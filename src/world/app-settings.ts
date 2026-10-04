@@ -5,6 +5,7 @@ import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateA
 import { createAppSourceState } from './app-source-state.mjs';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { deviceKey } from '../platform/device-key.mjs';
+import { exportAppDeployment, preferredInspectionEntry } from './app-deployment.mjs';
 import type { AppInspection, AppSettingsOptions, SettingsPending } from './app-settings.types';
 
 type Confirmation = { kind: 'retire'; domainId: string; origin: string; revision: number } | { kind: 'abandon'; pending: SettingsPending } | { kind: 'reset' } | { kind: 'revoke' }
@@ -246,7 +247,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   function preview(domainId?: string): void {
     if (!current() || busy || !model || staleInspection) return;
     const snapshot = model.read().snapshot;
-    const selected = domainId ?? snapshot.addresses.canonical?.id ?? snapshot.addresses.aliases.find(value => value.active && value.state === 'bound')?.id;
+    const selected = domainId ?? preferredInspectionEntry(snapshot)?.domainId;
     if (selected && snapshot.actions.canPreview) {
       const target = { domainId: selected, path: snapshot.source.entryPath };
       if (hasUnsavedDraft()) confirm({ kind: 'leave', preview: target }, document.activeElement instanceof HTMLElement ? document.activeElement : open);
@@ -476,7 +477,21 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   sourceHistory.addEventListener('toggle', () => {
     if (sourceHistory.open && (!historyOpened || sourceModel?.read().history.stale)) { historyOpened = true; void refreshSourceHistory(); }
   });
-  source.append(sourceState, sourceInfo, sourceBinding, sourceTime, sourceDetails, sourceHistory);
+  const deployment = el('details', 'sw-app-settings-details');
+  deployment.append(el('summary', '', 'Размещение с агентом'),
+    el('p', 'sw-muted', 'Скачайте свежие адреса и версию источника для подготовки размещения. Файл не содержит ключей и не даёт права менять приложение.'));
+  const exportDeployment = button('Скачать данные размещения', 'download', 'sw-button-quiet', () => {
+    if (!current() || busy || staleInspection || !model) return;
+    try {
+      const data = exportAppDeployment(model.read().snapshot, location.origin);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }));
+      const link = el('a'); link.href = url; link.download = 'soty-deployment-' + appId + '.json';
+      host.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notice = 'Данные размещения скачаны. Перед изменением источника получите свежую версию.'; render();
+    } catch { error = 'Не удалось подготовить данные размещения. Обновите состояние.'; render(); }
+  });
+  deployment.append(exportDeployment);
+  source.append(sourceState, sourceInfo, sourceBinding, sourceTime, sourceDetails, sourceHistory, deployment);
   const danger = keyed(el('details', 'sw-app-settings-details'), 'danger'); danger.append(el('summary', '', 'Закрыть приложение в Сотах'));
   const revoke = keyed(button('Закрыть все ссылки приложения', 'lock', 'sw-button-quiet sw-button-danger', () => confirm({ kind: 'revoke' }, revoke)), 'revoke');
   danger.append(el('p', 'sw-muted', 'Отдельное действие: закрывает весь доступ через Соты. Для смены аудитории используйте настройки выше.'), revoke);
@@ -496,6 +511,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     text(sourceBinding, binding === 'bound' ? 'Устройство подтвердило текущий маршрут.' : binding === 'legacy' ? 'На этом устройстве смена источника требует обновления Соты Коннектора.' : '');
     sourceBinding.hidden = !sourceBinding.textContent || snapshot.app.state === 'revoked';
     text(sourceDevice, snapshot.source.deviceName); text(sourcePort, String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
+    disable(exportDeployment, busy || staleInspection || snapshot.app.state !== 'enabled');
     text(sourceTime, observed.observedAt === null ? 'Пока нет наблюдения от устройства.' : `Последнее наблюдение: ${new Date(observed.observedAt).toLocaleString('ru-RU')}.`);
     const selectedKey = deviceKey(draft), names = new Map<string, number>();
     for (const value of devices) names.set(value.name, (names.get(value.name) ?? 0) + 1);

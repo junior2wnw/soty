@@ -1,5 +1,9 @@
 # soty.online
 
+Размещение веб-проектов как приложений: [повторяемый процесс](docs/deployment/app-release.md).
+Skill для агента: [soty-app-deploy](skills/soty-app-deploy/SKILL.md),
+установка — node scripts/install-soty-deploy-skill.mjs.
+
 Soty is a PWA for long-lived encrypted links between devices. Text, files,
 remote terminal output, wake signals, agent tasks, and explicitly granted
 traffic routes use the same trusted relationship.

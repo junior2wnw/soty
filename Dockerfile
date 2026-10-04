@@ -6,7 +6,7 @@ RUN corepack enable \
   && PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm run build
-RUN pnpm run typecheck && pnpm run connect:test && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
+RUN pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
 RUN pnpm prune --prod
 

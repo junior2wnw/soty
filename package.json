@@ -35,7 +35,9 @@
     "connector:selftest": "node scripts/build-agent-release.mjs && node scripts/agent-release-selftest.mjs && node scripts/agent-update-selftest.mjs && node scripts/opencode-model-selftest.mjs && node scripts/connector-store-selftest.mjs && node scripts/gonka-proxy-selftest.mjs",
     "connector:integration": "node scripts/connector-integration-selftest.mjs",
     "identity:selftest": "node scripts/soty-identity-adapter-selftest.mjs && node scripts/identity-wire-v1-selftest.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "app:release": "node scripts/soty-app-release.mjs",
+    "app:release:test": "node --test deploy/apps/*.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/core": "2.2.0",

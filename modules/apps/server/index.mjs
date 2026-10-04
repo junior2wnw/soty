@@ -211,11 +211,24 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const observed = inspectSource({ app: current, target: { connectorKey: current.target_connector_key, revision: current.target_revision, digest: current.target_digest } });
     const legacyState = { offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' };
     const state = current.state === 'revoked' ? 'revoked' : legacyState[observed.state];
+    let entry;
+    if (current.state === 'enabled' && actor.accountId === current.owner_account_id && current.active_named_address_count > 0) {
+      const address = db.prepare('SELECT ad.id,ad.origin FROM app_publication_domains pd JOIN app_domains ad '
+        + 'ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id '
+        + "JOIN app_domain_zones z ON z.id=ad.zone_id AND z.kind='named' "
+        + "WHERE pd.app_id=? AND pd.owner_account_id=? AND ad.role='alias' AND ad.state='bound' ORDER BY ad.created_at,ad.id LIMIT 1")
+        .get(current.id, current.owner_account_id);
+      if (address) {
+        try { entry = { domainId: address.id, origin: address.origin, path: runtimePath(current.target_entry_path) }; }
+        catch { /* Preserve inspection of a legacy registration with an invalid path. */ }
+      }
+    }
     return { id: current.id, name: current.name, ownerAccountId: current.owner_account_id, hostDeviceId: identity.hostDeviceId,
       state, createdAt: current.created_at, updatedAt: current.updated_at,
       ...(actor.accountId === current.owner_account_id ? { connectorId: identity.connectorId, deviceName: current.device_name,
         port: current.target_port, entryPath: current.target_entry_path, grants: JSON.parse(current.grants_json),
-        publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count } } : {}) };
+        publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count },
+        ...(entry ? { entry } : {}) } : {}) };
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });

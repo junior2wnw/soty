@@ -7,6 +7,8 @@ import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord } from './types';
 import { isAppExternalRequest } from './app-actions.mjs';
 import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
+import { mountAppFullscreen } from './app-fullscreen.mjs';
+import { icon } from './icons';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
@@ -77,6 +79,14 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (open) moreBody.querySelector<HTMLButtonElement>('button:not([hidden]):not(:disabled)')?.focus();
   });
   more.setAttribute('aria-controls', moreBody.id); more.setAttribute('aria-expanded', 'false'); more.dataset.stageControl = 'more';
+  const expand = iconButton('На весь экран', 'expand', () => { closeMore(); void fullscreen.toggle(); });
+  expand.dataset.stageControl = 'fullscreen';
+  const fullscreen = mountAppFullscreen({ screen, isCurrent: current, onChange: state => {
+    const label = state.active ? 'Вернуть обычный вид' : 'На весь экран';
+    expand.title = label; expand.setAttribute('aria-label', label); expand.setAttribute('aria-pressed', String(state.active));
+    expand.disabled = state.pending;
+    expand.replaceChildren(icon(state.active ? 'collapse' : 'expand'), el('span', '', label));
+  } });
   const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(); });
   refresh.dataset.stageControl = 'refresh';
   const external = button('Открыть отдельно', 'external', 'sw-button-quiet', () => {
@@ -92,7 +102,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   external.dataset.stageControl = 'external';
   const settings = button('Настройки приложения', 'settings', 'sw-button-quiet', () => {
-    closeMore(true); if (current()) options.onSettings(app, updateApp);
+    closeMore(true); if (current()) void fullscreen.leave().then(() => { if (current()) options.onSettings(app, updateApp); });
   });
   const archives = button('Архив владельца', 'history', 'sw-button-quiet', () => {
     closeMore(true); if (current()) void navigatePresentation({ panel: 'discussion', administrative: true }, true);
@@ -103,11 +113,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const otherAccount = button('Другой аккаунт', 'person', 'sw-button-quiet', () => {
     closeMore(true); if (!current() || accountPending) return;
     accountPending = true; otherAccount.disabled = true;
-    void options.onAccount().catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
+    void fullscreen.leave().then(() => current() ? options.onAccount() : undefined).catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
       .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
   });
   moreBody.append(external, refresh, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
-  header.append(back, title, savedHost, discuss, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace);
+  header.append(back, title, savedHost, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
@@ -256,6 +266,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; disposed = true; detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

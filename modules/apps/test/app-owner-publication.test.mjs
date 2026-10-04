@@ -84,6 +84,19 @@ test('public catalog includes only listed admitted named entries, without connec
   f.call('apps.revoke', { appId: f.appId }); assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] });
 });
 
+test('the owner list immediately selects the enabled named entry even for unlisted or restricted apps', async t => {
+  const f = await fixture(t), alias = f.claim('preferred-project');
+  assert.equal(f.current().entry, undefined, 'claim alone does not enable an address');
+  f.publish([alias.domainId], 'restricted');
+  assert.deepEqual(f.current().entry, { domainId: alias.domainId, origin: alias.origin, path: '/' });
+  assert.equal(f.catalog().apps.length, 0, 'the private list does not depend on catalog publication');
+  f.publish([alias.domainId], 'anyone', false);
+  assert.equal(f.current().entry.domainId, alias.domainId);
+  f.call('apps.domains.retire', { appId: f.appId, domainId: alias.domainId, requestId: 'retire-preferred',
+    expectedDomainsRevision: f.call('apps.domains.get', { appId: f.appId }).revision });
+  assert.equal(f.current().entry, undefined);
+});
+
 test('active count excludes merely claimed, disabled and retired aliases, and retained named policy survives claim disable', async t => {
   const f = await fixture(t), a = f.claim('one-address'), b = f.claim('two-address'), spare = f.claim('claimed-only');
   f.publish([a.domainId, b.domainId], 'restricted');

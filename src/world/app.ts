@@ -4,6 +4,7 @@ import './shell.css';
 import './chat.css';
 import './community.css';
 import { mountAppStage, type AppStageHandle } from './app-stage';
+import { preferredInspectionEntry } from './app-deployment.mjs';
 import { mountAppLibrary } from './app-library';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
@@ -1115,7 +1116,7 @@ class WorldApplication {
     if (this.destroyed || !this.deskAccount) return;
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
     const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
-      ...(app.entry ? { domainId: app.entry.domainId, path: app.entry.path } : {}) }, previousGroup?.communityId))!;
+      ...(app.entry ? { domainId: app.entry.domainId, path: app.entry.path } : {}) }, app.entry ? undefined : previousGroup?.communityId))!;
     const communityId = launchIntent.communityId;
     const knownGroup = communityId ? [previousGroup, ...this.communities].find(value => value?.communityId === communityId && value.membership?.state === 'active') ?? null : null;
     this.group = knownGroup; this.view = 'mine'; this.renderNavigation(); this.writeRoute(launchIntent.route);
@@ -1209,14 +1210,19 @@ class WorldApplication {
     handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent,
       onChanged: snapshot => {
         if (!isCurrent()) return;
-        const before = JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel]);
-        app = { ...app, name: snapshot.app.name, grants: snapshot.app.grants,
+        const before = JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel, app.entry]);
+        const { entry: _previousEntry, ...metadata } = app;
+        const entry = preferredInspectionEntry(snapshot);
+        app = { ...metadata, name: snapshot.app.name, grants: snapshot.app.grants,
           deviceId: snapshot.source.hostDeviceId, deviceLabel: snapshot.source.deviceName,
           status: snapshot.app.state === 'revoked' ? 'revoked' : ({ offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' } as const)[snapshot.source.observation.state],
-          publication: publicationFromInspection(snapshot) };
+          publication: publicationFromInspection(snapshot), ...(entry ? { entry } : {}) };
         app.audience = describeAppAudience(app, accountId).label;
-        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel]);
-        this.apps = this.apps.map(value => value.appId === app.appId ? { ...value, ...app } : value);
+        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel, app.entry]);
+        this.apps = this.apps.map(value => {
+          if (value.appId !== app.appId) return value;
+          const { entry: _oldEntry, ...previous } = value; return { ...previous, ...app };
+        });
         // Updating metadata must not recreate the running iframe or its chat.
         onUpdated?.(app);
       },

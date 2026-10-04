@@ -7,6 +7,8 @@ import * as appLaunch from './app-launch.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
+import * as appFullscreen from './app-fullscreen.mjs';
+import * as appDeployment from './app-deployment.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -44,7 +46,7 @@ class ElementPort {
 }
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
-  const document = { activeElement: null, visibilityState: 'visible', addEventListener() {} };
+  const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const view = Object.assign(new EventTarget(), { location, Node: ElementPort, navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '' });
@@ -57,6 +59,9 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
+    './app-fullscreen.mjs': appFullscreen,
+    './app-deployment.mjs': appDeployment,
+    './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() {}, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },

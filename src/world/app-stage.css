@@ -1,4 +1,8 @@
 .sa-stage { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--sw-surface); }
+.sa-stage:fullscreen, .sa-stage.is-window-expanded { width: 100%; height: 100dvh; max-width: none; max-height: none; }
+.sa-stage.is-window-expanded { position: fixed; inset: 0; z-index: 100; }
+.sa-stage::backdrop { background: var(--sw-surface); }
+.sa-toolbar [data-stage-control=fullscreen][aria-pressed=true] { background: var(--sw-selected); color: var(--sw-ink); }
 .sa-toolbar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 8px 16px; border-bottom: 1px solid var(--sw-line); background: var(--sw-bg); z-index: 2; }
 .sa-toolbar>.sw-icon-button, .sa-more>.sw-icon-button { flex: none; width: 44px; height: 44px; min-width: 44px; padding: 0; border-color: transparent; background: transparent; }
 .sa-title { flex: 1; min-width: 0; }
@@ -27,6 +31,7 @@
   .sa-toolbar { min-height: 56px; padding: 6px 8px; gap: 4px; }
   .sa-title h2 { font-size: 14px; }
   .sa-title p { display: none; }
+  .sa-toolbar { padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right)); }
   .sa-saved .se-saved-control { width: 44px; min-width: 44px; height: 44px; padding: 0; }
   .sa-saved .se-saved-control>span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
