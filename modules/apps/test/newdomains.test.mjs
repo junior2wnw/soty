@@ -52,6 +52,23 @@ const call = (service, op, args, actor = owner) => service.execute({ actor, op, 
 const claim = (service, slug, requestId = `req_${slug}`, extras = {}, actor = owner) => call(service, 'apps.domains.claim',
   { appId: appA, slug, requestId, expectedDomainsRevision: 0, ...extras }, actor);
 
+test('an explicitly retained named zone preserves old IDs and aliases when new names move to another zone', async t => {
+  const f=await fixture(t), old=f.open();
+  const previous=claim(old,'old-entry').receipt;
+  const before=call(old,'apps.domains.get',{appId:appA});old.close();
+  assert.throws(()=>f.open({namedAppZone:'https://current-apps.example'}),/apps_named_zone_changed/);
+  const next=f.open({namedAppZone:'https://current-apps.example',retainedNamedAppZones:[named]});
+  assert.deepEqual(call(next,'apps.domains.get',{appId:appA}),before);
+  const added=claim(next,'new-entry','new-zone',{expectedDomainsRevision:before.revision}).receipt;
+  assert.equal(added.origin,'https://new-entry.current-apps.example');
+  const domains=call(next,'apps.domains.get',{appId:appA}).domains;
+  assert.ok(domains.some(domain=>domain.id===previous.domainId && domain.origin===previous.origin && domain.state==='bound'));
+  next.close();
+  const reopened=f.open({namedAppZone:'https://current-apps.example',retainedNamedAppZones:[named]});
+  assert.deepEqual(call(reopened,'apps.domains.get',{appId:appA}).domains,domains);
+  assert.throws(()=>f.open({namedAppZone:'https://current-apps.example'}),/apps_named_zone_changed/);
+});
+
 test('v1 migration preserves app identity, exact ACL JSON and revisions; stale grant index is repaired', async t => {
   const f = await fixture(t);
   const beforeDb = new DatabaseSync(f.databasePath); const before = beforeDb.prepare('SELECT * FROM local_apps ORDER BY id').all(); beforeDb.close();

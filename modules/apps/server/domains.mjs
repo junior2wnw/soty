@@ -18,7 +18,7 @@ export function readNamedOrigins(db) {
   });
 }
 
-export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', domainLimits = {}, shellOrigins = [], validateNamedZone, allowShellZoneRoot = false,
+export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, shellOrigins = [], validateNamedZone, allowShellZoneRoot = false,
   onRetireInTransaction, onPolicyChanged }) {
   assertApps(typeof assertActor === 'function', 'apps_actor_validator_required', 500);
   assertApps(typeof onRetireInTransaction === 'function' && typeof onPolicyChanged === 'function', 'apps_policy_validator_required', 500);
@@ -36,7 +36,8 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
     if (!zoneOrigin) return;
     const zone = namedZone(zoneOrigin);
     const existing = db.prepare("SELECT * FROM app_domain_zones WHERE kind='named'").all();
-    assertApps(existing.length <= 1 && (!existing.length || existing[0].origin_template === zone.template), 'apps_named_zone_changed', 409);
+    const retained = new Set(retainedNamedAppZones.map(origin => namedZone(normalizeNamedAppZone(origin)).template));
+    assertApps(existing.every(row => row.origin_template === zone.template || retained.has(row.origin_template)), 'apps_named_zone_changed', 409);
     zoneId = insertDomainZone(db, zone, now());
   });
   const app = id => db.prepare('SELECT * FROM local_apps WHERE id=?').get(id);

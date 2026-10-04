@@ -6,6 +6,7 @@ import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord } from './types';
 import { isAppExternalRequest } from './app-actions.mjs';
+import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
@@ -54,6 +55,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const header = el('header', 'sa-toolbar'), title = el('div', 'sa-title'), name = el('h2', '', app.name);
   name.tabIndex = -1; const subtitle = el('p'); title.append(name, subtitle);
   const workspace = el('div', 'sa-workspace'), runtime = el('div', 'sa-runtime'), panel = el('aside', 'sa-discussion');
+  const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status');
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
@@ -254,6 +256,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; disposed = true; routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; disposed = true; detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

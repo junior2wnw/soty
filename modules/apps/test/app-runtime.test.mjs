@@ -89,6 +89,23 @@ test('named-only publication serves real HTTP, assets, mutations and websocket t
   assert.equal((await f.http('/api/items', { headers: { cookie } })).status, 200);
 });
 
+test('fixed native ingress rechecks publication, source pins, sessions and connector readiness', {timeout:15_000},async t=>{
+  const f=await setup(t,{legacy:false});
+  const snapshot=f.call('apps.publication.get',{appId:f.app.id});
+  const headers={'x-soty-ingress-app':f.app.id,'x-soty-ingress-target':snapshot.target.digest};
+  assert.notEqual((await f.http('/_soty/ingress-check',{headers})).status,204);
+  f.publish();assert.equal((await f.http('/_soty/ingress-check',{headers})).status,204);
+  assert.equal((await f.http('/_soty/ingress-check',{headers:{...headers,'x-soty-ingress-target':'0'.repeat(64)}})).status,403);
+  assert.equal((await f.http('/_soty/ingress-check',{headers:{...headers,'x-soty-ingress-app':'app-'+ 'f'.repeat(32)}})).status,403);
+  assert.equal((await f.http('/_soty/ingress-check?unchecked=yes',{headers})).status,403);
+  assert.notEqual((await f.http('/_soty/ingress-check',{method:'POST',headers})).status,204);
+  f.publish('restricted');assert.notEqual((await f.http('/_soty/ingress-check',{headers})).status,204);
+  const cookie=await f.launch();assert.equal((await f.http('/_soty/ingress-check',{headers:{...headers,cookie}})).status,204);
+  assert.notEqual((await f.http('/_soty/ingress-check',{headers:{...headers,cookie:'__Host-soty_app_session=bad'}})).status,204);
+  f.runtime.stop();await until(()=>f.call('apps.list').apps[0].state==='offline');
+  assert.notEqual((await f.http('/_soty/ingress-check',{headers:{...headers,cookie}})).status,204);
+});
+
 test('account sessions retain an absolute deadline and invalid presented credentials never become a guest', { timeout: 15_000 }, async t => {
   const f = await setup(t); f.publish(); const cookie = await f.launch(visitor);
   const verified = await f.http('/_soty/session', { headers: { cookie } });

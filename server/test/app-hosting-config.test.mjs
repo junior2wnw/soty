@@ -13,6 +13,11 @@ test('operator settings are nonsecret and strict; absence keeps the current prod
     assert.deepEqual(readAppHostingConfig(file), {});
     const value = { schema: 'soty.app-hosting.v1', domainProfile: 'shell-subdomains-v1', namedAppZone: 'https://xn--n1afe0b.online', discoveryOrigin: 'https://soty.pochinit.online' };
     writeFileSync(file, JSON.stringify(value)); assert.equal(readAppHostingConfig(file).namedAppZone, value.namedAppZone);
+    writeFileSync(file,JSON.stringify({...value,retainedNamedAppZones:['https://4-2.xn--p1ai']}));
+    assert.deepEqual(readAppHostingConfig(file).retainedNamedAppZones,['https://4-2.xn--p1ai']);
+    for(const retainedNamedAppZones of [null,'https://4-2.xn--p1ai',[''],[123],Array(9).fill('https://4-2.xn--p1ai')]) {
+      writeFileSync(file,JSON.stringify({...value,retainedNamedAppZones}));assert.throws(()=>readAppHostingConfig(file),/apps_hosting_config_invalid/);
+    }
     for (const invalid of [{ ...value, extra: true }, { ...value, domainProfile: 'anything' }, [], null]) { writeFileSync(file, JSON.stringify(invalid)); assert.throws(() => readAppHostingConfig(file), /apps_hosting_config_invalid/); }
   } finally { rmSync(dir, { recursive: true }); }
 });

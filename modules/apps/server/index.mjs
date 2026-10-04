@@ -28,7 +28,7 @@ const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
-export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
+export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
@@ -38,6 +38,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
   const namedZone = normalizeNamedAppZone(namedAppZone), limits = normalizeDomainLimits(domainLimits);
+  assertApps(Array.isArray(retainedNamedAppZones) && retainedNamedAppZones.length <= 8, 'invalid_retained_app_zones');
+  const retainedZones = retainedNamedAppZones.map(normalizeNamedAppZone);
+  assertApps(retainedZones.every(Boolean), 'invalid_retained_app_zones');
+  validateNamedOrigins(retainedZones, { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
   validateNamedOrigins([namedZone], { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
@@ -48,7 +52,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
     migrateAppsSchema(db, { legacyTemplate: template, now });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
-    domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
+    domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
       onPolicyChanged: publications.notifyChanged });
     db.exec('PRAGMA journal_mode=WAL;');
@@ -536,6 +540,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const path = requestPath(req.url || '/');
     assertOrigin(req, app.appHost.origin, !['GET', 'HEAD'].includes(req.method));
     const internalUrl = new URL(path, app.appHost.origin);
+    if (internalUrl.pathname === '/_soty/ingress-check') {
+      // A fixed operator-managed upstream may keep its own host-only cookies.
+      // This check grants no identity or arbitrary destination: ingress pins
+      // the application and current source digest and rechecks live authority.
+      assertApps(req.method === 'GET' && !internalUrl.search, 'invalid_app_ingress', 403);
+      const target = activeTarget(app.id);
+      assertApps(headerCount(req, 'x-soty-ingress-app') === 1 && req.headers['x-soty-ingress-app'] === app.id
+        && headerCount(req, 'x-soty-ingress-target') === 1 && target
+        && equalDigest(req.headers['x-soty-ingress-target'], target.digest), 'app_source_changed', 403);
+      const session = sessionFor(req, app);
+      const decision = checkAccess(session, { renewPublic: true });
+      assertRuntimeBinding(decision, { requireReady: true });
+      res.statusCode = 204; res.end(); return;
+    }
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
       assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path') && internalUrl.searchParams.getAll('path').length <= 1, 'invalid_app_path');
       const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();

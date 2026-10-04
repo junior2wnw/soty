@@ -28,6 +28,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
+  const retainedNamedAppZones = (appHosting.retainedNamedAppZones || []).map(zone =>
+    validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }));
   const admittedDiscoveryOrigin = validateDiscoveryOrigin({ discoveryOrigin, shellOrigins });
   const admittedCapabilityAudience = validateCapabilityAudience({ audience: capabilityAudience, shellOrigins, enabled: nativeNotesEnabled });
   const oauthProfile = createOAuthHostProfile(oauth, { shellOrigins, audience: admittedCapabilityAudience });
@@ -122,7 +124,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       }) } : {}),
     });
   } catch (error) { failedStart(); throw error; }
-  try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, shellOrigins,
+  try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,
