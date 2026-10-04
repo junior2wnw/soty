@@ -42,7 +42,9 @@ src/world/app-deployment.mjs. Экспорт не подписанный grant; 
   {path,status,contains?}, до 32 вместе с обязательными; без секретов и внешних URLs.
   Redirect отключён, response для contains ограничен 2 MiB.
   Restricted publication требует отдельной браузерной проверки.
-- zone — только snippet wildcard gateway, не настройка DNS и не reload Caddy.
+- zone — только snippet единого HTTPS catch-all с host expression и leaf TLS,
+  не настройка DNS и не reload Caddy. --retain-origin сохраняет дополнительные
+  именные/canonical зоны. Не дублировать уже существующий catch-all.
 
 HTTP receipt содержит httpOnly=true и browserAndDataChecksRequired=true.
 Не исправлять результат проверок переписыванием этих флагов.

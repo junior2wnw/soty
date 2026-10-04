@@ -37,8 +37,10 @@ node scripts/export-device-link.mjs --origin https://4-2.xn--p1ai --connector ht
 DNS сам по себе не публикует приложение: неизвестные и вложенные имена не
 попадают в основной сайт, API аккаунтов или коннектор.
 
-Caddy обслуживает wildcard текущей зоны и прежний https://*.xn--n1afe0b.online,
-передавая Host без замены в Soty gateway на loopback 18182. Точный native host
+Caddy использует один https:// catch-all с expression host для текущей,
+прежней и canonical зон, передавая Host без замены в Soty gateway на loopback
+18182. Literal wildcard site без DNS challenge не использовать: Caddy может
+запросить wildcard-сертификат и перекрыть точный host. Точный native host
 имеет отдельный проверенный route. On-demand TLS разрешается только для
 зарегистрированных имён через /api/apps/tls-allow. Каждый адрес закреплён в
 реестре; публичный runtime открывается после публикации.
