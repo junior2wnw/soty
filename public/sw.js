@@ -2,6 +2,18 @@ const cacheName = "soty-online-v20";
 const buildAssets = [];
 const classicAssets = [];
 const shell = ["/", "/manifest.webmanifest", "/icon.svg", "/icons/soty.svg", "/icons/soty-180.png", "/icons/soty-192.png", "/icons/soty-512.png"];
+const legacyHost = new URL(self.location.origin).hostname === 'xn--n1afe0b.online';
+const offlineShell = legacyHost ? '/__soty' : '/';
+const shellUrls = shell.map(url => url === '/' ? offlineShell : url);
+function isSotyDocument(value) {
+  if (!legacyHost) return true;
+  const url = new URL(value);
+  return url.pathname === '/__soty' || url.pathname.startsWith('/install/')
+    || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/')
+    || ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic', 'pwa'].some(name => url.searchParams.has(name))
+    || ['classic', 'world'].includes(url.searchParams.get('view'))
+    || /^#(?:app|launch|notes|access|mine|library|community)(?:\/|\?|$)/u.test(url.hash);
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
@@ -13,7 +25,7 @@ self.addEventListener("install", (event) => {
         || url.pathname.startsWith('/install/');
     });
     const cache = await caches.open(cacheName);
-    await cache.addAll([...new Set([...shell, ...buildAssets, ...(classic ? classicAssets : [])])]);
+    await cache.addAll([...new Set([...shellUrls, ...buildAssets, ...(classic ? classicAssets : [])])]);
   })());
   // A waiting update is activated by an explicit safe reload, never during an edit.
 });
@@ -33,7 +45,7 @@ self.addEventListener("message", (event) => {
   if (event.data?.type === 'SOTY_OFFLINE_STATUS') {
     event.waitUntil((async () => {
       const cache = await caches.open(cacheName);
-      const ready = await Promise.all([...new Set([...shell, ...buildAssets])].map(url => cache.match(url)));
+      const ready = await Promise.all([...new Set([...shellUrls, ...buildAssets])].map(url => cache.match(url)));
       event.ports[0]?.postMessage({ version: cacheName, offlineReady: ready.every(Boolean) });
     })());
   } else if (event.data?.type === 'SOTY_ACTIVATE_UPDATE' || event.data?.type === 'skipWaiting') {
@@ -45,7 +57,7 @@ let preparing;
 function prepareUpdate() {
   if (preparing) return preparing;
   preparing = (async () => {
-    const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+    const clients = (await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })).filter(client => isSotyDocument(client.url));
     const confirmedDocuments = new Map(clients.map(client => [client.id, client.url]));
     const decisions = await Promise.all(clients.map(client => new Promise(resolve => {
       const channel = new MessageChannel();
@@ -55,7 +67,7 @@ function prepareUpdate() {
     })));
     if (!decisions.every(Boolean)) return false;
     // A newly opened client has not yet confirmed durable drafts.
-    const latest = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+    const latest = (await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })).filter(client => isSotyDocument(client.url));
     if (latest.some(client => confirmedDocuments.get(client.id) !== client.url)) return false;
     for (const client of latest) client.postMessage({ type: 'SOTY_UPDATE_COMMIT' });
     await self.skipWaiting();
@@ -82,7 +94,8 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.open(cacheName).then(async cache => await cache.match("/") || Response.error())));
+    if (legacyHost && !isSotyDocument(url.href)) return;
+    event.respondWith(fetch(request).catch(() => caches.open(cacheName).then(async cache => await cache.match(offlineShell) || Response.error())));
     return;
   }
   if (url.search) {

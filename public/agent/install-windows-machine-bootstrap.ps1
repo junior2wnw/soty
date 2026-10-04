@@ -1,5 +1,5 @@
 param(
-  [string]$Base = "https://xn--n1afe0b.online/agent",
+  [string]$Base = "https://4-2.xn--p1ai/agent",
   [string]$Revision = "",
   [string]$RelayId = "",
   [string]$DeviceId = "",
@@ -32,7 +32,7 @@ function Test-SotyMachineHealth {
     $request.Method = "GET"
     $request.Timeout = 2500
     $request.ReadWriteTimeout = 2500
-    $request.Headers.Add("Origin", "https://xn--n1afe0b.online")
+    $request.Headers.Add("Origin", "https://4-2.xn--p1ai")
     $response = $request.GetResponse()
     try {
       $reader = New-Object System.IO.StreamReader($response.GetResponseStream())

@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-BASE="https://xn--n1afe0b.online/agent"
+BASE="https://4-2.xn--p1ai/agent"
 RELAY_ID=""
 SCOPE="CurrentUser"
 INSTALL_DIR=""
 LAUNCH_APP_AT_LOGON="0"
-APP_URL="https://xn--n1afe0b.online/?pwa=1"
+APP_URL="https://4-2.xn--p1ai/?pwa=1"
 
 die() {
   printf '%s\n' "$*" >&2
@@ -343,7 +343,7 @@ export SOTY_CONNECTOR_AUTO_UPDATE=1
 export SOTY_CONNECTOR_SCOPE="${SCOPE}"
 export SOTY_CONNECTOR_UPDATE_URL="${MANIFEST_URL}"
 export SOTY_CONNECTOR_LINK_ID="${RELAY_ID}"
-export SOTY_CONNECTOR_SERVER_URL="https://xn--n1afe0b.online"
+export SOTY_CONNECTOR_SERVER_URL="https://4-2.xn--p1ai"
 export PATH="${node_bin_dir}:\${PATH}"
 unset NODE_OPTIONS
 while true; do

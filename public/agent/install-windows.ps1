@@ -1,10 +1,10 @@
-﻿param(
-  [string]$Base = "https://xn--n1afe0b.online/agent",
+param(
+  [string]$Base = "https://4-2.xn--p1ai/agent",
   [ValidateSet("CurrentUser", "Machine")]
   [string]$Scope = "Machine",
   [string]$InstallDir = "",
   [switch]$LaunchAppAtLogon,
-  [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
+  [string]$AppUrl = "https://4-2.xn--p1ai/?pwa=1",
   [string]$RelayId = "",
   [string]$DeviceId = "",
   [string]$DeviceNick = "",
@@ -39,7 +39,7 @@ $RunnerStderrPath = Join-Path $AgentDir "start-agent.err.log"
 $RunnerStatusPath = Join-Path $AgentDir "start-agent.status.log"
 $WindowsPowerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $ManifestUrl = "$Base/manifest.json"
-$RelayBaseUrl = "https://xn--n1afe0b.online"
+$RelayBaseUrl = "https://4-2.xn--p1ai"
 try {
   $BaseUri = [Uri]$Base
   if (@("http", "https") -contains $BaseUri.Scheme.ToLowerInvariant()) {
@@ -469,7 +469,7 @@ try {
       $request.Method = "GET"
       $request.Timeout = 2500
       $request.ReadWriteTimeout = 2500
-      $request.Headers.Add("Origin", "https://xn--n1afe0b.online")
+      $request.Headers.Add("Origin", "https://4-2.xn--p1ai")
       $response = $request.GetResponse()
       try {
         $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
@@ -493,7 +493,7 @@ try {
       $request.Method = "GET"
       $request.Timeout = 2000
       $request.ReadWriteTimeout = 2000
-      $request.Headers.Add("Origin", "https://xn--n1afe0b.online")
+      $request.Headers.Add("Origin", "https://4-2.xn--p1ai")
       $response = $request.GetResponse()
       try {
         $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
@@ -760,7 +760,7 @@ shell.Run "$escapedCommand", 0, False
   }
 
   function Enable-BrowserLocalNetworkAccessPolicy {
-    $origins = @("https://xn--n1afe0b.online")
+    $origins = @("https://4-2.xn--p1ai", "https://xn--n1afe0b.online", "https://soty.pochinit.online")
     $browserPolicyRoots = @(
       "Software\Policies\Google\Chrome",
       "Software\Policies\Microsoft\Edge"

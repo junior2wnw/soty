@@ -13,8 +13,9 @@ import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeRe
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
+import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.0";
+const connectorVersion = "1.4.1";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -30,7 +31,7 @@ const configuredPort = safeInteger(arg("--port") || env("SOTY_CONNECTOR_PORT", "
 // Machine releases before 1.2.6 persisted port 0 in the managed runner. Treat it
 // as an old "automatic" value and converge to the browser-facing stable port.
 const port = companion ? configuredPort : (configuredPort || 49_424);
-const updateManifestUrl = arg("--update-url") || env("SOTY_CONNECTOR_UPDATE_URL", "SOTY_AGENT_UPDATE_URL") || "https://xn--n1afe0b.online/agent/manifest.json";
+const updateManifestUrl = arg("--update-url") || env("SOTY_CONNECTOR_UPDATE_URL", "SOTY_AGENT_UPDATE_URL") || "https://4-2.xn--p1ai/agent/manifest.json";
 const spreadExBaseUrl = normalizeSpreadExBaseUrl(env("SOTY_SPREADEX_BASE_URL")) || "https://miniapp.spreadex.me";
 const spreadExReleasePublicKey = env("SOTY_SPREADEX_ML_RELEASE_PUBLIC_KEY");
 const autoUpdate = env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") === "1" || (managed && env("SOTY_CONNECTOR_AUTO_UPDATE", "SOTY_AGENT_AUTO_UPDATE") !== "0");
@@ -213,7 +214,7 @@ async function startConnector() {
 async function handleHttp(request, response, url) {
   if (url.pathname === '/apps/claim') {
     const origin = String(request.headers.origin || '');
-    const allowed = origin !== '' && origin === relayBaseUrl;
+    const allowed = productionShellOriginAllowed(origin, relayBaseUrl);
     const headers = { 'Cache-Control': 'no-store', 'Vary': 'Origin', 'X-Content-Type-Options': 'nosniff',
       ...(allowed ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Private-Network': 'true' } : {}) };
     if (!allowed) { sendJson(response, 403, headers, { ok: false, error: 'origin-not-allowed' }); return; }
@@ -1782,7 +1783,7 @@ function originAllowed(origin, pathname = "") {
   if (pathname.startsWith("/integrations/spreadex/v1")) {
     return spreadExOriginAllowed(origin, spreadExBaseUrl, [relayBaseUrl, originOf(updateManifestUrl)]);
   }
-  return sameOrigin(origin, relayBaseUrl) || sameOrigin(origin, originOf(updateManifestUrl));
+  return productionShellOriginAllowed(origin, relayBaseUrl) || sameOrigin(origin, originOf(updateManifestUrl));
 }
 
 function sameOrigin(left, right) {

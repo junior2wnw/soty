@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { MessageChannel } from 'node:worker_threads';
 
 const source = readFileSync(new URL('../../public/sw.js', import.meta.url), 'utf8');
-function worker({ clients = [], latest = clients, present = true } = {}) {
+function worker({ clients = [], latest = clients, present = true, origin = 'https://soty.test' } = {}) {
   const handlers = new Map(), records = { activated: 0, committed: [], cache: new Set() };
   const cache = { match: async url => present && records.cache.has(typeof url === 'string' ? url : new URL(url.url).pathname) ? new Response('cached shell') : undefined,
     addAll: async urls => urls.forEach(url => records.cache.add(url)), put: async () => {} };
@@ -13,7 +13,7 @@ function worker({ clients = [], latest = clients, present = true } = {}) {
   vm.runInNewContext(source.replace('const buildAssets = [];', 'const buildAssets = ["/assets/entry.js", "/assets/typeface.woff2"];'), {
     URL, Response, MessageChannel, setTimeout, clearTimeout, fetch: async () => { throw new Error('offline'); },
     caches: { open: async () => cache, match: cache.match, keys: async () => ['soty-online-v20'], delete: async () => true },
-    self: { location: { origin: 'https://soty.test' }, addEventListener: (name, handler) => handlers.set(name, handler),
+    self: { location: { origin }, addEventListener: (name, handler) => handlers.set(name, handler),
       skipWaiting: async () => { records.activated++; }, clients: { claim: async () => {}, matchAll: async () => ++reads > 1 ? latest : clients } },
   });
   const emit = async (type, data) => {
@@ -85,6 +85,32 @@ test('navigation uses a real cached shell when the server is unreachable; API is
   assert.equal(await (await response).text(), 'cached shell');
   runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'cors', url: 'https://soty.test/api/account' }, respondWith: promise => { response = promise; } });
   await assert.rejects(response, /offline/);
+});
+
+test('the old origin caches its Soty entry and leaves the HIVE root navigation alone', async () => {
+  const origin = 'https://xn--n1afe0b.online', runtime = worker({ origin });
+  await runtime.emit('install');
+  assert.equal(runtime.records.cache.has('/__soty'), true);
+  assert.equal(runtime.records.cache.has('/'), false);
+  let response;
+  runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `${origin}/` }, respondWith: promise => { response = promise; } });
+  assert.equal(response, undefined);
+  for (const path of ['/__soty', '/?pwa=1', '/?view=classic', '/#notes/new', '/#launch/app/domain']) {
+    runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `${origin}${path}` }, respondWith: promise => { response = promise; } });
+    assert.equal(await (await response).text(), 'cached shell');
+  }
+});
+
+test('HIVE windows on the shared old origin do not receive Soty draft or reload messages', async () => {
+  const committed = [], editor = client('soty', true, committed), hive = client('hive', false, committed);
+  editor.url = 'https://xn--n1afe0b.online/__soty#mine'; hive.url = 'https://xn--n1afe0b.online/';
+  const runtime = worker({ origin: 'https://xn--n1afe0b.online', clients: [editor, hive] });
+  assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, true);
+  assert.deepEqual(committed, ['soty']);
+  const dirty = client('dirty', false, []); dirty.url = 'https://xn--n1afe0b.online/__soty#notes/new';
+  const blocked = worker({ origin: 'https://xn--n1afe0b.online', clients: [dirty, hive] });
+  assert.equal((await blocked.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, false);
+  assert.equal(blocked.records.activated, 0);
 });
 
 test('offline discovery, OAuth consent and machine navigation cannot turn into a cached SPA200', async () => {

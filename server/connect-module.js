@@ -22,7 +22,14 @@ export function attachConnectModule(app, { dataDir, origins, extensions = [], ca
 
 export function connectAllowedOrigins(origins) {
   const port = Number(process.env.PORT || 8080);
-  return origins || (process.env.SOTY_CONNECT_ORIGINS
+  if (origins) return origins;
+  const configured = process.env.SOTY_CONNECT_ORIGINS
     ? process.env.SOTY_CONNECT_ORIGINS.split(',').map(value => new URL(value.trim()).origin)
-    : ['https://xn--n1afe0b.online', 'https://soty.pochinit.online', `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    : ['https://xn--n1afe0b.online', 'https://soty.pochinit.online', `http://127.0.0.1:${port}`, `http://localhost:${port}`];
+  // The original origin still serves /__soty so its device vault remains usable.
+  // Only the recognised production deployment gains the new primary origin.
+  if (configured.includes('https://xn--n1afe0b.online') || configured.includes('https://soty.pochinit.online')) {
+    return [...new Set([...configured, 'https://4-2.xn--p1ai'])];
+  }
+  return configured;
 }
