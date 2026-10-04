@@ -7,7 +7,12 @@
 проект. Root, id, www, discovery и прежние app-зоны сохраняются.
 
 Wildcard DNS ведёт на TLS edge; Caddy требует on_demand_tls permission endpoint
-/api/apps/tls-allow. Проверить known enabled host → 200, unknown/nested host →
+/api/apps/tls-allow. Использовать один https:// catch-all с host expression;
+не literal https://*.zone site: он требует wildcard-сертификата/DNS challenge
+и может перекрыть точный native сертификат. Сохранить все обслуживаемые зоны
+в expression, объединить существующий catch-all, убрать только проверенные
+старые wildcard блоки. После adapt проверить отсутствие wildcard subjects
+в TLS automation. Проверить known enabled host → 200, unknown/nested host →
 отказ. Не включать свободную выдачу сертификатов неизвестным именам.
 Для массового потока измерить реальные лимиты сертификатов/ресурсов прежде,
 чем обещать неограниченное размещение.
@@ -26,7 +31,7 @@ Cookie Сот до backend удаляется, собственный cookie п�
 
 Для воспроизводимой проверки генератора:
 
-    SOTY_CADDY_BIN=/usr/bin/caddy node --test deploy/apps/native-ingress.acceptance.test.mjs
+    SOTY_CADDY_BIN=/usr/bin/caddy node --test deploy/apps/native-ingress.acceptance.test.mjs deploy/apps/named-zone.acceptance.test.mjs
 
 Тест поднимает отдельный loopback Caddy и synthetic upstream/gateway;
 проверяет query, cookie, CSP и отказ. Это не публикация и не проверка production.

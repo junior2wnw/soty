@@ -109,13 +109,23 @@ export function nativeIngress(plan) {
   ].join('\n');
 }
 /** One shared named zone serves future isolated apps; exact native hosts win. */
-export function namedZoneIngress({ origin, gatewayPort = 18182 }) {
-  const zone = new URL(deploymentOrigin(origin));
-  check(!zone.port && zone.hostname.includes('.') && !/^[\d.]+$/u.test(zone.hostname)
-    && zone.hostname !== 'localhost' && !/[{}"\s]/u.test(zone.hostname), 'invalid_named_zone');
+export function namedZoneIngress({ origin, additionalOrigins = [], gatewayPort = 18182 }) {
+  check(Array.isArray(additionalOrigins) && additionalOrigins.length <= 16, 'invalid_named_zone');
+  const zones = [...new Set([origin, ...additionalOrigins].map(value => {
+    const zone = new URL(deploymentOrigin(value));
+    check(!zone.port && zone.hostname.includes('.') && !/^[\d.]+$/u.test(zone.hostname)
+      && zone.hostname !== 'localhost' && !/[{}"'\s]/u.test(zone.hostname), 'invalid_named_zone');
+    return zone.hostname;
+  }))];
   check(Number.isInteger(gatewayPort) && gatewayPort >= 1024 && gatewayPort <= 65535, 'invalid_gateway_port');
-  return '# Soty named applications in ' + zone.hostname + '\nhttps://*.' + zone.hostname + ' {\n'
-    + '    tls {\n        on_demand\n    }\n    reverse_proxy 127.0.0.1:' + gatewayPort + '\n}\n';
+  // Literal wildcard site addresses request wildcard certificates and can
+  // shadow exact native certificates. Keep routing in an expression so Caddy
+  // does not infer wildcard subjects; registry-gated SNI obtains leaf certs.
+  return '# Soty registry-gated applications\nhttps:// {\n'
+    + '    tls {\n        on_demand\n    }\n'
+    + "    @soty_apps expression `host(" + zones.map(zone => "'*." + zone + "'").join(', ') + ')`\n'
+    + '    handle @soty_apps {\n        reverse_proxy 127.0.0.1:' + gatewayPort + '\n    }\n'
+    + '    handle {\n        respond 421\n    }\n}\n';
 }
 export async function writeReleasePlan(output, plan) {
   // A fresh run directory prevents confusing a new intent with an old receipt.

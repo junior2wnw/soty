@@ -94,11 +94,16 @@ Origin/CSRF и callback URL: прокси не исправляет несовм
 Основная зона берётся из актуальных hosting-настроек. Для неё нужны wildcard
 DNS и Caddy route:
 
-    node scripts/soty-app-release.mjs zone --origin https://4-2.xn--p1ai --output /private/named-zone.caddy
+    node scripts/soty-app-release.mjs zone --origin https://4-2.xn--p1ai --retain-origin https://xn--n1afe0b.online --retain-origin https://soty.pochinit.online --output /private/named-zone.caddy
 
-Snippet требует существующего глобального on_demand_tls с
+Snippet содержит один HTTPS catch-all, host expression для выбранных зон и
+отказ 421 вне этих зон. Он требует существующего глобального on_demand_tls с
 ask http://127.0.0.1:18182/api/apps/tls-allow. Для новой зоны проверить это
-один раз, сохранив корень, id, www, старые зоны и точные native hosts.
+один раз, сохранив корень, id, www, старые зоны и точные native hosts. Если уже
+есть catch-all, аккуратно объединить его правила, не создавать второй адрес.
+Не оставлять старые literal wildcard sites для этих зон: они заставляют Caddy
+запрашивать wildcard-сертификат и могут перекрыть сертификат точного native host.
+Без DNS challenge используются отдельные сертификаты зарегистрированных имён.
 Имена из реестра открываются через wildcard gateway; неизвестные и вложенные
 имена отклоняются. DNS запись сама не регистрирует приложение.
 
@@ -132,4 +137,6 @@ hashes конфигурации, receipts данных/браузера/дост
 Контракты: [App operations](../../modules/apps/README.md),
 [source/publication contract](../research/apps-contract-20260928.md).
 Прокси: [Caddy forward_auth](https://caddyserver.com/docs/caddyfile/directives/forward_auth),
-[response headers](https://caddyserver.com/docs/caddyfile/directives/header).
+[response headers](https://caddyserver.com/docs/caddyfile/directives/header),
+[certificate subjects](https://caddyserver.com/docs/automatic-https),
+[host expression](https://caddyserver.com/docs/caddyfile/matchers#host).

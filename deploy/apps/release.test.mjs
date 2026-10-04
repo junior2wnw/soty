@@ -94,7 +94,9 @@ test('real CLI init and plan work on this OS, fail without dumping supplied secr
 });
 test('named zone setup uses a single registry gated wildcard route and cannot inject a Caddyfile', () => {
   const text = namedZoneIngress({ origin: 'https://4-2.xn--p1ai' });
-  assert.match(text, /https:\/\/\*\.4-2\.xn--p1ai/u); assert.match(text, /127\.0\.0\.1:18182/u);
+  assert.match(text, /https:\/\/ \{/u); assert.match(text, /host\('\*\.4-2\.xn--p1ai'\)/u); assert.match(text, /127\.0\.0\.1:18182/u);
+  const retained = namedZoneIngress({ origin: 'https://4-2.xn--p1ai', additionalOrigins: ['https://old.example', 'https://4-2.xn--p1ai'] });
+  assert.match(retained, /host\('\*\.4-2\.xn--p1ai', '\*\.old\.example'\)/u);
   for (const origin of ['https://user:password@example.com', 'https://example.com/path', 'http://example.com', 'https://127.0.0.1'])
     assert.throws(() => namedZoneIngress({ origin }));
 });

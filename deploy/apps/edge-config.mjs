@@ -3,6 +3,7 @@ import { createHash, createCipheriv, randomBytes, publicEncrypt } from 'node:cry
 import { spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { namedZoneIngress } from './release.mjs';
 
 const marker = '# Soty isolated applications';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -10,10 +11,10 @@ const fail = code => { throw Object.assign(new Error(code), { code }); };
 
 export function extendCaddyfile(source) {
   if (typeof source !== 'string' || !/^\s*\{/.test(source) || source.includes(marker)
-      || /\bon_demand_tls\b|\*\.soty\.pochinit\.online|\{\$/.test(source)) fail('edge_existing_configuration_requires_review');
+      || /\bon_demand_tls\b|\*\.soty\.pochinit\.online|https:\/\/\s*\{|\{\$/.test(source)) fail('edge_existing_configuration_requires_review');
   const global = source.indexOf('{') + 1;
   return source.slice(0, global) + '\n\ton_demand_tls {\n\t\task http://127.0.0.1:18182/api/apps/tls-allow\n\t}\n' + source.slice(global)
-    + '\n' + marker + '\nhttps://*.soty.pochinit.online {\n\ttls {\n\t\ton_demand\n\t}\n\treverse_proxy 127.0.0.1:18182\n}\n';
+    + '\n' + marker + '\n' + namedZoneIngress({ origin: 'https://soty.pochinit.online' });
 }
 
 // Preparing a candidate never writes the serving configuration or reloads Caddy.

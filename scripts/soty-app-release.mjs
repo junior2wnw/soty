@@ -9,17 +9,17 @@ import { AppDeploymentError } from '../src/world/app-deployment.mjs';
 const usage = 'init --project PATH --name NAME --port N [--entry-path /]\n'
   + 'plan --project PATH --deployment FILE --output NEW_DIR [--mode isolated|native] [--domain-id ID] [--gateway-port N] [--frame-origin HTTPS_ORIGIN ...]\n'
   + 'verify --plan FILE [--probes FILE] --output NEW_FILE\n'
-  + 'zone --origin HTTPS_ZONE [--gateway-port N] --output NEW_FILE\n';
+  + 'zone --origin HTTPS_ZONE [--retain-origin HTTPS_ZONE ...] [--gateway-port N] --output NEW_FILE\n';
 export async function main(argv) {
   const action = argv[0];
   if (action === 'help' || !action) { process.stdout.write(usage); return; }
-  const allowed = { init: ['project', 'name', 'port', 'entry-path'], plan: ['project', 'deployment', 'output', 'mode', 'domain-id', 'gateway-port', 'frame-origin'], verify: ['plan', 'probes', 'output'], zone: ['origin', 'gateway-port', 'output'] };
+  const allowed = { init: ['project', 'name', 'port', 'entry-path'], plan: ['project', 'deployment', 'output', 'mode', 'domain-id', 'gateway-port', 'frame-origin'], verify: ['plan', 'probes', 'output'], zone: ['origin', 'retain-origin', 'gateway-port', 'output'] };
   if (!allowed[action]) throw new AppDeploymentError('invalid_release_command');
-  const args = {}, frameOrigins = [];
+  const args = {}, frameOrigins = [], additionalOrigins = [];
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i]?.slice(2), value = argv[i + 1];
-    if (!argv[i]?.startsWith('--') || !allowed[action].includes(key) || !value || (key !== 'frame-origin' && Object.hasOwn(args, key))) throw new AppDeploymentError('invalid_release_arguments');
-    if (key === 'frame-origin') frameOrigins.push(value); else args[key] = value;
+    if (!argv[i]?.startsWith('--') || !allowed[action].includes(key) || !value || (!['frame-origin', 'retain-origin'].includes(key) && Object.hasOwn(args, key))) throw new AppDeploymentError('invalid_release_arguments');
+    if (key === 'frame-origin') frameOrigins.push(value); else if (key === 'retain-origin') additionalOrigins.push(value); else args[key] = value;
   }
   const required = { init: ['project', 'name', 'port'], plan: ['project', 'deployment', 'output'], verify: ['plan', 'output'], zone: ['origin', 'output'] };
   if (required[action].some(key => !args[key])) throw new AppDeploymentError('missing_release_argument');
@@ -33,7 +33,7 @@ export async function main(argv) {
     const written = await writeReleasePlan(args.output, plan);
     result = { ok: true, file: written.file, mode: plan.mode, origin: plan.origin, shellLaunchUrl: plan.shellLaunchUrl, applied: false };
   } else if (action === 'zone') {
-    const text = namedZoneIngress({ origin: args.origin, gatewayPort: Number(args['gateway-port'] ?? 18182) });
+    const text = namedZoneIngress({ origin: args.origin, additionalOrigins, gatewayPort: Number(args['gateway-port'] ?? 18182) });
     await writeFile(resolve(args.output), text, { flag: 'wx', mode: 0o600 });
     result = { ok: true, file: resolve(args.output), applied: false, registryTlsPermissionRequired: true };
   } else {
