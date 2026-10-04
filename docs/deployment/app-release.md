@@ -41,12 +41,17 @@
 
        node scripts/soty-app-release.mjs verify --plan /private/run-unique/release-plan.json --probes /private/probes.json --output /private/run-unique/http-check.json
 
-   Дополнительные проверки — JSON-массив, например:
+   Дополнительные проверки для native — JSON-массив, например:
 
        [{"path":"/api/health?probe=release","status":200,"contains":"ready"},{"path":"/assets/app.css","status":200}]
 
    Не помещать секреты в query или файл checks. TLS проверяется штатно.
    Перенаправления не маскируются успешным ответом другого сервера.
+   У isolated первый запрос без bootstrap-сессии может получить HTML-вход
+   gateway даже на API/asset пути. Поэтому 200 сам по себе не подтверждает
+   ответ приложения. Его API, assets и содержимое проверять в браузере после
+   bootstrap; использовать contains, когда endpoint действительно доступен
+   без сессии. Не принимать HTML-вход за успешный JSON health.
 8. В настоящем браузере открыть карточку в Сотах, пройти вход и чтение/запись
    проверочного объекта, перезагрузить; проверить ограничения доступа и
    сохранность старых данных. Проверить полный экран → возврат на том же iframe.

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as audience from './app-audience.mjs';
+import * as deployment from './app-deployment.mjs';
 
 const owner = 'owner', grants = { accountIds: [], communityIds: [] };
 const app = { appId: 'app-example', name: 'Project', status: 'offline', ownerAccountId: owner, grants,
@@ -27,6 +28,7 @@ const el = (...args) => new Element(...args);
 const all = node => [node, ...node.children.flatMap(all)];
 const ports = {
   './app-audience.mjs': audience,
+  './app-deployment.mjs': deployment,
   './types': { worldColor: color => color },
   './dom': { el, button: (label, symbol, className) => el('button', className, label), iconButton: label => el('button', '', label) },
   './icons': { icon: symbol => Object.assign(el('svg'), { symbol }) },

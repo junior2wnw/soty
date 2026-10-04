@@ -42,6 +42,9 @@ Cookie Сот до backend удаляется, собственный cookie п�
 3. Полный кандидат → adapt/validate → локальный listener. Проверить entry
    с параметрами, queried health/API, assets, boot, неправильную сессию/pin,
    старые маршруты. Успешный build не проверяет эти связи.
+   В isolated без bootstrap-сессии gateway может вернуть HTML-вход вместо
+   API/asset. Проверять содержимое и настоящий ответ приложения после входа
+   в браузере; один HTTP 200 не является health приложения.
 4. CAS по исходному SHA → атомарный config write → reload только известного
    serving процесса → active/disk equality. Если SHA изменился — перечитать,
    не затирать параллельную работу.

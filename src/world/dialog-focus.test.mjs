@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as audience from './app-audience.mjs';
 import * as launch from './app-launch.mjs';
+import * as deployment from './app-deployment.mjs';
 
 const compile = async file => ts.transpileModule(await readFile(new URL(file, import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -69,7 +70,7 @@ function fixture() {
   const dom = { el, button, iconButton: (label, symbol, action) => button(label, symbol, 'sw-icon-button', action) };
   let settings, disposed = 0;
   const ports = { './dom': dom, './icons': { icon: () => el('svg') }, './types': { worldColor: value => value },
-    './app-audience.mjs': audience, './app-launch.mjs': launch,
+    './app-audience.mjs': audience, './app-launch.mjs': launch, './app-deployment.mjs': deployment,
     './app-settings': { mountAppSettings(options) { settings = options; return { dispose() { disposed++; }, requestClose(_trigger, afterClose) { options.onClose(afterClose); } }; } } };
   const globals = { document, location, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
     URLSearchParams, setTimeout, clearTimeout, clearInterval, Event };
