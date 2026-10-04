@@ -40,9 +40,11 @@ test('real Caddy preserves app query/cookie/CSP and closes the ingress when acce
   const file = join(root, 'Caddyfile'); await writeFile(file, nativeIngress(plan));
   const adapted = spawnSync(binary, ['adapt', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8' });
   assert.equal(adapted.status, 0, 'generated Caddyfile must adapt');
-  const config = JSON.parse(adapted.stdout);
-  config.admin = { disabled: true }; delete config.apps.tls;
-  for (const server of Object.values(config.apps.http.servers)) { server.listen = ['127.0.0.1:' + port]; server.automatic_https = { disable: true }; }
+  const adaptedConfig = JSON.parse(adapted.stdout);
+  const config = { admin: { disabled: true }, apps: { http: { servers: { probe: {
+    listen: ['127.0.0.1:' + port], automatic_https: { disable: true },
+    routes: Object.values(adaptedConfig.apps.http.servers).flatMap(server => server.routes),
+  } } } } };
   const configFile = join(root, 'probe.json'); await writeFile(configFile, JSON.stringify(config));
   child = spawn(binary, ['run', '--config', configFile], { stdio: 'ignore', env: { ...process.env, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root } });
   child.on('error', () => {});

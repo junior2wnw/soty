@@ -88,7 +88,9 @@ export function nativeIngress(plan) {
     '    }',
     '    @soty_boot path /_soty/*',
     '    route {',
-    '        handle @soty_boot { reverse_proxy 127.0.0.1:' + plan.gatewayPort + ' }',
+    '        handle @soty_boot {',
+    '            reverse_proxy 127.0.0.1:' + plan.gatewayPort,
+    '        }',
     '        handle {',
     '            forward_auth 127.0.0.1:' + plan.gatewayPort + ' {',
     '                uri /_soty/ingress-check?',
@@ -113,7 +115,7 @@ export function namedZoneIngress({ origin, gatewayPort = 18182 }) {
     && zone.hostname !== 'localhost' && !/[{}"\s]/u.test(zone.hostname), 'invalid_named_zone');
   check(Number.isInteger(gatewayPort) && gatewayPort >= 1024 && gatewayPort <= 65535, 'invalid_gateway_port');
   return '# Soty named applications in ' + zone.hostname + '\nhttps://*.' + zone.hostname + ' {\n'
-    + '    tls { on_demand }\n    reverse_proxy 127.0.0.1:' + gatewayPort + '\n}\n';
+    + '    tls {\n        on_demand\n    }\n    reverse_proxy 127.0.0.1:' + gatewayPort + '\n}\n';
 }
 export async function writeReleasePlan(output, plan) {
   // A fresh run directory prevents confusing a new intent with an old receipt.
