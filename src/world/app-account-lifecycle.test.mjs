@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
+import * as hiveDeviceBridge from './hive-device-bridge.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -55,6 +56,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-launch.mjs': appLaunch,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
+    './hive-device-bridge.mjs': hiveDeviceBridge,
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() {}, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
