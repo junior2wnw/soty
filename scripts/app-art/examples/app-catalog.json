@@ -1,0 +1,16 @@
+{
+  "apps": [
+    {
+      "appId": "app-00000000000000000000000000000000",
+      "name": "Canvas — пример снимка каталога",
+      "description": "Собирать идеи в одном пространстве",
+      "art": {
+        "key": "example-canvas",
+        "subject": "One restrained sculptural constellation of smoked glass plates joined by fine warm ivory bridges, graphite studio surface, realistic soft shadows.",
+        "alt": "Связанные пластины из дымчатого стекла",
+        "palette": { "base": "#252C2B", "accent": "#D5D9BF", "ink": "#F4F4EB" },
+        "focalPoint": { "x": 0.5, "y": 0.42 }
+      }
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "styleVersion": "soty-graphite-1",
+  "reference": "output/soty-ideal-renders-20261005/01-graphite-home.png",
+  "bindings": {
+    "notes": "notes",
+    "chess": "chess"
+  },
+  "assets": {
+    "notes": {
+      "key": "notes",
+      "name": "Записки",
+      "purpose": "Записывать мысли, заметки и идеи",
+      "subject": "A single sculptural warm ivory sheet of subtly textured paper folded into an elegant arch, on a matte taupe studio plinth. True paper fibers, soft long shadow.",
+      "alt": "Скульптурный изгиб светлой бумаги",
+      "palette": {
+        "base": "#413B33",
+        "accent": "#E8CFAB",
+        "ink": "#F5F0E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.48
+      },
+      "kind": "builtin"
+    },
+    "chess": {
+      "key": "chess",
+      "name": "Шахматы",
+      "purpose": "Играть в шахматы и развивать стратегическое мышление",
+      "subject": "A single beautifully carved warm ivory chess knight on a dark charcoal and bone chess board. Rich ceramic surface, subtle tactile imperfections, glossy small highlights.",
+      "alt": "Светлый шахматный конь на графитовой доске",
+      "palette": {
+        "base": "#242321",
+        "accent": "#EBC7A2",
+        "ink": "#F8F1E6"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "kind": "builtin"
+    },
+    "tavysh": {
+      "key": "tavysh",
+      "name": "Тавыш",
+      "purpose": "Музыка, в которой участвуешь",
+      "subject": "A continuous translucent smoky champagne glass ribbon flowing left to right in two beautiful sinusoidal waves through a dark graphite studio. Slender warm ivory-gold waveform lines in the distance. Beautiful refraction and luminous edges.",
+      "alt": "Золотистая звуковая волна из прозрачного стекла",
+      "palette": {
+        "base": "#21211B",
+        "accent": "#E8CF9C",
+        "ink": "#FAF5E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.39
+      },
+      "kind": "example"
+    },
+    "hive": {
+      "key": "hive",
+      "name": "HIVE",
+      "purpose": "Идеи становятся связями",
+      "subject": "Five large translucent hexagonal glass slabs standing upright on dark brushed graphite, arranged as a connected honeycomb sculpture: clear smoked glass, deep forest-green glass and ivory frosted glass. Exact regular hexagons with exquisite thin bevels, elegant overlapping depth.",
+      "alt": "Пять связанных стеклянных сот",
+      "palette": {
+        "base": "#303B34",
+        "accent": "#C8D6BF",
+        "ink": "#F4F5ED"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "kind": "example"
+    },
+    "focus": {
+      "key": "focus",
+      "name": "Фокус",
+      "purpose": "Концентрация и спокойная работа",
+      "subject": "One freestanding perfectly circular lilac translucent glass ring standing on a soft dark plum studio surface. Slender ring with polished subtle luminous edge, delicate realistic refraction, blank interior and long quiet shadow.",
+      "alt": "Тонкое лиловое стеклянное кольцо",
+      "palette": {
+        "base": "#392F44",
+        "accent": "#CCACEF",
+        "ink": "#F4EDF9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "kind": "example"
+    },
+    "pulse": {
+      "key": "pulse",
+      "name": "Pulse",
+      "purpose": "Наглядная аналитика",
+      "subject": "Five softly rounded upright sage ivory glass columns in an ascending sequence from left to right, sculptural bar-chart still-life on a dark forest graphite studio surface. Precise rounded tops, frosted ceramic-glass material, soft highlights and realistic shadows.",
+      "alt": "Пять растущих столбцов из светлого матового стекла",
+      "palette": {
+        "base": "#293629",
+        "accent": "#D5DDAD",
+        "ink": "#F6F7EE"
+      },
+      "focalPoint": {
+        "x": 0.54,
+        "y": 0.45
+      },
+      "kind": "example",
+      "compactFocalPoint": {
+        "x": 0.745,
+        "y": 0.45
+      }
+    }
+  }
+}

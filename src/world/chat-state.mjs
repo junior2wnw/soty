@@ -1,13 +1,15 @@
 const PREFIX = 'soty.chat.draft.v1:';
-const empty = () => ({ text: '', pending: null });
-const copy = value => ({ text: value.text, pending: value.pending ? { ...value.pending } : null });
+const empty = () => ({ text: '', replyTo: null, pending: null });
+const copy = value => ({ text: value.text, replyTo: value.replyTo, pending: value.pending ? { ...value.pending } : null });
+const replyId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(value) ? value : null;
 function decode(raw) {
   const value = empty();
   try {
     const item = JSON.parse(raw || 'null');
     if (item && typeof item.text === 'string' && item.text.length <= 6000) {
       value.text = item.text;
-      if (item.pending && typeof item.pending.clientId === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(item.pending.clientId) && typeof item.pending.text === 'string' && item.pending.text.length <= 6000) value.pending = { clientId: item.pending.clientId, text: item.pending.text };
+      value.replyTo = replyId(item.replyTo);
+      if (item.pending && typeof item.pending.clientId === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(item.pending.clientId) && typeof item.pending.text === 'string' && item.pending.text.length <= 6000) value.pending = { clientId: item.pending.clientId, text: item.pending.text, replyTo: replyId(item.pending.replyTo) };
     }
   } catch { /* Invalid local metadata is not executable data. */ }
   return value;
@@ -34,22 +36,24 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     memory.set(key, copy(value));
     let durable = true;
     try {
-      if (value.text || value.pending) storage.setItem(key, JSON.stringify(value));
+      if (value.text || value.replyTo || value.pending) storage.setItem(key, JSON.stringify(value));
       else storage.removeItem(key);
       volatile.delete(key);
-    } catch { durable = false; if (value.text || value.pending) volatile.add(key); else volatile.delete(key); }
+    } catch { durable = false; if (value.text || value.replyTo || value.pending) volatile.add(key); else volatile.delete(key); }
     notify(key, value); return durable;
   }
   return {
     read,
-    edit(accountId, communityId, text) {
+    edit(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId); value.text = text.slice(0, 6000);
+      if (replyTo !== undefined) value.replyTo = replyId(replyTo);
       return save(accountId, communityId, value);
     },
-    beginSend(accountId, communityId, text) {
+    beginSend(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId);
       value.text = text;
-      if (value.pending?.text !== text) value.pending = { clientId: makeId(), text };
+      if (replyTo !== undefined) value.replyTo = replyId(replyTo);
+      if (value.pending?.text !== text || value.pending.replyTo !== value.replyTo) value.pending = { clientId: makeId(), text, replyTo: value.replyTo };
       const durable = save(accountId, communityId, value);
       return { ...value.pending, durable };
     },
@@ -59,7 +63,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       const value = read(accountId, communityId);
       // A late ACK must never clear a newer draft or a later send.
       if (value.pending?.clientId !== clientId) return value;
-      if (value.text.trim() === value.pending.text) value.text = '';
+      if (value.text.trim() === value.pending.text && value.replyTo === value.pending.replyTo) { value.text = ''; value.replyTo = null; }
       value.pending = null; save(accountId, communityId, value);
       return copy(value);
     },

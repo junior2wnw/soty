@@ -237,13 +237,19 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function updateApp(value: WorldAppRecord): void {
     if (!current() || value.appId !== initial.target.appId) return;
+    const access = (record: WorldAppRecord): string => JSON.stringify({
+      grants: { accountIds: [...(record.grants?.accountIds ?? [])].sort(), communityIds: [...(record.grants?.communityIds ?? [])].sort() },
+      publication: record.publication ?? null,
+    });
+    const accessChanged = Boolean(app.grants || app.publication) && access(app) !== access(value);
     app = value; name.textContent = value.name; name.title = value.name;
     subtitle.textContent = value.deviceLabel ? `На устройстве «${value.deviceLabel}»` : 'Приложение в Сотах';
     const frame = runtime.querySelector('iframe'); if (frame) frame.title = value.name;
     settings.hidden = archives.hidden = value.ownerAccountId !== accountId;
-    // A policy change is a reason to re-read the current discussion; its own
-    // state machine preserves a former audience's draft independently.
-    if (discussion) void discussion.refresh();
+    // The discussion already resolves and polls its own exact-entry authority.
+    // Late initial metadata and title/device changes must not clear a loaded
+    // conversation. Observed grant/policy changes still refresh immediately.
+    if (discussion && accessChanged) void discussion.refresh();
   }
   function updateCommunity(value: { communityId: string; name: string } | null): void {
     if (!current()) return;

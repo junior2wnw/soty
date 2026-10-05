@@ -49,6 +49,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const view = Object.assign(new EventTarget(), { location, Node: ElementPort, navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
+  const discussionCalls = { refresh: 0 };
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '' });
   const ports = {
     './dom': { el: makeElement, button: label => makeElement('button', '', label), iconButton: label => makeElement('button', '', label), emptyState: label => makeElement('div', '', label) },
@@ -64,7 +65,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
-    './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() {}, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
+    './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController });
@@ -87,7 +88,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     group: null, selected: null, selectedChat: `chat-${initial}`, groupReturn: 'world', groupTab: 'apps',
     homeState: { slots: new Map([['private-slot', initial]]), scroll: 20, fieldX: 3, fieldY: 9, communityId: 'private-group', focusId: 'private-focus', focusControl: null, lens: 'all', pinned: new Set(['old-pin']) },
     homeStatus: { devices: 'ready', apps: 'ready', communities: 'ready', notes: 'ready' },
-    desk: { favorites: [`favorite-${initial}`], recent: [] }, fieldState: {}, discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
+    desk: { favorites: [`favorite-${initial}`], recent: [] }, fieldState: {}, homeFieldState: {}, discoveryApps: new Map([['private-group', [{ appId: `private-${initial}` }]]]), homeQuery: 'private apps', homeFilter: 'together', discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
     results: { people: [{ name: `private-${initial}` }], communities: [], totals: {} }, discoveryStatus: 'ready', query: 'private search', kind: 'people', routeLoaded: true,
     view: 'mine', activeRoute: hash,
     options: { localAccount: async () => ({ accountId: local, label: 'Local identity' }), listDevices: async () => [{ deviceId: `device-${local}` }] },
@@ -115,7 +116,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, location, requests, personalFrames, dialogs, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
+  return { app, Controller, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
 
 test('actual refresh A → offline B → online B clears every private cache before B metadata is available', async () => {
@@ -126,6 +127,7 @@ test('actual refresh A → offline B → online B clears every private cache bef
   for (const key of ['apps', 'communities', 'devices']) assert.equal(f.app[key].length, 0, key);
   assert.equal(f.app.homeNotes, null); assert.equal(f.app.results.people.length, 0);
   assert.equal(f.app.homeState.slots.size, 0); assert.equal(f.app.query, '');
+  assert.equal(f.app.discoveryApps.size, 0); assert.equal(f.app.homeQuery, ''); assert.equal(f.app.homeFilter, 'all');
   assert.equal(oldDialog.element.open, false); assert.equal(disposed, 1);
   assert.equal(f.app.desk.favorites[0], 'favorite-account-B');
   f.setOnline(true); await f.app.refresh(true);
@@ -211,6 +213,22 @@ test('same-account settings refresh retains the running app and existing window'
 const stageAppId = `app-${'c'.repeat(32)}`, stageDomainId = `dom_${'d'.repeat(32)}`;
 const stageResponse = path => ({ url: `https://runtime.example/_soty/boot?${new URLSearchParams({ path })}#${'e'.repeat(43)}`,
   entry: { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path } });
+
+test('actual stage preserves a discussion through initial metadata and rename, but refreshes changed access', async () => {
+  const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' }, undefined, { panel: 'discussion' });
+  const f = fixture({ hash: '#' + route });
+  f.app.options.openApp = async () => stageResponse('/');
+  await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
+  const stage = f.app.appStage, frame = f.app.main.querySelector('iframe');
+  const observed = { appId: stageAppId, name: 'Observed editor', status: 'ready', ownerAccountId: 'account-A', grants: { accountIds: ['person-b', 'person-a'], communityIds: [] } };
+  stage.updateApp(observed); assert.equal(f.discussionCalls.refresh, 0);
+  stage.updateApp({ ...observed, name: 'Renamed', deviceLabel: 'Another label', grants: { accountIds: ['person-a', 'person-b'], communityIds: [] } });
+  assert.equal(f.discussionCalls.refresh, 0); assert.equal(f.app.main.querySelector('iframe'), frame);
+  const changed = { ...observed, grants: { accountIds: ['person-a'], communityIds: [] } };
+  stage.updateApp(changed); assert.equal(f.discussionCalls.refresh, 1);
+  stage.updateApp({ ...changed, publication: { launchPolicy: 'anyone', activeNamedAddressCount: 1 } });
+  assert.equal(f.discussionCalls.refresh, 2); assert.equal(f.app.main.querySelector('iframe'), frame);
+});
 test('actual controller and stage preserve the same runtime through discussion, archive and route Back', async () => {
   const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/editor?q=one#row' });
   const f = fixture({ hash: '#' + route }), calls = [];

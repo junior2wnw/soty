@@ -28,7 +28,7 @@ export function createPalette(scheme, brightness = 50) {
     '--sw-control-border': dark ? '#a2a39d' : '#74766d',
     '--sw-focus': dark ? '#d5c6a7' : '#716044', '--sw-color-scheme': dark ? 'dark' : 'light',
     '--sw-on-accent': '#201d17', '--sw-primary-hover': mix(honey, '#fffef7', .15),
-    '--sw-action': dark ? honey : '#716044', '--sw-action-ink': dark ? '#201d17' : '#fffef7',
+    '--sw-action': dark ? honey : '#716044', '--sw-action-ink': dark ? '#201d17' : '#fffef7', '--sw-on-action': dark ? '#201d17' : '#fffef7',
     '--sw-action-hover': dark ? '#e4d7be' : '#5f5038',
     '--sw-chrome': dark ? tone('#0e0f10', '#141516', '#27282a') : tone('#f0eee8', '#fbfaf7', '#ffffff'),
     '--sw-header': bg,

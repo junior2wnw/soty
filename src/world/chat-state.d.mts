@@ -1,9 +1,9 @@
 import type { WorldMessage } from './types';
-export interface ChatDraft { text: string; pending: { clientId: string; text: string } | null; }
+export interface ChatDraft { text: string; replyTo: string | null; pending: { clientId: string; text: string; replyTo: string | null } | null; }
 export interface ChatDraftStore {
   read(accountId: string, communityId: string): ChatDraft;
-  edit(accountId: string, communityId: string, text: string): boolean;
-  beginSend(accountId: string, communityId: string, text: string): { clientId: string; text: string; durable: boolean };
+  edit(accountId: string, communityId: string, text: string, replyTo?: string | null): boolean;
+  beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null): { clientId: string; text: string; replyTo: string | null; durable: boolean };
   acknowledge(accountId: string, communityId: string, clientId: string): ChatDraft;
   retrySave(accountId: string, communityId: string): boolean;
   subscribe(accountId: string, communityId: string, listener: (draft: ChatDraft) => void): () => void;

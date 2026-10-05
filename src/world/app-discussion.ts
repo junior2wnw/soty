@@ -7,6 +7,7 @@ import { createAppDiscussionDraftState, createAppDiscussionFeed, dispatchAppDisc
 import type { AppEntry } from './app-saved-state.mjs';
 import type { AppDiscussionDraftState, AppDiscussionFeed, DiscussionContext, DiscussionDraft, DiscussionMessage, DiscussionPending, DiscussionScope, RetainedDiscussionDraft } from './app-discussion-state.mjs';
 import type { WorldApi } from './types';
+import { chatDayKey, chatDayLabel, shouldSendOnEnter } from './messenger.mjs';
 
 export interface DiscussionSelection { conversationId?: string; administrative?: boolean; }
 export interface AppDiscussionOptions extends EngagementStorageOptions {
@@ -18,7 +19,7 @@ export interface AppDiscussionHandle {
   dispose(): void; refresh(): Promise<void>; focus(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean;
   setVisible(value: boolean): void; updateSelection(selection: DiscussionSelection): Promise<void>; updateEntry(entry: AppEntry): Promise<void>;
 }
-interface MessageRow { element: HTMLLIElement; value: DiscussionMessage; author: HTMLElement; time: HTMLTimeElement; body: HTMLElement; replyLabel: HTMLElement; reply: HTMLButtonElement; remove: HTMLButtonElement; }
+interface MessageRow { element: HTMLLIElement; value: DiscussionMessage; author: HTMLElement; time: HTMLTimeElement; body: HTMLElement; replyLabel: HTMLElement; day: HTMLElement; more: HTMLButtonElement; }
 interface DraftSlot { model: AppDiscussionDraftState; unsubscribe(): void; }
 interface RetainedRow { element: HTMLDetailsElement; value: RetainedDiscussionDraft; text: HTMLTextAreaElement; status: HTMLElement; retry: HTMLButtonElement; abandon: HTMLButtonElement; remove: HTMLButtonElement; }
 const text = (node: HTMLElement, value: string): void => { if (node.textContent !== value) node.textContent = value; };
@@ -58,6 +59,13 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   if (options.onClose) headerActions.append(iconButton('Закрыть обсуждение', 'close', () => { if (current()) options.onClose?.(); }));
   header.append(heading, headerActions);
   const scroll = el('div', 'se-discussion-scroll'); scroll.tabIndex = 0; scroll.setAttribute('aria-label', 'Сообщения и черновики');
+  const captureScroll = (): { node?: HTMLElement; top: number; position: number; atEnd: boolean } => {
+    const bounds = scroll.getBoundingClientRect(), node = [...list.querySelectorAll<HTMLElement>('.se-message')].find(row => row.getBoundingClientRect().bottom > bounds.top && row.getBoundingClientRect().top < bounds.bottom);
+    return { ...(node ? { node } : {}), top: node?.getBoundingClientRect().top ?? bounds.top, position: scroll.scrollTop, atEnd: scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 64 };
+  };
+  const restoreScroll = (position: ReturnType<typeof captureScroll>): void => {
+    scroll.scrollTop = position.atEnd ? scroll.scrollHeight : position.node?.isConnected ? scroll.scrollTop + position.node.getBoundingClientRect().top - position.top : position.position;
+  };
   const banner = el('div', 'se-discussion-banner'), bannerText = el('p');
   const currentButton = button('Текущее обсуждение', 'chat', 'sw-button-quiet', () => { void choose({ administrative }); }); currentButton.dataset.engagementKey = 'discussion-current';
   banner.append(bannerText, currentButton);
@@ -86,9 +94,34 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   const reply = el('div', 'se-discussion-reply'), replyText = el('span');
   const clearReply = iconButton('Не отвечать на сообщение', 'close', () => { if (canWrite() && activeDraft) edit(activeDraft.read().draft.text, null); }); reply.append(replyText, clearReply);
   const composer = el('form', 'se-discussion-composer'), input = el('textarea'); input.rows = 1; input.maxLength = 4000;
-  input.placeholder = 'Сообщение'; input.setAttribute('aria-label', 'Сообщение в обсуждение'); input.dataset.engagementKey = 'discussion-input';
+  input.placeholder = 'Сообщение'; input.enterKeyHint = 'send'; input.setAttribute('aria-keyshortcuts', 'Enter Control+Enter Meta+Enter'); input.setAttribute('aria-label', 'Сообщение в обсуждение'); input.dataset.engagementKey = 'discussion-input';
   const sendButton = button('Отправить', 'send', 'sw-button-primary'); sendButton.type = 'submit'; sendButton.dataset.engagementKey = 'discussion-send';
-  composer.append(input, sendButton); bottom.append(latest, status, pendingBox, conflict, reply, composer); root.append(header, scroll, bottom); host.replaceChildren(root);
+  composer.append(input, sendButton); bottom.append(latest, status, pendingBox, conflict, reply, composer);
+  const menu = el('div', 'se-message-menu'); menu.hidden = true; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Действия с сообщением');
+  let menuRow: MessageRow | null = null, menuScrollTop = 0;
+  function closeMenu(focus = false): void { const row = menuRow; menuRow = null; menu.hidden = true; row?.more.setAttribute('aria-expanded', 'false'); if (focus && row?.more.isConnected) row.more.focus({ preventScroll: true }); }
+  function openMenu(row: MessageRow): void {
+    if (!foreground() || busy || switching || !row.value.body || menuRow === row && !menu.hidden) { closeMenu(true); return; }
+    closeMenu(); menuRow = row; menuScrollTop = scroll.scrollTop; row.more.setAttribute('aria-expanded', 'true');
+    const actions: HTMLButtonElement[] = [];
+    if (canWrite()) { const respond = button('Ответить', 'back', 'se-message-menu-item', () => { closeMenu(); if (canWrite() && activeDraft && row.value.body) { edit(activeDraft.read().draft.text, row.value.id); input.focus({ preventScroll: true }); } }); respond.dataset.engagementKey = 'discussion-reply'; actions.push(respond); }
+    actions.push(button('Копировать текст', 'list', 'se-message-menu-item', () => { closeMenu(true); if (!row.value.body) return; if (!view?.navigator.clipboard) { notice = 'Выделите текст сообщения, чтобы скопировать.'; render(); return; } void view.navigator.clipboard.writeText(row.value.body).then(() => { if (foreground()) { notice = 'Текст скопирован.'; render(); } }).catch(() => { if (foreground()) { notice = 'Не удалось скопировать. Выделите текст сообщения.'; render(); } }); }));
+    if (row.value.canRemove) { const remove = button('Удалить у всех', 'trash', 'se-message-menu-item is-danger', () => { closeMenu(true); removeMessage(row.value); }); remove.dataset.engagementKey = 'discussion-remove'; disabled(remove, busy || switching); actions.push(remove); }
+    actions.forEach(action => action.setAttribute('role', 'menuitem')); menu.replaceChildren(...actions); menu.hidden = false;
+    const bounds = root.getBoundingClientRect(), anchor = row.more.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(bounds.width - menu.offsetWidth - 8, anchor.right - bounds.left - menu.offsetWidth))}px`;
+    const below = anchor.bottom - bounds.top + 6; menu.style.top = `${Math.max(8, below + menu.offsetHeight <= bounds.height - 8 ? below : anchor.top - bounds.top - menu.offsetHeight - 6)}px`;
+    menu.querySelector<HTMLButtonElement>('button:not([aria-disabled=true])')?.focus({ preventScroll: true });
+  }
+  menu.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
+    else if (event.key === 'Tab') closeMenu();
+    else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not([aria-disabled=true])')]; const index = items.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); }
+  });
+  const outsideMenu = (event: Event): void => { const target = event.target as Node | null; if (target && !menu.contains(target) && !menuRow?.more.contains(target)) closeMenu(); };
+  document.addEventListener('pointerdown', outsideMenu); scroll.addEventListener('scroll', () => { if (Math.abs(scroll.scrollTop - menuScrollTop) > 1) closeMenu(); }, { passive: true });
+  root.append(header, scroll, bottom, menu); host.replaceChildren(root);
 
   let composerFrame: number | null = null, composerTyping = false, observedComposerWidth = 0;
   let appliedComposerHeight = '', manualComposerHeight: number | null = null;
@@ -149,7 +182,10 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
 
   function closeDialog(): void { const previous = dialog; dialog = null; previous?.close(); }
   function openDialog(label: string): WorldDialog {
-    closeDialog(); const value = createDialog(label, () => { if (dialog === value) dialog = null; }); dialog = value; value.element.classList.add('se-dialog'); return value;
+    closeDialog();
+    const messageId = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('.se-message')?.dataset.messageId : undefined;
+    const value = createDialog(label, () => { if (dialog === value) dialog = null; }, messageId ? { isCurrent: foreground, resolve: () => messages.get(messageId)?.more ?? title } : undefined);
+    dialog = value; value.element.classList.add('se-dialog'); return value;
   }
   function stopPoll(): void { if (timer !== null) clearTimeout(timer); timer = null; }
   function schedulePoll(): void {
@@ -195,7 +231,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     catch (reason) { error = engagementError(reason); render(); }
   }
   input.addEventListener('input', () => { scheduleComposerFit(true); if (activeDraft) edit(input.value, activeDraft.read().draft.replyTo); });
-  input.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) { event.preventDefault(); submit(); } });
+  input.addEventListener('keydown', event => { if (shouldSendOnEnter(event) || event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); submit(); } });
   composer.addEventListener('submit', event => { event.preventDefault(); submit(); });
   function submit(): void {
     if (!canWrite() || !activeDraft || busy) return;
@@ -264,13 +300,14 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   }
   function newMessage(value: DiscussionMessage): MessageRow {
     const item = el('li', 'se-message'); item.dataset.messageId = value.id;
+    const day = el('div', 'se-message-day'); day.setAttribute('role', 'separator');
     const top = el('div', 'se-message-header'), author = el('span', 'se-message-author'), time = el('time'); top.append(author, time);
     const body = el('p', 'se-message-body'), replyLabel = el('span', 'se-message-reply');
-    const tools = el('div', 'se-message-tools'), respond = button('Ответить', undefined, 'sw-button-quiet'), remove = button('Удалить', 'trash', 'sw-button-quiet');
-    respond.dataset.engagementKey = 'discussion-reply'; remove.dataset.engagementKey = 'discussion-remove';
-    const row = { element: item, value, author, time, body, replyLabel, reply: respond, remove };
-    respond.addEventListener('click', () => { if (canWrite() && activeDraft && row.value.body) { edit(activeDraft.read().draft.text, row.value.id); input.focus(); } });
-    remove.addEventListener('click', () => removeMessage(row.value)); tools.append(respond, remove); item.append(top, replyLabel, body, tools); return row;
+    const content = el('div', 'se-message-content'), tools = el('div', 'se-message-tools'), more = iconButton('Действия с сообщением', 'more', () => openMenu(row));
+    more.dataset.engagementKey = 'discussion-message-actions'; more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+    const row = { element: item, value, author, time, body, replyLabel, day, more };
+    item.addEventListener('contextmenu', event => { if (view?.getSelection()?.toString()) return; event.preventDefault(); openMenu(row); });
+    content.append(top, replyLabel, body); tools.append(more); item.append(day, content, tools); return row;
   }
   function newRetained(value: RetainedDiscussionDraft): RetainedRow {
     const element = el('details', 'se-retained-draft'), summary = el('summary', '', 'Сохранённый черновик'); element.append(summary);
@@ -319,6 +356,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     if (rendering) { if (!renderQueued) { renderQueued = true; queueMicrotask(() => { renderQueued = false; render(); }); } return; }
     if (!current()) { cancelComposerFit(); root.replaceChildren(); closeDialog(); stopPoll(); return; }
     if (!visible) return;
+    const position = captureScroll(), previousConversation = messageConversation;
     rendering = true;
     try {
       const state = feed?.read(), context = state?.context ?? null;
@@ -338,19 +376,22 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       archiveFold.hidden = !feed; disabled(refreshButton, switching || !!state?.loading);
       olderBox.hidden = !state?.historyCursor; disabled(olderButton, busy || switching || !!state?.loading);
       latest.hidden = !state?.hasNewer && !state?.resetRequired; disabled(latest, switching || !!state?.loading);
-      if (messageConversation !== context?.conversationId) { messages.clear(); list.replaceChildren(); messageConversation = context?.conversationId ?? null; }
+      if (messageConversation !== context?.conversationId) { closeMenu(); messages.clear(); list.replaceChildren(); messageConversation = context?.conversationId ?? null; }
       const writable = canWrite();
       const ids = new Set(state?.messages.map(item => item.id) ?? []);
       for (const [id, row] of messages) if (!ids.has(id)) { row.element.remove(); messages.delete(id); }
-      let previous: ChildNode | null = null;
+      let previous: ChildNode | null = null, previousDay = '';
       for (const value of state?.messages ?? []) {
         let row = messages.get(value.id); if (!row) { row = newMessage(value); messages.set(value.id, row); }
         row.value = value; row.element.dataset.own = String(value.author.accountId === options.accountId); row.element.dataset.removed = String(value.body === null);
         text(row.author, value.author.label); const date = new Date(value.createdAt), validDate = Number.isFinite(date.getTime()); row.time.dateTime = validDate ? date.toISOString() : '';
         text(row.time, validDate ? date.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) : ''); row.time.title = validDate ? date.toLocaleString('ru') : '';
         text(row.body, value.body ?? 'Сообщение удалено'); row.replyLabel.hidden = !value.replyTo;
-        text(row.replyLabel, 'В ответ на сообщение'); row.reply.hidden = !writable || value.body === null;
-        row.remove.hidden = !value.canRemove || value.body === null; disabled(row.remove, busy || switching);
+        const target = value.replyTo ? state?.messages.find(message => message.id === value.replyTo) : null;
+        text(row.replyLabel, target ? `${target.author.label}: ${target.body?.replace(/\s+/gu, ' ').slice(0, 140) ?? 'Сообщение удалено'}` : 'Ответ на сообщение из предыдущей истории');
+        const day = chatDayKey(value.createdAt); row.day.hidden = day === previousDay; text(row.day, chatDayLabel(value.createdAt)); row.day.setAttribute('aria-label', row.day.textContent ?? ''); previousDay = day;
+        row.more.hidden = value.body === null; disabled(row.more, busy || switching);
+        if (menuRow === row && (value.body === null || !value.canRemove && menu.querySelector('[data-engagement-key=discussion-remove]') || !writable && menu.querySelector('[data-engagement-key=discussion-reply]'))) closeMenu();
         const reference: ChildNode | null = previous ? previous.nextSibling : list.firstChild; if (reference !== row.element) list.insertBefore(row.element, reference); previous = row.element;
       }
       empty.hidden = !!state?.messages.length || !!state?.loading || !!error || !!state?.error;
@@ -364,13 +405,15 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       if (draft && input.value !== draft.draft.text) input.value = draft.draft.text;
       const replyTarget = draft?.draft.replyTo ? messages.get(draft.draft.replyTo)?.value : null;
       text(replyText, replyTarget?.body ? `Ответ: ${replyTarget.author.label}` : 'Ответ на сообщение');
-      disabled(sendButton, busy || !writable || !draft?.draft.text.trim() || !!draft?.pending || !!draft?.conflict);
+      disabled(sendButton, busy || !writable || !draft?.draft.text.trim() || !!draft?.pending || !!draft?.conflict); composer.setAttribute('aria-busy', String(busy)); sendButton.dataset.state = busy ? 'sending' : 'ready';
       pendingBox.hidden = !lastPending; disabled(pendingRetry, busy || switching); disabled(pendingAbandon, busy || switching);
       conflict.hidden = !draft?.conflict; disabled(compare, busy || switching);
       const message = error || draft?.error && engagementError(draft.error) || localError || state?.error && engagementError(state.error) || notice
         || (state?.loading && !context ? 'Обновляем…' : draft && !draft.durable ? 'Черновик ещё не сохранён на устройстве.' : '');
       text(status, message); status.dataset.tone = error || draft?.error || localError || state?.error ? 'error' : '';
       renderRetained(showComposer); renderArchives(); scheduleComposerFit();
+      if (context && state?.messages.length && !previousConversation) scroll.scrollTop = scroll.scrollHeight;
+      else restoreScroll(position);
     } finally { rendering = false; }
   }
   function renderArchives(): void {
@@ -402,7 +445,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     } finally { switching = false; input.readOnly = false; if (current()) render(); }
     if (!current()) return;
     const admin = next.administrative === true;
-    switching = true; selectionVersion++; stopPoll(); closeDialog(); error = ''; notice = ''; archiveError = '';
+    switching = true; selectionVersion++; stopPoll(); closeDialog(); closeMenu(); error = ''; notice = ''; archiveError = '';
     requestedConversationId = next.conversationId; resolvedConversationId = undefined; activeDraft = null;
     if (administrative !== admin) { administrative = admin; createFeed(); }
     else feed?.invalidate();
@@ -436,20 +479,20 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   }
   async function poll(afterSend = false): Promise<void> {
     if (!foreground() || !feed || switching || !afterSend && (busy || feed.read().loading)) return;
-    const token = selectionVersion, model = feed, nearEnd = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 64;
+    const token = selectionVersion, model = feed;
     const previousIds = new Set(model.read().messages.map(message => message.id));
     try { await model.poll({ api: options.api, isCurrent: () => valid(token) }); if (valid(token)) {
       const count = model.read().messages.filter(message => !previousIds.has(message.id) && message.body !== null).length;
       if (count && !afterSend) notice = count === 1 ? 'Новое сообщение.' : `Новых сообщений: ${count}.`;
-      refreshRetained(); render(); if (nearEnd) scroll.scrollTop = scroll.scrollHeight;
+      refreshRetained(); render();
     } }
     catch (reason) { if (valid(token)) { error = engagementError(reason); render(); } }
     finally { if (valid(token)) schedulePoll(); }
   }
   async function older(): Promise<void> {
     if (!foreground() || !feed || busy || switching || feed.read().loading) return;
-    const token = selectionVersion, before = scroll.scrollHeight, position = scroll.scrollTop, model = feed; error = '';
-    try { await model.older({ api: options.api, isCurrent: () => valid(token) }); if (valid(token)) { render(); scroll.scrollTop = position + scroll.scrollHeight - before; } }
+    const token = selectionVersion, model = feed; error = '';
+    try { await model.older({ api: options.api, isCurrent: () => valid(token) }); if (valid(token)) render(); }
     catch (reason) { if (valid(token)) { error = engagementError(reason); render(); } }
   }
   async function loadArchives(older: boolean): Promise<void> {
@@ -462,7 +505,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   archiveFold.addEventListener('toggle', () => { if (archiveFold.open && !archiveLoaded) void loadArchives(false); });
   function onStorage(): void { if (!current()) return; for (const { model } of drafts.values()) model.refreshLocal(); refreshRetained(); render(); }
   function onVisibility(): void {
-    if (!foreground()) { cancelComposerFit(); stopPoll(); feed?.invalidate(); closeDialog(); }
+    if (!foreground()) { cancelComposerFit(); stopPoll(); feed?.invalidate(); closeDialog(); closeMenu(); }
     else { for (const { model } of drafts.values()) model.refreshLocal(); refreshRetained(); void refresh(); }
   }
   const onPageHide = (): void => { for (const { model } of drafts.values()) void model.flush(); };
@@ -480,7 +523,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     focus() { if (!foreground()) return; (canWrite() ? input : refreshButton).focus(); },
     setVisible(value) {
       if (!current() || visible === value) return; visible = value; root.hidden = !value; selectionVersion++; closeDialog(); stopPoll();
-      if (!value) { cancelComposerFit(); feed?.invalidate(); onPageHide(); }
+      if (!value) { cancelComposerFit(); closeMenu(); feed?.invalidate(); onPageHide(); }
       else { onStorage(); void refresh(); }
     },
     dispose() {
@@ -489,6 +532,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       view?.removeEventListener('resize', onComposerResize); view?.visualViewport?.removeEventListener('resize', onComposerResize);
       document.fonts?.removeEventListener('loadingdone', onComposerFontLoad);
       document.removeEventListener('visibilitychange', onVisibility); view?.removeEventListener('storage', onStorage); view?.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('pointerdown', outsideMenu); closeMenu();
       for (const { model, unsubscribe } of drafts.values()) { unsubscribe(); model.dispose(); } drafts.clear(); root.remove();
     } };
 }

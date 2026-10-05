@@ -57,7 +57,10 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   const request = async <T>(op: string, args: Record<string, unknown> = {}): Promise<T> => {
     if (!await current()) throw Object.assign(new Error('authentication_required'), { code: 'authentication_required' });
     let result: T;
-    try { result = await options.client.extension<T>(op, { ...args, expectedAccountId: accountId }); }
+    try {
+      const payload = op.startsWith('apps.agent.') || op.startsWith('apps.assistant.') ? { ...args, expectedAccountId: accountId } : args;
+      result = await options.client.extension<T>(op, payload, { expectedAccountId: accountId });
+    }
     catch (cause) { if (cause && typeof cause === 'object' && 'code' in cause && ['authentication_required', 'device_revoked', 'device_not_found'].includes(String(cause.code))) lock(); throw cause; }
     if (!await current()) throw Object.assign(new Error('authentication_required'), { code: 'authentication_required' });
     return result;

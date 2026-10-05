@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "bindings": {
+    "chess": "chess",
+    "notes": "notes"
+  },
+  "assets": {
+    "chess": {
+      "key": "chess",
+      "version": 1,
+      "alt": "Светлый шахматный конь на графитовой доске",
+      "palette": {
+        "base": "#242321",
+        "accent": "#EBC7A2",
+        "ink": "#F8F1E6"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/chess/v001-6f5959bcff02/cover-320.4525a9fd0acd.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/chess/v001-6f5959bcff02/cover-640.2f4cd624022f.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/chess/v001-6f5959bcff02/cover-960.2369125b4d14.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/chess/v001-6f5959bcff02/cover-1440.1a3545f5c681.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    },
+    "focus": {
+      "key": "focus",
+      "version": 1,
+      "alt": "Тонкое лиловое стеклянное кольцо",
+      "palette": {
+        "base": "#392F44",
+        "accent": "#CCACEF",
+        "ink": "#F4EDF9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "renditions": [
+        {
+          "url": "/app-art/focus/v001-c15b79ea2a64/cover-320.3a5d5a282959.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/focus/v001-c15b79ea2a64/cover-640.a85c5fa91cc8.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/focus/v001-c15b79ea2a64/cover-960.b11af6224981.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/focus/v001-c15b79ea2a64/cover-1440.52eedd9d0eab.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    },
+    "hive": {
+      "key": "hive",
+      "version": 1,
+      "alt": "Пять связанных стеклянных сот",
+      "palette": {
+        "base": "#303B34",
+        "accent": "#C8D6BF",
+        "ink": "#F4F5ED"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.4
+      },
+      "renditions": [
+        {
+          "url": "/app-art/hive/v001-745f2a459985/cover-320.447ee5d22e98.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/hive/v001-745f2a459985/cover-640.70273b66fe0d.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/hive/v001-745f2a459985/cover-960.e3b2ee78b666.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/hive/v001-745f2a459985/cover-1440.71169aa2ff6e.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    },
+    "notes": {
+      "key": "notes",
+      "version": 1,
+      "alt": "Скульптурный изгиб светлой бумаги",
+      "palette": {
+        "base": "#413B33",
+        "accent": "#E8CFAB",
+        "ink": "#F5F0E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.48
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.48
+      },
+      "renditions": [
+        {
+          "url": "/app-art/notes/v001-59804a3b2eba/cover-320.278120f85c2a.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/notes/v001-59804a3b2eba/cover-640.03021a91e7f1.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/notes/v001-59804a3b2eba/cover-960.37584b61e068.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/notes/v001-59804a3b2eba/cover-1440.38f61b1007b5.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    },
+    "pulse": {
+      "key": "pulse",
+      "version": 2,
+      "alt": "Пять растущих столбцов из светлого матового стекла",
+      "palette": {
+        "base": "#293629",
+        "accent": "#D5DDAD",
+        "ink": "#F6F7EE"
+      },
+      "focalPoint": {
+        "x": 0.54,
+        "y": 0.45
+      },
+      "compactFocalPoint": {
+        "x": 0.745,
+        "y": 0.45
+      },
+      "renditions": [
+        {
+          "url": "/app-art/pulse/v002-fd78e1bbd5a1/cover-320.145dfaa27f11.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/pulse/v002-fd78e1bbd5a1/cover-640.5a8d93209a0b.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/pulse/v002-fd78e1bbd5a1/cover-960.d27ebb4cc001.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/pulse/v002-fd78e1bbd5a1/cover-1440.2ddb9ddc7ad1.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    },
+    "tavysh": {
+      "key": "tavysh",
+      "version": 1,
+      "alt": "Золотистая звуковая волна из прозрачного стекла",
+      "palette": {
+        "base": "#21211B",
+        "accent": "#E8CF9C",
+        "ink": "#FAF5E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.39
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.39
+      },
+      "renditions": [
+        {
+          "url": "/app-art/tavysh/v001-e7ba048505a0/cover-320.d2f8834c663b.webp",
+          "width": 320,
+          "height": 213
+        },
+        {
+          "url": "/app-art/tavysh/v001-e7ba048505a0/cover-640.e94ffd070496.webp",
+          "width": 640,
+          "height": 427
+        },
+        {
+          "url": "/app-art/tavysh/v001-e7ba048505a0/cover-960.5135656a4b26.webp",
+          "width": 960,
+          "height": 640
+        },
+        {
+          "url": "/app-art/tavysh/v001-e7ba048505a0/cover-1440.6161ffa725fe.webp",
+          "width": 1440,
+          "height": 960
+        }
+      ]
+    }
+  }
+}

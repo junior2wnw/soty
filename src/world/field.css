@@ -1,0 +1,182 @@
+/* The signature map: point-up application cells, soft community contours, circular people.
+   Geometry comes from field-layout.mjs; every colour comes from the active semantic palette. */
+.sw-world-viewport[data-field-map] {
+  isolation: isolate;
+  scrollbar-width: none;
+  background: var(--sw-bg);
+}
+.sw-world-viewport[data-field-map]::-webkit-scrollbar { display: none; }
+.sw-world-viewport[data-field-map] .sw-world-dimensions { overflow: hidden; }
+.sw-world-viewport[data-field-map] .sw-world-plane {
+  background-image:
+    radial-gradient(circle, color-mix(in srgb, var(--sw-control-border) 27%, transparent) .65px, transparent .9px),
+    linear-gradient(to right, color-mix(in srgb, var(--sw-line) 40%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--sw-line) 40%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px, 90px 90px, 90px 90px;
+  contain: layout style;
+}
+.sw-world-viewport[data-field-map] .sw-field-row { contain: layout style; }
+.sw-world-viewport[data-field-map] .sw-field-target {
+  color: var(--sw-ink);
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+.sw-world-viewport[data-field-map].is-dragging .sw-field-target { cursor: grabbing; }
+.sw-world-viewport[data-field-map] .sw-field-community-row { z-index: 1; }
+.sw-world-viewport[data-field-map] .sw-field-community {
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+}
+.sw-constellation { display: block; position: absolute; inset: 0; }
+.sw-constellation-contour { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.sw-constellation-contour path {
+  fill: color-mix(in srgb, var(--sw-cell-light) 48%, transparent);
+  stroke: color-mix(in srgb, var(--sw-cell-border) 48%, var(--sw-line));
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  transition: fill var(--sw-motion-fast) var(--sw-ease), stroke var(--sw-motion-fast) var(--sw-ease);
+}
+.sw-field-community:hover .sw-constellation-contour path {
+  fill: color-mix(in srgb, var(--sw-cell-light) 68%, transparent);
+  stroke: var(--sw-cell-border);
+}
+.sw-field-community[aria-pressed=true] .sw-constellation-contour path { stroke: var(--sw-cell-border); stroke-width: 1.6; }
+.sw-field-community:focus-visible .sw-constellation-contour path { stroke: var(--sw-focus); stroke-width: 2.4; }
+.sw-constellation-label {
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 54px;
+  width: max-content;
+  max-width: calc(100% - 20px);
+  padding: 8px 17px 9px;
+  border: 1px solid color-mix(in srgb, var(--sw-cell-border) 60%, var(--sw-line));
+  border-radius: 28px;
+  background: var(--sw-surface);
+  color: var(--sw-ink);
+  box-shadow: var(--sw-shadow-small);
+  white-space: nowrap;
+  text-align: left;
+  transition: border-color var(--sw-motion-fast) var(--sw-ease);
+}
+.sw-constellation-label>.sw-icon { width: 23px; height: 23px; flex: none; color: var(--sw-cell-ink); }
+.sw-constellation-copy { min-width: 0; display: grid; gap: 2px; }
+.sw-constellation-copy strong { overflow: hidden; text-overflow: ellipsis; font-size: 17px; line-height: 1.25; font-weight: 620; letter-spacing: -.025em; }
+.sw-constellation-copy small { font-size: 11px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; color: var(--sw-muted); }
+.sw-constellation-label>.sw-constellation-member { width: 16px; height: 16px; color: var(--sw-cell-ink); }
+.sw-constellation-unread { min-width: 21px; padding: 3px 6px; border-radius: 12px; background: var(--sw-unread); color: var(--sw-on-unread); text-align: center; font-size: 11px; line-height: 1; }
+.sw-field-community:focus-visible .sw-constellation-label { border-color: var(--sw-focus); outline: 2px solid var(--sw-focus); outline-offset: 3px; }
+.sw-field-core {
+  position: absolute;
+  overflow: hidden;
+  clip-path: url('#sw-field-hex-clip');
+  background: var(--sw-cell-light);
+  color: var(--sw-cell-ink);
+}
+.sw-field-core.is-empty { background: color-mix(in srgb, var(--sw-cell-light) 42%, transparent); }
+.sw-field-core.is-empty .sw-field-tile-frame path { stroke: color-mix(in srgb, var(--sw-cell-border) 40%, var(--sw-line)); }
+.sw-field-core-content { position: absolute; inset: 0; display: grid; place-items: center; }
+.sw-field-core-content>.sw-icon { width: 39px; height: 39px; }
+.sw-field-tile-frame { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+.sw-field-tile-frame path { fill: none; stroke: var(--sw-cell-border, var(--sw-control-border)); stroke-width: 1.3; vector-effect: non-scaling-stroke; }
+.sw-world-viewport[data-field-map] :is(.sw-field-app-row,.sw-field-overflow-row) { z-index: 2; }
+.sw-world-viewport[data-field-map] :is(.sw-field-app,.sw-field-overflow) {
+  position: relative;
+  isolation: isolate;
+  border: 0;
+  border-radius: 0;
+  clip-path: url('#sw-field-hex-clip');
+  background: var(--sw-cell-light,var(--sw-surface-raised));
+  color: var(--sw-ink);
+  transition: background-color var(--sw-motion-fast) var(--sw-ease), transform var(--sw-motion-fast) var(--sw-ease);
+  outline: none;
+}
+.sw-world-viewport[data-field-map] :is(.sw-field-app,.sw-field-overflow):hover { transform: translateY(-2px); background: var(--sw-surface-hover); }
+.sw-world-viewport[data-field-map] :is(.sw-field-app,.sw-field-overflow):hover .sw-field-tile-frame path { stroke: var(--sw-cell-ink,var(--sw-control-border)); stroke-width: 1.8; }
+.sw-world-viewport[data-field-map] :is(.sw-field-app,.sw-field-overflow):focus-visible .sw-field-tile-frame path { stroke: var(--sw-focus); stroke-width: 4; }
+.sw-field-app-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; pointer-events: none; }
+.sw-field-app.has-art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(to bottom, transparent 14%, color-mix(in srgb, var(--sw-surface) 25%, transparent) 35%, var(--sw-surface) 90%);
+  pointer-events: none;
+}
+.sw-field-app-content {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: 47%;
+  transform: translate(-50%, -50%);
+  width: 75%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sw-field-app-content>.sw-icon { width: 32px; height: 32px; flex: none; color: var(--sw-cell-ink,var(--sw-ink)); stroke-width: 1.6; }
+.sw-field-app.has-art .sw-field-app-content>.sw-icon { padding: 5px; width: 42px; height: 42px; border-radius: 12px; background: color-mix(in srgb, var(--sw-surface) 92%, transparent); }
+.sw-field-app-content>strong { max-width: 100%; font-size: 17px; font-weight: 620; line-height: 1.2; letter-spacing: -.025em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-field-app-content>small { max-width: 88%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sw-muted); font-size: 11px; line-height: 1.2; }
+.sw-world-viewport[data-field-map] .sw-field-person-row { z-index: 3; }
+.sw-world-viewport[data-field-map] .sw-field-person {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+}
+.sw-world-viewport[data-field-map] .sw-field-face {
+  width: 62px;
+  height: 62px;
+  aspect-ratio: 1;
+  --hex-width: 62px;
+  --hex-border: 2px;
+  clip-path: none;
+  border: 1.5px solid var(--sw-control-border);
+  border-radius: 50%;
+  background: var(--sw-surface);
+  color: var(--sw-ink);
+  box-shadow: 0 0 0 4px var(--sw-bg);
+  overflow: hidden;
+  transition: border-color var(--sw-motion-fast) var(--sw-ease), transform var(--sw-motion-fast) var(--sw-ease);
+}
+.sw-world-viewport[data-field-map] .sw-field-face::before { inset: 2px; border-radius: 50%; clip-path: none; background: var(--sw-cell-light); }
+.sw-world-viewport[data-field-map] .sw-field-face>img { inset: 2px; width: calc(100% - 4px); height: calc(100% - 4px); border-radius: 50%; clip-path: none; }
+.sw-world-viewport[data-field-map] .sw-field-face>span { width: 100%; height: 100%; font-size: 20px; letter-spacing: -.035em; }
+.sw-world-viewport[data-field-map] .sw-field-person-name { max-width: 100%; color: var(--sw-ink); font-size: 12px; line-height: 1.2; font-weight: 500; }
+.sw-world-viewport[data-field-map] .sw-field-person:hover .sw-field-face { border-color: var(--sw-cell-ink,var(--sw-control-border)); transform: translateY(-2px); }
+.sw-world-viewport[data-field-map] .sw-field-person:focus-visible .sw-field-face { outline: 2px solid var(--sw-focus); outline-offset: 4px; }
+.sw-world-viewport[data-field-map] .sw-field-person[aria-pressed=true] .sw-field-face { border-color: var(--sw-focus); box-shadow: 0 0 0 3px var(--sw-bg), 0 0 0 5px var(--sw-focus); }
+.sw-field-links { position: absolute; left: 0; top: 0; z-index: 0; overflow: visible; pointer-events: none; }
+.sw-field-links path { fill: none; stroke: color-mix(in srgb, var(--sw-control-border) 42%, transparent); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sw-field-links .sw-field-link-app { stroke: color-mix(in srgb, var(--sw-honey-border) 62%, transparent); stroke-width: 1.3; }
+.sw-field-links path[data-selected=true] { stroke: var(--sw-honey-border); }
+.sw-field-links circle { fill: var(--sw-honey-border); }
+.sw-world-viewport[data-field-map].is-compact .sw-constellation-label { min-height: 48px; padding: 8px 13px; gap: 8px; }
+.sw-world-viewport[data-field-map].is-compact .sw-constellation-copy strong { font-size: 15px; }
+.sw-world-viewport[data-field-map].is-compact .sw-constellation-copy small { font-size: 10px; }
+.sw-world-viewport[data-field-map].is-compact .sw-constellation-label>.sw-icon { width: 20px; height: 20px; }
+.sw-world-viewport[data-field-map].is-compact .sw-field-app-content { gap: 5px; }
+.sw-world-viewport[data-field-map].is-compact .sw-field-app-content>strong { font-size: 15px; }
+.sw-world-viewport[data-field-map].is-compact .sw-field-app-content>small { display: none; }
+.sw-world-viewport[data-field-map].is-compact .sw-field-app-content>.sw-icon { width: 28px; height: 28px; }
+.sw-world-viewport[data-field-map].is-compact .sw-field-app.has-art .sw-field-app-content>.sw-icon { width: 36px; height: 36px; padding: 5px; border-radius: 10px; }
+@media (prefers-reduced-motion: reduce) {
+  .sw-world-viewport[data-field-map] *, .sw-world-viewport[data-field-map] *::after { transition: none !important; }
+}

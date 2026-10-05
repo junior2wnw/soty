@@ -1,0 +1,21 @@
+{
+  "key": "pulse",
+  "name": "Pulse",
+  "purpose": "Наглядная аналитика",
+  "subject": "Five softly rounded upright sage ivory glass columns in an ascending sequence from left to right, sculptural bar-chart still-life on a dark forest graphite studio surface. Precise rounded tops, frosted ceramic-glass material, soft highlights and realistic shadows.",
+  "alt": "Пять растущих столбцов из светлого матового стекла",
+  "palette": {
+    "base": "#293629",
+    "accent": "#D5DDAD",
+    "ink": "#F6F7EE"
+  },
+  "focalPoint": {
+    "x": 0.54,
+    "y": 0.45
+  },
+  "kind": "example",
+  "compactFocalPoint": {
+    "x": 0.745,
+    "y": 0.45
+  }
+}

@@ -6,7 +6,12 @@ import './community.css';
 import { mountAppStage, type AppStageHandle } from './app-stage';
 import { preferredInspectionEntry } from './app-deployment.mjs';
 import { mountAppLibrary } from './app-library';
+import './experience.css';
+import { createHome, createAppCard, type AppCardData, type HomeFilter } from './home';
+import { resolveAppArt } from './app-art.mjs';
+import { createBrandMark } from './brand';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
+import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
@@ -45,9 +50,9 @@ class WorldApplication {
   private readonly api: WorldApi;
   private readonly preferences: WorldPreferences;
   private readonly main = el('main', 'sw-main');
-  private readonly header = el('header', 'sx-header');
-  private readonly rail = el('aside', 'sx-rail');
-  private readonly mobileNav = el('nav', 'sx-mobile-nav');
+  private readonly header = el('header', 'sw-topbar');
+  private readonly sidebar = el('aside', 'sx-sidebar');
+  private readonly mobileNav = el('nav', 'sw-mobile-nav');
   private readonly live = el('div', 'sw-sr-only');
   private readonly controller = new AbortController();
   private readonly avatars: AvatarHydrator;
@@ -68,6 +73,7 @@ class WorldApplication {
   private homeHandle: ReturnType<typeof createAppsHome> | null = null;
   private readonly homeState: AppHomeState = { lens: 'all', communityId: null, presentation: 'cards', scroll: 0, fieldX: 0, fieldY: 0, slots: new Map(), focusId: null, pinned: new Set() };
   private assistantHandle: WorldAssistantHandle | null = null;
+  private assistantMode: 'create' | 'chat' = 'create';
   private accessHandle: WorldAssistantHandle | null = null;
   private appStage: AppStageHandle | null = null;
   private activeRoute = location.hash || '#mine';
@@ -82,6 +88,8 @@ class WorldApplication {
   private apps: WorldAppRecord[] = [];
   private devices: WorldDevice[] = [];
   private view: WorldView;
+  private homeQuery = '';
+  private homeFilter: HomeFilter = 'all';
   private query = '';
   private kind: CatalogKind = 'all';
   private discoveryPages: (string | null)[] = [null];
@@ -90,7 +98,9 @@ class WorldApplication {
   private groupTab: GroupTab = 'about';
   private groupReturn: 'mine' | 'world' | 'messages' = 'mine';
   private field: HexField | null = null;
+  private discoveryApps = new Map<string, WorldAppRecord[]>();
   private fieldState = createHexFieldState();
+  private homeFieldState = createHexFieldState();
   private discoveryScope = '';
   private discoveryStatus: 'loading' | 'ready' | 'error' = 'loading';
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,7 +125,7 @@ class WorldApplication {
     this.main.id = 'soty-main'; this.main.tabIndex = -1;
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
-    root.replaceChildren(skip, this.rail, this.header, this.pwaBanner, this.main, this.mobileNav, this.live);
+    root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.main, this.mobileNav, this.live);
     this.pwaBanner.setAttribute('aria-live', 'polite'); this.pwaBanner.setAttribute('aria-label', 'Состояние приложения');
     this.unsubscribePwa = this.pwa.subscribe(state => {
       const recovered = state.connection === 'online' && this.connection !== 'online';
@@ -138,8 +148,13 @@ class WorldApplication {
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
     window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
+    root.addEventListener('soty:chat-updated', event => {
+      const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
+      if(!group)return;const known=this.communities.find(value=>value.communityId===group.communityId);if(known)known.unreadCount=group.unreadCount;this.updateNavUnread();
+    },{signal:this.controller.signal});
+    root.addEventListener('soty:inbox-updated',event=>{const groups=(event as CustomEvent<{communities:WorldCommunity[]}>).detail?.communities;if(Array.isArray(groups)){this.communities=groups;this.updateNavUnread();}},{signal:this.controller.signal});
     document.addEventListener('keydown', event => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !event.isComposing && !document.querySelector('dialog[open]')) { event.preventDefault(); this.openQuickActions(); return; }
+      if ((event.ctrlKey || event.metaKey) && (event.code === 'KeyK' || event.key.toLowerCase() === 'k') && !event.isComposing && !document.querySelector('dialog[open]')) { event.preventDefault(); this.openQuickActions(); return; }
       if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement).tagName) && !document.querySelector('dialog[open]')) {
         const search = this.root.querySelector<HTMLInputElement>('.sw-search input');
         if (search) { event.preventDefault(); search.focus(); }
@@ -246,7 +261,8 @@ class WorldApplication {
     this.desk = next ? loadDeskPreferences(next) : { favorites: [], recent: [] };
     this.homeState.pinned = new Set(this.desk.pinnedApps ?? []);
     this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
-    this.fieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
+    this.homeQuery = ''; this.homeFilter = 'all'; this.discoveryApps.clear();
+    this.fieldState = createHexFieldState(); this.homeFieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
     this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
     this.routeLoaded = false; this.noteActionPending = false; this.visibilityOpen = false;
     if (this.searchTimer) clearTimeout(this.searchTimer); this.searchTimer = null;
@@ -312,61 +328,85 @@ class WorldApplication {
   }
 
   private renderNavigation(): void {
-    const brand = button('Соты', undefined, 'sx-wordmark', () => this.navigate('mine'));
-    const context = el('span', 'sx-header-context', this.group?.name || 'Личное');
+    const brandButton = el('button', 'sx-brand-button'); brandButton.type = 'button'; brandButton.setAttribute('aria-label', 'Соты — главная');
+    brandButton.append(createBrandMark()); brandButton.addEventListener('click', () => this.navigate('mine'));
     const nav = el('nav', 'sx-rail-nav'); nav.setAttribute('aria-label', 'Главная навигация');
-    const items: [WorldView, string, string][] = [['mine', 'Аппки', 'app'], ['messages', 'Чаты', 'chat'], ['assistant', 'Помощник', 'sparkle']];
+    const active = this.view === 'messages' ? 'messages' : this.view === 'assistant' ? 'assistant' : 'mine';
+    const items = [['mine', 'Приложения', 'grid'], ['messages', 'Чаты', 'chat'], ['assistant', 'Помощник', 'sparkle']] as const;
     this.mobileNav.replaceChildren();
     for (const [id, label, symbol] of items) {
-      const make = (): HTMLButtonElement => {
-        const item = button(label, symbol, 'sx-nav-button', () => this.navigate(id));
-        if (this.view === id || id === 'mine' && !['messages', 'assistant', 'access'].includes(this.view)) item.setAttribute('aria-current', 'page'); return item;
-      };
-      nav.append(make()); this.mobileNav.append(make());
+      const make = (className: string) => { const node = button(label, symbol, className, () => this.navigate(id));node.dataset.navView=id; if (active === id) node.setAttribute('aria-current', 'page'); return node; };
+      nav.append(make('sx-rail-button')); this.mobileNav.append(make('sw-nav-button'));
     }
-    const makeProfile = (): HTMLButtonElement => {
-      const profile = el('button', 'sx-profile'); profile.type = 'button'; profile.setAttribute('aria-label', 'Профиль и настройки');
-      profile.append(avatar(this.profile?.displayName || 'Я', this.profile?.avatarUrl, worldColor(this.profile?.avatarColor), this.profile?.profileId, this.profile?.avatarRevision));
-      profile.addEventListener('click', () => this.openProfileMenu()); return profile;
-    };
-    const emblem = button('', undefined, 'sx-brand-mark', () => this.navigate('mine')); emblem.setAttribute('aria-label', 'Соты — на главную');
-    const hex = el('span', 'soty-hex', 'S'); emblem.append(hex);
-    const bottom = el('div', 'sx-rail-bottom'); bottom.append(iconButton('Оформление', 'sun', () => this.openAppearance()), makeProfile());
-    this.rail.replaceChildren(emblem, nav, bottom);
-    const search = button('Аппки, люди, возможности', 'search', 'sx-global-search', () => this.openQuickActions());
-    search.setAttribute('aria-label', 'Аппки, люди, возможности');
-    search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.append(el('kbd', '', 'Ctrl K'));
-    const access = button('Доступы и действия', 'shield', 'sx-access-button', () => this.navigate('access'));
-    access.setAttribute('aria-label', 'Доступы и действия');
-    if (this.view === 'access') access.setAttribute('aria-current', 'page');
-    const add = button('Добавить', 'plus', 'sw-button-primary sx-add-button', () => this.openAddMenu()); add.setAttribute('aria-label', 'Добавить');
-    const actions = el('div', 'sx-header-actions'); actions.append(search, access, add);
-    const profile = makeProfile(); profile.classList.add('sx-mobile-profile'); actions.append(profile);
-    this.header.replaceChildren(brand, context, actions);
+    const footer = el('div', 'sx-rail-footer');
+    const theme = iconButton(this.theme.get().resolvedTheme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему', this.theme.get().resolvedTheme === 'dark' ? 'sun' : 'moon', () => { this.theme.set({ themeMode: this.theme.get().resolvedTheme === 'dark' ? 'light' : 'dark' }); this.renderNavigation(); });
+    const profile = el('button', 'sx-profile-button'); profile.type = 'button'; profile.setAttribute('aria-label', 'Мой профиль и настройки');
+    profile.append(avatar(this.profile?.displayName ?? 'Я', this.profile?.avatarUrl, worldColor(this.profile?.avatarColor), this.profile?.profileId, this.profile?.avatarRevision)); profile.addEventListener('click', () => this.openProfileMenu());
+    footer.append(theme, profile, iconButton('Оформление', 'settings', () => this.openAppearance()));
+    this.sidebar.replaceChildren(brandButton, nav, footer);
+    const brand = el('button', 'sx-header-brand', 'СОТЫ'); brand.type = 'button'; brand.addEventListener('click', () => this.navigate('mine'));
+    const context = el('span', 'sx-header-context', this.group?.name || ({ mine:'Личное', world:'Общий мир', messages:'Чаты', assistant:'Помощник', notes:'Записки', library:'Возможности', access:'Доступы и действия' } as Record<WorldView,string>)[this.view]);
+    const search = button('Приложения, люди, сообщества', 'search', 'sx-global-search', () => this.openQuickActions()); search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.setAttribute('aria-label', 'Поиск приложений, людей и сообществ'); search.append(el('kbd', '', 'Ctrl K'));
+    const add = button('Добавить', 'plus', 'sw-button-primary sx-global-add', () => this.openAddMenu());add.setAttribute('aria-label','Добавить');
+    const mobileProfile=el('button','sx-profile-button sx-mobile-profile');mobileProfile.type='button';mobileProfile.setAttribute('aria-label','Мой профиль и настройки');mobileProfile.append(avatar(this.profile?.displayName??'Я',this.profile?.avatarUrl,worldColor(this.profile?.avatarColor),this.profile?.profileId,this.profile?.avatarRevision));mobileProfile.addEventListener('click',()=>this.openProfileMenu());
+    this.header.replaceChildren(brand, context, search, mobileProfile, add);this.updateNavUnread();
+  }
+
+  private updateNavUnread(): void {
+    const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0);
+    for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread);}
   }
 
   private openProfileMenu(): void {
-    const dialog = this.dialog(this.profile?.displayName || 'Мой аккаунт'); const list = el('div', 'sx-profile-menu');
-    const choice = (label: string, symbol: string, action: () => void): void => { list.append(button(label, symbol, 'sw-button-quiet', () => { dialog.close(); action(); })); };
-    choice('Профиль', 'person', () => this.openProfileEditor());
-    choice(this.profile?.discoverable ? 'Вы видны в общем мире' : 'Вы скрыты в общем мире', this.profile?.discoverable ? 'eye' : 'hidden', () => this.openVisibility());
-    choice('Устройства', 'laptop', () => this.openResources('devices'));
-    choice('Доступы и действия', 'shield', () => this.navigate('access'));
-    choice('Оформление', 'sun', () => this.openAppearance());
-    choice('Все возможности', 'grid', () => this.navigate('library'));
-    const developerDocs = el('a', 'sw-button sw-button-quiet');
-    developerDocs.href = '/agents'; developerDocs.target = '_blank'; developerDocs.rel = 'noopener';
-    developerDocs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)');
-    developerDocs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external'));
-    list.append(developerDocs);
-    choice('Аккаунт и восстановление', 'lock', () => this.runHook(() => this.options.openAccount('recovery')));
-    dialog.body.append(list);
+    const menu=this.dialog('Мои настройки');const options=el('div','sx-profile-menu');
+    const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
+    options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
+    const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs); menu.body.append(options);
+  }
+
+  private openSavedLibrary(): void {
+    const accountId = this.deskAccount, accountCurrent = this.accountTask();
+    if (!accountId || !accountCurrent()) return;
+    let library: ReturnType<typeof mountAppLibrary> | null = null;
+    const dialog = this.dialog('Сохранённые приложения', () => library?.dispose());
+    const host = el('div', 'sx-saved-dialog'); dialog.body.append(host);
+    const open = (entry: AppResolvedEntry, discussion = false): void => {
+      if (!accountCurrent() || !dialog.element.open) return;
+      dialog.close({ restoreFocus: false });
+      this.afterNoteSaved(() => {
+        if (!accountCurrent()) return;
+        this.writeRoute(formatAppLaunchRoute({ appId: entry.appId, domainId: entry.domainId, path: entry.path }, undefined, discussion ? { panel: 'discussion' } : undefined));
+        void this.openRoute();
+      });
+    };
+    library = mountAppLibrary(host, { api: this.api, accountId, isCurrent: () => accountCurrent() && dialog.element.open, openEntry: entry => open(entry), discussEntry: entry => open(entry, true) });
+  }
+
+  private openAppCardActions(app: WorldAppRecord): void {
+    const accountCurrent = this.accountTask();
+    const dialog = this.dialog(app.name, undefined, this.appDialogReturnTarget(app.appId));
+    const actions = el('div', 'sx-profile-menu');
+    const action = (label: string, symbol: string, run: () => void): HTMLElement => button(label, symbol, 'sw-button-wide', () => {
+      if (!accountCurrent()) return; dialog.close({ restoreFocus: false }); run();
+    });
+    actions.append(action('О приложении', 'info', () => this.inspectApplication(app)), action(this.homeState.pinned.has(app.appId) ? 'Открепить' : 'Закрепить', 'pin', () => {
+      this.homeState.pinned.has(app.appId) ? this.homeState.pinned.delete(app.appId) : this.homeState.pinned.add(app.appId);
+      this.desk.pinnedApps = [...this.homeState.pinned].slice(0, 200); this.saveDesk();
+      if (this.view === 'mine' && !this.group && !this.appStage) this.renderPersonal();
+      const target = this.appDialogReturnTarget(app.appId).resolve(); if (isDialogFocusTarget(target)) target.focus({ preventScroll: true });
+    }));
+    if (app.ownerAccountId === this.profile?.profileId) actions.append(action('Название и доступ', 'settings', () => this.openAppSettings(app)));
+    dialog.body.append(actions);
   }
 
   private navigate(view: WorldView, chatId?: string): void {
+    this.afterNoteSaved(() => this.navigateReady(view, chatId));
+  }
+
+  private navigateReady(view: WorldView, chatId?: string): void {
     this.selectedChat = view === 'messages' ? chatId : undefined;
     if (view === 'world') this.discoveryStatus = 'loading';
-    this.writeRoute(view === 'messages' && chatId ? `messages/${chatId}` : view === 'world' ? this.discoveryRoute() : view);
+    this.writeRoute(view === 'messages' && chatId ? `messages/${chatId}` : view === 'world' ? this.discoveryRoute() : view === 'assistant' ? `assistant/${this.assistantMode}` : view);
     this.view = view; this.preferences.view = view; this.persist(); this.group = null; this.selected = null;
     this.renderNavigation(); this.renderCurrent();
     if (view === 'world') void this.search();
@@ -432,7 +472,12 @@ class WorldApplication {
       this.query = (parameters.get('q') || '').slice(0, 100); const kind = parameters.get('kind');
       this.kind = kind === 'people' || kind === 'communities' ? kind : 'all'; this.navigate('world'); return true;
     }
-    if (route === 'mine' || route === 'library' || route === 'assistant' || route === 'access') { this.navigate(route); return true; }
+    if (route === 'assistant') {
+      // Existing assistant links continue to open the general task workspace.
+      this.assistantMode = id === 'create' || !this.options.openAssistant ? 'create' : 'chat';
+      this.navigate('assistant'); return true;
+    }
+    if (route === 'mine' || route === 'library' || route === 'access') { this.navigate(route); return true; }
     if (route) return false;
     return false;
   }
@@ -450,15 +495,35 @@ class WorldApplication {
   }
 
   private renderAssistant(): void {
-    const host = el('section', 'sw-assistant-host sx-page-host'); host.dataset.pwaIgnore = ''; this.main.replaceChildren(host);
+    const section = el('section', 'sx-assistant');
+    const header = el('header', 'sx-assistant-heading');
+    const copy = el('div'); copy.append(el('h1', '', 'Помощник'), el('p', 'sx-subtitle', this.assistantMode === 'create' ? 'Из идеи — в полезное приложение' : 'Задачи на ваших устройствах'));
+    const tabs = el('div', 'sx-assistant-modes'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Режим помощника');
+    const choose = (mode: 'create' | 'chat', keyboard = false): void => this.afterNoteSaved(() => {
+      this.assistantMode = mode; this.navigateReady('assistant');
+      if (keyboard) this.main.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')?.focus({ preventScroll: true });
+    });
+    for (const [mode, label] of [['create', 'Приложение'], ['chat', 'Задачи']] as const) {
+      const tab = button(label, mode === 'create' ? 'grid' : 'sparkle', '', () => choose(mode, document.activeElement === tab));
+      tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(mode === this.assistantMode));
+      tab.tabIndex = mode === this.assistantMode ? 0 : -1;
+      tab.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault(); choose(event.key === 'Home' ? 'create' : event.key === 'End' ? 'chat' : mode === 'create' ? 'chat' : 'create', true);
+      });
+      tabs.append(tab);
+    }
+    const host = el('div', 'sx-assistant-content sw-assistant-host'); host.dataset.pwaIgnore = '';
+    header.append(copy, tabs); section.append(header, host); this.main.replaceChildren(section);
     const sequence = this.screenSequence;
-    if (!this.options.openAssistant) {
+    const mount = this.assistantMode === 'create' ? this.options.openAppBuilder : this.options.openAssistant;
+    if (!mount) {
       const panel = el('div', 'sx-assistant-fallback'); panel.append(heading('Помощник', 'Ваши задачи и устройства'),
         button('Создать приложение', 'sparkle', 'sw-button-primary', () => this.runHook(() => this.options.agentCreate())),
         button('Мои устройства', 'laptop', 'sw-button-quiet', () => this.openResources('devices'))); host.append(panel); return;
     }
     host.append(this.loading('Открываем помощника'));
-    void Promise.resolve().then(() => this.options.openAssistant!(host)).then(handle => {
+    void Promise.resolve().then(() => mount(host)).then(handle => {
       if (this.destroyed || sequence !== this.screenSequence || !host.isConnected) { handle.dispose(); return; }
       this.assistantHandle = handle;
     }).catch(error => { if (host.isConnected && sequence === this.screenSequence) host.replaceChildren(emptyState('Помощник пока недоступен', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => this.navigate('assistant')))); });
@@ -477,7 +542,9 @@ class WorldApplication {
 
   private renderDiscovery(): void {
     const workspace = el('div', 'sw-workspace'); const discovery = el('section', 'sw-discovery');
-    const mobileHeading = el('div', 'sw-mobile-heading'); mobileHeading.append(heading('Открытия', 'Люди и сообщества'));
+    const mobileHeading = el('div', 'sw-mobile-heading sx-world-heading'); mobileHeading.append(heading('Общий мир', 'Приложения, люди, сообщества'));
+    const presentation=el('div','sx-presentation sx-world-presentation');presentation.setAttribute('role','group');presentation.setAttribute('aria-label','Вид общего мира');
+    for(const [value,label,symbol] of [['list','Карточки','grid'],['field','Поле','cells']] as const){const choice=button(label,symbol,'',()=>{this.preferences.presentation=value;this.persist();presentation.querySelectorAll('button').forEach(node=>node.setAttribute('aria-pressed',String(node===choice)));this.renderSearchResults();});choice.setAttribute('aria-label',label);choice.setAttribute('aria-pressed',String(value===this.preferences.presentation));presentation.append(choice);}mobileHeading.append(presentation);
     const searchbar = el('div', 'sw-searchbar'); const search = el('label', 'sw-search');
     const input = textInput(this.query, 'Люди и сообщества', 100); input.type = 'search'; input.setAttribute('aria-label', 'Поиск людей и сообществ');
     const clear = iconButton('Очистить поиск', 'close', () => { input.value = ''; this.query = ''; input.focus(); void this.search(); }); clear.hidden = !this.query;
@@ -519,6 +586,7 @@ class WorldApplication {
       if (scope !== this.discoveryScope) { this.field?.destroy(); this.field = null; this.fieldState = createHexFieldState(); this.discoveryScope = scope; this.selected = null; this.main.querySelector('.sw-side')?.remove(); }
       if (this.view !== 'world' || this.group) return;
       this.renderSearchResults();
+      void this.loadDiscoveryApps(sequence);
       stage?.setAttribute('aria-busy', 'false');
       this.announce(this.searchCount(response.totals));
     } catch (error) {
@@ -549,8 +617,9 @@ class WorldApplication {
     }
     const selected = this.selected ? entityId(this.selected) : '';
     if (this.preferences.presentation === 'field') {
-      if (!this.field || !stage.contains(this.field.element)) { this.field?.destroy(); this.field = createHexField(entity => { void this.preview(entity); }, this.preferences.scale, this.fieldState); stage.replaceChildren(this.field.element); }
+      if (!this.field || !stage.contains(this.field.element)) { this.field?.destroy(); this.field = createHexField(entity => { void this.preview(entity); }, this.preferences.scale,{state:this.fieldState,onSelectApp:app=>{void this.openApplication(app);},resolveAppArt:app=>resolveAppArt(app).srcset.split(',')[0]?.trim().split(' ')[0]||resolveAppArt(app).src,onScaleChange:scale=>{this.preferences.scale=scale;this.persist();}}); stage.replaceChildren(this.field.element); }
       this.field.update(entities, selected);
+      this.field.setApps(this.visibleDiscoveryApps());
     } else {
       this.field?.destroy(); this.field = null;
       const list = el('div', 'sw-results'); list.setAttribute('role', 'list');
@@ -561,16 +630,22 @@ class WorldApplication {
     const controls = el('div', 'sw-field-controls');
     if (this.preferences.presentation === 'field') {
       controls.append(iconButton('Уменьшить поле', 'minus', () => this.changeScale(-.12)), iconButton('Увеличить поле', 'plus', () => this.changeScale(.12)));
-      const reset = button('Обзор', 'cells', 'sw-button-small sw-field-reset', () => { this.preferences.scale = 1; this.persist(); this.field?.setScale(1); this.field?.element.scrollTo({ left: 0, top: 0, behavior: 'instant' }); }); reset.setAttribute('aria-label', 'Вернуть обзор поля'); reset.title = 'Вернуть обзор поля'; controls.append(reset);
+      const reset = button('Сброс', 'refresh', 'sw-button-small sw-field-reset', () => { this.field?.resetView(); }); reset.setAttribute('aria-label', 'Вернуть обзор поля'); reset.title = 'Вернуть обзор поля'; controls.append(reset);
     }
     if (this.discoveryPages.length > 1) controls.append(iconButton('Предыдущая страница', 'back', () => { void this.search(false, true); }));
     if (this.results.nextCursor) controls.append(iconButton('Следующая страница', 'next', () => { void this.search(true); }));
-    const segment = el('div', 'sw-segment'); segment.setAttribute('role', 'group'); segment.setAttribute('aria-label', 'Вид результатов');
-    for (const [view, label] of [['field', 'Поле'], ['list', 'Список']] as const) {
-      const item = button(label, undefined, this.preferences.presentation === view ? 'is-selected' : '', () => { this.preferences.presentation = view; this.persist(); this.renderSearchResults(); });
-      item.setAttribute('aria-pressed', String(this.preferences.presentation === view)); segment.append(item);
-    }
-    controls.append(segment); stage.append(controls);
+    if(this.preferences.presentation==='field'){const legend=el('div','sx-field-legend');for(const [symbol,label] of [['cells','Приложение'],['person','Человек'],['people','Сообщество']]){const item=el('span');item.append(icon(symbol!),el('span','',label));legend.append(item);}controls.append(legend);}stage.append(controls);
+  }
+
+  private async loadDiscoveryApps(sequence: number): Promise<void> {
+    const allowed = new Set(this.results.communities.filter(group => group.membership?.state === 'active').map(group => group.communityId));
+    for (const id of this.discoveryApps.keys()) if (!allowed.has(id)) this.discoveryApps.delete(id);
+    const groups=this.results.communities.filter(group=>allowed.has(group.communityId)).slice(0,12);let index=0;
+    const worker=async()=>{while(index<groups.length){const group=groups[index++]!;try{const apps=await this.loadApps(group.communityId);if(this.destroyed||sequence!==this.requestSequence||this.view!=='world'||this.group)return;this.discoveryApps.set(group.communityId,apps);}catch{if(this.destroyed||sequence!==this.requestSequence||this.view!=='world'||this.group)return;this.discoveryApps.delete(group.communityId);}this.field?.setApps(this.visibleDiscoveryApps());}};await Promise.all(Array.from({length:Math.min(3,groups.length)},worker));
+  }
+
+  private visibleDiscoveryApps(): WorldAppRecord[] {
+    return this.results.communities.filter(group => group.membership?.state === 'active').flatMap(group => this.discoveryApps.get(group.communityId) || []);
   }
 
   private changeScale(delta: number): void { this.preferences.scale = Math.max(.65, Math.min(1.4, this.preferences.scale + delta)); this.persist(); this.field?.setScale(this.preferences.scale); }
@@ -601,8 +676,8 @@ class WorldApplication {
       const summary = el('div', 'sw-side-summary'); summary.append(communityEmblem(group), el('h2', '', group.name), el('p', 'sw-side-description', group.description), this.tags(group.topics));
       const members = el('div', 'sw-preview-members'); const memberInfo = el('div', 'sw-preview-member-info'); memberInfo.append(el('p', 'sw-small-note', nounCount(group.memberCount, 'участник', 'участника', 'участников')), badge(this.joinLabel(group), group.joinPolicy === 'open' ? 'world' : 'lock', 'sage')); members.append(this.faces(group.previewMembers, group.memberCount), memberInfo);
       inner.append(summary, members);
-      const showcase = el('div', 'sw-stack sw-preview-showcase'); showcase.append(el('h3', '', 'О группе'), el('div', 'sw-showcase', group.showcase || 'Общее место для новых идей и совместных дел.'));
-      inner.append(showcase);
+      if (group.showcase) { const about = el('details', 'sx-preview-about'); about.append(el('summary', '', 'О сообществе'), el('p', '', group.showcase)); inner.append(about); }
+      if(group.membership?.state==='active'){const appsSection=el('section','sx-preview-apps');appsSection.append(el('h3','','Приложения'));const list=el('div','sx-preview-app-list');list.append(this.loading('Открываем приложения'));appsSection.append(list);inner.append(appsSection);void this.loadApps(group.communityId).then(apps=>{if(!side.isConnected||this.destroyed||this.selected!==entity)return;list.replaceChildren();for(const app of apps){const row=button(app.name,app.symbol||'grid','sx-preview-app',()=>{this.group=group;void this.openApplication(app);});row.append(icon('next'));list.append(row);}if(!apps.length)list.append(el('p','sw-muted','Пока нет приложений'));}).catch(()=>{if(list.isConnected)list.replaceChildren(el('p','sw-muted','Приложения не обновлены'));});}
       const footer = el('div', 'sw-preview-footer'); footer.append(button(group.membership?.state === 'active' ? 'Открыть сообщество' : 'Посмотреть группу', 'arrow', 'sw-button-primary sw-button-large sw-button-wide', () => { void this.openGroup(group.communityId); })); inner.append(footer);
     } else {
       const profile = entity.value;
@@ -728,135 +803,402 @@ class WorldApplication {
     const accountId = this.profile?.profileId ?? this.deskAccount;
     const initialDraft = this.chatDrafts.read(accountId, group.communityId);
     const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${group.name}`);
+    let replyTo = initialDraft.replyTo, sending = false, accessClosed = false, searchIndex = -1;
+    let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, historyLoading = false, hasHistory = false;
+    let catchupTimer: ReturnType<typeof setTimeout> | undefined;
+    const highlightTimers = new Set<ReturnType<typeof setTimeout>>();
+    const known = new Map<string, WorldMessage>();
+    const rows = new Map<string, HTMLElement>();
+    const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
+    const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+    let timelineDirty = false, searchMatches: string[] = [], unseen = 0;
+
+    const menu = el('div', 'sw-chat-menu'); menu.hidden = true; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', 'Действия');
+    let menuAnchor: HTMLButtonElement | null = null, menuScrollTop = 0;
+    const closeMenu = (restoreFocus = false): void => {
+      const anchor = menuAnchor; menu.hidden = true; menuAnchor = null; anchor?.setAttribute('aria-expanded', 'false'); anchor?.closest('.sw-chat-message')?.classList.remove('has-actions');
+      if (restoreFocus && anchor?.isConnected) anchor.focus({ preventScroll: true });
+    };
+    const openMenu = (anchor: HTMLButtonElement, actions: { label: string; symbol: string; run(): void; danger?: boolean; disabled?: boolean }[]): void => {
+      if (menuAnchor === anchor && !menu.hidden) { closeMenu(true); return; }
+      closeMenu(); menuAnchor = anchor; menuScrollTop = messages.scrollTop; anchor.setAttribute('aria-expanded', 'true'); anchor.closest('.sw-chat-message')?.classList.add('has-actions');
+      menu.replaceChildren(...actions.map(action => {
+        const item = button(action.label, action.symbol, `sw-chat-menu-item${action.danger ? ' is-danger' : ''}`, () => { closeMenu(true); action.run(); });
+        item.setAttribute('role', 'menuitem'); item.disabled = !!action.disabled; return item;
+      }));
+      menu.hidden = false;
+      const bounds = chat.getBoundingClientRect(), target = anchor.getBoundingClientRect();
+      menu.style.left = `${Math.max(8, Math.min(bounds.width - menu.offsetWidth - 8, target.right - bounds.left - menu.offsetWidth))}px`;
+      const below = target.bottom - bounds.top + 6;
+      menu.style.top = `${Math.max(8, below + menu.offsetHeight < bounds.height - 8 ? below : target.top - bounds.top - menu.offsetHeight - 6)}px`;
+      menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    };
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); return; }
+      if (event.key === 'Tab') { closeMenu(); return; }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault(); const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+      items[next]?.focus({ preventScroll: true });
+    });
+    const outsideMenu = (event: PointerEvent): void => { if (event.target instanceof Node && !menu.contains(event.target) && !menuAnchor?.contains(event.target)) closeMenu(); };
+    document.addEventListener('pointerdown', outsideMenu);
+
+    const searchBar = el('div', 'sw-chat-search'); searchBar.hidden = true;
+    const searchInput = textInput('', 'Поиск в загруженных сообщениях', 120); searchInput.type = 'search'; searchInput.setAttribute('aria-label', 'Поиск в загруженной истории чата');
+    const searchCount = el('span', 'sw-chat-search-count'); searchCount.setAttribute('role', 'status');
+    const searchPrevious = iconButton('Предыдущее совпадение', 'back', () => moveSearch(-1));
+    const searchNext = iconButton('Следующее совпадение', 'next', () => moveSearch(1));
+    const searchClose = iconButton('Закрыть поиск', 'close', () => { searchBar.hidden = true; searchInput.value = ''; refreshSearch(); input.focus({ preventScroll: true }); });
+    searchBar.append(icon('search'), searchInput, searchCount, searchPrevious, searchNext, searchClose);
+    let refreshHeader = (): void => {};
     if (showHeader) {
-      const header = el('div', 'sw-chat-header'); const back = iconButton('Все чаты', 'back', () => this.navigate('messages')); back.classList.add('sw-mobile-back');
-      const copy = el('div', 'sw-grow'); copy.append(el('h3', '', group.name), el('small', 'sw-muted', `Сообщество · ${nounCount(group.memberCount, 'участник', 'участника', 'участников')}`));
-      header.append(back, copy, iconButton('О сообществе', 'people', () => { void this.openGroup(group.communityId); })); chat.append(header);
+      const header = el('div', 'sw-chat-header'); const back = iconButton('Все чаты', 'back', () => { this.navigate('messages'); this.main.querySelector<HTMLHeadingElement>('.sw-inbox-head h1')?.focus({ preventScroll: true }); }); back.classList.add('sw-mobile-back');
+      const identity = el('button', 'sw-chat-identity'); identity.type = 'button'; identity.setAttribute('aria-label', `О сообществе ${group.name}`); identity.addEventListener('click', () => { void this.openGroup(group.communityId); });
+      const copy = el('span', 'sw-grow'), name = el('strong', '', group.name), members = el('small', 'sw-muted', nounCount(group.memberCount, 'участник', 'участника', 'участников')); copy.append(name, members); identity.append(communityEmblem(group), copy);
+      refreshHeader = () => { name.textContent = group.name; members.textContent = nounCount(group.memberCount, 'участник', 'участника', 'участников'); identity.setAttribute('aria-label', `О сообществе ${group.name}`); identity.replaceChildren(communityEmblem(group), copy); chat.setAttribute('aria-label', `Чат: ${group.name}`); };
+      const searchOpen = iconButton('Поиск в чате', 'search', () => { searchBar.hidden = !searchBar.hidden; if (!searchBar.hidden) searchInput.focus(); else { searchInput.value = ''; refreshSearch(); } });
+      const more = iconButton('Действия с чатом', 'more'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+      const changePreference = (key: 'muted' | 'pinned'): void => {
+        void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, [key]: !group.membership?.[key] }).then(result => {
+          if (!active()) return; group = result.community; this.updateCommunity(group); if (this.group?.communityId === group.communityId) this.group = group; notifyConversation();
+        }).catch(reason => { if (active()) this.toast(errorText(reason), true); });
+      };
+      more.addEventListener('click', () => openMenu(more, [
+        { label: 'О сообществе', symbol: 'people', run: () => { void this.openGroup(group.communityId); } },
+        { label: 'Участники', symbol: 'person', run: () => this.openGroupManagement(group) },
+        { label: group.membership?.muted ? 'Включить уведомления' : 'Отключить уведомления', symbol: 'bell', run: () => changePreference('muted') },
+        { label: group.membership?.pinned ? 'Открепить чат' : 'Закрепить чат', symbol: 'pin', run: () => changePreference('pinned') },
+      ]));
+      header.append(back, identity, searchOpen, more); chat.append(header);
     }
-    const messages = el('div', 'sw-chat-messages'); messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Сообщения'); messages.setAttribute('aria-live', 'polite'); messages.setAttribute('aria-relevant', 'additions'); messages.append(this.loading('Загружаем разговор'));
-    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = 'Написать в общий чат'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); input.value = initialDraft.text;
-    const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.disabled = !input.value.trim(); send.setAttribute('aria-label', 'Отправить сообщение');
+    const messages = el('div', 'sw-chat-messages'); messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Сообщения'); messages.setAttribute('aria-live', 'polite'); messages.setAttribute('aria-relevant', 'additions'); messages.setAttribute('tabindex', '0'); messages.append(this.loading('Загружаем разговор'));
+    const previous = button('Ранее', 'back', 'sw-chat-history', () => { void loadHistory(); }); previous.hidden = true;
+    const jump = iconButton('К последним сообщениям', 'down', () => { messages.scrollTo({ top: messages.scrollHeight, behavior: this.preferences.motion ? 'smooth' : 'instant' }); unseen = 0; updateJump(); markRead(); }); jump.classList.add('sw-chat-jump'); jump.hidden = true;
+    const jumpCount = el('span', 'sw-chat-jump-count'); jumpCount.hidden = true; jump.append(jumpCount);
+    const dock = el('div', 'sw-composer-dock');
+    const reply = el('div', 'sw-composer-reply'); reply.hidden = true;
+    const replyCopy = el('button', 'sw-composer-reply-copy'); replyCopy.type = 'button'; replyCopy.addEventListener('click', () => { if (replyTo) void jumpToMessage(replyTo); });
+    const replyAuthor = el('strong'), replyText = el('span'); replyCopy.append(icon('back'), replyAuthor, replyText);
+    const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, group.communityId, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
+    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
+    const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
+    const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = true; error.append(retrySend);
     const draftStatus = el('div', 'sw-chat-draft-status'); draftStatus.setAttribute('role', 'status');
     const downloadDraft = button('Скачать черновик', 'download', 'sw-button-small sw-button-quiet', () => {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
+    const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
+    const updateComposer = (): void => { input.disabled = accessClosed || !group.permissions.canWrite; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
     const describeDraft = (): void => {
       const volatile = this.chatDrafts.isVolatile(accountId, group.communityId);
-      draftStatus.textContent = input.value ? volatile ? 'Черновик пока только в открытом приложении' : 'Черновик на этом устройстве' : '';
-      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !input.value; downloadDraft.hidden = !volatile;
+      draftStatus.textContent = volatile ? 'Черновик пока только в открытом приложении' : '';
+      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !volatile; downloadDraft.hidden = !volatile;
     };
-    error.append(draftStatus, downloadDraft); describeDraft();
-    const fitComposer = (): void => { input.style.height = 'auto'; input.style.height = `${Math.min(144, input.scrollHeight)}px`; };
-    input.addEventListener('input', () => { this.chatDrafts.edit(accountId, group.communityId, input.value); send.disabled = !input.value.trim(); fitComposer(); describeDraft(); });
-    input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !matchMedia('(pointer:coarse)').matches) { event.preventDefault(); if (input.value.trim() && !send.disabled) composer.requestSubmit(); } });
-    composer.append(input, send); chat.append(messages, error, composer); parent.append(chat);
-    fitComposer();
+    error.append(draftStatus, downloadDraft, limitStatus); describeDraft();
+    const fitComposer = (): void => { const stick = nearEnd(); input.style.height = 'auto'; input.style.height = `${Math.min(144, Math.max(24, input.scrollHeight))}px`; if (stick) messages.scrollTop = messages.scrollHeight; };
+    const refreshReply = (): void => {
+      reply.hidden = !replyTo; if (!replyTo) return;
+      const target = known.get(replyTo); replyAuthor.textContent = target ? `Ответ · ${target.author.displayName}` : 'Ответ на сообщение'; replyText.textContent = target ? chatPreview(target) : 'Сообщение из предыдущей истории';
+    };
+    input.addEventListener('input', () => { this.chatDrafts.edit(accountId, group.communityId, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
+    input.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
+      else if (event.key === 'Escape' && replyTo && !sending) { event.preventDefault(); cancelReply.click(); }
+    });
+    composer.append(input, send); dock.append(reply, error, composer); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    fitComposer(); updateComposer(); refreshReply();
     let composerWidth = 0;
-    const composerResize = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } });
-    composerResize.observe(composer);
-    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, group.communityId, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } if (!input.disabled) send.disabled = !input.value.trim(); describeDraft(); });
-    let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, accessClosed = false, catchupTimer: ReturnType<typeof setTimeout> | undefined;
-    const known = new Set<string>();
-    const active = (): boolean => !this.destroyed && sequence === this.screenSequence && chat.isConnected;
+    const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
+    composerResize.observe(composer); composerResize.observe(dock);
+    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, group.communityId, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; updateComposer(); refreshReply(); describeDraft(); });
 
-    const append = (message: WorldMessage, prepend = false): void => {
-      if (known.has(message.messageId)) {
-        if (message.removed) { const row = messages.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(message.messageId)}"]`); if (row) { row.classList.add('is-removed'); row.querySelector('.sw-message-text')!.textContent = 'Сообщение удалено'; row.querySelector('.sw-message-delete')?.remove(); } }
-        return;
-      }
-      known.add(message.messageId); firstSeq = Math.min(firstSeq, message.seq);
+    const ordered = (): WorldMessage[] => [...known.values()].sort((a, b) => a.seq - b.seq);
+    const notifyConversation = (readAcknowledged = false): void => { chat.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: group, message: ordered().at(-1), readAcknowledged } })); };
+    const capturePosition = (): { node?: HTMLElement; top: number; height: number; scroll: number } => {
+      const bounds = messages.getBoundingClientRect(), top = bounds.top;
+      const node = Array.from(messages.querySelectorAll<HTMLElement>('[data-message-seq]')).find(row => { const rect = row.getBoundingClientRect(); return rect.bottom > top && rect.top < bounds.bottom; });
+      return { ...(node ? { node } : {}), top: node?.getBoundingClientRect().top ?? top, height: messages.scrollHeight, scroll: messages.scrollTop };
+    };
+    const restorePosition = (position: ReturnType<typeof capturePosition>): void => { messages.scrollTop = position.node?.isConnected ? messages.scrollTop + position.node.getBoundingClientRect().top - position.top : position.scroll + messages.scrollHeight - position.height; };
+    const updateJump = (): void => {
+      jump.hidden = initial || nearEnd() || !known.size; if (nearEnd()) unseen = 0;
+      jumpCount.hidden = !unseen; jumpCount.textContent = unseen > 99 ? '99+' : String(unseen); jump.setAttribute('aria-label', unseen ? `К последним сообщениям, ${unseen} новых` : 'К последним сообщениям');
+    };
+    const focusMessage = (messageId: string): void => {
+      const row = rows.get(messageId); if (!row) return;
+      row.scrollIntoView({ block: 'center', behavior: this.preferences.motion ? 'smooth' : 'instant' }); row.classList.add('is-highlighted');
+      const timer = setTimeout(() => { row.classList.remove('is-highlighted'); highlightTimers.delete(timer); }, 1800); highlightTimers.add(timer);
+    };
+    const jumpToMessage = async (messageId: string): Promise<void> => {
+      for (let page = 0; !known.has(messageId) && hasHistory && page < 8 && active(); page++) { if (!await loadHistory()) break; }
+      if (!active()) return;
+      if (known.has(messageId)) focusMessage(messageId); else this.toast('Сообщение ещё не загружено. Откройте более раннюю историю.', true);
+    };
+    const renderText = (node: HTMLElement, text: string, query: string): void => {
+      node.replaceChildren(); const needle = query.trim().toLocaleLowerCase('ru-RU'), haystack = text.toLocaleLowerCase('ru-RU');
+      if (!needle) { node.textContent = text; return; }
+      let cursor = 0, found = haystack.indexOf(needle);
+      while (found >= 0) { node.append(document.createTextNode(text.slice(cursor, found)), el('mark', '', text.slice(found, found + needle.length))); cursor = found + needle.length; found = haystack.indexOf(needle, cursor); }
+      node.append(document.createTextNode(text.slice(cursor)));
+    };
+    const moveSearch = (direction: number): void => {
+      if (!searchMatches.length) return; searchIndex = (searchIndex + direction + searchMatches.length) % searchMatches.length;
+      const target = searchMatches[searchIndex]; if (target) focusMessage(target); searchCount.textContent = `${searchIndex + 1} / ${searchMatches.length}`;
+    };
+    const refreshSearch = (): void => {
+      const query = searchInput.value.trim().toLocaleLowerCase('ru-RU'); const previousMatch = searchMatches[searchIndex];
+      searchMatches = ordered().filter(message => !message.removed && query && message.text.toLocaleLowerCase('ru-RU').includes(query)).map(message => message.messageId);
+      searchIndex = previousMatch ? searchMatches.indexOf(previousMatch) : -1;
+      if (searchIndex < 0 && searchMatches.length) searchIndex = searchMatches.length - 1;
+      searchPrevious.disabled = searchNext.disabled = !searchMatches.length;
+      searchCount.textContent = query ? searchMatches.length ? `${searchIndex + 1} / ${searchMatches.length}` : 'Нет совпадений' : '';
+      for (const message of known.values()) { const text = rows.get(message.messageId)?.querySelector<HTMLElement>('.sw-message-text'); if (text) renderText(text, message.removed ? 'Сообщение удалено' : message.text, query); }
+    };
+    searchInput.addEventListener('input', () => { searchIndex = -1; refreshSearch(); const target = searchMatches[searchIndex]; if (target) focusMessage(target); });
+    searchInput.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229) return; if (event.key === 'Escape') { event.preventDefault(); searchClose.click(); } else if (event.key === 'Enter') { event.preventDefault(); moveSearch(event.shiftKey ? -1 : 1); } });
+    const messageActions = (messageId: string, anchor: HTMLButtonElement): void => {
+      const message = known.get(messageId); if (!message || message.removed) return;
+      const actions: Parameters<typeof openMenu>[1] = [
+        { label: 'Ответить', symbol: 'back', disabled: sending || accessClosed || !group.permissions.canWrite, run: () => { replyTo = messageId; this.chatDrafts.edit(accountId, group.communityId, input.value, replyTo); refreshReply(); input.focus({ preventScroll: true }); } },
+        { label: 'Копировать текст', symbol: 'list', run: () => { if (!navigator.clipboard) { this.toast('Выделите текст сообщения, чтобы скопировать его.', true); return; } void navigator.clipboard.writeText(message.text).then(() => { if (active()) this.toast('Текст скопирован'); }).catch(() => { if (active()) this.toast('Не удалось скопировать. Выделите текст сообщения.', true); }); } },
+      ];
+      if (message.author.profileId === accountId || group.permissions.canModerate) actions.push({ label: 'Удалить у всех', symbol: 'trash', danger: true, run: () => this.confirmAction('Удалить сообщение?', 'Оно исчезнет из разговора у всех участников.', 'Удалить', async () => {
+        await this.api.request('world.chat.remove', { communityId: group.communityId, messageId });
+        if (!active()) return; const position = capturePosition(); append({ ...message, text: '', removed: true }); refreshTimeline(); restorePosition(position); notifyConversation();
+      }) });
+      openMenu(anchor, actions);
+    };
+    const createMessage = (message: WorldMessage): HTMLElement => {
+      const own = message.author.profileId === accountId;
+      const row = el('article', `sw-chat-message${own ? ' is-own' : ''}${message.removed ? ' is-removed' : ''}`); row.dataset.messageId = message.messageId; row.dataset.messageSeq = String(message.seq);
+      if (!own) row.append(avatar(message.author.displayName, message.author.avatarUrl, worldColor(message.author.avatarColor), message.author.profileId, message.author.avatarRevision));
+      const body = el('div', 'sw-message-body');
+      if (!own) { const author = el('button', 'sw-message-author', message.author.displayName); author.type = 'button'; author.addEventListener('click', () => this.openPersonDialog(message.author)); body.append(author); }
+      if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
+      body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
+      const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
+      if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); delivered.setAttribute('aria-label', 'Отправлено'); delivered.title = 'Отправлено'; meta.append(delivered); }
+      body.append(meta); row.append(body);
+      if (!message.removed) { const more = iconButton('Действия с сообщением', 'more', () => messageActions(message.messageId, more)); more.classList.add('sw-message-actions'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false'); row.append(more); row.addEventListener('contextmenu', event => { if (window.getSelection()?.toString()) return; event.preventDefault(); messageActions(message.messageId, more); }); }
+      return row;
+    };
+    const append = (message: WorldMessage): void => {
+      const old = known.get(message.messageId);
+      if (old && old.removed === message.removed && old.text === message.text && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
+      known.set(message.messageId, message); firstSeq = Math.min(firstSeq, message.seq); timelineDirty = true;
       messages.querySelector('.sw-empty')?.remove();
-      const row = el('article', `sw-chat-message${message.author.profileId === this.profile?.profileId ? ' is-own' : ''}${message.removed ? ' is-removed' : ''}`);
-      row.dataset.messageId = message.messageId; row.dataset.messageSeq = String(message.seq); row.append(avatar(message.author.displayName, message.author.avatarUrl, worldColor(message.author.avatarColor), message.author.profileId, message.author.avatarRevision));
-      const body = el('div', 'sw-message-body'); const meta = el('div', 'sw-message-meta');
-      const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); meta.append(el('strong', '', message.author.displayName), time);
-      if (!message.removed && (message.author.profileId === this.profile?.profileId || group.permissions.canModerate)) {
-        const remove = iconButton('Удалить сообщение', 'trash', () => this.confirmAction('Удалить сообщение?', 'Оно исчезнет из разговора у всех участников.', 'Удалить', async () => { await this.api.request('world.chat.remove', { communityId: group.communityId, messageId: message.messageId }); if (row.isConnected) { row.classList.add('is-removed'); row.querySelector('.sw-message-text')!.textContent = 'Сообщение удалено'; remove.remove(); } })); remove.classList.add('sw-message-delete'); meta.append(remove);
-      }
-      body.append(meta, el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text)); row.append(body);
-      const next = Array.from(messages.querySelectorAll<HTMLElement>('[data-message-seq]')).find(item => Number(item.dataset.messageSeq) > message.seq);
-      messages.insertBefore(row, next ?? null);
+      const row = createMessage(message), existing = rows.get(message.messageId); rows.set(message.messageId, row);
+      if (existing?.isConnected) { if (menuAnchor && existing.contains(menuAnchor)) closeMenu(); existing.replaceWith(row); }
+      else { const next = Array.from(messages.querySelectorAll<HTMLElement>('[data-message-seq]')).find(item => Number(item.dataset.messageSeq) > message.seq); messages.insertBefore(row, next ?? null); }
+    };
+    const refreshTimeline = (): void => {
+      if (!timelineDirty) return; timelineDirty = false;
+      messages.querySelectorAll('.sw-chat-day').forEach(day => day.remove());
+      const orderedMessages = ordered(); let day = '';
+      orderedMessages.forEach((message, index) => {
+        const row = rows.get(message.messageId); if (!row) return;
+        const currentDay = chatDayKey(message.createdAt);
+        if (currentDay !== day) { const separator = el('div', 'sw-chat-day', chatDayLabel(message.createdAt)); separator.setAttribute('role', 'separator'); separator.setAttribute('aria-label', separator.textContent ?? ''); messages.insertBefore(separator, row); day = currentDay; }
+        row.classList.toggle('is-grouped', canGroupMessages(orderedMessages[index - 1], message));
+        const next = orderedMessages[index + 1]; row.classList.toggle('is-group-end', !next || !canGroupMessages(message, next));
+      });
+      for (const quote of messages.querySelectorAll<HTMLButtonElement>('.sw-message-reply')) { const target = known.get(quote.dataset.replyTo ?? ''); quote.querySelector('strong')!.textContent = target?.author.displayName ?? 'Ответ на сообщение'; quote.querySelector('span')!.textContent = target ? chatPreview(target) : 'Сообщение из предыдущей истории'; quote.setAttribute('aria-label', `Открыть сообщение: ${quote.querySelector('strong')!.textContent}`); }
+      refreshReply(); refreshSearch();
     };
 
     const markRead = (): void => {
-      if (!reading && syncSeq > lastRead && document.visibilityState === 'visible' && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 140) {
+      if (!reading && !accessClosed && syncSeq > lastRead && document.visibilityState === 'visible' && nearEnd()) {
         reading = true; const throughSeq = syncSeq;
-        void this.api.request<{ unreadCount: number }>('world.chat.read', { communityId: group.communityId, throughSeq }).then(result => { lastRead = throughSeq; group.unreadCount = result.unreadCount; this.updateCommunity(group); }).catch(() => { /* Reading acknowledgement retries with the next refresh. */ }).finally(() => { reading = false; });
+        void this.api.request<{ unreadCount: number }>('world.chat.read', { communityId: group.communityId, throughSeq }).then(result => { if (!active()) return; lastRead = throughSeq; group.unreadCount = result.unreadCount; this.updateCommunity(group); notifyConversation(true); }).catch(() => { /* Reading acknowledgement retries with the next refresh. */ }).finally(() => { reading = false; });
       }
     };
-
+    const closeAccess = (reason: unknown): boolean => {
+      if (!(typeof reason === 'object' && reason && 'code' in reason && ['community_membership_required', 'community_not_found', 'community_banned'].includes(String(reason.code)))) return false;
+      accessClosed = true; closeMenu(); updateComposer(); this.avatars.setContext(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
+      previous.hidden = true; jump.hidden = true; searchBar.hidden = true; if (this.chatTimer) clearInterval(this.chatTimer); if (catchupTimer) clearTimeout(catchupTimer); return true;
+    };
+    chat.addEventListener('soty:chat-community', event => {
+      const detail = (event as CustomEvent<{ communityId: string; community: WorldCommunity | null }>).detail;
+      if (!active() || detail.communityId !== group.communityId) return;
+      if (!detail.community || detail.community.membership?.state !== 'active') { closeAccess({ code: 'community_membership_required' }); return; }
+      group = detail.community; refreshHeader(); updateComposer();
+    });
+    const loadHistory = async (): Promise<boolean> => {
+      if (historyLoading || !hasHistory || initial || accessClosed || !active()) return false;
+      historyLoading = true; previous.disabled = true; previous.querySelector('span')!.textContent = 'Загружаем историю'; messages.setAttribute('aria-busy', 'true');
+      try {
+        const history = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, before: firstSeq, limit: 60 });
+        if (!active()) return false; const position = capturePosition(); history.messages.forEach(append); hasHistory = history.hasMore && history.messages.length > 0; previous.hidden = !hasHistory; refreshTimeline(); restorePosition(position); updateJump(); if (retrySend.hidden) errorMessage.textContent = ''; return history.messages.length > 0;
+      } catch (reason) { if (active() && !closeAccess(reason)) errorMessage.textContent = errorText(reason); return false; }
+      finally { historyLoading = false; previous.disabled = false; previous.querySelector('span')!.textContent = 'Ранее'; messages.setAttribute('aria-busy', 'false'); }
+    };
     const load = async (): Promise<void> => {
-      if (fetching || !active() || document.visibilityState === 'hidden') return;
+      if (fetching || historyLoading || accessClosed || !active() || document.visibilityState === 'hidden') return;
       fetching = true;
       try {
-        const stickToEnd = initial || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 130;
+        // Standalone group chats have no inbox poll to refresh their permissions.
+        if (!chat.closest('.sw-inbox')) {
+          const current = await this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: group.communityId });
+          if (!active()) return;
+          if (current.community.membership?.state !== 'active') { closeAccess({ code: 'community_membership_required' }); return; }
+          group = current.community; this.updateCommunity(group); refreshHeader(); updateComposer();
+        }
         const response = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, limit: 60 });
         if (!active()) return;
-        if (initial) { messages.querySelector('.sw-loading')?.remove(); response.messages.forEach(message => append(message)); syncSeq = Math.max(0, ...response.messages.map(message => message.seq)); }
-        else {
+        const updates: WorldMessage[] = [], incoming: WorldMessage[] = []; let nextSync = Math.max(0, ...response.messages.map(message => message.seq)), hasMoreForward = false;
+        if (!initial) {
           // Refresh existing tombstones without jumping past an unseen interval.
-          response.messages.filter(message => known.has(message.messageId)).forEach(message => append(message));
-          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after, limit: 60 }), append: message => append(message) });
+          const visiblePosition = capturePosition();
+          if (visiblePosition.node && Number(visiblePosition.node.dataset.messageSeq) < (response.messages[0]?.seq ?? 0)) {
+            const visible = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after: Math.max(0, Number(visiblePosition.node.dataset.messageSeq) - 1), limit: 60 });
+            if (!active()) return; updates.push(...visible.messages);
+          }
+          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after, limit: 60 }), append: message => incoming.push(message) });
           if (!active()) return;
-          syncSeq = forward.cursor;
-          if (forward.hasMore) catchupTimer = setTimeout(() => { void load(); }, 100);
+          nextSync = forward.cursor; hasMoreForward = forward.hasMore;
         }
-        if (initial && response.hasMore) {
-          const previous = button('Раньше', 'back', 'sw-button-small sw-button-quiet', () => {
-            previous.disabled = true; const beforeHeight = messages.scrollHeight;
-            void this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, before: firstSeq, limit: 60 }).then(history => {
-              if (!active()) return; [...history.messages].reverse().forEach(message => append(message, true));
-              if (history.hasMore) messages.prepend(previous); else previous.remove(); messages.scrollTop += messages.scrollHeight - beforeHeight;
-            }).catch(error => { if (active()) errorMessage.textContent = errorText(error); }).finally(() => { previous.disabled = false; });
-          }); messages.prepend(previous);
-        }
-        if (!known.size) messages.replaceChildren(emptyState('Поздоровайтесь первыми', 'Начните с вопроса или поделитесь идеей.', undefined, 'chat'));
-        initial = false; errorMessage.textContent = '';
-        if (stickToEnd) messages.scrollTop = messages.scrollHeight;
-        markRead();
+        // Capture the user's current position after network waits, then apply a batch.
+        const stickToEnd = initial || nearEnd(), position = capturePosition(), countBefore = known.size;
+        if (initial) { messages.replaceChildren(previous); response.messages.forEach(append); hasHistory = response.hasMore; previous.hidden = !hasHistory; }
+        else { [...response.messages, ...updates].filter(message => known.has(message.messageId)).forEach(append); incoming.forEach(append); }
+        syncSeq = nextSync; if (hasMoreForward) catchupTimer = setTimeout(() => { void load(); }, 100);
+        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', 'Поздоровайтесь со своим кругом.', undefined, 'chat'));
+        refreshTimeline();
+        if (!stickToEnd) unseen += Math.max(0, known.size - countBefore);
+        initial = false; if (retrySend.hidden) errorMessage.textContent = '';
+        if (stickToEnd) messages.scrollTop = messages.scrollHeight; else restorePosition(position);
+        updateJump(); markRead(); notifyConversation();
       } catch (error) {
         if (!active()) return;
+        if (closeAccess(error)) return;
         if (initial) messages.replaceChildren(emptyState('Разговор пока недоступен', errorText(error), button('Повторить', 'refresh', 'sw-button-quiet', () => { void load(); }), 'chat'));
         else errorMessage.textContent = errorText(error);
-        if (typeof error === 'object' && error && 'code' in error && ['community_membership_required', 'community_not_found', 'community_banned'].includes(String(error.code))) { accessClosed = true; input.disabled = true; send.disabled = true; this.avatars.setContext(); messages.replaceChildren(emptyState('Доступ к сообществу закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock')); if (this.chatTimer) clearInterval(this.chatTimer); }
       } finally { fetching = false; }
     };
-    messages.addEventListener('scroll', () => { if (!fetching) markRead(); }, { passive: true });
+    messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
       event.preventDefault(); const text = input.value.trim(); if (!text || send.disabled) return;
-      const pending = this.chatDrafts.beginSend(accountId, group.communityId, text); describeDraft();
-      send.disabled = true; input.disabled = true; errorMessage.textContent = '';
-      void this.api.request<{ message: WorldMessage }>('world.chat.send', { communityId: group.communityId, clientId: pending.clientId, text }).then(response => {
+      sending = true; const pending = this.chatDrafts.beginSend(accountId, group.communityId, text, replyTo); describeDraft(); updateComposer();
+      errorMessage.textContent = ''; retrySend.hidden = true;
+      void this.api.request<{ message: WorldMessage }>('world.chat.send', { communityId: group.communityId, clientId: pending.clientId, text, replyTo: pending.replyTo }).then(response => {
         const draft = this.chatDrafts.acknowledge(accountId, group.communityId, pending.clientId);
         if (!active()) return;
-        append(response.message); input.value = draft.text; fitComposer(); describeDraft(); messages.scrollTop = messages.scrollHeight; void load();
-      }).catch(error => { if (active()) errorMessage.textContent = errorText(error); }).finally(() => { if (active()) { input.disabled = accessClosed; send.disabled = accessClosed || !input.value.trim(); if (!accessClosed) input.focus({ preventScroll: true }); } });
+        const stickToEnd = nearEnd(), position = capturePosition();
+        append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
+        if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
+        updateJump(); notifyConversation(); void load();
+      }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, group.communityId); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
-    this.chatCleanup = () => { unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); if (catchupTimer) clearTimeout(catchupTimer); };
+    const previousCleanup = this.chatCleanup;
+    this.chatCleanup = () => { previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
   }
 
   private renderMessages(selectedId?: string): void {
-    const groups = this.communities.filter(group => group.membership?.state === 'active');
+    const restoreHeadingFocus = document.activeElement instanceof HTMLElement && document.activeElement.matches('.sw-inbox-head h1');
+    const groups = this.communities.filter(group => group.membership?.state === 'active'); const accountId = this.profile?.profileId ?? this.deskAccount;
     const selected = groups.find(group => group.communityId === selectedId);
     this.selectedChat = selected?.communityId;
     if (selectedId && !selected) { this.activeRoute = '#messages'; history.replaceState({ soty: true }, '', this.activeRoute); this.toast('Этот чат сейчас недоступен. Выберите другой разговор.'); }
-    const screen = el('section', `sw-messages-view${selected ? ' has-room' : ''}`); const list = el('aside', 'sw-conversations'); list.append(heading('Чаты'));
-    if (!groups.length) list.append(emptyState('Найдите свой круг', 'Вступите в сообщество, чтобы начать разговор.', button('Найти сообщество', 'world', 'sw-button-primary', () => this.navigate('world')), 'chat'));
+    const sequence = this.screenSequence, previews = new Map<string, WorldMessage>(), conversationRows = new Map<string, HTMLButtonElement>(), unsubscribers = new Map<string, () => void>();
+    const active = (): boolean => !this.destroyed && sequence === this.screenSequence && screen.isConnected;
+    let selectedUpdate = 0, refreshing = false;
+    const screen = el('section', `sw-messages-view sw-inbox${selected ? ' has-room' : ''}`); screen.setAttribute('aria-label', 'Чаты');
+    const list = el('aside', 'sw-conversations'); list.setAttribute('aria-label', 'Список чатов');
+    const top = el('div', 'sw-inbox-head'); const title = el('h1', '', 'Чаты'); title.tabIndex = -1; const contacts = iconButton('Контакты и приглашения', 'people', () => this.runHook(() => this.options.openAccount('people'))); top.append(title, contacts);
+    const search = el('label', 'sw-inbox-search'); const query = textInput('', 'Поиск', 160); query.type = 'search'; query.setAttribute('aria-label', 'Поиск чатов'); const clearSearch = iconButton('Очистить поиск', 'close', () => { query.value = ''; renderList(); query.focus(); }); clearSearch.hidden = true; search.append(icon('search'), query, clearSearch);
+    const filters = el('div', 'sw-inbox-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Фильтр чатов'); let unreadOnly = false;
+    const allFilter = button('Все', undefined, 'is-selected', () => { unreadOnly = false; renderList(); }); const unreadFilter = button('Непрочитанные', undefined, '', () => { unreadOnly = true; renderList(); }); filters.append(allFilter, unreadFilter);
+    const conversations = el('div', 'sw-conversation-list'); const listStatus = el('div', 'sw-inbox-status'); listStatus.setAttribute('role', 'status');
+    const footer = button('Найти сообщество', 'plus', 'sw-inbox-discover', () => this.navigate('world'));
+    list.append(top, search, filters, conversations, listStatus, footer);
     const room = el('div', 'sw-message-room');
-    for (const group of groups) {
-      const target = el('button', `sw-conversation${selectedId === group.communityId ? ' is-selected' : ''}`); target.type = 'button';
-      const copy = el('span', 'sw-grow'); copy.append(el('strong', '', group.name), el('small', '', group.description || 'Общий чат')); target.append(communityEmblem(group), copy);
-      if (group.unreadCount > 0) target.append(el('span', 'sw-message-count', group.unreadCount > 99 ? '99+' : String(group.unreadCount)));
-      target.addEventListener('click', () => { this.writeRoute(`messages/${group.communityId}`); this.cleanScreen(); this.renderMessages(group.communityId); }); list.append(target);
-    }
-    list.append(button('Контакты и приглашения', 'people', 'sw-button-quiet sw-button-wide', () => this.runHook(() => this.options.openAccount('people'))));
+    const paintConversation = (group: WorldCommunity): HTMLButtonElement => {
+      let target = conversationRows.get(group.communityId);
+      if (!target) { target = el('button', 'sw-conversation'); target.type = 'button'; target.dataset.communityId = group.communityId; target.addEventListener('click', event => { if (this.selectedChat === group.communityId) return; this.writeRoute(`messages/${group.communityId}`); this.cleanScreen(); this.renderMessages(group.communityId); if (event.detail === 0) this.main.querySelector<HTMLButtonElement>('.sw-chat-identity')?.focus({ preventScroll: true }); }); conversationRows.set(group.communityId, target); }
+      target.classList.toggle('is-selected', selectedId === group.communityId); target.classList.toggle('is-muted', !!group.membership?.muted); target.setAttribute('aria-current', selectedId === group.communityId ? 'true' : 'false');
+      const draft = this.chatDrafts.read(accountId, group.communityId), message = previews.get(group.communityId);
+      const copy = el('span', 'sw-conversation-copy'); const head = el('span', 'sw-conversation-head'); const name = el('strong', '', group.name); head.append(name);
+      if (message) { const time = el('time', '', chatListTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); head.append(time); }
+      const line = el('span', `sw-conversation-preview${draft.text ? ' is-draft' : ''}`);
+      if (draft.text) line.append(el('span', 'sw-conversation-draft-label', 'Черновик: '), document.createTextNode(draft.text.replace(/\s+/gu, ' ')));
+      else if (message) line.textContent = `${message.author.profileId === accountId ? 'Вы' : message.author.displayName.split(' ')[0]}: ${chatPreview(message)}`;
+      else line.textContent = nounCount(group.memberCount, 'участник', 'участника', 'участников');
+      const sub = el('span', 'sw-conversation-sub'); sub.append(line); const indicators = el('span', 'sw-conversation-indicators');
+      if (group.membership?.pinned) { const pin = icon('pin'); pin.setAttribute('aria-hidden', 'false'); pin.setAttribute('aria-label', 'Закреплён'); indicators.append(pin); }
+      if (group.membership?.muted) { const muted = icon('bell'); muted.setAttribute('aria-hidden', 'false'); muted.setAttribute('aria-label', 'Уведомления выключены'); indicators.append(muted); }
+      if (group.unreadCount > 0) { const count = el('span', 'sw-message-count', group.unreadCount > 99 ? '99+' : String(group.unreadCount)); count.setAttribute('aria-label', nounCount(group.unreadCount, 'непрочитанное сообщение', 'непрочитанных сообщения', 'непрочитанных сообщений')); indicators.append(count); }
+      sub.append(indicators); copy.append(head, sub); target.replaceChildren(communityEmblem(group), copy); return target;
+    };
+    const renderList = (): void => {
+      const needle = query.value.trim().toLocaleLowerCase('ru-RU'); clearSearch.hidden = !query.value;
+      allFilter.classList.toggle('is-selected', !unreadOnly); unreadFilter.classList.toggle('is-selected', unreadOnly); allFilter.setAttribute('aria-pressed', String(!unreadOnly)); unreadFilter.setAttribute('aria-pressed', String(unreadOnly));
+      const visible = groups.filter(group => (!unreadOnly || group.unreadCount > 0) && (!needle || `${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle))).sort((a, b) => Number(!!b.membership?.pinned) - Number(!!a.membership?.pinned) || (previews.get(b.communityId)?.createdAt ?? 0) - (previews.get(a.communityId)?.createdAt ?? 0));
+      const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
+      conversations.replaceChildren(...visible.map(paintConversation)); listStatus.textContent = '';
+      if (!groups.length) conversations.append(emptyState('Ваш круг — здесь', 'Найдите сообщество и начните разговор.', button('Найти сообщество', 'world', 'sw-button-primary', () => this.navigate('world')), 'chat'));
+      else if (!visible.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';
+      if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
+    };
+    query.addEventListener('input', renderList); query.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229) return; if (event.key === 'Escape' && query.value) { event.preventDefault(); clearSearch.click(); } else if (event.key === 'ArrowDown') { event.preventDefault(); conversations.querySelector<HTMLButtonElement>('button')?.focus(); } });
+    conversations.addEventListener('keydown', event => { if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return; const items = Array.from(conversations.querySelectorAll<HTMLButtonElement>('.sw-conversation')); const index = items.indexOf(document.activeElement as HTMLButtonElement); if (index < 0) return; event.preventDefault(); items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus({ preventScroll: true }); });
+    screen.addEventListener('soty:chat-updated', event => { const detail = (event as CustomEvent<{ community: WorldCommunity; message?: WorldMessage; readAcknowledged?: boolean }>).detail; const index = groups.findIndex(group => group.communityId === detail.community.communityId); if (index < 0) return; groups[index] = detail.community; if (detail.community.communityId === selectedId && detail.readAcknowledged) selectedUpdate++; if (detail.message) previews.set(detail.community.communityId, detail.message); renderList(); });
+    const subscribeDrafts = (): void => { for (const group of groups) if (!unsubscribers.has(group.communityId)) unsubscribers.set(group.communityId, this.chatDrafts.subscribe(accountId, group.communityId, () => { if (!active()) return; const current = groups.find(item => item.communityId === group.communityId); if (current && conversationRows.get(group.communityId)?.isConnected) paintConversation(current); })); };
+    subscribeDrafts();
+    const previousCleanup = this.chatCleanup;
+    let inboxTimer: ReturnType<typeof setInterval> | undefined;
+    const returned = (): void => { if (document.visibilityState === 'visible') void refreshInbox(); };
+    this.chatCleanup = () => { previousCleanup?.(); unsubscribers.forEach(unsubscribe => unsubscribe()); if (inboxTimer) clearInterval(inboxTimer); document.removeEventListener('visibilitychange', returned); };
     screen.append(list, room); this.main.replaceChildren(screen);
+    renderList();
+    if (restoreHeadingFocus) title.focus({ preventScroll: true });
     if (selected) this.mountChat(room, selected, true);
-    else room.append(emptyState('Выберите разговор', 'Здесь находятся чаты ваших сообществ.', undefined, 'chat'));
+    else room.append(emptyState('Ближе к своим', 'Выберите чат, чтобы продолжить разговор.', undefined, 'chat'));
+    const pendingPreviews = new Set(groups.filter(group => group.communityId !== selectedId).map(group => group.communityId)); let previewWorkers = 0;
+    const loadPreviews = async (): Promise<void> => {
+      previewWorkers++;
+      try { while (active() && pendingPreviews.size) {
+        const id = pendingPreviews.values().next().value; if (!id) break; pendingPreviews.delete(id);
+        if (!groups.some(group => group.communityId === id)) continue;
+        try { const response = await this.api.request<{ messages: WorldMessage[] }>('world.chat.list', { communityId: id, limit: 1 }); if (!active()) return; if (!groups.some(group => group.communityId === id)) continue; const message = response.messages[0]; if (message) previews.set(id, message); renderList(); }
+        catch { /* A community remains usable when its preview could not refresh. */ }
+      } } finally { previewWorkers--; }
+    };
+    const startPreviews = (): void => { while (active() && previewWorkers < 3 && pendingPreviews.size) void loadPreviews(); };
+    const visibleConversation = (id: string): boolean => { const target = conversationRows.get(id); if (!target?.isConnected || !conversations.clientHeight || !conversations.getClientRects().length) return false; const bounds = conversations.getBoundingClientRect(), row = target.getBoundingClientRect(); return row.bottom > bounds.top && row.top < bounds.bottom; };
+    const refreshVisiblePreviews = (): void => { if (!active()) return; for (const group of groups) if (group.communityId !== selectedId && visibleConversation(group.communityId)) pendingPreviews.add(group.communityId); startPreviews(); };
+    conversations.addEventListener('scroll', refreshVisiblePreviews, { passive: true });
+    const refreshInbox = async (): Promise<void> => {
+      if (refreshing || !active() || document.visibilityState === 'hidden') return; refreshing = true;
+      const updateBefore = selectedUpdate;
+      try {
+        const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active()) return;
+        const old = new Map(groups.map(group => [group.communityId, group])); const next = response.communities.filter(group => group.membership?.state === 'active');
+        for (const group of next) {
+          const previous = old.get(group.communityId);
+          if (previous?.membership && group.membership && previous.membership.revision > group.membership.revision) group.membership = previous.membership;
+          if (group.communityId === selectedId && selectedUpdate !== updateBefore && previous) group.unreadCount = previous.unreadCount;
+          // Removal and an author's rename need not change the unread count or
+          // community revision. Refresh visible previews without polling every
+          // offscreen community; the existing three workers bound concurrency.
+          if (group.communityId !== selectedId && (!previous || previous.unreadCount !== group.unreadCount || previous.revision !== group.revision || visibleConversation(group.communityId))) pendingPreviews.add(group.communityId);
+        }
+        this.communities = response.communities; groups.splice(0, groups.length, ...next);
+        for (const [id, unsubscribe] of unsubscribers) if (!next.some(group => group.communityId === id)) { unsubscribe(); unsubscribers.delete(id); previews.delete(id); conversationRows.delete(id); pendingPreviews.delete(id); }
+        subscribeDrafts(); renderList(); startPreviews();
+        screen.dispatchEvent(new CustomEvent('soty:inbox-updated', { bubbles: true, detail: { communities: response.communities } }));
+        if (selectedId) room.querySelector('.sw-chat')?.dispatchEvent(new CustomEvent('soty:chat-community', { detail: { communityId: selectedId, community: next.find(group => group.communityId === selectedId) ?? null } }));
+        const notify = next.find(group => group.communityId === selectedId) ?? next[0]; if (notify) screen.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: notify } }));
+      } catch { /* Existing conversations and drafts remain usable while metadata is offline. */ }
+      finally { refreshing = false; }
+    };
+    startPreviews(); inboxTimer = setInterval(() => { void refreshInbox(); }, 6000); document.addEventListener('visibilitychange', returned);
   }
 
   private async loadPersonal(only?: HomeSection): Promise<void> {
@@ -882,37 +1224,51 @@ class WorldApplication {
   }
 
   private renderPersonal(): void {
-    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (focused && this.homeHandle?.element.contains(focused)) {
-      if (focused.dataset.homeControl) this.homeState.focusControl = focused.dataset.homeControl;
-      else if (focused.dataset.entityId) this.homeState.focusId = focused.dataset.entityId;
-    }
-    this.homeHandle?.destroy();
-    const screen = this.screenSequence, accountCurrent = this.accountTask(), accountId = this.deskAccount;
-    this.homeHandle = createAppsHome({ apps: this.apps, communities: this.communities, accountId: this.profile?.profileId || this.deskAccount,
-      notes: this.homeNotes, state: this.homeState, appStatus: this.homeStatus.apps, notesStatus: this.homeStatus.notes,
-      onChange: () => { this.desk.pinnedApps = [...this.homeState.pinned].slice(0, 200); this.saveDesk(); this.renderPersonal(); }, openApp: app => { void this.openApplication(app); }, openNotes: id => this.openNotes(id),
-      openCommunity: (group, chat) => { void this.openGroup(group.communityId, chat ? 'chat' : 'about'); },
-      inspectApp: app => this.inspectApplication(app), add: () => this.openAddMenu(), explore: () => this.navigate('world'),
-      library: () => this.navigate('library'), retry: () => { void this.loadPersonal(); },
-      mountSaved: host => {
-        const current = (): boolean => accountCurrent() && this.screenSequence === screen;
-        const open = (entry: AppResolvedEntry, discussion = false): void => {
-          if (!current()) return;
-          this.writeRoute(formatAppLaunchRoute({ appId: entry.appId, domainId: entry.domainId, path: entry.path }, undefined,
-            discussion ? { panel: 'discussion' } : undefined));
-          void this.openRoute();
-        };
-        const library = mountAppLibrary(host, { api: this.api, accountId, isCurrent: current,
-          openEntry: entry => open(entry), discussEntry: entry => open(entry, true) });
-        return () => library.dispose();
-      },
-      recent: () => this.openRecent(), hasRecent: this.desk.recent.length > 0,
-      shortcuts: this.desk.favorites.filter(id => id !== 'apps' && id !== 'notes').flatMap(id => {
-        const entry = capabilities.find(value => value.id === id); return entry ? [{ title: entry.title, symbol: entry.symbol, action: () => this.openCapability(id) }] : [];
-      }),
+    this.field?.destroy(); this.field = null;
+    const groups = this.communities.filter(group => ['active', 'invited', 'requested'].includes(group.membership?.state ?? ''));
+    const makeApp = (app: WorldAppRecord, featured = false): AppCardData => ({
+      id: app.appId, title: app.name, description: app.description || app.audience || 'Приложение в Сотах',
+      ...(app.coverKey?{coverKey:app.coverKey}:{}), symbol: app.symbol || 'grid', featured,
+      own: app.ownerAccountId === this.profile?.profileId, shared: Boolean(app.communityId || app.grants?.communityIds.length || app.grants?.accountIds.length || app.ownerAccountId && app.ownerAccountId !== this.profile?.profileId),
+      ...(app.status === 'ready' ? {} : {status:app.status === 'offline' ? 'Не в сети' : this.appStateLabel(app.status)}),
+      actionLabel: this.desk.recent.some(recent => recent.route === `app/${app.appId}`) ? 'Продолжить' : 'Открыть',
+      open: () => { void this.openApplication(app); }, settings: () => this.openAppCardActions(app), menuLabel: `Действия: ${app.name}`,
     });
-    this.main.replaceChildren(this.homeHandle.element);
+    const notes: AppCardData = { id:'builtin-notes', title:'Записки', description:'Мысли, которые останутся', coverKey:'notes', symbol:'list', own:true, open:()=>this.openNotes() };
+    const chess: AppCardData = { id:'builtin-chess', title:'Шахматы', description:'Хороший повод встретиться', coverKey:'chess', symbol:'game', open:()=>this.runHook(()=>this.options.openLegacy('chess')) };
+    const orderedApps = [...this.apps].sort((a,b) => Number(this.homeState.pinned.has(b.appId)) - Number(this.homeState.pinned.has(a.appId)));
+    const featured = orderedApps.slice(0,2).map(app=>makeApp(app,true)), remaining = orderedApps.slice(2).map(app=>makeApp(app));
+    if (!featured.length && this.homeStatus.apps!=='loading') featured.push({ id:'add-first-project', title:'Ваше приложение', description:'Добавьте проект с компьютера', coverKey:'hive', symbol:'plus', featured:true, actionLabel:'Добавить', open:()=>this.openAddApp() }, { ...notes, featured:true, actionLabel:'Записать' });
+    const cards: AppCardData[] = [...featured, ...(!featured.some(card=>card.id===notes.id)?[notes]:[]), ...remaining.slice(0,1), chess, ...remaining.slice(1)];
+    const activeSearch=document.activeElement instanceof HTMLInputElement && document.activeElement.closest('.sx-mobile-search') && this.main.contains(document.activeElement) ? document.activeElement : null;
+    if(activeSearch?.dataset.composing==='true'){activeSearch.addEventListener('compositionend',()=>{if(activeSearch.isConnected&&this.view==='mine')this.renderPersonal();},{once:true});return;}
+    const selection=activeSearch?{start:activeSearch.selectionStart,end:activeSearch.selectionEnd,direction:activeSearch.selectionDirection}:null;
+    this.main.replaceChildren(createHome({
+      cards, query:this.homeQuery, filter:this.homeFilter, presentation:this.preferences.homePresentation,
+      communities:groups.map(group=>({ id:group.communityId, name:group.name, unread:group.unreadCount, open:()=>{void this.openGroup(group.communityId,'apps');}, people:group.previewMembers.map(person=>({name:person.displayName,...(person.avatarUrl?{avatarUrl:person.avatarUrl}:{}),profileId:person.profileId,...(person.avatarRevision!==undefined?{avatarRevision:person.avatarRevision}:{})})) })),
+      loading:this.homeStatus.apps==='loading', errors:Object.entries(this.homeStatus).filter(([,value])=>value==='error').map(([key])=>({apps:'Приложения не обновлены',devices:'Устройства не обновлены',communities:'Сообщества не обновлены',notes:'Записки не обновлены'} as Record<string,string>)[key]!),
+      create:()=>this.openAddApp(), discover:()=>this.navigate('world'), saved:()=>this.openSavedLibrary(), searchWorld:query=>{this.query=query;this.kind='all';this.navigate('world');}, assistant:()=>this.navigate('assistant'), retry:()=>{void this.loadPersonal();},
+      changeFilter:value=>{this.homeFilter=value;}, changeQuery:value=>{this.homeQuery=value;},
+      changePresentation:value=>{const restoreFocus = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest('.sx-presentation'));this.preferences.homePresentation=value;this.persist();this.renderPersonal();if(restoreFocus)this.main.querySelector<HTMLButtonElement>('.sx-presentation button[aria-pressed=true]')?.focus({preventScroll:true});},
+      unmountField:()=>{this.field?.destroy();this.field=null;},
+      mountField:(host,visibleCards)=>{
+        const ids=new Set(visibleCards.map(card=>card.id));const shownApps=this.apps.filter(app=>ids.has(app.appId));
+        const builtinApps:WorldAppRecord[]=[];if(ids.has('builtin-notes'))builtinApps.push({appId:'builtin:notes',name:'Записки',symbol:'list',coverKey:'notes',status:'ready'});if(ids.has('builtin-chess'))builtinApps.push({appId:'builtin:chess',name:'Шахматы',symbol:'game',coverKey:'chess',status:'ready'});
+        const shownGroups=visibleCards.length===cards.length?groups:groups.filter(group=>shownApps.some(app=>app.communityId===group.communityId||app.grants?.communityIds.includes(group.communityId)));
+        const placedApps=shownApps.map(app=>{if(app.communityId)return app;const group=shownGroups.find(value=>app.grants?.communityIds.includes(value.communityId));return group?{...app,communityId:group.communityId}:app;});
+        this.field = createHexField(entity=>{void this.previewPersonalEntity(entity);}, this.preferences.scale, { state: this.homeFieldState, onSelectApp:app=>{if(app.appId==='builtin:notes')this.openNotes();else if(app.appId==='builtin:chess')this.runHook(()=>this.options.openLegacy('chess'));else void this.openApplication(app);}, resolveAppArt:app=>resolveAppArt(app).srcset.split(',')[0]?.trim().split(' ')[0]||resolveAppArt(app).src, onScaleChange:scale=>{this.preferences.scale=scale;this.persist();} });
+        const visiblePeople = new Map(shownGroups.flatMap(group => group.previewMembers).map(person => [person.profileId, person]));
+        const entities: WorldEntity[] = [...shownGroups.map(value => ({type:'community' as const,value})), ...Array.from(visiblePeople.values(), value => ({type:'person' as const,value}))];
+        host.append(this.field.element); this.field.update(entities, ''); this.field.setApps([...placedApps,...builtinApps]);
+        const controls=el('div','sx-personal-field-controls');controls.append(iconButton('Уменьшить поле','minus',()=>this.changeScale(-.12)),iconButton('Увеличить поле','plus',()=>this.changeScale(.12)),iconButton('Вернуть обзор поля','refresh',()=>this.field?.resetView()));host.append(controls);
+      },
+    }));
+    if(activeSearch){const search=this.main.querySelector<HTMLInputElement>('.sx-mobile-search input');search?.focus({preventScroll:true});if(search&&selection?.start!==null&&selection?.end!==null){try{search.setSelectionRange(selection?.start??0,selection?.end??0,selection?.direction??'none');}catch{/* Unsupported selection APIs do not interrupt navigation. */}}}
+  }
+
+  private async previewPersonalEntity(entity: WorldEntity): Promise<void> {
+    if(entity.type==='community') await this.openGroup(entity.value.communityId,'apps');
+    else this.openPersonDialog(entity.value);
   }
 
   private openRecent(): void {
@@ -1047,7 +1403,7 @@ class WorldApplication {
     option('Записку', 'note', () => this.openNotes('new'));
     option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
     option('Сообщество', 'people', () => this.openCommunityForm());
-    option('Создать с ИИ', 'sparkle', () => this.runHook(() => this.options.agentCreate()));
+    option('Создать с ИИ', 'sparkle', () => this.navigate('assistant'));
     option('Контакт', 'person', () => this.runHook(() => this.options.openAccount('people')));
     dialog.body.append(list);
   }
@@ -1098,14 +1454,15 @@ class WorldApplication {
       const stack = el('div', 'sw-stack');
       if (!apps.length) stack.append(emptyState('Что будем делать вместе?', group.permissions.canModerate ? 'Добавьте приложение со своего компьютера или создайте новое с ИИ.' : 'Здесь появятся приложения, которыми поделятся организаторы.', undefined, 'grid'));
       else {
-        const cards = el('div', 'sx-app-grid sx-community-apps');
-        for (const app of apps) cards.append(createApplicationCard({ app, accountId: this.profile?.profileId || this.deskAccount,
-          communities: [group, ...this.communities.filter(value => value.communityId !== group.communityId)], contextCommunityId: group.communityId,
-          pinned: this.homeState.pinned.has(app.appId), open: () => { void this.openApplication(app); }, inspect: () => this.inspectApplication(app),
-          openCommunity: (target, chat) => { void this.openGroup(target.communityId, chat ? 'chat' : 'about'); }, togglePin: () => {
-            this.homeState.pinned.has(app.appId) ? this.homeState.pinned.delete(app.appId) : this.homeState.pinned.add(app.appId);
-            this.desk.pinnedApps = [...this.homeState.pinned].slice(0, 200); this.saveDesk(); return this.homeState.pinned.has(app.appId);
-          } })); stack.append(cards);
+        const cards = el('div', 'sw-app-cards');
+        for (const app of apps) cards.append(createAppCard({
+          id: app.appId, title: app.name, description: app.description || app.audience || group.name,
+          symbol: app.symbol || 'grid', ...(app.coverKey ? { coverKey: app.coverKey } : {}),
+          ...(app.status !== 'ready' ? { status: this.appStateLabel(app.status) } : {}),
+          open: () => { this.group = group; void this.openApplication(app); },
+          ...(app.ownerAccountId === this.profile?.profileId ? { settings: () => this.openAppSettings(app) } : {}),
+        }));
+        stack.append(cards);
       }
       if (group.membership?.state === 'active' && group.permissions.canModerate) { const actions = el('div', 'sw-row'); actions.append(button('Добавить приложение', 'plus', 'sw-button-primary', () => this.openAddApp(group.communityId)), button('Создать с ИИ', 'sparkle', '', () => this.runHook(() => this.options.agentCreate(group.communityId)))); stack.append(actions); }
       parent.replaceChildren(stack);

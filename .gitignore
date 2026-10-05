@@ -34,3 +34,8 @@ scripts/sotyctl.ps1
 
 output/
 .local/
+
+/scripts/app-art/jobs/
+/output/app-art-history/
+/scripts/app-art/registry.json
+/scripts/app-art/prompts/

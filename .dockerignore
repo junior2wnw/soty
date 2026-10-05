@@ -13,6 +13,9 @@ backups
 upstream
 # Historical test imports only; the final image does not COPY /app/deploy.
 deploy/**
+!deploy/apps/
+deploy/apps/**
+!deploy/apps/*.mjs
 !deploy/connector/
 deploy/connector/**
 !deploy/connector/apps-v2.fixture.mjs
@@ -48,3 +51,5 @@ output
 modules/connect.stage-*
 modules/connect.previous-*
 modules/connect.*.failed
+
+/scripts/app-art/

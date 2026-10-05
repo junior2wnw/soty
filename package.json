@@ -37,7 +37,13 @@
     "identity:selftest": "node scripts/soty-identity-adapter-selftest.mjs && node scripts/identity-wire-v1-selftest.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "app:release": "node scripts/soty-app-release.mjs",
-    "app:release:test": "node --test deploy/apps/*.test.mjs"
+    "app:release:test": "node --test deploy/apps/*.test.mjs",
+    "app-art": "node scripts/app-art/cli.mjs",
+    "app-art:prepare": "node scripts/app-art/cli.mjs prepare",
+    "app-art:import": "node scripts/app-art/cli.mjs import",
+    "app-art:validate": "node scripts/app-art/cli.mjs validate",
+    "app-art:list": "node scripts/app-art/cli.mjs list",
+    "app-art:test": "node --test scripts/app-art/*.test.mjs src/world/app-art.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/core": "2.2.0",
@@ -58,7 +64,8 @@
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.5.12",
     "typescript": "^5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "sharp": "0.34.5"
   },
   "engines": {
     "node": ">=24.15.0"

@@ -69,6 +69,7 @@ export interface WorldAppRecord {
   publication?: WorldAppPublication;
   entry?: { domainId: string; origin: string; path: string };
   symbol?: string;
+  coverKey?: string;
   color?: string;
   ownerAccountId?: string;
   grants?: { accountIds: string[]; communityIds: string[] };
@@ -85,8 +86,9 @@ export interface WorldAppOptions {
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
-  agentCreate: (communityId?: string) => void | Promise<void>;
+  agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
   openAssistant?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
+  openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null }>;
   requestContact?: (profile: WorldProfile) => void | Promise<void>;
   listDevices?: () => Promise<WorldDevice[]>;

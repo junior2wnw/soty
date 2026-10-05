@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export default defineConfig({
+  server: { fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,pfx,p12}', '**/.git/**', '**/scripts/app-art/**', '**/output/**'] } },
   plugins: [{
     name: "soty-versioned-worker",
     apply: "build",

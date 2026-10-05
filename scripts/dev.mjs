@@ -102,11 +102,12 @@ export async function startDevelopment(input = {}) {
       server: {
         host: options.host, port: options.port, strictPort: true,
         cors: { origin: options.origin }, allowedHosts: [options.host],
-        watch: { ignored: ['**/var/**', '**/data/**', '**/output/**', '**/backups/**'] },
+        watch: { ignored: ['**/var/**', '**/data/**', '**/output/**', '**/backups/**', '**/scripts/app-art/**'] },
         fs: { deny: [
           '**/.env', '**/.env.*', '**/.git', '**/.git/**', `${rootDir.replaceAll('\\', '/')}/.codex*/**`,
           `${rootDir.replaceAll('\\', '/')}/{data,var,output,backups,deploy}/**`, '**/*{config,secrets}.json',
           '**/*.{crt,pem,key,pfx,p12,log,db,sqlite,sqlite3,sqlite-wal,sqlite-shm}',
+          '**/scripts/app-art/**',
         ] },
         proxy: {
           '^/(?:api|ws|agents)(?:/|\\?|$)|^/(?:health|ready)(?:\\?|$)': {
