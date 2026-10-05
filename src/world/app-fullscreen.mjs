@@ -65,7 +65,7 @@ export function mountAppFullscreen({ screen, isCurrent, onChange }) {
     render();
   }
   function escape(event) {
-    if (event.key === 'Escape' && windowExpanded && !event.defaultPrevented) {
+    if (event.key === 'Escape' && active() && !event.defaultPrevented) {
       event.preventDefault(); void leave();
     }
   }

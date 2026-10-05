@@ -43,6 +43,22 @@ test('unsupported or refused API expands the existing stage in the window and re
     assert.equal(f.screen.children[0], f.frame); f.controller.dispose();
   }
 });
+
+test('a delivered Escape exits the current native stage without replacing its runtime', async () => {
+  const f = fixture(); await f.controller.toggle();
+  const escape = new Event('keydown', { cancelable: true }); Object.defineProperty(escape, 'key', { value: 'Escape' });
+  f.doc.dispatchEvent(escape); await new Promise(done => setImmediate(done));
+  assert.equal(f.doc.fullscreenElement, null); assert.equal(f.states.at(-1).active, false);
+  assert.equal(f.exits(), 1); assert.equal(f.screen.children[0], f.frame); assert.equal(f.frame.draft, 'unsaved text');
+  // A managed dialog or another application's fullscreen keeps its own Escape.
+  const other = {}; f.doc.fullscreenElement = other;
+  const unrelated = new Event('keydown', { cancelable: true }); Object.defineProperty(unrelated, 'key', { value: 'Escape' });
+  f.doc.dispatchEvent(unrelated); assert.equal(f.doc.fullscreenElement, other); assert.equal(unrelated.defaultPrevented, false);
+  f.doc.fullscreenElement = f.screen;
+  const handled = new Event('keydown', { cancelable: true }); Object.defineProperty(handled, 'key', { value: 'Escape' }); handled.preventDefault();
+  f.doc.dispatchEvent(handled); assert.equal(f.doc.fullscreenElement, f.screen); assert.equal(f.exits(), 1);
+  f.controller.dispose();
+});
 test('leaving an app during a delayed request exits only its own late fullscreen', async () => {
   const f = fixture({ delayed: true }); const request = f.controller.toggle();
   void f.controller.toggle(); assert.equal(f.calls(), 1, 'no duplicate request while pending');
