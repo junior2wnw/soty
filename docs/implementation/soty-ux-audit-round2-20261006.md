@@ -60,4 +60,6 @@
 
 Отправленный текст пока не редактируется: серверной операции edit нет, кнопка-пустышка не добавлена. Новый чат использует существующую приватную комнату с приглашениями; это не новый direct-DM или E2EE protocol. Реальный Safari/OS keyboard, человеческие интервью и CrUX не проверялись. Публичные записи не создавались ради красивых скриншотов; локальная мастерская и LLM-персоны помечены как test data.
 
-Публикация: отдельный новый каталог `D:/соты/output/soty-ux-release-20261006`, свежие receipts/backup/proofs. Старые документы служат навигацией, не заменяют live audit. Source backend/field schema не меняется: release mode `unchanged` требует точного сохранения всех старых строк/schema/epochs, config/model routing и работающего cold rollback.
+Первая матрица ошибочно передавала `theme` вместо `themeMode`: её файлы сохранены как invalid setup и не считаются dark evidence. Финальный прогон проверяет фактический `data-soty-theme`/mode:20dark и20light. Визуальная сверка также выявила второй mode callback, возвращавший старую подпись «Личное» в шапку; обе точки теперь используют «Моё поле».
+
+Публикация: отдельный новый каталог `D:/соты/output/soty-ux-release-20261006-final`, свежие receipts/backup/proofs. Предварительный5a594aa image сохранён как superseded и не принимался за final release. Старые документы служат навигацией, не заменяют live audit. Source backend/field schema не меняется: release mode `unchanged` требует точного сохранения всех старых строк/schema/epochs, config/model routing и работающего cold rollback.

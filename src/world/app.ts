@@ -573,7 +573,7 @@ class WorldApplication {
         if (location.hash.split('?')[0] !== next.split('?')[0]) history.pushState({ soty: true }, '', next);
         else history.replaceState({ soty: true }, '', next);
         this.activeRoute = next;
-        const context = this.header.querySelector('.sx-header-context'); if (context) context.textContent = mode === 'mine' ? 'Личное' : 'Поиск';
+        const context = this.header.querySelector('.sx-header-context'); if (context) context.textContent = mode === 'mine' ? 'Моё поле' : 'Поиск';
       },
       onOpen: (item, record) => this.afterNoteSaved(() => {
         if (!isCurrent()) return;
