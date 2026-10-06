@@ -32,6 +32,10 @@ Every method below has the `world.` prefix. All writes reject unknown properties
 | `profile.avatar.read` | `{profileId,communityId?}` | `{profileId,avatarUrl,avatarRevision}`; one authorized full image or null |
 | `profile.avatars` | `{profileIds: string[1..24],communityId?}` | `{avatars:[{profileId,avatarUrl,avatarRevision}]}`; thumbnails only, unavailable items omitted |
 | `discovery.search` | `{query?,kind?:'all'|'people'|'communities',limit?,cursor?}` | `{people,communities,nextCursor,totals:{people,communities,peopleExact?:false,communitiesExact?:false}}` |
+| `directory.search` | `{expectedAccountId,query?,kind?:'all'|'people'|'communities',scope?:'all'|'mine'|'public',limit?,cursor?}` | `{schema:'soty.world-directory.v1',people,communities,nextCursor}`; current authorized directory |
+| `directory.resolve` | `{expectedAccountId,entities:[{kind:'person'|'community',id}]}` | `{schema,items:[{ref,available,person?/community?,access?}]}`; at most60 identities |
+| `field.get` | `{expectedAccountId}` | `{revision,document,contentHash,updatedAt}`; empty field starts at revision0 |
+| `field.put` | `{expectedAccountId,expectedRevision,requestId,document,contentHash?}` | `{replayed,receipt:{revision,contentHash,committedAt},current}`; account-local CAS |
 | `community.create` | `{requestId,name,description?,topics?,joinPolicy?,showMembers?,showcase?,symbol?,color?}` | `{communityId,community}` |
 | `community.get` | `{communityId}` | `{community}` |
 | `community.list` | `{}` | `{communities}`; active/requested/invited participation |
@@ -100,6 +104,44 @@ node --test modules/world/test/*.test.mjs
 ```
 
 The suite includes file-backed restart tests, privacy projections, role boundaries, idempotency, revocation, message pagination, and two independently generated P-256 accounts through Connect and its actual HTTP adapter. Browser workflow verification belongs to the product integration; an API test does not certify its UI or deployment.
+
+## Personal field and authorized directory
+
+The new directory and field operations require `expectedAccountId` to match the verified Connect actor. Browser controllers also pass the captured account to `client.extension(op,args,{expectedAccountId})`; the RPC argument and the browser admission context have different responsibilities. No new operation accepts a request-supplied actor or bypasses Connect. The operation map and result types are exported in `index.d.ts`.
+
+`directory.search` retains public person privacy and adds currently active/invited private groups only for their participant. `scope:'mine'` includes active/requested/invited own communities; `public` excludes invitation-only groups even for a member. It returns no global private counts. Its seek cursor binds account, installation, normalized query, kind and scope. Page limits are1–60; always follow `nextCursor`, not a guessed total. Public profile discovery stays opt-in. A known hidden person may resolve only while the actor currently has active roster access through a shared active community; that resolver returns name/avatar revision only, without bio, interests or shared-group identities. Invitation does not permit chat until membership is active. Unknown and unauthorized identities have the same unavailable result.
+
+The field document is `{schema:'soty.field.v1',contexts:[{contextId,title,x,y}],shortcuts:[{shortcutId,entity:{kind,id},contextId,slot:[q,r]}]}`. The shared strict validator is [Field contract](../field/contract.mjs):24 contexts,256 shortcuts,128KiB UTF-8. `kind` is app/person/community/device/builtin. Two shortcuts may reference the same entity, but a context slot has only one occupant. A shortcut stores an opaque reference, not a cached profile, device credential, membership or grant. Adding, moving, removing, copying and undoing shortcuts have **no admission or publication effect**.
+
+`field.put` uses expected revision0 for the first document; each new accepted request increments it. The server computes a canonical document hash and checks an optional caller hash. Retry the same requestId, expectedRevision and document after an uncertain response. The immutable receipt is returned before a stale-version check for an identical retry. Changing the intent under that ID is rejected. `receipt.revision` describes that accepted intent; `current` may describe a newer arrangement from another device and must not be replaced with the earlier document. Field state is private account data stored under normal server access controls; it is not end-to-end encrypted.
+
+Storage is an additive `field_schema_version=1` extension with `world_field_documents` and immutable `world_field_receipts` in the same SQLite file. World remains schema3. Its unchanged v3 migrator opens the extended database and preserves the extra metadata/tables; no old rows or existing receipts are rewritten. New readers refuse unknown field epochs, missing guards or invalid document hashes rather than resetting the layout. Existing file snapshots include these tables automatically.
+
+The product adapter uses account-scoped IndexedDB transactions for its bounded durable outbox before dispatch. Lost ACKs replay the original intent; quota errors dispatch nothing. Other-window conflicts preserve pending changes and require an explicit version choice. Only an undurable local buffer triggers the navigation guard. `discardVolatile` restores the latest durable baseline and does not delete any window's outbox. These client guarantees require real-browser verification in addition to API tests.
+
+`createFieldPersistence({localFirst:true})` acknowledges an intent after its IndexedDB transaction, before waiting for the network. It reports `volatile` with `localDurable:true`; this is a device save, not a server confirmation. Its logical `projectedRevision = revision + pendingCount` is the next UI command fence: ordered requests still use server revisions individually, and their ACKs do not change that logical fence. GET/PUT requests run outside the local transaction queue, so a slow server cannot postpone subsequent local saves. Capturing intents and adopting validated ACKs remain serialized. The default adapter mode still awaits the server for callers that require that behavior.
+
+A read-only second window may follow the shared durable outbox and its validated latest head without claiming authorship or issuing a duplicate mutation. Changes from another window conflict with this controller's own pending intent or undurable buffer; merely observing the first window's pending queue does not create a false conflict when its ACK arrives.
+
+An accepted receipt followed by a different newer current document is a visible conflict. The adapter durably retains the desired arrangement separately from that verified current state. Choosing the local version creates a fresh request at the latest revision; choosing the other version makes no duplicate mutation. A same-revision response with a different valid content hash is rejected rather than silently rewriting known state.
+
+The product's `loadMine` also reads authenticated Connect `contacts.list`. Only active accepted relationships appear, with their known account label and no invented avatar, bio or presence. This own-only relationship data never enters World public search. A saved hidden person can fall back to that current private contact label when World profile/roster access is unavailable. Removing or blocking the contact removes this fallback on the next read; it does not grant or revoke unrelated World roster permissions. Raw contact records route to the existing account people panel, not an expanded `profile.view` privilege.
+
+```ts
+import type { WorldFieldEnvelope, WorldFieldPutResult } from './modules/world/index';
+const accountId = displayedAccountId;
+const before = await client.extension<WorldFieldEnvelope>('world.field.get',
+  { expectedAccountId: accountId }, { expectedAccountId: accountId });
+const result = await client.extension<WorldFieldPutResult>('world.field.put',
+  { expectedAccountId: accountId, expectedRevision: before.revision,
+    requestId: crypto.randomUUID(), document: validatedDocument }, { expectedAccountId: accountId });
+```
+
+Directory/field operations do not execute tools or models, extend capability grants, expose human presence, or publish private chat history. `community.showcase` is explicit owner-authored text; a public discovery card is not permission to read a conversation.
+
+### Field verification
+
+`node --test modules/world/test/field-directory.test.mjs modules/world/test/field-migration.acceptance.test.mjs server/test/field-directory-http.test.mjs src/world/field-directory.test.mjs src/world/field-persistence.test.mjs` checks domain CAS/actual frozen old-reader preservation, signed HTTP/connector enrollment, and independently controlled client failure ordering. Client outbox unit tests replace IDB with an atomic memory port; they do not claim browser IDB coverage. No production data or model calls are used.
 
 ## Scale observations
 

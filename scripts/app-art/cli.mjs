@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { REPO_ROOT, prepareArtwork, importArtwork, bindArtwork, rollbackArtwork, validateArtwork, validatePublicArtwork, listArtwork, queueArtwork, migrateArtworkHistory, readJson, definitionsFromCatalog } from './pipeline.mjs';
+import { REPO_ROOT, prepareArtwork, importArtwork, bindArtwork, aliasFieldArtwork, configureFieldIcon, rollbackArtwork, validateArtwork, validatePublicArtwork, listArtwork, queueArtwork, migrateArtworkHistory, readJson, definitionsFromCatalog } from './pipeline.mjs';
 
 const HELP = `Soty application artwork
   prepare --all [--refresh]
@@ -9,7 +9,9 @@ const HELP = `Soty application artwork
   prepare --definition app-art.json
   prepare --catalog app-catalog.json
   import --key notes --source C:\\path\\image.png [--job scripts/app-art/jobs/notes/job-....json] --visual-approved [--reviewer codex] [--generation-id id]
-  bind --app-id app-<32 hex> --key cover-key
+  bind --app-id app-<32 hex> --key cover-key [--profile field]
+  profile --key field-hive --cover-key hive
+  icon --key field-hive --icon cells
   rollback --key notes --version 1
   validate [--public]
   list
@@ -22,7 +24,7 @@ This local CLI prepares, versions, validates, imports and binds images; it does 
 const FLAG_SETS = {
   prepare: ['root', 'all', 'refresh', 'key', 'definition', 'catalog', 'prompt-file', 'app-id', 'reference-image'],
   import: ['root', 'key', 'source', 'job', 'visual-approved', 'reviewer', 'generation-id'],
-  bind: ['root', 'app-id', 'key'], rollback: ['root', 'key', 'version'], validate: ['root', 'public'], list: ['root'], queue: ['root', 'all'], 'migrate-history': ['root'],
+  bind: ['root', 'app-id', 'key', 'profile'], profile: ['root','cover-key','key'], icon: ['root','key','icon'], rollback: ['root', 'key', 'version'], validate: ['root', 'public'], list: ['root'], queue: ['root', 'all'], 'migrate-history': ['root'],
 };
 const BOOLEANS = new Set(['all', 'refresh', 'visual-approved', 'public']);
 function flags(args, command) {
@@ -52,7 +54,9 @@ try {
       result = await prepareArtwork(root, { definitions, keys: options.key ? [options.key] : [], all: !!options.all, refresh: !!options.refresh, ...(prompt !== undefined ? { prompt } : {}), ...(options['app-id'] ? { appId: options['app-id'] } : {}), ...(options['reference-image'] ? { referenceImage: options['reference-image'] } : {}) });
     } else if (command === 'import') {
       result = await importArtwork(root, { key: options.key, source: options.source, visualApproved: !!options['visual-approved'], reviewer: options.reviewer || 'local-review', ...(options.job ? { job: options.job } : {}), ...(options['generation-id'] ? { generationId: options['generation-id'] } : {}) });
-    } else if (command === 'bind') result = await bindArtwork(root, { key: options.key, appId: options['app-id'] });
+    } else if (command === 'bind') result = await bindArtwork(root, { key: options.key, appId: options['app-id'], ...(options.profile ? {profile:options.profile} : {}) });
+    else if (command === 'profile') result = await aliasFieldArtwork(root,{key:options.key,coverKey:options['cover-key']});
+    else if (command === 'icon') result = await configureFieldIcon(root,{key:options.key,icon:options.icon});
     else if (command === 'rollback') result = await rollbackArtwork(root, { key: options.key, version: Number(options.version) });
     else if (command === 'validate') result = options.public ? await validatePublicArtwork(root) : await validateArtwork(root);
     else if (command === 'queue') result = await queueArtwork(root, { includeAccepted: !!options.all });

@@ -1,4 +1,6 @@
 import { mountWorldApp } from './app';
+import { resolveFieldAppArt } from './field-art.mjs';
+import { createFieldDocument, validateFieldDocument, type FieldDocument } from '../../modules/field/contract.mjs';
 import { el, button } from './dom';
 import { createAppActions } from '../platform/local-apps';
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
@@ -8,19 +10,42 @@ if (!import.meta.env.DEV)
 const params = new URLSearchParams(location.search);
 const palette = params.get('theme') === 'light' ? 'light' : 'dark';
 localStorage.setItem('soty.world.ui.v1', JSON.stringify({ themeMode: palette, themeBrightness: 50, view: 'mine', presentation: 'field', homePresentation: 'list' }));
-const self: WorldProfile = { profileId: 'qa-person-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true };
-const people: WorldProfile[] = [self, { ...self, profileId: 'qa-person-tim', displayName: 'Тим', avatarColor: '#c4b0d8' }, { ...self, profileId: 'qa-person-mira', displayName: 'Мира', avatarColor: '#dba99b' }];
+const self: WorldProfile = { profileId: 'qa-field4-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true };
+const people: WorldProfile[] = [self, { ...self, profileId: 'qa-person-tim', displayName: 'Тим', avatarColor: '#c4b0d8' }, { ...self, profileId: 'qa-person-mira', displayName: 'Мира', avatarColor: '#dba99b' }, { ...self, profileId: 'qa-person-sasha', displayName: 'Саша', avatarColor: '#b3c6a8' }, { ...self, profileId: 'qa-person-kirill', displayName: 'Кирилл', avatarColor: '#c7b995' }];
+const qaPortraits = ['/src/world/fixtures/portraits/qa-anya.ce799ce936e5.webp', '/src/world/fixtures/portraits/qa-tim.879f6cbb19af.webp', '/src/world/fixtures/portraits/qa-mira.9e9577679d25.webp', '/src/world/fixtures/portraits/qa-sasha.4ba368e9d3be.webp', '/src/world/fixtures/portraits/qa-kirill.067cbf835a8d.webp'];
+for (const [index, person] of people.entries()) person.avatarUrl = qaPortraits[index]!;
 const groups: WorldCommunity[] = [
     { communityId: 'qa-studio', name: 'Студия', description: 'Место для наших идей', topics: ['творчество'], joinPolicy: 'invite', showcase: 'Придумываем, собираем и выпускаем свои проекты.', symbol: 'cells', color: 'sage', revision: 1, memberCount: 3, previewMembers: people, membership: { state: 'active', role: 'owner', pinned: true, muted: false, showInProfile: true, revision: 1 }, permissions: { canManage: true, canModerate: true, canWrite: true }, unreadCount: 0 },
     { communityId: 'qa-evening', name: 'После работы', description: 'Музыка и хорошая компания', topics: ['музыка', 'игры'], joinPolicy: 'open', showcase: 'Музыка, одна партия и люди, с которыми хорошо.', symbol: 'music', color: 'honey', revision: 1, memberCount: 3, previewMembers: people, membership: { state: 'active', role: 'member', pinned: false, muted: false, showInProfile: true, revision: 1 }, permissions: { canManage: false, canModerate: false, canWrite: true }, unreadCount: 2 },
     { communityId: 'qa-makers', name: 'Мастерская', description: 'Воплощаем идеи', topics: ['идеи'], joinPolicy: 'open', showcase: 'Обмениваемся идеями и делаем полезные вещи.', symbol: 'tools', color: 'coral', revision: 1, memberCount: 2, previewMembers: people.slice(1), membership: { state: 'active', role: 'member', pinned: false, muted: false, showInProfile: false, revision: 1 }, permissions: { canManage: false, canModerate: false, canWrite: true }, unreadCount: 0 }
 ];
+for (const group of groups) group.previewMembers = group.previewMembers.slice(0, group.memberCount);
 const apps: WorldAppRecord[] = [
     { appId: 'app-11111111111111111111111111111111', name: 'Тавыш', description: 'Музыка, в которой участвуешь', coverKey: 'tavysh', symbol: 'music', status: 'ready', ownerAccountId: self.profileId, communityId: 'qa-evening', grants: { accountIds: [], communityIds: ['qa-evening'] } },
     { appId: 'app-22222222222222222222222222222222', name: 'HIVE', description: 'Идеи становятся связями', coverKey: 'hive', symbol: 'cells', status: 'ready', ownerAccountId: self.profileId, communityId: 'qa-studio', grants: { accountIds: [], communityIds: ['qa-studio'] } },
     { appId: 'app-33333333333333333333333333333333', name: 'Фокус', description: 'Место для одной задачи', coverKey: 'focus', symbol: 'activity', status: 'ready', communityId: 'qa-evening' },
     { appId: 'app-44444444444444444444444444444444', name: 'Pulse', description: 'Главное в ваших цифрах', coverKey: 'pulse', symbol: 'activity', status: 'ready', ownerAccountId: self.profileId, communityId: 'qa-studio' }
 ];
+apps[2] = { ...apps[2]!, name: 'Canvas', coverKey: 'canvas', symbol: 'brush', communityId: 'qa-studio' };
+const preset = createFieldDocument();
+preset.contexts = [{ contextId: 'studio', title: 'Студия', x: 0, y: 0 }, { contextId: 'close', title: 'Близкие', x: 640, y: -80 }, { contextId: 'evening', title: 'После работы', x: 520, y: 340 }];
+const shortcut = (id: string, entity: { kind: 'app' | 'person' | 'builtin' | 'device'; id: string }, contextId: string, slot: [number, number]): void => { preset.shortcuts.push({ shortcutId: id, entity, contextId, slot }); };
+shortcut('studio-hive', { kind: 'app', id: apps[1]!.appId }, 'studio', [0, 0]);
+shortcut('studio-canvas', { kind: 'app', id: apps[2]!.appId }, 'studio', [-25, 19]);
+shortcut('studio-pulse', { kind: 'app', id: apps[3]!.appId }, 'studio', [6, 19]);
+shortcut('studio-anna', { kind: 'person', id: self.profileId }, 'studio', [-24, -3]);
+shortcut('studio-tim', { kind: 'person', id: people[1]!.profileId }, 'studio', [29, 5]);
+shortcut('close-notes', { kind: 'builtin', id: 'notes' }, 'close', [0, 0]);
+shortcut('close-mira', { kind: 'person', id: people[2]!.profileId }, 'close', [-16, -1]);
+shortcut('close-sasha', { kind: 'person', id: people[3]!.profileId }, 'close', [16, 0]);
+shortcut('evening-music', { kind: 'app', id: apps[0]!.appId }, 'evening', [0, 0]);
+shortcut('evening-chess', { kind: 'builtin', id: 'chess' }, 'evening', [19, 0]);
+shortcut('evening-kirill', { kind: 'person', id: people[4]!.profileId }, 'evening', [35, -1]);
+const sha = async (value: unknown): Promise<string> => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value))))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+const fixtureFieldKey = 'soty.qa.unified-field.v4';
+let fixtureField: { revision: number; document: FieldDocument; contentHash: string; updatedAt: number } | null = null;
+const fieldReceipts = new Map<string, { revision: number; contentHash: string; committedAt: number }>();
+const fixtureApp = (app: WorldAppRecord) => ({ id: app.appId, name: app.name, ownerAccountId: app.ownerAccountId ?? self.profileId, state: 'ready', createdAt: 1, updatedAt: 1, access: 'owner', canManage: true, entry: { appId: app.appId, domainId: `dom_${app.appId.slice(4)}`, origin: location.origin, path: '/' } });
 const now = Date.now();
 const history: Record<string, WorldMessage[]> = {};
 for (const group of groups) {
@@ -37,6 +62,36 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
         let result: unknown;
         const group = groups.find(item => item.communityId === args.communityId) || groups[0]!;
         switch (op) {
+            case 'contacts.list': result = { contacts: [], requests: { incoming: [], outgoing: [] }, blocked: [], invitations: [] }; break;
+            case 'world.field.get': {
+                if (!fixtureField) {
+                    if (!preset.shortcuts.some(value => value.shortcutId === 'studio-notebook')) shortcut('studio-notebook', { kind: 'device', id: `device-${await sha(['qa-notebook', 'qa-connector'])}` }, 'studio', [-17, 34]);
+                    const saved = localStorage.getItem(fixtureFieldKey);
+                    try { if (saved) { const value = JSON.parse(saved); fixtureField = { ...value, document: validateFieldDocument(value.document) }; } } catch { /* Isolated controlled fixture only. */ }
+                    fixtureField ??= { revision: 1, document: preset, contentHash: await sha(preset), updatedAt: 1 };
+                }
+                result = structuredClone(fixtureField); break;
+            }
+            case 'world.field.put': {
+                if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture account changed'), { code: 'field_account_changed' });
+                const document = validateFieldDocument(args.document), contentHash = await sha(document), id = String(args.requestId), prior = fieldReceipts.get(id);
+                if (prior) { if (prior.contentHash !== contentHash) throw Object.assign(new Error('Fixture intent changed'), { code: 'field_request_conflict' }); result = { replayed: true, receipt: prior, current: fixtureField }; break; }
+                if (Number(args.expectedRevision) !== (fixtureField?.revision ?? 0)) throw Object.assign(new Error('Fixture conflict'), { code: 'field_revision_conflict' });
+                const receipt = { revision: Number(args.expectedRevision) + 1, contentHash, committedAt: Date.now() }; fieldReceipts.set(id, receipt);
+                fixtureField = { revision: receipt.revision, document, contentHash, updatedAt: receipt.committedAt }; localStorage.setItem(fixtureFieldKey, JSON.stringify(fixtureField)); result = { replayed: false, receipt, current: fixtureField }; break;
+            }
+            case 'world.directory.search': {
+                const query = String(args.query ?? '').toLocaleLowerCase('ru'); result = { people: args.kind === 'communities' || args.scope === 'mine' ? [] : people.filter(person => person.displayName.toLocaleLowerCase('ru').includes(query)), communities: args.kind === 'people' ? [] : groups.filter(group => group.name.toLocaleLowerCase('ru').includes(query)), nextCursor: null }; break;
+            }
+            case 'world.directory.resolve': {
+                result = { items: (args.entities as { kind: string; id: string }[]).map(ref => ref.kind === 'person' ? { ref, available: true, person: people.find(person => person.profileId === ref.id), access: 'public' } : { ref, available: true, community: groups.find(group => group.communityId === ref.id) }) }; break;
+            }
+            case 'apps.directory.search': {
+                const query = String(args.query ?? '').toLocaleLowerCase('ru'); result = { apps: apps.filter(app => app.name.toLocaleLowerCase('ru').includes(query)).map(fixtureApp), nextCursor: null }; break;
+            }
+            case 'apps.directory.resolve': {
+                result = { items: (args.appIds as string[]).map(appId => { const app = apps.find(value => value.appId === appId), ref = { kind: 'app', id: appId }; return app ? { ref, available: true, app: fixtureApp(app) } : { ref, available: false }; }) }; break;
+            }
             case 'world.profile.get':
                 result = { profile: self };
                 break;
@@ -167,7 +222,7 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
 const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
-mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: () => toast('Устройство: локальный пример'), agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host) });
+mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: () => toast('Устройство: локальный пример'), agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host) });
 const marker = el('aside', 'sx-fixture-badge', 'Примеры · локальная проверка');
 marker.setAttribute('aria-label', 'Изолированный UI пример. Данные вымышленные, операции локальные.');
 document.body.append(marker);

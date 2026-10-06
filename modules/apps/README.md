@@ -36,6 +36,8 @@ Register `apps.operations` and its synchronous `execute({op,args,actor})` as a C
 | `apps.devices` | `{}` | `{devices:[{hostDeviceId,connectorId,name,online,claimed}]}` |
 | `apps.claim` | `{hostDeviceId,connectorId,claimCode}` | `{device}` |
 | `apps.list` | `{communityId?}` | `{configured,apps}` |
+| `apps.directory.search` | `{expectedAccountId,query?,scope?:'all'|'mine'|'public',limit?,cursor?}` | `{schema:'soty.app-directory.v1',apps,nextCursor}`; thin currently authorized directory |
+| `apps.directory.resolve` | `{expectedAccountId,appIds:string[]}` | `{schema,items:[{ref,available,app?}]}`; at most60 IDs |
 | `apps.register` | `{hostDeviceId,connectorId,name,port,entryPath?,grants?}` | `{app}` |
 | `apps.update` | `{appId,name?,grants?}` | `{app}` |
 | `apps.revoke` | `{appId}` | `{app}` |
@@ -72,6 +74,18 @@ Boot removes its ticket fragment before network work. POST `/_soty/session` retu
 Private top-level GET navigation may redirect to the trusted `#launch/<appId>/<domainId>?path=...` shell route. Asset/fetch/HEAD/unsafe/iframe requests retain status responses. The shell issues a fresh ticket for separate opening; it does not reuse an iframe ticket. Local launch paths preserve query and hash-SPA fragments; raw fragments of an initial private runtime URL are not sent to the HTTP server and cannot be preserved by that302. Share closed hash-SPA apps through the encoded shell launch route. Managed status pages use the same neutral palette and hex geometry as the shell, with nonce CSP and no external assets.
 
 Public app data: `{id,name,ownerAccountId,hostDeviceId,state,createdAt,updatedAt}`. Only the owner receives `{connectorId,port,entryPath,grants}`. States are `starting`, `ready`, `stopped`, `offline`, `revoked`. The registry and normalized grants are SQLite-backed and survive restarts. No HTML/HTTP bodies are persisted in the registry.
+
+## Authorized app directory
+
+The new signed directory preserves older `apps.list` and `apps.catalog` contracts. It requires a caller `expectedAccountId` matching the verified active Connect account. Browser clients separately capture their displayed account in `extension(op,args,{expectedAccountId})`. Operation/result DTOs are in [directory.d.mts](server/directory.d.mts); the allowlist contains only these two read operations and grants no execution/model authority.
+
+Search unions owned apps, direct account grants, currently valid community grants and explicitly listed public apps. A community grant requires both active viewer membership and the publisher's current administrator role. Public discovery requires enabled state, `launchPolicy:'anyone'`, `listed:true`, and a bound active named address. A public but unlisted link does not enter search. `scope:'mine'` excludes public apps without personal permission; `scope:'public'` uses the public-listing predicate even for owners. Devices are available only through the existing own-only `apps.devices` operation and never appear in public directory projections.
+
+Every directory item is whitelisted to `{id,name,ownerAccountId,state,createdAt,updatedAt,access,canManage,entry:{appId,domainId,origin,path}}`. There are no connector/host identities, device names, ports, grants, private community IDs, launch tickets, raw HTTP content or human-online claims. `updatedAt` is registry metadata activity, not a user's presence. Current source availability is an observation, not a promise that a launch will succeed. Opening an item still uses the exact entry and current launch authorization; storing its reference in a personal field grants no access.
+
+Pages accept1–60 rows and inspect at most256 candidate rows per call. A short or empty page may still have `nextCursor` when current authority removes candidates. Follow that cursor until null. Seek order uses immutable creation time and identity; renaming/removing prior rows does not shift later pages. Cursors bind account, device, normalized query and scope. No private/global count is returned. Unknown and unauthorized app IDs resolve identically unavailable. Reads run under the existing synchronous Connect→World→Apps authority fence and contain no network/model dispatch.
+
+Directory operations add no Apps tables or schema version. Genuine signed HTTP/connector and second-device acceptance is in `server/test/field-directory-http.test.mjs`. Existing public capability discovery remains a separate metadata catalog: a listed app is not a capability execution grant.
 
 ## Connector integration
 

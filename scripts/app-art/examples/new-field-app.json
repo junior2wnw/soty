@@ -1,0 +1,13 @@
+{
+  "key": "local-new-field-app",
+  "appId": "app-11111111111111111111111111111111",
+  "name": "Новое приложение",
+  "purpose": "Уточните настоящее назначение приложения; эти данные остаются локальными",
+  "subject": "One compact abstract sculpture made from ivory glass and brushed graphite, centered with generous empty background around its entire silhouette.",
+  "alt": "Арт-обложка приложения",
+  "kind": "app",
+  "profile": "field",
+  "palette": { "base": "#242725", "accent": "#C7D5C1", "ink": "#F5F4F0" },
+  "focalPoint": { "x": 0.5, "y": 0.42 },
+  "compactFocalPoint": { "x": 0.5, "y": 0.42 }
+}

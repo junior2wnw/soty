@@ -76,6 +76,7 @@ export class AvatarHydrator {
         for (const { node, revision } of nodes) {
           if (node.dataset.profileId !== id || node.dataset.avatarRevision !== revision) continue;
           this.cache.set(`${id}:${revision}`, avatar?.avatarUrl ?? null);
+          if (this.cache.size > 256) this.cache.delete(this.cache.keys().next().value!);
           if (avatar?.avatarUrl) this.apply(node, avatar.avatarUrl); else node.replaceChildren(el('span', '', node.dataset.avatarLabel ?? 'С'));
         }
       }

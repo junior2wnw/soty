@@ -9,6 +9,9 @@ import { mountAppLibrary } from './app-library';
 import './experience.css';
 import { createHome, createAppCard, type AppCardData, type HomeFilter } from './home';
 import { resolveAppArt } from './app-art.mjs';
+import { createUnifiedFieldScreen, type FieldFilter, type UnifiedFieldScreen } from './unified-field-screen';
+import type { UnifiedFieldViewState } from './unified-field';
+import type { DirectoryApp, DirectoryPerson } from './field-directory';
 import { createBrandMark } from './brand';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
@@ -98,6 +101,10 @@ class WorldApplication {
   private groupTab: GroupTab = 'about';
   private groupReturn: 'mine' | 'world' | 'messages' = 'mine';
   private field: HexField | null = null;
+  private unifiedField: UnifiedFieldScreen | null = null;
+  private unifiedFieldView: UnifiedFieldViewState = {};
+  private unifiedFieldFilter: FieldFilter = 'all';
+  private unifiedFieldFilters: Record<'mine' | 'world', FieldFilter> = { mine: 'all', world: 'all' };
   private discoveryApps = new Map<string, WorldAppRecord[]>();
   private fieldState = createHexFieldState();
   private homeFieldState = createHexFieldState();
@@ -133,13 +140,14 @@ class WorldApplication {
       this.renderPwaBanner(state);
       if (recovered) {
         this.notesHandle?.reconnect();
+        this.unifiedField?.reconnect();
         if (!this.profile && this.deskAccount) void this.refresh(true);
       }
     });
     this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); return !this.screenHasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sa-stage') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sa-stage,.uf-screen,.uf-global-search') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -154,9 +162,9 @@ class WorldApplication {
     },{signal:this.controller.signal});
     root.addEventListener('soty:inbox-updated',event=>{const groups=(event as CustomEvent<{communities:WorldCommunity[]}>).detail?.communities;if(Array.isArray(groups)){this.communities=groups;this.updateNavUnread();}},{signal:this.controller.signal});
     document.addEventListener('keydown', event => {
-      if ((event.ctrlKey || event.metaKey) && (event.code === 'KeyK' || event.key.toLowerCase() === 'k') && !event.isComposing && !document.querySelector('dialog[open]')) { event.preventDefault(); this.openQuickActions(); return; }
+      if ((event.ctrlKey || event.metaKey) && (event.code === 'KeyK' || event.key.toLowerCase() === 'k') && !event.isComposing && !document.querySelector('dialog[open]')) { event.preventDefault(); if (this.unifiedField) this.unifiedField.focusSearch(); else this.openQuickActions(); return; }
       if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement).tagName) && !document.querySelector('dialog[open]')) {
-        const search = this.root.querySelector<HTMLInputElement>('.sw-search input');
+        const search = this.root.querySelector<HTMLInputElement>('.uf-global-search input,.sw-search input');
         if (search) { event.preventDefault(); search.focus(); }
       }
       if (event.key === 'Escape' && this.selected && !document.querySelector('dialog[open]')) this.closePreview();
@@ -203,8 +211,9 @@ class WorldApplication {
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) return; }
       if (this.group) { await this.openGroup(this.group.communityId, this.groupTab); return; }
       this.renderCurrent();
-      if (this.view === 'world') await this.search();
-      if (this.view === 'mine') await this.loadPersonal();
+      if (this.unifiedField) await this.unifiedField.refresh();
+      else if (this.view === 'world') await this.search();
+      else if (this.view === 'mine') await this.loadPersonal();
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
@@ -216,6 +225,7 @@ class WorldApplication {
           const sameScreen = !changed && this.deskAccount === accountAtStart && this.screenSequence === screenAtStart;
           if (sameScreen && this.appSettingsDialog?.element.open) return;
           if (sameScreen && this.appStage) { this.toast(errorText(error), true); return; }
+          if (sameScreen && this.unifiedField) { this.unifiedField.reconnect(); return; }
           if (sameScreen && preserveNote && this.notesHandle) { this.toast(errorText(error), true); return; }
           if (!changed) this.cleanScreen();
           this.renderNavigation();
@@ -235,6 +245,7 @@ class WorldApplication {
             const box = emptyState('Приложение ждёт подключения', 'Подключитесь к сети и попробуйте снова.', button('Повторить', 'refresh', 'sw-button-primary', () => { if (current()) void this.refresh(); }), 'app');
             box.append(otherAccount, detail); this.main.replaceChildren(box); return;
           }
+          if (this.view === 'mine' || this.view === 'world') { this.renderCurrent(); return; }
           this.main.replaceChildren(emptyState('Можно продолжать записывать', 'Сервер пока недоступен. Черновики этого аккаунта сохранены на устройстве.', button('Открыть записки', 'list', 'sw-button-primary', () => this.openNotes())), button('Повторить подключение', 'refresh', 'sw-button-quiet', () => { void this.refresh(); })); return;
         }
       }
@@ -263,6 +274,9 @@ class WorldApplication {
     this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
     this.homeQuery = ''; this.homeFilter = 'all'; this.discoveryApps.clear();
     this.fieldState = createHexFieldState(); this.homeFieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
+    this.unifiedFieldView = {};
+    this.unifiedFieldFilter = 'all';
+    this.unifiedFieldFilters = { mine: 'all', world: 'all' };
     this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
     this.routeLoaded = false; this.noteActionPending = false; this.visibilityOpen = false;
     if (this.searchTimer) clearTimeout(this.searchTimer); this.searchTimer = null;
@@ -276,9 +290,9 @@ class WorldApplication {
   }
 
   private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
-  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; }
-  private screenHasUnsavedChanges(): boolean { return !!(this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
-  private async flushScreen(): Promise<void> { await Promise.all([this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
+  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
+  private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
   private toast(message: string, isError = false): void {
@@ -332,7 +346,7 @@ class WorldApplication {
     brandButton.append(createBrandMark()); brandButton.addEventListener('click', () => this.navigate('mine'));
     const nav = el('nav', 'sx-rail-nav'); nav.setAttribute('aria-label', 'Главная навигация');
     const active = this.view === 'messages' ? 'messages' : this.view === 'assistant' ? 'assistant' : 'mine';
-    const items = [['mine', 'Приложения', 'grid'], ['messages', 'Чаты', 'chat'], ['assistant', 'Помощник', 'sparkle']] as const;
+    const items = [['mine', 'Поле', 'grid'], ['messages', 'Чаты', 'chat'], ['assistant', 'Помощник', 'sparkle']] as const;
     this.mobileNav.replaceChildren();
     for (const [id, label, symbol] of items) {
       const make = (className: string) => { const node = button(label, symbol, className, () => this.navigate(id));node.dataset.navView=id; if (active === id) node.setAttribute('aria-current', 'page'); return node; };
@@ -349,7 +363,15 @@ class WorldApplication {
     const search = button('Приложения, люди, сообщества', 'search', 'sx-global-search', () => this.openQuickActions()); search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.setAttribute('aria-label', 'Поиск приложений, людей и сообществ'); search.append(el('kbd', '', 'Ctrl K'));
     const add = button('Добавить', 'plus', 'sw-button-primary sx-global-add', () => this.openAddMenu());add.setAttribute('aria-label','Добавить');
     const mobileProfile=el('button','sx-profile-button sx-mobile-profile');mobileProfile.type='button';mobileProfile.setAttribute('aria-label','Мой профиль и настройки');mobileProfile.append(avatar(this.profile?.displayName??'Я',this.profile?.avatarUrl,worldColor(this.profile?.avatarColor),this.profile?.profileId,this.profile?.avatarRevision));mobileProfile.addEventListener('click',()=>this.openProfileMenu());
-    this.header.replaceChildren(brand, context, search, mobileProfile, add);this.updateNavUnread();
+    const fieldSearch = this.unifiedField ? this.header.querySelector<HTMLElement>('.uf-global-search') : null;
+    if (fieldSearch) {
+      // Keep the live search input connected: shell metadata/theme refresh must
+      // not interrupt focus, selection or an in-progress IME composition.
+      for (const child of [...this.header.children]) if (child !== fieldSearch) child.remove();
+      this.header.prepend(brand, context); this.header.append(mobileProfile, add);
+    } else this.header.replaceChildren(brand, context, search, mobileProfile, add);
+    this.updateNavUnread();
+    this.unifiedField?.attachHeaderSearch(this.header);
   }
 
   private updateNavUnread(): void {
@@ -404,13 +426,14 @@ class WorldApplication {
   }
 
   private navigateReady(view: WorldView, chatId?: string): void {
+    if (view === 'mine' || view === 'world') this.unifiedFieldFilter = this.unifiedFieldFilters[view];
     this.selectedChat = view === 'messages' ? chatId : undefined;
     if (view === 'world') this.discoveryStatus = 'loading';
-    this.writeRoute(view === 'messages' && chatId ? `messages/${chatId}` : view === 'world' ? this.discoveryRoute() : view === 'assistant' ? `assistant/${this.assistantMode}` : view);
+    this.writeRoute(view === 'messages' && chatId ? `messages/${chatId}` : view === 'mine' || view === 'world' ? this.unifiedFieldRoute(view) : view === 'assistant' ? `assistant/${this.assistantMode}` : view);
     this.view = view; this.preferences.view = view; this.persist(); this.group = null; this.selected = null;
     this.renderNavigation(); this.renderCurrent();
-    if (view === 'world') void this.search();
-    if (view === 'mine') void this.loadPersonal();
+    if (!this.unifiedField && view === 'world') void this.search();
+    if (!this.unifiedField && view === 'mine') void this.loadPersonal();
     if (view === 'messages') {
       const sequence = this.screenSequence;
       void this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(result => { if (!this.destroyed && this.screenSequence === sequence && this.view === 'messages') { this.communities = result.communities; if (!this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat); } }).catch(error => this.toast(errorText(error), true));
@@ -426,6 +449,13 @@ class WorldApplication {
     if (this.query.trim()) parameters.set('q', this.query.trim());
     if (this.kind !== 'all') parameters.set('kind', this.kind);
     const query = parameters.toString(); return `world${query ? `?${query}` : ''}`;
+  }
+
+  private unifiedFieldRoute(view: 'mine' | 'world'): string {
+    const params = new URLSearchParams(), query = view === 'world' ? this.query : this.homeQuery;
+    if (query.trim()) params.set('q', query.trim());
+    if (this.unifiedFieldFilter !== 'all') params.set('kind', this.unifiedFieldFilter === 'person' ? 'people' : this.unifiedFieldFilter === 'community' ? 'communities' : this.unifiedFieldFilter);
+    return `${view}${params.size ? '?' + params.toString() : ''}`;
   }
 
   private async openRoute(): Promise<boolean> {
@@ -470,6 +500,8 @@ class WorldApplication {
     if (route === 'apps') { this.navigate('mine'); return true; }
     if (route === 'world') {
       this.query = (parameters.get('q') || '').slice(0, 100); const kind = parameters.get('kind');
+      this.unifiedFieldFilter = kind === 'people' ? 'person' : kind === 'communities' ? 'community' : kind === 'app' ? 'app' : 'all';
+      this.unifiedFieldFilters.world = this.unifiedFieldFilter;
       this.kind = kind === 'people' || kind === 'communities' ? kind : 'all'; this.navigate('world'); return true;
     }
     if (route === 'assistant') {
@@ -477,12 +509,18 @@ class WorldApplication {
       this.assistantMode = id === 'create' || !this.options.openAssistant ? 'create' : 'chat';
       this.navigate('assistant'); return true;
     }
-    if (route === 'mine' || route === 'library' || route === 'access') { this.navigate(route); return true; }
+    if (route === 'mine') { this.homeQuery = (parameters.get('q') || '').slice(0, 100); const kind = parameters.get('kind'); this.unifiedFieldFilter = kind === 'people' ? 'person' : kind === 'communities' ? 'community' : kind === 'app' || kind === 'device' ? kind : 'all'; this.unifiedFieldFilters.mine = this.unifiedFieldFilter; this.navigate('mine'); return true; }
+    if (route === 'library' || route === 'access') { this.navigate(route); return true; }
     if (route) return false;
     return false;
   }
 
   private renderCurrent(): void {
+    if ((this.view === 'mine' || this.view === 'world') && !this.group) {
+      if (!this.unifiedField) { this.cleanScreen(); this.renderUnifiedField(); }
+      else this.unifiedField.setMode(this.view === 'world' ? 'search' : 'mine', this.view === 'world' ? this.query : this.homeQuery, this.unifiedFieldFilter);
+      this.avatars.setContext(); return;
+    }
     this.cleanScreen();
     this.avatars.setContext();
     if (this.view === 'world') this.renderDiscovery();
@@ -492,6 +530,48 @@ class WorldApplication {
     else if (this.view === 'assistant') this.renderAssistant();
     else if (this.view === 'access') this.renderAccess();
     else this.renderLibrary();
+  }
+
+  private renderUnifiedField(): void {
+    if (!this.deskAccount || this.destroyed) return;
+    const isCurrent = this.accountTask();
+    this.root.dataset.field = 'unified';
+    const field = createUnifiedFieldScreen({ api: this.api, accountId: this.deskAccount, isCurrent,
+      mode: this.view === 'world' ? 'search' : 'mine', query: this.view === 'world' ? this.query : this.homeQuery,
+      filter: this.unifiedFieldFilter,
+      filtersByMode: { mine: this.unifiedFieldFilters.mine, search: this.unifiedFieldFilters.world },
+      viewState: this.unifiedFieldView, ...(this.desk.pinnedApps ? { pinnedApps: this.desk.pinnedApps } : {}),
+      ...(this.options.fieldArt ? { resolveArt: this.options.fieldArt } : {}),
+      onMessage: (message, error) => { if (isCurrent()) this.toast(message, error); },
+      onAppSettings: app => { if (isCurrent()) this.openAppSettings({ appId: app.id, name: app.name, status: app.state, ownerAccountId: app.ownerAccountId, entry: app.entry }); },
+      onRoute: (mode, query, filter) => {
+        if (!isCurrent()) return; this.view = mode === 'search' ? 'world' : 'mine'; this.preferences.view = this.view;
+        if (mode === 'search') this.query = query; else this.homeQuery = query; this.unifiedFieldFilter = filter;
+        this.unifiedFieldFilters[this.view as 'mine' | 'world'] = filter;
+        this.kind = filter === 'person' ? 'people' : filter === 'community' ? 'communities' : 'all'; this.persist();
+        const params = new URLSearchParams(); if (query.trim()) params.set('q', query.trim()); if (filter !== 'all') params.set('kind', filter === 'person' ? 'people' : filter === 'community' ? 'communities' : filter);
+        const next = `#${this.view}${params.size ? '?' + params.toString() : ''}`;
+        // Typing replaces its own route; choosing the other side creates one history step.
+        if (location.hash.split('?')[0] !== next.split('?')[0]) history.pushState({ soty: true }, '', next);
+        else history.replaceState({ soty: true }, '', next);
+        this.activeRoute = next;
+        const context = this.header.querySelector('.sx-header-context'); if (context) context.textContent = mode === 'mine' ? 'Личное' : 'Поиск';
+      },
+      onOpen: (item, record) => this.afterNoteSaved(() => {
+        if (!isCurrent()) return;
+        if (item.entity.kind === 'builtin') { if (item.entity.id === 'notes') this.openNotes(); else if (item.entity.id === 'chess') this.runHook(() => this.options.openLegacy('chess')); return; }
+        if (item.entity.kind === 'app') {
+          const app = record && 'entry' in record && 'id' in record ? record as DirectoryApp : null;
+          void this.openApplication({ appId: item.entity.id, name: item.title, status: app?.state ?? 'unknown', ...(app ? { entry: app.entry, ownerAccountId: app.ownerAccountId } : {}) }, undefined, !app); return;
+        }
+        if (item.entity.kind === 'community') { const group = record && 'communityId' in record ? record as WorldCommunity : null; void this.openGroup(item.entity.id, group?.membership?.state === 'active' ? 'chat' : 'about'); return; }
+        if (item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact') { this.runHook(() => this.options.openAccount('people')); return; }
+        if (item.entity.kind === 'person' && record && 'profileId' in record) { const person = record as DirectoryPerson; this.openPersonDialog({ ...person, bio: person.bio ?? '', interests: person.interests ?? [] }); return; }
+        if (item.entity.kind === 'device') this.runHook(() => this.options.openAccount('devices'));
+      }),
+      onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openAddApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.navigate('assistant'); },
+    });
+    this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header);
   }
 
   private renderAssistant(): void {
@@ -541,6 +621,7 @@ class WorldApplication {
   }
 
   private renderDiscovery(): void {
+    if (this.deskAccount && !this.group) { this.renderCurrent(); return; }
     const workspace = el('div', 'sw-workspace'); const discovery = el('section', 'sw-discovery');
     const mobileHeading = el('div', 'sw-mobile-heading sx-world-heading'); mobileHeading.append(heading('Общий мир', 'Приложения, люди, сообщества'));
     const presentation=el('div','sx-presentation sx-world-presentation');presentation.setAttribute('role','group');presentation.setAttribute('aria-label','Вид общего мира');
@@ -1224,6 +1305,7 @@ class WorldApplication {
   }
 
   private renderPersonal(): void {
+    if (this.deskAccount && !this.group && !this.appStage) { this.renderCurrent(); void this.unifiedField?.refresh().catch(reason => this.toast(errorText(reason), true)); return; }
     this.field?.destroy(); this.field = null;
     const groups = this.communities.filter(group => ['active', 'invited', 'requested'].includes(group.membership?.state ?? ''));
     const makeApp = (app: WorldAppRecord, featured = false): AppCardData => ({
@@ -1397,6 +1479,7 @@ class WorldApplication {
   }
 
   private openAddMenu(): void {
+    if (this.unifiedField) { this.unifiedField.openAdd(); return; }
     const dialog = this.dialog('Добавить'); const list = el('div', 'sx-profile-menu');
     const option = (title: string, symbol: string, action: () => void): void => list.append(button(title, symbol, 'sw-button-large', () => { dialog.close(); action(); }));
     option('Приложение', 'grid', () => this.openAddApp());

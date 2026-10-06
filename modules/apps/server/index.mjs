@@ -20,8 +20,9 @@ import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
+import { createAppDirectory, directoryOperations } from './directory.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -59,7 +60,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  let inspection, saved, discussions, entryRead;
+  let inspection, saved, discussions, directory, entryRead;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
@@ -77,6 +78,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       });
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
+    directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, canUse, resolveEntry });
     discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse,
       readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
         assertApps(typeof readCommunityAuthority === 'function', 'apps_authority_fence_required', 503);
@@ -354,7 +356,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     send(channel, { type: 'sync', apps });
   }
   function execute({ op, args = {}, actor }) {
+    if (directoryOperations.includes(op)) assertApps(Object.hasOwn(args, 'expectedAccountId'), 'apps_directory_account_required');
     args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
+    if (directoryOperations.includes(op)) return directory.execute({ op, actor, args });
     if (savedOperations.has(op)) return saved.execute({ op, actor, args });
     if (discussionOperations.has(op)) return discussions.execute({ op, actor, args });
     if (op === 'apps.source.promote' || op === 'apps.source.history') return sources.execute({ op, actor, args });

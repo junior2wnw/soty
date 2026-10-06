@@ -26,6 +26,28 @@ node scripts/app-art/cli.mjs prepare --catalog ./app-catalog.json
 
 Принимаются только выбранные поля `appId`/`id`, `name`, `description`, `coverKey` и объект `art`. Конфигурация, переменные окружения, подключения и ключи авторизации не читаются. Из `art` можно задать `key`, `purpose`, `subject`, `alt`, `palette`, `focalPoint` и необязательный `compactFocalPoint`. Если определения ещё нет, его локальный ключ вычисляется из `appId`, а композиция — из назначения приложения. Точное предметное описание в `subject` даёт более выразительный результат. Эти данные остаются в локальных registry/jobs. Каталог всегда создаёт `kind: "app"`, поэтому private description и `art.alt` не становятся публичной подписью.
 
+## Отдельные обложки поля
+
+Карточки и поле используют независимые профили. Определение с `"profile": "field"` готовит квадратный арт для настоящей SVG-маски соты; это не переключает старые карточки на квадрат и не меняет их URLs. В квадрате оставьте воздух вокруг предмета: важные концы силуэта должны помещаться в центральных 70%, нижняя треть остаётся спокойной для HTML-подписи. В `styleReference` можно указать утверждённый локальный PNG внутри `output/`, например `output/soty-field-v2-20261006/01-mine.png`; путь остаётся в приватном job.
+
+```powershell
+node scripts/app-art/cli.mjs prepare --definition ./new-field-art.json
+# Встроенный image_gen получает точный job.prompt и локальный style reference.
+node scripts/app-art/cli.mjs import --key local-art-key --source ./generated-square.png --visual-approved
+node scripts/app-art/cli.mjs bind --profile field --app-id app-<32-hex-symbols> --key local-art-key
+node scripts/app-art/cli.mjs validate
+```
+
+Источник должен быть квадратным, минимум 960×960 px. Resize не увеличивает исходник: принятый профиль создаёт WebP 160/320/640/960 px с бюджетами 20/60/140/250 KB. Перед `--visual-approved` оператор смотрит отдельный предмет в реальной соте на большом экране и телефоне, проверяет важные концы, отсутствие текста, рамок и лишних объектов. Автоматическая проверка размеров не заменяет художественную приёмку.
+
+Явный публичный `coverKey` для существующего общего арта задаётся `profile --key field-hive --cover-key hive`. Для частных определений `kind: "app"` разрешён только opaque alias; безопаснее использовать точную привязку app ID. Resolver `resolveFieldAppArt({ appId, coverKey }, { screenWidth })` отдаёт `src`, `srcset`, `sizes`, `focalPosition`, `compactFocalPosition`, `palette` и `fallback`. Привязка по ID имеет приоритет. Никаких выводов по названию приложения или его URL нет; незнакомый ключ использует обычную локальную обложку или нейтральный fallback.
+
+Поле хранит только минимальный `public/app-art/field-profile.json` и равную ему source-копию `src/world/app-art-field-profile.json`. `manifest.json` карточек остаётся отдельным. В обоих публичных профилях нет prompts, purpose, исходных app IDs и локальных путей; новые private apps получают случайный публичный ключ и пустой alt. Как и карточные обложки, готовый арт публичен и не является механизмом доступа. Изменение, импорт и откат профиля требуют сохранённой private history; свежий checkout проверяет оба готовых профиля через `validate --public` и не очищает их при отсутствии operator data.
+
+Для различимой HTML-подписи можно явно выбрать локальный значок: `icon --key field-canvas --icon brush`. Разрешён конечный набор `cells`, `brush`, `bars`, `activity`, `note`, `chess`, `music`, `app`; название и URL приложения не выбирают значок автоматически. `FieldAppArt.icon` необязателен. Изменение значка добавляет отдельный неизменяемый layout receipt к выбранному арту, сохраняет raster-файлы, generation receipt и version. Оно не вызывает генерацию. Значок можно также указать в новом определении с `profile: "field"`.
+
+Фантазийные лица для проверки интерфейса находятся только в `src/world/fixtures/portraits/` и подключены dev-only `ui-fixture.ts`. Они не связаны с настоящими профилями и не используются как production пользователи, сообщения или online-сигналы.
+
 ## Реальная генерация
 
 Генерация выполняется встроенным инструментом Codex `image_gen`, по одному вызову на отдельный арт. Передайте ему точный `job.prompt`, `transparent_background: false`, без скриншота как цели редактирования. Ключи API и платный CLI не нужны. Для новых обложек применяется исходный визуальный язык утверждённого рендера `output/soty-ideal-renders-20261005/01-graphite-home.png`: графит, светлая бумага, стекло, керамика, мягкий студийный свет.

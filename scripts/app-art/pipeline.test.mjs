@@ -347,6 +347,7 @@ test('a cold Git checkout validates public covers and refuses mutations without 
   }
   await mkdir(join(cold, 'src', 'world'), { recursive: true });
   await copyFile(join(operator, 'src', 'world', 'app-art-manifest.json'), join(cold, 'src', 'world', 'app-art-manifest.json'));
+  await copyFile(join(operator, 'src', 'world', 'app-art-field-profile.json'), join(cold, 'src', 'world', 'app-art-field-profile.json'));
   await rm(join(cold, 'scripts', 'app-art', 'registry.json'));
   const before = await readFile(join(cold, 'public', 'app-art', 'manifest.json'));
   assert.equal((await validatePublicArtwork(cold)).valid, true);

@@ -82,6 +82,7 @@ export interface WorldAssistantHandle {
 }
 export interface WorldAppOptions {
   api: WorldApi;
+  fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;
   localAccount?: () => Promise<{ accountId: string | null; label: string }>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;

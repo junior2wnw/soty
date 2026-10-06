@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "profile": "field",
+  "aliases": {
+    "canvas": "field-canvas",
+    "chess": "field-chess",
+    "hive": "field-hive",
+    "notes": "field-notes",
+    "pulse": "field-pulse",
+    "tavysh": "field-tavysh"
+  },
+  "bindings": {
+    "bind-ed7232c5f5d14982b822da1b782c9c3677334f8e3ba191d4ed0cb6688e2c92f9": "field-hive",
+    "chess": "field-chess",
+    "notes": "field-notes"
+  },
+  "assets": {
+    "field-canvas": {
+      "key": "field-canvas",
+      "version": 1,
+      "alt": "Translucent purple silk-glass ribbon flowing in a graceful S wave.",
+      "palette": {
+        "base": "#392F44",
+        "accent": "#CCACEF",
+        "ink": "#F4EDF9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-canvas/v001-aa3b3ecb20f2/cover-160.e8ada3fd4dd5.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-canvas/v001-aa3b3ecb20f2/cover-320.2d755a9f88e2.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-canvas/v001-aa3b3ecb20f2/cover-640.79243bfbc490.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-canvas/v001-aa3b3ecb20f2/cover-960.4769be3a0681.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "brush"
+    },
+    "field-chess": {
+      "key": "field-chess",
+      "version": 1,
+      "alt": "One satin warm ivory chess knight facing left, complete ears and pedestal.",
+      "palette": {
+        "base": "#242321",
+        "accent": "#EBC7A2",
+        "ink": "#F8F1E6"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-chess/v001-0947fdad7866/cover-160.3f33f2e36a05.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-chess/v001-0947fdad7866/cover-320.0175fa8a83db.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-chess/v001-0947fdad7866/cover-640.74e6f7f958d1.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-chess/v001-0947fdad7866/cover-960.c89672f2e8f1.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "chess"
+    },
+    "field-hive": {
+      "key": "field-hive",
+      "version": 1,
+      "alt": "Connected frosted ivory and desaturated sage glass honeycomb sculpture, intricate bevels and overlapping depth.",
+      "palette": {
+        "base": "#303B34",
+        "accent": "#C8D6BF",
+        "ink": "#F4F5ED"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-hive/v001-3c589ab7daab/cover-160.e4355caaa20b.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-hive/v001-3c589ab7daab/cover-320.de5d83f001b0.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-hive/v001-3c589ab7daab/cover-640.cb7ae304e54d.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-hive/v001-3c589ab7daab/cover-960.f545ca877f9c.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "cells"
+    },
+    "field-notes": {
+      "key": "field-notes",
+      "version": 1,
+      "alt": "Folded angular ivory paper sculpture with tactile fibers and softly curved fold.",
+      "palette": {
+        "base": "#413B33",
+        "accent": "#E8CFAB",
+        "ink": "#F5F0E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-notes/v001-3e3e88454436/cover-160.771b48725b6f.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-notes/v001-3e3e88454436/cover-320.3ea1f3020885.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-notes/v001-3e3e88454436/cover-640.2db653a1ba33.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-notes/v001-3e3e88454436/cover-960.88bfc70e48bf.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "note"
+    },
+    "field-pulse": {
+      "key": "field-pulse",
+      "version": 1,
+      "alt": "Exactly three ascending rounded ivory-sage columns in a charcoal studio.",
+      "palette": {
+        "base": "#293629",
+        "accent": "#D5DDAD",
+        "ink": "#F6F7EE"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-pulse/v001-c88c1471286b/cover-160.adf41601abbd.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-pulse/v001-c88c1471286b/cover-320.ff6ce4467a04.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-pulse/v001-c88c1471286b/cover-640.7605b2c80869.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-pulse/v001-c88c1471286b/cover-960.ca66a4bfd748.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "bars"
+    },
+    "field-tavysh": {
+      "key": "field-tavysh",
+      "version": 1,
+      "alt": "Luminous champagne-gold glass ribbon wave with slender warm filaments.",
+      "palette": {
+        "base": "#21211B",
+        "accent": "#E8CF9C",
+        "ink": "#FAF5E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-tavysh/v001-ee75c756d1f9/cover-160.cc623367ab84.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-tavysh/v001-ee75c756d1f9/cover-320.5f02cb4b27df.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-tavysh/v001-ee75c756d1f9/cover-640.c612d83414e0.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-tavysh/v001-ee75c756d1f9/cover-960.13154b8f2159.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "music"
+    }
+  }
+}

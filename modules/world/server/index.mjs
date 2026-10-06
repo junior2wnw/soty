@@ -9,11 +9,15 @@ import { PROFILE_OPERATIONS, profileOperation } from './profiles.mjs';
 import { COMMUNITY_OPERATIONS, communityOperation } from './communities.mjs';
 import { CHAT_OPERATIONS, chatOperation } from './chat.mjs';
 import { AVATAR_OPERATIONS, avatarOperation } from './avatars.mjs';
+import { DIRECTORY_OPERATIONS, directoryMatches, directoryOperation } from './directory.mjs';
+import { FIELD_OPERATIONS, fieldOperation, migrateField } from './field.mjs';
 
 export { WorldError, SCHEMA_VERSION };
-export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS]);
+export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS, ...DIRECTORY_OPERATIONS, ...FIELD_OPERATIONS]);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const READ_OPERATIONS = new Set(['world.profile.get', 'world.profile.view', 'world.discovery.search',
+  ...DIRECTORY_OPERATIONS,
+  'world.field.get',
   'world.community.get', 'world.community.list', 'world.membership.list', 'world.chat.list', 'world.profile.avatar.read', 'world.profile.avatars']);
 function physicalPath(file) {
   try { return realpathSync(file); }
@@ -37,8 +41,9 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
   const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false;
-  try { migrateWorld(db, projectId); } catch (error) { db.close(); throw error; }
+  try { migrateWorld(db, projectId); migrateField(db); } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
+  db.function('world_directory_match', { deterministic: true }, directoryMatches);
   const subscribers = new Set(); let events = [];
   const m = createModel(db, event => { events.push(Object.freeze(event)); });
   const operations = new Set(WORLD_OPERATIONS);
@@ -89,6 +94,8 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
         if (PROFILE_OPERATIONS.includes(op)) result = profileOperation(m, op, args, actor, now);
         else if (COMMUNITY_OPERATIONS.includes(op)) result = communityOperation(m, op, args, actor, now);
         else if (CHAT_OPERATIONS.includes(op)) result = chatOperation(m, op, args, actor, now);
+        else if (DIRECTORY_OPERATIONS.includes(op)) result = directoryOperation(m, op, args, actor);
+        else if (FIELD_OPERATIONS.includes(op)) result = fieldOperation(m, op, args, actor, now);
         else result = avatarOperation(m, op, args, actor, now);
         if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
           const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);
