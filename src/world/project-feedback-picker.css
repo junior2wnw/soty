@@ -1,0 +1,10 @@
+.soty-project-capture{box-sizing:border-box;width:min(480px,calc(100vw - 24px));max-height:calc(100vh - 32px);overflow:auto;border:1px solid #b6c9bf;border-radius:18px;padding:20px;background:#f7faf8;color:#193326;font:15px/1.5 system-ui,sans-serif}
+.soty-project-capture::backdrop{background:#101c16b8}
+.soty-project-capture h2{margin:0 0 10px;font-size:22px;line-height:1.25}
+.soty-project-capture p{margin:8px 0 14px;overflow-wrap:anywhere}
+.soty-project-capture img{display:block;width:auto;max-width:100%;max-height:40vh;margin:12px auto;border-radius:8px}
+.soty-project-capture audio{width:100%;margin:12px 0}
+.soty-project-capture-actions{display:flex;flex-wrap:wrap;gap:8px}
+.soty-project-capture button{min-height:44px;padding:9px 14px;border:1px solid #9db4a5;border-radius:10px;background:#fff;color:inherit;font:inherit;cursor:pointer}
+.soty-project-capture button:focus-visible{outline:3px solid #527565;outline-offset:2px}
+.soty-project-capture button:disabled{opacity:.55;cursor:default}

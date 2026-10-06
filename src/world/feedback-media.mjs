@@ -15,7 +15,7 @@ export function validateAttachmentBudget(attachments, limits = FEEDBACK_MEDIA_LI
   let bytes = 0;
   for (const value of attachments) {
     if (!value || !['image', 'audio'].includes(value.kind) || typeof value.name !== 'string' || value.name.length > 120 ||
-        !(value.kind === 'image' ? ['image/png', 'image/jpeg', 'image/webp'] : ['audio/webm', 'audio/ogg', 'audio/mp4']).includes(value.mimeType)) throw new Error('invalid_feedback_attachment');
+        !(value.kind === 'image' ? ['image/png', 'image/jpeg', 'image/webp'] : ['audio/webm', 'audio/ogg']).includes(value.mimeType)) throw new Error('invalid_feedback_attachment');
     bytes += attachmentBytes(value);
   }
   if (bytes > limits.totalAttachmentBytes) throw new Error('feedback_attachment_bytes');
@@ -156,13 +156,15 @@ export function createFeedbackRecorder({ maxBytes, maxSeconds = 120, signal, onT
   const cancel = () => { cancelled = true; if (recorder?.state === 'recording') recorder.stop(); stopTracks(); rejectResult?.(new DOMException('Cancelled', 'AbortError')); };
   signal?.addEventListener('abort', cancel, { once: true });
   async function start() {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('feedback_record_unavailable');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined'
+      || typeof MediaRecorder.isTypeSupported !== 'function') throw new Error('feedback_record_unavailable');
     aborted(signal);
+    // Match the actual server's bounded Opus profile before requesting a mic.
+    const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus'].find(value => MediaRecorder.isTypeSupported(value));
+    if (!mime) throw new Error('feedback_record_unavailable');
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (cancelled || signal?.aborted) { stopTracks(); throw new DOMException('Cancelled', 'AbortError'); }
-      const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(value => MediaRecorder.isTypeSupported(value));
-      if (!mime) throw new Error('feedback_record_unavailable');
       recorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 48000 });
       return await new Promise((resolve, reject) => {
         rejectResult = reject; const parts = []; let bytes = 0, seconds = 0, overflow = false;

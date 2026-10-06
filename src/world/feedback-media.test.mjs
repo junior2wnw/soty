@@ -38,9 +38,19 @@ function mediaGlobals(t, navigator, MediaRecorder) {
   Object.defineProperty(globalThis, 'MediaRecorder', { configurable:true, value:MediaRecorder });
   t.after(() => { for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; } });
 }
+
+test('unsupported MP4-only recorder never requests microphone or advertises server-invalid media', async t => {
+  let requests = 0;
+  class Recorder { static isTypeSupported(value) { return value === 'audio/mp4'; } }
+  mediaGlobals(t, { mediaDevices: { async getUserMedia() { requests++; throw new Error('unexpected microphone'); } } }, Recorder);
+  const recorder = createFeedbackRecorder({ maxBytes: 1048576 });
+  await assert.rejects(recorder.start(), /feedback_record_unavailable/);
+  assert.equal(requests, 0);
+  assert.throws(() => validateAttachmentBudget([{ kind: 'audio', name: 'invalid.mp4', mimeType: 'audio/mp4', dataBase64: 'AQID' }]), /invalid_feedback_attachment/);
+});
 test('closing while microphone permission is pending stops a late stream and cannot produce an attachment', async t => {
   let release, stopped=0;
-  mediaGlobals(t, { mediaDevices:{ getUserMedia:() => new Promise(done => { release=done; }) } }, class {});
+  mediaGlobals(t, { mediaDevices:{ getUserMedia:() => new Promise(done => { release=done; }) } }, class { static isTypeSupported(){return true;} });
   const controller=new AbortController(), recorder=createFeedbackRecorder({maxBytes:100,signal:controller.signal});
   const outcome=recorder.start(); controller.abort(); release({getTracks:()=>[{stop(){stopped++;}}]});
   await assert.rejects(outcome, error => error.name==='AbortError'); assert.equal(stopped,1); assert.equal(recorder.active(),false);
