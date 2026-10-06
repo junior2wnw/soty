@@ -4,11 +4,12 @@ import { CapabilityHttpError, createNativeIngress, singleHeader } from './capabi
 import { createCapabilityOperations } from './capabilities-actions.js';
 import { parseMcpJson } from './capabilities-mcp-ingress.js';
 import { canonicalHash } from '../modules/capabilities/server/validation.mjs';
-import { externalCapabilityTools, EXTERNAL_HTTP_ROUTES } from './external-capabilities-contract.js';
+import { externalCapabilityTools, EXTERNAL_HTTP_ROUTES, EXTERNAL_GUIDANCE_HTTP_ROUTES,EXTERNAL_QUERY_HTTP_ROUTES } from './external-capabilities-contract.js';
 
 export const EXTERNAL_MCP_TOOLS = externalCapabilityTools(buildCapabilitiesOpenApi().components.schemas);
+const ALL_REVIEWED_TOOLS = externalCapabilityTools(buildCapabilitiesOpenApi().components.schemas, { guidanceConfigured: true,queryConfigured:true });
 const validator = new AjvJsonSchemaValidator();
-const checks = new Map(EXTERNAL_MCP_TOOLS.map(tool => [tool.name, { tool, input: validator.getValidator(tool.inputSchema), output: validator.getValidator(tool.outputSchema) }]));
+const checks = new Map(ALL_REVIEWED_TOOLS.map(tool => [tool.name, { tool, input: validator.getValidator(tool.inputSchema), output: validator.getValidator(tool.outputSchema) }]));
 const requireThat = (value, code = 'invalid_input') => { if (!value) throw new CapabilityHttpError(code); };
 const invocationFields = ['invocationId','capabilityId','version','status','cancelRequested','effectState','effects','createdAt','updatedAt','completedAt','receipt'];
 function projected(value) {
@@ -21,12 +22,18 @@ export function createExternalCapabilityOperations({ service, origin }) {
     const statuses = { external_adapter_capacity:429, external_admission_limit:429, external_rate_limit:429, external_ledger_limit:429,
       external_adapter_closed:503, external_authority_invalid:503,
       external_adapter_not_registered:404, external_resource_denied:403, external_payload_limit:413,
+      external_guidance_not_found:404, external_guidance_invalid:400,
+      external_query_not_admitted:404,readonly_query_api_required:400,external_query_invalid:400,external_query_unconfirmed:503,
+      external_query_output_invalid:502,
+      planner_readonly_credential_required:403, planner_access_denied:403, planner_source_scope_changed:403,
+      planner_credential_unavailable:503, planner_destination_denied:503, planner_source_unconfirmed:503,
+      planner_response_limit:502, planner_response_invalid:502, planner_source_profile_changed:503, planner_schema_changed:503,
       query_invalid:400, cursor_invalid:400, projection_too_large:503, apps_access_denied:403, apps_owner_required:403, app_unavailable:404 };
     if (Object.hasOwn(statuses,error?.code)) return { status:statuses[error.code], code:error.code };
     return legacy.failure(error);
   }
   return Object.freeze({ authenticate:legacy.authenticate, failure,
-    tools: service.external ? EXTERNAL_MCP_TOOLS : [],
+    tools: service.external ? externalCapabilityTools(buildCapabilitiesOpenApi().components.schemas,{guidanceConfigured:Boolean(service.externalGuidance),queryConfigured:service.external.queryConfigured===true}) : [],
     check(name,args) { return checks.has(name) && checks.get(name).input(args).valid; },
     outputSchema(name) { return checks.get(name)?.tool.outputSchema; },
     async call({ actor, name, args = {} }) {
@@ -37,7 +44,12 @@ export function createExternalCapabilityOperations({ service, origin }) {
       else if (name === 'apps_catalog_get') result = service.external.getContract({actor,...args});
       else if (name === 'apps_invoke') result = projected(await service.external.invoke({actor,...args}));
       else if (name === 'apps_invocation_get') result = projected(service.external.get({actor,...args}));
-      else result = projected(service.external.cancel({actor,...args}));
+      else if (name === 'apps_invocation_cancel') result = projected(service.external.cancel({actor,...args}));
+      else if (name === 'apps_query') result = await service.external.query({actor,...args});
+      else {
+        requireThat(service.externalGuidance, 'external_adapter_closed');
+        result = name === 'apps_guidance_list' ? service.externalGuidance.list({actor,...args}) : service.externalGuidance.get({actor,...args});
+      }
       requireThat(checks.get(name).output(result).valid, 'internal_error'); return result;
     },
     recheck({ actor, name, args, value }) {
@@ -45,13 +57,17 @@ export function createExternalCapabilityOperations({ service, origin }) {
       if (name === 'apps_catalog_search' || name === 'apps_catalog_get') {
         const current = name === 'apps_catalog_search' ? service.external.search({actor,...args}) : service.external.getContract({actor,...args});
         requireThat(canonicalHash(current) === canonicalHash(value), 'access_denied');
+      } else if (name === 'apps_guidance_list' || name === 'apps_guidance_get') {
+        requireThat(service.externalGuidance, 'external_adapter_closed');
+        const current = name === 'apps_guidance_list' ? service.externalGuidance.list({actor,...args}) : service.externalGuidance.get({actor,...args});
+        requireThat(canonicalHash(current) === canonicalHash(value), 'access_denied');
       } else service.external.get({actor,invocationId:value.invocation.invocationId});
     },
   });
 }
 
 const PREFIX = '/api/capabilities/v1/app-actions';
-const routeNames = EXTERNAL_HTTP_ROUTES;
+const routeNames = Object.freeze({ ...EXTERNAL_HTTP_ROUTES, ...EXTERNAL_GUIDANCE_HTTP_ROUTES,...EXTERNAL_QUERY_HTTP_ROUTES });
 /** Same audience-bound service authority as MCP. Cookies/Host/JSON actor claims
  * never authenticate. The namespace stays reserved when no adapter is installed. */
 export function attachExternalCapabilities(app,{service,origin}) {
@@ -84,7 +100,8 @@ export function attachExternalCapabilities(app,{service,origin}) {
         const status=value.invocation&&!TERMINAL.has(value.invocation.status)?202:name==='apps_invoke'&&value.reused===false&&value.invocation.status==='succeeded'?201:200;
         send(res,status,value);
       }catch(error){
-        const safe=operations.failure(error);if(!req.complete||!req.readableEnded)res.set('Connection','close');
+        const safe=operations.failure(error);
+        if(!req.complete||!req.readableEnded){ req.resume(); res.shouldKeepAlive=false; res.set('Connection','close'); }
         if(safe.status===401)res.set('WWW-Authenticate','Bearer realm="soty"');send(res,safe.status,{error:{code:safe.code}});
       }finally{lease?.release();}
     };

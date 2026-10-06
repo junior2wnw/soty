@@ -38,7 +38,8 @@ const hash = value => createHash('sha256').update(JSON.stringify(canonical(value
  * Dispatch intents are recoverable delivery records; connector jobs own execution leases.
  * Internal dispatch/result methods must never be exposed as unauthenticated HTTP operations. */
 export function createInvocationStore({ db, clock = Date.now, transaction, authorize, reserveBudget, settleBudget,
-  canonicalHash = hash, newId = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`, limits = {}, captureInternalCore } = {}) {
+  canonicalHash = hash, newId = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`, limits = {}, captureInternalCore,
+  readonlyContracts = [], captureReadonlyCore, validateReadonlyInput } = {}) {
   check(db && typeof db.prepare === 'function' && [transaction, authorize, reserveBudget, settleBudget, clock, canonicalHash, newId].every(fn => typeof fn === 'function'), 'invocation_configuration_required');
   const bounds = { ...DEFAULT_LIMITS, ...limits };
   for (const [name, value] of Object.entries(bounds)) check(Object.hasOwn(DEFAULT_LIMITS, name) && Number.isSafeInteger(value) && value > 0 && value <= DEFAULT_LIMITS[name], 'invocation_invalid_limits');
@@ -48,6 +49,14 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   const run = (sql, ...args) => prepare(sql).run(...args);
   const now = () => integer(clock());
   const native = createNativeBaselineGuard({ db, error: code => new InvocationError(code) });
+  check(Array.isArray(readonlyContracts) && readonlyContracts.length <= 64, 'readonly_query_configuration_invalid');
+  const readonlyRefs = new Map();
+  check(readonlyContracts.length===0 || typeof validateReadonlyInput==='function' && validateReadonlyInput.constructor?.name!=='AsyncFunction','readonly_query_configuration_invalid');
+  for (const ref of readonlyContracts) {
+    exact(ref, ['capabilityId','version','digest']); identifier(ref.capabilityId); integer(ref.version);
+    check(ref.version>=1 && typeof ref.digest==='string' && /^[a-f0-9]{64}$/u.test(ref.digest) && !readonlyRefs.has(ref.capabilityId+'@'+ref.version), 'readonly_query_configuration_invalid');
+    readonlyRefs.set(ref.capabilityId+'@'+ref.version, Object.freeze({...ref}));
+  }
   function atomic(fn) {
     return transaction(() => { const result = fn(); check(!result || typeof result.then !== 'function', 'invocation_async_transaction_forbidden'); return result; });
   }
@@ -161,6 +170,91 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     run('INSERT INTO cap_dispatch_intents(invocation_id,internal_request_id,state,created_at,updated_at) VALUES(?,?,?,?,?)', id, internalRequestId, 'pending', timestamp, timestamp);
     return row(id);
   }
+  // Only admitted readonly contracts receive this private port. Raw input is
+  // validated by the original catalog policy BEFORE substituting the marker.
+  // Markers are never public input and generic dispatch cannot consume them.
+  const READ_MARKER='soty.read-query-intent.v1';
+  function readRow(id) {
+    const value=row(id); check(value,'invocation_not_found'); native.assertGeneric(value.id);
+    const ref=readonlyRefs.get(value.capability_id+'@'+value.capability_version);
+    const marker=JSON.parse(value.input_json), auth=JSON.parse(value.authorization_json), target=JSON.parse(value.target_json);
+    check(ref && ref.digest===value.capability_digest && auth.effects.length===0 && target?.kind==='registered'
+      && plain(marker) && Object.keys(marker).sort().join(',')==='inputDigest,schema' && marker.schema===READ_MARKER
+      && typeof marker.inputDigest==='string' && /^[a-f0-9]{64}$/u.test(marker.inputDigest),'readonly_query_not_admitted');
+    return value;
+  }
+  function assertGenericRead(value) {
+    // Retain the boundary when the optional readonly composition is absent
+    // after reopen. Persisted private markers must not become effect inputs.
+    let marker = false;
+    if (value.input_json.includes(READ_MARKER)) {
+      const input = JSON.parse(value.input_json);
+      marker = plain(input) && Object.keys(input).sort().join(',') === 'inputDigest,schema'
+        && input.schema === READ_MARKER && typeof input.inputDigest === 'string' && /^[a-f0-9]{64}$/u.test(input.inputDigest);
+    }
+    check(!marker && !readonlyRefs.has(value.capability_id+'@'+value.capability_version),'readonly_query_api_required');
+  }
+  function readTerminal(value,status,errorCode) {
+    check(['succeeded','failed','cancelled'].includes(status),'readonly_query_invalid');
+    check(errorCode===undefined || typeof errorCode==='string' && /^[a-z][a-z0-9_]{1,79}$/u.test(errorCode),'readonly_query_invalid');
+    if(TERMINAL.has(value.status))return {reused:true,invocation:projection(value)};
+    const delivery=intent(value.id);check(delivery,'invocation_binding_mismatch');
+    const before=delivery.state==='pending';check(!before || status==='cancelled','readonly_query_not_started');
+    const time=now(),receipt={verificationMethod:status==='succeeded'?'domain_read':'unverified',artifacts:[],...(errorCode?{errorCode}:{})};
+    if(before) {
+      check(run("UPDATE cap_dispatch_intents SET state='cancelled',updated_at=? WHERE invocation_id=? AND state='pending'",time,value.id).changes===1,'readonly_query_dispatch_conflict');
+      settle(value,'released');
+    } else check(delivery.state==='dispatching','readonly_query_dispatch_conflict');
+    // A started query was already charged at CAS. Completion never refunds it.
+    const digest=canonicalHash({status,receipt,readonly:true});
+    run('INSERT INTO cap_receipts(invocation_id,value_json,digest,created_at) VALUES(?,?,?,?)',value.id,encoded(receipt,bounds.metadataBytes),digest,time);
+    run('UPDATE cap_invocations SET status=?,effect_state=\'none\',effects_json=\'[]\',cancel_requested=?,updated_at=?,completed_at=? WHERE id=?',status,Number(status==='cancelled'),time,time,value.id);
+    return {reused:false,invocation:projection(row(value.id))};
+  }
+  if(captureReadonlyCore!==undefined) {
+    check(typeof captureReadonlyCore==='function' && captureReadonlyCore.constructor?.name!=='AsyncFunction','readonly_query_configuration_invalid');
+    captureReadonlyCore(Object.freeze({
+      admit({actor,reference,idempotencyKey,input}) {
+        const ref=readonlyRefs.get(reference?.capabilityId+'@'+reference?.version);
+        check(ref && ref.digest===reference.digest,'readonly_query_not_admitted');
+        check(typeof idempotencyKey==='string' && idempotencyKey.length>=8 && idempotencyKey.length<=160 && !/[\u0000-\u0020\u007f]/u.test(idempotencyKey));
+        const raw=JSON.parse(encoded(input,bounds.inputBytes)),inputDigest=canonicalHash(raw);
+        check(!validateReadonlyInput({reference:ref,input:raw})?.then,'readonly_query_configuration_invalid');
+        return atomic(()=>{
+          let authorized=policy({actor,action:'read',capabilityId:ref.capabilityId,version:ref.version});
+          check(authorized.capabilityDigest===ref.digest && authorized.executionBinding?.kind==='registered' && authorized.effects.length===0,'readonly_query_not_admitted');
+          const requestKey=canonicalHash(idempotencyKey),requestDigest=canonicalHash({capabilityId:ref.capabilityId,version:ref.version,capabilityDigest:ref.digest,
+            input:raw,target:authorized.executionBinding,resources:authorized.resources,effects:authorized.effects,recipients:authorized.recipients});
+          const previous=get('SELECT * FROM cap_invocations WHERE account_id=? AND client_id=? AND request_key=?',authorized.accountId,authorized.clientId,requestKey);
+          if(previous) {check(previous.principal_id===authorized.principalId,'invocation_not_found');check(previous.request_digest===requestDigest,'invocation_request_conflict');
+            const current=readRow(previous.id);access(actor,current,'read');return {reused:true,invocation:projection(current)};}
+          authorized=policy({actor,action:'invoke',capabilityId:ref.capabilityId,version:ref.version,input:raw});
+          const active="status NOT IN ('succeeded','failed','cancelled')";
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND principal_id=? AND ${active}`,authorized.accountId,authorized.principalId).n<4,'external_admission_limit');
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND ${active}`,authorized.accountId).n<16,'external_admission_limit');
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE ${active}`).n<128,'external_admission_limit');
+          check(get('SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND principal_id=? AND created_at>?',authorized.accountId,authorized.principalId,now()-60000).n<10,'external_rate_limit');
+          check(get('SELECT count(*) AS n FROM cap_invocations').n<100000,'external_ledger_limit');
+          const value=insertAuthorized({authorized,capabilityId:ref.capabilityId,version:ref.version,inputJson:encoded({schema:READ_MARKER,inputDigest},bounds.metadataBytes),
+            targetJson:encoded(authorized.executionBinding,bounds.metadataBytes),requestKey,requestDigest});
+          return {reused:false,invocation:projection(value)};
+        });
+      },
+      claim({actor,invocationId,input}) {const digest=canonicalHash(JSON.parse(encoded(input,bounds.inputBytes)));
+        return atomic(()=>{const value=readRow(invocationId);access(actor,value,'read');check(JSON.parse(value.input_json).inputDigest===digest,'invocation_request_conflict');
+          if(TERMINAL.has(value.status)||value.cancel_requested||intent(value.id)?.state!=='pending')return {claimed:false,invocation:projection(value)};
+          const authorization=authorizeDispatch(value),time=now();
+          check(run("UPDATE cap_dispatch_intents SET state='dispatching',updated_at=? WHERE invocation_id=? AND state='pending'",time,value.id).changes===1,'readonly_query_dispatch_conflict');
+          settle(value,'spent');run("UPDATE cap_invocations SET status='running',updated_at=? WHERE id=?",time,value.id);
+          return {claimed:true,authorization,invocation:projection(row(value.id))};});
+      },
+      get({actor,invocationId}) {return atomic(()=>{const value=readRow(invocationId);access(actor,value,'read');
+        const budget=get('SELECT disposition FROM cap_budget_reservations WHERE id=?',value.reservation_id);check(budget,'readonly_query_budget_missing');
+        return {invocation:projection(value),charged:budget.disposition==='spent'};});},
+      finish({invocationId,status,errorCode}) {return atomic(()=>readTerminal(readRow(invocationId),status,errorCode));},
+      cancel({actor,invocationId}) {return atomic(()=>{const value=readRow(invocationId);access(actor,value,'cancel');return readTerminal(value,'cancelled','readonly_query_cancelled');});},
+    }));
+  }
   // Only the composing service receives this transaction core. It is not part
   // of the returned Invocation API and never accepts a public native bypass flag.
   if (captureInternalCore !== undefined) {
@@ -175,6 +269,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
 
   return Object.freeze({
     admit({ actor, capabilityId, version, idempotencyKey, input, target } = {}) {
+      check(!readonlyRefs.has(capabilityId+'@'+version),'readonly_query_api_required');
       identifier(capabilityId); check(Number.isSafeInteger(version) && version >= 1 && version <= 1000000);
       check(typeof idempotencyKey === 'string' && idempotencyKey.length >= 8 && idempotencyKey.length <= 160 && !/[\u0000-\u0020\u007f]/u.test(idempotencyKey));
       const inputJson = encoded(input, bounds.inputBytes), cleanInput = JSON.parse(inputJson);
@@ -255,7 +350,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     },
     requestCancel({ actor, invocationId } = {}) {
       return atomic(() => {
-        const value = row(invocationId); access(actor, value, 'cancel');
+        const value = row(invocationId);check(value,'invocation_not_found');assertGenericRead(value);access(actor, value, 'cancel');
         if (TERMINAL.has(value.status)) return { invocation: projection(value) };
         const delivery = intent(value.id), timestamp = now();
         const beforeDispatch = notDispatched(value, delivery);
@@ -283,7 +378,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     // Never expose input/authorization/internalRequestId over an HTTP/MCP API.
     inspectDispatch({ invocationId } = {}) {
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found'); native.assertGeneric(value.id);
+        const value = row(invocationId); check(value, 'invocation_not_found'); native.assertGeneric(value.id); assertGenericRead(value);
         check(!TERMINAL.has(value.status), 'invocation_already_terminal');
         const delivery = intent(value.id); check(delivery, 'invocation_binding_mismatch');
         return { ...dispatchProjection(value, JSON.parse(value.authorization_json)), state: delivery.state };
@@ -291,7 +386,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     },
     beginDispatch({ invocationId } = {}) {
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found');
+        const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         native.assertGeneric(value.id);
         check(!value.cancel_requested && !TERMINAL.has(value.status), 'invocation_dispatch_denied');
         const authorized = authorizeDispatch(value);
@@ -307,7 +402,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     // This is not a reusable execution permit or a remote runtime lease.
     reconcileAuthorization({ invocationId } = {}) {
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found');
+        const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         try {
           authorizeDispatch(value);
           return { authorized: true, invocation: projection(value) };
@@ -341,7 +436,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     bindJob({ invocationId, internalRequestId, jobId } = {}) {
       identifier(jobId); identifier(internalRequestId);
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found');
+        const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         native.assertGeneric(value.id);
         check(value.internal_request_id === internalRequestId, 'invocation_binding_mismatch');
         check(value.job_id === null || value.job_id === jobId, 'invocation_binding_mismatch');
@@ -356,7 +451,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     markUncertain({ invocationId, effects = [] } = {}) {
       const cleanEffects = sanitizeEffects(effects);
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found');
+        const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         native.assertGeneric(value.id);
         if (TERMINAL.has(value.status)) return { invocation: projection(value) };
         check(['dispatching', 'bound', 'uncertain'].includes(intent(value.id)?.state), 'invocation_dispatch_not_started');
@@ -377,7 +472,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       check(!['committed', 'partial'].includes(effectState) || cleanEffects.length > 0);
       const receiptJson = encoded(cleanReceipt, bounds.metadataBytes);
       return atomic(() => {
-        const value = row(invocationId); check(value, 'invocation_not_found');
+        const value = row(invocationId); check(value, 'invocation_not_found'); assertGenericRead(value);
         native.assertGeneric(value.id);
         // P1 supports count quotas only. Completed work cannot replenish its own
         // allowance by claiming zero cost or releasing a successful reservation.

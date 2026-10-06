@@ -122,4 +122,15 @@ node --test modules/capabilities/test/*.test.mjs
 node --test server/test/capabilities-connect.test.mjs
 ```
 
+The optional authorized application catalog also supports a separate
+host-admitted read-only query profile and pinned skills/documents. `apps_query`
+uses current Root/App/Source authority and the existing invocation budget: one
+unit is spent at durable dispatch CAS, while exact retries return metadata only
+and never repeat a Source read or recover private result contents. No query or
+result payload is retained, and no new storage schema is introduced. JSON hints
+cannot admit executable code. See
+[`authorized-app-queries.md`](../../docs/implementation/authorized-app-queries.md)
+for the exact contract, trusted code boundary, actual Planner gate, timeout/crash
+limits and the distinction between domain reads and operational key metadata.
+
 Remaining P4 gates: native crash/concurrency acceptance, authorized write/receipt HTTP, OAuth AS and versioned MCP adapter, two real client compatibility checks and external HTTPS release. Default `notes.createDraft@1` uses `notes:new`, `create`, `soty:notes`; issuing a grant does not enable its handler. Public crawling/HTML and an OpenAPI document do not guarantee indexing or installation in another AI product.
