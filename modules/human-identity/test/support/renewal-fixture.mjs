@@ -55,6 +55,9 @@ export async function environment(t, { renewal = true, serviceDecorator = value 
   const secrets = [random(), random()], rps = await Promise.all(['app-alpha', 'app-beta'].map((clientId, index) => createHumanBffFixture({ clientId, clientSecret: secrets[index], sessionDatabasePath:join(directory,'rp-'+index+'.sqlite') })));
   let app, identity, connect;
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
+  // Match the production transport. A slow synchronous quota fill must not
+  // race the default 5s idle close with Undici's reused token connection.
+  server.keepAliveTimeout = 65000; server.headersTimeout = 70000;
   await new Promise(done => server.listen(0, '127.0.0.1', done)); const origin = `http://127.0.0.1:${server.address().port}`, issuer = origin + '/human-identity';
   const privateJwk = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
   Object.assign(privateJwk, { kid: 'human-fixture', alg: 'RS256', use: 'sig' });

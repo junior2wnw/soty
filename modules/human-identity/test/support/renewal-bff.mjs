@@ -116,6 +116,7 @@ export async function createHumanBffFixture({ clientId, clientSecret, name = cli
       send(401, { error: lastError });
     }
   });
+  server.keepAliveTimeout = 65000; server.headersTimeout = 70000;
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
   return Object.freeze({ origin, redirectUri: origin + '/oidc/callback', clientId,
