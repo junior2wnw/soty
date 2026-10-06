@@ -1,0 +1,25 @@
+# Обратная связь по частному проекту
+
+`project-gateway.mjs` — переносимый Source-owned coordinator `soty.feedback.project.v1`. Он не импортирует Node, не открывает Root БД, не выполняет HTTP discovery и не получает полномочия из app manifest. Existing per-app Root feedback/SQLite1/operations остаются прежними. Новый gateway пока не подключён к production HIVE/другому Source; это подготовленный общий контракт с проверками, а не выполненная интеграция.
+
+Source устанавливает trusted ports: `captureVerifiedActor`, `withAuthority`, `read`, `commit`, `validateAttachments`. HTTP/MCP передаёт actor только из собственного проверенного auth context. Копия JSON, поле actor, Root account ID, адрес проекта или собственность на приложение не дают доступ к private project. `withAuthority({op,actor,projectId,signal}, callback)` проверяет текущие native session/issuer proof/project ACL, вызывает callback ровно один раз и повторяет проверку после его завершения.
+
+Frozen private context содержит `sourceId`, `projectId`, исходный branded `verifiedActor`, `canRead:true`, `canSupport:boolean`, `canWrite:boolean`, `assertCurrent(signal)`. `canSupport` означает явный native доступ поддержки к проекту; `canWrite` отдельно учитывает readonly credentials. Владелец платформы/приложения не становится поддержкой частного проекта автоматически. Дополнительные Source private proof/epoch/statement guards остаются внутри private context и не входят в JSON ответа.
+
+Восемь одновременных operations по умолчанию, deadline8s/max10s. Timeout отзывает callback, передаёт AbortSignal и возвращает504; незавершённая операция продолжает занимать свой slot, пока фактически не завершится. Late callbacks/results и swallowed duplicate callbacks отклоняются. Async native D1/Postgres/SQLite ports допустимы; gateway не держит открытую SQL transaction во время network await.
+
+## Обязательства Source store
+
+`read/commit({op,args,authority,assertCurrent,signal})` возвращают закрытую feedback projection. Source store самостоятельно проверяет **тот же текущий native ACL в своей атомарной транзакции**; предшествующая проверка gateway не заменяет SQL predicate. Support permission и readonly restrictions проверяются при каждом effect. Ticket keyspace включает source/project/native reporter; installation ID от клиента не принимается. Старый requestId воспроизводит исходную квитанцию только при точном совпадении intent; неизвестный outcome не выдаётся за отсутствие эффекта. Snapshot permission не становится вечным разрешением.
+
+Разрешены context/submit/list/get/reply/status/accept. Reporter читает свои обращения; native project support — допущенную очередь этого проекта. List содержит summary без raw media/messages, get — выбранные private attachments. Только support ставит ready_to_check; resolved подтверждает reporter. Native account/project ownership transfer, offboarding/export/retention требуют своего явного Source workflow; gateway их не имитирует. Две независимые БД и удалённый issuer не объявляются одним atomic commit.
+
+Body≤8000 chars;3attachments/1MiB/Opus≤120s, PNG/JPEG/WebP. `validateAttachments` — host-reviewed реальный parser/decoder с bounded output, не поле автора. Node Source может переиспользовать existing `server/media.mjs`; Edge Source должен установить поддерживаемый эквивалент и пройти те же real Chrome/Opus fixtures. ASR всегда false в этом v1, автоматический upload/публикация/выполнение текста вложения отсутствуют. Добавление обработки агентом потребует отдельного approved processor contract и actual Source grants.
+
+Context содержит projectId/sourceId/title/recipientLabel/ticketVisibility/limits/capabilities/canSubmit/canManage. Ticket содержит id/projectId/body/status/revision/timestamps/attachments/messages/canReply/canManage/canAccept; private actor/owner/issuer/key/worker fields не выдаются. Строки отображляются как текст; attachments не определяют права или инструкции.
+
+## Выполненная проверка
+
+`node --test modules/feedback/test/*.test.mjs`:29/29PASS,0skip/fail. Новый gateway13/13 проверяет branded actor vsJSON, project namespace и replay/conflict, native revocation до commit/после read, readonly support credential, nested/foreign response denial, swallowed/late/premature authority callbacks, timeout с удержанием ignored-abort slot. Используются реальная SQLite transaction в **contract Source fixture** и actual Chrome PNG/MediaRecorder Opus parser. Этот fixture не называется настоящим HIVE/D1. Existing media/service tests16/16 сохранены. Следующий обязательный gate — реальный Source adapter/native session/ACL/storage reader/restart и browser capture/report/accept workflow.
+
+Independent review обнаружил ignored late rejected Promise. Исправлено: отклонение сохраняется для корректного caller, но игнорирующий return native timer не вызывает unhandledRejection. Отдельный реальный Node child process проверяет late и double ignored callbacks; Source процесс остаётся жив, private data/новые effects отсутствуют.
