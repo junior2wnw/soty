@@ -196,7 +196,7 @@ test('Apps5 recognizes each exact monotonic saved guard and retains the historic
 test('the host probe remains independent of candidate source and test-only historical migrators', async () => {
   const source = await readFile(new URL('./storage-probe.mjs', import.meta.url), 'utf8');
   const imports = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/gu)].map(match => match[1]);
-  assert.deepEqual(imports, ['node:fs/promises', 'node:path', 'node:sqlite']);
+  assert.deepEqual(imports, ['node:fs/promises', 'node:path', 'node:sqlite', 'node:crypto']);
   assert.doesNotMatch(source, /\b(?:import\s*\(|require\s*\(|eval\s*\()/u);
   assert.doesNotMatch(source, /fixtures\/apps|modules\/apps|migrateAppsSchema/u);
   assert.match(source, /new DatabaseSync\(filename, \{ readOnly: true \}\)/u);

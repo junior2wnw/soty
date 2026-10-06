@@ -12,6 +12,8 @@ import { normalizeOAuthConfiguration } from './oauth-profile.mjs';
 import { createOAuthConnections, OAUTH_OPERATIONS } from './oauth-connections.mjs';
 import { createDelegationCoordinator, normalizeDelegationConfiguration } from './delegation.mjs';
 import { assert, canonicalHash, exact, integer, newId } from './validation.mjs';
+import { createNativeNotesAdapter, createTrustedAdapterRegistry, NOTES_CREATE_DRAFT_CONTRACT } from './adapters.mjs';
+import { captureExternalAdapters, createExternalAdapterCoordinator } from './external-adapters.mjs';
 
 export { ACCESS_OPERATIONS } from './access.mjs';
 export { BUILTIN_CAPABILITIES } from './catalog.mjs';
@@ -19,7 +21,7 @@ export { AccessError } from './validation.mjs';
 export { OAUTH_OPERATIONS } from './oauth-connections.mjs';
 
 export function createCapabilitiesService({ databasePath, projectId, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES,
-  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, allowOAuthMigration = false, nativeNotes, oauth, delegation } = {}) {
+  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, allowOAuthMigration = false, nativeNotes, oauth, delegation, externalAdapters } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof allowNativeMigration === 'boolean' && typeof allowOAuthMigration === 'boolean', 'schema_configuration_invalid');
@@ -28,6 +30,7 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   const nativeComposition = validateNativeNoteComposition(nativeNotes);
   const oauthComposition = normalizeOAuthConfiguration(oauth);
   const delegationComposition = normalizeDelegationConfiguration(delegation);
+  const externalComposition = captureExternalAdapters(externalAdapters);
   exact(limits, ['access', 'invocations', 'nativeNotes'], 'limits_invalid');
   const nativeLimits = normalizeNativeNoteLimits(limits.nativeNotes);
   const accessLimits = limits.access ?? {};
@@ -38,6 +41,12 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   const maximum = { inputBytes: 262144, metadataBytes: 32768, pageSize: 50 };
   for (const [key, value] of Object.entries(invocationLimits)) integer(value, 1, maximum[key], 'limits_invalid');
   const registry = createCatalog(catalog);
+  // Reject an invalid trusted binding before creating/migrating any database.
+  for (const value of externalComposition) {
+    const entry = registry.get(value.contract.capabilityId, value.contract.version);
+    assert(entry && entry.digest === value.contract.digest && entry.capabilityId !== 'notes.createDraft'
+      && entry.executionBinding.kind === 'registered' && entry.executionBinding.handler === entry.capabilityId && entry.effects.length > 0, 'external_contract_mismatch');
+  }
   // Validate the complete public projection before creating or pinning storage.
   const publicCatalog = createPublicDiscovery({ catalog: registry, documentation });
   if (databasePath !== ':memory:') mkdirSync(path.dirname(databasePath), { recursive: true });
@@ -90,10 +99,13 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     captureInternalCore: nativeComposition ? value => { invocationCore = value; } : undefined,
   });
   let nativeBindingReady = () => false;
-  const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, schemaVersion: storage.schemaVersion, clock,
+  const nativeCoordinator = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, schemaVersion: storage.schemaVersion, clock,
     registry, access, core: invocationCore, settleNativeBudget: nativeSettlement, transaction, ensureOpen,
     composition: nativeComposition, limits: nativeLimits, invocationLimits, oauthScope: oauthAuthority?.scope,
     captureBindingReadiness(value) { nativeBindingReady = value; } }) : null;
+  const adapters = createTrustedAdapterRegistry(nativeCoordinator ? [createNativeNotesAdapter(nativeCoordinator)] : []);
+  const native = nativeCoordinator ? adapters.get(NOTES_CREATE_DRAFT_CONTRACT).adapter : null;
+  const external = externalComposition.length ? createExternalAdapterCoordinator({ entries: externalComposition, registry, invocations, authorize: access.authorize }) : null;
   const oauthCoordinator = oauthComposition ? createOAuthConnections({ db, projectId, registryId: storage.registryId,
     schemaVersion: storage.schemaVersion, clock, transaction, ensureOpen, configuration: oauthComposition, access,
     authority: oauthAuthority, nativeBindingReady }) : null;
@@ -111,11 +123,12 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     projectId, schemaVersion: storage.schemaVersion, registryId: storage.registryId,
     supportedSchemaVersions: CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS,
     operations, execute,
-    authenticateCredential: access.authenticateCredential, authorize: access.authorize,
-    catalog: publicCatalog, invocations, nativeNotes: native,
+    authenticateCredential: access.authenticateCredential, authorize: access.authorize, withOwnerAuthority: access.withOwnerAuthority,
+    withSnapshotOwnerAuthority: access.withSnapshotOwnerAuthority,
+    catalog: publicCatalog, invocations, nativeNotes: native, adapters, external,
     delegation: delegationCoordinator,
     ...(oauthCoordinator ? { oauth: oauthCoordinator.oauth } : {}),
     close() { if (!closed) { assert(!inTransaction && !db.isTransaction, 'nested_transaction'); oauthCoordinator?.close();
-      db.close(); closed = true; oauthComposition?.artifactKey?.fill(0); } }
+      external?.close(); db.close(); closed = true; oauthComposition?.artifactKey?.fill(0); } }
   });
 }

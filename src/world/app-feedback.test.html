@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Обращение · изолированный интерфейсный стенд</title>
+<link rel="icon" href="data:,">
+<style>body{margin:0;font:15px/1.5 system-ui;background:#f5f6f2;color:#17212b}.qa{padding:12px}.qa button{min-height:44px;margin:4px}#host.sw-app{position:relative;inset:auto;z-index:auto;height:calc(100dvh - 180px);min-height:360px;display:flex}#result{white-space:pre-wrap;overflow-wrap:anywhere}#host>.sa-stage{flex:1}</style>
+<section class="qa"><p>Настоящие UI, dialog, iframe и Web Locks. Ответы API вымышлены и задерживаются намеренно. Этот стенд не доказывает signed Connect, сохранение в серверной БД, microphone permission или ASR.</p>
+<button id="run">Проверить интерфейсные сценарии</button><button id="manual">Открыть для ручной проверки</button><p id="result" role="status" data-status="idle">Готов к проверке</p></section>
+<main id="host" class="sw-app"></main>
+<script type="module">
+import './world.css';
+import { mountAppStage } from './app-stage.ts';
+import { formatAppLaunchRoute, parseAppLaunchRoute } from './app-launch.mjs';
+if(!import.meta.env.DEV)throw new Error('fixture_dev_only');
+const host=document.querySelector('#host'), result=document.querySelector('#result');
+const appId=`app-${'78'.repeat(16)}`,domainId=`dom_${'79'.repeat(16)}`;
+let stage=null,generation=0, serial=0;
+const delay=ms=>new Promise(done=>setTimeout(done,ms));
+async function until(check,label){const limit=performance.now()+5000;while(!check()){if(performance.now()>limit)throw new Error(label);await delay(20);}}
+function assert(check,label){if(!check)throw new Error(label);}
+const click=text=>[...host.querySelectorAll('button')].find(node=>node.textContent.trim()===text)?.click();
+function model(){
+ const accountId=`fixture-feedback-${crypto.randomUUID()}`, installationId=`installation_${++serial}`, calls=[], submissions=[], replies=[], actions=[], actionReceipts=new Map();
+ let lose=false, hold=false, release=null, ticket=null, loseAction=false;
+ const context={installationId,appId,title:'Независимый пример',recipientLabel:'Ответственный за тестовое приложение',ticketVisibility:'reporter-and-support',canSubmit:true,canManage:true,
+ capabilities:{text:true,voice:true,screenshot:true,asr:false},limits:{bodyChars:8000,totalAttachmentBytes:1048576,maxAttachments:3,maxAudioSeconds:120}};
+ const api={async request(op,args){calls.push({op,requestId:args?.requestId??null});
+  if(op==='apps.saved.get')return{revision:0,entry:null};
+  if(op==='apps.feedback.context'){if(hold){hold=false;return new Promise(done=>{release=()=>done({context,readiness:'ready'});});}return{context,readiness:'ready'};}
+  if(op==='apps.feedback.list')return{tickets:ticket?[ticket]:[],nextCursor:null};
+  if(op==='apps.feedback.get')return{ticket};
+  if(op==='apps.feedback.submit'){
+   submissions.push(structuredClone(args));
+   ticket??={id:'ticket_fixture',appId,installationId,body:args.body,status:'received',revision:1,createdAt:Date.now(),attachments:args.attachments,messages:[],canReply:true,canManage:true,canAccept:false};
+   if(lose){lose=false;throw Object.assign(new Error('synthetic_response_loss'),{code:'synthetic_response_loss'});}
+   return{requestId:args.requestId,replayed:submissions.length>1,receipt:{ticketId:ticket.id,revision:ticket.revision},ticket};
+  }
+  if(op==='apps.feedback.reply'){replies.push(structuredClone(args));ticket={...ticket,revision:ticket.revision+1,status:'in_progress',messages:[...ticket.messages,{body:args.body,kind:'support',createdAt:new Date().toISOString()}]};return{requestId:args.requestId,receipt:{ticketId:ticket.id,revision:ticket.revision},ticket};}
+  if(op==='apps.feedback.status'||op==='apps.feedback.accept'){
+   actions.push({op,...structuredClone(args)});
+   if(actionReceipts.has(args.requestId))return{requestId:args.requestId,replayed:true,receipt:actionReceipts.get(args.requestId),ticket};
+   if(args.expectedRevision!==ticket.revision)throw Object.assign(new Error('feedback_revision_conflict'),{code:'feedback_revision_conflict'});
+   ticket={...ticket,revision:ticket.revision+1,status:op.endsWith('.accept')?'resolved':args.status,canAccept:op.endsWith('.status')&&args.status==='ready_to_check'};
+   const receipt={ticketId:ticket.id,revision:ticket.revision,createdAt:Date.now()};actionReceipts.set(args.requestId,receipt);
+   if(loseAction){loseAction=false;throw Object.assign(new Error('synthetic_response_loss'),{code:'synthetic_response_loss'});}
+   return{requestId:args.requestId,replayed:false,receipt,ticket};
+  }
+  throw Object.assign(new Error('fixture_operation_unsupported'),{code:'fixture_operation_unsupported'});
+ }};
+ return{accountId,api,calls,submissions,replies,actions,lose(){lose=true;},loseAction(){loseAction=true;},advance(){ticket={...ticket,revision:ticket.revision+1};},hold(){hold=true;},release(){release?.();}};
+}
+async function boot(f){
+ stage?.dispose();const token=++generation;
+ const origin=`http://fixture-app.localhost:${location.port}`,entry={appId,domainId,origin,path:'/start'};
+ const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId,domainId,path:'/start'}));history.replaceState(null,'','#'+intent.route);
+ const app={appId,name:'Независимый пример',status:'ready',ownerAccountId:f.accountId};
+ stage=mountAppStage(host,{api:f.api,accountId:f.accountId,app,intent,isCurrent:()=>token===generation,
+  async request(){f.calls.push({op:'launch',requestId:null});return{url:`${origin}/_soty/boot?path=%2Fstart#${'a'.repeat(43)}`,entry};},
+  onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){},async onAccount(){},onSettings(){}});
+ await stage.ready;const frame=host.querySelector('iframe');
+ frame.srcdoc='<html lang="ru"><meta charset="utf-8"><body style="font:16px system-ui;padding:20px"><label>Состояние приложения <input id="retained" value="initial"></label><p>Синтетический runtime. Нет сервера приложения.</p></body></html>';
+ await until(()=>frame.contentDocument?.querySelector('#retained'),'frame_ready');
+ return frame;
+}
+async function open(){host.querySelector('[data-stage-control=feedback]').click();await until(()=>host.querySelector('.sf-audience')?.textContent.includes('Получатель:'),'context_ready');}
+async function run(){
+ result.dataset.status='running';result.textContent='Проверяем…';const checks=[];
+ try{
+  const f=model(),frame=await boot(f),windowRef=frame.contentWindow;frame.contentDocument.querySelector('#retained').value='keep runtime';await open();
+  const text=host.querySelector('[aria-label="Содержание обращения"]');text.value='Синтетическая проблема';text.dispatchEvent(new Event('input',{bubbles:true}));
+  click('Закрыть');assert(host.querySelector('iframe')===frame&&frame.contentWindow===windowRef&&frame.contentDocument.querySelector('#retained').value==='keep runtime','iframe_changed');
+  await open();assert(host.querySelector('[aria-label="Содержание обращения"]').value==='Синтетическая проблема','draft_lost');assert(f.calls.filter(value=>value.op==='launch').length===1,'extra_launch');checks.push('Dialog open/close: iframe identity и его поле сохранены; launch не повторён.');
+  f.lose();click('Отправить');await until(()=>host.querySelector('.sf-form button[type=submit]')?.textContent.includes('Проверить отправку'),'pending_not_held');
+  assert(host.querySelector('[aria-label="Содержание обращения"]').value==='Синтетическая проблема','unknown_ack_cleared_words');
+  click('Проверить отправку');await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Принято сервером'),'retry_not_confirmed');
+  assert(f.submissions.length===2&&f.submissions[0].requestId===f.submissions[1].requestId,'retry_changed_intent');assert(JSON.stringify(f.submissions[0])===JSON.stringify(f.submissions[1]),'retry_changed_payload');checks.push('Lost ACK: клиент повторяет тот же requestId и payload; слова очищаются после scripted receipt. Это не серверный exactly-once тест.');
+  click('История');await until(()=>host.querySelector('.sf-ticket-row'),'history_missing');host.querySelector('.sf-ticket-row').click();await until(()=>host.querySelector('[aria-label="Ответ в обращении"]'),'ticket_missing');
+  const response=host.querySelector('[aria-label="Ответ в обращении"]');response.value='Содержательный ответ поддержки';response.dispatchEvent(new Event('input',{bubbles:true}));click('Ответить');await until(()=>host.querySelector('.sf-thread-message'),'reply_missing');assert(f.replies[0].expectedRevision===1,'reply_revision_missing');checks.push('Ответ передаёт expectedRevision, отображается текстом; ticket не объявлен Решено.');
+  assert(![...host.querySelectorAll('button')].some(node=>node.textContent.trim()==='Проблема решена'),'accept_exposed_before_ready');
+  f.advance();click('Передать на проверку');await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Это изменение не применено'),'explicit_revision_refusal_missing');
+  await until(()=>host.querySelector('.sf-ticket button')&&!host.querySelector('.sf-ticket button').disabled,'refreshed_status_button_missing');
+  assert(f.actions.length===1,'revision_conflict_automatically_resubmitted');
+  f.loseAction();click('Передать на проверку');await until(()=>[...host.querySelectorAll('button')].some(node=>node.textContent.trim()==='Проверить изменение'),'status_lost_ack_not_frozen');
+  click('Проверить изменение');await until(()=>[...host.querySelectorAll('button')].some(node=>node.textContent.trim()==='Проблема решена'),'status_retry_not_confirmed');
+  assert(f.actions[1].requestId===f.actions[2].requestId&&JSON.stringify(f.actions[1])===JSON.stringify(f.actions[2]),'status_retry_changed_intent');
+  click('Проблема решена');await until(()=>host.querySelector('.sf-ticket-status')?.textContent==='Решено','reporter_accept_missing');assert(f.actions[3].op==='apps.feedback.accept','wrong_accept_operation');checks.push('Передача на проверку и принятие явные; revision conflict ждёт нового клика, lost ACK сохраняет точный intent, принять раньше нельзя.');
+  const old=model();old.hold();await boot(old);host.querySelector('[data-stage-control=feedback]').click();await until(()=>old.calls.some(value=>value.op==='apps.feedback.context'),'old_context_not_sent');const next=model();await boot(next);old.release();await delay(60);assert(!host.querySelector('.sf-dialog'),'late_context_reentered_new_account');checks.push('Поздний context старого account generation не появляется в новом stage.');
+  await open();checks.push('Новый аккаунт получает свою пустую панель.');
+  const volatile=host.querySelector('[type=checkbox]');volatile.click();const words=host.querySelector('[aria-label="Содержание обращения"]');words.value='Без локального сохранения';words.dispatchEvent(new Event('input',{bubbles:true}));click('Отправить');
+  await until(()=>host.querySelector('.sf-notice')?.textContent.includes('Принято сервером'),'volatile_cannot_submit');assert(next.submissions[0]?.body==='Без локального сохранения','volatile_payload_missing');checks.push('Явный отказ от локального сохранения оставляет отправку доступной; до receipt намерение остаётся в памяти.');
+  result.dataset.status='pass';result.textContent=checks.join('\n');
+ }catch(error){result.dataset.status='fail';result.textContent='FAIL: '+String(error.message).replace(/[^a-zA-Z0-9_ -]/g,'').slice(0,160);}
+}
+document.querySelector('#run').addEventListener('click',()=>void run());
+document.querySelector('#manual').addEventListener('click',()=>void boot(model()));
+</script>
+</html>

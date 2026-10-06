@@ -38,7 +38,8 @@ export function parseConnectLink(value, origin = globalThis.location?.origin) {
   } catch { return null; }
 }
 export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename,
-  snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null, initialTab = 'profile' }) {
+  snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null, initialTab = 'profile', bootstrapOnOpen = true }) {
+  if (typeof bootstrapOnOpen !== 'boolean') throw new TypeError('invalid_bootstrap_policy');
   const previousFocus = document.activeElement;
   const dialog = document.createElement('dialog');
   dialog.className = 'connect-panel';
@@ -104,6 +105,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     await refresh(); if (stopped) return;
     dialog.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'));
     if (intent) { await renderIntent(); return; }
+    if (!local.accountId && (tab === 'profile' || tab === 'people')) {
+      content.innerHTML = '<h3>Открыть существующий профиль</h3><p>Подтвердите новое устройство с вашего прежнего устройства или используйте файл восстановления.</p><button data-existing>Подключить по QR</button><button data-recovery>Открыть файл восстановления</button>';
+      on('[data-existing]', async () => { tab = 'devices'; await render(); });
+      on('[data-recovery]', async () => { tab = 'recovery'; await render(); });
+      return;
+    }
     if (tab === 'profile') {
       const account = status?.account;
       content.innerHTML = `<h3>${escape(account?.label || label)}</h3><p>Ваш профиль сохраняется при обновлениях. У каждого подключённого устройства свой доступ.</p>
@@ -197,7 +204,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     } else {
       const verified = status?.recovery?.verified === true;
       content.innerHTML = `<h3>Не потерять профиль</h3><p>${verified ? 'Запасной способ входа проверен.' : 'Пока доступ зависит от ваших устройств. Сохраните и проверьте файл восстановления.'}</p>
-        <button data-save-recovery>Создать файл восстановления</button><div data-recovery-confirm></div>
+        ${local.accountId ? '<button data-save-recovery>Создать файл восстановления</button>' : ''}<div data-recovery-confirm></div>
         <label>Открыть профиль из файла восстановления<input type="file" accept="application/json,.json" data-recover-file></label><button data-recover>Восстановить профиль</button>
         <h4>Сохранённая копия данных</h4><p>${escape(snapshotDescription)}</p>
         ${snapshot ? '<button data-save>Сохранить текущие данные</button>' : ''}
@@ -246,7 +253,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   }
   void guard(async () => {
     local = await client.getLocalState();
-    if (!local.accountId) { try { await client.bootstrap(label); } catch (error) { note(friendly(error)); } }
+    if (!local.accountId && bootstrapOnOpen) { try { await client.bootstrap(label); } catch (error) { note(friendly(error)); } }
     await render();
   })();
   return { close: () => dialog.close(), refresh: () => guard(render)() };

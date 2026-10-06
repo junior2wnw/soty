@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,">
+<title>Обращения · настоящая локальная очередь</title>
+<style>body{margin:0;font:14px/1.5 system-ui}.qa{padding:10px;background:#f5f6f2}.qa button{min-height:44px;padding:8px;margin:3px}#result{white-space:pre-wrap;overflow-wrap:anywhere}#host.sw-app{position:relative;inset:auto;z-index:auto;height:calc(100dvh - 230px);min-height:400px;display:flex}#host>.sa-stage{flex:1}</style>
+<section class="qa"><p>Только localhost и вымышленные данные. Настоящие IndexedDB, signed Connect, HTTP runtime и временная SQLite. Вспомогательные grant/support/restart routes существуют только на этом стенде и не являются production авторизацией.</p>
+<button id="start">Начать локальную проверку</button><button id="arm" disabled>Потерять следующий ответ отправки</button><button id="restart" disabled>Перезапустить сервер</button><button id="support" disabled>Ответ тестовой поддержки</button><button id="verify" disabled>Проверить сохранность и доступ</button>
+<label>Синтетический источник отзывов <select id="review-scenario"><option value="public">Опубликованные</option><option value="empty">Подтверждённая пустота</option><option value="unavailable">Источник недоступен</option><option value="partial">Только данные объекта</option><option value="mismatch">Чужой subjectId</option><option value="redirect">Redirect</option><option value="large">Превышен лимит</option><option value="slow">Медленный ответ</option></select></label><button id="reviews-proof">Проверить анонимность чтения</button>
+<p id="result" role="status" data-status="idle">Запустите стенд scripts/fixtures/feedback-browser.mjs.</p></section>
+<section class="qa"><p>Root-вход: только синтетические приложения и профили этого localhost. Открытие страницы входа не создаёт аккаунт автоматически.</p>
+<button id="root-seed">Создать тестовый профиль для Root</button><button id="root-second">Подготовить второй тестовый профиль</button><button id="root-switch">Сменить тестовый профиль в другой вкладке</button>
+<button id="human-lose">Потерять следующий ответ входа</button><button id="human-hold">Задержать следующий ответ входа</button><button id="human-release">Вернуть задержанный ответ</button><button id="human-proof">Проверить Root-вход без вывода ключей</button>
+<div id="human-rps"></div><p id="human-result" role="status"></p></section>
+<main id="host" class="sw-app"></main>
+<script type="module">
+import './world.css';
+import {createConnectClient} from '../../modules/connect/browser/index.mjs';
+import {mountAppStage} from './app-stage.ts';
+import {formatAppLaunchRoute,parseAppLaunchRoute} from './app-launch.mjs';
+import {accountClient} from '../core/connect-client.ts';
+if(!import.meta.env.DEV||!['127.0.0.1','localhost'].includes(location.hostname))throw new Error('fixture_dev_only');
+const host=document.querySelector('#host'),output=document.querySelector('#result'),actions=[...document.querySelectorAll('.qa button:not(#start)')];
+let stage,client,other,info,accountId,foreignId,lastTicketId=null,lastSubmitted=null,stageGeneration=0,submissions=[],lastProof=null;
+const humanOutput=document.querySelector('#human-result');let rootAccountId=null,otherRootId=null;
+const showHuman=value=>{humanOutput.textContent=typeof value==='string'?value:JSON.stringify(value,null,2);};
+const endpoint=location.origin+'/api/connect/rpc';
+async function helper(path,body){const response=await fetch('/__fixture/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});const value=await response.json();if(!response.ok)throw Object.assign(new Error(value.code||'fixture_failed'),{code:value.code});return value;}
+const code=error=>/^[A-Za-z0-9_:-]+$/.test(error?.code||'')?error.code:'fixture_check_failed';
+function show(value,status='ready'){output.dataset.status=status;output.textContent=typeof value==='string'?value:JSON.stringify(value,null,2);}
+async function digest(value){const bytes=new TextEncoder().encode(JSON.stringify(value));return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(value=>value.toString(16).padStart(2,'0')).join('');}
+async function start(){
+ try{
+  stage?.dispose();client?.dispose();other?.dispose();info=await helper('info');
+  client=createConnectClient({projectId:info.projectId,endpoint,dbName:'feedback-signed:'+info.namespace+':reporter'});
+  let local=await client.getLocalState();if(!local.accountId)await client.bootstrap('Тестовый отправитель');accountId=(await client.getLocalState()).accountId;
+  other=createConnectClient({projectId:info.projectId,endpoint,dbName:'feedback-signed:'+info.namespace+':foreign'});
+  local=await other.getLocalState();if(!local.accountId)await other.bootstrap('Другой тестовый отправитель');foreignId=(await other.getLocalState()).accountId;
+  await helper('grant',{accountId});await helper('grant',{accountId:foreignId});
+  const apps=(await client.extension('apps.list',{}, {expectedAccountId:accountId})).apps,record=apps.find(value=>value.id===info.appId);if(!record)throw new Error('fixture_app_missing');
+  const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId:info.appId}));history.replaceState(null,'','#'+intent.route);const token=++stageGeneration;
+  const api={async request(method,args){
+    if(method==='apps.feedback.submit'){const stamp={requestId:args.requestId,fingerprint:await digest(args)};submissions.push(stamp);lastSubmitted=structuredClone(args);}
+    const value=await client.extension(method,args??{}, {expectedAccountId:accountId});
+    if(value.receipt?.ticketId)lastTicketId=value.receipt.ticketId;
+    return value;
+  }};
+  stage=mountAppStage(host,{api,accountId,app:{appId:record.id,name:record.name,status:record.state,ownerAccountId:record.ownerAccountId},intent,isCurrent:()=>token===stageGeneration,
+    async request(args){const result=await client.extension('apps.launch',args,{expectedAccountId:accountId});return{url:result.launchUrl,entry:result.entry};},
+    onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){},async onAccount(){},onSettings(){}});
+  await stage.ready;actions.forEach(value=>{value.disabled=false;});show('Готово. Введите значение внутри настоящего приложения. Откройте «Сообщить проблему», добавьте синтетический PNG и текст. Для lost ACK сначала нажмите кнопку стенда.');
+ }catch(error){show(code(error),'fail');}
+}
+async function verify(){
+ try{
+  const context=(await client.extension('apps.feedback.context',{appId:info.appId},{expectedAccountId:accountId})).context;
+  const page=await client.extension('apps.feedback.list',{appId:info.appId,installationId:context.installationId},{expectedAccountId:accountId});
+  const ticketId=lastTicketId??page.tickets[0]?.id;if(!ticketId)throw new Error('fixture_ticket_missing');lastTicketId=ticketId;
+  const ticket=(await client.extension('apps.feedback.get',{appId:info.appId,installationId:context.installationId,ticketId},{expectedAccountId:accountId})).ticket;
+  let foreignDenied=false;try{await other.extension('apps.feedback.get',{appId:info.appId,installationId:context.installationId,ticketId},{expectedAccountId:foreignId});}catch(error){foreignDenied=error.code==='feedback_ticket_unavailable';}
+  const counts=await helper('counts',{}), lastPair=submissions.slice(-2), rawPresent=(ticket.attachments??[]).some(item=>item.kind==='image'&&typeof item.dataBase64==='string'&&item.dataBase64.length>0);
+  const submittedBytesSame=lastSubmitted?JSON.stringify((ticket.attachments??[]).map(item=>item.dataBase64))===JSON.stringify(lastSubmitted.attachments.map(item=>item.dataBase64)):null;
+  lastProof={signedBrowser:true,indexedDb:true,serverGeneration:(await helper('info')).generation,tickets:counts.tickets,attachmentCount:counts.attachments,
+    status:ticket.status,revision:ticket.revision,textRetained:lastSubmitted?ticket.body===lastSubmitted.body:null,pngRetained:rawPresent,submittedBytesSame,foreignDenied,
+    exactClientReplay:lastPair.length===2&&lastPair[0].requestId===lastPair[1].requestId&&lastPair[0].fingerprint===lastPair[1].fingerprint};
+  show(lastProof,foreignDenied&&rawPresent&&submittedBytesSame!==false?'pass':'fail');
+ }catch(error){show(code(error),'fail');}
+}
+document.querySelector('#start').addEventListener('click',()=>void start());
+document.querySelector('#arm').addEventListener('click',()=>void helper('lose-next-submit-ack',{}).then(()=>show('Следующий успешный submit завершится потерей HTTP ответа после commit.')).catch(error=>show(code(error),'fail')));
+document.querySelector('#restart').addEventListener('click',()=>void helper('restart',{}).then(()=>show('Настоящий сервер перезапущен с прежней временной БД.')).catch(error=>show(code(error),'fail')));
+document.querySelector('#support').addEventListener('click',()=>void (async()=>{const ctx=(await client.extension('apps.feedback.context',{appId:info.appId},{expectedAccountId:accountId})).context;
+ const page=await client.extension('apps.feedback.list',{appId:info.appId,installationId:ctx.installationId},{expectedAccountId:accountId});const ticketId=lastTicketId??page.tickets[0]?.id;if(!ticketId)throw new Error('fixture_ticket_missing');lastTicketId=ticketId;
+ const value=await helper('support',{ticketId});show({signedOwnerSupport:true,status:value.status,revision:value.revision});})().catch(error=>show(code(error),'fail')));
+document.querySelector('#verify').addEventListener('click',()=>void verify());
+document.querySelector('#review-scenario').addEventListener('change',event=>void helper('reviews-scenario',{scenario:event.target.value}).then(value=>show(value)).catch(error=>show(code(error),'fail')));
+document.querySelector('#reviews-proof').addEventListener('click',()=>void helper('reviews-counts',{}).then(value=>show(value,value.credentialRequests===0?'pass':'fail')).catch(error=>show(code(error),'fail')));
+async function humanInfo(){const value=await helper('info');const links=document.querySelector('#human-rps');links.replaceChildren();for(const rp of value.humanRps){const link=document.createElement('a');link.href=rp.loginUrl;link.textContent=rp.label;link.style.cssText='display:inline-flex;min-height:44px;align-items:center;margin:8px';links.append(link);}}
+void humanInfo().catch(error=>showHuman(code(error)));
+document.querySelector('#root-seed').addEventListener('click',()=>void(async()=>{let value=await accountClient.getLocalState();if(!value.accountId)await accountClient.bootstrap('Синтетический профиль Root');rootAccountId=(await accountClient.getLocalState()).accountId;localStorage.setItem('fixture-root-first',rootAccountId);showHuman({explicitProfile:true,existingVault:true});})().catch(error=>showHuman(code(error))));
+document.querySelector('#root-second').addEventListener('click',()=>void(async()=>{rootAccountId=(await accountClient.getLocalState()).accountId;if(!rootAccountId)throw new Error('fixture_root_profile_missing');
+ const details=await helper('info'),second=createConnectClient({projectId:'soty',endpoint,dbName:'synthetic-second-root:'+details.namespace});try{await second.bootstrap('Синтетический второй профиль');const kit=await second.prepareRecovery();await second.confirmRecovery(kit);const linked=await accountClient.recover(kit,'Только синтетический стенд');otherRootId=linked.accountId;localStorage.setItem('fixture-root-second',otherRootId);await accountClient.switchProfile(rootAccountId);showHuman({twoExplicitProfilesSaved:true});}finally{second.dispose();}})().catch(error=>showHuman(code(error))));
+document.querySelector('#root-switch').addEventListener('click',()=>void(async()=>{const target=otherRootId??localStorage.getItem('fixture-root-second');if(!target)throw new Error('fixture_second_profile_missing');await accountClient.switchProfile(target);showHuman({explicitProfileSwitch:true});})().catch(error=>showHuman(code(error))));
+for(const [buttonId,path] of [['human-lose','lose-next-human-ack'],['human-hold','hold-next-human-ack'],['human-release','release-human-ack']])document.getElementById(buttonId).addEventListener('click',()=>void helper(path,{}).then(showHuman).catch(error=>showHuman(code(error))));
+document.querySelector('#human-proof').addEventListener('click',()=>void helper('human-proof',{...(rootAccountId??localStorage.getItem('fixture-root-first')?{expectedAccountId:rootAccountId??localStorage.getItem('fixture-root-first')}: {})}).then(showHuman).catch(error=>showHuman(code(error))));
+// Only content-free evidence is exposed. No keys, launch fragments or message bodies.
+window.__feedbackSignedEvidence=()=>lastProof;
+</script></html>

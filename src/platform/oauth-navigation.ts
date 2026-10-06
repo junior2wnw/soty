@@ -4,12 +4,23 @@ export function submitOAuthCompletion(interactionId: string, expectedAccountId: 
   if (!/^[A-Za-z0-9_-]{16,128}$/u.test(interactionId) || !expectedAccountId || expectedAccountId.length > 160) {
     return Promise.reject(new TypeError('Completion unavailable'));
   }
+  return submitCompletion(`/oauth/interaction/${interactionId}/complete`, 'expectedAccountId', expectedAccountId);
+}
+
+export function submitHumanCompletion(interactionId: string, csrf: string): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{16,128}$/u.test(interactionId) || !/^[A-Za-z0-9_-]{16,128}$/u.test(csrf)) {
+    return Promise.reject(new TypeError('Completion unavailable'));
+  }
+  return submitCompletion(`/human-identity/interaction/${interactionId}/complete`, 'csrf', csrf);
+}
+
+function submitCompletion(route: string, field: string, value: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const form = document.createElement('form');
-    form.method = 'POST'; form.action = `/oauth/interaction/${interactionId}/complete`;
+    form.method = 'POST'; form.action = route;
     form.enctype = 'application/x-www-form-urlencoded'; form.hidden = true;
     const expected = document.createElement('input');
-    expected.type = 'hidden'; expected.name = 'expectedAccountId'; expected.value = expectedAccountId;
+    expected.type = 'hidden'; expected.name = field; expected.value = value;
     form.append(expected); document.body.append(form);
     let finished = false;
     const finish = (navigated: boolean, blocked = false): void => {

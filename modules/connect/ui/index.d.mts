@@ -8,4 +8,5 @@ export function openConnectPanel(options: {
   invitation?: () => { url: string; label: string } | Promise<{ url: string; label: string }>;
   onRename?: (label: string) => void | Promise<void>;
   snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: 'profile' | 'people' | 'devices' | 'recovery';
+  bootstrapOnOpen?: boolean;
 }): { close(): void; refresh(): Promise<void> };

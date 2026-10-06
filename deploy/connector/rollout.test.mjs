@@ -209,6 +209,31 @@ for(const store of ['notes','capabilities'])test(`a serving reader1 rejects fres
  assert.ok(!f.events.some(event=>event.startsWith('stop:')||event.startsWith('policy:')||event==='helper:enter'));
 });
 
+for(const store of ['appRegistration','feedback'])test(`a serving v3 image rejects installed ${store}1 before STOP despite a reader4 candidate`,async()=>{
+ const f=fixture(),readImage=f.engine.image;
+ f.engine.image=async key=>{const value=await readImage(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2,3]}}';return value;};
+ await f.run.prepare(args);
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1});
+ await assert.rejects(f.run.promote(),/storage_reader_incompatible/);
+ assert.equal(f.map.get(args.originalId).State.Running,true);
+ assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
+ assert.ok(!f.events.some(event=>event.startsWith('stop:')||event.startsWith('policy:')||event==='helper:enter'));
+});
+
+for(const store of ['appRegistration','feedback'])test(`new ${store} storage after candidate initialization fences an incompatible v3 rollback without deleting data`,async()=>{
+ const f=fixture({op:'readiness',when:'before'}),readImage=f.engine.image;
+ f.engine.image=async key=>{const value=await readImage(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2,3]}}';return value;};
+ f.run.storageProbe=async()=>f.migrated
+   ? {ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1}
+   : {ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty'};
+ await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
+ assert.equal(f.run.state.failureCode,'storage_reader_incompatible');assert.equal(f.migrated,true);
+ assert.equal(f.map.get(args.originalId).State.Running,false);
+ assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
+ assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
+ assert.ok(!f.events.some(event=>event.startsWith('remove:')));
+});
+
 test('ambiguous candidate start keeps the barrier and does not race a delayed start with original recovery',async()=>{
  const f=fixture();await f.run.prepare(args);const start=f.engine.start;
  f.engine.start=async id=>{if(id===f.run.candidate.Id)throw new SafeError('engine_response_ambiguous');return start(id);};

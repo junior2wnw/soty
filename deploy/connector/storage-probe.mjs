@@ -3,6 +3,7 @@
 import { lstat, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const missing = async file => { try { return await lstat(file); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
@@ -284,6 +285,54 @@ const capabilitiesOAuthProjections = {
   "cap_oauth_interactions": "uid_hash,issuer,static_client_id,resource,redirect_uri,request_digest,browser_nonce_hash,duration_ms,budget_limit,created_at,expires_at,decision,decided_at,decided_account_id,decided_device_id,connection_id"
 };
 
+// Independent U1 format pins, reviewed against frozen literal U1 vectors.
+// Never import the candidate's schema/migrator.
+// Hashes cover exact normalized table DDL, indexes and every immutable guard.
+const universalLayouts = {
+  appRegistration: {
+    directory: 'app-registration', filename: 'registry.sqlite', metadataTable: 'registration_metadata',
+    lineage: 'soty.app-registration.v1', objects: 30,
+    digest: 'ecedce0b7ab95e6dea20dd3721f4f3673d517f1f4320c3bb852d31ca4508f5e6',
+    projections: {
+      registration_metadata: 'key,value',
+      registration_authorities: 'scope_key,scope_json,owner_id,generation,fingerprint,authority_digest,updated_at',
+      registration_heads: 'scope_key,app_id,owner_id,revision,generation,descriptor_digest,authority_digest,authority_revision,intent_digest,request_id,status,feedback_json,updated_at',
+      registration_versions: 'scope_key,generation,committed_revision,descriptor_digest,descriptor_json,authority_digest,authority_revision,plan_json,created_at',
+      registration_receipts: 'account_id,request_id,intent_hash,scope_key,generation,receipt_json,created_at',
+      registration_reference_history: 'kind,ref_id,ref_version,content_digest,content_json',
+      registration_feedback_outbox: 'scope_key,generation,provisioning_key,request_json,created_at',
+    },
+  },
+  feedback: {
+    directory: 'feedback', filename: 'feedback.sqlite', metadataTable: 'feedback_meta',
+    lineage: 'soty.feedback.sqlite.v1', objects: 21,
+    digest: '6f899fad0d4fc218c827bf937fdf14a2bb1336f504281b168167b355aae0d222',
+    projections: {
+      feedback_meta: 'key,value',
+      feedback_installations: 'id,provisioning_key,registry_id,tenant_id,app_id,environment_id,created_at',
+      feedback_provider_receipts: 'receipt_key,installation_id,proof_json,created_at',
+      feedback_tickets: 'id,installation_id,app_id,reporter_id,owner_id,body,status,revision,created_at,updated_at',
+      feedback_attachments: 'id,ticket_id,ordinal,kind,name,mime_type,byte_length,bytes',
+      feedback_messages: 'id,ticket_id,ordinal,actor_id,kind,body,created_at',
+      feedback_receipts: 'installation_id,account_id,request_key,intent_digest,result_json',
+    },
+  },
+  humanIdentity: {
+    directory: 'human-identity', filename: 'identity.sqlite', metadataTable: 'human_identity_meta',
+    lineage: 'soty.human-identity.sqlite.v1', objects: 31,
+    digest: '68a7925ae4ab38923841308906d4ff35a9adf630e30631a718aab80ef8014d22',
+    projections: {
+      human_identity_meta: 'key,value',
+      human_identity_artifacts: 'model,id_hash,payload_cipher,payload_digest,key_id,account_id,device_id,client_id,grant_hash,uid_hash,browser_hash,expires_at,consumed_at,created_at',
+      human_identity_interactions: 'uid_hash,browser_hash,csrf_hash,client_id,profile_digest,client_generation,params_digest,params_cipher,key_id,expires_at,decision,account_id,device_id,approved_at',
+      human_identity_decisions: 'account_id,request_id,intent_hash,uid_hash,result_json,created_at',
+      human_identity_grant_bindings: 'grant_hash,account_id,device_id,client_id,interaction_hash,profile_digest,client_generation,created_at,revoked_at',
+      human_identity_client_versions: 'client_id,version,profile_digest,created_at',
+      human_identity_client_heads: 'client_id,version,profile_digest,generation,active,updated_at',
+    },
+  },
+};
+
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
   for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -463,12 +512,69 @@ async function readCapabilitiesFormat(dataDir) {
   });
 }
 
+function recognizeUniversalLayout(db, expected) {
+  // Bound SQL/name sizes before reading database-controlled schema text.
+  const rows = db.prepare(`SELECT type,
+    CASE WHEN length(name)<=128 THEN name ELSE NULL END AS name,
+    CASE WHEN length(tbl_name)<=128 THEN tbl_name ELSE NULL END AS tbl_name,
+    CASE WHEN typeof(sql)='text' AND length(sql)<=32768 THEN sql ELSE NULL END AS sql
+    FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?`).all(expected.objects + 1);
+  const layout = rows.map(row => [row.type, row.name, row.tbl_name, normalizedSql(row.sql)]);
+  if (rows.length !== expected.objects || createHash('sha256').update(JSON.stringify(layout)).digest('hex') !== expected.digest) fail('storage_format_unreadable');
+  const kinds = new Map(db.prepare('PRAGMA table_list').all().filter(row => row.schema === 'main').map(row => [row.name, row]));
+  for (const [table, projection] of Object.entries(expected.projections)) {
+    const columns = db.prepare(`PRAGMA table_xinfo(${table})`).all();
+    if (kinds.get(table)?.type !== 'table' || kinds.get(table)?.strict !== 1
+      || columns.map(column => column.name).join(',') !== projection || columns.some(column => column.hidden !== 0)) fail('storage_format_unreadable');
+    // LIMIT 0 never reads tickets, attachments, grants, descriptors or private proof bodies.
+    db.prepare(`SELECT ${projection} FROM ${table} LIMIT 0`).all();
+  }
+}
+
+function universalMetadata(db, expected) {
+  const human = expected.directory === 'human-identity', count = human ? 5 : 3;
+  const rows = db.prepare(`SELECT
+    CASE WHEN typeof(key)='text' AND length(key)<=32 THEN key ELSE NULL END AS key,
+    CASE WHEN typeof(value)='text' AND length(value)<=${human ? 512 : 96} THEN value ELSE NULL END AS value
+    FROM ${expected.metadataTable} LIMIT ${count + 1}`).all();
+  const values = Object.fromEntries(rows.map(row => [row.key, row.value]));
+  const literal = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,95}$/u.test(value)
+    && !value.includes('..') && !value.includes('//');
+  if (rows.length !== count || Object.keys(values).sort().join(',') !== (human ? 'environment_id,issuer,lineage,profile,registry_id' : 'environment_id,lineage,registry_id')
+    || values.lineage !== expected.lineage || !literal(values.registry_id) || !literal(values.environment_id)) fail('storage_format_unknown');
+  if (human) {
+    let issuer; try { issuer = new URL(values.issuer); } catch { fail('storage_format_unknown'); }
+    if (values.profile !== 'oidc-provider-9.12.2-human-v1' || values.issuer !== issuer.origin + '/human-identity'
+      || issuer.username || issuer.password || !['https:', 'http:'].includes(issuer.protocol)
+      || issuer.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(issuer.hostname)) fail('storage_format_unknown');
+  }
+  return { registryId: values.registry_id, environmentId: values.environment_id };
+}
+
+async function readUniversalFormat(dataDir, kind) {
+  const expected = universalLayouts[kind];
+  const filename = await checkedStoreFile(dataDir, expected.directory, expected.filename);
+  if (!filename) return { format: 'empty', metadata: null };
+  return inspectDatabase(filename, db => {
+    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
+    recognizeUniversalLayout(db, expected);
+    return { format: 1, metadata: universalMetadata(db, expected) };
+  });
+}
+
 export async function readStorageFormat(dataDir = '/data') {
   const root = await lstat(dataDir);
   if (!root.isDirectory() || root.isSymbolicLink()) fail('storage_directory_invalid');
   const rooms = await readRoomsFormat(dataDir), apps = await readAppsFormat(dataDir);
   const notes = await readNotesFormat(dataDir), capabilities = await readCapabilitiesFormat(dataDir);
-  return { ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities };
+  const registration = await readUniversalFormat(dataDir, 'appRegistration'), feedback = await readUniversalFormat(dataDir, 'feedback'), human = await readUniversalFormat(dataDir, 'humanIdentity');
+  const metadata = [registration.metadata, feedback.metadata, human.metadata].filter(Boolean);
+  if (metadata.some(value => value.registryId !== metadata[0].registryId || value.environmentId !== metadata[0].environmentId)) fail('storage_format_unknown');
+  if (human.format !== 'empty') return { ok: true, schema: 'soty.storage-format.v5', rooms, apps, notes, capabilities,
+    appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format };
+  if (registration.format === 'empty' && feedback.format === 'empty') return { ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities };
+  return { ok: true, schema: 'soty.storage-format.v4', rooms, apps, notes, capabilities,
+    appRegistration: registration.format, feedback: feedback.format };
 }
 
 if (process.env.SOTY_STORAGE_PROBE === '1') {

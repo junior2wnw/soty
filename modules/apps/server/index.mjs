@@ -21,6 +21,7 @@ import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
 import { createAppDirectory, directoryOperations } from './directory.mjs';
+import { createAppAuthorityPort } from './authority-port.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
@@ -60,11 +61,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  let inspection, saved, discussions, directory, entryRead;
+  let inspection, saved, discussions, directory, entryRead, appAuthority;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
+    appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry });
     const readEntryTransaction = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 32 * 1024,
       busyCode: 'apps_entry_busy', timeoutCode: 'apps_entry_timeout_invalid', responseCode: 'apps_entry_response_too_large' });
     entryRead = (actor, args) => {
@@ -871,6 +873,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return hostClassifier.allowsTlsDomain(domain);
   }
   return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+    withAppAuthority: appAuthority,
+    withReviewedAppAuthority(request, callback) {
+      return appAuthority({ ...request, mode: 'owner' }, ({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants }) =>
+        callback(Object.freeze({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants })));
+    },
     policy: Object.freeze({
       decideAccess(value) { assertApps(!closed, 'apps_closed', 503); return publications.decideAccess(value); },
       recheckAccess(value, options) { assertApps(!closed, 'apps_closed', 503); return publications.recheckAccess(value, options); },

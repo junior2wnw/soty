@@ -22,9 +22,22 @@ import { attachCapabilitiesOAuth } from './capabilities-oauth.js';
 import { startOAuthCleanup } from './capabilities-oauth-cleanup.js';
 import { readAppHostingConfig } from './app-hosting-config.mjs';
 import { attachCapabilitiesMcp } from './capabilities-mcp.js';
+import { createUniversalApps } from './universal-apps.js';
+import { forcedLegacyMode } from './universal-mode.js';
+import { createReviewsService } from '../modules/reviews/server/index.mjs';
+import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
+import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
+import { attachHumanIdentity } from './human-identity.js';
+import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
+import { attachExternalCapabilities } from './external-capabilities.js';
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications } = {}) {
+  if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
+  const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
+  const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human,
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
@@ -33,6 +46,14 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const admittedDiscoveryOrigin = validateDiscoveryOrigin({ discoveryOrigin, shellOrigins });
   const admittedCapabilityAudience = validateCapabilityAudience({ audience: capabilityAudience, shellOrigins, enabled: nativeNotesEnabled });
   const oauthProfile = createOAuthHostProfile(oauth, { shellOrigins, audience: admittedCapabilityAudience });
+  const humanProfile = universalEnabled ? createHumanIdentityHostProfile(humanIdentity, { shellOrigins }) : null;
+  if (humanProfile && (humanProfile.registryId !== 'soty' || humanProfile.environmentId !== 'production')) throw new AccessError('human_identity_configuration_invalid');
+  // Validate optional review pins before opening any product database. These
+  // captured closures are called only after the actual Connect/Apps wiring.
+  if (universalEnabled) reviews = createReviewsService({ configuration: reviewsConfiguration, allowFixtureOrigins: allowReviewsFixtureOrigins,
+    actorActive: actor => connect?.isActorActive(actor) === true,
+    withAppAuthority: (request, callback) => apps.withAppAuthority(request, callback) });
+  const reviewOrigins = reviews?.origins() ?? [];
   const legacyFrameSource = legacyAppFrameSource(appOriginTemplate);
   const app = express();
   const safeConnectorPort = Number.isSafeInteger(localConnectorPort) && localConnectorPort >= 1024 && localConnectorPort <= 65535 ? localConnectorPort : 49424;
@@ -60,7 +81,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
-      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:* http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
+      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:* http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}${reviewOrigins.map(origin => ` ${origin}`).join('')}`,
       "manifest-src 'self'",
       "worker-src 'self'",
       `frame-src 'self'${[...new Set([legacyFrameSource, ...(app.locals.appsService?.frameSources() || [])].filter(Boolean))].map(origin => ` ${origin}`).join('')}`,
@@ -88,11 +109,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
-  let world, notes, connectors, capabilities, connect, apps, nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   const failedStart = () => {
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations?.();
     try { void mcp?.close().catch(() => {}); } catch { /* Preserve the startup failure. */ }
-    for (const service of [apps, capabilities, notes, world, connect]) {
+    for (const service of [human, universal, reviews, apps, capabilities, notes, world, connect]) {
       try { service?.close(); } catch { /* Preserve the startup failure. */ }
     }
     try { void connectors?.store.close().catch(() => {}); } catch { /* Preserve the startup failure. */ }
@@ -108,8 +128,9 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     capabilities = createCapabilitiesService({
       databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,
-      catalog: BUILTIN_CAPABILITIES.map(entry => ({ ...entry,
-        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),
+      catalog: [...BUILTIN_CAPABILITIES.map(entry => ({ ...entry,
+        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog)],
+      externalAdapters: composeExternalApplications(externalEntries,{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
       nativeNotes: { notes: notes.native, withAuthorityFence: action => {
         if (!connect) throw new AccessError('native_unavailable');
         return connect.withAuthorityFence(action);
@@ -144,7 +165,16 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const appJobs = createAppJobsExtension({ store: connectors.store, actorActive: actor => connect?.isActorActive(actor) === true,
     inferenceReady: () => connectors.modelProxy.ready === true,
     resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId) });
+  try {
+    if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
+    if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
+      profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
+      withAuthorityFence: action => connect.withAuthorityFence(action), readProfile: () => ({}) });
+  }
+  catch (error) { failedStart(); throw error; }
   app.locals.appsService = apps;
+  app.locals.universalApps = universal;
+  app.locals.humanIdentityService = human;
   app.get('/api/apps/catalog', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Access-Control-Allow-Origin', '*');
     try { res.json(apps.publicCatalog()); } catch { res.status(503).json({ ok: false, code: 'apps_catalog_unavailable' }); }
@@ -160,11 +190,13 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.capabilitiesService = capabilities;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
+  app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience) }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
-    app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, apps.sourcePreparationExtension, appJobs, notes, capabilities],
+    app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities,
+      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(human ? [human] : [])],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
@@ -173,6 +205,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     // fallback namespace guard and does not enable native execution.
     app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience });
     app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
+    app.locals.humanIdentityStatus = attachHumanIdentity(app, { profile: humanProfile, service: human, distDir });
     unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
     // Timers start only after actual Connect and provider admission. Disabled
     // issuance still permits bounded keyless cleanup and committed recovery.
@@ -186,12 +219,12 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.closeServices = async () => {
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();
-    apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
+    human?.close(); universal?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
     await connectors.store.close();
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2] });
+    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human) });
   });
   attachCanonicalIdentityApi(app, { dataDir });
   attachSotyIdentityAdapterApi(app, { dataDir });

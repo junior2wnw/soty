@@ -5,6 +5,7 @@ import { CapabilityHttpError } from './capabilities-ingress.js';
 import { createCatalog } from '../modules/capabilities/server/catalog.mjs';
 import { AccessError, freezeDeep } from '../modules/capabilities/server/validation.mjs';
 import { DISCOVERY_LIMITS } from '../modules/capabilities/server/discovery.mjs';
+import { createExternalCapabilityOperations } from './external-capabilities.js';
 
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const catalog = createCatalog(), note = catalog.get('notes.createDraft', 1);
@@ -56,13 +57,25 @@ const errorResult = code => ({ isError: true, content: [{ type: 'text', text: JS
 
 /** Request-local actor and invocation reference stay outside SDK authInfo/wire. */
 export function createMcpTools({ service, operations, context }) {
+  const external = createExternalCapabilityOperations({service,origin:context.origin ?? ''});
+  async function externalCall(params) {
+    if(Object.keys(params).some(key=>!['name','arguments','_meta'].includes(key))||!external.check(params.name,params.arguments??{}))return errorResult('invalid_input');
+    try {
+      context.current(); const args=params.arguments??{};
+      const value=await external.call({actor:context.authenticate(),name:params.name,args});
+      context.current(); external.recheck({actor:context.authenticate(),name:params.name,args,value});
+      context.externalRead={name:params.name,args,value};
+      return {content:[{type:'text',text:JSON.stringify(value)}],structuredContent:value};
+    }catch(error){return errorResult(external.failure(error).code);}
+  }
   return Object.freeze({
     list(params) {
       if (params !== undefined && (params === null || typeof params !== 'object'
         || Object.keys(params).some(key => key !== '_meta'))) throw new ProtocolError(INVALID_PARAMS, 'Invalid tool listing parameters');
-      return { tools: MCP_TOOLS };
+      return { tools: service.external ? [...MCP_TOOLS,...external.tools] : MCP_TOOLS };
     },
     call(params) {
+      if(service.external&&external.tools.some(tool=>tool.name===params?.name))return externalCall(params);
       const check = checks.get(params?.name);
       if (!check) throw new ProtocolError(INVALID_PARAMS, 'Unknown tool');
       if (Object.keys(params).some(key => !['name', 'arguments', '_meta'].includes(key))
@@ -89,6 +102,6 @@ export function createMcpTools({ service, operations, context }) {
         return errorResult(code);
       }
     },
-    outputSchema(name) { return checks.get(name)?.tool.outputSchema; },
+    outputSchema(name) { return checks.get(name)?.tool.outputSchema ?? (service.external ? external.outputSchema(name) : undefined); },
   });
 }

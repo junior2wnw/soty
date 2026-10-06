@@ -179,7 +179,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       check(typeof idempotencyKey === 'string' && idempotencyKey.length >= 8 && idempotencyKey.length <= 160 && !/[\u0000-\u0020\u007f]/u.test(idempotencyKey));
       const inputJson = encoded(input, bounds.inputBytes), cleanInput = JSON.parse(inputJson);
       return atomic(() => {
-        const authorized = policy({ actor, action: 'invoke', capabilityId, version, input: cleanInput, ...(target === undefined ? {} : { target }) });
+        let authorized = policy({ actor, action: 'read', capabilityId, version, ...(target === undefined ? {} : { target }) });
         check(authorized.capabilityId === capabilityId && authorized.version === version, 'invocation_capability_mismatch');
         const pinnedTarget = authorized.executionBinding ?? null;
         if (target !== undefined) check(canonicalHash(target) === canonicalHash(pinnedTarget), 'invocation_target_mismatch');
@@ -189,10 +189,30 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
           input: cleanInput, target: pinnedTarget, resources: authorized.resources, effects: authorized.effects, recipients: authorized.recipients });
         const previous = get('SELECT * FROM cap_invocations WHERE account_id=? AND client_id=? AND request_key=?', authorized.accountId, authorized.clientId, requestKey);
         if (previous) {
+          // Preserve the original generic/native admission behavior. A pinned
+          // registered adapter may replay an existing exact historical intent
+          // while execution is paused; replay does not dispatch an effect.
+          if (pinnedTarget?.kind !== 'registered') policy({ actor, action:'invoke', capabilityId, version, input:cleanInput,
+            ...(target === undefined ? {} : { target }) });
           check(previous.principal_id === authorized.principalId, 'invocation_not_found');
           check(previous.request_digest === requestDigest, 'invocation_request_conflict');
           access(actor, previous, 'read');
           return { reused: true, invocation: projection(previous) };
+        }
+        authorized = policy({ actor, action:'invoke', capabilityId, version, input:cleanInput,
+          ...(target === undefined ? {} : { target }) });
+        check(canonicalHash(authorized.executionBinding ?? null) === canonicalHash(pinnedTarget), 'invocation_target_mismatch');
+        if (pinnedTarget?.kind === 'registered') {
+          // One host pilot, finite persistent admission. Existing exact retries
+          // and receipts precede these mutable operational limits.
+          const active = "status NOT IN ('succeeded','failed','cancelled')";
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND principal_id=? AND ${active}`,
+            authorized.accountId, authorized.principalId).n < 4, 'external_admission_limit');
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND ${active}`, authorized.accountId).n < 16, 'external_admission_limit');
+          check(get(`SELECT count(*) AS n FROM cap_invocations WHERE ${active}`).n < 128, 'external_admission_limit');
+          check(get('SELECT count(*) AS n FROM cap_invocations WHERE account_id=? AND principal_id=? AND created_at>?',
+            authorized.accountId, authorized.principalId, now()-60000).n < 10, 'external_rate_limit');
+          check(get('SELECT count(*) AS n FROM cap_invocations').n < 100000, 'external_ledger_limit');
         }
         const value = insertAuthorized({ authorized, capabilityId, version, inputJson, targetJson, requestKey, requestDigest });
         return { reused: false, invocation: projection(value) };
@@ -256,6 +276,18 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
         WHERE d.state IN ('pending','dispatching','uncertain') AND i.status NOT IN ('succeeded','failed','cancelled')
         ${native.available() ? 'AND NOT EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=i.id)' : ''}
         ORDER BY d.created_at,d.invocation_id LIMIT ?`).all(limit);
+    },
+    // Host-only recovery context. It confers no execution authority. The
+    // composing adapter must recheck the original grant and its current source
+    // binding before sending, and only a read-only source proof can settle it.
+    // Never expose input/authorization/internalRequestId over an HTTP/MCP API.
+    inspectDispatch({ invocationId } = {}) {
+      return atomic(() => {
+        const value = row(invocationId); check(value, 'invocation_not_found'); native.assertGeneric(value.id);
+        check(!TERMINAL.has(value.status), 'invocation_already_terminal');
+        const delivery = intent(value.id); check(delivery, 'invocation_binding_mismatch');
+        return { ...dispatchProjection(value, JSON.parse(value.authorization_json)), state: delivery.state };
+      });
     },
     beginDispatch({ invocationId } = {}) {
       return atomic(() => {

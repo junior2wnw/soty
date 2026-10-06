@@ -1,0 +1,18 @@
+{
+  "schema": "soty.universal-storage-fixture.v1",
+  "sourceBase": "698a75f82ba9780494e10e1bf060781e94095b5e",
+  "kind": "reviewed-uncommitted-U1-candidate",
+  "normalization": "single-quoted-literals-preserved;other-SQL-whitespace-removed-lowercase;type/name/table/SQL ordered by name",
+  "stores": {
+    "app-registration": {
+      "layoutSha256": "ecedce0b7ab95e6dea20dd3721f4f3673d517f1f4320c3bb852d31ca4508f5e6",
+      "objects": 30,
+      "ddlSha256": "2e588186b477c355eec11249f3970421affdba194623541e6ae4660ef06db326"
+    },
+    "feedback": {
+      "layoutSha256": "6f899fad0d4fc218c827bf937fdf14a2bb1336f504281b168167b355aae0d222",
+      "objects": 21,
+      "ddlSha256": "4d0e1ab1c65065b4b8d9a703920f3f0806d0230d64114240525e0bf5cf0b01a0"
+    }
+  }
+}

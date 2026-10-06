@@ -27,7 +27,7 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
     server.closeAllConnections(); await new Promise(done => server.close(done)); await app?.locals.closeServices();
     assert.equal(realpathSync(directory), directory); assert.equal(dirname(directory), parent);
     assert.ok(directory.startsWith(join(parent, 'soty-native-http-'))); assert.equal(readFileSync(marker, 'utf8'), nonce);
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const notesFile = join(directory, 'notes', 'notes.sqlite'), capsFile = join(directory, 'capabilities', 'capabilities.sqlite');
   if (notesVersion === 2) createNotesService({ databasePath: notesFile, projectId: 'soty', allowNativeMigration: true }).close();

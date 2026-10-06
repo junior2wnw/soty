@@ -9,6 +9,8 @@ import { isAppExternalRequest } from './app-actions.mjs';
 import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
 import { mountAppFullscreen } from './app-fullscreen.mjs';
 import { icon } from './icons';
+import { mountAppFeedback, type AppFeedbackHandle } from './app-feedback';
+import { mountAppReviews, type AppReviewsHandle } from './app-reviews';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
@@ -45,6 +47,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let disposed = false, runtimeStarted = false, runtimePending = false, accountPending = false;
   let routeGeneration = 0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
   let presentationVersion = 0, applyingPresentation = false;
+  let feedback: AppFeedbackHandle | null = null;
+  let reviews: AppReviewsHandle | null = null;
   let lastVisiblePresentation = initial.presentation;
   let group: { communityId: string; name: string } | null = null;
   const controller = new AbortController(), view = host.ownerDocument.defaultView!;
@@ -61,6 +65,15 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status');
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
+  const feedbackHost = el('div');
+  const reviewsHost = el('div');
+  const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
+    if (!current()) return;
+    feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: current });
+    feedback.open();
+  });
+  report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
+  report.dataset.stageControl = 'feedback';
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
@@ -110,14 +123,20 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const community = button('Сообщество', 'people', 'sw-button-quiet', () => {
     closeMore(true); if (current() && group) options.onCommunity?.(group.communityId);
   }); community.hidden = true;
+  const publicReviews = button('Отзывы', 'list', 'sw-button-quiet', () => {
+    closeMore(); if (!current()) return;
+    reviews ??= mountAppReviews(reviewsHost, { api: options.api, appId: app.appId, title: app.name, isCurrent: current,
+      entry: () => selectedEntry ? { domainId: selectedEntry.domainId, path: selectedEntry.path } : null, onClose: () => { if (current()) more.focus(); } });
+    reviews.open();
+  }); publicReviews.dataset.stageControl = 'reviews';
   const otherAccount = button('Другой аккаунт', 'person', 'sw-button-quiet', () => {
     closeMore(true); if (!current() || accountPending) return;
     accountPending = true; otherAccount.disabled = true;
     void fullscreen.leave().then(() => current() ? options.onAccount() : undefined).catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
       .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
   });
-  moreBody.append(external, refresh, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
-  header.append(back, title, savedHost, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace);
+  moreBody.append(publicReviews, external, refresh, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
+  header.append(back, title, savedHost, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
@@ -271,7 +290,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
-    flush: async () => { await discussion?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges(),
+    dispose() { if (disposed) return; feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

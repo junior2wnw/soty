@@ -148,7 +148,11 @@ test('offline discovery, OAuth consent and machine navigation cannot turn into a
   for (const pathname of ['/agents', '/agents?query=notes', '/agents/missing', '/api/capabilities',
     '/api/capabilities/v1/catalog/notes.createDraft/versions/1/contract.json', '/api/capabilities/v1/missing',
     '/oauth', '/oauth/authorize?client_id=example', '/oauth/interaction/example', '/oauth/interaction/example/context',
-    '/oauth/.well-known/openid-configuration', '/mcp', '/mcp/missing',
+    '/oauth/.well-known/openid-configuration', '/mcp', '/mcp/missing', '/human-identity',
+    '/human-identity/authorize', '/human-identity/interaction/fixture', '/human-identity/interaction/fixture/context',
+    '/human-identity/.well-known/openid-configuration',
+    '/Human-Identity/authorize', '/human%2Didentity/authorize', '/%68uman-identity/authorize',
+    '/human%252Didentity/authorize', '/api/connect/capabilities', '/API/connect/capabilities',
     '/.well-known/oauth-authorization-server/oauth', '/.well-known/oauth-protected-resource',
     '/.well-known/oauth-protected-resource/mcp']) {
     let response;

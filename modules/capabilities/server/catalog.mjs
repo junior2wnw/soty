@@ -88,9 +88,17 @@ export function createCatalog(entries = BUILTIN_CAPABILITIES) {
     assert(['public', 'private'].includes(entry.visibility) && typeof entry.executionEnabled === 'boolean', 'catalog_invalid');
     validateSchema(entry.inputSchema); validateSchema(entry.outputSchema);
     entry.resources = stringSet(entry.resources); entry.effects = stringSet(entry.effects); entry.recipients = stringSet(entry.recipients);
-    exact(entry.executionBinding, ['kind', 'handler', 'version']);
-    assert(entry.executionBinding.kind === 'native', 'executor_unsupported');
+    exact(entry.executionBinding, ['kind', 'handler', 'version', 'binding']);
+    assert(['native', 'registered'].includes(entry.executionBinding.kind), 'executor_unsupported');
     identifier(entry.executionBinding.handler); integer(entry.executionBinding.version, 1, 1, 'executor_unsupported');
+    if (entry.executionBinding.kind === 'native') assert(entry.executionBinding.binding === undefined, 'executor_unsupported');
+    else {
+      const binding = entry.executionBinding.binding;
+      exact(binding, ['id', 'version', 'digest'], 'executor_unsupported');
+      assert(Object.keys(binding).length === 3 && entry.executionBinding.handler === entry.capabilityId, 'executor_unsupported');
+      identifier(binding.id, 'executor_unsupported'); integer(binding.version, 1, 1000000, 'executor_unsupported');
+      assert(typeof binding.digest === 'string' && /^[a-f0-9]{64}$/u.test(binding.digest), 'executor_unsupported');
+    }
     const key = `${entry.capabilityId}@${entry.version}`;
     assert(!byKey.has(key), 'catalog_duplicate');
     const { executionEnabled: _operationalFlag, ...contract } = entry;

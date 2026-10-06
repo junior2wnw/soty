@@ -8,6 +8,7 @@ import { attachRealtime } from "./realtime.js";
 import { createTrafficTunnelProxy } from "./traffic-tunnel-proxy.js";
 import { hasSingleHostHeader } from './app-domain-policy.mjs';
 import { loadCapabilityConfiguration } from './capabilities-configuration.js';
+import { loadUniversalConfiguration } from './universal-configuration.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -16,6 +17,7 @@ const dataDir = process.env.DATA_DIR || path.join(rootDir, "data");
 const port = Number.parseInt(process.env.PORT || "8080", 10);
 const host = process.env.HOST || "0.0.0.0";
 const capabilityConfiguration = loadCapabilityConfiguration();
+const universalConfiguration = loadUniversalConfiguration();
 
 const trafficTunnel = combineTunnelProxies([
   createTrafficTunnelProxy(),
@@ -24,7 +26,7 @@ const trafficTunnel = combineTunnelProxies([
     publicPath: process.env.SOTY_TRAFFIC_WS_PATH || "/api/traffic/ws"
   })
 ]);
-const app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration });
+const app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration });
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first
 // can race a reused POST connection and produce an avoidable reset.

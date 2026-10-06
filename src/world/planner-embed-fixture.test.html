@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Планировщик · selected workspace fixture</title
+  ><link rel="icon" href="data:," />
+  <style>
+    body {
+      font: 15px/1.5 system-ui;
+      margin: 0;
+    }
+    .qa {
+      padding: 12px;
+      background: #f2f6f3;
+    }
+    button {
+      min-height: 44px;
+      margin: 4px;
+      padding: 10px;
+    }
+    iframe {
+      width: 100%;
+      height: calc(100dvh - 225px);
+      min-height: 400px;
+      box-sizing: border-box;
+      border: 0;
+    }
+    #result {
+      overflow-wrap: anywhere;
+    }
+  </style>
+  <section class="qa">
+    <p>
+      Только синтетический localhost. Настоящие browser IndexedDB, signed Connect, Root OIDC и
+      source-owned Планировщик. Helper выбора ожидаемого Root-профиля не является production
+      авторизацией.
+    </p>
+    <button id="profile">Создать тестовый профиль Сот</button
+    ><button id="restart">Перезапустить только Планировщик</button
+    ><button id="second">Другой тестовый профиль</button
+    ><button id="revoke">Отозвать выбранное пространство</button
+    ><button id="verify">Проверить без данных и ключей</button>
+    <p id="result" role="status"></p>
+  </section>
+  <iframe id="planner" title="Планировщик в выбранном пространстве"></iframe>
+  <script type="module">
+    import { accountClient } from '../core/connect-client.ts';
+    import { createConnectClient } from '../../modules/connect/browser/index.mjs';
+    if (!import.meta.env.DEV || location.origin !== 'http://127.0.0.1:5239')
+      throw new Error('fixture_dev_only');
+    const output = document.querySelector('#result'),
+      frame = document.querySelector('#planner');
+    async function helper(path, body = {}) {
+      const r = await fetch('/__fixture/' + path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await r.json();
+      if (!r.ok) throw new Error('fixture_failed');
+      return result;
+    }
+    const info = await helper('info');
+    frame.src = info.embedded + '/embed';
+    const show = (value) =>
+      (output.textContent = typeof value === 'string' ? value : JSON.stringify(value));
+    document.querySelector('#profile').onclick = async () => {
+      try {
+        let state = await accountClient.getLocalState();
+        if (!state.accountId)
+          await accountClient.bootstrap('Синтетический профиль для Планировщика');
+        state = await accountClient.getLocalState();
+        await helper('bind', { accountId: state.accountId });
+        show('Профиль подготовлен. Нажмите «Войти через Соты» внутри Планировщика.');
+      } catch {
+        show('fixture_failed');
+      }
+    };
+    document.querySelector('#restart').onclick = async () => {
+      try {
+        show(await helper('restart'));
+      } catch {
+        show('fixture_failed');
+      }
+    };
+    document.querySelector('#second').onclick = async () => {
+      const second = createConnectClient({
+        projectId: 'soty',
+        endpoint: location.origin + '/api/connect/rpc',
+        dbName: 'planner-browser-second',
+      });
+      try {
+        let state = await second.getLocalState();
+        if (!state.accountId) await second.bootstrap('Второй синтетический профиль');
+        const kit = await second.prepareRecovery();
+        await second.confirmRecovery(kit);
+        const account = await accountClient.recover(kit, 'Только синтетическая проверка');
+        await helper('bind', { accountId: account.accountId });
+        show('Выбран другой профиль. Старый доступ должен закрыться.');
+      } catch {
+        show('fixture_failed');
+      } finally {
+        second.dispose();
+      }
+    };
+    document.querySelector('#revoke').onclick = async () => {
+      try {
+        show(await helper('revoke'));
+      } catch {
+        show('fixture_failed');
+      }
+    };
+    document.querySelector('#verify').onclick = async () => {
+      try {
+        show(await helper('counts'));
+      } catch {
+        show('fixture_failed');
+      }
+    };
+  </script>
+</html>

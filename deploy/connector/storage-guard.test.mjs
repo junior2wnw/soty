@@ -132,6 +132,11 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
   assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1']);
   assert.equal(created.HostConfig.NetworkMode, 'none'); assert.equal(created.HostConfig.ReadonlyRootfs, true);
+  assert.equal(created.HostConfig.Memory, 512 * 1024 * 1024);
+  assert.deepEqual(created.HostConfig.Tmpfs, { '/tmp': 'rw,noexec,nosuid,size=268435456' });
+  assert.equal(created.HostConfig.NanoCpus, 500000000); assert.equal(created.HostConfig.PidsLimit, 16);
+  assert.deepEqual(created.HostConfig.CapDrop, ['ALL']); assert.deepEqual(created.HostConfig.CapAdd, ['DAC_READ_SEARCH']);
+  assert.deepEqual(created.HostConfig.SecurityOpt, ['no-new-privileges']);
   assert.equal(created.HostConfig.PortBindings, undefined); assert.equal(created.HostConfig.Binds, undefined);
   assert.deepEqual(created.HostConfig.Mounts, [{ Type: 'volume', Source: 'live-data', Target: '/data', ReadOnly: true, VolumeOptions: { NoCopy: true } }]);
   assert.doesNotMatch(JSON.stringify(created), /synthetic-never-in-probe|server\/index\.js/);
@@ -346,8 +351,8 @@ test('failed probe remains explicit and never becomes a successful start receipt
 
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
-  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 3,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3] } });
+  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 5,
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);

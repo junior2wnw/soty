@@ -1,0 +1,16 @@
+.sr-dialog { width:min(720px,calc(100vw - 24px)); max-height:calc(100dvh - 24px); border:1px solid var(--sw-line,#d7dce0); border-radius:20px; background:var(--sw-surface,#fff); color:var(--sw-ink,#17212b); padding:20px; overflow:auto; box-sizing:border-box; }
+.sr-dialog::backdrop { background:rgb(10 20 30 / .48); }
+.sr-header,.sr-subject-tabs,.sr-review-byline { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.sr-header { justify-content:space-between; }.sr-header h2 { font-size:1.3rem; margin:0; }
+.sr-app-title { margin:12px 0; font-weight:600; }.sr-notice { background:var(--sw-soft,#eff3ed); border-radius:12px; padding:10px 12px; line-height:1.5; }
+.sr-subject-tabs { margin:12px 0; }.sr-subject-tabs [aria-pressed=true] { background:var(--sw-selected,#edf2ec); font-weight:650; }
+.sr-content,.sr-list,.sr-summary,.sr-page-controls { display:grid; gap:12px; }.sr-content { margin:12px 0; }
+.sr-source,.sr-rights,.sr-detail,.sr-provider-verification,.sr-counts { font-size:.85rem; line-height:1.5; color:var(--sw-muted,#55646c); }
+.sr-source { margin:0; }.sr-public-link { min-height:44px; display:inline-flex; align-items:center; color:var(--sw-accent,#206784); text-decoration:underline; }
+.sr-rating { font-size:1.1rem; font-weight:650; }.sr-summary p,.sr-summary h3,.sr-review p,.sr-review h4 { margin:0; }
+.sr-review { display:grid; gap:10px; border:1px solid var(--sw-line,#d7dce0); border-radius:14px; padding:14px; min-width:0; }
+.sr-review-byline { justify-content:space-between; }.sr-body { white-space:pre-wrap; line-height:1.6; }.sr-item-rating { font-weight:600; }.sr-error { color:#943422; }
+.sr-dialog p,.sr-dialog h3,.sr-dialog h4,.sr-dialog small,.sr-dialog strong,.sr-public-link { overflow-wrap:anywhere; }.sr-dialog button { min-height:44px; }
+.sr-dialog :focus-visible { outline:3px solid #287eb5; outline-offset:3px; }.sr-dialog [hidden] { display:none!important; }
+@media(max-width:480px) { .sr-dialog { padding:14px; border-radius:14px; }.sr-subject-tabs button { flex:1 1 90px; } }
+@media(forced-colors:active) { .sr-review,.sr-notice { border:1px solid CanvasText; } }

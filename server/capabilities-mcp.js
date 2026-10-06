@@ -4,6 +4,7 @@ import { createCapabilityOperations } from './capabilities-actions.js';
 import { validateDiscoveryOrigin } from './capabilities-discovery.js';
 import { createMcpIngress, McpIngressError, singleHeader } from './capabilities-mcp-ingress.js';
 import { createMcpTools } from './capabilities-mcp-tools.js';
+import { createExternalCapabilityOperations } from './external-capabilities.js';
 
 const LEGACY_REVISIONS = Object.freeze(['2025-11-25', '2025-06-18']);
 export const MCP_REVISIONS = Object.freeze(['2026-07-28', ...LEGACY_REVISIONS]);
@@ -96,21 +97,22 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits } = {}
   requireValue(validateDiscoveryOrigin({ discoveryOrigin: origin, shellOrigins: origin ? [origin] : [] }) === origin,
     'capability_configuration_invalid');
   const operations = createCapabilityOperations({ service, origin }), ingress = createMcpIngress(limits);
+  const externalOperations = createExternalCapabilityOperations({service,origin});
   const contexts = new WeakMap(), exchanges = new Set(), host = origin ? new URL(origin) : null;
   let closed = false;
   const sdk = createMcpHandler(({ requestInfo }) => {
     const context = contexts.get(requestInfo);
     requireValue(context, 'internal_error'); context.current();
     const server = new Server({ name: 'soty-capabilities', version: '1.0.0' }, {
-      capabilities: { tools: {} }, instructions, supportedProtocolVersions: [...MCP_REVISIONS],
+      capabilities: { tools: {} }, instructions: service.external ? instructions + ' Approved application tools are also available. Discover only your authorized catalog, keep exact version/binding pins and request ID, and recover uncertain effects from source proof.' : instructions, supportedProtocolVersions: [...MCP_REVISIONS],
     });
     context.server = server;
     // SDK errors remain controlled protocol results; never log request data.
     server.onerror = () => {};
     const tools = createMcpTools({ service, operations, context });
     server.setRequestHandler('tools/list', request => tools.list(request.params));
-    server.setRequestHandler('tools/call', request => server.projectCallToolResult(
-      tools.call(request.params), tools.outputSchema(request.params?.name)));
+    server.setRequestHandler('tools/call', async request => server.projectCallToolResult(
+      await tools.call(request.params), tools.outputSchema(request.params?.name)));
     return server;
   }, { legacy: 'stateless', responseMode: 'json', maxRequestBodySize: ingress.limits.bodyBytes,
     keepAliveMs: 0, maxSubscriptions: 0, onerror: () => {} });
@@ -138,7 +140,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits } = {}
       const admitted = await lease.read(); body = admitted.body;
       lease.current(); authenticate(); revision(headers, body);
       webRequest = new Request(`${origin}/mcp`, { method: 'POST', headers, body: admitted.text, signal: lease.signal });
-      context = { authenticate, current: lease.current, privateRead: null, server: null };
+      context = { authenticate, current: lease.current, privateRead: null, externalRead:null, origin, server: null };
       contexts.set(webRequest, context);
       const response = await sdk.fetch(webRequest, { parsedBody: body });
       lease.current();
@@ -150,6 +152,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits } = {}
       completion = lease.completion();
       const actor = authenticate();
       if (context.privateRead) operations.read({ actor, ...context.privateRead });
+      if(context.externalRead)externalOperations.recheck({actor,...context.externalRead});
       res.statusCode = response.status;
       const type = response.headers.get('content-type');
       if (type) res.setHeader('Content-Type', type);

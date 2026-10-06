@@ -569,5 +569,29 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     }));
   }
   return Object.freeze({ operations: new Set(ACCESS_OPERATIONS), execute, authenticateCredential, authorize, authorizeInvocation, reserveBudget, settleBudget,
+    // Trusted composing host only. A delegated service maps to its existing
+    // active root creator for an app/resource ACL fence; this is not a human
+    // login proof, a new device, an HTTP operation or a grant of extra rights.
+    withOwnerAuthority({ actor }, callback) {
+      assert(typeof callback === 'function', 'host_auth_required');
+      const current = resolveActor(actor), root = current.ancestry.at(-1);
+      const context = Object.freeze({ accountId: current.credential.account_id, deviceId: root.creator_device_id });
+      const result = callback(context);
+      if (result && typeof result.then === 'function') { Promise.resolve(result).catch(() => {}); assert(false, 'async_transaction_not_allowed'); }
+      resolveActor(actor); return result;
+    },
+    withSnapshotOwnerAuthority({ authorization }, callback) {
+      assert(typeof callback === 'function', 'host_auth_required');
+      const snapshot = record(authorization, 'authorization_required');
+      const current = currentCredential(snapshot), approved = descriptor(current, snapshot.capabilityId, snapshot.version);
+      for (const key of ['accountId','clientId','principalId','credentialId','audience','grantId','rootGrantId','capabilityId','version','capabilityDigest','expiresAt'])
+        assert(approved[key] === snapshot[key], 'access_denied');
+      for (const key of ['resources','effects','recipients','executionBinding','charges'])
+        assert(canonicalJson(approved[key]) === canonicalJson(snapshot[key]), 'access_denied');
+      const context = Object.freeze({ accountId: current.credential.account_id, deviceId: current.ancestry.at(-1).creator_device_id });
+      const result = callback(context);
+      if (result && typeof result.then === 'function') { Promise.resolve(result).catch(() => {}); assert(false, 'async_transaction_not_allowed'); }
+      currentCredential(snapshot); return result;
+    },
     verifyOwner({ actor, args }) { return hostOwner(actor, args); } });
 }

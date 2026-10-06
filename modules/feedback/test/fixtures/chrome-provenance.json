@@ -1,0 +1,12 @@
+{
+  "synthetic": true,
+  "source": "Canvas + AudioContext oscillator + MediaRecorder",
+  "audio": {
+    "sampleRate": 48000,
+    "frequencyHz": 440,
+    "requestedDurationMs": 350,
+    "timesliceMs": 100,
+    "mimeType": "audio/webm;codecs=opus"
+  },
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36"
+}

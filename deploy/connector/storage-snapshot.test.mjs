@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, unlink, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, unlink, symlink, open, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -74,4 +74,24 @@ test('a symlink inside a store is refused rather than dereferenced', async t => 
   try { await symlink(other, join(f.source, 'notes', 'notes.sqlite')); }
   catch (e) { if (process.platform === 'win32' && e.code === 'EPERM') { t.skip('Windows requires symlink privilege; verified in Linux'); return; } throw e; }
   await assert.rejects(snapshotStorage(f.source, f.target), /storage_format_unreadable/);
+});
+
+test('the reviewed 192MiB default copies new-store growth above48MiB, rejects one aggregate byte over, and preserves source evidence', async t => {
+  const f = await fixture(t), MiB = 1024 * 1024;
+  assert.equal(dirname(resolve(f.root)), resolve(tmpdir())); assert.match(basename(f.root), /^soty-cold-snapshot-/u);
+  const registration = join(f.source, 'app-registration'), feedback = join(f.source, 'feedback');
+  await mkdir(registration); await mkdir(feedback);
+  const files = [join(registration, 'registry.sqlite'), join(feedback, 'feedback.sqlite')];
+  // Synthetic sparse files exercise logical byte budgets without allocating media buffers or reading user data.
+  for (const file of files) {
+    const handle = await open(file, 'wx');
+    try { await handle.truncate(96 * MiB); } finally { await handle.close(); }
+  }
+  await snapshotStorage(f.source, f.target);
+  assert.deepEqual(await Promise.all(['app-registration/registry.sqlite', 'feedback/feedback.sqlite']
+    .map(file => stat(join(f.target, file)).then(value => value.size))), [96 * MiB, 96 * MiB]);
+  const handle = await open(files[1], 'r+');
+  try { await handle.truncate(96 * MiB + 1); } finally { await handle.close(); }
+  await assert.rejects(snapshotStorage(f.source, join(f.root, 'over-budget')), /storage_format_unreadable/u);
+  assert.deepEqual(await Promise.all(files.map(file => stat(file).then(value => value.size))), [96 * MiB, 96 * MiB + 1]);
 });

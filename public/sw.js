@@ -6,18 +6,29 @@ const legacyHost = new URL(self.location.origin).hostname === 'xn--n1afe0b.onlin
 const sharedPrimaryHost = new URL(self.location.origin).hostname === '4-2.xn--p1ai';
 const offlineShell = legacyHost ? '/__soty' : '/';
 const shellUrls = shell.map(url => url === '/' ? offlineShell : url);
+function isReservedProtocolDocument(pathname, humanOnly = false) {
+  let value = pathname;
+  for (let round = 0; round < 3; round++) {
+    if (humanOnly ? /^\/human-identity(?:\/|$)/iu.test(value)
+      : /^\/(?:agents|api|oauth|mcp|human-identity)(?:\/|$)/iu.test(value)
+        || /^\/\.well-known\/(?:oauth-authorization-server|oauth-protected-resource)(?:\/|$)/iu.test(value)) return true;
+    try { const decoded = decodeURIComponent(value); if (decoded === value) break; value = decoded; } catch { break; }
+  }
+  return false;
+}
 function isSotyDocument(value) {
   const url = new URL(value);
+  if (isReservedProtocolDocument(url.pathname, true)) return true;
   if (sharedPrimaryHost) {
     // The retained HIVE and /ecolab documents share this origin, but cannot
     // become an offline Soty shell or participate in Soty's reload handshake.
     return (url.pathname === '/' && !['project', 'hive'].some(name => url.searchParams.has(name)))
       || url.pathname === '/install' || url.pathname.startsWith('/install/')
-      || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/');
+      || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/human-identity/');
   }
   if (!legacyHost) return true;
   return url.pathname === '/__soty' || url.pathname.startsWith('/install/')
-    || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/')
+    || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/') || url.pathname.startsWith('/human-identity/')
     || ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic', 'pwa'].some(name => url.searchParams.has(name))
     || ['classic', 'world'].includes(url.searchParams.get('view'))
     || /^#(?:app|launch|notes|access|mine|library|community)(?:\/|\?|$)/u.test(url.hash);
@@ -95,9 +106,7 @@ self.addEventListener("fetch", (event) => {
   }
   // These URLs describe server representations. A cached application shell is
   // never an offline substitute for a contract, authorization or API error.
-  if (['/agents', '/api/capabilities', '/oauth', '/mcp',
-    '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource']
-    .some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
+  if (isReservedProtocolDocument(url.pathname)) {
     event.respondWith(fetch(request));
     return;
   }

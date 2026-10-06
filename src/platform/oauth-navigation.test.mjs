@@ -24,7 +24,7 @@ function fixture({ throwSubmit = false } = {}) {
   vm.runInNewContext(compiled, { module, exports: module.exports, document, window,
     setTimeout(callback, delay) { const id = ++next; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); } });
-  return { forms, listeners, timers, submit: module.exports.submitOAuthCompletion, get submits() { return submits; } };
+  return { forms, listeners, timers, submit: module.exports.submitOAuthCompletion, submitHuman: module.exports.submitHumanCompletion, get submits() { return submits; } };
 }
 
 test('completion form stays connected past submit and is cleaned only after navigation', async () => {
@@ -68,4 +68,14 @@ test('unbounded or malformed completion context cannot construct a form', async 
     await assert.rejects(f.submit(id, actor), error => error.message === 'Completion unavailable');
   }
   assert.equal(f.submits, 0); assert.equal(f.forms.size, 0);
+});
+
+test('human login completion posts only the bound CSRF to the fixed issuer path and cannot accept a redirect', async () => {
+  const f = fixture(), csrf = 'c'.repeat(43), pending = f.submitHuman(interaction, csrf);
+  const form = [...f.forms][0];
+  assert.equal(form.action, '/human-identity/interaction/' + interaction + '/complete');
+  assert.equal(form.children.length, 1); assert.equal(form.children[0].name, 'csrf'); assert.equal(form.children[0].value, csrf);
+  f.listeners.get('pagehide')(); await pending;
+  for (const [uid, value] of [['../foreign', csrf], [interaction, 'https://foreign.test'], [interaction, '']]) await assert.rejects(f.submitHuman(uid, value));
+  assert.equal(f.submits, 1);
 });

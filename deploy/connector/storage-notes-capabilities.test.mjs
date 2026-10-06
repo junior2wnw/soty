@@ -303,6 +303,6 @@ for (const store of Object.keys(stores)) test(`${store}: cold committed WAL afte
 test('the trusted probe imports only builtins and never a Notes/Capabilities fixture, schema or migrator', async () => {
   const source = await readFile(new URL('./storage-probe.mjs', import.meta.url), 'utf8');
   const imports = [...source.matchAll(/^import .* from '([^']+)'/gmu)].map(match => match[1]);
-  assert.deepEqual(imports, ['node:fs/promises', 'node:path', 'node:sqlite']);
+  assert.deepEqual(imports, ['node:fs/promises', 'node:path', 'node:sqlite', 'node:crypto']);
   assert.doesNotMatch(source, /import\s*\(|migrateNotes|initializeCapabilitiesSchema|fixtures\//u);
 });

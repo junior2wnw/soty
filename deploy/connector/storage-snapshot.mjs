@@ -3,7 +3,7 @@ import { join as snapshotJoin } from 'node:path';
 
 // Only for an offline volume after the writer gate. SQLite can create its SHM
 // in private RAM while the source remains mounted read-only; WAL is retained.
-export async function snapshotStorage(source, target, maxBytes = 48 * 1024 * 1024) {
+export async function snapshotStorage(source, target, maxBytes = 192 * 1024 * 1024) {
   const refuse = () => { throw Object.assign(new Error('storage_format_unreadable'), { code: 'storage_format_unreadable' }); };
   const root = await snapshotStat(source);
   if (!root.isDirectory() || root.isSymbolicLink()) refuse();
@@ -26,7 +26,7 @@ export async function snapshotStorage(source, target, maxBytes = 48 * 1024 * 102
     observed.push([from, before]);
   }
   for await (const entry of await snapshotDir(source)) {
-    if (['apps', 'notes', 'capabilities'].includes(entry.name) || /^rooms-v2\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.name)
+    if (['apps', 'notes', 'capabilities', 'app-registration', 'feedback', 'human-identity'].includes(entry.name) || /^rooms-v2\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.name)
       || (!hasRoomDatabase && !ignoredJson.has(entry.name) && /^[A-Za-z0-9_-]{16,96}\.json$/.test(entry.name))) await copy(snapshotJoin(source, entry.name), snapshotJoin(target, entry.name));
   }
   for (const [file, before] of observed) {

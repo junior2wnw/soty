@@ -1,8 +1,10 @@
-# Universal app contract — prototype U1
+# Universal app contract — portable U1 core
 
-Pure, local conformance package on serving base 5a854855. No server route,
-provider request, account migration, inbox, MCP transport, invocation or process
-executor is installed by this module. A valid descriptor is metadata, not a grant.
+Pure, local conformance core originally prototyped on historical base 5a854855.
+The companion [durable registration service](server/README.md) now persists
+admission and creates a real feedback inbox through the host composition.
+This pure entrypoint itself installs no route, transport or executor.
+A valid descriptor is metadata, not a grant.
 All plans explicitly have productionAdmission:false; only synthetic feedback
 confirmation can produce fixture-ready. UI, agent and local gates are independent.
 
@@ -52,10 +54,13 @@ capabilities/skills/docs и disabled reviews. Никакого выполнен�
     import { materializeAuthorDraft } from './modules/app-contract/sdk.mjs';
     const descriptor = materializeAuthorDraft(trustedHost, draft);
 
-Registration API входит в полную сдачу U1 и ещё не реализован этим reference
-пакетом. Настоящий inbox, discovery и выполнение относятся к U3. Здесь
-проверяется только переносимый контракт. Для продвинутой интеграции ниже
-сохраняется строгий createDescriptor с проверенными ссылками.
+Registration API реализован в companion `server/registration.mjs` и подключён
+к подписанному Connect через `server/universal-apps.js`. Реальный feedback
+проверяется отдельным provider и после commit; неизвестный ответ не создаёт
+второй inbox. Сам переносимый core по-прежнему не исполняет приложения.
+Host-only registered adapters и общий ledger находятся в `modules/capabilities`;
+их конкретный source, текущие права и допуск проверяются отдельно.
+Для продвинутой интеграции ниже сохраняется строгий createDescriptor с проверенными ссылками.
 
 Keep deployment's strict .soty/app.json unchanged. Write a separate
 .soty/agent.json using createDescriptor from sdk.mjs (see examples/fixture.mjs).
