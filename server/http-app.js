@@ -224,7 +224,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
         return;
       }
       const publicPath = path.relative(distDir, filePath).split(path.sep).join('/');
-      const immutableCover = /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(publicPath);
+      // Card and square-field pipelines retain versioned, content-hashed renditions.
+      const immutableCover = /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(publicPath);
       if (filePath.includes(`${path.sep}assets${path.sep}`) || immutableCover) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       }
