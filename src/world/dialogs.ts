@@ -4,6 +4,14 @@ export interface DialogReturnTarget { isCurrent(): boolean; resolve(): HTMLEleme
 export interface DialogCloseContext { interrupted: boolean; }
 export interface WorldDialog { element: HTMLDialogElement; body: HTMLElement; close(options?: { restoreFocus?: boolean }): void; }
 
+/** Keep the primary action reachable while optional fields scroll independently. */
+export function pinDialogSubmit(dialog: WorldDialog, form: HTMLFormElement, submit: HTMLButtonElement): void {
+  form.id ||= `world-form-${crypto.randomUUID()}`;
+  submit.type = 'submit'; submit.setAttribute('form', form.id);
+  dialog.element.classList.add('sw-form-dialog');
+  const actions = el('div', 'sw-dialog-form-actions'); actions.append(submit); dialog.element.append(actions);
+}
+
 /** Also accepts an explicit tabindex=-1 workflow heading/main, never a hidden control. */
 export function isDialogFocusTarget(node: HTMLElement | null): node is HTMLElement {
   if (!node?.isConnected || node.matches(':disabled, [aria-disabled="true"]') || node.closest('[hidden], [inert]') ||

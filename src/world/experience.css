@@ -2168,3 +2168,40 @@
     top: 2px;
   }
 }
+
+/* Compact typography and shell leave space for the user's content. */
+.sw-form-extra>summary,.sw-origin-links>summary { min-height: 44px; padding: 12px 4px; cursor: pointer; color: var(--sw-muted); font-size: 14px; line-height: 20px; }
+.sw-form-extra>.sw-stack { padding: 8px 0 12px; }
+.sw-origin-links { border-top: 1px solid var(--sw-line); }
+.sw-origin-links a { min-height: 44px; margin: 4px 0; }
+.sw-form-dialog[open] { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.sw-form-dialog .sw-dialog-content { min-height: 0; max-height: none; }
+.sw-dialog-form-actions { padding: 14px 26px 18px; border-top: 1px solid var(--sw-line); background: var(--sw-bg); }
+.sw-dialog-form-actions>.sw-button { width: 100%; min-height: 44px; }
+@media(max-width:900px) {
+  .sw-app { top: var(--soty-visible-top,0px); bottom: auto; height: var(--soty-visible-height,100dvh); }
+  body[data-soty-surface=world] #app.sw-app { min-height: 0; }
+  html[data-soty-keyboard=true] .sw-dialog { position: fixed; top: calc(var(--soty-visible-top,0px) + 12px); bottom: auto; margin-block: 0; max-height: calc(var(--soty-visible-height,100dvh) - 24px); }
+  html[data-soty-keyboard=true] .sw-dialog-content { max-height: calc(var(--soty-visible-height,100dvh) - 170px); }
+  html[data-soty-keyboard=true] .sw-form-dialog .sw-dialog-content { max-height: none; }
+}
+@media(max-width:720px) {
+  .sw-app:not(:has(.sw-inbox.has-room,.sw-detail-view.has-chat,.sa-stage.has-discussion)) { grid-template-rows: 56px auto minmax(0,1fr) auto; }
+  .sw-app .sw-topbar { height: 56px; min-height: 56px; padding-block: 6px; }
+  .sw-app .sx-mobile-profile { width: 44px; height: 44px; }
+  .sw-app .sx-mobile-profile .sw-avatar { width: 32px; height: 32px; }
+  .sw-app .sx-global-add { width: 44px; height: 44px; min-height: 44px; }
+  .sw-app .sw-mobile-nav { min-height: 64px; padding: 4px 12px max(6px,env(safe-area-inset-bottom)); }
+  .sw-app .sw-mobile-nav .sw-nav-button { min-height: 44px; padding: 4px 0; gap: 3px; font-size: 11px; line-height: 14px; }
+  .sw-app .sx-home h1,.sw-app .sx-assistant h1,.sw-app .sw-mobile-heading h1,.sw-app[data-compact=true] .sx-home-heading h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.025em; }
+  .sx-assistant { gap: 12px; }
+  .sx-assistant-context { margin-top: 10px; }
+  .sx-assistant-context .sw-button { min-height: 44px; font-size: 14px; }
+  .sx-assistant-content .sw-empty { min-height: 180px; padding: 16px 0; }
+  .sx-assistant-inline textarea { min-height: 88px; font-size: 16px; padding: 12px; }
+  .sw-dialog :is(input:not([type=checkbox]):not([type=radio]),textarea,select) { font-size: 16px; }
+  .sw-dialog :is(h1,h2) { font-size: 20px; line-height: 26px; }
+  .sw-dialog-form-actions { padding: 12px 20px 16px; }
+  .sw-profile-form .sw-avatar { --hex-width: 64px !important; }
+  .sw-profile-form .sw-textarea { min-height: 88px; }
+}

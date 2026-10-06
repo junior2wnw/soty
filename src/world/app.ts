@@ -11,8 +11,10 @@ import { createHome, createAppCard, type AppCardData, type HomeFilter } from './
 import { resolveAppArt } from './app-art.mjs';
 import { createUnifiedFieldScreen, type FieldFilter, type UnifiedFieldScreen } from './unified-field-screen';
 import type { UnifiedFieldViewState } from './unified-field';
-import type { DirectoryApp, DirectoryPerson } from './field-directory';
+import type { DirectoryApp, DirectoryContact, DirectoryPerson } from './field-directory';
 import { createBrandMark } from './brand';
+import { createOriginContinuityLinks } from '../platform/origin-continuity';
+import { observeVisibleViewport } from './visible-viewport';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
@@ -25,7 +27,7 @@ import { createThemeController, createThemeControls, type ThemeController } from
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
 import { AvatarHydrator, prepareAvatar } from './avatars';
 import { avatar, badge, button, el, emptyState, heading, iconButton, labeledField, nounCount, textInput, timeLabel } from './dom';
-import { createDialog, errorText, isDialogFocusTarget, switchControl, type DialogCloseContext, type DialogReturnTarget, type WorldDialog } from './dialogs';
+import { createDialog, errorText, isDialogFocusTarget, pinDialogSubmit, switchControl, type DialogCloseContext, type DialogReturnTarget, type WorldDialog } from './dialogs';
 import { communityEmblem, createHexField, createHexFieldState, type HexField } from './hex-field';
 import { communityIcons, icon } from './icons';
 import { loadPreferences, savePreferences, type WorldPreferences, type WorldView } from './preferences';
@@ -121,9 +123,11 @@ class WorldApplication {
   private destroyed = false;
   private visibilityOpen = false;
   private routeLoaded = false;
+  private readonly releaseViewport: () => void;
 
   constructor(root: HTMLElement, options: WorldAppOptions) {
     this.root = root; this.options = options; this.api = options.api;
+    this.releaseViewport = observeVisibleViewport(root.ownerDocument);
     this.preferences = loadPreferences(); this.view = this.preferences.view;
     this.theme = createThemeController({ initial: this.preferences, onChange: next => { Object.assign(this.preferences, next); this.persist(); } });
     if (!location.hash) history.replaceState({ soty: true }, '', `#${this.view}`);
@@ -173,7 +177,7 @@ class WorldApplication {
 
   destroy(): void {
     this.destroyed = true; this.requestSequence++; this.screenSequence++;
-    this.controller.abort(); this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy();
+    this.controller.abort(); this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
@@ -359,7 +363,7 @@ class WorldApplication {
     footer.append(theme, profile, iconButton('Оформление', 'settings', () => this.openAppearance()));
     this.sidebar.replaceChildren(brandButton, nav, footer);
     const brand = el('button', 'sx-header-brand', 'СОТЫ'); brand.type = 'button'; brand.addEventListener('click', () => this.navigate('mine'));
-    const context = el('span', 'sx-header-context', this.group?.name || ({ mine:'Личное', world:'Общий мир', messages:'Чаты', assistant:'Помощник', notes:'Записки', library:'Возможности', access:'Доступы и действия' } as Record<WorldView,string>)[this.view]);
+    const context = el('span', 'sx-header-context', this.group?.name || ({ mine:'Моё поле', world:'Поиск', messages:'Чаты', assistant:'Помощник', notes:'Записки', library:'Возможности', access:'Доступы и действия' } as Record<WorldView,string>)[this.view]);
     const search = button('Приложения, люди, сообщества', 'search', 'sx-global-search', () => this.openQuickActions()); search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.setAttribute('aria-label', 'Поиск приложений, людей и сообществ'); search.append(el('kbd', '', 'Ctrl K'));
     const add = button('Добавить', 'plus', 'sw-button-primary sx-global-add', () => this.openAddMenu());add.setAttribute('aria-label','Добавить');
     const mobileProfile=el('button','sx-profile-button sx-mobile-profile');mobileProfile.type='button';mobileProfile.setAttribute('aria-label','Мой профиль и настройки');mobileProfile.append(avatar(this.profile?.displayName??'Я',this.profile?.avatarUrl,worldColor(this.profile?.avatarColor),this.profile?.profileId,this.profile?.avatarRevision));mobileProfile.addEventListener('click',()=>this.openProfileMenu());
@@ -383,6 +387,7 @@ class WorldApplication {
     const menu=this.dialog('Мои настройки');const options=el('div','sx-profile-menu');
     const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
     options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
+    const continuity = createOriginContinuityLinks(); if (continuity) options.append(continuity);
     const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs); menu.body.append(options);
   }
 
@@ -423,6 +428,19 @@ class WorldApplication {
 
   private navigate(view: WorldView, chatId?: string): void {
     this.afterNoteSaved(() => this.navigateReady(view, chatId));
+  }
+
+  private findCommunities(): void {
+    this.afterNoteSaved(() => {
+      this.query = ''; this.kind = 'communities'; this.unifiedFieldFilters.world = 'community';
+      this.navigateReady('world');
+    });
+  }
+
+  private searchEverything(query: string): void {
+    this.afterNoteSaved(() => {
+      this.query = query; this.kind = 'all'; this.unifiedFieldFilters.world = 'all'; this.navigateReady('world');
+    });
   }
 
   private navigateReady(view: WorldView, chatId?: string): void {
@@ -804,7 +822,7 @@ class WorldApplication {
     this.view = this.groupTab === 'chat' ? 'messages' : 'mine'; this.renderNavigation();
     this.avatars.setContext(group.membership?.state === 'active' ? group.communityId : undefined);
     const screen = el('section', `sw-detail-view${this.groupTab === 'chat' ? ' has-chat' : ''}`); const summary = el('header', 'sw-community-summary');
-    const crumb = el('div', 'sw-breadcrumb'); crumb.append(button(this.groupReturn === 'world' ? 'Открытия' : this.groupReturn === 'messages' ? 'Все чаты' : 'Моё пространство', 'back', 'sw-button-quiet', () => this.navigate(this.groupReturn)));
+    const crumb = el('div', 'sw-breadcrumb'); crumb.append(button(this.groupReturn === 'world' ? 'К поиску' : this.groupReturn === 'messages' ? 'Все чаты' : 'Моё поле', 'back', 'sw-button-quiet', () => this.navigate(this.groupReturn)));
     const title = el('div', 'sw-community-title'); const copy = el('div'); copy.append(el('h1', '', group.name), el('p', '', group.description)); title.append(communityEmblem(group), copy);
     const meta = el('div', 'sw-community-meta'); meta.append(badge(nounCount(group.memberCount, 'участник', 'участника', 'участников'), 'people'), badge(this.joinLabel(group), group.joinPolicy === 'open' ? 'world' : 'lock', 'sage'));
     summary.append(crumb, title, meta);
@@ -1147,7 +1165,7 @@ class WorldApplication {
         if (initial) { messages.replaceChildren(previous); response.messages.forEach(append); hasHistory = response.hasMore; previous.hidden = !hasHistory; }
         else { [...response.messages, ...updates].filter(message => known.has(message.messageId)).forEach(append); incoming.forEach(append); }
         syncSeq = nextSync; if (hasMoreForward) catchupTimer = setTimeout(() => { void load(); }, 100);
-        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', 'Поздоровайтесь со своим кругом.', undefined, 'chat'));
+        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', group.memberCount < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', group.permissions.canModerate ? button('Пригласить человека', 'people', 'sw-button-primary', () => this.openInvite(group)) : undefined, 'chat'));
         refreshTimeline();
         if (!stickToEnd) unseen += Math.max(0, known.size - countBefore);
         initial = false; if (retrySend.hidden) errorMessage.textContent = '';
@@ -1197,7 +1215,7 @@ class WorldApplication {
     const filters = el('div', 'sw-inbox-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Фильтр чатов'); let unreadOnly = false;
     const allFilter = button('Все', undefined, 'is-selected', () => { unreadOnly = false; renderList(); }); const unreadFilter = button('Непрочитанные', undefined, '', () => { unreadOnly = true; renderList(); }); filters.append(allFilter, unreadFilter);
     const conversations = el('div', 'sw-conversation-list'); const listStatus = el('div', 'sw-inbox-status'); listStatus.setAttribute('role', 'status');
-    const footer = button('Найти сообщество', 'plus', 'sw-inbox-discover', () => this.navigate('world'));
+    const footer = button('Найти сообщество', 'world', 'sw-inbox-discover', () => this.findCommunities());
     list.append(top, search, filters, conversations, listStatus, footer);
     const room = el('div', 'sw-message-room');
     const paintConversation = (group: WorldCommunity): HTMLButtonElement => {
@@ -1223,7 +1241,7 @@ class WorldApplication {
       const visible = groups.filter(group => (!unreadOnly || group.unreadCount > 0) && (!needle || `${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle))).sort((a, b) => Number(!!b.membership?.pinned) - Number(!!a.membership?.pinned) || (previews.get(b.communityId)?.createdAt ?? 0) - (previews.get(a.communityId)?.createdAt ?? 0));
       const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
       conversations.replaceChildren(...visible.map(paintConversation)); listStatus.textContent = '';
-      if (!groups.length) conversations.append(emptyState('Ваш круг — здесь', 'Найдите сообщество и начните разговор.', button('Найти сообщество', 'world', 'sw-button-primary', () => this.navigate('world')), 'chat'));
+      if (!groups.length) conversations.append(emptyState('Пока нет чатов', 'Создайте чат для своих или найдите сообщество.', button('Новый чат', 'plus', 'sw-button-primary', () => this.openCommunityForm(undefined, true)), 'chat'));
       else if (!visible.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';
       if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
     };
@@ -1329,7 +1347,7 @@ class WorldApplication {
       cards, query:this.homeQuery, filter:this.homeFilter, presentation:this.preferences.homePresentation,
       communities:groups.map(group=>({ id:group.communityId, name:group.name, unread:group.unreadCount, open:()=>{void this.openGroup(group.communityId,'apps');}, people:group.previewMembers.map(person=>({name:person.displayName,...(person.avatarUrl?{avatarUrl:person.avatarUrl}:{}),profileId:person.profileId,...(person.avatarRevision!==undefined?{avatarRevision:person.avatarRevision}:{})})) })),
       loading:this.homeStatus.apps==='loading', errors:Object.entries(this.homeStatus).filter(([,value])=>value==='error').map(([key])=>({apps:'Приложения не обновлены',devices:'Устройства не обновлены',communities:'Сообщества не обновлены',notes:'Записки не обновлены'} as Record<string,string>)[key]!),
-      create:()=>this.openAddApp(), discover:()=>this.navigate('world'), saved:()=>this.openSavedLibrary(), searchWorld:query=>{this.query=query;this.kind='all';this.navigate('world');}, assistant:()=>this.navigate('assistant'), retry:()=>{void this.loadPersonal();},
+      create:()=>this.openAddApp(), discover:()=>this.navigate('world'), saved:()=>this.openSavedLibrary(), searchWorld:query=>this.searchEverything(query), assistant:()=>this.navigate('assistant'), retry:()=>{void this.loadPersonal();},
       changeFilter:value=>{this.homeFilter=value;}, changeQuery:value=>{this.homeQuery=value;},
       changePresentation:value=>{const restoreFocus = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest('.sx-presentation'));this.preferences.homePresentation=value;this.persist();this.renderPersonal();if(restoreFocus)this.main.querySelector<HTMLButtonElement>('.sx-presentation button[aria-pressed=true]')?.focus({preventScroll:true});},
       unmountField:()=>{this.field?.destroy();this.field=null;},
@@ -1404,7 +1422,7 @@ class WorldApplication {
     else if (id === 'apps') this.navigate('mine');
     else if (id === 'devices') this.openResources('devices');
     else if (id === 'agent') this.navigate('assistant');
-    else if (id === 'communities') this.navigate('world');
+    else if (id === 'communities') this.findCommunities();
     else if (id === 'contacts') this.runHook(() => this.options.openAccount('people'));
     else if (id === 'appearance') this.openAppearance();
     else this.runHook(() => this.options.openLegacy(id === 'legacy-notes' ? 'notes' : id));
@@ -1427,7 +1445,7 @@ class WorldApplication {
       ...capabilities.map(item => ({ title: item.title, detail: item.detail, symbol: item.symbol, action: () => this.openCapability(item.id) })),
       ...this.apps.map(app => ({ title: app.name, detail: 'Приложение', symbol: 'grid', action: () => { this.writeRoute(`app/${app.appId}`); void this.openRoute(); } })),
       ...this.communities.map(group => ({ title: group.name, detail: 'Сообщество', symbol: 'people', action: () => { void this.openGroup(group.communityId, 'chat'); } })),
-      ], this.dialog('Быстрый переход'), query => { this.query = query; this.kind = 'all'; this.navigate('world'); });
+      ], this.dialog('Быстрый переход'), query => this.searchEverything(query));
     });
   }
 
@@ -1480,6 +1498,7 @@ class WorldApplication {
 
   private openAddMenu(): void {
     if (this.unifiedField) { this.unifiedField.openAdd(); return; }
+    if (this.view === 'messages' && !this.group) { this.openCommunityForm(undefined, true); return; }
     const dialog = this.dialog('Добавить'); const list = el('div', 'sx-profile-menu');
     const option = (title: string, symbol: string, action: () => void): void => list.append(button(title, symbol, 'sw-button-large', () => { dialog.close(); action(); }));
     option('Приложение', 'grid', () => this.openAddApp());
@@ -1742,7 +1761,9 @@ class WorldApplication {
     photoActions.append(choose, removePhoto, upload); identityControls.append(photoActions);
     const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Сохранить', 'check', 'sw-button-primary'); save.type = 'submit';
     upload.addEventListener('change', () => { const file = upload.files?.[0]; upload.value = ''; if (!file) return; choose.disabled = true; save.disabled = true; error.textContent = ''; void prepareAvatar(file).then(value => { pendingAvatar = value; delete preview.dataset.profileId; const image = el('img'); image.src = value.avatarUrl; image.alt = 'Предпросмотр фотографии'; preview.replaceChildren(image); removePhoto.hidden = false; }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { choose.disabled = false; save.disabled = false; }); });
-    form.append(identity, labeledField('Имя', name), labeledField('О себе', bio), labeledField('Интересы', interests, 'Через запятую. По ним вас смогут найти.'), error, save);
+    form.classList.add('sw-profile-form');
+    form.append(identity, labeledField('Имя', name), labeledField('О себе', bio), labeledField('Интересы', interests, 'Через запятую. По ним вас смогут найти.'), error);
+    pinDialogSubmit(dialog, form, save);
     form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true; error.textContent = ''; void this.updateProfile({ displayName: name.value.trim(), bio: bio.value.trim(), interests: interests.value.split(',').map(item => item.trim().slice(0, 32)).filter(Boolean).slice(0, 8), avatarColor: worldColors[color] }).then(async () => { if (pendingAvatar && this.profile) { const result = await this.api.request<{ profile: WorldProfile }>('world.profile.avatar.set', { expectedRevision: this.profile.revision, ...pendingAvatar }); this.profile = result.profile; this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined); this.renderNavigation(); if (this.view === 'mine' && !this.group) this.renderPersonal(); } dialog.close(); this.toast('Профиль сохранён'); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; }); });
     const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Аккаунт, устройства и контакты', 'person', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(this.options.openAccount); }), button('Прежние комнаты и инструменты', 'chat', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(this.options.openLegacy); })); dialog.body.append(form, el('hr', 'sw-rule'), extra);
   }
@@ -1753,24 +1774,39 @@ class WorldApplication {
     for (const [value, label] of Object.entries(names)) { const target = el('button', `sw-choice-color sw-color-${value}`); target.type = 'button'; target.setAttribute('aria-label', label); target.title = label; target.setAttribute('aria-pressed', String(value === current)); target.addEventListener('click', () => { colors.querySelectorAll('button').forEach(node => node.setAttribute('aria-pressed', String(node === target))); change(value); }); colors.append(target); } return colors;
   }
 
-  private openCommunityForm(existing?: WorldCommunity): void {
-    const dialog = this.dialog(existing ? 'Настроить сообщество' : 'Создать сообщество'); const form = el('form');
-    const name = textInput(existing?.name ?? '', 'Например, Фотоклуб', 80); name.required = true;
+  private openCommunityForm(existing?: WorldCommunity, chat = false): void {
+    const accountCurrent = this.accountTask(), returnTab = this.groupTab;
+    const dialog = this.dialog(existing ? 'Настроить сообщество' : chat ? 'Новый чат' : 'Создать сообщество'); const form = el('form');
+    const name = textInput(existing?.name ?? '', chat ? 'Например, Близкие' : 'Например, Фотоклуб', 80); name.required = true;
     const description = textInput(existing?.description ?? '', 'Что вас объединяет', 240);
     const topics = textInput(existing?.topics.join(', ') ?? '', 'Фото, прогулки, творчество', 240);
     const showcase = el('textarea', 'sw-textarea'); showcase.value = existing?.showcase ?? ''; showcase.maxLength = 2500; showcase.placeholder = 'Пригласите людей: расскажите, чем здесь можно заняться.';
-    const access = el('select', 'sw-select'); for (const [value, label] of [['open', 'Любой может вступить'], ['request', 'По заявке'], ['invite', 'Только по приглашению']] as const) { const option = el('option', '', label); option.value = value; option.selected = (existing?.joinPolicy ?? 'open') === value; access.append(option); }
+    const access = el('select', 'sw-select'); for (const [value, label] of [['open', 'Любой может вступить'], ['request', 'По заявке'], ['invite', 'Только по приглашению']] as const) { const option = el('option', '', label); option.value = value; option.selected = (existing?.joinPolicy ?? (chat ? 'invite' : 'open')) === value; access.append(option); }
     const canChangeAccess = !existing || existing.membership?.role === 'owner'; access.disabled = !canChangeAccess;
     let color = worldColor(existing?.color), symbol = existing?.symbol ?? 'cells';
     const styles = el('div', 'sw-stack'); styles.append(this.colorPicker(color, value => { color = worldColor(value); })); const icons = el('div', 'sw-setting-options'); icons.setAttribute('role', 'group'); icons.setAttribute('aria-label', 'Значок сообщества');
     const iconNames: Record<string, string> = { cells: 'Соты', tools: 'Мастерская', camera: 'Фотография', game: 'Игры', music: 'Музыка', bulb: 'Идеи', image: 'Галерея', people: 'Люди' };
     communityIcons.forEach(value => { const target = el('button', 'sw-choice-icon'); target.type = 'button'; target.setAttribute('aria-label', iconNames[value] ?? value); target.title = iconNames[value] ?? value; target.setAttribute('aria-pressed', String(value === symbol)); target.append(icon(value)); target.addEventListener('click', () => { symbol = value; icons.querySelectorAll('button').forEach(node => node.setAttribute('aria-pressed', String(node === target))); }); icons.append(target); }); styles.append(icons);
-    const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button(existing ? 'Сохранить' : 'Создать сообщество', existing ? 'check' : 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit'; const requestId = crypto.randomUUID();
-    form.append(labeledField('Название', name), labeledField('Коротко о сообществе', description), labeledField('Темы', topics), labeledField('Облик', styles), labeledField('Вступление', access), labeledField('Витрина', showcase), error, save);
+    const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button(existing ? 'Сохранить' : chat ? 'Создать чат' : 'Создать сообщество', existing ? 'check' : 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit'; const requestId = crypto.randomUUID();
+    const optional = el('div', 'sw-stack'); optional.append(labeledField('Описание (необязательно)', description), labeledField('Темы (необязательно)', topics), labeledField('Облик', styles), labeledField('Витрина (необязательно)', showcase));
+    form.append(labeledField(chat ? 'Название чата' : 'Название', name));
+    if (chat) form.append(el('p', 'sw-small-note', 'Чат доступен только приглашённым участникам. Их можно добавить после создания.'));
+    else form.append(labeledField('Вступление', access));
+    if (existing) form.append(optional);
+    else { const details = el('details', 'sw-form-extra'); details.append(el('summary', '', 'Описание и оформление'), optional); form.append(details); }
+    form.append(error); pinDialogSubmit(dialog, form, save);
     form.addEventListener('submit', event => {
-      event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true; error.textContent = '';
+      event.preventDefault(); if (!accountCurrent() || !dialog.element.open || !form.reportValidity()) return; save.disabled = true; error.textContent = '';
       const parameters: Record<string, unknown> = { name: name.value.trim(), description: description.value.trim(), topics: topics.value.split(',').map(value => value.trim().slice(0, 32)).filter(Boolean).slice(0, 8), ...(canChangeAccess ? { joinPolicy: access.value } : {}), showcase: showcase.value.trim(), color: worldColors[color], symbol, ...(existing ? { communityId: existing.communityId, expectedRevision: existing.revision } : { requestId }) };
-      void this.api.request<{ community: WorldCommunity }>(existing ? 'world.community.update' : 'world.community.create', parameters).then(response => { if (this.destroyed) return; this.updateCommunity(response.community); dialog.close(); this.group = response.community; this.groupTab = 'about'; this.renderGroup(); this.toast(existing ? 'Сообщество обновлено' : 'Ваше сообщество готово'); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
+      void this.api.request<{ community: WorldCommunity }>(existing ? 'world.community.update' : 'world.community.create', parameters).then(response => {
+        if (!accountCurrent() || !dialog.element.open) return;
+        this.updateCommunity(response.community); dialog.close();
+        if (chat) { this.navigateReady('messages', response.community.communityId); this.toast('Чат создан'); return; }
+        this.group = response.community;
+        this.groupTab = existing ? returnTab : 'about';
+        this.writeRoute(`community/${response.community.communityId}/${this.groupTab}`); this.renderGroup();
+        this.toast(existing ? 'Сообщество обновлено' : 'Ваше сообщество готово');
+      }).catch(reason => { if (accountCurrent() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     }); dialog.body.append(form); name.focus();
   }
 
@@ -1875,19 +1911,48 @@ class WorldApplication {
   }
 
   private openInvite(group: WorldCommunity): void {
+    const accountCurrent = this.accountTask();
     let timer: ReturnType<typeof setTimeout> | null = null, sequence = 0;
-    const dialog = this.dialog('Пригласить в сообщество', () => { if (timer) clearTimeout(timer); sequence++; }); const input = textInput('', 'Имя или интерес', 100); input.setAttribute('aria-label', 'Найти человека');
+    let contactsRequest: Promise<{ contacts: Omit<DirectoryContact, 'kind'>[] }> | null = null;
+    const dialog = this.dialog('Пригласить человека', () => { if (timer) clearTimeout(timer); sequence++; }); const input = textInput('', 'Имя или интерес', 100); input.setAttribute('aria-label', 'Найти человека');
     const results = el('div', 'sw-stack'); const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); dialog.body.append(input, el('hr', 'sw-rule'), results, error);
     const search = async (): Promise<void> => {
-      const request = ++sequence; results.replaceChildren(this.loading('Ищем людей'));
-      try {
-        const response = await this.api.request<WorldSearch>('world.discovery.search', { query: input.value.trim(), kind: 'people', limit: 24 });
-        if (!dialog.element.open || request !== sequence) return; results.replaceChildren();
-        const people = response.people.filter(profile => profile.profileId !== this.profile?.profileId);
-        if (!people.length) results.append(el('p', 'sw-muted', 'Никого не нашли. Попробуйте другое имя.'));
-        people.forEach(profile => { const row = el('div', 'sw-member-row'); row.append(avatar(profile.displayName, profile.avatarUrl, worldColor(profile.avatarColor), profile.profileId, profile.avatarRevision), el('strong', 'sw-grow', profile.displayName)); const invite = button('Пригласить', 'plus', 'sw-button-small', () => { invite.disabled = true; void this.api.request('world.membership.invite', { communityId: group.communityId, profileId: profile.profileId }).then(() => { invite.replaceChildren(icon('check'), el('span', '', 'Приглашён')); }).catch(reason => { error.textContent = errorText(reason); invite.disabled = false; }); }); row.append(invite); results.append(row); });
-      } catch (reason) { if (dialog.element.open) results.replaceChildren(el('div', 'sw-error', errorText(reason))); }
+      const request = ++sequence, query = input.value.trim(); results.replaceChildren(this.loading('Ищем людей')); error.textContent = '';
+      contactsRequest ??= this.api.request('contacts.list', {});
+      const [publicPeople, contacts] = await Promise.allSettled([
+        this.api.request<WorldSearch>('world.discovery.search', { query, kind: 'people', limit: 24 }), contactsRequest,
+      ]);
+      if (!accountCurrent() || !dialog.element.open || request !== sequence) return;
+      if (contacts.status === 'rejected') contactsRequest = null;
+      results.replaceChildren();
+      type Target = Pick<WorldProfile, 'profileId' | 'displayName'> & Partial<Pick<WorldProfile, 'avatarUrl' | 'avatarColor' | 'avatarRevision'>> & { contact?: boolean };
+      const targets = new Map<string, Target>();
+      const visible = publicPeople.status === 'fulfilled' ? publicPeople.value.people : [];
+      const needle = query.toLocaleLowerCase('ru');
+      if (contacts.status === 'fulfilled') for (const contact of contacts.value.contacts) {
+        if (!contact.peerAccountId || !contact.label.toLocaleLowerCase('ru').includes(needle)) continue;
+        const profile = visible.find(value => value.profileId === contact.peerAccountId);
+        targets.set(contact.peerAccountId, { ...profile, profileId: contact.peerAccountId, displayName: contact.label, contact: true });
+        if (targets.size >= 24) break;
+      }
+      for (const profile of visible) if (!targets.has(profile.profileId) && targets.size < 24) targets.set(profile.profileId, profile);
+      const people = [...targets.values()].filter(profile => profile.profileId !== this.profile?.profileId);
+      if (publicPeople.status === 'rejected' || contacts.status === 'rejected') {
+        error.textContent = publicPeople.status === 'rejected' && contacts.status === 'rejected' ? 'Не удалось загрузить людей. Повторите поиск.' : contacts.status === 'rejected' ? 'Контакты временно недоступны. Показаны открытые профили.' : 'Поиск открытых профилей недоступен. Показаны ваши контакты.';
+        results.append(button('Повторить поиск', 'refresh', 'sw-button-quiet', () => { void search(); }));
+      }
+      if (!people.length) results.append(el('p', 'sw-muted', 'Никого не нашли. Попробуйте другое имя.'));
+      people.forEach(profile => {
+        const row = el('div', 'sw-member-row'), copy = el('div', 'sw-grow'); copy.append(el('strong', '', profile.displayName)); if (profile.contact) copy.append(el('p', 'sw-small-note', 'Ваш контакт'));
+        row.append(avatar(profile.displayName, profile.avatarUrl, worldColor(profile.avatarColor), profile.profileId, profile.avatarRevision), copy);
+        const invite = button('Пригласить', 'plus', '', () => {
+          if (!accountCurrent() || !dialog.element.open) return; invite.disabled = true;
+          void this.api.request('world.membership.invite', { communityId: group.communityId, profileId: profile.profileId }).then(() => {
+            if (accountCurrent() && dialog.element.open && invite.isConnected) invite.replaceChildren(icon('check'), el('span', '', 'Приглашён'));
+          }).catch(reason => { if (accountCurrent() && dialog.element.open && invite.isConnected) { error.textContent = errorText(reason); invite.disabled = false; } });
+        }); row.append(invite); results.append(row);
+      });
     };
-    input.addEventListener('input', () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { void search(); }, 230); }); void search(); input.focus();
+    input.addEventListener('input', () => { sequence++; if (timer) clearTimeout(timer); timer = setTimeout(() => { void search(); }, 230); }); void search(); input.focus();
   }
 }

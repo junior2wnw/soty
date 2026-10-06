@@ -4,11 +4,9 @@ import { loadPreferences } from './world/preferences';
 import { applyThemePreferences } from './world/theme/theme';
 import './platform/connect-theme.css';
 import { getPwaController } from './platform/pwa';
-import { showOriginContinuity } from './platform/origin-continuity';
 
 applyThemePreferences(loadPreferences());
 getPwaController();
-showOriginContinuity();
 
 const root = document.querySelector<HTMLElement>('#app')!;
 const url = new URL(window.location.href);

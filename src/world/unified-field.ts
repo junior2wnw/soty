@@ -17,8 +17,9 @@ export type { FieldCamera } from './unified-field-camera.mjs';
 export type { FieldDocument, FieldContext, FieldEntityRef } from '../../modules/field/contract.mjs';
 export type UnifiedFieldMode = 'mine' | 'search';
 type FieldVisualArt = AppArt & { icon?: FieldAppArt['icon'] };
+type CameraFit = 'manual' | 'overview' | 'context';
 export interface FieldCommitResult { status: 'saved' | 'volatile' | 'conflict'; revision: number; document: FieldDocument; errorCode?: string; localDurable?: boolean }
-export interface UnifiedFieldViewState { mine?: FieldCamera; search?: FieldCamera; mineContext?: string; searchContext?: string; mineSelection?: string; searchSelection?: string }
+export interface UnifiedFieldViewState { mine?: FieldCamera; search?: FieldCamera; mineContext?: string; searchContext?: string; mineSelection?: string; searchSelection?: string; mineFit?: CameraFit; searchFit?: CameraFit }
 export interface UnifiedFieldSummary {
   mode: UnifiedFieldMode; camera: FieldCamera; focusContextId: string; selectedShortcutId: string; arranging: boolean;
   persistence: 'saved' | 'saving' | 'pending' | 'error' | 'conflict'; localDurable: boolean; revision: number;
@@ -123,10 +124,15 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   plane.setAttribute('aria-label', 'Стрелки выбирают объект. Enter открывает. В расстановке Space переносит, Escape отменяет.');
   const live = el('div', 'uf-live'); live.setAttribute('aria-live', 'polite'); live.setAttribute('role', 'status');
   const tools = el('div', 'uf-move-tools'); tools.hidden = true;
+  tools.setAttribute('role', 'group'); tools.setAttribute('aria-label', 'Перенос ярлыка');
+  const moveHint = el('p', 'uf-move-hint', 'Выберите место, затем перенесите'); moveHint.setAttribute('aria-hidden', 'true');
   const contextSelect = el('select', 'uf-move-context'); contextSelect.setAttribute('aria-label', 'Переместить в пространство');
-  const confirm = el('button', 'uf-move-confirm', 'Переместить сюда'); confirm.type = 'button';
-  const cancelButton = el('button', 'uf-move-cancel', 'Отменить перенос'); cancelButton.type = 'button';
-  tools.append(contextSelect, confirm, cancelButton); viewport.append(plane, tools, live);
+  const confirm = el('button', 'uf-move-confirm'); confirm.type = 'button'; confirm.setAttribute('aria-label', 'Переместить сюда');
+  const confirmFull = el('span', 'uf-full-label', 'Переместить сюда'), confirmShort = el('span', 'uf-compact-label', 'Перенести');
+  confirm.append(confirmFull, confirmShort);
+  const cancelButton = el('button', 'uf-move-cancel'); cancelButton.type = 'button'; cancelButton.setAttribute('aria-label', 'Отменить перенос');
+  cancelButton.append(icon('close'), el('span', 'uf-full-label', 'Отменить перенос'));
+  tools.append(moveHint, contextSelect, confirm, cancelButton); viewport.append(plane, tools, live);
   const controller = new AbortController(), signal = controller.signal;
   let resolveReady!: () => void, readySettled = false;
   const ready = new Promise<void>(resolve => { resolveReady = resolve; });
@@ -134,6 +140,10 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     mine: normalizeFieldCamera(viewState.mine), search: normalizeFieldCamera(viewState.search) };
   const contextFocus: Record<UnifiedFieldMode, string> = { mine: viewState.mineContext ?? '', search: viewState.searchContext ?? '' };
   const initialized: Record<UnifiedFieldMode, boolean> = { mine: !!viewState.mine, search: !!viewState.search };
+  const cameraFit: Record<UnifiedFieldMode, CameraFit> = {
+    mine: viewState.mineFit ?? (viewState.mineContext ? 'context' : viewState.mine ? 'manual' : 'overview'),
+    search: viewState.searchFit ?? (viewState.searchContext ? 'context' : viewState.search ? 'manual' : 'overview'),
+  };
   let fieldDocument = validateFieldDocument(options.document ?? createFieldDocument()), revision = options.revision ?? 0;
   let entities = thinEntities(options.entities ?? []), mode = options.mode ?? 'mine', scope = '', searchDocument: FieldScene = { contexts: [], shortcuts: [] };
   let layout = layoutUnifiedField(fieldDocument, entities, metrics), index = createFieldSpatialIndex(layout.nodes);
@@ -166,20 +176,19 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   function remember(): void {
     viewState[mode] = { ...camera() };
     selections[mode] = selectedId;
-    if (mode === 'mine') { viewState.mineContext = contextFocus.mine; viewState.mineSelection = selectedId; }
-    else { viewState.searchContext = contextFocus.search; viewState.searchSelection = selectedId; }
+    if (mode === 'mine') { viewState.mineContext = contextFocus.mine; viewState.mineSelection = selectedId; viewState.mineFit = cameraFit.mine; }
+    else { viewState.searchContext = contextFocus.search; viewState.searchSelection = selectedId; viewState.searchFit = cameraFit.search; }
   }
-  function setCamera(next: FieldCamera): void { if (destroyed) return; cameras[mode] = normalizeFieldCamera(next); initialized[mode] = true; remember(); schedule(); emit(); }
+  function setCamera(next: FieldCamera, fit: CameraFit = 'manual'): void { if (destroyed) return; cameraFit[mode] = fit; cameras[mode] = normalizeFieldCamera(next); initialized[mode] = true; remember(); schedule(); emit(); }
   function fitOverview(): void {
-    contextFocus[mode] = ''; setCamera(fitFieldCamera(layout.bounds, viewportSize(), { padding: viewport.clientWidth < 720 ? 16 : 30, maxScale: 1 }));
+    contextFocus[mode] = ''; setCamera(fitFieldCamera(layout.bounds, viewportSize(), { padding: 60, maxScale: 1 }), 'overview');
   }
   function focusContext(contextId: string): void {
     const context = layout.contexts.find(item => item.contextId === contextId); if (!context) return;
     const view = viewportSize(), compact = view.width < 720;
     const core = layout.nodes.filter(node => node.contextId === contextId && !['person', 'device'].includes(node.kind));
     const bounds = compact && core.length ? fieldBounds(core.flatMap(node => node.footprint), 16) : context.bounds;
-    const minimum = compact ? Math.max(.55, Math.min(.76, .65 + (view.width - 320) / 70 * .11)) : .45;
-    contextFocus[mode] = contextId; setCamera(fitFieldCamera(bounds, view, { padding: compact ? 12 : 30, maxScale: 1, minScale: minimum }));
+    contextFocus[mode] = contextId; setCamera(fitFieldCamera(bounds, view, { padding: compact && core.length ? 12 : 44, maxScale: 1, minScale: .45 }), 'context');
   }
   function rebuild(): void {
     const priorFocus = document.activeElement instanceof HTMLElement && plane.contains(document.activeElement) ? document.activeElement : null;
@@ -189,14 +198,17 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       layout.nodes = layout.nodes.filter(node => (!visibleKinds?.length || visibleKinds.includes(node.kind) || node.kind === 'builtin' && visibleKinds.includes('app'))
         && (!query || matchingContexts.has(node.contextId) || `${node.entity.title} ${node.entity.description ?? ''}`.toLocaleLowerCase('ru').includes(query)));
       const kept = new Set(layout.nodes.map(node => node.shortcutId));
-      layout.contexts = layout.contexts.filter(context => context.children.some(id => kept.has(id)) || !!query && matchingContexts.has(context.contextId))
+      layout.contexts = layout.contexts.filter(context => !query || context.children.some(id => kept.has(id)) || matchingContexts.has(context.contextId))
         .map(context => ({ ...context, children: context.children.filter(id => kept.has(id)) }));
     }
     index = createFieldSpatialIndex(layout.nodes);
     if (!layout.nodes.some(node => node.shortcutId === selectedId)) selectedId = '';
-    if (!layout.contexts.some(context => context.contextId === contextFocus[mode])) contextFocus[mode] = '';
+    if (contextFocus[mode] && !layout.contexts.some(context => context.contextId === contextFocus[mode])) { contextFocus[mode] = ''; initialized[mode] = false; }
     if (!initialized[mode] && viewport.clientWidth && viewport.clientHeight) {
       if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(contextFocus[mode] || layout.contexts[0].contextId); else fitOverview();
+    } else if (!gesture && !moving && viewport.clientWidth && viewport.clientHeight) {
+      if (cameraFit[mode] === 'overview') fitOverview();
+      else if (cameraFit[mode] === 'context' && contextFocus[mode]) focusContext(contextFocus[mode]);
     }
     render();
     if (priorFocus && !priorFocus.isConnected) (plane.querySelector<HTMLButtonElement>('.uf-node:not(:disabled)[tabindex="0"]') ?? plane.querySelector<HTMLButtonElement>('.uf-context-title'))?.focus({ preventScroll: true });
@@ -276,10 +288,12 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       const centre = { x: context.header.x + context.header.width / 2, y: headerY };
       const nearest = visibleContexts.filter(other => other.contextId !== context.contextId && Math.abs((other.header.y + other.header.height / 2 - centre.y) * cam.scale) < 72)
         .map(other => Math.abs((other.header.x + other.header.width / 2 - centre.x) * cam.scale));
-      const titleWidth = Math.max(44, Math.min(view.width - 24, metrics.contextTitleWidth, ...nearest.map(distance => distance - 14)));
+      const screenX = (centre.x - cam.x) * cam.scale + view.width / 2;
+      const edgeRoom = cameraFit[mode] === 'overview' ? 2 * Math.max(0, Math.min(screenX - 8, view.width - screenX - 8)) : view.width - 24;
+      const titleWidth = Math.max(44, Math.min(view.width - 24, edgeRoom, metrics.contextTitleWidth, ...nearest.map(distance => distance - 14)));
       title.style.setProperty('--uf-title-screen-width', `${titleWidth}px`); title.classList.toggle('is-icon-only', titleWidth < 112);
       const titleSignature = JSON.stringify([mode, context.title, context.children.length]);
-      if (title.dataset.signature !== titleSignature) { const copy = el('span', 'uf-context-copy'); copy.append(el('strong', 'uf-context-name', context.title)); title.replaceChildren(icon(mode === 'mine' ? 'cells' : 'people'), copy); title.dataset.signature = titleSignature; }
+      if (title.dataset.signature !== titleSignature) { const copy = el('span', 'uf-context-copy'); copy.append(el('strong', 'uf-context-name', context.title)); title.replaceChildren(icon(mode === 'mine' ? 'layers' : context.title === 'Приложения' ? 'grid' : 'people'), copy); title.dataset.signature = titleSignature; }
       title.setAttribute('aria-label', `${context.title}. ${nounCount(context.children.length, 'объект', 'объекта', 'объектов')}`);
       title.tabIndex = level === 'overview' ? 0 : -1;
     }
@@ -312,6 +326,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       } else if (node.kind === 'person') target.style.height = `${Math.max(node.height, 44 / cam.scale)}px`;
       const screenWidth = node.kind === 'device' ? node.width : node.width * cam.scale, screenHeight = node.kind === 'device' ? node.height : node.height * cam.scale;
       target.style.setProperty('--uf-node-screen-width', `${screenWidth}px`); target.style.setProperty('--uf-node-screen-height', `${screenHeight}px`);
+      const caption = screenWidth < 135 ? 'compact' : 'full'; if (target.dataset.caption !== caption) target.dataset.caption = caption;
       // Search and overview remain navigable. Read-only describes layout changes, never inspection/opening.
       target.disabled = false;
       target.dataset.interactive = String(!target.disabled);
@@ -342,11 +357,15 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       }
     }
     tools.hidden = !moving;
+    const moveState = String(!!moving); if (viewport.dataset.moving !== moveState) viewport.dataset.moving = moveState;
     if (moving) {
       const ids = fieldDocument.contexts.map(context => context.contextId).join('|');
       if (contextSelect.dataset.contexts !== ids) { contextSelect.replaceChildren(...fieldDocument.contexts.map(context => { const option = el('option', '', context.title); option.value = context.contextId; return option; })); contextSelect.dataset.contexts = ids; }
       contextSelect.value = moving.preview.target.contextId; confirm.disabled = !moving.preview.valid;
-      confirm.textContent = moving.preview.occupied ? 'Обменять местами' : 'Переместить сюда';
+      const action = moving.preview.occupied ? 'Обменять местами' : 'Переместить сюда';
+      if (confirm.getAttribute('aria-label') !== action) { confirm.setAttribute('aria-label', action); confirmFull.textContent = action; confirmShort.textContent = moving.preview.occupied ? 'Обменять' : 'Перенести'; }
+      const hint = !moving.preview.valid ? 'Здесь соты будут перекрываться' : moving.preview.occupied ? 'Эти соты поменяются местами' : 'Выберите место, затем перенесите';
+      if (moveHint.textContent !== hint) moveHint.textContent = hint;
     }
     if (!readySettled && initialized[mode] && viewport.clientWidth > 0 && viewport.clientHeight > 0) {
       readySettled = true; viewport.dataset.ready = 'true'; resolveReady();
@@ -564,7 +583,11 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const changed = Math.abs(width - lastWidth) > 40 || Math.abs(height - lastHeight) > 40;
     lastWidth = width; lastHeight = height;
     if (!initialized[mode]) rebuild();
-    else if (changed && contextFocus[mode] && !gesture && !moving) focusContext(contextFocus[mode]);
+    else if (changed && !gesture && !moving) {
+      if (cameraFit[mode] === 'context' && contextFocus[mode]) focusContext(contextFocus[mode]);
+      else if (cameraFit[mode] === 'overview') fitOverview();
+      else render();
+    }
     else render();
   }); resize.observe(viewport);
   // TTL expiry removes device signals even when no new directory page arrives.

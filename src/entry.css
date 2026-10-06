@@ -1,3 +1,4 @@
+html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 body[data-soty-surface="world"] { margin:0; background:var(--sw-bg); color:var(--sw-ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
 body[data-soty-surface="world"] #app { min-height:100dvh; }
 .soty-start { min-height:100dvh; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:20px; padding:24px; box-sizing:border-box; text-align:center; }

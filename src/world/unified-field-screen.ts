@@ -68,6 +68,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   clear.classList.add('uf-search-clear'); search.append(icon('search'), searchInput, clear);
   const localSearch = el('div', 'uf-local-search'); localSearch.append(search);
   const filters = el('div', 'uf-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Какие объекты показать');
+  const compactFilter = el('select', 'uf-compact-filter'); compactFilter.setAttribute('aria-label', 'Какие объекты показать'); filters.append(compactFilter);
+  compactFilter.addEventListener('change', () => { filter = compactFilter.value as FieldFilter; filtersByMode[mode] = filter; updateChrome(); inputChanged(true); });
   const filterButtons = new Map<FieldFilter, HTMLButtonElement>();
   const host = el('div', 'uf-scene-host');
   const loading = el('div', 'uf-loading', 'Открываем поле…'); loading.setAttribute('role', 'status');
@@ -78,13 +80,15 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const setZoom = (factor: number): void => { if (!engine) return; const camera = engine.getCamera(); engine.setCamera({ ...camera, scale: camera.scale * factor }); };
   zoom.append(iconButton('Уменьшить поле', 'minus', () => setZoom(1 / 1.18)), percent, iconButton('Увеличить поле', 'plus', () => setZoom(1.18)));
   const contextSelector = el('select', 'uf-context-selector'); contextSelector.setAttribute('aria-label', 'Пространство поля');
-  contextSelector.addEventListener('change', () => contextSelector.value ? engine?.focusContext(contextSelector.value) : engine?.fitOverview(), { signal });
-  const overview = button('Обзор', 'refresh', 'uf-overview-button', () => engine?.fitOverview());
+  contextSelector.addEventListener('change', () => { closePreview(false); contextSelector.value ? engine?.focusContext(contextSelector.value) : engine?.fitOverview(); }, { signal });
+  const overview = button('Показать всё', 'expand', 'uf-overview-button', () => { closePreview(false); engine?.fitOverview(); });
   const spaces = iconButton('Управлять пространствами', 'settings', () => manageContexts());
-  toolbar.append(zoom, contextSelector, overview, spaces);
+  const viewTools = iconButton('Вид поля', 'sliders', () => openViewTools()); viewTools.classList.add('uf-view-tools');
+  toolbar.append(zoom, contextSelector, overview, spaces, viewTools);
+  const arrangeHint = el('p', 'uf-arrange-hint', 'Перетащите соту или нажмите на неё'); arrangeHint.hidden = true;
   const more = button('Показать ещё', 'plus', 'uf-more', () => run(searchDirectory(true))); more.hidden = true;
   const undo = button('Отменить', 'back', 'uf-undo', () => run(engine?.undo())); undo.hidden = true;
-  host.append(loading, empty, feedback, toolbar, more, undo); element.append(head, localSearch, filters, host);
+  host.append(loading, empty, feedback, toolbar, arrangeHint, more, undo); element.append(head, localSearch, filters, host);
   const dialogs = new Set<WorldDialog>();
   const metadata = new Map<string, DirectoryEntity>(BUILTINS.map(item => [fieldEntityKey(item.entity), item]));
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;
@@ -100,11 +104,32 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
   let firstResolve = true;
-  const wide = matchMedia('(min-width: 769px)');
+  const wide = matchMedia('(min-width: 901px)');
+  let viewPercent: HTMLOutputElement | null = null;
   const report = (error: unknown): void => { if (current()) options.onMessage(errorText(error), true); };
   const run = (promise: Promise<unknown> | undefined): void => { if (promise) void promise.catch(report); };
   function dialog(name: string): WorldDialog {
     const instance = createDialog(name, () => dialogs.delete(instance)); dialogs.add(instance); return instance;
+  }
+  function openViewTools(): void {
+    const instance = dialog('Вид поля'); instance.element.classList.add('uf-view-dialog');
+    const types = el('select', 'sw-select'); types.setAttribute('aria-label', 'Какие объекты показать');
+    for (const kind of ['all', 'app', 'community', 'person', 'device'] as FieldFilter[]) {
+      if (mode === 'search' && kind === 'device') continue;
+      const option = el('option', '', labels[kind]); option.value = kind; types.append(option);
+    }
+    types.value = filter;
+    types.addEventListener('change', () => { filter = types.value as FieldFilter; filtersByMode[mode] = filter; updateChrome(); inputChanged(true); instance.close(); });
+    const row = el('div', 'uf-view-zoom'), value = el('output', 'uf-zoom-value', percent.value || '100%');
+    value.setAttribute('aria-label', 'Масштаб поля'); viewPercent = value;
+    row.append(iconButton('Уменьшить поле', 'minus', () => setZoom(1 / 1.18)), value, iconButton('Увеличить поле', 'plus', () => setZoom(1.18)));
+    const contexts = el('select', 'sw-select'); contexts.setAttribute('aria-label', 'Показать пространство');
+    contexts.append(...[...contextSelector.options].map(option => { const copy = el('option', '', option.textContent ?? ''); copy.value = option.value; return copy; }));
+    contexts.value = contextSelector.value;
+    contexts.addEventListener('change', () => { closePreview(false); contexts.value ? engine?.focusContext(contexts.value) : engine?.fitOverview(); instance.close(); });
+    instance.body.append(labeledField('Показать', types), labeledField('Перейти к', contexts), row,
+      button('Показать всё', 'expand', 'sw-button-wide', () => { closePreview(false); engine?.fitOverview(); instance.close(); }));
+    if (mode === 'mine') instance.body.append(button('Мои пространства', 'layers', 'sw-button-wide', () => { instance.close(); manageContexts(); }));
   }
   function merge(items: readonly DirectoryEntity[]): void { for (const item of items) metadata.set(fieldEntityKey(item.entity), item); metadataRevision++; }
   function pruneMetadata(): void {
@@ -117,6 +142,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     return [...metadata.values()].filter(item => needed.has(fieldEntityKey(item.entity)));
   }
   function placeSearch(): void {
+    searchInput.placeholder = wide.matches ? mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества' : 'Поиск';
     const placeholder = header?.querySelector('.sx-global-search');
     if (wide.matches && header) { placeholder?.replaceWith(search); if (search.parentElement !== header) header.insertBefore(search, header.querySelector('.sx-mobile-profile')); }
     else { if (search.parentElement !== localSearch) localSearch.append(search); placeholder?.remove(); }
@@ -130,11 +156,15 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     searchInput.value = queries[mode]; searchInput.placeholder = mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества';
     searchInput.setAttribute('aria-label', searchInput.placeholder); clear.hidden = !searchInput.value;
     arrange.hidden = mode !== 'mine'; spaces.hidden = mode !== 'mine';
+    contextSelector.setAttribute('aria-label', mode === 'mine' ? 'Мои пространства' : 'Раздел поиска');
+    contextSelector.title = mode === 'mine' ? 'Перейти к пространству на поле' : 'Перейти к разделу результатов';
     for (const kind of ['all', 'app', 'community', 'person', 'device'] as FieldFilter[]) {
       let target = filterButtons.get(kind);
       if (!target) { target = button(labels[kind], undefined, '', () => { filter = kind; filtersByMode[mode] = kind; updateChrome(); inputChanged(true); }); filterButtons.set(kind, target); filters.append(target); }
       target.setAttribute('aria-pressed', String(filter === kind)); target.hidden = mode === 'search' && kind === 'device';
     }
+    compactFilter.replaceChildren(...(['all', 'app', 'community', 'person', 'device'] as FieldFilter[]).filter(kind => mode !== 'search' || kind !== 'device').map(kind => { const option = el('option', '', labels[kind]); option.value = kind; return option; }));
+    compactFilter.value = filter;
     if (focused instanceof HTMLElement && filters.contains(focused) && !focused.getClientRects().length) searchInput.focus({ preventScroll: true });
     contextKey = ''; if (summary) updateSummary(summary); placeSearch();
   }
@@ -178,13 +208,19 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }));
   }
   function updateSummary(next: UnifiedFieldSummary): void {
+    if (mode === 'mine' && selected?.shortcutId) {
+      const inspected = next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId);
+      if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
+    }
     summary = next; arrange.setAttribute('aria-pressed', String(next.arranging)); arrange.querySelector('span')!.textContent = next.arranging ? 'Готово' : 'Расставить';
     element.dataset.focusContext = next.focusContextId;
+    arrangeHint.hidden = !next.arranging;
     const zoomValue = `${Math.round(next.camera.scale * 100)}%`; if (percent.value !== zoomValue) percent.value = zoomValue;
+    if (viewPercent?.isConnected && viewPercent.value !== zoomValue) viewPercent.value = zoomValue;
     undo.hidden = !next.canUndo || mode !== 'mine';
     const contexts = mode === 'mine' ? next.document.contexts : searchScene().contexts;
     const key = JSON.stringify(contexts.map(context => [context.contextId, context.title]));
-    if (contextKey !== key) { contextKey = key; contextSelector.replaceChildren(el('option', '', 'Все пространства'), ...contexts.map(context => { const option = el('option', '', context.title); option.value = context.contextId; return option; })); contextSelector.firstElementChild!.setAttribute('value', ''); }
+    if (contextKey !== key) { contextKey = key; contextSelector.replaceChildren(el('option', '', mode === 'mine' ? 'Все пространства' : 'Все результаты'), ...contexts.map(context => { const option = el('option', '', context.title); option.value = context.contextId; return option; })); contextSelector.firstElementChild!.setAttribute('value', ''); }
     contextSelector.value = next.focusContextId || ''; updateMineEmpty(next.document); updateStatus();
   }
   function updateStatus(): void {
@@ -266,7 +302,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       }
       element.dataset.searchState = page.status;
       empty.hidden = searchItems.length > 0;
-      if (!searchItems.length) { empty.replaceChildren(el('h2', '', page.status === 'offline' ? 'Поиск ждёт подключения' : 'Пока ничего не найдено'), el('p', '', page.status === 'offline' ? 'Ваше поле остаётся доступным.' : query ? 'Попробуйте другое название.' : 'Здесь появятся доступные приложения, люди и сообщества.'), button(page.status === 'offline' ? 'Повторить' : 'На моё поле', page.status === 'offline' ? 'refresh' : 'back', 'sw-button-quiet', () => page.status === 'offline' ? run(searchDirectory()) : changeMode('mine'))); }
+      if (!searchItems.length) {
+        const title = filter === 'community' ? 'Сообщества не найдены' : filter === 'person' ? 'Люди не найдены' : filter === 'app' ? 'Приложения не найдены' : 'Пока ничего не найдено';
+        const hint = query ? 'Попробуйте другое название.' : filter === 'community' ? 'Здесь появятся доступные вам сообщества.' : filter === 'person' ? 'Здесь появятся люди, открывшие свой профиль для поиска.' : 'Здесь появятся доступные приложения, люди и сообщества.';
+        empty.replaceChildren(el('h2', '', page.status === 'offline' ? 'Поиск ждёт подключения' : title), el('p', '', page.status === 'offline' ? 'Ваше поле остаётся доступным.' : hint), button(page.status === 'offline' ? 'Повторить' : 'На моё поле', page.status === 'offline' ? 'refresh' : 'back', 'sw-button-quiet', () => page.status === 'offline' ? run(searchDirectory()) : changeMode('mine')));
+      }
       else if (page.status === 'partial') options.onMessage('Часть результатов временно недоступна. Можно повторить поиск.');
       if (summary) { contextKey = ''; updateSummary(summary); }
     } catch (error) {
@@ -309,6 +349,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const panel = el('aside', 'uf-preview'); panel.setAttribute('aria-label', `Об объекте: ${item.title}`);
     panel.tabIndex = -1; const close = iconButton('Закрыть карточку', 'close', () => closePreview()); close.classList.add('uf-preview-close');
     const copy = el('div', 'uf-preview-content'); copy.append(el('small', 'uf-eyebrow', kindLabel(item.entity.kind)), el('h2', '', item.title));
+    if (mode === 'mine' && shortcutId) {
+      const doc = engine?.snapshot(), placement = doc?.shortcuts.find(shortcut => shortcut.shortcutId === shortcutId);
+      const context = doc?.contexts.find(context => context.contextId === placement?.contextId);
+      if (context) copy.append(el('p', 'uf-preview-placement', `В пространстве «${context.title}»`));
+    }
     if (item.entity.kind === 'person') copy.prepend(avatar(item.title, item.avatarUrl, item.color, item.entity.id, item.avatarRevision));
     if (item.description) copy.append(el('p', '', item.description));
     const record = directory.getRecord(item.entity), actions = el('div', 'uf-preview-actions');
@@ -326,7 +371,15 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       else {
         const join = button(group.membership?.state === 'invited' ? 'Принять приглашение' : group.membership?.state === 'requested' ? 'Заявка отправлена' : group.joinPolicy === 'open' ? 'Вступить' : group.joinPolicy === 'request' ? 'Подать заявку' : 'По приглашению', 'people', 'sw-button-primary');
         join.disabled = ['requested', 'banned'].includes(group.membership?.state ?? '') || group.joinPolicy === 'invite' && group.membership?.state !== 'invited';
-        join.addEventListener('click', () => { join.disabled = true; run(options.api.request<{ community: WorldCommunity }>('world.membership.join', { communityId: group.communityId }).then(async result => { if (!current()) return; await loadMine(); if (!current()) return; const refreshed = metadata.get(fieldEntityKey(item.entity)); if (refreshed) openPreview(refreshed, shortcutId); options.onMessage(result.community.membership?.state === 'active' ? 'Вы в сообществе' : 'Заявка отправлена'); }).finally(() => { if (join.isConnected) join.disabled = false; })); });
+        join.addEventListener('click', () => {
+          const selection = selected, selectedMode = mode; join.disabled = true;
+          run(options.api.request<{ community: WorldCommunity }>('world.membership.join', { communityId: group.communityId }).then(async result => {
+            if (!current()) return; await loadMine(); if (!current()) return;
+            const refreshed = metadata.get(fieldEntityKey(item.entity));
+            if (refreshed && selected === selection && mode === selectedMode) openPreview(refreshed, shortcutId);
+            options.onMessage(result.community.membership?.state === 'active' ? 'Вы в сообществе' : 'Заявка отправлена');
+          }).finally(() => { if (join.isConnected) join.disabled = false; }));
+        });
         actions.append(join, button('О сообществе', 'info', 'sw-button-quiet', () => options.onOpen(item, directory.getRecord(item.entity))));
       }
     } else { const open = button(item.entity.kind === 'person' ? 'Профиль и контакт' : item.entity.kind === 'device' ? 'Управление устройствами' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity))); open.disabled = !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open); }
@@ -361,7 +414,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     input.required = true; const submit = button('Создать', 'plus', 'sw-button-primary'); submit.type = 'submit';
     form.append(labeledField('Название', input), error, submit);
     form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity() || !input.value.trim()) return; submit.disabled = true;
-      void engine?.addContext(input.value.trim()).then(() => { if (current()) instance.close(); }).catch(errorValue => { error.textContent = errorText(errorValue); }).finally(() => { submit.disabled = false; }); });
+      const existing = new Set(engine?.snapshot().contexts.map(context => context.contextId));
+      void engine?.addContext(input.value.trim()).then(() => {
+        if (!current() || !instance.element.open) return; instance.close();
+        const created = engine?.snapshot().contexts.find(context => !existing.has(context.contextId));
+        if (created) { closePreview(false); engine?.focusContext(created.contextId); }
+      }).catch(errorValue => { error.textContent = errorText(errorValue); }).finally(() => { submit.disabled = false; }); });
     instance.body.append(form); input.focus();
   }
   function manageContexts(): void {
@@ -418,9 +476,17 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     };
     find.addEventListener('input', render); render();
     const create = el('div', 'uf-add-create');
-    create.append(button('Найти новое', 'search', 'sw-button-wide', () => { instance.close(); changeMode('search'); searchInput.focus(); }), button('Новое пространство', 'cells', 'sw-button-wide', () => { instance.close(); newContext(); }));
-    for (const [kind, label, symbol] of [['app', 'Подключить приложение', 'grid'], ['community', 'Создать сообщество', 'people'], ['device', 'Подключить устройство', 'laptop'], ['person', 'Добавить контакт', 'person'], ['assistant', 'Создать с ИИ', 'sparkle']] as const) create.append(button(label, symbol, 'sw-button-wide', () => { instance.close(); options.onCreate(kind); }));
-    instance.body.append(find, list, create); find.focus();
+    create.append(button('Найти в Сотах', 'search', 'sw-button-wide', () => {
+      instance.close(); queries.search = ''; filtersByMode.search = 'all';
+      if (mode === 'search') { filter = 'all'; updateChrome(); route(); run(searchDirectory()); } else changeMode('search');
+      searchInput.focus();
+    }), button('Новое пространство', 'layers', 'sw-button-wide', () => { instance.close(); newContext(); }));
+    const extra = button('Создать или подключить', 'plus', 'sw-button-wide', () => {
+      instance.close(); const creator = dialog('Создать или подключить'), extras = el('div', 'uf-add-extra-actions');
+      for (const [kind, label, symbol] of [['app', 'Подключить приложение', 'grid'], ['community', 'Создать сообщество', 'people'], ['device', 'Подключить устройство', 'laptop'], ['person', 'Добавить контакт', 'person'], ['assistant', 'Создать с ИИ', 'sparkle']] as const) extras.append(button(label, symbol, 'sw-button-wide', () => { creator.close(); options.onCreate(kind); }));
+      creator.body.append(extras);
+    });
+    instance.body.append(find, list, create, extra); find.focus();
     // Refresh the available directory on each opening so newly connected apps/devices are reachable.
     run(loadMine().then(() => { if (current() && instance.element.open) render(); }));
   }

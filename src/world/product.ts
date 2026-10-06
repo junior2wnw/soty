@@ -73,7 +73,7 @@ export function openCommandPalette(commands: QuickCommand[], dialog: WorldDialog
   const render = (): void => {
     const searchText = input.value.trim(), query = searchText.toLocaleLowerCase('ru');
     visible = commands.filter(item => `${item.title} ${item.detail ?? ''}`.toLocaleLowerCase('ru').includes(query)).slice(0, searchText && discover ? 11 : 12);
-    if (searchText && discover) visible.push({ title: `Найти «${searchText}» среди людей и сообществ`, symbol: 'search', action: () => discover(searchText) });
+    if (searchText && discover) visible.push({ title: `Найти «${searchText}» в Сотах`, symbol: 'search', action: () => discover(searchText) });
     list.replaceChildren();
     visible.forEach((item, index) => { const option = el('div', 'sw-command-option'); option.id = `${list.id}-${index}`; option.setAttribute('role', 'option'); const text = el('span'); text.append(el('strong', '', item.title)); if (item.detail) text.append(el('small', '', item.detail)); option.append(icon(item.symbol), text, icon('arrow')); option.addEventListener('pointerdown', event => event.preventDefault()); option.addEventListener('click', () => { selected = index; run(); }); list.append(option); });
     count.textContent = visible.length ? `${visible.length} действий` : 'Ничего не найдено'; select(0);
