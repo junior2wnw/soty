@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createHttpApp } from '../../http-app.js';
+import { createHttpApp, waitForRejectedHttpStart } from '../../http-app.js';
 import { createNotesService } from '../../../modules/notes/server/index.mjs';
 import { createCapabilitiesService } from '../../../modules/capabilities/server/index.mjs';
 import { digestArgs } from '../../../modules/connect/server/index.mjs';
@@ -41,7 +41,8 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   const create = enabled => createHttpApp(resolve('dist'), { dataDir: directory, connectOrigins: [origin],
     capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
     ...(oauth ? { oauth: oauth(origin) } : {}) });
-  app = create(enabled);
+  try { app = create(enabled); }
+  catch (error) { await waitForRejectedHttpStart(error); throw error; }
   const send = async value => {
     const response = await fetch(`${origin}/api/connect/rpc`, { method: 'POST',
       headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ protocol: 1, ...value }) });
@@ -86,7 +87,9 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
     get app() { return app; },
     setFront(value) { front = value; },
     async restart({ enabled = false } = {}) {
-      await app?.locals.closeServices(); app = undefined; app = create(enabled);
+      await app?.locals.closeServices(); app = undefined;
+      try { app = create(enabled); }
+      catch (error) { await waitForRejectedHttpStart(error); throw error; }
     },
     sql(file, action) { const db = new DatabaseSync(file, { readOnly: true }); try { return action(db); } finally { db.close(); } },
   };

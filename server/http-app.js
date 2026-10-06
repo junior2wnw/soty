@@ -31,6 +31,16 @@ import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
 
+// Startup remains synchronous for callers. Its error privately retains the
+// asynchronous worker shutdown so supervisors can wait before retrying or
+// removing a rejected host's storage; no cleanup handle is serialized.
+const rejectedStarts = new WeakMap();
+export async function waitForRejectedHttpStart(error) {
+  const cleanup = error && (typeof error === 'object' || typeof error === 'function')
+    ? rejectedStarts.get(error) : undefined;
+  if (cleanup) { await cleanup; rejectedStarts.delete(error); }
+}
+
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
@@ -109,13 +119,20 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
-  const failedStart = () => {
-    nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations?.();
-    try { void mcp?.close().catch(() => {}); } catch { /* Preserve the startup failure. */ }
+  const failedStart = error => {
+    const pending = [];
+    const close = action => {
+      try { pending.push(Promise.resolve(action()).catch(() => {})); }
+      catch { /* Preserve the startup failure. */ }
+    };
+    close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
+    close(() => mcp?.close());
     for (const service of [human, universal, reviews, apps, capabilities, notes, world, connect]) {
-      try { service?.close(); } catch { /* Preserve the startup failure. */ }
+      close(() => service?.close());
     }
-    try { void connectors?.store.close().catch(() => {}); } catch { /* Preserve the startup failure. */ }
+    close(() => connectors?.store.close());
+    const cleanup = Promise.all(pending).then(() => undefined);
+    if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
@@ -144,7 +161,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
         return connect.withAuthorityFence(action);
       }) } : {}),
     });
-  } catch (error) { failedStart(); throw error; }
+  } catch (error) { failedStart(error); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
@@ -159,7 +176,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   }); } catch (error) {
     // Retained zones still need validation when new claims are disabled. A
     // rejected startup must not leave already opened services alive.
-    failedStart();
+    failedStart(error);
     throw error;
   }
   const appJobs = createAppJobsExtension({ store: connectors.store, actorActive: actor => connect?.isActorActive(actor) === true,
@@ -171,7 +188,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
       withAuthorityFence: action => connect.withAuthorityFence(action), readProfile: () => ({}) });
   }
-  catch (error) { failedStart(); throw error; }
+  catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;
   app.locals.universalApps = universal;
   app.locals.humanIdentityService = human;
@@ -192,7 +209,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
-    openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience) }),
+    openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external) }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities,
@@ -213,7 +230,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
     oauthCleanup = oauthProfile && capabilities.schemaVersion === 3
       ? startOAuthCleanup({ oauth: capabilities.oauth }) : null;
-  } catch (error) { failedStart(); throw error; }
+  } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
   app.locals.closeServices = async () => {

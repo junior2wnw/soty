@@ -105,8 +105,10 @@ test('actual private HTTP rejects noncanonical routes, Host, auth ambiguity and 
     { body: JSON.stringify({ ...input, body: '中'.repeat(87371) + 'x'.repeat(9), title: '' }), status: 413 },
     { body: ' '.repeat(2 * 1024 * 1024 + 1), status: 413 },
   ];
-  for (const { path = CREATE, status, ...options } of cases) {
-    const response = await f.http(path, { method: 'POST', token: identity.token, body: JSON.stringify(input), ...options });
+  for (const [index, { path = CREATE, status, ...options }] of cases.entries()) {
+    let response;
+    try { response = await f.http(path, { method: 'POST', token: identity.token, body: JSON.stringify(input), ...options }); }
+    catch (error) { assert.fail(`rejected request case ${index} lost its HTTP response: ${error.code || 'transport_error'}`); }
     assert.equal(response.status, status, path); noSecrets(response, [input.title, input.body, identity.token]);
   }
   assert.equal((await f.http(CREATE, { token: identity.token })).status, 405);

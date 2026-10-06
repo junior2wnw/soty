@@ -2,6 +2,7 @@ import { buildDiscoveryOpenApi } from '../modules/capabilities/server/openapi.mj
 import { BUILTIN_CAPABILITIES } from '../modules/capabilities/server/catalog.mjs';
 import { canonicalJson, freezeDeep } from '../modules/capabilities/server/validation.mjs';
 import { NATIVE_HTTP_LIMITS } from './capabilities-ingress.js';
+import { externalCapabilityTools, EXTERNAL_HTTP_ROUTES, externalOpenApiSchema } from './external-capabilities-contract.js';
 import { CAPABILITIES_BASE as BASE, NOTES_DRAFT_PATH, INVOCATIONS_PATH, INVOCATION_ID_PATTERN,
   NATIVE_NOTE_ID_PATTERN, SERVICE_DELEGATION_PATH, SERVICE_DELEGATION_BODY_BYTES } from './capabilities-http-contract.js';
 
@@ -14,7 +15,7 @@ const copy = value => structuredClone(value);
 
 /** Composed HTTP surface. The domain's standalone discovery-only contract stays
  * reusable; the host adds only the private operations it actually attaches. */
-export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false } = {}) {
+export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false, externalConfigured = false } = {}) {
   const document = copy(buildDiscoveryOpenApi());
   const note = BUILTIN_CAPABILITIES.find(entry => entry.capabilityId === 'notes.createDraft' && entry.version === 1);
   document.info = { title: 'Soty capabilities HTTP API', version: '1.3.0', description:
@@ -24,8 +25,9 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
       : 'Private access uses owner-issued service credentials. ')
     + (mcpConfigured ? 'The separate POST /mcp endpoint uses stateless Streamable HTTP. Obtain its tool definitions through MCP; this document describes the typed HTTP operations. '
       : 'MCP transport is not configured on this host. ')
-    + (!oauthConfigured && !mcpConfigured ? 'No OAuth, MCP, generic execution or reading of Notes content is described by this document. '
-      : 'No generic execution or reading of current Notes content is exposed. ')
+    + (externalConfigured ? 'Typed application actions are installed by the trusted host and independently enforce current source authority. No arbitrary commands, URLs or keys can be submitted for execution. '
+      : !oauthConfigured && !mcpConfigured ? 'No OAuth, MCP, generic execution or reading of Notes content is described by this document. '
+        : 'No generic execution or reading of current Notes content is exposed. ')
     + 'Public routes support GET/HEAD and public,no-cache with ETag; private routes and status use no-store. '
     + 'Never retry an uncertain write with a new idempotency key: get its Invocation or repeat the original request.' };
   document.tags.push({ name: 'Private Notes', description: 'Create-only scope; own historical receipts contain no current Note content or existence check.' });
@@ -158,6 +160,27 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
       ...delegationFailures } } };
   document.paths[`${BASE}/status`].get.description = 'Current native Notes readiness and explicitly configured audience. Readiness does not grant access, reserve capacity or migrate storage.';
   document.paths[`${BASE}/openapi.json`].get.description = 'OpenAPI 3.1.2 for public discovery and the attached typed private HTTP operations. Local references only; schemas do not grant execution.';
+  if (externalConfigured) {
+    const tools = externalCapabilityTools(schemas);
+    document.tags.push({ name: 'Private application actions', description: 'Only installed, pinned actions allowed by the current root grant and independent source authority.' });
+    if (mcpConfigured) document['x-soty-mcp'].tools.push(...tools.map(tool => tool.name));
+    for (const [route, toolName] of Object.entries(EXTERNAL_HTTP_ROUTES)) {
+      const tool = tools.find(value => value.name === toolName), prefix = `AppAction_${route}`;
+      schemas[prefix + 'Input'] = externalOpenApiSchema(tool.inputSchema);
+      schemas[prefix + 'Output'] = externalOpenApiSchema(tool.outputSchema);
+      const responses = { 200: json('Authorized typed result. A receipt is historical; metadata is not an execution grant.', ref(prefix + 'Output')),
+        ...errors([400, 401, 403, 404, 405, 408, 409, 413, 415, 429, 500, 503]) };
+      responses[413].description = 'The 64 KiB raw request or installed action input budget was exceeded.';
+      if (['invoke', 'get', 'cancel'].includes(route)) responses[202] = json('An admitted action is not terminal; retain its exact invocation and intention.', ref(prefix + 'Output'));
+      if (route === 'invoke') responses[201] = json('A new action has a source-verified committed result.', ref(prefix + 'Output'));
+      document.paths[`${BASE}/app-actions/${route}`] = { post: {
+        tags: ['Private application actions'], security: [{ CapabilityBearer: [] }], operationId: toolName,
+        summary: tool.description.split('.')[0], description: tool.description + ' Exact Host and Origin, audience-bound bearer, current Connect/App/Source authority, and a closed duplicate-free UTF-8 JSON body are required. '
+          + '64 KiB raw body; no cookie authentication, query alias, command forwarding or endpoint selection. Rejected and unknown outcomes never prove absence of an effect.',
+        requestBody: { required: true, content: { 'application/json': { schema: ref(prefix + 'Input') } } }, responses,
+      } };
+    }
+  }
   canonicalJson(document, { maxBytes: 256 * 1024 });
   return freezeDeep(document);
 }

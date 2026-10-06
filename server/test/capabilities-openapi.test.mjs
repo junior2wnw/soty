@@ -33,6 +33,27 @@ test('the composed OpenAPI names exactly the attached private operations without
   assert.match(doc.info.description, /No OAuth, MCP/u);
 });
 
+test('installed application actions share closed HTTP/MCP contracts with resolvable OpenAPI references', () => {
+  const base = buildCapabilitiesOpenApi({ mcpConfigured: true }), doc = buildCapabilitiesOpenApi({ mcpConfigured: true, externalConfigured: true });
+  assert.equal(Object.keys(base.paths).some(path => path.includes('/app-actions/')), false);
+  assert.equal(doc['x-soty-mcp'].tools.length, 9);
+  const expected = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel'];
+  for (const [index, route] of ['catalog', 'contract', 'invoke', 'get', 'cancel'].entries()) {
+    const path = doc.paths[`${BASE}/app-actions/${route}`];
+    assert.deepEqual(Object.keys(path), ['post']); assert.equal(path.post.operationId, expected[index]);
+    assert.deepEqual(path.post.security, [{ CapabilityBearer: [] }]);
+    const schema = doc.components.schemas[`AppAction_${route}Input`];
+    assert.equal(schema.additionalProperties, false);
+  }
+  walk(doc, value => {
+    if (!value.$ref) return;
+    assert.match(value.$ref, /^#\/components\/(schemas|parameters|responses)\//u);
+    assert.ok(value.$ref.slice(2).split('/').reduce((selected, key) => selected?.[key], doc));
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(doc)) < 256 * 1024);
+  assert.match(doc.info.description, /Typed application actions/u);
+});
+
 test('real HTTP responses validate with an independent JSON Schema 2020-12 implementation and expose no owner data in the public document', async t => {
   const probe = spawnSync('python', ['-c', 'import jsonschema'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
   if (probe.status !== 0) { t.skip('Python jsonschema is not installed; no dependency is installed by this test'); return; }

@@ -100,6 +100,10 @@ test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard t
       binding:{id:'app.'+f.appId+':source-binding',version:1,digest:canonicalHash({scope:resource,protocol:EXTERNAL_ADAPTER_PROFILE})}}};
   const options = {capabilityAudience:f.origin,externalApplications:[{appId:f.appId,target:{revision:source.revision,digest:source.digest},catalog,adapter}]};
   await f.restart(options);
+  const documentResponse = await fetch(f.origin + '/api/capabilities/v1/openapi.json'), document = await documentResponse.json();
+  assert.equal(documentResponse.status, 200); assert.equal(document['x-soty-mcp'].tools.length, 9);
+  assert.equal(document.paths['/api/capabilities/v1/app-actions/invoke'].post.operationId, 'apps_invoke');
+  assert.equal(JSON.stringify(document).includes(f.appId), false, 'public protocol documentation does not expose the private installed application');
   const reference = f.service().locals.capabilitiesService.external.contracts[0];
   const principal = (await f.owner.client.extension('access.principals.create',{expectedAccountId:f.owner.account.accountId,label:'Synthetic generic wire'})).principal;
   const grant = (await f.owner.client.extension('access.grants.issue',{expectedAccountId:f.owner.account.accountId,principalId:principal.id,

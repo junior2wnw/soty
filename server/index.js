@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { createHttpApp } from "./http-app.js";
+import { createHttpApp, waitForRejectedHttpStart } from "./http-app.js";
 import { createRoomStore } from "./room-store.js";
 import { attachRealtime } from "./realtime.js";
 import { createTrafficTunnelProxy } from "./traffic-tunnel-proxy.js";
@@ -26,7 +26,9 @@ const trafficTunnel = combineTunnelProxies([
     publicPath: process.env.SOTY_TRAFFIC_WS_PATH || "/api/traffic/ws"
   })
 ]);
-const app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration });
+let app;
+try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration }); }
+catch (error) { await waitForRejectedHttpStart(error); throw error; }
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first
 // can race a reused POST connection and produce an avoidable reset.
