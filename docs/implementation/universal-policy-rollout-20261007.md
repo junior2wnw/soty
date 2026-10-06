@@ -19,8 +19,10 @@ Kvartal policy остаётся отдельной и сохраняет сво�
 }
 ```
 
-`human` и `reviews` могут быть `null`. Фаза `legacy-baseline` ничего не добавляет
-в Env/mounts. Фаза `features` допускает только:
+`human` и `reviews` могут быть `null`. Обе фазы явно добавляют только
+`SOTY_UNIVERSAL_OPERATOR_ENABLED=1` для частного read-only port. Фаза
+`legacy-baseline` не читает Human/reviews config и не добавляет их flags/mounts.
+Фаза `features` дополнительно допускает только:
 
 - `SOTY_UNIVERSAL_APPS_ENABLED=true`;
 - `SOTY_HUMAN_IDENTITY_ENABLED=1` и точные issuer/key pathname при Human, иначе `0`;
@@ -35,7 +37,8 @@ pins проверяет тот же `createReviewsService`: отдельные s
 провайдера, не managed rights и не подтверждение его доступности.
 
 Private Human JSON имеет ровно существующий loader shape:
-`clients`, `jwks`, `cookieKeys`, `artifactKey`, `artifactKeyId`. Реальный host profile
+`clients`, `jwks`, `cookieKeys`, `artifactKey`, `artifactKeyId`, optional closed
+`renewal:{admissionEnabled,clientIds}`. Реальный host profile
 проверяет issuer против `shellOrigins`, фиксированные HTTPS callbacks, RSA/JWK,
 cookie/client/key bounds. Непроверенные значения не становятся частью host.
 Размер каждого файла ≤64 KiB; UTF-8 и duplicate JSON keys проверяются строго.
@@ -102,13 +105,19 @@ cookie/client/artifact key или byte-identical новая inode отверга
 
 ## Tiny wiring seams для владельца rollout
 
-Существующие `rollout.mjs`, `cli.mjs`, `runtime.mjs`, server composition здесь
-не изменены. До использования требуется последовательно подключить:
+В `rollout.mjs`, `cli.mjs`, `runtime.mjs`, `docker-api.mjs` подключён optional
+closed Universal путь. Root server lifecycle hook реализуется отдельно; actual
+Linux/image gates остаются обязательными. Source integration включает:
 
 1. Опциональный trusted `universalPolicy` handle в rollout args. На prepare это
    новый проверенный handle; на promote — только восстановленный с exact
    reviewed witnessId. Journal хранит public policy/witnessId, а не private
-   body/hash/keys. Публичный digest без witness не разрешает promote.
+   body/hash/keys. Публичный digest без witness не разрешает promote. Handle
+   одноразово привязан к exact rollout tuple и private preservation fingerprint;
+   этот fingerprint шифруется вместе с file witness. Restored handle сравнивает
+   прежнюю привязку и не допускает rebind даже при одинаковом изменении Env у
+   original и candidate. Новый public configurationSha256 зависит только от
+   закрытых nonsecret rollout metadata. No-Universal legacy wire сохранён отдельно.
 2. В `createConfig` после сохранения исходных Env/mounts/networks и отдельного
    Kvartal delta вызвать `applyUniversalPolicy(config, handle)`. Функция возвращает
    clone, сохраняет остальные поля и отказывается заменить прежнее другое
@@ -127,9 +136,9 @@ cookie/client/artifact key или byte-identical новая inode отверга
    delta не создаёт дополнительных mounts.
 5. После создания actual services и Human HTTP adapter вызвать host-only
    `captureUniversalPreparedness({ compiledLegacyMode, universalConfigured,
-   reviewsConfigured, humanProfile, humanHttpEnabled, reviewsConfiguration })`.
+   reviewsConfigured, humanProfile, humanHttpEnabled, reviewsPreparedness })`.
    Здесь bools берутся из actual instantiated objects, `humanProfile` — из того
-   же замкнутого host profile, а config — из actual captured loader value.
+   же замкнутого host profile, а projection — из actual reviews.preparedness().
    Перед leave вызвать `assertUniversalPreparedness(handle, runtimeDto)`.
    Не подставлять plan/body или значение `enabled` вместо actual objects.
 
@@ -139,8 +148,13 @@ issuer/protocol, публичные client/JWKS pins и captured reviews config.
 Это trusted factory measurement; DTO не является криптографической аттестацией
 процесса или приватных ключей. Exact secret approval обеспечивается private
 witness плюс повторными file checks и actual mount/immutable-image boot gate.
-Этот DTO следует получить через частный операторский/in-namespace порт,
+Этот DTO получают fixed Docker exec reader через частный операторский Unix port,
 не публикуя глобальные review bindings или конфигурацию в browser `/health`.
+Feature prepare сначала проверяет actual private DTO уже установленного legacy
+baseline, до CREATE/STOP. Initial baseline допускает старый original без operator
+port. Candidate DTO физически доступен после START, проверяется до leave; его
+отказ вызывает compatible fallback. Exec CREATE/START не повторяется при
+неопределённом ответе; неуспешный/другой container/process/output не является ready.
 
 ## Два этапа и проверка отката
 

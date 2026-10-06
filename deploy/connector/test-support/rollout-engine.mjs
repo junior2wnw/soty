@@ -33,4 +33,3 @@ export function fixture(fault={}) {
  const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
  return {run,engine,map,events,records,get migrated(){return migrated;}};
 }
-

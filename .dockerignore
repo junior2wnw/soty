@@ -21,6 +21,8 @@ deploy/apps/**
 deploy/connector/**
 !deploy/connector/*.mjs
 !deploy/connector/Dockerfile
+!deploy/connector/test-support/
+!deploy/connector/test-support/**
 !deploy/connector/apps-v2.fixture.mjs
 !deploy/connector/apps-v3.fixture.mjs
 !deploy/connector/apps-v4.fixture.mjs
