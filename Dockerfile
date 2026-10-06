@@ -2,7 +2,7 @@ FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 \
+  && apt-get install -y --no-install-recommends python3 python3-jsonschema git \
   && ln -s /usr/bin/python3 /usr/local/bin/python \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable \
@@ -44,7 +44,7 @@ COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
 LABEL io.soty.universal.legacy="${LEGACY_UNIVERSAL_MODE}"
-LABEL io.soty.storage.readers="{\"version\":5,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1]}}"
+LABEL io.soty.storage.readers="{\"version\":5,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2]}}"
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]

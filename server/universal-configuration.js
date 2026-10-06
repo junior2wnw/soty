@@ -23,10 +23,11 @@ function fileValue(filename, maximum) {
 }
 function humanSecrets(filename) {
   const value = fileValue(filename, 65536), names = ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'];
-  check(Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name)));
+  check(names.every(name => Object.hasOwn(value, name)) && Object.keys(value).every(name => names.includes(name) || name === 'renewal'));
   check(typeof value.artifactKey === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.artifactKey));
   const key = Buffer.from(value.artifactKey, 'base64url'); check(key.length === 32 && key.toString('base64url') === value.artifactKey);
-  return { clients: value.clients, jwks: value.jwks, cookieKeys: value.cookieKeys, artifactKey: key, artifactKeyId: value.artifactKeyId };
+  return { clients: value.clients, jwks: value.jwks, cookieKeys: value.cookieKeys, artifactKey: key, artifactKeyId: value.artifactKeyId,
+    ...(Object.hasOwn(value, 'renewal') ? { renewal: value.renewal } : {}) };
 }
 
 /** Private process-entry inputs only. No environment enumeration, automatic

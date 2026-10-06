@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -14,6 +14,7 @@ import { createHistoricalCapabilitiesV1 } from './capabilities-v1.fixture.mjs';
 import { createHistoricalCapabilitiesV2 } from './capabilities-v2.fixture.mjs';
 import { createHistoricalCapabilitiesV3, upgradeHistoricalCapabilitiesV3, oauthCapabilitiesV3DDL } from './capabilities-v3.fixture.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
+import { historicalSourceBytes, gitBlobHash } from './historical-source.fixture.mjs';
 import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, guardStorageStart,
   requireStorageStartReceipt, storageReaderLabel } from './storage-guard.mjs';
 
@@ -34,8 +35,7 @@ const reader2 = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1,
 const reader3 = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3] } });
 const image = (readers = reader3) => ({ Id: 'sha256:' + '2'.repeat(64), Config: { Labels: { [storageReaderLabel]: readers } } });
 const contractDigest = '95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204';
-const git = (pin, source) => execFileSync('git', ['show', `${pin}:${source}`],
-  { cwd: new URL('../..', import.meta.url), maxBuffer: 1024 * 1024, windowsHide: true });
+const git = historicalSourceBytes;
 const json = url => readFile(url, 'utf8').then(JSON.parse);
 
 async function directory(t) {
@@ -73,8 +73,7 @@ async function pinnedModule(t, version) {
     assert.match(source, /^modules\/capabilities\/server\/[a-z0-9-]+\.mjs$/u);
     const bytes = git(provenance.commit, source);
     assert.equal(bytes.length, expected.bytes); assert.equal(sha(bytes), expected.sha256, source);
-    assert.equal(execFileSync('git', ['rev-parse', `${provenance.commit}:${source}`],
-      { cwd: new URL('../..', import.meta.url), encoding: 'utf8', windowsHide: true }).trim(), expected.gitBlob);
+    assert.equal(gitBlobHash(bytes), expected.gitBlob);
     const target = path.join(root, source); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, bytes);
   }
   return { module: await import(pathToFileURL(path.join(root, 'modules/capabilities/server/schema.mjs')).href), provenance };

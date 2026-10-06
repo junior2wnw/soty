@@ -9,6 +9,7 @@ import { createTrafficTunnelProxy } from "./traffic-tunnel-proxy.js";
 import { hasSingleHostHeader } from './app-domain-policy.mjs';
 import { loadCapabilityConfiguration } from './capabilities-configuration.js';
 import { loadUniversalConfiguration } from './universal-configuration.js';
+import { startUniversalOperator } from './universal-operator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -18,6 +19,8 @@ const port = Number.parseInt(process.env.PORT || "8080", 10);
 const host = process.env.HOST || "0.0.0.0";
 const capabilityConfiguration = loadCapabilityConfiguration();
 const universalConfiguration = loadUniversalConfiguration();
+const operatorFlag = process.env.SOTY_UNIVERSAL_OPERATOR_ENABLED ?? '';
+if (!['', '0', '1'].includes(operatorFlag)) throw Object.assign(new Error('universal_operator_configuration_invalid'), { code: 'universal_operator_configuration_invalid' });
 
 const trafficTunnel = combineTunnelProxies([
   createTrafficTunnelProxy(),
@@ -36,6 +39,11 @@ server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 34_000_000 });
 const store = createRoomStore(dataDir);
+let operator = { async close() {} };
+if (operatorFlag === '1') {
+  try { operator = await startUniversalOperator({ capture: app.locals.captureUniversalPreparedness }); }
+  catch (error) { store.close(); await app.locals.closeServices(); throw error; }
+}
 
 attachRealtime(wss, store);
 
@@ -82,7 +90,8 @@ function shutdown() {
   const closeRooms = new Promise((resolveClose, rejectClose) => wss.close(() => {
     try { store.close(); resolveClose(); } catch (error) { rejectClose(error); }
   }));
-  void Promise.all([closeRooms, app.locals.closeServices()]).catch(() => { process.exitCode = 1; });
+  const closeServices = async () => { await operator.close(); await app.locals.closeServices(); };
+  void Promise.all([closeRooms, closeServices()]).catch(() => { process.exitCode = 1; });
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);

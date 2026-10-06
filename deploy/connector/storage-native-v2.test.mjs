@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -13,6 +13,7 @@ import { createHistoricalCapabilitiesV1 } from './capabilities-v1.fixture.mjs';
 import { createHistoricalNotesV2, upgradeHistoricalNotesV2, nativeNotesV2DDL } from './notes-v2.fixture.mjs';
 import { createHistoricalCapabilitiesV2, upgradeHistoricalCapabilitiesV2, nativeCapabilitiesV2DDL } from './capabilities-v2.fixture.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
+import { historicalSourceBytes } from './historical-source.fixture.mjs';
 import { assertStorageCompatible, currentStorageReaders, guardStorageStart, storageReaderLabel } from './storage-guard.mjs';
 
 const baseline = '5e459abc6afa376861c2032226bd29f78bf0468d';
@@ -39,8 +40,7 @@ const notesDigest = '95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c1
 const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const put = (db, table, values) => db.prepare(`INSERT INTO ${table}(${Object.keys(values).join(',')}) VALUES(${Object.keys(values).map(() => '?').join(',')})`).run(...Object.values(values));
-const git = (pin, sourcePath) => execFileSync('git', ['show', `${pin}:${sourcePath}`],
-  { cwd: new URL('../..', import.meta.url), encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true });
+const git = (pin, sourcePath) => historicalSourceBytes(pin, sourcePath).toString('utf8');
 
 async function directory(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'soty-native-reader2-'));

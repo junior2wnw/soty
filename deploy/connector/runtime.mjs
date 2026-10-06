@@ -1,6 +1,11 @@
 import { SafeError,httpJson } from './docker-api.mjs';
 import { createConfig,safeStatus,pendingMatches } from './rollout.mjs';
 const label='io.soty.connector-rollout';
+/** Host-only measurement bridge; the engine owns its fixed command/protocol. */
+export function universalMeasurement(engine) {
+ if(typeof engine?.universalPreparedness!=='function')throw new SafeError('universal_measurement_required');
+ return async id=>engine.universalPreparedness(id);
+}
 export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}) {
  let sequence=0;
  return async (verb,run)=>{

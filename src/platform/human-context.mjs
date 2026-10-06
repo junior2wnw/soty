@@ -7,7 +7,8 @@ const fail = () => { throw new TypeError('human_login_context_unavailable'); };
  * tokens, redirect authority, client secrets or a caller-selected subject. */
 export function parseHumanLoginContext(value, { interactionId, checkedAt } = {}) {
   if (!opaque(interactionId) || !Number.isSafeInteger(checkedAt)
-    || !closed(value, ['schema', 'interactionId', 'browserNonce', 'csrf', 'client', 'scopes', 'expiresAt', 'decision'])
+    || !closed(value, ['schema', 'interactionId', 'browserNonce', 'csrf', 'client', 'scopes', 'expiresAt', 'decision',
+      ...(Object.hasOwn(value ?? {}, 'renewal') ? ['renewal'] : [])])
     || value.schema !== 'soty.human-login-context.v1' || value.interactionId !== interactionId
     || !opaque(value.browserNonce) || !opaque(value.csrf)
     || !closed(value.client, ['id', 'label'])
@@ -18,7 +19,12 @@ export function parseHumanLoginContext(value, { interactionId, checkedAt } = {})
     || !Array.isArray(value.scopes) || !value.scopes.includes('openid') || value.scopes.length > 2
     || new Set(value.scopes).size !== value.scopes.length || value.scopes.some(scope => !['openid', 'profile'].includes(scope))
     || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= checkedAt
-    || value.expiresAt - checkedAt > 601000 || !['pending', 'approved', 'denied'].includes(value.decision)) fail();
+    || value.expiresAt - checkedAt > 601000 || !['pending', 'approved', 'denied'].includes(value.decision)
+    || Object.hasOwn(value, 'renewal') && (!closed(value.renewal, ['maximumSessionSeconds',
+      ...(Object.hasOwn(value.renewal ?? {}, 'approvedSessionSeconds') ? ['approvedSessionSeconds'] : [])])
+      || value.renewal.maximumSessionSeconds !== 86400 || Object.hasOwn(value.renewal, 'approvedSessionSeconds')
+        && (value.decision !== 'approved' || ![0, 86400].includes(value.renewal.approvedSessionSeconds)))) fail();
   return Object.freeze({ ...value, client: Object.freeze({ ...value.client }), scopes: Object.freeze([...value.scopes]),
+    ...(Object.hasOwn(value, 'renewal') ? { renewal: Object.freeze({ ...value.renewal }) } : {}),
     remainingMs: value.expiresAt - checkedAt });
 }

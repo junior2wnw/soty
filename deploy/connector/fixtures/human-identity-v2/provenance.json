@@ -1,0 +1,9 @@
+{
+  "schema": "soty.human-identity-storage-fixture.v2",
+  "sourceBase": "f5931914f2e4bcaab988c3887ef17e2d71bcf02a",
+  "kind": "reviewable-renewal-schema2-candidate",
+  "normalization": "single-quoted-literals-preserved;other-SQL-whitespace-removed-lowercase;type/name/table/SQL ordered by name",
+  "objects": 33,
+  "layoutSha256": "b096f63d2b27fa301d9fd336a57205278495ea80355fd27477f46115d4f8a2c9",
+  "ddlSha256": "36d71d26ec13f3129923f0742730174df67637a2219d036a9ca79b98e0265a19"
+}

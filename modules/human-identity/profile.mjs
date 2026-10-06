@@ -3,6 +3,9 @@ import { snapshotOAuthJson, canonicalOAuthJson } from '../capabilities/server/oa
 
 export const HUMAN_IDENTITY_PROFILE = 'oidc-provider-9.12.2-human-v1';
 export const HUMAN_IDENTITY_PATH = '/human-identity';
+export const HUMAN_RENEWAL_PROFILE = 'soty.human-rp-renewal.v1';
+export const HUMAN_RENEWAL_LIMITS = Object.freeze({ sessionSeconds: 86400, activeFamilies: 16, familiesPerAccount: 8,
+  refreshRowsPerFamily: 512, rotationArtifactSlots: 2, rotationHeadroomBytes: 128 * 1024 });
 export class HumanIdentityError extends Error {
   constructor(code = 'human_identity_invalid', status = 400) { super(code); this.name = 'HumanIdentityError'; this.code = code; this.status = status; }
 }
@@ -58,7 +61,7 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
   if (options === undefined) return null;
   const code = 'human_identity_configuration_invalid';
   closed(options, ['enabled', 'issuer', 'registryId', 'environmentId'],
-    ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'], code);
+    ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId', 'renewal'], code);
   requireHuman(typeof options.enabled === 'boolean' && typeof options.issuer === 'string' && options.issuer.endsWith(HUMAN_IDENTITY_PATH), code, 503);
   const origin = originFor(options.issuer.slice(0, -HUMAN_IDENTITY_PATH.length));
   requireHuman(shellOrigins.includes(origin), code, 503); id(options.registryId); id(options.environmentId);
@@ -82,19 +85,31 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
   requireHuman(options.artifactKey instanceof Uint8Array && options.artifactKey.byteLength === 32
     && typeof options.artifactKeyId === 'string' && /^[A-Za-z0-9_-]{1,64}$/u.test(options.artifactKeyId), code, 503);
   const artifactKey = Buffer.from(options.artifactKey), keyId = options.artifactKeyId;
+  let renewal;
+  if (options.renewal !== undefined) {
+    renewal = data(options.renewal); closed(renewal, ['admissionEnabled', 'clientIds'], [], code);
+    requireHuman(typeof renewal.admissionEnabled === 'boolean' && Array.isArray(renewal.clientIds) && renewal.clientIds.length <= 64
+      && new Set(renewal.clientIds).size === renewal.clientIds.length && renewal.clientIds.every(clientId => ids.has(clientId)), code, 503);
+  }
+  const renewalClients = new Set(renewal?.clientIds || []);
   const protocolDigest = digest({ profile: HUMAN_IDENTITY_PROFILE, issuer, scopes: ['openid', 'profile'],
     responseTypes: ['code'], pkce: 'S256', clientAuth: 'client_secret_basic', subjectType: 'public' });
   const publicClients = clients.map(({ id: clientId, label, redirectUri, version }) => Object.freeze({ id: clientId, label, redirectUri, version,
-    profileDigest: digest({ protocolDigest, id: clientId, version, redirectUri }) }));
+    profileDigest: renewalClients.has(clientId)
+      ? digest({ baseProfile: digest({ protocolDigest, id: clientId, version, redirectUri }), renewalProfile: HUMAN_RENEWAL_PROFILE,
+        maximumSessionSeconds: HUMAN_RENEWAL_LIMITS.sessionSeconds })
+      : digest({ protocolDigest, id: clientId, version, redirectUri }) }));
   return Object.freeze({ enabled, issuer, origin, secure: origin.startsWith('https:'), registryId: options.registryId, environmentId: options.environmentId,
     profile: HUMAN_IDENTITY_PROFILE, protocolDigest, profileDigest: protocolDigest,
     publicClients: Object.freeze(publicClients),
+    ...(renewal ? { renewalAdmissionEnabled: renewal.admissionEnabled, renewalAllowed(clientId) { return renewalClients.has(clientId); } } : {}),
     client(clientId) { return publicClients.find(client => client.id === clientId); },
     isRegisteredRedirect(clientId, redirectUri) { return publicClients.some(client => client.id === clientId && client.redirectUri === redirectUri); },
     providerKeys() { return { jwks: data(jwks), cookieKeys: [...cookies] }; },
     encryptionKey() { return { key: Buffer.from(artifactKey), keyId }; },
     providerClients() { return clients.map(client => ({ client_id: client.id, client_secret: client.clientSecret, redirect_uris: [client.redirectUri],
       application_type: 'web', subject_type: 'public', token_endpoint_auth_method: 'client_secret_basic',
-      grant_types: ['authorization_code'], response_types: ['code'], id_token_signed_response_alg: 'RS256' })); },
+      grant_types: renewalClients.has(client.id) ? ['authorization_code', 'refresh_token'] : ['authorization_code'],
+      response_types: ['code'], id_token_signed_response_alg: 'RS256' })); },
   });
 }

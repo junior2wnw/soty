@@ -80,6 +80,10 @@ const fails = code => error => error.code === code;
 
 test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard the generic application ledger', { timeout: 20000 }, async t => {
   const f = await fixture(t), source = f.created.universalRegistration.descriptor.app.source;
+  const preparation = f.service().locals.captureUniversalPreparedness();
+  assert.equal(preparation.compiledLegacyMode, false); assert.equal(preparation.universalConfigured, true);
+  assert.equal(preparation.reviewsConfigured, true); assert.equal(preparation.humanHttpEnabled, false);
+  assert.equal(JSON.stringify(preparation).includes(f.appId), false);
   const proofs = new Map(); let writes = 0, sourceActive = true;
   const id = 'app.' + f.appId + ':createWorkItem', resource = 'app.' + f.appId + ':workspace-one';
   const adapter = { profile: EXTERNAL_ADAPTER_PROFILE,

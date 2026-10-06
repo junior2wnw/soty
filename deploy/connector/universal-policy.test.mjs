@@ -242,9 +242,11 @@ test('image modes enforce legacy v5 baseline before feature writes; copied conta
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', JSON.stringify(future)), originalImage: image('1', currentStorageReaders, 'b') }), failCode('storage_reader_unknown'));
 });
 
-test('baseline ignores inherited enablement/private path without opening it and creates no policy mounts/env', async t => {
+test('baseline ignores inherited enablement/private paths and adds only the explicit private operator flag', async t => {
   const f = await fixture(t), handle = await prepared(t, f, baselinePlan()), config = createConfig(original(), 'sha256:' + 'a'.repeat(64), '1'.repeat(20));
-  assert.deepEqual(applyUniversalPolicy(config, handle), config);
+  const applied = applyUniversalPolicy(config, handle);
+  assert.deepEqual(applied.Env, [...config.Env, 'SOTY_UNIVERSAL_OPERATOR_ENABLED=1']);
+  assert.deepEqual(applied.HostConfig, config.HostConfig);
   const neverRead = new Proxy({}, { get() { throw new Error('private sentinel'); } });
   assert.deepEqual(loadUniversalConfiguration(neverRead, { legacyMode: true }), {});
   const dto = captureUniversalPreparedness({ compiledLegacyMode: true, universalConfigured: false, reviewsConfigured: false,
@@ -292,4 +294,24 @@ test('production owner/mode gates and Windows fixture limitation are explicit', 
   await chmod(f.root, 0o777); await assert.rejects(prepareUniversalPolicy(f.plan, f.options), failCode('universal_policy_file_permissions')); await chmod(f.root, 0o700);
   const wrongOwner = Number((await lstat(f.humanSource)).uid) + 1;
   await assert.rejects(prepareUniversalPolicy(f.plan, { ...f.options, ownerUid: wrongOwner }), failCode('universal_policy_file_permissions'));
+});
+
+test('renewal operational policy is explicit public measurement and requires a reader2 baseline before feature admission', async t => {
+  const f = await fixture(t); f.human.clients[0].version = 2;
+  f.human.renewal = { admissionEnabled: false, clientIds: [f.human.clients[0].id] };
+  await writeFile(f.humanSource, JSON.stringify(f.human), { mode: 0o600 });
+  const handle = await prepared(t, f), receipt = publicUniversalPolicy(handle);
+  assert.equal(receipt.human.renewal.admissionEnabled, false); assert.equal(receipt.human.renewal.maximumSessionSeconds, 86400);
+  const v1 = JSON.parse(currentStorageReaders); v1.readers.humanIdentity = [1];
+  const v2 = JSON.parse(currentStorageReaders); v2.readers.humanIdentity = [1, 2];
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(v1)), originalImage: image('1', JSON.stringify(v1), 'b') }), failCode('universal_policy_reader_baseline_required'));
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(v2)), originalImage: image('1', JSON.stringify(v1), 'b') }), failCode('universal_policy_reader_baseline_required'));
+  assert.equal(assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(v2)), originalImage: image('1', JSON.stringify(v2), 'b') }).phase, 'features');
+  const human = createHumanIdentityHostProfile({ enabled: true, issuer, registryId: 'soty', environmentId: 'production', ...f.human,
+    artifactKey: Buffer.from(f.human.artifactKey, 'base64url') }, { shellOrigins: [origin] });
+  const dto = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanHttpEnabled: true, humanProfile: human, reviewsConfiguration: f.reviews });
+  assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
+  const changed = { ...dto, human: { ...dto.human, renewal: { ...dto.human.renewal, admissionEnabled: true } } };
+  assert.throws(() => assertUniversalPreparedness(handle, changed, { allowFixture: true }), failCode('universal_policy_runtime_mismatch'));
 });

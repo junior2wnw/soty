@@ -245,7 +245,12 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
     } catch (error) {
       res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       const safe = errorResponse(error);
-      if (!req.complete || !req.readableEnded) { res.shouldKeepAlive = false; res.set('Connection', 'close'); }
+      if (!req.complete || !req.readableEnded) {
+        // Discard unread bytes without buffering while the small rejection is
+        // flushed. Leaving IncomingMessage paused can reset the TCP connection
+        // before a sender receives its structured 413 on an oversized request.
+        req.resume(); res.shouldKeepAlive = false; res.set('Connection', 'close');
+      }
       if (safe.status === 401) res.set('WWW-Authenticate', `Bearer realm="soty"${resourceMetadata ? `, resource_metadata="${resourceMetadata}"` : ''}`);
       if (safe.retry && route?.kind !== 'derive') res.set('Retry-After', String(safe.retry));
       send(res, safe.status, { error: { code: safe.code } });

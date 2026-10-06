@@ -103,6 +103,8 @@ export function createReviewsService({ actorActive, withAppAuthority, registryId
     publicSubjects: [...subjects.values()].map(value => value.subject),
   });
   const origins = Object.freeze([...new Set([...providers.values()].map(value => value.origin))].sort());
+  const preparedness = freezeDeep({ configurationDigest: contractDigest(config), providerCount: config.providers.length,
+    bindingCount: config.bindings.length });
   let disposed = false;
   const authenticate = actor => {
     requireThat(!disposed, 'reviews_closed', 503);
@@ -111,6 +113,8 @@ export function createReviewsService({ actorActive, withAppAuthority, registryId
   return Object.freeze({
     operations: new Set(REVIEWS_OPERATIONS),
     origins() { requireThat(!disposed, 'reviews_closed', 503); return origins; },
+    /** Private immutable host measurement. No subject, tenant, app or binding list. */
+    preparedness() { requireThat(!disposed, 'reviews_closed', 503); return preparedness; },
     approvedReferences() { requireThat(!disposed, 'reviews_closed', 503); return approved; },
     /** Private synchronous host resolver. A binding's operational digest also
      * fences origin/association changes without redefining semantic ref pins. */

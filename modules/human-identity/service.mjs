@@ -5,10 +5,11 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { canonicalOAuthJson } from '../capabilities/server/oauth-profile.mjs';
 import { HumanIdentityError, HUMAN_IDENTITY_PROFILE, requireHuman as require, closed, data, digest, id, uid, nonce, synchronous } from './profile.mjs';
 import { initializeHumanIdentitySchema } from './schema.mjs';
+import { HUMAN_RENEWAL_LIMITS as RENEWAL_LIMITS } from './profile.mjs';
 
 export const HUMAN_IDENTITY_OPERATIONS = Object.freeze(['identity.human.approve']);
-const MODELS = new Set(['Session', 'Interaction', 'Grant', 'AuthorizationCode', 'AccessToken']);
-const TOKEN_MODELS = new Set(['AuthorizationCode', 'AccessToken']);
+const MODELS = new Set(['Session', 'Interaction', 'Grant', 'AuthorizationCode', 'RefreshToken', 'AccessToken']);
+const TOKEN_MODELS = new Set(['AuthorizationCode', 'RefreshToken', 'AccessToken']);
 const LIMITS = Object.freeze({ interactions: 4096, decisions: 8192, artifacts: 8192, grantBindings: 4096 });
 export const HUMAN_IDENTITY_RUNTIME = Object.freeze({ maxArtifactSeconds: 3600, decidedRetentionSeconds: 3660,
   pendingPerBrowser: 8, pendingPerClient: 64, decisionsPerInteraction: 16, compactionBatch: 128 });
@@ -18,7 +19,8 @@ const hashId = (model, value) => digest(model + '\0' + value);
 
 /** Private SDK/store ports are not incoming operations. Connect signs approvals and fences later token use. */
 export function createHumanIdentityService({ databasePath, profile, actorActive, withAuthorityFence, readProfile = () => ({}), maxDatabaseBytes = 64 * 1024 * 1024,
-  now = Date.now } = {}) {
+  now = Date.now, allowRenewalMigration = false } = {}) {
+  require(typeof allowRenewalMigration === 'boolean', 'human_identity_renewal_configuration_invalid', 503);
   require(profile?.enabled === true, 'human_identity_disabled', 503);
   for (const fn of [actorActive, withAuthorityFence, readProfile]) require(typeof fn === 'function' && fn.constructor?.name !== 'AsyncFunction', 'human_identity_authority_required', 503);
   require(typeof databasePath === 'string' && databasePath.length > 0, 'human_identity_database_required', 503);
@@ -28,12 +30,12 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
   const epoch = () => { const value = synchronous(now()); require(Number.isSafeInteger(value) && value > 0, 'human_identity_clock_invalid', 503); return Math.floor(value / 1000); };
   const encryption = profile.encryptionKey(), key = Buffer.from(encryption.key), keyId = encryption.keyId;
   encryption.key.fill(0);
-  mkdirSync(dirname(databasePath), { recursive: true }); const db = new DatabaseSync(databasePath); let stopped = false, gcEpoch = 0;
+  mkdirSync(dirname(databasePath), { recursive: true }); const db = new DatabaseSync(databasePath); let stopped = false, gcEpoch = 0, schemaVersion;
   // Guarded deletion is available only inside this private bounded maintenance transaction.
   db.function('human_identity_gc_epoch', () => gcEpoch);
   try {
     db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=100;PRAGMA synchronous=FULL;');
-    initializeHumanIdentitySchema(db, profile);
+    schemaVersion = initializeHumanIdentitySchema(db, profile, { allowRenewalMigration }).schemaVersion;
     const pageSize = Number(db.prepare('PRAGMA page_size').get().page_size);
     require(Number.isSafeInteger(pageSize) && pageSize >= 512, 'human_identity_storage_corrupt', 503);
     // Operational allocation cap; overquota persisted data is never shrunk, evicted or repaired.
@@ -81,6 +83,19 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     const pages = Number(db.prepare('PRAGMA page_count').get().page_count), size = Number(db.prepare('PRAGMA page_size').get().page_size);
     require(pages * size <= maxDatabaseBytes, 'human_identity_storage_full', 503);
   }
+  function rotationCapacity(family) {
+    // The maintained engine rotates through separate adapter transactions. This
+    // preflight protects an unconsumed token from known exhaustion; it does not
+    // claim a reservation against later concurrent writes or disk failure.
+    compactExpired(); writeCapacity();
+    require(db.prepare('SELECT count(*) AS n FROM human_identity_artifacts').get().n
+      <= LIMITS.artifacts - RENEWAL_LIMITS.rotationArtifactSlots, 'human_identity_capacity', 429);
+    require(db.prepare("SELECT count(*) AS n FROM human_identity_artifacts WHERE model='RefreshToken' AND grant_hash=?").get(family.grant_hash).n
+      < RENEWAL_LIMITS.refreshRowsPerFamily, 'human_identity_capacity', 429);
+    const pages = Number(db.prepare('PRAGMA page_count').get().page_count), free = Number(db.prepare('PRAGMA freelist_count').get().freelist_count);
+    const size = Number(db.prepare('PRAGMA page_size').get().page_size);
+    require((pages - free) * size + RENEWAL_LIMITS.rotationHeadroomBytes <= maxDatabaseBytes, 'human_identity_storage_full', 503);
+  }
   function capacity(table, limit) {
     compactExpired();
     writeCapacity(); require(db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n < limit, 'human_identity_capacity', 429);
@@ -89,12 +104,12 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     require(db.isTransaction, 'human_identity_nested_transaction', 500);
     gcEpoch = epoch();
     const eligible = `i.expires_at<=? AND (i.decision='pending' OR i.expires_at<=?-3660)
-      AND NOT EXISTS(SELECT 1 FROM human_identity_artifacts a WHERE a.expires_at>?
+      AND NOT EXISTS(SELECT 1 FROM human_identity_artifacts a WHERE a.${schemaVersion === 2 ? 'retain_until' : 'expires_at'}>?
        AND (a.model='Interaction' AND a.id_hash=i.uid_hash OR a.grant_hash IN
         (SELECT grant_hash FROM human_identity_grant_bindings WHERE interaction_hash=i.uid_hash)))`;
     const batch = HUMAN_IDENTITY_RUNTIME.compactionBatch;
     try {
-      const artifacts = db.prepare('DELETE FROM human_identity_artifacts WHERE rowid IN (SELECT rowid FROM human_identity_artifacts WHERE expires_at<=? ORDER BY expires_at LIMIT ?)').run(gcEpoch, batch).changes;
+      const artifacts = db.prepare(`DELETE FROM human_identity_artifacts WHERE rowid IN (SELECT rowid FROM human_identity_artifacts WHERE ${schemaVersion === 2 ? 'retain_until' : 'expires_at'}<=? ORDER BY ${schemaVersion === 2 ? 'retain_until' : 'expires_at'} LIMIT ?)`).run(gcEpoch, batch).changes;
       const decisions = db.prepare(`DELETE FROM human_identity_decisions WHERE rowid IN (SELECT d.rowid FROM human_identity_decisions d
         JOIN human_identity_interactions i ON i.uid_hash=d.uid_hash WHERE ${eligible} LIMIT ?)`).run(gcEpoch, gcEpoch, gcEpoch, batch).changes;
       const bindings = db.prepare(`DELETE FROM human_identity_grant_bindings WHERE rowid IN (SELECT b.rowid FROM human_identity_grant_bindings b
@@ -156,7 +171,10 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     const stored = decrypt('LoginIntent', row.uid_hash, row.params_cipher, row.key_id), authority = clientAuthority(row.client_id), client = authority?.client;
     require(client && row.profile_digest === client.profileDigest && row.client_generation === authority.generation, 'human_identity_profile_changed', 403);
     return { schema: 'soty.human-login-context.v1', interactionId, browserNonce, csrf: stored.csrf,
-      client: { id: client.id, label: client.label }, scopes: stored.parameters.scope.split(' '), expiresAt: row.expires_at * 1000, decision: row.decision };
+      client: { id: client.id, label: client.label }, scopes: stored.parameters.scope.split(' '), expiresAt: row.expires_at * 1000, decision: row.decision,
+      ...(schemaVersion === 2 && profile.renewalAllowed?.(client.id) && (profile.renewalAdmissionEnabled || row.decision === 'approved')
+        ? { renewal: { maximumSessionSeconds: RENEWAL_LIMITS.sessionSeconds,
+          ...(row.decision === 'approved' ? { approvedSessionSeconds: row.stay_in_app_seconds } : {}) } } : {}) };
   }
   function browserMatch(row, browserNonce, csrf) {
     require(row && row.expires_at > epoch(), 'human_identity_interaction_expired', 410);
@@ -167,7 +185,7 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
   function bindingForHash(hash) { return db.prepare('SELECT * FROM human_identity_grant_bindings WHERE grant_hash=?').get(hash); }
   function activeBinding(binding) {
     const authority = binding && clientAuthority(binding.client_id);
-    return Boolean(binding && binding.revoked_at === null && authority && binding.profile_digest === authority.client.profileDigest && binding.client_generation === authority.generation
+    return Boolean(binding && binding.revoked_at === null && (!binding.stay_in_app_seconds || binding.session_expires_at > epoch()) && authority && binding.profile_digest === authority.client.profileDigest && binding.client_generation === authority.generation
       && synchronous(actorActive({ accountId: binding.account_id, deviceId: binding.device_id })) === true);
   }
   function bindingFromPayload(model, payload, approvedBinding, clientId) {
@@ -190,16 +208,20 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     return null;
   }
   function findArtifact(model, rawId) {
-    require(MODELS.has(model) && typeof rawId === 'string' && rawId.length <= 256, 'human_identity_artifact_invalid');
+    require(MODELS.has(model) && (schemaVersion === 2 || model !== 'RefreshToken') && typeof rawId === 'string' && rawId.length <= 256, 'human_identity_artifact_invalid');
     const row = db.prepare('SELECT * FROM human_identity_artifacts WHERE model=? AND id_hash=?').get(model, hashId(model, rawId));
     if (!row || row.expires_at <= epoch()) return undefined;
     if (row.account_id && synchronous(actorActive({ accountId: row.account_id, deviceId: row.device_id })) !== true) return undefined;
     if (row.grant_hash && model !== 'Session' && !activeBinding(bindingForHash(row.grant_hash))) return undefined;
-    const payload = decrypt(model, row.id_hash, row.payload_cipher, row.key_id, row.payload_digest);
-    return row.consumed_at === null ? payload : { ...payload, consumed: row.consumed_at };
+    const load = () => {
+      if (row.grant_hash && model !== 'Session') require(activeBinding(bindingForHash(row.grant_hash)), 'human_identity_actor_revoked', 403);
+      const payload = decrypt(model, row.id_hash, row.payload_cipher, row.key_id, row.payload_digest);
+      return row.consumed_at === null ? payload : { ...payload, consumed: row.consumed_at };
+    };
+    return row.account_id ? fenced({ accountId: row.account_id, deviceId: row.device_id }, load) : load();
   }
   return Object.freeze({
-    operations: new Set(HUMAN_IDENTITY_OPERATIONS), schemaVersion: 1,
+    operations: new Set(HUMAN_IDENTITY_OPERATIONS), schemaVersion, renewalEnabled: schemaVersion === 2,
     prepareInteraction({ interactionId, browserNonce, parameters }) {
       uid(interactionId); nonce(browserNonce); const captured = paramsFor(parameters), intent = digest(captured);
       return transaction(() => {
@@ -214,7 +236,7 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
           capacity('human_identity_interactions', LIMITS.interactions);
           const authority = clientAuthority(captured.client_id); require(authority, 'human_identity_profile_changed', 403);
           const csrf = randomBytes(32).toString('base64url'), hash = hashId('Interaction', interactionId), encrypted = encrypt('LoginIntent', hash, { parameters: captured, csrf });
-          db.prepare(`INSERT INTO human_identity_interactions VALUES(?,?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,NULL)`)
+          db.prepare(`INSERT INTO human_identity_interactions VALUES(?,?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,NULL${schemaVersion === 2 ? ',0' : ''})`)
             .run(hash, digest(browserNonce), digest(csrf), captured.client_id, authority.client.profileDigest, authority.generation, intent, encrypted.bytes, keyId, Math.min(sdk.expires_at, epoch() + 300));
           row = interaction(interactionId);
         }
@@ -224,23 +246,25 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     compactExpiredRuntime() { return transaction(compactExpired); },
     execute({ op, actor: actorInput, args: input }) {
       require(op === 'identity.human.approve', 'unsupported_operation');
-      const args = data(input); closed(args, ['expectedAccountId', 'interactionId', 'browserNonce', 'csrf', 'requestId', 'decision']);
+      const args = data(input); closed(args, ['expectedAccountId', 'interactionId', 'browserNonce', 'csrf', 'requestId', 'decision'], ['stayInAppSeconds']);
+      const stay = args.stayInAppSeconds === undefined ? 0 : args.stayInAppSeconds; require([0, RENEWAL_LIMITS.sessionSeconds].includes(stay), 'human_identity_renewal_invalid');
       const actor = actorOf(actorInput); require(args.expectedAccountId === actor.accountId, 'human_identity_account_mismatch', 403);
       uid(args.interactionId); id(args.requestId); require(['approve', 'deny'].includes(args.decision), 'human_identity_decision_invalid');
       // Connect already holds its proof transaction; never nest another Connect fence here.
       return transaction(() => {
         authenticate(actor); const row = interaction(args.interactionId); browserMatch(row, args.browserNonce, args.csrf);
         const intent = digest({ interaction: row.uid_hash, browser: row.browser_hash, csrf: row.csrf_hash, params: row.params_digest,
-          accountId: actor.accountId, deviceId: actor.deviceId, decision: args.decision });
+          accountId: actor.accountId, deviceId: actor.deviceId, decision: args.decision, ...(stay ? { stayInAppSeconds: stay } : {}) });
         const prior = db.prepare('SELECT * FROM human_identity_decisions WHERE account_id=? AND request_id=?').get(actor.accountId, args.requestId);
-        if (prior) { require(prior.intent_hash === intent, 'human_identity_intent_conflict', 409); return JSON.parse(prior.result_json); }
+        if (prior) { require(prior.intent_hash === intent, 'human_identity_intent_conflict', 409); authenticate(actor); return JSON.parse(prior.result_json); }
+        require(!stay || schemaVersion === 2 && args.decision === 'approve' && (row.decision !== 'pending' || profile.renewalAdmissionEnabled === true && profile.renewalAllowed?.(row.client_id)), 'human_identity_renewal_disabled', 403);
         const decision = args.decision === 'approve' ? 'approved' : 'denied';
-        require(row.decision === 'pending' || row.decision === decision && row.account_id === actor.accountId && row.device_id === actor.deviceId,
+        require(row.decision === 'pending' || row.decision === decision && row.account_id === actor.accountId && row.device_id === actor.deviceId && (row.stay_in_app_seconds || 0) === stay,
           'human_identity_decision_conflict', 409);
         require(db.prepare('SELECT count(*) AS n FROM human_identity_decisions WHERE uid_hash=?').get(row.uid_hash).n < HUMAN_IDENTITY_RUNTIME.decisionsPerInteraction,
           'human_identity_decision_capacity', 429); capacity('human_identity_decisions', LIMITS.decisions);
-        if (row.decision === 'pending') db.prepare('UPDATE human_identity_interactions SET decision=?,account_id=?,device_id=?,approved_at=? WHERE uid_hash=? AND decision=\'pending\'')
-          .run(decision, actor.accountId, actor.deviceId, epoch(), row.uid_hash);
+        if (row.decision === 'pending') db.prepare(`UPDATE human_identity_interactions SET decision=?,account_id=?,device_id=?,approved_at=?${schemaVersion === 2 ? ',stay_in_app_seconds=?' : ''} WHERE uid_hash=? AND decision='pending'`)
+          .run(decision, actor.accountId, actor.deviceId, epoch(), ...(schemaVersion === 2 ? [stay] : []), row.uid_hash);
         const result = { schema: 'soty.human-login-decision.v1', interactionId: args.interactionId, requestId: args.requestId, decision };
         db.prepare('INSERT INTO human_identity_decisions VALUES(?,?,?,?,?,?)').run(actor.accountId, args.requestId, intent, row.uid_hash, stringify(result), epoch());
         authenticate(actor); return result;
@@ -251,7 +275,8 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
       require(row.decision !== 'pending', 'human_identity_approval_required', 403);
       return fenced({ accountId: row.account_id, deviceId: row.device_id }, () => ({ accountId: row.account_id, deviceId: row.device_id,
         clientId: row.client_id, interactionHash: row.uid_hash, profileDigest: row.profile_digest, clientGeneration: row.client_generation, decision: row.decision,
-        scopes: decrypt('LoginIntent', row.uid_hash, row.params_cipher, row.key_id).parameters.scope }));
+        scopes: decrypt('LoginIntent', row.uid_hash, row.params_cipher, row.key_id).parameters.scope,
+        ...(row.stay_in_app_seconds ? { stayInAppSeconds: row.stay_in_app_seconds, sessionExpiresAt: row.approved_at + row.stay_in_app_seconds } : {}) }));
     },
     accountClaims({ accountId, grantId, sessionUid }) {
       let binding = grantId ? bindingForHash(hashId('Grant', grantId)) : null;
@@ -270,12 +295,23 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
       });
     },
     sdk: Object.freeze({
-      upsert({ model, id: rawId, payload: input, expiresIn, approvedBinding, clientId, browserNonce }) {
-        require(MODELS.has(model) && typeof rawId === 'string' && rawId.length >= 16 && rawId.length <= 256
-          && Number.isSafeInteger(expiresIn) && expiresIn > 0 && expiresIn <= 3600, 'human_identity_artifact_invalid');
+      upsert({ model, id: rawId, payload: input, expiresIn, approvedBinding, clientId, browserNonce, request }) {
+        require(MODELS.has(model) && (schemaVersion === 2 || model !== 'RefreshToken') && typeof rawId === 'string' && rawId.length >= 16 && rawId.length <= 256
+          && Number.isSafeInteger(expiresIn) && expiresIn > 0 && expiresIn <= (schemaVersion === 2 && ['Grant','RefreshToken'].includes(model) ? RENEWAL_LIMITS.sessionSeconds : 3600), 'human_identity_artifact_invalid');
         const payload = data(input), binding = bindingFromPayload(model, payload, approvedBinding, clientId);
         const apply = () => {
           if (TOKEN_MODELS.has(model)) require(activeBinding(bindingForHash(hashId('Grant', payload.grantId))), 'human_identity_actor_revoked', 403);
+          if (TOKEN_MODELS.has(model)) {
+            const family = bindingForHash(hashId('Grant', payload.grantId));
+            require(!family.stay_in_app_seconds || epoch() + expiresIn <= family.session_expires_at && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
+          }
+          if (model === 'RefreshToken') {
+            const family = bindingForHash(hashId('Grant', payload.grantId));
+            require(family?.stay_in_app_seconds && request?.clientId === family.client_id && ['authorization_code', 'refresh_token'].includes(request.grantType)
+              && epoch() + expiresIn <= family.session_expires_at && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
+            require(db.prepare("SELECT count(*) AS n FROM human_identity_artifacts WHERE model='RefreshToken' AND grant_hash=? AND id_hash<>?").get(family.grant_hash, hashId(model, rawId)).n < RENEWAL_LIMITS.refreshRowsPerFamily,
+              'human_identity_capacity', 429);
+          }
           const hash = hashId(model, rawId), prior = db.prepare('SELECT * FROM human_identity_artifacts WHERE model=? AND id_hash=?').get(model, hash);
           require(!prior || prior.expires_at > epoch(), 'human_identity_interaction_expired', 410);
           let browserHash = prior?.browser_hash || null, artifactClientId = binding?.clientId || null;
@@ -301,17 +337,25 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
                 && approval.client_generation === authority.generation && binding.clientGeneration === authority.generation, 'human_identity_grant_unreviewed', 403);
               const occupied = db.prepare('SELECT grant_hash FROM human_identity_grant_bindings WHERE interaction_hash=?').get(binding.interactionHash);
               require(!occupied, 'human_identity_grant_conflict', 409);
-              db.prepare('INSERT INTO human_identity_grant_bindings VALUES(?,?,?,?,?,?,?,?,NULL)').run(grantHash, binding.accountId, binding.deviceId,
-                binding.clientId, binding.interactionHash, authority.client.profileDigest, authority.generation, epoch());
+              const stay = approval.stay_in_app_seconds || 0, end = stay ? approval.approved_at + stay : null;
+              require(!stay || binding.stayInAppSeconds === stay && binding.sessionExpiresAt === end && end > epoch() && epoch() + expiresIn <= end, 'human_identity_grant_unreviewed', 403);
+              if (stay) {
+                require(db.prepare('SELECT count(*) AS n FROM human_identity_grant_bindings WHERE stay_in_app_seconds>0 AND revoked_at IS NULL AND session_expires_at>?').get(epoch()).n < RENEWAL_LIMITS.activeFamilies,
+                  'human_identity_capacity', 429);
+                require(db.prepare('SELECT count(*) AS n FROM human_identity_grant_bindings WHERE account_id=? AND stay_in_app_seconds>0 AND revoked_at IS NULL AND session_expires_at>?').get(binding.accountId, epoch()).n < RENEWAL_LIMITS.familiesPerAccount,
+                  'human_identity_capacity', 429);
+              }
+              db.prepare(`INSERT INTO human_identity_grant_bindings VALUES(?,?,?,?,?,?,?,?,NULL${schemaVersion === 2 ? ',?,?' : ''})`).run(grantHash, binding.accountId, binding.deviceId,
+                binding.clientId, binding.interactionHash, authority.client.profileDigest, authority.generation, epoch(), ...(schemaVersion === 2 ? [stay, end] : []));
             } else require(prior && activeBinding(existing), 'human_identity_actor_revoked', 403);
           }
           const encrypted = encrypt(model, hash, payload), grantHash = model === 'Grant' ? hash : payload.grantId ? hashId('Grant', payload.grantId) : binding?.grantHash || null;
-          db.prepare(`INSERT INTO human_identity_artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          db.prepare(`INSERT INTO human_identity_artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?${schemaVersion === 2 ? ',?' : ''})
             ON CONFLICT(model,id_hash) DO UPDATE SET payload_cipher=excluded.payload_cipher,payload_digest=excluded.payload_digest,
-              expires_at=excluded.expires_at,uid_hash=excluded.uid_hash,account_id=excluded.account_id,
+              expires_at=excluded.expires_at,${schemaVersion === 2 ? 'retain_until=excluded.retain_until,' : ''}uid_hash=excluded.uid_hash,account_id=excluded.account_id,
               device_id=excluded.device_id,client_id=excluded.client_id,grant_hash=excluded.grant_hash`)
             .run(model, hash, encrypted.bytes, encrypted.digest, keyId, binding?.accountId || null, binding?.deviceId || null,
-              artifactClientId, grantHash, payload.uid ? digest(payload.uid) : null, browserHash, epoch() + expiresIn, prior?.consumed_at ?? null, epoch());
+              artifactClientId, grantHash, payload.uid ? digest(payload.uid) : null, browserHash, epoch() + expiresIn, prior?.consumed_at ?? null, epoch(), ...(schemaVersion === 2 ? [model === 'RefreshToken' ? bindingForHash(grantHash).session_expires_at : epoch() + expiresIn] : []));
         };
         return binding ? fenced(binding, apply) : transaction(apply);
       },
@@ -330,22 +374,53 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
         if (!row || row.account_id && synchronous(actorActive({ accountId: row.account_id, deviceId: row.device_id })) !== true) return undefined;
         return decrypt('Session', row.id_hash, row.payload_cipher, row.key_id, row.payload_digest);
       },
-      consume(model, rawId) {
+      consume(model, rawId, request) {
         const row = db.prepare('SELECT * FROM human_identity_artifacts WHERE model=? AND id_hash=?').get(model, hashId(model, rawId));
+        if (model === 'RefreshToken') {
+          if (schemaVersion !== 2 || !row?.account_id || request?.clientId !== row.client_id || request.grantType !== 'refresh_token' || row.expires_at <= epoch()) return { status: 'invalid_grant' };
+          return fenced({ accountId: row.account_id, deviceId: row.device_id }, () => {
+            const current = db.prepare('SELECT * FROM human_identity_artifacts WHERE model=? AND id_hash=?').get(model, row.id_hash);
+            require(current && current.expires_at > epoch() && current.client_id === request.clientId
+              && activeBinding(bindingForHash(current.grant_hash)), 'human_identity_grant_invalid', 403);
+            if (current.consumed_at !== null) {
+              db.prepare('UPDATE human_identity_grant_bindings SET revoked_at=? WHERE grant_hash=? AND revoked_at IS NULL').run(epoch(), current.grant_hash);
+              return { status: 'invalid_grant' };
+            }
+            rotationCapacity(bindingForHash(current.grant_hash));
+            const changed = db.prepare('UPDATE human_identity_artifacts SET consumed_at=? WHERE model=? AND id_hash=? AND consumed_at IS NULL').run(epoch(), model, row.id_hash);
+            if (changed.changes !== 1) {
+              db.prepare('UPDATE human_identity_grant_bindings SET revoked_at=? WHERE grant_hash=? AND revoked_at IS NULL').run(epoch(), current.grant_hash);
+              return { status: 'invalid_grant' };
+            }
+            return { status: 'consumed' };
+          });
+        }
         require(row?.account_id && row.expires_at > epoch() && row.consumed_at === null, 'human_identity_grant_invalid', 403);
         return fenced({ accountId: row.account_id, deviceId: row.device_id }, () => {
           const changed = db.prepare('UPDATE human_identity_artifacts SET consumed_at=? WHERE model=? AND id_hash=? AND consumed_at IS NULL')
             .run(epoch(), model, row.id_hash); require(changed.changes === 1, 'human_identity_grant_invalid', 403);
         });
       },
-      destroy(model, rawId) { return transaction(() => db.prepare('DELETE FROM human_identity_artifacts WHERE model=? AND id_hash=?').run(model, hashId(model, rawId))); },
+      destroy(model, rawId) { return transaction(() => {
+        const row = db.prepare('SELECT grant_hash FROM human_identity_artifacts WHERE model=? AND id_hash=?').get(model, hashId(model, rawId));
+        if (model === 'RefreshToken') { if (row) db.prepare('UPDATE human_identity_grant_bindings SET revoked_at=? WHERE grant_hash=? AND revoked_at IS NULL').run(epoch(), row.grant_hash); return; }
+        return db.prepare('DELETE FROM human_identity_artifacts WHERE model=? AND id_hash=?').run(model, hashId(model, rawId));
+      }); },
       revokeByGrantId(rawGrantId) {
         return transaction(() => {
           const hash = hashId('Grant', rawGrantId);
           db.prepare('UPDATE human_identity_grant_bindings SET revoked_at=? WHERE grant_hash=? AND revoked_at IS NULL').run(epoch(), hash);
-          db.prepare('DELETE FROM human_identity_artifacts WHERE grant_hash=?').run(hash);
+          db.prepare("DELETE FROM human_identity_artifacts WHERE grant_hash=? AND model<>'RefreshToken'").run(hash);
         });
       },
+    }),
+    renewal: Object.freeze({
+      grantTTL(approval) { return approval?.stayInAppSeconds ? Math.max(1, approval.sessionExpiresAt - epoch()) : 600; },
+      issueRefreshToken(grantId, clientId) { const family = bindingForHash(hashId('Grant', grantId));
+        return Boolean(schemaVersion === 2 && family?.stay_in_app_seconds && activeBinding(family) && family.client_id === clientId); },
+      remaining(grantId, clientId) { const family = bindingForHash(hashId('Grant', grantId));
+        require(family?.stay_in_app_seconds && activeBinding(family) && family.client_id === clientId, 'human_identity_grant_invalid', 403);
+        return family.session_expires_at - epoch(); },
     }),
     close() { if (stopped) return false; stopped = true; db.close(); key.fill(0); return true; },
   });

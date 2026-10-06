@@ -9,14 +9,17 @@ import { storageReaders, storageReaderLabel } from './storage-guard.mjs';
 import { canonicalJson } from '../../modules/capabilities/server/validation.mjs';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
+import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
+  UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
 export const UNIVERSAL_POLICY_SCHEMA = 'soty.universal-rollout-policy.v1';
-export const UNIVERSAL_RUNTIME_SCHEMA = 'soty.universal-preparedness.v1';
+export { UNIVERSAL_RUNTIME_SCHEMA };
 export const universalModeLabel = 'io.soty.universal.legacy';
 export const humanPrivateTarget = '/run/secrets/soty-human-identity.json';
 export const reviewsTarget = '/run/config/soty-reviews-bindings.json';
 const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human: 'SOTY_HUMAN_IDENTITY_ENABLED',
-  issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE' });
+  issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
+  operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
 const fail = (code = 'universal_policy_invalid') => { throw new SafeError(code); };
 const check = (value, code) => { if (!value) fail(code); };
@@ -111,7 +114,7 @@ async function filesystemContext(options) {
   check(process.platform === 'linux' || fixtureRoot !== null, 'universal_policy_posix_required');
   return { shellOrigins: input.shellOrigins, ownerUid, fixtureRoot, posix: process.platform === 'linux' };
 }
-async function inspectChain(source, context) {
+async function inspectChain(source, context, { missingFinal = false } = {}) {
   if (context.fixtureRoot) check(under(context.fixtureRoot, source), 'universal_policy_fixture_invalid');
   let directory = path.dirname(source), chain = [];
   while (true) {
@@ -126,7 +129,7 @@ async function inspectChain(source, context) {
     if (context.posix) check((Number(stat.mode) & 0o022) === 0 && [0, context.ownerUid].includes(Number(stat.uid)), 'universal_policy_file_permissions');
     evidence.push([entry, String(stat.dev), String(stat.ino), String(stat.mode), String(stat.uid), String(stat.gid)]);
   }
-  check(await realpath(source) === source, 'universal_policy_file_invalid'); return evidence;
+  check(await realpath(missingFinal ? path.dirname(source) : source) === (missingFinal ? path.dirname(source) : source), 'universal_policy_file_invalid'); return evidence;
 }
 function inspectStat(stat, visibility, context) {
   check(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size > 0n && stat.size <= BigInt(MAX_FILE), 'universal_policy_file_invalid');
@@ -156,17 +159,40 @@ async function readBounded(source, visibility, context) {
   } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_file_invalid'); }
   finally { bytes?.fill(0); if (descriptor) await descriptor.close(); }
 }
+/** Local operator file transport only. Bytes stay private and disposable. */
+export async function readUniversalLocalFile(source, options, { privateFile = false } = {}) {
+  const context = await filesystemContext(options), file = await readBounded(source, privateFile ? 'private' : 'nonsecret', context);
+  return { bytes: file.bytes, dispose() { file.bytes.fill(0); } };
+}
+export function parseUniversalLocalJson(bytes) { return parse(bytes); }
+/** Exclusive atomic publication of an encrypted witness, never a plaintext backup. */
+export async function writeUniversalWitnessExclusive(target, packet, options) {
+  const context = await filesystemContext(options); exactPath(target);
+  check(packet instanceof Uint8Array && packet.byteLength > 0 && packet.byteLength <= MAX_FILE, 'universal_policy_witness_invalid');
+  const chain = await inspectChain(target, context, { missingFinal: true }), temporary = path.join(path.dirname(target), '.soty-witness-' + randomBytes(16).toString('hex') + '.tmp');
+  let descriptor, published = false;
+  try {
+    descriptor = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+    await descriptor.writeFile(packet); await descriptor.sync(); await descriptor.close(); descriptor = null;
+    check(JSON.stringify(chain) === JSON.stringify(await inspectChain(target, context, { missingFinal: true })), 'universal_policy_file_changed');
+    const { link, unlink } = await import('node:fs/promises');
+    await link(temporary, target); published = true; await unlink(temporary);
+    const file = await readBounded(target, 'private', context);
+    try { check(file.bytes.length === packet.byteLength && timingSafeEqual(file.bytes, packet), 'universal_policy_witness_invalid'); }
+    finally { file.bytes.fill(0); }
+    if (process.platform !== 'win32') { const parent = await open(path.dirname(target), constants.O_RDONLY); try { await parent.sync(); } finally { await parent.close(); } }
+  } catch { fail(published ? 'universal_policy_witness_write_uncertain' : 'universal_policy_witness_exists_or_invalid'); }
+  finally {
+    if (descriptor) await descriptor.close();
+    const { unlink } = await import('node:fs/promises'); await unlink(temporary).catch(() => {});
+  }
+}
 
 function humanPreparation(profile) {
-  if (!profile?.enabled) return { configured: false };
-  const publicKeys = profile.providerKeys().jwks.keys.map(({ kty, kid, use, alg, n, e }) => ({ kty, kid, use, alg, n, e }));
-  const clients = profile.publicClients.map(({ id, redirectUri, version, profileDigest }) => ({ id, redirectUri, version, profileDigest }));
-  return { configured: true, issuer: profile.issuer, profile: profile.profile, protocolDigest: profile.protocolDigest,
-    clientsDigest: digest(clients.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), clientCount: clients.length,
-    signingPublicKeysDigest: digest(publicKeys.sort((a, b) => a.kid < b.kid ? -1 : a.kid > b.kid ? 1 : 0)) };
+  return captureHumanPreparedness(profile);
 }
 function validateHuman(value, issuer, context) {
-  closed(value, ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId']);
+  closed(value, ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'], ['renewal']);
   check(typeof value.artifactKey === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.artifactKey), 'universal_policy_human_invalid');
   const artifactKey = Buffer.from(value.artifactKey, 'base64url');
   try {
@@ -207,11 +233,11 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       reviews = validateReviews(parse(file.bytes));
       check(createHash('sha256').update(file.bytes).digest('hex') === plan.reviews.sha256, 'universal_policy_reviews_hash_mismatch');
     }
-    const environment = plan.phase === 'legacy-baseline' ? [] : [
+    const environment = [{ name: settings.operator, value: '1' }, ...(plan.phase === 'legacy-baseline' ? [] : [
       { name: settings.universal, value: 'true' }, { name: settings.human, value: human.configured ? '1' : '0' },
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
       ...(plan.reviews ? [{ name: settings.reviews, value: reviewsTarget }] : []),
-    ];
+    ])];
     const mounts = files.map(file => ({ source: file.source, target: file.visibility === 'private' ? humanPrivateTarget : reviewsTarget, readOnly: true, visibility: file.visibility }));
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
       human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) } };
@@ -221,6 +247,19 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
 }
 export function publicUniversalPolicy(handle) { return stateFor(handle).receipt; }
 export function disposeUniversalPolicy(handle) { const state = stateFor(handle); forget(state); }
+function rolloutBinding(input) {
+  const value = safe(input); closed(value, ['preservationFingerprint', 'originalId', 'originalImage', 'candidateImage', 'revision', 'transaction']);
+  check(HEX.test(value.preservationFingerprint || '') && HEX.test(value.originalId || '')
+    && /^sha256:[a-f0-9]{64}$/u.test(value.originalImage || '') && /^sha256:[a-f0-9]{64}$/u.test(value.candidateImage || '')
+    && /^[a-f0-9]{40}$/u.test(value.revision || '') && /^[a-f0-9]{16,40}$/u.test(value.transaction || ''), 'universal_policy_rollout_mismatch');
+  return freeze(value);
+}
+/** Private one-time binding. Never emit this fingerprint in a receipt/journal. */
+export function bindUniversalRollout(handle, input) {
+  const state = stateFor(handle), captured = rolloutBinding(input);
+  if (state.rolloutBinding) check(canonicalJson(state.rolloutBinding) === canonicalJson(captured), 'universal_policy_rollout_mismatch');
+  else { check(!state.restored, 'universal_policy_rollout_mismatch'); state.rolloutBinding = captured; }
+}
 export async function assertUniversalPolicyCurrent(handle) {
   const state = stateFor(handle);
   try {
@@ -246,6 +285,7 @@ function witnessKey(input, restore = false) {
 }
 function privateWitness(state) {
   return { schema: 'soty.universal-policy-private-witness.v1', contextDigest: digest(state.context),
+    ...(state.rolloutBinding ? { rolloutBinding: state.rolloutBinding } : {}),
     files: state.files.map(file => ({ source: file.source, visibility: file.visibility, identity: file.identity,
       chainDigest: digest(file.chain), bytesDigest: createHash('sha256').update(file.bytes).digest('hex') })) };
 }
@@ -288,6 +328,8 @@ export async function restoreUniversalPolicy(plan, input, options, keyInput) {
     const restored = parse(plaintext);
     handle = await prepareUniversalPolicy(plan, options); const state = stateFor(handle);
     check(packet.policyDigest === state.receipt.policyDigest, 'universal_policy_witness_mismatch');
+    if (restored.rolloutBinding !== undefined) state.rolloutBinding = rolloutBinding(restored.rolloutBinding);
+    state.restored = true;
     const actual = Buffer.from(canonicalJson(privateWitness(state))), expected = Buffer.from(canonicalJson(restored));
     try { check(actual.length === expected.length && timingSafeEqual(actual, expected), 'universal_policy_witness_mismatch'); }
     finally { actual.fill(0); expected.fill(0); }
@@ -304,10 +346,9 @@ export function applyUniversalPolicy(config, handle) {
   const receipt = stateFor(handle).receipt; let next;
   try { next = structuredClone(config); } catch { fail('universal_policy_configuration_invalid'); }
   check(next && typeof next === 'object' && next.HostConfig && typeof next.HostConfig === 'object', 'universal_policy_configuration_invalid');
-  if (receipt.phase === 'legacy-baseline') return next;
   check(next.Env === undefined || Array.isArray(next.Env) && next.Env.every(value => typeof value === 'string'), 'universal_policy_configuration_invalid');
   const expected = new Map(receipt.environment.map(({ name, value }) => [name, value]));
-  for (const name of Object.values(settings)) {
+  for (const name of receipt.phase === 'legacy-baseline' ? [settings.operator] : Object.values(settings)) {
     check(!(next.Env || []).includes(name), 'universal_policy_preexisting_configuration');
     const matches = (next.Env || []).filter(value => value.startsWith(name + '='));
     check(matches.length <= 1 && (matches.length === 0 || expected.has(name) && matches[0] === name + '=' + expected.get(name)), 'universal_policy_preexisting_configuration');
@@ -340,9 +381,11 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
     check(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version === 5 && candidate.appRegistration.includes(1)
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');
     check(candidateImage.Config.Labels[universalModeLabel] === (receipt.phase === 'legacy-baseline' ? '1' : '0'), 'universal_policy_image_mode_mismatch');
+    if (receipt.human.renewal) check(candidate.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
     if (receipt.phase === 'features') check(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version === 5
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === '1', 'universal_policy_reader_baseline_required');
+    if (receipt.phase === 'features' && receipt.human.renewal) check(original.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
     return freeze({ schema: 'soty.universal-image-prerequisites.v1', phase: receipt.phase,
       candidateImage: candidateImage.Id, originalImage: originalImage.Id, fixtureOnly: receipt.fixtureOnly });
   } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_image_invalid'); }
@@ -350,14 +393,8 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
 
 /** Host factory hook only, after constructing actual services/HTTP. This is a
  * bounded measurement DTO, not network-provided authority or key attestation. */
-export function captureUniversalPreparedness({ compiledLegacyMode, universalConfigured, reviewsConfigured,
-  humanProfile, humanHttpEnabled, reviewsConfiguration = { providers: [], bindings: [] } }) {
-  try {
-    check([compiledLegacyMode, universalConfigured, reviewsConfigured, humanHttpEnabled].every(value => typeof value === 'boolean'), 'universal_policy_runtime_invalid');
-    check(humanHttpEnabled === Boolean(humanProfile?.enabled), 'universal_policy_runtime_invalid');
-    const human = humanPreparation(humanProfile), reviews = validateReviews(safe(reviewsConfiguration));
-    return freeze({ schema: UNIVERSAL_RUNTIME_SCHEMA, compiledLegacyMode, universalConfigured, reviewsConfigured, humanHttpEnabled, human, reviews });
-  } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_runtime_invalid'); }
+export function captureUniversalPreparedness(input) {
+  try { return captureRuntimePreparedness(input); } catch { fail('universal_policy_runtime_invalid'); }
 }
 export function assertUniversalPreparedness(handle, input, { allowFixture = false } = {}) {
   const expected = stateFor(handle).receipt, runtime = safe(input, 'universal_policy_runtime_invalid');

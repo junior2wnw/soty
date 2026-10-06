@@ -20,6 +20,7 @@ deploy/apps/**
 !deploy/connector/
 deploy/connector/**
 !deploy/connector/*.mjs
+!deploy/connector/Dockerfile
 !deploy/connector/apps-v2.fixture.mjs
 !deploy/connector/apps-v3.fixture.mjs
 !deploy/connector/apps-v4.fixture.mjs
@@ -43,6 +44,10 @@ deploy/connector/fixtures/**
 !deploy/connector/fixtures/universal-stores-v1/**
 !deploy/connector/fixtures/human-identity-v1/
 !deploy/connector/fixtures/human-identity-v1/**
+!deploy/connector/fixtures/human-identity-v2/
+!deploy/connector/fixtures/human-identity-v2/**
+!deploy/connector/fixtures/historical-source/
+!deploy/connector/fixtures/historical-source/**
 !deploy/connector/fixtures/notes-v1/
 deploy/connector/fixtures/notes-v1/**
 !deploy/connector/fixtures/notes-v1/schema.mjs

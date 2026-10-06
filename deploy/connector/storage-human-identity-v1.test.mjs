@@ -80,11 +80,11 @@ test('old v3/v4 readers refuse v5 evidence, while current v5 reads all historica
   for (const value of [v3, v4, v5]) assert.deepEqual(assertStorageCompatible(image(), value), value);
   assertStorageCompatible(image(reader4), v4); assertStorageCompatible(image(reader3), v3);
   assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'feedback', 'humanIdentity', 'notes', 'rooms']);
-  for (const changed of [undefined, [], [2], ['1'], [1, 1]]) {
+  for (const changed of [undefined, [], [3], ['1'], [1, 1]]) {
     const manifest = JSON.parse(currentStorageReaders); if (changed === undefined) delete manifest.readers.humanIdentity; else manifest.readers.humanIdentity = changed;
     assert.throws(() => storageReaders(image(JSON.stringify(manifest))), /storage_reader_unknown/u);
   }
-  for (const value of [undefined, 0, 2, '1', null]) assert.throws(() => checkedStorageFormat({ ...v5, humanIdentity: value }), /storage_probe_invalid/u);
+  for (const value of [undefined, 0, 3, '1', null]) assert.throws(() => checkedStorageFormat({ ...v5, humanIdentity: value }), /storage_probe_invalid/u);
   const receipt = { ...v5, schema: 'soty.storage-start.v5', containerId: '2'.repeat(64), image: image().Id, mountSha256: '3'.repeat(64) }; delete receipt.ok;
   requireStorageStartReceipt(receipt, receipt.containerId);
   assert.throws(() => requireStorageStartReceipt({ ...receipt, schema: 'soty.storage-start.v4' }, receipt.containerId), /storage_start_guard_missing/u);
@@ -104,7 +104,7 @@ test('human metadata binds lineage/protocol/issuer and agrees with other install
     ['issuer', 'http://external.example/human-identity'], ['registry_id', '../escape'], ['environment_id', 'x'.repeat(513)]]) {
     const root = await directory(t), path = await seed(root); mutate(path, db => metadata(db, key, value)); await assert.rejects(readStorageFormat(root), /storage_format_unknown/u);
   }
-  const future = await directory(t), path = await seed(future); mutate(path, db => db.exec('PRAGMA user_version=2')); await assert.rejects(readStorageFormat(future), /storage_format_unknown/u);
+  const future = await directory(t), path = await seed(future); mutate(path, db => db.exec('PRAGMA user_version=3')); await assert.rejects(readStorageFormat(future), /storage_format_unknown/u);
   for (const changes of [{ registryId: 'other' }, { environmentId: 'development' }]) {
     const root = await directory(t); await seedUniversal(root, 'feedback'); await seed(root, changes); await assert.rejects(readStorageFormat(root), /storage_format_unknown/u);
   }

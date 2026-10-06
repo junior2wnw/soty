@@ -5,7 +5,7 @@ import './oauth-consent.css';
 
 interface Account { accountId: string | null; label: string; revoked: boolean; }
 interface Decision { expectedAccountId: string; interactionId: string; browserNonce: string; csrf: string;
-  requestId: string; decision: 'approve' | 'deny'; }
+  requestId: string; decision: 'approve' | 'deny'; stayInAppSeconds?: 86400; }
 export interface HumanLoginPorts {
   account(): Promise<Account>; context(): Promise<Readonly<HumanLoginContext>>;
   decide(args: Readonly<Decision>): Promise<void>; complete(csrf: string): Promise<void>;
@@ -18,6 +18,7 @@ export function mountHumanLogin(host: HTMLElement, ports: HumanLoginPorts): { ca
   let disposed = false, sequence = 0, busy = false, invalidated = false, creatingProfile = false, error = '', deadline = 0;
   let account: Account = { accountId: null, label: '', revoked: false };
   let context: Readonly<HumanLoginContext> | null = null, pending: Readonly<Decision> | null = null;
+  let stayInApp = false;
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   const root = el('section', 'so-consent'), card = el('div', 'so-card'); root.append(card); host.replaceChildren(root);
   const alive = (ticket: number) => !disposed && sequence === ticket;
@@ -31,6 +32,7 @@ export function mountHumanLogin(host: HTMLElement, ports: HumanLoginPorts): { ca
       const [nextAccount, nextContext] = await Promise.all([ports.account(), ports.context()]);
       if (!alive(ticket)) return;
       account = nextAccount; context = nextContext; invalidated = false;
+      stayInApp = context.renewal?.approvedSessionSeconds === 86400;
       deadline = performance.now() + context.remainingMs;
       clearTimeout(expiryTimer); expiryTimer = setTimeout(expire, context.remainingMs);
     } catch { if (alive(ticket)) { context = null; error = 'Не удалось проверить запрос входа. Проверьте соединение и повторите.'; } }
@@ -56,7 +58,8 @@ export function mountHumanLogin(host: HTMLElement, ports: HumanLoginPorts): { ca
         || !create && account.accountId !== selected.accountId) throw new TypeError('profile_changed');
       account = selected;
       pending ??= Object.freeze({ expectedAccountId: selected.accountId, interactionId: context.interactionId,
-        browserNonce: context.browserNonce, csrf: context.csrf, requestId: crypto.randomUUID(), decision: kind });
+        browserNonce: context.browserNonce, csrf: context.csrf, requestId: crypto.randomUUID(), decision: kind,
+        ...(kind === 'approve' && context.renewal && stayInApp ? { stayInAppSeconds: 86400 as const } : {}) });
       if (pending.decision !== kind || !valid()) return;
       await ports.decide(pending);
       if (!alive(ticket)) return;
@@ -70,7 +73,8 @@ export function mountHumanLogin(host: HTMLElement, ports: HumanLoginPorts): { ca
         const code = failure && typeof failure === 'object' && 'code' in failure ? String(failure.code) : '';
         if (['human_identity_intent_conflict', 'human_identity_context_mismatch', 'human_identity_interaction_expired',
           'human_identity_browser_mismatch', 'human_identity_profile_changed', 'human_identity_actor_revoked',
-          'human_identity_decision_conflict', 'human_identity_account_mismatch', 'ACTIVE_PROFILE_CHANGED', 'authentication_required'].includes(code)) {
+          'human_identity_decision_conflict', 'human_identity_account_mismatch', 'human_identity_renewal_disabled', 'human_identity_renewal_invalid',
+          'ACTIVE_PROFILE_CHANGED', 'authentication_required'].includes(code)) {
           invalidated = true; error = 'Этот вход недоступен с выбранным профилем. Начните вход в приложении ещё раз.';
         } else error = pending
           ? 'Ответ пока не подтверждён. Нажмите «Проверить вход»: будет проверено то же решение.'
@@ -95,6 +99,13 @@ export function mountHumanLogin(host: HTMLElement, ports: HumanLoginPorts): { ca
       if (context.scopes.includes('profile')) contents.append(el('p', 'so-details', 'Также запрошены данные профиля, разрешённые для этого входа.'));
       const profile = button(account.accountId ? `${account.label || 'Ваш профиль'} · ${account.accountId.slice(-8)}` : 'У меня уже есть профиль', 'person', 'so-account', () => void openAccount());
       profile.disabled = busy || !!pending || invalidated; profile.dataset.loginControl = 'account'; contents.append(profile);
+      if (context.renewal && context.decision !== 'denied') {
+        const choice = el('label', 'so-stay'), checkbox = el('input', 'so-stay-checkbox');
+        checkbox.type = 'checkbox'; checkbox.checked = pending ? pending.stayInAppSeconds === 86400 : stayInApp;
+        checkbox.disabled = busy || !!pending || invalidated || context.decision !== 'pending'; checkbox.dataset.loginControl = 'stay';
+        checkbox.addEventListener('change', () => { if (!busy && !pending && !invalidated) stayInApp = checkbox.checked; });
+        choice.append(checkbox, el('span', '', 'Оставаться в этом приложении до 24 часов')); contents.append(choice);
+      }
       if (context.decision === 'denied') {
         const back = button('Вернуться в приложение', undefined, 'sw-button-primary', () => {
           if (busy || !valid()) return; busy = true; render();

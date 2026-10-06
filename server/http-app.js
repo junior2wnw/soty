@@ -30,6 +30,7 @@ import { createHumanIdentityService } from '../modules/human-identity/service.mj
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
+import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -41,8 +42,9 @@ export async function waitForRejectedHttpStart(error) {
   if (cleanup) { await cleanup; rejectedStarts.delete(error); }
 }
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
+  if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
@@ -186,7 +188,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
     if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
-      withAuthorityFence: action => connect.withAuthorityFence(action), readProfile: () => ({}) });
+      withAuthorityFence: action => connect.withAuthorityFence(action), readProfile: () => ({}), allowRenewalMigration: humanIdentityRenewalMigration });
   }
   catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;
@@ -233,6 +235,11 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
+  app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
+    compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
+    humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
+    ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
+  });
   app.locals.closeServices = async () => {
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();

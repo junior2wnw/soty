@@ -3,6 +3,8 @@ import { HUMAN_IDENTITY_PROFILE, requireHuman } from './profile.mjs';
 
 export const HUMAN_IDENTITY_SCHEMA_VERSION = 1;
 export const HUMAN_IDENTITY_LINEAGE = 'soty.human-identity.sqlite.v1';
+export const HUMAN_IDENTITY_RENEWAL_SCHEMA_VERSION = 2;
+export const HUMAN_IDENTITY_RENEWAL_LINEAGE = 'soty.human-identity.sqlite.v2';
 export const HUMAN_IDENTITY_DDL = `
 CREATE TABLE human_identity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
 CREATE TABLE human_identity_artifacts(
@@ -97,20 +99,59 @@ CREATE TRIGGER human_identity_client_head_monotonic BEFORE UPDATE ON human_ident
 WHEN NEW.client_id<>OLD.client_id OR NEW.version<OLD.version OR NEW.generation<>OLD.generation+1
 BEGIN SELECT RAISE(ABORT,'human_identity_client_required'); END;
 `;
+// Preserve the complete literal v1 contract for the independent short-session baseline.
+// v2 adds retention and a finite, immutable per-RP family; cipher AAD remains v1.
+export const HUMAN_IDENTITY_RENEWAL_DDL = HUMAN_IDENTITY_DDL
+  .replace('CREATE TABLE human_identity_artifacts(', 'CREATE TABLE "human_identity_artifacts"(')
+  .replace("'AuthorizationCode','AccessToken'", "'AuthorizationCode','RefreshToken','AccessToken'")
+  .replace('PRIMARY KEY(model,id_hash)', 'retain_until INTEGER NOT NULL CHECK(retain_until>=expires_at),PRIMARY KEY(model,id_hash)')
+  .replace("CHECK((decision='pending'", "stay_in_app_seconds INTEGER NOT NULL DEFAULT 0 CHECK(stay_in_app_seconds IN(0,86400)),CHECK((decision='pending'")
+  .replace('created_at INTEGER NOT NULL,revoked_at INTEGER\n)', `created_at INTEGER NOT NULL,revoked_at INTEGER,
+ stay_in_app_seconds INTEGER NOT NULL DEFAULT 0 CHECK(stay_in_app_seconds IN(0,86400)),
+ session_expires_at INTEGER CHECK((stay_in_app_seconds=0 AND session_expires_at IS NULL)
+  OR (stay_in_app_seconds=86400 AND session_expires_at IS NOT NULL AND session_expires_at>created_at))
+)`)
+  + `CREATE INDEX human_identity_artifact_retention ON human_identity_artifacts(retain_until);
+CREATE INDEX human_identity_grant_family_expiry ON human_identity_grant_bindings(stay_in_app_seconds,session_expires_at);`;
+export const HUMAN_IDENTITY_RENEWAL_GUARDS = HUMAN_IDENTITY_GUARDS
+  .replaceAll('a.expires_at>human_identity_gc_epoch()', 'a.retain_until>human_identity_gc_epoch()')
+  .replace('OR NEW.interaction_hash<>OLD.interaction_hash', 'OR NEW.stay_in_app_seconds<>OLD.stay_in_app_seconds OR NEW.session_expires_at IS NOT OLD.session_expires_at OR NEW.interaction_hash<>OLD.interaction_hash');
 const normalized = sql => sql.split(/('(?:[^']|'')*')/gu).map((part, index) => index % 2 ? part
   : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('');
 const layout = db => db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()
   .map(row => [row.type, row.name, row.tbl_name, normalized(row.sql)]);
-let expected;
-function reference() {
-  if (!expected) { const db = new DatabaseSync(':memory:'); try { db.exec(HUMAN_IDENTITY_DDL + HUMAN_IDENTITY_GUARDS); expected = JSON.stringify(layout(db)); } finally { db.close(); } }
-  return expected;
+const expected = new Map();
+function reference(version) {
+  if (!expected.has(version)) { const db = new DatabaseSync(':memory:'); try {
+    db.exec(version === 1 ? HUMAN_IDENTITY_DDL + HUMAN_IDENTITY_GUARDS : HUMAN_IDENTITY_RENEWAL_DDL + HUMAN_IDENTITY_RENEWAL_GUARDS);
+    expected.set(version, JSON.stringify(layout(db)));
+  } finally { db.close(); } }
+  return expected.get(version);
 }
-export function initializeHumanIdentitySchema(db, profile) {
+function upgradeRenewal(db) {
+  // Called only after exact v1 layout/metadata/FK validation, inside one transaction.
+  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger'").all()) {
+    requireHuman(/^[a-z_]+$/u.test(row.name), 'human_identity_storage_unknown', 503); db.exec(`DROP TRIGGER ${row.name}`);
+  }
+  const artifact = HUMAN_IDENTITY_RENEWAL_DDL.match(/CREATE TABLE "human_identity_artifacts"\([\s\S]+?\) STRICT;/u)[0]
+    .replace('"human_identity_artifacts"', 'human_identity_artifacts_candidate');
+  db.exec(artifact + `INSERT INTO human_identity_artifacts_candidate SELECT *,expires_at FROM human_identity_artifacts;
+DROP TABLE human_identity_artifacts;ALTER TABLE human_identity_artifacts_candidate RENAME TO human_identity_artifacts;`);
+  for (const index of HUMAN_IDENTITY_RENEWAL_DDL.matchAll(/CREATE INDEX human_identity_artifact_[^;]+;/gu)) db.exec(index[0]);
+  db.exec(`ALTER TABLE human_identity_interactions ADD COLUMN stay_in_app_seconds INTEGER NOT NULL DEFAULT 0 CHECK(stay_in_app_seconds IN(0,86400));
+ALTER TABLE human_identity_grant_bindings ADD COLUMN stay_in_app_seconds INTEGER NOT NULL DEFAULT 0 CHECK(stay_in_app_seconds IN(0,86400));
+ALTER TABLE human_identity_grant_bindings ADD COLUMN session_expires_at INTEGER CHECK((stay_in_app_seconds=0 AND session_expires_at IS NULL)
+ OR (stay_in_app_seconds=86400 AND session_expires_at IS NOT NULL AND session_expires_at>created_at));
+CREATE INDEX human_identity_grant_family_expiry ON human_identity_grant_bindings(stay_in_app_seconds,session_expires_at);`);
+  db.prepare("UPDATE human_identity_meta SET value=? WHERE key='lineage'").run(HUMAN_IDENTITY_RENEWAL_LINEAGE);
+  db.exec(HUMAN_IDENTITY_RENEWAL_GUARDS + 'PRAGMA user_version=2');
+}
+export function initializeHumanIdentitySchema(db, profile, { allowRenewalMigration = false } = {}) {
   requireHuman(profile?.enabled === true, 'human_identity_disabled', 503);
+  requireHuman(typeof allowRenewalMigration === 'boolean', 'human_identity_renewal_configuration_invalid', 503);
   db.exec('BEGIN IMMEDIATE');
   try {
-    const version = Number(db.prepare('PRAGMA user_version').get().user_version);
+    let version = Number(db.prepare('PRAGMA user_version').get().user_version);
     if (version === 0) {
       requireHuman(layout(db).length === 0, 'human_identity_storage_unknown', 503);
       db.exec(HUMAN_IDENTITY_DDL + HUMAN_IDENTITY_GUARDS);
@@ -118,13 +159,17 @@ export function initializeHumanIdentitySchema(db, profile) {
       for (const [key, value] of Object.entries({ lineage: HUMAN_IDENTITY_LINEAGE, registry_id: profile.registryId,
         environment_id: profile.environmentId, issuer: profile.issuer, profile: HUMAN_IDENTITY_PROFILE })) insert.run(key, value);
       db.exec('PRAGMA user_version=1');
-    } else requireHuman(version === 1, 'human_identity_storage_unknown', 503);
-    requireHuman(JSON.stringify(layout(db)) === reference(), 'human_identity_storage_unknown', 503);
+      version = 1;
+    } else requireHuman([1, 2].includes(version), 'human_identity_storage_unknown', 503);
+    requireHuman(JSON.stringify(layout(db)) === reference(version), 'human_identity_storage_unknown', 503);
     const rows = db.prepare('SELECT key,value FROM human_identity_meta ORDER BY key').all(), values = Object.fromEntries(rows.map(row => [row.key, row.value]));
-    requireHuman(rows.length === 5 && values.lineage === HUMAN_IDENTITY_LINEAGE && values.registry_id === profile.registryId
+    requireHuman(rows.length === 5 && values.lineage === (version === 1 ? HUMAN_IDENTITY_LINEAGE : HUMAN_IDENTITY_RENEWAL_LINEAGE) && values.registry_id === profile.registryId
       && values.environment_id === profile.environmentId && values.issuer === profile.issuer && values.profile === HUMAN_IDENTITY_PROFILE,
     'human_identity_storage_identity_mismatch', 503);
     requireHuman(!db.prepare('PRAGMA foreign_key_check').get(), 'human_identity_storage_corrupt', 503);
-    db.exec('COMMIT'); return Object.freeze({ schemaVersion: 1 });
+    if (version === 1 && allowRenewalMigration) { upgradeRenewal(db); version = 2; }
+    requireHuman(version === 2 || profile.renewalAdmissionEnabled !== true, 'human_identity_renewal_migration_required', 503);
+    requireHuman(JSON.stringify(layout(db)) === reference(version) && !db.prepare('PRAGMA foreign_key_check').get(), 'human_identity_storage_unknown', 503);
+    db.exec('COMMIT'); return Object.freeze({ schemaVersion: version });
   } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
 }

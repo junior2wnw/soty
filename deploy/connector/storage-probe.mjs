@@ -333,6 +333,19 @@ const universalLayouts = {
   },
 };
 
+// Independently reviewed schema2 vector. No candidate initializer, provider,
+// decryption or artifact rows participate in the storage start decision.
+const humanRenewalLayout = {
+  ...universalLayouts.humanIdentity, lineage: 'soty.human-identity.sqlite.v2', objects: 33,
+  digest: 'b096f63d2b27fa301d9fd336a57205278495ea80355fd27477f46115d4f8a2c9',
+  projections: {
+    ...universalLayouts.humanIdentity.projections,
+    human_identity_artifacts: universalLayouts.humanIdentity.projections.human_identity_artifacts + ',retain_until',
+    human_identity_interactions: universalLayouts.humanIdentity.projections.human_identity_interactions + ',stay_in_app_seconds',
+    human_identity_grant_bindings: universalLayouts.humanIdentity.projections.human_identity_grant_bindings + ',stay_in_app_seconds,session_expires_at',
+  },
+};
+
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
   for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -556,9 +569,11 @@ async function readUniversalFormat(dataDir, kind) {
   const filename = await checkedStoreFile(dataDir, expected.directory, expected.filename);
   if (!filename) return { format: 'empty', metadata: null };
   return inspectDatabase(filename, db => {
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
-    recognizeUniversalLayout(db, expected);
-    return { format: 1, metadata: universalMetadata(db, expected) };
+    const version = db.prepare('PRAGMA user_version').get().user_version;
+    if (version !== 1 && !(kind === 'humanIdentity' && version === 2)) fail('storage_format_unknown');
+    const layout = kind === 'humanIdentity' && version === 2 ? humanRenewalLayout : expected;
+    recognizeUniversalLayout(db, layout);
+    return { format: version, metadata: universalMetadata(db, layout) };
   });
 }
 

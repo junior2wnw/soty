@@ -2,12 +2,15 @@ import { createHash } from 'node:crypto';
 import { SafeError } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
+import { applyUniversalPolicy, publicUniversalPolicy, bindUniversalRollout, assertUniversalPolicyCurrent,
+  assertUniversalImagePrerequisites, assertUniversalPreparedness, universalModeLabel } from './universal-policy.mjs';
+import { captureUniversalPreparedness, validateUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
 const requireThat=(ok,code)=>{if(!ok)throw new SafeError(code);};
 const label='io.soty.connector-rollout';
-export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy) {
+export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy,universalPolicy) {
   const config=clone(original.Config),host=clone(original.HostConfig),endpoints={};
   // Inspect includes realised anonymous volume names. Reattach those explicitly;
   // replaying Config.Volumes alone would silently create fresh empty volumes.
@@ -23,8 +26,9 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   // Reader metadata must come from the immutable image, never an inherited
   // container label from the previous application.
   delete config.Labels[storageReaderLabel];
+  delete config.Labels[universalModeLabel];
   const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
-  addApprovedPolicy(result,applicationPolicy);return result;
+  addApprovedPolicy(result,applicationPolicy);return universalPolicy?applyUniversalPolicy(result,universalPolicy):result;
 }
 export function preservationHash(config) {
   const c=clone(config);delete c.Image;
@@ -40,7 +44,7 @@ export function preservationHash(config) {
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');requireThat(s.queuedSha256==null||(/^[a-f0-9]{64}$/.test(s.queuedSha256)&&s.count>0&&s.activeJobs.every(j=>j.status==='queued')),'maintenance_queued_fingerprint_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,queuedSha256:s.queuedSha256||null};}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
-  constructor({engine,maintenance,ready,storageProbe,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,record,attempts,sleep});this.state={phase:'new'};}
+  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,record,attempts,sleep});this.state={phase:'new'};}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
   storageContext(){return {engine:this.engine,probeImage:this.args.storageProbeImage,transactionId:this.args.transaction,getState:()=>this.state,record:fields=>this.note(this.state.phase,fields),probe:this.storageProbe,wait:this.sleep};}
   async guardStart(id,{running=false}={}){return guardStorageStart(this.storageContext(),await this.engine.inspect(id),{running});}
@@ -49,10 +53,13 @@ export class Rollout {
     const storageGuard=policy.Name!=='no'?await this.guardStart(id,{running:runtime.State.Running}):undefined;
     await this.note(this.state.phase,{restartPolicyIntent:{id,policy,...(storageGuard?{storageGuard}:{})}});
     await this.reconcile(()=>this.engine.request('POST',`/containers/${id}/update`,{RestartPolicy:policy}),id,c=>hash(c.HostConfig.RestartPolicy)===hash(policy));
+    if(id===this.original.Id)this.originalPolicySuspended=policy.Name==='no';
     await this.note(this.state.phase,{restartPolicyIntent:null});
   }
   async startApplication(id){
     const storageGuard=await this.guardStart(id);
+    if(id===this.candidate?.Id)await this.checkUniversalCurrent();
+    else if(this.args.universalPolicy&&id===this.original.Id)await this.checkOriginalPreserved();
     await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'starting'}});
     await this.reconcile(()=>this.engine.start(id),id,c=>c.State.Running&&c.Image===storageGuard.image);
     await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'confirmed'}});
@@ -63,6 +70,7 @@ export class Rollout {
     throw new SafeError(error?.code==='engine_response_ambiguous'?'operation_unresolved':'operation_failed');
   }
   async guard(args) {
+    args={...args};
     requireThat(/^[a-f0-9]{64}$/.test(args.originalId)&&/^sha256:[a-f0-9]{64}$/.test(args.originalImage)&&/^sha256:[a-f0-9]{64}$/.test(args.candidateImage)&&/^[a-f0-9]{40}$/.test(args.revision)&&/^[a-f0-9]{16,40}$/.test(args.transaction),'invalid_exact_guards');
     requireThat(!args.preserveQueuedSha256||/^[a-f0-9]{64}$/.test(args.preserveQueuedSha256),'invalid_queued_fingerprint');
     const old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
@@ -76,19 +84,64 @@ export class Rollout {
     requireThat(/^sha256:[a-f0-9]{64}$/.test(args.storageProbeImage||''),'storage_probe_image_required');
     requireThat((await this.engine.image(args.storageProbeImage)).Id===args.storageProbeImage,'storage_probe_image_identity');
     if(args.applicationPolicy)await readApprovedPolicy(args.applicationPolicy.source,args.applicationPolicy.sha256);
-    this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy);this.fingerprint=preservationHash(this.config);
+    let universalReceipt;
+    if(args.universalPolicy){
+      universalReceipt=await assertUniversalPolicyCurrent(args.universalPolicy);
+      requireThat(typeof this.allowUniversalFixture==='boolean'&&(!universalReceipt.fixtureOnly||this.allowUniversalFixture),'universal_policy_fixture_not_production');
+      requireThat(typeof this.universalMeasurement==='function','universal_measurement_required');
+      assertUniversalImagePrerequisites(args.universalPolicy,{candidateImage:image,originalImage:oldImage});
+      if(universalReceipt.phase==='features'){
+        const observed=validateUniversalPreparedness(await this.universalMeasurement(old.Id,this));
+        const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null});
+        requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
+      }
+      requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
+    }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');
+    this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy,args.universalPolicy);this.fingerprint=preservationHash(this.config);
+    if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
     this.originalPolicySha256=baseline.applicationPolicySha256||null;
-    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,storageProbeImage:args.storageProbeImage,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null};
+    const configurationSha256=universalReceipt?hash({schema:'soty.universal-public-configuration.v1',originalId:old.Id,originalImage:old.Image,
+      candidateImage:image.Id,revision:args.revision,transaction:args.transaction,policyDigest:universalReceipt.policyDigest}):this.fingerprint;
+    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,storageProbeImage:args.storageProbeImage,revision:args.revision,transaction:args.transaction,configurationSha256,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null,
+      ...(universalReceipt?{universalPolicyDigest:universalReceipt.policyDigest,universalWitnessId:args.universalWitnessId||null,universalPhase:universalReceipt.phase}: {})};
     if(args.legacyRecovery)this.state.legacyRecovery=true;
+  }
+  universalBinding(preservationFingerprint){return {preservationFingerprint,originalId:this.args.originalId,originalImage:this.args.originalImage,
+    candidateImage:this.args.candidateImage,revision:this.args.revision,transaction:this.args.transaction};}
+  async checkUniversalCurrent(){
+    if(!this.args.universalPolicy)return;
+    await assertUniversalPolicyCurrent(this.args.universalPolicy);
+    const candidateImage=await this.engine.image(this.args.candidateImage),originalImage=await this.engine.image(this.args.originalImage);
+    requireThat(candidateImage.Id===this.args.candidateImage&&originalImage.Id===this.args.originalImage,'universal_image_identity_mismatch');
+    assertUniversalImagePrerequisites(this.args.universalPolicy,{candidateImage,originalImage});
+    const old=await this.engine.inspect(this.original.Id);
+    requireThat(old.Id===this.args.originalId&&old.Image===this.args.originalImage,'original_identity_mismatch');
+    requireThat(hash(old.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)
+      ||this.originalPolicySuspended&&hash(old.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'original_configuration_changed');
+    old.HostConfig.RestartPolicy=clone(this.original.HostConfig.RestartPolicy);
+    const fingerprint=preservationHash(createConfig(old,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy));
+    bindUniversalRollout(this.args.universalPolicy,this.universalBinding(fingerprint));
+    if(this.candidate)this.validateCandidate(await this.engine.inspect(this.candidate.Id));
+  }
+  async checkOriginalPreserved(){
+    const current=await this.engine.inspect(this.original.Id);
+    requireThat(current.Id===this.original.Id&&current.Image===this.original.Image,'original_identity_mismatch');
+    requireThat(hash(current.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)
+      ||this.originalPolicySuspended&&hash(current.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'original_configuration_changed');
+    current.HostConfig.RestartPolicy=clone(this.original.HostConfig.RestartPolicy);
+    requireThat(preservationHash(createConfig(current,current.Image,this.args.transaction))===preservationHash(createConfig(this.original,this.original.Image,this.args.transaction)),
+      'original_configuration_changed');
   }
   validateCandidate(c,{stopped=false}={}) {
     requireThat(c.Id&&c.Image===this.args.candidateImage&&c.Config.Labels?.[label]===this.args.transaction&&c.Config.Labels?.[label+'.original']===this.args.originalId&&c.Config.Labels?.['org.opencontainers.image.revision']===this.args.revision&&(!stopped||!c.State.Running),'candidate_ownership_mismatch');
     requireThat(preservationHash(createConfig(c,this.args.candidateImage,this.args.transaction))===this.fingerprint,'candidate_configuration_mismatch');
   }
   async prepare(args) {
+    requireThat(!args.universalPolicy||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId||''),'universal_witness_receipt_invalid');
     await this.guard(args);await this.note('guarded');const name='soty-connector-next-'+args.transaction;
+    await this.checkUniversalCurrent();
     let response;try{response=await this.engine.create(name,this.config);}catch{}
     const c=await this.engine.inspect(response?.Id||name);
     this.validateCandidate(c,{stopped:true});
@@ -101,11 +154,13 @@ export class Rollout {
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
       const originalNow=await this.engine.inspect(this.original.Id);
-      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy))===this.fingerprint,'original_configuration_changed');
+      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy))===this.fingerprint,'original_configuration_changed');
+      await this.checkUniversalCurrent();
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&!s.maintenance,'precheck_not_quiescent');
       await this.guardStart(this.original.Id,{running:true});
       await this.note('stopping_original');
+      await this.checkUniversalCurrent();
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
       await this.note('original_stopped');
       await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
@@ -121,9 +176,17 @@ export class Rollout {
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
       requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
       requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
+      if(this.args.universalPolicy){
+        await this.checkUniversalCurrent();
+        const measurement=await this.universalMeasurement(this.candidate.Id,this);
+        const receipt=assertUniversalPreparedness(this.args.universalPolicy,measurement,{allowFixture:this.allowUniversalFixture});
+        await this.note(this.state.phase,{universalPreparedness:receipt});
+      }
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&s.maintenance,'candidate_pending_jobs_changed');
-      await this.note('candidate_ready');leaveAttempted=true;
+      await this.note('candidate_ready');
+      await this.checkUniversalCurrent();
+      leaveAttempted=true;
       try{s=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
@@ -148,6 +211,7 @@ export class Rollout {
         if(prev.Name!=='/'+this.originalName)await this.reconcile(()=>this.engine.rename(prev.Id,this.originalName),prev.Id,c=>c.Name==='/'+this.originalName);
         // Rollback helper leaves the marker in place while restoring compatible
         // JSON. Legacy original does not admit through the new marker contract.
+        if(this.args.universalPolicy)await this.checkOriginalPreserved();
         await this.restartPolicy(this.original.Id,this.original.HostConfig.RestartPolicy);
         await this.startApplication(this.original.Id);
         const restoredHealth=await this.ready('original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');

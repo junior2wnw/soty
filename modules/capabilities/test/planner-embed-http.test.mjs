@@ -427,23 +427,49 @@ test(
     assert.ok(
       page.headers.get('content-security-policy').includes('frame-ancestors ' + f.rootOrigin),
     );
+    const hasSelectedGrants = !!f.planner.store.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='planner_soty_grants'")
+      .get();
+    const selectedGrant = hasSelectedGrants
+      ? f.planner.store.db
+          .prepare(
+            'SELECT issuer,subject,workspace_id,binding_digest,created_at FROM planner_soty_grants WHERE issuer=? AND subject=? AND workspace_id=?',
+          )
+          .get(f.options.embed.profile.issuer, f.primary.account.accountId, f.workspaceId)
+      : null;
     const revoked = await f.wire.request(f.native + '/soty/disconnect', { body: {} });
     assert.equal(revoked.status, 200);
     const denied = await f.wire.request(f.embedded + '/api/embed/state');
     assert.equal(denied.status, 403);
     assert.equal(denied.body.code, 'embed_link_required');
-    // Restore only this synthetic association for restart/current-profile checks.
-    f.planner.store.db
-      .prepare(
-        'INSERT INTO planner_soty_links(issuer,subject,workspace_id,user_id,created_at) VALUES(?,?,?,?,?)',
-      )
-      .run(
-        f.options.embed.profile.issuer,
-        f.primary.account.accountId,
-        f.workspaceId,
-        f.planner.store.localUser().id,
-        Date.now(),
-      );
+    // New Source separates immutable identity association from resource grant.
+    // Restore only the exact captured synthetic grant for restart checks. The
+    // separately packaged historical checkpoint has the legacy association.
+    if (hasSelectedGrants) {
+      assert.ok(selectedGrant);
+      f.planner.store.db
+        .prepare(
+          'INSERT INTO planner_soty_grants(issuer,subject,workspace_id,binding_digest,created_at) VALUES(?,?,?,?,?)',
+        )
+        .run(
+          selectedGrant.issuer,
+          selectedGrant.subject,
+          selectedGrant.workspace_id,
+          selectedGrant.binding_digest,
+          selectedGrant.created_at,
+        );
+    } else
+      f.planner.store.db
+        .prepare(
+          'INSERT INTO planner_soty_links(issuer,subject,workspace_id,user_id,created_at) VALUES(?,?,?,?,?)',
+        )
+        .run(
+          f.options.embed.profile.issuer,
+          f.primary.account.accountId,
+          f.workspaceId,
+          f.planner.store.localUser().id,
+          Date.now(),
+        );
     await f.restart();
     assert.equal((await f.wire.request(f.embedded + '/api/embed/state')).status, 200);
     const privateRows = f.planner.store.db

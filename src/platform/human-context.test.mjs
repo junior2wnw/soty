@@ -18,3 +18,17 @@ test('stale, different browser interaction and malformed display text cannot ena
   const value = parse(context()); assert(Object.isFrozen(value) && Object.isFrozen(value.client) && Object.isFrozen(value.scopes));
   assert.equal(value.remainingMs, 600000);
 });
+
+test('a finite renewal choice is shown only for the exact eligible context without adding authority fields', () => {
+  const value = parse({ ...context(), renewal: { maximumSessionSeconds: 86400 } });
+  assert.equal(value.renewal.maximumSessionSeconds, 86400); assert.ok(Object.isFrozen(value.renewal));
+  assert.equal(Object.hasOwn(parse(context()), 'renewal'), false);
+  for (const renewal of [null, {}, { maximumSessionSeconds: 3600 }, { maximumSessionSeconds: '86400' },
+    { maximumSessionSeconds: 86400, approvedSessionSeconds: 86400 },
+    { maximumSessionSeconds: 86400, stayInAppSeconds: 86400 }, { maximumSessionSeconds: 86400, accountId: 'claimed' }]) {
+    assert.throws(() => parse({ ...context(), renewal }));
+  }
+  for (const approvedSessionSeconds of [0, 86400]) assert.equal(parse({ ...context(), decision: 'approved',
+    renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds } }).renewal.approvedSessionSeconds, approvedSessionSeconds);
+  assert.throws(() => parse({ ...context(), decision: 'approved', renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds: 86401 } }));
+});
