@@ -105,3 +105,33 @@ test('no installed guidance leaves the original tool set and does not invent ins
   const f = environment(t, { guidance: [] }); assert.equal(f.service.externalGuidance, null);
   const operations = createExternalCapabilityOperations({ service: f.service, origin: AUDIENCE }); assert.equal(operations.tools.length, 5);
 });
+
+test('direct SDK catalog closes when Source A withdraws inside another Source authority callback', t => {
+  const second = { ...CAP, capabilityId: 'planner:secondItem', executionBinding: {
+    ...CAP.executionBinding, handler: 'planner:secondItem', binding: { ...CAP.executionBinding.binding, id: 'planner:secondBinding' },
+  } };
+  const catalog = createCatalog([CAP, second]);
+  const references = [CAP, second].map(value => ({ capabilityId: value.capabilityId, version: 1,
+    digest: catalog.get(value.capabilityId, 1).digest }));
+  let firstAllowed = true;
+  const service = createCapabilitiesService({ databasePath: ':memory:', projectId: 'guidance-reentrancy',
+    actorActive: actor => actor.accountId === OWNER.accountId && actor.deviceId === OWNER.deviceId,
+    catalog: [CAP, second], documentation: [], externalAdapters: references.map((contract, index) => ({ contract,
+      adapter: { profile: EXTERNAL_ADAPTER_PROFILE,
+        withAuthority(_request, callback) {
+          if (index === 0 && !firstAllowed) throw Object.assign(new Error('denied'), { code: 'external_resource_denied' });
+          if (index === 1) firstAllowed = false;
+          return callback();
+        }, execute() { throw new Error('must_not_execute'); }, readProof() { throw new Error('must_not_read'); },
+      } })) });
+  t.after(() => service.close());
+  const call = (op, args) => service.execute({ op: 'access.' + op, actor: OWNER, args: { expectedAccountId: OWNER.accountId, ...args } });
+  const principal = call('principals.create', { label: 'Synthetic direct SDK reader' }).principal;
+  const grant = call('grants.issue', { principalId: principal.id,
+    capabilities: references.map(({ capabilityId, version }) => ({ capabilityId, version })),
+    resources: CAP.resources, effects: CAP.effects, recipients: CAP.recipients, expiresAt: Date.now() + 600000,
+    budget: { unit: 'invocations', limit: 3 } }).grant;
+  const credential = call('credentials.issue', { grantId: grant.id, audience: AUDIENCE });
+  const actor = service.authenticateCredential({ token: credential.token, audience: AUDIENCE });
+  assert.throws(() => service.external.search({ actor }), error => error.code === 'external_resource_denied');
+});

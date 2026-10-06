@@ -74,18 +74,21 @@ function synchronous(value) {
  * A source must atomically deduplicate the exact request and retain its proof.
  * `not_applied` is retryable absence, never permission to release a started
  * reservation: another process may already have a source request in flight. */
-export function createExternalAdapterCoordinator({ entries, registry, invocations, authorize, limits = {} }) {
+export function createExternalAdapterCoordinator({ entries, readonlyEntries = [], readonly, registry, invocations, authorize, limits = {} }) {
   object(limits, [], ['inflight', 'callTimeoutMs']);
   const bounds = Object.freeze({ inflight: limits.inflight ?? 4, callTimeoutMs: limits.callTimeoutMs ?? 8000 });
   integer(bounds.inflight, 1, 4, CODE); integer(bounds.callTimeoutMs, 1, 8000, CODE);
   assert(registry && typeof registry.get === 'function' && invocations && typeof invocations.inspectDispatch === 'function' && typeof authorize === 'function', CODE);
   const byKey = new Map();
-  for (const value of entries) {
+  assert(entries.length + readonlyEntries.length <= 64, 'external_adapter_invalid');
+  for (const value of [...entries,...readonlyEntries]) {
+    const read = readonlyEntries.includes(value);
     const entry = registry.get(value.contract.capabilityId, value.contract.version);
     assert(entry && entry.digest === value.contract.digest && entry.capabilityId !== 'notes.createDraft'
       && entry.executionBinding.kind === 'registered' && entry.executionBinding.handler === entry.capabilityId
-      && entry.executionBinding.version === 1 && entry.effects.length > 0, 'external_contract_mismatch');
-    byKey.set(`${entry.capabilityId}@${entry.version}`, Object.freeze({ ...value, entry }));
+      && entry.executionBinding.version === 1 && (read ? entry.effects.length===0 : entry.effects.length>0), 'external_contract_mismatch');
+    assert(!byKey.has(`${entry.capabilityId}@${entry.version}`), 'external_adapter_duplicate');
+    byKey.set(`${entry.capabilityId}@${entry.version}`, Object.freeze({ ...value, entry, readonly: read }));
   }
   let closed = false;
   const inflight = new Map();
@@ -202,6 +205,7 @@ export function createExternalAdapterCoordinator({ entries, registry, invocation
   }
   function admit({ actor, reference, idempotencyKey, input }) {
       assert(!closed, 'external_adapter_closed'); const value = binding(reference), captured = data(input);
+      assert(!value.readonly, 'readonly_query_api_required');
       return authority(value, { phase: 'admit', actor, input: captured }, () => invocations.admit({ actor,
         capabilityId: value.entry.capabilityId, version: value.entry.version, idempotencyKey, input: captured }));
   }
@@ -257,6 +261,10 @@ export function createExternalAdapterCoordinator({ entries, registry, invocation
       if (Buffer.byteLength(JSON.stringify(page(i+1))) > 65536) { items.pop(); break; }
     }
     assert(items.length > 0 || offset === selected.length, 'projection_too_large');
+    // Root history alone does not recheck a Source that changed while another
+    // selected entry's trusted callback ran. Direct SDK users need this fence,
+    // not just the additional HTTP/MCP transport recheck.
+    for (const item of items) selectedMetadata(args.actor, binding(item.reference));
     authorize({ actor: args.actor, action: 'history' }); return freezeDeep(page(offset+items.length));
   }
   return Object.freeze({
@@ -280,10 +288,16 @@ export function createExternalAdapterCoordinator({ entries, registry, invocation
     },
     async reconcile({ reference, invocationId }) {
       const value = binding(reference);
+      assert(!value.readonly, 'readonly_query_api_required');
       return run(value, identifier(invocationId), false);
     },
     get,
-    cancel({ actor, invocationId }) { get({ actor, invocationId }); return invocations.requestCancel({ actor, invocationId }); },
-    close() { closed = true; for (const controller of outstanding.values()) controller.abort(); },
+    queryConfigured: Boolean(readonly),
+    query(request) { assert(readonly, 'external_query_not_admitted'); return readonly.query(request); },
+    cancel({ actor, invocationId }) {
+      const current = get({ actor, invocationId }), value = byKey.get(current.invocation.capabilityId + '@' + current.invocation.version);
+      return value.readonly ? readonly.cancel({ actor, invocationId }) : invocations.requestCancel({ actor, invocationId });
+    },
+    close() { closed = true; readonly?.close(); for (const controller of outstanding.values()) controller.abort(); },
   });
 }

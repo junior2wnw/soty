@@ -149,7 +149,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,
       catalog: [...BUILTIN_CAPABILITIES.map(entry => ({ ...entry,
         executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog)],
-      externalAdapters: composeExternalApplications(externalEntries,{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
+      externalAdapters: composeExternalApplications(externalEntries.filter(entry=>!entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
+      readonlyQueries: composeExternalApplications(externalEntries.filter(entry=>entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
       externalGuidance: externalEntries.flatMap(entry=>entry.guidance),
       nativeNotes: { notes: notes.native, withAuthorityFence: action => {
         if (!connect) throw new AccessError('native_unavailable');
@@ -212,7 +213,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
-    openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance) }),
+    openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities,

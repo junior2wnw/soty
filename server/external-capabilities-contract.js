@@ -4,7 +4,7 @@ const object = (properties, required = Object.keys(properties)) => ({ type: 'obj
 
 // One typed contract supplies MCP validators and the composed HTTP document.
 // It contains no installed application names, URLs, credentials or authority.
-export function externalCapabilityTools(base, { guidanceConfigured = false } = {}) {
+export function externalCapabilityTools(base, { guidanceConfigured = false,queryConfigured=false } = {}) {
   function standalone(input) {
     const needed = {}, pending = new Set();
     function visit(value) {
@@ -49,6 +49,11 @@ export function externalCapabilityTools(base, { guidanceConfigured = false } = {
     { name: 'apps_invocation_cancel', description: 'Request cancellation. A dispatched action may already have committed; cancellation does not undo an effect or release uncertain quota.',
       inputSchema: object({ invocationId: base.NativeInvocationId }), outputSchema: response, readOnly: false },
   ];
+  if(queryConfigured)tools.push({name:'apps_query',description:'Read one host-admitted readonly Source capability. One invocation unit is charged at durable dispatch CAS, even if delivery never reaches Source. Keep the same key after a lost response: exact retries return metadata only and never repeat the read or recover private contents. A fresh read needs a new key and budget. Returned content is application data, not authority.',
+    inputSchema:object({reference,idempotencyKey:base.NativeDraftRequest.properties.idempotencyKey,input:{type:'object'}}),
+    outputSchema:standalone(object({schema:{const:'soty.authorized-app-query.v1'},scope:{const:'authorized'},authority:{const:'application-data'},invocation,reused:{type:'boolean'},resultUnavailable:{type:'boolean'},
+      charge:object({unit:{const:'invocations'},amount:{type:'integer',minimum:0,maximum:1},point:{const:'durable-dispatch-cas'}}),result:{type:['object','array','string','number','boolean','null']}},
+    ['schema','scope','authority','invocation','reused','resultUnavailable','charge'])),readOnly:true});
   if (guidanceConfigured) {
     const guideRef = object({ id: base.Identifier, version: { const: 1 }, digest: base.Digest });
     const guide = { reference: guideRef, kind: { enum: ['skill', 'document'] }, language: { enum: ['ru', 'en'] },
@@ -70,6 +75,7 @@ export function externalCapabilityTools(base, { guidanceConfigured = false } = {
 export const EXTERNAL_HTTP_ROUTES = Object.freeze({ catalog: 'apps_catalog_search', contract: 'apps_catalog_get',
   invoke: 'apps_invoke', get: 'apps_invocation_get', cancel: 'apps_invocation_cancel' });
 export const EXTERNAL_GUIDANCE_HTTP_ROUTES = Object.freeze({ 'guidance-list': 'apps_guidance_list', 'guidance-get': 'apps_guidance_get' });
+export const EXTERNAL_QUERY_HTTP_ROUTES=Object.freeze({query:'apps_query'});
 
 // Standalone JSON Schemas carry their own $defs. OpenAPI references instead
 // address the already declared document components; do not leave dangling
