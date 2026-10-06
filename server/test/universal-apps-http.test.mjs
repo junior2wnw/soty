@@ -78,7 +78,7 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
 }
 const fails = code => error => error.code === code;
 
-test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard the generic application ledger', { timeout: 20000 }, async t => {
+for (const withGuidance of [false, true]) test(`real signed Apps/Connect authority and separate HTTP/MCP audiences guard the generic application ledger${withGuidance ? ' with private guidance' : ''}`, { timeout: 20000 }, async t => {
   const f = await fixture(t), source = f.created.universalRegistration.descriptor.app.source;
   const preparation = f.service().locals.captureUniversalPreparedness();
   assert.equal(preparation.compiledLegacyMode, false); assert.equal(preparation.universalConfigured, true);
@@ -102,10 +102,13 @@ test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard t
     outputSchema:{type:'object',properties:{objectId:{type:'string',maxLength:160},revision:{type:'integer',minimum:0}},required:['objectId','revision'],additionalProperties:false},
     resources:[resource],effects:['create'],recipients:[resource],executionBinding:{kind:'registered',handler:id,version:1,
       binding:{id:'app.'+f.appId+':source-binding',version:1,digest:canonicalHash({scope:resource,protocol:EXTERNAL_ADAPTER_PROFILE})}}};
-  const options = {capabilityAudience:f.origin,externalApplications:[{appId:f.appId,target:{revision:source.revision,digest:source.digest},catalog,adapter}]};
+  const guidance = { kind:'skill', language:'ru', title:'Задачи в выбранном пространстве', summary:'Для явного поручения создать рабочий объект.',
+    content:'Проверьте пространство. Сохраняйте исходный ключ запроса после потерянного ответа. Не меняйте получателя автоматически.' };
+  const options = {capabilityAudience:f.origin,externalApplications:[{appId:f.appId,target:{revision:source.revision,digest:source.digest},catalog,adapter,
+    ...(withGuidance ? {guidance:[guidance]} : {})}]};
   await f.restart(options);
   const documentResponse = await fetch(f.origin + '/api/capabilities/v1/openapi.json'), document = await documentResponse.json();
-  assert.equal(documentResponse.status, 200); assert.equal(document['x-soty-mcp'].tools.length, 9);
+  assert.equal(documentResponse.status, 200); assert.equal(document['x-soty-mcp'].tools.length, withGuidance ? 11 : 9);
   assert.equal(document.paths['/api/capabilities/v1/app-actions/invoke'].post.operationId, 'apps_invoke');
   assert.equal(JSON.stringify(document).includes(f.appId), false, 'public protocol documentation does not expose the private installed application');
   const reference = f.service().locals.capabilitiesService.external.contracts[0];
@@ -121,6 +124,15 @@ test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard t
   const page = await http('catalog',{}); assert.equal(page.status,200); assert.equal(page.data.items.length,1);
   assert.equal((await http('catalog',{},mcpToken)).status,401); assert.equal((await http('catalog',{},null)).status,401);
   assert.equal((await http('contract',{reference})).data.binding.digest.length,64);
+  let guidanceRef;
+  if (withGuidance) {
+    const guides = await http('guidance-list',{reference}); assert.equal(guides.status,200); assert.equal(guides.data.items.length,1);
+    guidanceRef=guides.data.items[0].reference;
+    const body=await http('guidance-get',{reference,guidance:guidanceRef}); assert.equal(body.status,200); assert.equal(body.data.content,guidance.content);
+    assert.equal(body.data.authority,'application-data'); assert.equal((await http('guidance-list',{reference},mcpToken)).status,401);
+    assert.equal((await http('guidance-get',{reference,guidance:{...guidanceRef,digest:'f'.repeat(64)}})).status,404);
+    assert.equal(JSON.stringify(document).includes(guidance.title),false); assert.equal(writes,0);
+  }
   assert.equal((await http('invoke','{"reference":'+JSON.stringify(reference)+',"idempotencyKey":"same-intent","input":{"title":"x","title":"y"}}')).status,400);
   const args={reference,idempotencyKey:'same-intention-0001',input:{title:'Synthetic private input'}};
   const first=await http('invoke',args); assert.equal(first.status,201); assert.equal(first.data.invocation.status,'succeeded'); assert.equal(writes,1);
@@ -132,12 +144,20 @@ test('real signed Apps/Connect authority and separate HTTP/MCP audiences guard t
     ...(method==='tools/call'?{'mcp-name':params.name}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params:{...params,_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28',
       'io.modelcontextprotocol/clientInfo':{name:'synthetic-universal-wire',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}}})});
     return{status:response.status,data:await response.json()}; }
-  const listed=await mcp('tools/list',{});assert.equal(listed.status,200);assert.equal(listed.data.result.tools.length,9);
+  const listed=await mcp('tools/list',{});assert.equal(listed.status,200);assert.equal(listed.data.result.tools.length,withGuidance?11:9);
+  if (withGuidance) {
+    const guides=await mcp('tools/call',{name:'apps_guidance_list',arguments:{reference}}); assert.equal(guides.status,200);
+    assert.deepEqual(guides.data.result.structuredContent.items[0].reference,guidanceRef);
+    const body=await mcp('tools/call',{name:'apps_guidance_get',arguments:{reference,guidance:guidanceRef}});
+    assert.equal(body.status,200); assert.equal(body.data.result.structuredContent.content,guidance.content);
+  }
   const read=await mcp('tools/call',{name:'apps_invocation_get',arguments:{invocationId:first.data.invocation.invocationId}});
   assert.equal(read.status,200);assert.equal(read.data.result.structuredContent.invocation.invocationId,first.data.invocation.invocationId);
   sourceActive=false; assert.equal((await http('get',{invocationId:first.data.invocation.invocationId})).status,403);
+  if(withGuidance) assert.equal((await http('guidance-get',{reference,guidance:guidanceRef})).status,403);
   sourceActive=true;await f.owner.client.extension('apps.revoke',{appId:f.appId});
   assert.equal((await http('get',{invocationId:first.data.invocation.invocationId})).status,404);assert.equal(writes,1);
+  if(withGuidance) assert.equal((await http('guidance-list',{reference})).status,404);
 });
 
 test('actual signed registration commits real feedback and preserves request receipts across HTTP restart', { timeout: 20000 }, async t => {

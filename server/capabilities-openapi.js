@@ -2,7 +2,7 @@ import { buildDiscoveryOpenApi } from '../modules/capabilities/server/openapi.mj
 import { BUILTIN_CAPABILITIES } from '../modules/capabilities/server/catalog.mjs';
 import { canonicalJson, freezeDeep } from '../modules/capabilities/server/validation.mjs';
 import { NATIVE_HTTP_LIMITS } from './capabilities-ingress.js';
-import { externalCapabilityTools, EXTERNAL_HTTP_ROUTES, externalOpenApiSchema } from './external-capabilities-contract.js';
+import { externalCapabilityTools, EXTERNAL_HTTP_ROUTES, EXTERNAL_GUIDANCE_HTTP_ROUTES, externalOpenApiSchema } from './external-capabilities-contract.js';
 import { CAPABILITIES_BASE as BASE, NOTES_DRAFT_PATH, INVOCATIONS_PATH, INVOCATION_ID_PATTERN,
   NATIVE_NOTE_ID_PATTERN, SERVICE_DELEGATION_PATH, SERVICE_DELEGATION_BODY_BYTES } from './capabilities-http-contract.js';
 
@@ -15,7 +15,8 @@ const copy = value => structuredClone(value);
 
 /** Composed HTTP surface. The domain's standalone discovery-only contract stays
  * reusable; the host adds only the private operations it actually attaches. */
-export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false, externalConfigured = false } = {}) {
+export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false, externalConfigured = false, guidanceConfigured = false } = {}) {
+  if (guidanceConfigured && !externalConfigured) throw new Error('external_guidance_contract_mismatch');
   const document = copy(buildDiscoveryOpenApi());
   const note = BUILTIN_CAPABILITIES.find(entry => entry.capabilityId === 'notes.createDraft' && entry.version === 1);
   document.info = { title: 'Soty capabilities HTTP API', version: '1.3.0', description:
@@ -161,10 +162,11 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
   document.paths[`${BASE}/status`].get.description = 'Current native Notes readiness and explicitly configured audience. Readiness does not grant access, reserve capacity or migrate storage.';
   document.paths[`${BASE}/openapi.json`].get.description = 'OpenAPI 3.1.2 for public discovery and the attached typed private HTTP operations. Local references only; schemas do not grant execution.';
   if (externalConfigured) {
-    const tools = externalCapabilityTools(schemas);
+    const tools = externalCapabilityTools(schemas, { guidanceConfigured });
     document.tags.push({ name: 'Private application actions', description: 'Only installed, pinned actions allowed by the current root grant and independent source authority.' });
     if (mcpConfigured) document['x-soty-mcp'].tools.push(...tools.map(tool => tool.name));
-    for (const [route, toolName] of Object.entries(EXTERNAL_HTTP_ROUTES)) {
+    const routes = { ...EXTERNAL_HTTP_ROUTES, ...(guidanceConfigured ? EXTERNAL_GUIDANCE_HTTP_ROUTES : {}) };
+    for (const [route, toolName] of Object.entries(routes)) {
       const tool = tools.find(value => value.name === toolName), prefix = `AppAction_${route}`;
       schemas[prefix + 'Input'] = externalOpenApiSchema(tool.inputSchema);
       schemas[prefix + 'Output'] = externalOpenApiSchema(tool.outputSchema);
