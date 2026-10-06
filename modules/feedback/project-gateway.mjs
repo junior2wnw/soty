@@ -16,6 +16,12 @@ export class ProjectFeedbackError extends Error {
 }
 const check = (ok, code = 'project_feedback_invalid_arguments', status) => { if (!ok) throw new ProjectFeedbackError(code, status); };
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
+// Native resource IDs are opaque values, not capability IDs or URL paths.
+// Preserve Unicode, spaces and case. Longer legacy IDs need a Source-owned
+// locator; no trim/rename or inference of permission is performed here.
+const projectIdentifier = value => typeof value === 'string' && value.length > 0 && value.length <= 4096
+  && value.isWellFormed() && !/[\u0000-\u001f\u007f]/u.test(value)
+  && new TextEncoder().encode(value).byteLength <= 4096;
 function capture(value, maxBytes) {
   let nodes = 0, stringBytes = 0;
   const visit = (entry, depth) => {
@@ -50,7 +56,7 @@ function exact(value, keys, optional = []) {
 }
 function argumentsFor(op, input) {
   const args = capture(input, op === 'submit' ? 1500000 : 32768); exact(args, KEYS[op], OPTIONAL[op] || []);
-  check(identifier(args.projectId));
+  check(projectIdentifier(args.projectId));
   for (const key of ['requestId', 'ticketId']) if (Object.hasOwn(args, key)) check(identifier(args[key]));
   if (Object.hasOwn(args, 'expectedRevision')) check(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 1);
   if (Object.hasOwn(args, 'body')) check(typeof args.body === 'string' && args.body.trim().length > 0 && args.body.length <= 8000

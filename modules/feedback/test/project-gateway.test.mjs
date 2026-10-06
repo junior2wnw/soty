@@ -97,6 +97,17 @@ test('revoked project access hides old receipts and project contents', async t =
   assert.deepEqual(f.counts(), { reads: 0, writes: 1 });
 });
 
+test('native Unicode/space/slash/long project locators preserve exact case without renaming', async t => {
+  const f = host(t);
+  const projectId = ' Проект/Внутренний:А ' + 'x'.repeat(180);
+  f.db.prepare('INSERT INTO native_acl VALUES(?,1,1,0,0)').run(projectId);
+  assert.equal((await f.execute('context', { projectId })).context.projectId, projectId);
+  await f.execute('submit', submission(projectId));
+  await denied(f.execute('get', { projectId: projectId.toLowerCase(), ticketId: 'ticket-one' }), 'native_access_denied');
+  await denied(f.execute('context', { projectId: projectId.trim() }), 'native_access_denied');
+  await denied(f.execute('context', { projectId: 'я'.repeat(2049) }), 'project_feedback_invalid_arguments');
+});
+
 test('Source revoke after read and before reply releases no private content', async t => {
   const f = host(t, { async read(value, read, db) { const result = await read(value);
     db.exec("UPDATE native_acl SET allowed=0,epoch=epoch+1 WHERE project='one'"); return result; } });
