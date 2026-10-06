@@ -38,6 +38,7 @@
 | Короткая высота | Список чатов становился нулевой высоты | Компактный layout с минимумом места под строку;6000-char draft занимает74px при370px viewport |
 | Клавиатура | Visual viewport может уменьшаться без изменения layout; root min-height мешала сжатию | Один observer на document, события через RAF, visible height/top, формы и chat dock в видимой области; pinch zoom освобождает адаптацию |
 | Прежние входы | Большое плавающее сообщение перекрывало поле | Прежние адреса доступны в настройках, отдельный overlay убран |
+| Возврат из приложения | HIVE открыт из поиска, но «Назад» возвращает на «Моё» | Исходная сторона поля сохраняется вместе с запросом и фильтром; переход на другой адрес приложения сохраняет тот же возврат |
 
 ## Проверки и артефакты
 
@@ -49,6 +50,7 @@
 -  Реальный renderer с synthetic records: обычный click/inspect, preview без writes, exact swap/undo, keyboard focus и culling120shortcuts:36overview nodes/23focus nodes; resize не меняет документ. `engine-regression.log`.
 -  Controlled VisualViewport:350px видимой области, offset120, send внутри неё; pinned profile save внутри350px; pinch освобождает адаптацию. `virtual-keyboard.log`. Это не физическая клавиатура iOS.
 - 4 новых теста geometry/coalescing/reference lifecycle/pinch/dispose; full Windows suite1194:1189PASS/5SKIP/0FAIL. Typecheck/build прошли. Immutable Linux image повторяет штатные build/test/selftest gates; результат выпуска фиксируется отдельно.
+- 10 дополнительных браузерных проверок возврата на desktop/phone: поиск всех типов, поиск приложений, личное поле, прямая ссылка и переход между адресами приложений. Реальный `mountWorldApp`, synthetic directory; недоступный fixture runtime не обходит проверку входа. `app-return-regression.log`.
 
 Наборы пересекаются; их количества не суммируются в выдуманное число уникальных сценариев. Первая версия cleanup тестового поля через прямой API создала ожидаемый conflict с IDB outbox: штатный выбор версии и unload guard отработали. Финальный сценарий убирает своё пространство через UI, дожидается actual server state и сохраняет проверки. Статус saved до dispatch сам по себе не считается доказательством завершения mutation.
 
@@ -62,4 +64,4 @@
 
 Первая матрица ошибочно передавала `theme` вместо `themeMode`: её файлы сохранены как invalid setup и не считаются dark evidence. Финальный прогон проверяет фактический `data-soty-theme`/mode:20dark и20light. Визуальная сверка также выявила второй mode callback, возвращавший старую подпись «Личное» в шапку; обе точки теперь используют «Моё поле».
 
-Публикация: отдельный новый каталог `D:/соты/output/soty-ux-release-20261006-final`, свежие receipts/backup/proofs. Предварительный5a594aa image сохранён как superseded и не принимался за final release. Старые документы служат навигацией, не заменяют live audit. Source backend/field schema не меняется: release mode `unchanged` требует точного сохранения всех старых строк/schema/epochs, config/model routing и работающего cold rollback.
+Публикация: отдельный новый каталог `D:/соты/output/soty-ux-release-20261006-return`, свежие receipts/backup/proofs. Предварительный5a594aa image сохранён как superseded; a3b207e был опубликован и прошёл публичную приёмку, после которой root и обычная персона независимо нашли потерю поискового контекста при возврате из HIVE. Исправление проходит отдельный выпуск. Старые документы служат навигацией, не заменяют live audit. Source backend/field schema не меняется: release mode `unchanged` требует точного сохранения всех старых строк/schema/epochs, config/model routing и работающего cold rollback.

@@ -81,6 +81,7 @@ class WorldApplication {
   private assistantMode: 'create' | 'chat' = 'create';
   private accessHandle: WorldAssistantHandle | null = null;
   private appStage: AppStageHandle | null = null;
+  private appReturnView: 'mine' | 'world' = 'mine';
   private activeRoute = location.hash || '#mine';
   private homeNotes: HomeNote[] | null = null;
   private homeRequest = 0;
@@ -1573,6 +1574,8 @@ class WorldApplication {
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;
+    const returnView = this.appStage ? this.appReturnView : /^#world(?:\?|$)/u.test(this.activeRoute) ? 'world' : 'mine';
+    this.appReturnView = returnView;
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
     const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
       ...(app.entry ? { domainId: app.entry.domainId, path: app.entry.path } : {}) }, app.entry ? undefined : previousGroup?.communityId))!;
@@ -1593,7 +1596,7 @@ class WorldApplication {
       },
       onBack: () => this.afterNoteSaved(() => {
         if (!current()) return;
-        if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else this.navigate('mine');
+        if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else this.navigate(returnView);
       }),
       onAccount: async () => {
         await stage.flush();
