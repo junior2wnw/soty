@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createProjectFeedbackGateway } from '../project-gateway.mjs';
 import { validateFeedbackAttachments } from '../server/media.mjs';
 
@@ -195,4 +196,30 @@ test('timeout bounds caller latency without releasing an ignored-abort Source sl
   await denied(f.execute('context', { projectId: 'two' }), 'project_feedback_busy');
   release(); await turn();
   assert.equal((await f.execute('context', { projectId: 'two' })).context.projectId, 'two');
+});
+
+test('ignored native late/double callbacks cannot crash a separate Source process', () => {
+  const code = `
+    import assert from 'node:assert/strict';
+    import { createProjectFeedbackGateway } from ${JSON.stringify(new URL('../project-gateway.mjs', import.meta.url).href)};
+    for (const variant of ['late','double']) {
+      const actor=Object.freeze({}),context=Object.freeze({sourceId:'child-fixture',projectId:'one',verifiedActor:actor,
+        canRead:true,canWrite:false,canSupport:false,assertCurrent:async()=>true});
+      let reads=0;
+      const gateway=createProjectFeedbackGateway({sourceId:'child-fixture',captureVerifiedActor:async()=>actor,
+        async withAuthority(_request,callback) {
+          if(variant==='late') { setTimeout(()=>{callback(context);},10); return {}; }
+          const reply=await callback(context);setTimeout(()=>{callback(context);},10);return reply;
+        },read:async()=>{reads++;return {tickets:[],nextCursor:null};},commit:async()=>{throw new Error('unexpected');},validateAttachments:()=>{}});
+      const pending=gateway.execute({op:'list',verifiedActor:actor,args:{projectId:'one'}});
+      if(variant==='late') await assert.rejects(pending,error=>error.code==='project_feedback_authority_invalid');
+      else assert.deepEqual((await pending).tickets,[]);
+      await new Promise(resolve=>setTimeout(resolve,40));gateway.close();
+      assert.equal(reads,variant==='late'?0:1);
+    }
+    console.log('ignored-native-callbacks-safe');
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 10000, maxBuffer: 8192 });
+  assert.equal(child.status, 0); assert.equal(child.error, undefined);
+  assert.equal(child.stdout.trim(), 'ignored-native-callbacks-safe');
 });

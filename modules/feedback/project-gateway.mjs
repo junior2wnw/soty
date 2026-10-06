@@ -154,7 +154,14 @@ export function createProjectFeedbackGateway({ sourceId, captureVerifiedActor, w
         check(active && !closed, 'project_feedback_authority_invalid', 500);
         check(actor && typeof actor === 'object' && Object.isFrozen(actor), 'project_feedback_authentication_required', 401);
         const callback = context => {
-          if (!active || entered) { poisoned = true; return Promise.reject(new ProjectFeedbackError('project_feedback_authority_invalid', 500)); }
+          if (!active || entered) {
+            poisoned = true;
+            const rejected = Promise.reject(new ProjectFeedbackError('project_feedback_authority_invalid', 500));
+            // A native timer may ignore its return. Preserve rejection for a
+            // proper caller without crashing the Source on ignored late work.
+            rejected.catch(() => {});
+            return rejected;
+          }
           entered = true;
           callbackCompletion = (async () => {
             check(context && typeof context === 'object' && Object.isFrozen(context) && context.projectId === args.projectId
