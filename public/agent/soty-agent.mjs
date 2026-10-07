@@ -40,7 +40,7 @@ var ScopedConnectorHost = (() => {
   __export(connector_host_exports, {
     createConnectorScopedFactory: () => createConnectorScopedFactory
   });
-  var import_node_crypto4 = __require("node:crypto");
+  var import_node_crypto5 = __require("node:crypto");
 
   // modules/apps/scoped-embed/source-proof.mjs
   var import_node_crypto2 = __require("node:crypto");
@@ -360,7 +360,7 @@ var ScopedConnectorHost = (() => {
   }
 
   // modules/apps/scoped-embed/resource-proof.mjs
-  var import_node_crypto3 = __require("node:crypto");
+  var import_node_crypto4 = __require("node:crypto");
 
   // modules/apps/scoped-embed/resource-profile.mjs
   var SELECTED_RESOURCE_PROFILE = "soty.selected-human-embed.v2";
@@ -433,9 +433,64 @@ var ScopedConnectorHost = (() => {
     callMs: 8e3
   });
 
+  // modules/source-app/server/wire.mjs
+  var import_node_crypto3 = __require("node:crypto");
+  function canonical2(input) {
+    if (Array.isArray(input)) return "[" + input.map(canonical2).join(",") + "]";
+    if (input && typeof input === "object") return "{" + Object.keys(input).sort().map((key) => JSON.stringify(key) + ":" + canonical2(input[key])).join(",") + "}";
+    return JSON.stringify(input);
+  }
+  var digest = (value) => (0, import_node_crypto3.createHash)("sha256").update(typeof value === "string" ? value : canonical2(value)).digest("hex");
+  var deepFreeze = (value) => {
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(deepFreeze);
+      Object.freeze(value);
+    }
+    return value;
+  };
+
+  // modules/source-app/server/standard-profile.mjs
+  var rule = (kind, methods, path, requestBytes, responseBytes, queries = []) => ({ kind, methods, path, requestBytes, responseBytes, queries });
+  var STANDARD_SOURCE_CONTRACT = deepFreeze({
+    schema: "soty.source-route-adapter.v1",
+    kind: "soty.resource.v1",
+    auth: {
+      schema: "soty.source-embed-auth.v1",
+      cookies: ["soty_rp_session", "soty_rp_intent", "soty_rp_link"],
+      basicSeconds: 300,
+      finiteSeconds: 86400,
+      proof: "maintained-native-rp-current-userinfo",
+      nativeConsent: "selected-current-native-acl",
+      nativeHandoffPath: "/soty/connect",
+      nativeCallbackPath: "/soty/callback",
+      feedbackPermission: "explicit-current-native-report"
+    },
+    rules: [
+      rule("public-ui", ["GET", "HEAD"], "/embed", 0, 4194304),
+      rule("auth-start", ["GET", "POST"], "/api/embed/login", 16384, 65536),
+      rule("auth-read", ["GET"], "/api/embed/session-status", 0, 65536),
+      rule("auth-continue", ["POST"], "/api/embed/session-continue", 16384, 65536),
+      rule("auth-callback", ["GET"], "/api/embed/callback", 0, 65536, ["code", "state", "iss", "error", "error_description"]),
+      rule("auth-completion", ["GET"], "/api/embed/complete-link", 0, 65536, ["intent"]),
+      rule("read", ["GET"], "/api/embed/context", 0, 65536),
+      rule("read", ["POST"], "/api/embed/query", 65536, 65536),
+      rule("write", ["POST"], "/api/embed/invoke", 65536, 65536),
+      rule("read", ["POST"], "/api/embed/receipt", 16384, 65536),
+      rule("feedback-read", ["GET"], "/api/embed/feedback/context", 0, 65536),
+      rule("feedback-read", ["GET"], "/api/embed/feedback", 0, 65536, ["limit", "cursor"]),
+      rule("feedback-write", ["POST"], "/api/embed/feedback", 15e5, 262144),
+      rule("feedback-read", ["GET"], "/api/embed/feedback/ticket", 0, 15e5, ["ticketId"]),
+      rule("feedback-write", ["POST"], "/api/embed/feedback/reply", 32768, 262144),
+      rule("feedback-write", ["POST"], "/api/embed/feedback/status", 32768, 262144),
+      rule("feedback-write", ["POST"], "/api/embed/feedback/accept", 32768, 262144)
+    ],
+    assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4194304 }
+  });
+  var STANDARD_SELECTED_SOURCE = deepFreeze({ id: "soty.standard-resource", version: 1, digest: digest(STANDARD_SOURCE_CONTRACT) });
+
   // modules/apps/scoped-embed/resource-route-adapters.mjs
   var MiB = 1048576;
-  var rule = (kind, methods, path, requestBytes, responseBytes, queries = []) => Object.freeze({ kind, methods: Object.freeze(methods), path, requestBytes, responseBytes, queries: Object.freeze(queries) });
+  var rule2 = (kind, methods, path, requestBytes, responseBytes, queries = []) => Object.freeze({ kind, methods: Object.freeze(methods), path, requestBytes, responseBytes, queries: Object.freeze(queries) });
   var hiveContract = capture({
     schema: "soty.source-route-adapter.v1",
     kind: "hive.project.v1",
@@ -451,27 +506,27 @@ var ScopedConnectorHost = (() => {
       feedbackPermission: "explicit-current-native-report"
     },
     rules: [
-      rule("public-ui", ["GET", "HEAD"], "/embed", 0, 4 * MiB),
-      rule("auth-start", ["GET", "POST"], "/api/embed/login", 16384, 65536),
-      rule("auth-read", ["GET"], "/api/embed/session-status", 0, 65536),
-      rule("auth-continue", ["POST"], "/api/embed/session-continue", 16384, 65536),
-      rule("auth-callback", ["GET"], "/api/embed/callback", 0, 65536, ["code", "state", "iss", "error", "error_description"]),
-      rule("auth-completion", ["GET"], "/api/embed/complete-link", 0, 65536, ["intent"]),
-      rule("read", ["GET"], "/api/embed/context", 0, 65536),
-      rule("read", ["GET"], "/api/embed/project", 0, 4 * MiB),
-      rule("write", ["PUT"], "/api/embed/project", MiB, 4 * MiB),
-      rule("write", ["POST"], "/api/embed/operations", MiB, 4 * MiB),
-      rule("read", ["GET"], "/api/embed/changes", 0, MiB, ["after", "limit"]),
-      rule("read", ["GET"], "/api/embed/live", 0, 65536, ["clientId"]),
-      rule("read", ["GET"], "/api/embed/presence", 0, 65536, ["clientId"]),
-      rule("presence", ["POST", "DELETE"], "/api/embed/presence", 16384, 65536),
-      rule("feedback-read", ["GET"], "/api/embed/feedback/context", 0, 65536),
-      rule("feedback-read", ["GET"], "/api/embed/feedback", 0, 65536, ["limit", "cursor"]),
-      rule("feedback-write", ["POST"], "/api/embed/feedback", 15e5, 262144),
-      rule("feedback-read", ["GET"], "/api/embed/feedback/ticket", 0, 2 * MiB, ["ticketId"]),
-      rule("feedback-write", ["POST"], "/api/embed/feedback/reply", 32768, 262144),
-      rule("feedback-write", ["POST"], "/api/embed/feedback/status", 32768, 262144),
-      rule("feedback-write", ["POST"], "/api/embed/feedback/accept", 32768, 262144)
+      rule2("public-ui", ["GET", "HEAD"], "/embed", 0, 4 * MiB),
+      rule2("auth-start", ["GET", "POST"], "/api/embed/login", 16384, 65536),
+      rule2("auth-read", ["GET"], "/api/embed/session-status", 0, 65536),
+      rule2("auth-continue", ["POST"], "/api/embed/session-continue", 16384, 65536),
+      rule2("auth-callback", ["GET"], "/api/embed/callback", 0, 65536, ["code", "state", "iss", "error", "error_description"]),
+      rule2("auth-completion", ["GET"], "/api/embed/complete-link", 0, 65536, ["intent"]),
+      rule2("read", ["GET"], "/api/embed/context", 0, 65536),
+      rule2("read", ["GET"], "/api/embed/project", 0, 4 * MiB),
+      rule2("write", ["PUT"], "/api/embed/project", MiB, 4 * MiB),
+      rule2("write", ["POST"], "/api/embed/operations", MiB, 4 * MiB),
+      rule2("read", ["GET"], "/api/embed/changes", 0, MiB, ["after", "limit"]),
+      rule2("read", ["GET"], "/api/embed/live", 0, 65536, ["clientId"]),
+      rule2("read", ["GET"], "/api/embed/presence", 0, 65536, ["clientId"]),
+      rule2("presence", ["POST", "DELETE"], "/api/embed/presence", 16384, 65536),
+      rule2("feedback-read", ["GET"], "/api/embed/feedback/context", 0, 65536),
+      rule2("feedback-read", ["GET"], "/api/embed/feedback", 0, 65536, ["limit", "cursor"]),
+      rule2("feedback-write", ["POST"], "/api/embed/feedback", 15e5, 262144),
+      rule2("feedback-read", ["GET"], "/api/embed/feedback/ticket", 0, 2 * MiB, ["ticketId"]),
+      rule2("feedback-write", ["POST"], "/api/embed/feedback/reply", 32768, 262144),
+      rule2("feedback-write", ["POST"], "/api/embed/feedback/status", 32768, 262144),
+      rule2("feedback-write", ["POST"], "/api/embed/feedback/accept", 32768, 262144)
     ],
     assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4 * MiB }
   });
@@ -491,6 +546,10 @@ var ScopedConnectorHost = (() => {
   var hive = Object.freeze({ pin: HIVE_SELECTED_KERNEL_SOURCE, kind: hiveContract.kind, contract: hiveContract });
   var editor = Object.freeze({ pin: HIVE_SELECTED_SOURCE, kind: editorContract.kind, contract: editorContract });
   var adapters = new Map([hive, editor].map((adapter) => [adapter.pin.id + ":" + adapter.pin.version + ":" + adapter.pin.digest, adapter]));
+  adapters.set(
+    STANDARD_SELECTED_SOURCE.id + ":1:" + STANDARD_SELECTED_SOURCE.digest,
+    Object.freeze({ pin: STANDARD_SELECTED_SOURCE, kind: STANDARD_SOURCE_CONTRACT.kind, contract: STANDARD_SOURCE_CONTRACT })
+  );
   function selectedRouteAdapter(input) {
     const profile = selectedResourceProfile(input);
     const pin2 = profile.sourceProfile, adapter = adapters.get(pin2.id + ":" + pin2.version + ":" + pin2.digest);
@@ -537,7 +596,7 @@ var ScopedConnectorHost = (() => {
   var RESOURCE_PROOF_HEADER = "x-soty-selected-proof";
   var RESOURCE_MAC_HEADER = "x-soty-selected-mac";
   var opaque = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
-  var mac2 = (key, value) => (0, import_node_crypto3.createHmac)("sha256", key).update(value).digest("base64url");
+  var mac2 = (key, value) => (0, import_node_crypto4.createHmac)("sha256", key).update(value).digest("base64url");
   function hostKey2(key) {
     need(Buffer.isBuffer(key) && key.length === 32, "scoped_embed_key_required");
     return Buffer.from(key);
@@ -600,7 +659,7 @@ var ScopedConnectorHost = (() => {
           path,
           bodyDigest: hash(bytes.toString("base64")),
           cookieDigest: hash(cookie),
-          nonce: (0, import_node_crypto3.randomBytes)(32).toString("base64url"),
+          nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
           expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs)
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
@@ -611,7 +670,7 @@ var ScopedConnectorHost = (() => {
         const proof = {
           schema: "soty.selected-source-probe.v2",
           profileDigest: profile.digest,
-          nonce: (0, import_node_crypto3.randomBytes)(32).toString("base64url"),
+          nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
           expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
@@ -620,7 +679,7 @@ var ScopedConnectorHost = (() => {
       verifyReady(response, expected) {
         const text = response.headers.get("x-soty-selected-ready"), signature = response.headers.get(RESOURCE_MAC_HEADER);
         need(opaque(signature) && typeof text === "string" && text.length <= 2048, "scoped_embed_probe_invalid", 503);
-        need((0, import_node_crypto3.timingSafeEqual)(Buffer.from(signature), Buffer.from(mac2(secret2, "ready\0" + text))), "scoped_embed_probe_invalid", 503);
+        need((0, import_node_crypto4.timingSafeEqual)(Buffer.from(signature), Buffer.from(mac2(secret2, "ready\0" + text))), "scoped_embed_probe_invalid", 503);
         let value;
         try {
           value = capture(JSON.parse(Buffer.from(text, "base64url").toString("utf8")));
@@ -1163,9 +1222,9 @@ var ScopedConnectorHost = (() => {
   }
 
   // modules/apps/scoped-embed/connector-host.mjs
-  var mac3 = (key, text) => (0, import_node_crypto4.createHmac)("sha256", key).update(text).digest("base64url");
+  var mac3 = (key, text) => (0, import_node_crypto5.createHmac)("sha256", key).update(text).digest("base64url");
   var secret = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
-  var equal = (a, b) => typeof a === "string" && typeof b === "string" && a.length === b.length && (0, import_node_crypto4.timingSafeEqual)(Buffer.from(a), Buffer.from(b));
+  var equal = (a, b) => typeof a === "string" && typeof b === "string" && a.length === b.length && (0, import_node_crypto5.timingSafeEqual)(Buffer.from(a), Buffer.from(b));
   function createConnectorScopedFactory({ entries = [], clock = Date.now } = {}) {
     need(Array.isArray(entries) && entries.length <= 64);
     const approved = /* @__PURE__ */ new Map(), brokers = /* @__PURE__ */ new Map(), ipcNonces = /* @__PURE__ */ new Map();
@@ -3473,7 +3532,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.5";
+const connectorVersion = "1.4.6";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

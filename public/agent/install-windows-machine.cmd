@@ -1,8 +1,8 @@
 @echo off
-rem soty-agent-machine-bootstrap:1.4.5
+rem soty-agent-machine-bootstrap:1.4.6
 setlocal
 set "BASE=https://4-2.xn--p1ai/agent"
-set "INSTALLER_REVISION=1.4.5"
+set "INSTALLER_REVISION=1.4.6"
 if not defined SOTY_CONNECTOR_LINK_ID set "SOTY_CONNECTOR_LINK_ID="
 if not defined SOTY_CONNECTOR_DEVICE_ID set "SOTY_CONNECTOR_DEVICE_ID="
 if not defined SOTY_CONNECTOR_DEVICE_NICK set "SOTY_CONNECTOR_DEVICE_NICK="
