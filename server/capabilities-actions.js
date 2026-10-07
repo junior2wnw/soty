@@ -4,6 +4,8 @@ import { NotesError } from '../modules/notes/server/validation.mjs';
 import { ConnectError } from '../modules/connect/server/index.mjs';
 import { validateDiscoveryOrigin } from './capabilities-discovery.js';
 import { CapabilityHttpError, createNativeIngress, parseDelegationJson, singleHeader } from './capabilities-ingress.js';
+import { discardRejectedRequest } from './capabilities-rejection-drain.js';
+import { isHttpSocketClosing, markHttpSocketClosing } from './http-closing-socket.mjs';
 import { CAPABILITIES_BASE as BASE, NOTES_DRAFT_PATH as CREATE, INVOCATIONS_PATH as HISTORY,
   INVOCATION_ID_PATTERN, NATIVE_NOTE_ID_PATTERN, SERVICE_DELEGATION_PATH, SERVICE_DELEGATION_BODY_BYTES } from './capabilities-http-contract.js';
 
@@ -245,11 +247,14 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
     } catch (error) {
       res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       const safe = errorResponse(error);
-      if (!req.complete || !req.readableEnded) {
-        // Discard unread bytes without buffering while the small rejection is
-        // flushed. Leaving IncomingMessage paused can reset the TCP connection
-        // before a sender receives its structured 413 on an oversized request.
-        req.resume(); res.shouldKeepAlive = false; res.set('Connection', 'close');
+      if (!req.complete || !req.readableEnded || isHttpSocketClosing(req.socket)) {
+        markHttpSocketClosing(req.socket); res.shouldKeepAlive = false; res.set('Connection', 'close');
+        if (safe.status === 413) {
+          // A Writable finish cannot prove delivery while a bulk upload remains
+          // unread. Only a bounded completed discard allows the small rejection.
+          const discarded = await discardRejectedRequest(req);
+          if (!discarded.complete) { res.destroy(); req.destroy(); return; }
+        } else req.resume(); // Preserve immediate authority/header rejection.
       }
       if (safe.status === 401) res.set('WWW-Authenticate', `Bearer realm="soty"${resourceMetadata ? `, resource_metadata="${resourceMetadata}"` : ''}`);
       if (safe.retry && route?.kind !== 'derive') res.set('Retry-After', String(safe.retry));

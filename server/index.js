@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { fenceClosingUpgrade } from './http-closing-socket.mjs';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -48,6 +49,7 @@ if (operatorFlag === '1') {
 attachRealtime(wss, store);
 
 server.on("upgrade", (request, socket, head) => {
+  if (fenceClosingUpgrade(request, socket)) return;
   if (!hasSingleHostHeader(request)) {
     socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     return;

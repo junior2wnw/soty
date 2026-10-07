@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { markHttpSocketClosing } from './http-closing-socket.mjs';
 
 export class CapabilityHttpError extends Error {
   constructor(code) { super(code); this.name = 'CapabilityHttpError'; this.code = code; }
@@ -126,7 +127,12 @@ export function createNativeIngress({ limits = {} } = {}) {
           bodyBytes = Math.min(maximumBytes, bounds.bodyBytes);
           nativeBodyHeaders(req, bodyBytes);
         }
-        catch (error) { release(); throw error; }
+        catch (error) {
+          // Synchronous fence precedes Promise rejection and another parser
+          // request/upgrade from the same buffered TCP input.
+          if (error instanceof CapabilityHttpError && error.code === 'payload_too_large') markHttpSocketClosing(req.socket);
+          release(); throw error;
+        }
         return new Promise((resolve, reject) => {
           let settled = false, bytes = 0;
           // One byte-bounded allocation also bounds object overhead when a
@@ -141,6 +147,7 @@ export function createNativeIngress({ limits = {} } = {}) {
             if (settled) return;
             settled = true; cleanup(); release();
             if (error) {
+              if (error instanceof CapabilityHttpError && error.code === 'payload_too_large') markHttpSocketClosing(req.socket);
               buffer = null; req.pause();
               // An aborted IncomingMessage can emit its terminal error after
               // the aborted event; consume that event without processing data.

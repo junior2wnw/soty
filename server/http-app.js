@@ -32,6 +32,7 @@ import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
+import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -79,6 +80,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const localConnectorOrigin = `http://127.0.0.1:${safeConnectorPort}`;
   app.disable("x-powered-by");
   if (process.env.SOTY_TRUST_PROXY) app.set('trust proxy', process.env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
+  app.use(fenceClosingHttpSocket);
   app.use((req, res, next) => {
     if (!hasSingleHostHeader(req)) { res.status(400).set('Cache-Control', 'no-store').end(); return; }
     if (app.locals.appsService?.handleRequest(req, res)) return;
