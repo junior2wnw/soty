@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { ConnectorPersistence, metadata } from "./connector-persistence.js";
+import { ConnectorPersistence, metadata, connectorStoreClosed } from "./connector-persistence.js";
 import path from "node:path";
 import { statSync } from "node:fs";
 import { EventEmitter } from "node:events";
@@ -55,13 +55,20 @@ class ConnectorStore {
 
   maintenance() { try { statSync(this.maintenancePath); return true; } catch(error) { if(error.code === "ENOENT") return false; throw error; } }
 
-  async close() {
-    await this.writeQueue.catch(() => undefined);
-    await this.persistence.close();
+  close() {
+    if (this.closePromise) return this.closePromise;
+    this.closing = true;
+    this.closePromise = (async () => {
+      await this.writeQueue.catch(() => undefined);
+      await this.persistence.close();
+    })();
+    return this.closePromise;
   }
 
   async readable() {
+    if (this.closing) throw connectorStoreClosed();
     await this.ready;
+    if (this.closing) throw connectorStoreClosed();
     if (this.persistence.failed || this.failed) throw this.persistence.failed || this.failed;
   }
 
@@ -676,8 +683,12 @@ class ConnectorStore {
   }
 
   async mutate(callback) {
+    if (this.closing) throw connectorStoreClosed();
     const run = this.writeQueue.then(async () => {
-      await this.readable();
+      // This write was admitted before close began. Drain it, while public
+      // readers and new writes are already refused by the closing fence.
+      await this.ready;
+      if (this.persistence.failed || this.failed) throw this.persistence.failed || this.failed;
       const committed = this.state;
       const draft = {
         ...committed,

@@ -136,6 +136,10 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
 function route(handler) {
   return (req, res) => {
     Promise.resolve(handler(req, res)).catch((error) => {
+      if (error?.code === "STORE_CLOSED") {
+        respond(res, { ok: false, error: "connector-storage-unavailable" }, 503);
+        return;
+      }
       console.error("[soty] Connector API request failed", error);
       respond(res, { ok: false, error: "connector-internal-error" }, 500);
     });

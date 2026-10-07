@@ -35,7 +35,12 @@ export class ConnectorPersistence {
   }
 
   call(action, value) {
+    if (this.closing) return Promise.reject(connectorStoreClosed());
     if (this.failed) return Promise.reject(this.failed);
+    return this.#enqueue(action, value);
+  }
+
+  #enqueue(action, value) {
     this.worker.ref();
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
@@ -44,10 +49,24 @@ export class ConnectorPersistence {
     });
   }
 
-  async close() {
-    if (!this.failed) await this.call("close");
-    await this.worker.terminate();
+  close() {
+    if (this.closePromise) return this.closePromise;
+    // Close admission synchronously, before queuing the final worker message.
+    // Already posted work drains in order; no late caller reaches a closed DB.
+    this.closing = true;
+    this.closePromise = (async () => {
+      try {
+        if (!this.failed) await this.#enqueue("close");
+      } finally {
+        await this.worker.terminate();
+      }
+    })();
+    return this.closePromise;
   }
+}
+
+export function connectorStoreClosed() {
+  return Object.assign(new Error("Connector store is closed"), { code: "STORE_CLOSED" });
 }
 
 function workerModuleArguments(args) {
