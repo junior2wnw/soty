@@ -32,6 +32,8 @@ Derived Source image использует pinned whole-green Root8fd исклю�
 
 ## Данные и откат
 
+Новая отдельная startup delta перед `serve` проверяет actual encrypted Source state **read-only**: известные Interaction/Session/NativeLoginProof/ProcessorGrant/ProcessorReceipt columns, Native realm/meta, единый configured KeyId и реальный AES-GCM/AAD decoder. По одному bounded ciphertext на модель доказывает соответствие ключа; это не полный integrity scan и не permission. Wrong shaped32-byte key отказывает до создания listener. При0 encrypted rows explicit empty bootstrap остаётся разрешён, статус `keyCorrectness:unproved_empty`. Нет DDL, healing, новых Native grants или сети внутри probe. Старый образ e8d/407 этих новых проверок не получает задним числом.
+
 ДоimageSTART нужен независимый Reader3. Старый Reader2 отвергает Native3 BEFORESTART; готовая compatible Reader3 baseline нужна до3write. При неподдерживаемом schema/key/Native grant Source отказывает, не открывает legacy bypass. Current/compatible Source image/cold должны сохранить все Native IDs/receipts/FKs/encrypted session bytes и private config/key equality.
 
 Backup полного stopped Source volume/config/secrets только encrypted. Для Root-managed Docker volume уже существует guarded `deploy/connect/backup.mjs` +independent restore/sink: actual STOP/no other RW mounts/offline metadata/RSA3072-AES-GCM/tar bounds. Source packet physical-cold fixture ещё отдельный review/RUN; local temp/restart не считается power-loss/physical-volume acceptance. Restore старого Basic/Root ref не создаёт разрешений: нужен новый явный вход с current Native authority.

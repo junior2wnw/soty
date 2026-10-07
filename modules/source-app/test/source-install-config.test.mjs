@@ -86,3 +86,12 @@ test('exclusive Source installation cannot overwrite an existing resource when t
   assert.equal(app.store.db.prepare('SELECT count(*) n FROM native_resources').get().n,1);
   assert.equal(app.store.db.prepare('SELECT count(*) n FROM native_principals').get().n,0);
 });
+test('wrong shaped32-byte key for retained Source ciphertext fails actual installed startup before listener',async t=>{
+  const f=await fixture(t),h=await loadSourceOperatorConfiguration(f.path);f.cleanup(()=>disposeSourceOperatorConfiguration(h));await initializeInstalledSource(h);
+  await withSourceOperatorConfiguration(h,async options=>{const store=createOrdinaryAppStore({databasePath:options.databasePath,realmId:options.realmId,key:options.cipherKey,keyId:options.keyId});
+    try{await store.storage.createInteraction({idHash:'synthetic-retained-startup',revision:1,phase:'pending',expiresAt:Date.now()+10000,synthetic:true});store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');}finally{store.close();}});
+  await writeFile(join(f.directory,'secrets','cipher.key'),randomBytes(32).toString('base64url')+'\n',{mode:0o600});
+  const bad=await loadSourceOperatorConfiguration(f.path);f.cleanup(()=>disposeSourceOperatorConfiguration(bad));
+  await assert.rejects(startInstalledSource(bad),error=>error.code==='source_install_key_probe_denied');
+  await assert.rejects(new Promise((resolve,reject)=>{const r=httpRequest({hostname:'127.0.0.1',port:f.config.listener.port,path:'/embed',agent:false,signal:AbortSignal.timeout(1000)},res=>{res.resume();resolve(res.statusCode);});r.on('error',reject);r.end();}));
+});

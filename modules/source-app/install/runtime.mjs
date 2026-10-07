@@ -4,6 +4,7 @@ import {createOrdinaryAppStore} from '../examples/ordinary-app/store.mjs';
 import {createOrdinaryAppServer} from '../examples/ordinary-app/index.mjs';
 import {readOrdinaryFormat3} from '../examples/ordinary-app/reader3.mjs';
 import {withSourceOperatorConfiguration} from './config.mjs';
+import {probeInstalledSourceKey} from './key-probe.mjs';
 
 async function directory(path){const stat=await lstat(path);check(stat.isDirectory()&&!stat.isSymbolicLink()&&await realpath(path)===path
   &&(process.platform!=='linux'||stat.uid===process.getuid()&&(stat.mode&0o777)===0o700),'source_install_data_denied',503);}
@@ -21,8 +22,9 @@ export async function initializeInstalledSource(handle){return withSourceOperato
 });}
 export async function startInstalledSource(handle){return withSourceOperatorConfiguration(handle,async(options,cfg)=>{
   await directory(cfg.storage.directory);readOrdinaryFormat3(options.databasePath,options.realmId);
+  probeInstalledSourceKey({databasePath:options.databasePath,realmId:options.realmId,keyId:options.keyId,cipherKey:options.cipherKey});
   const app=await createOrdinaryAppServer({...options,initialize:false});
   try{await app.listen();return app;}catch(error){await app.close();throw error;}
 });}
 export function inspectInstalledSource(handle){return withSourceOperatorConfiguration(handle,options=>({schema:'soty.source-reader-status.v1',
-  reader:readOrdinaryFormat3(options.databasePath,options.realmId),readyToStart:true,connected:false}));}
+  reader:readOrdinaryFormat3(options.databasePath,options.realmId),keyProbe:probeInstalledSourceKey({databasePath:options.databasePath,realmId:options.realmId,keyId:options.keyId,cipherKey:options.cipherKey}),readyToStart:true,connected:false}));}
