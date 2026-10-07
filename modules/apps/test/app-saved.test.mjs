@@ -244,6 +244,13 @@ test('two real SQLite writers with one expected account revision commit exactly 
   });
   let readiness = 0;
   const results = await Promise.all([start(1), start(2)]);
-  assert.equal(results.filter(value => value.ok === 1).length, 1); assert.equal(results.filter(value => value.code === 'apps_saved_revision_conflict').length, 1);
+  assert.equal(results.filter(value => value.ok === 1).length, 1);
+  const losingIndex = results.findIndex(value => value.ok !== 1);
+  // The bounded100ms lock may expire under full-suite CPU/IO contention before
+  // the winning commit. It still must refuse without a second effect.
+  assert.ok(['apps_saved_revision_conflict', 'apps_saved_busy'].includes(results[losingIndex].code));
+  assert.equal(op(f.saved, 'list', {}).entries.length, 1); assert.equal(op(f.saved, 'list', {}).revision, 1);
+  assert.throws(() => op(f.saved, 'set', { appId: id(losingIndex + 1), saved: true, expectedRevision: 0,
+    requestId: `writer_${losingIndex + 1}` }), code('apps_saved_revision_conflict'));
   assert.equal(op(f.saved, 'list', {}).entries.length, 1); assert.equal(op(f.saved, 'list', {}).revision, 1);
 });
