@@ -270,11 +270,16 @@ for (const store of Object.keys(stores)) test(`${store}: cold committed WAL afte
   const root = await directory(t); await mkdir(path.join(root, store));
   const module = new URL(`./${store}-v1.fixture.mjs`, import.meta.url).href;
   const create = store === 'notes' ? 'createHistoricalNotesV1' : 'createHistoricalCapabilitiesV1';
+  // The historical Notes fixture has no transaction of its own. Commit its
+  // schema and seed together; keep the real FULL WAL and unchanged ready bound.
+  const initialize = store === 'notes'
+    ? "db.exec('BEGIN IMMEDIATE'); create(db); seed(db); db.exec('COMMIT');"
+    : "create(db); db.exec('BEGIN IMMEDIATE'); seed(db); db.exec('COMMIT');";
   const script = `import { DatabaseSync } from 'node:sqlite'; import { createHash } from 'node:crypto';
     import { ${create} as create } from ${JSON.stringify(module)};
     const hash=${hash.toString()}, put=${put.toString()}, seed=${store === 'notes' ? seedNotes.toString() : seedCapabilities.toString()};
     const db=new DatabaseSync(process.argv[1]); db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA synchronous=FULL');
-    create(db); db.exec('BEGIN IMMEDIATE'); seed(db); db.exec('COMMIT');
+    ${initialize}
     process.stdout.write('ready\\n'); setInterval(()=>{},1000);`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script, file(root, store)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const exited = once(child, 'exit');
