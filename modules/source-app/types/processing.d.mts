@@ -7,7 +7,7 @@ export interface ProcessingIntent {readonly args:{readonly requestId:string;read
 export function createFeedbackProcessorEngine(options:{ref:ProcessingPin;purposes:('asr'|'ocr'|'triage')[];localOnly:true;synthetic:boolean;process:(input:unknown)=>Promise<unknown>}):ProcessingEngine;
 export function createFeedbackJobEnforcer(options:{engine:ProcessingEngine;platform:'linux';maxBudget:ProcessingBudget;syntheticTestOnly:boolean;
   assertHostBounds?:(input:{engineRef:ProcessingPin;budget:ProcessingBudget})=>boolean;
-  execute:(options:{engine:ProcessingEngine;input:unknown;purpose:'asr'|'ocr'|'triage';budget:ProcessingBudget;signal:AbortSignal})=>Promise<unknown>}):ProcessingEnforcer;
+  execute:(options:{engine:ProcessingEngine;input:unknown;purpose:'asr'|'ocr'|'triage';budget:ProcessingBudget;signal:AbortSignal;/** Host-only fresh Root/RP/Native check outside SQL before fixed OS START. */beforeStart:()=>Promise<void>})=>Promise<unknown>}):ProcessingEnforcer;
 export function feedbackProcessingPolicy(input:ProcessingPolicy):Readonly<ProcessingPolicy>;
 export const FEEDBACK_JOB_LIMITS:Readonly<ProcessingBudget&{grantSeconds:900}>;
 export function createSourceFeedbackProcessingClient(options?:{fetch?:typeof fetch}):{

@@ -169,12 +169,24 @@ export function createOrdinaryFeedbackJobs({store,resourceId,incarnationId,polic
       if(claimed.prior)return{outcome:'committed',replayed:true,result:claimed.prior};
       const controller=new AbortController(),onAbort=()=>controller.abort();signal?.addEventListener('abort',onAbort,{once:true});running.set(jobId,controller);
       const timer=setTimeout(()=>controller.abort(),claimed.payload.request.budget.wallMs);
+      // Cross-process Native revoke is a fresh SQL poll, not a RAM map event.
+      // Target interval 250ms, not an instant distributed-revocation promise.
+      const monitor=setInterval(()=>{
+        if(controller.signal.aborted)return;
+        try{store.tx(()=>{const current=currentGrant(jobId,proof);check(current.job.state==='started'&&current.job.claim_hash===claimed.claimHash,'ordinary_feedback_job_outcome_unknown',503);});}
+        catch{controller.abort();}
+      },250);
       try{
         // Recheck after SQL claim and immediately before the trusted executor.
         // This port has no async work/network inside the Native transaction.
         assertFeedbackHostBounds(enforcer,claimed.payload.request.budget);
         const raw=await executor.execute({engine:registry.get(digest(claimed.payload.engineRef)),input:claimed.input,
-          purpose:claimed.payload.request.purpose,budget:claimed.payload.request.budget,signal:controller.signal});
+          purpose:claimed.payload.request.purpose,budget:claimed.payload.request.budget,signal:controller.signal,
+          async beforeStart(){
+            const latest=await currentProof(row.source_session_hash),current=feedbackJobAuthority(latest);await current.assertCurrent();
+            store.tx(()=>current.withCurrent(()=>{const value=currentGrant(jobId,latest,true);
+              check(value.job.state==='started'&&value.job.claim_hash===claimed.claimHash&&!controller.signal.aborted,'ordinary_feedback_job_outcome_unknown',503);}));
+          }});
         check(!controller.signal.aborted,'ordinary_feedback_cancelled',409);
         const output=feedbackProcessorOutput(raw,claimed.payload.request.purpose,claimed.payload.request.budget);
         await beforeFinal?.(jobId);
@@ -196,7 +208,7 @@ export function createOrdinaryFeedbackJobs({store,resourceId,incarnationId,polic
         // and never taken over; a closed DB is not a reason to rerun apply.
         try{markUnknown(jobId,claimed.claimHash);}catch{}
         throw Object.assign(new Error('ordinary_feedback_job_outcome_unknown'),{code:'ordinary_feedback_job_outcome_unknown',status:503});
-      }finally{clearTimeout(timer);signal?.removeEventListener('abort',onAbort);running.delete(jobId);}
+      }finally{clearTimeout(timer);clearInterval(monitor);signal?.removeEventListener('abort',onAbort);running.delete(jobId);}
     },
     close(){for(const controller of running.values())controller.abort();},
   });

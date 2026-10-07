@@ -44,7 +44,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   const hostFile=join(runtimeDir,'selected-hosts.json');
   await writeFile(join(runtimeDir,'connector-config.json'),JSON.stringify({workspaceRoot:runtimeDir,allowedRoots:[runtimeDir],installId:'ordinary_fixture'}));
   async function stopChild(){if(!child)return;const current=child;child=null;if(current.exitCode===null){current.kill('SIGTERM');await Promise.race([new Promise(done=>current.once('exit',done)),pause(2500)]);if(current.exitCode===null)current.kill('SIGKILL');}}
-  function startChild(selected){child=spawn(process.execPath,[fileURLToPath(new URL('../../../../public/agent/soty-connector.mjs',import.meta.url)),'--port',String(connectorPort),'--scope','Dev'],{
+  function startChild(selected){child=spawn(process.execPath,[options.connectorScript??fileURLToPath(new URL('../../../../public/agent/soty-connector.mjs',import.meta.url)),'--port',String(connectorPort),'--scope','Dev'],{
     cwd:runtimeDir,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{PATH:[dirname(process.execPath),process.env.SystemRoot?join(process.env.SystemRoot,'System32'):'/usr/bin','/bin'].join(process.platform==='win32'?';':':'),
       ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),TEMP:directory,TMP:directory,USERPROFILE:directory,APPDATA:join(directory,'appdata'),LOCALAPPDATA:join(directory,'localappdata'),
       SOTY_CONNECTOR_DATA_DIR:runtimeDir,SOTY_CONNECTOR_SERVER_URL:origin,SOTY_CONNECTOR_LINK_ID:'ordinary_installed_link_123456789012',SOTY_CONNECTOR_DEVICE_ID:'ordinary_host',

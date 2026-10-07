@@ -135,6 +135,25 @@ test('two real OS Source processes share Native SQL claim exactly once; process 
   await assert.rejects(f.runner({execute:async()=>{throw new Error('must not restart');}}).process(next),error=>error.code==='ordinary_feedback_job_outcome_unknown');
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM native_processor_receipts').get().n,1);
 });
+test('a second OS Native writer revoke is observed by fresh SQL monitor; same executor Abort precedes wall and cannot commit/restart',async t=>{
+  const f=await fixture(t);await f.invoke('reporter',f.consent);const jobId=(await f.invoke('owner',f.grant)).data.jobId;
+  let entered,aborted=false;const started=new Promise(resolve=>{entered=resolve;});
+  const runner=f.runner({execute:({signal})=>new Promise((_resolve,reject)=>{entered();signal.addEventListener('abort',()=>{aborted=true;reject(new Error('Native revoke'));},{once:true});})});
+  const pending=runner.process(jobId),rejected=assert.rejects(pending,error=>error.code==='ordinary_feedback_job_outcome_unknown');await started;
+  const child=spawn(process.execPath,[fileURLToPath(new URL('./support/ordinary-feedback-revoke-worker.mjs',import.meta.url))],{stdio:['pipe','ignore','ignore']});
+  child.stdin.end(JSON.stringify({databasePath:f.options.databasePath,nativeSessionHash:digest(f.tokens.owner)}));
+  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(new Error('synthetic_revoke_failed')));});
+  const start=performance.now();await rejected;assert.equal(aborted,true);assert.ok(performance.now()-start<2000);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM native_processor_receipts').get().n,0);
+  assert.equal(f.store.db.prepare('SELECT state FROM native_feedback_jobs WHERE id=?').get(jobId).state,'unknown');await assert.rejects(runner.process(jobId));
+});
+test('revocation during awaited OS preparation is rechecked by private beforeStart and zero processor apply occurs',async t=>{
+  const f=await fixture(t);await f.invoke('reporter',f.consent);const jobId=(await f.invoke('owner',f.grant)).data.jobId;let applied=0;
+  const runner=f.runner({execute:async({beforeStart})=>{assert.equal(f.store.inTransaction(),false);
+    f.store.revokeNativeSession(f.tokens.owner);await beforeStart();applied++;return{kind:'transcript',text:'must not execute'};}});
+  await assert.rejects(runner.process(jobId),error=>error.code==='ordinary_feedback_job_outcome_unknown');assert.equal(applied,0);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM native_processor_receipts').get().n,0);
+});
 test('exact grant request receipt survives Source restart/lost ACK without duplicate grant/job; revoke is explicit, queued state retains receipt',async t=>{
   const f=await fixture(t);await f.invoke('reporter',f.consent);const id='same-grant-intent-0001',created=await f.invoke('owner',f.grant,id);f.restart();
   const replay=await f.invoke('owner',f.grant,id);assert.deepEqual(replay.data,created.data);assert.equal(replay.replayed,true);
