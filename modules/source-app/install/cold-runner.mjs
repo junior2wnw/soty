@@ -5,13 +5,15 @@ import {createHash,generateKeyPairSync} from 'node:crypto';
 import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {encryptBackup} from '../../../deploy/connect/backup.mjs';
-import {inspectRestorableBackup} from '../../../deploy/connect/restore-backup.mjs';
+import {createOrdinaryNativeRestorePorts} from '../../../deploy/connect/restore-backup.mjs';
 import {assertInstalledSourceImage} from './image-guard.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedback-local-placement.mjs';
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
+import {sourceColdStoppedOriginal,assertSourceColdOriginalUnchanged,sourceColdFailureCode,sourceColdNativeCheckpoint,SOURCE_COLD_NATIVE_REALM} from './cold-original.mjs';
 
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex'),check=value=>{if(!value)throw Error('source_cold_guard_refused');};
 const same=isDeepStrictEqual;
+const nativeRestore=createOrdinaryNativeRestorePorts({realmId:SOURCE_COLD_NATIVE_REALM});
 const limits={archiveBytes:16777216,plaintextBytes:16777216,fileBytes:4194304,extractedBytes:8388608,entries:64,headers:128,pathBytes:4096,pathDepth:8,externalFiles:4,externalBytes:131072,wallMs:30000,idleMs:10000};
 const owned=[];
 function command(args,input,limit=2097152){
@@ -19,7 +21,16 @@ function command(args,input,limit=2097152){
   let bytes=0,failed=false,closed=false,streamUncertain=false,timer,force;const pieces=[];
   const stop=()=>{if(closed)return;failed=true;child.kill('SIGTERM');force??=setTimeout(()=>{if(!closed)child.kill('SIGKILL');},500);};
   const done=new Promise((resolve,reject)=>{child.once('error',()=>{failed=true;stop();});child.stdout.on('data',chunk=>{bytes+=chunk.length;
-    if(bytes>limit)stop();else pieces.push(chunk);});child.once('close',code=>{closed=true;clearTimeout(timer);clearTimeout(force);code===0&&!failed?resolve(Buffer.concat(pieces)):reject(Object.assign(Error('source_cold_command_failed'),{code:streamUncertain?'source_cold_stream_unknown':'source_cold_command_failed'}));});});done.catch(()=>{});
+    if(bytes>limit)stop();else pieces.push(chunk);});child.once('close',code=>{closed=true;clearTimeout(timer);clearTimeout(force);
+    if(code===0&&!failed){resolve(Buffer.concat(pieces));return;}
+    let safeCode=streamUncertain?'source_cold_stream_unknown':'source_cold_command_failed';
+    // The fixed extraction helper may fail with its closed error receipt.
+    // Never attach its raw stdout (which other helpers use for private witness).
+    if(code===1&&!failed)try{const failure=JSON.parse(Buffer.concat(pieces).toString('utf8'));
+      if(Object.keys(failure).sort().join(',')==='code,passed,productionReady'&&failure.passed===false&&failure.productionReady===false
+        &&sourceColdFailureCode(failure)===failure.code)safeCode=failure.code;
+    }catch{}
+    reject(Object.assign(Error('source_cold_command_failed'),{code:safeCode}));});});done.catch(()=>{});
   timer=setTimeout(stop,40000);child.stdin.on('error',()=>{streamUncertain=true;stop();});try{child.stdin.end(input);}catch{streamUncertain=true;stop();}
   return{done,stop:async()=>{if(!closed)stop();await done.catch(()=>{});}};
 }
@@ -80,18 +91,20 @@ export async function runSourceCold(config){
     await noWriters(volumes[0]);await noWriters(volumes[1]);
     const seed=await create(config,'seed',volumes[0],'/data',true,['/probe/fixture.mjs','seed']);
     const before=JSON.parse((await execute(seed)).toString());check(before.schema==='soty.source-cold-witness.v1'&&before.authenticationProved===false&&before.data.reader.format===3);
+    const sourceNativeCheckpoint=sourceColdNativeCheckpoint(before);
     await writeFile(join(config.packetDirectory,'before.private.json'),JSON.stringify(before)+'\n',{flag:'wx',mode:0o600});
-    phase='archive';await noWriters(volumes[0]);
+    phase='archive';const original=sourceColdStoppedOriginal(spec(seed,await inspect(seed.id)));await noWriters(volumes[0]);
     const archive=await create(config,'archive',volumes[0],'/data',false,['--input-type=module','-e',"import{spawn}from'node:child_process';const c=spawn('tar',['-C','/data','-cf','-','.'],{stdio:['ignore','pipe','ignore']});c.stdout.pipe(process.stdout);c.on('close',n=>{process.exitCode=n;});"]);
     const tar=await execute(archive,undefined,16777216);await noWriters(volumes[0]);
+    assertSourceColdOriginalUnchanged(original,sourceColdStoppedOriginal(spec(seed,await inspect(seed.id))));
     const inventory={files:before.files.slice().sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),stores:[{id:'ordinary-native',required:true,present:true,format:'soty.ordinary-native.v3',identitySha256:before.data.nativeIdentityDigest,
       paths:before.files.filter(f=>f.type==='file').map(f=>f.path).sort()}],external:[]};
     const manifest={version:1,generationId:config.nonce,checkpointSha256:sha(JSON.stringify(before.data)),inventory};
     const witness={generationId:config.nonce,checkpointSha256:manifest.checkpointSha256,inventorySha256:sha(JSON.stringify(inventory))};
     const key=generateKeyPairSync('rsa',{modulusLength:3072,publicKeyEncoding:{format:'pem',type:'spki'},privateKeyEncoding:{format:'pem',type:'pkcs8'}});
-    const file=join(config.packetDirectory,'backup.enc');await encryptBackup({output:file,publicKey:key.publicKey,metadata:{offline:true,dataFormat:'tar',secrets:{},restoreManifest:manifest,restoreFiles:{}},stream:Readable.from([tar])});tar.fill(0);
+    const file=join(config.packetDirectory,'backup.enc');await encryptBackup({output:file,publicKey:key.publicKey,metadata:{original,sourceNativeCheckpoint,offline:true,dataFormat:'tar',secrets:{},restoreManifest:manifest,restoreFiles:{}},stream:Readable.from([tar])});tar.fill(0);
     const expectedSha256=sha(await readFile(file)),expectedManifestSha256=sha(JSON.stringify(manifest)),input={file,privateKeyPem:key.privateKey,expectedSha256,expectedManifestSha256,sourceWitness:witness,limits};
-    phase='dry_inspect';check((await inspectRestorableBackup(input)).inventoryMatched===true);
+    phase='dry_inspect';check((await nativeRestore.inspect(input)).inventoryMatched===true);
     phase='restore';const restore=await create(config,'restore',volumes[1],'/target',true,['/probe/extract.mjs']);
     const restored=JSON.parse((await execute(restore,JSON.stringify({privateKeyPem:key.privateKey,expectedSha256,expectedManifestSha256,sourceWitness:witness,limits,targetId:config.nonce}))).toString());key.privateKey='';
     check(restored.passed===true&&restored.authenticated===true&&restored.inventoryMatched===true);
@@ -104,7 +117,7 @@ export async function runSourceCold(config){
     const entryProof=JSON.parse((await execute(entry)).toString());check(entryProof.passed===true&&entryProof.currentReader===true&&entryProof.legacyRefusedBeforeStart===true
       &&entryProof.foreignRealmDenied===true&&entryProof.missingKeyDenied===true&&entryProof.wrongKeyBeforeListenerDenied===true&&entryProof.actualInstallerListening===true&&entryProof.spoofedReadDenied===true);
     passed=true;
-  }catch(error){passed=false;code=['source_cold_stream_unknown','source_cold_command_failed'].includes(error?.code)?error.code:'source_cold_guard_refused';
+  }catch(error){passed=false;code=sourceColdFailureCode(error);
     if(code==='source_cold_stream_unknown')cleanupUnknown=true;}
   finally{for(const item of owned.reverse())try{const c=spec(item,await inspect(item.id??item.name));
     if(c.State.Running)await run(['kill','--signal','SIGKILL',c.Id]);const state=spec(item,await inspect(c.Id));check(!state.State.Running);

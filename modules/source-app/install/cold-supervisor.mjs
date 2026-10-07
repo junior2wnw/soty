@@ -9,6 +9,7 @@ import {createLocalWslHostDockerCommandRunner} from '../server/linux-feedback-li
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedback-local-placement.mjs';
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
 import {sourceColdLaunchDiagnostic} from './cold-launch-diagnostic.mjs';
+import {sourceColdFailureCode} from './cold-original.mjs';
 const commands=createLocalWslHostDockerCommandRunner(placement.dockerHostBinary),sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const check=value=>{if(!value)throw Error('source_cold_supervisor_refused');};
 // Docker's JSON objects may have different key insertion order. Array order,
@@ -69,7 +70,8 @@ export async function launchSourceColdSupervisor(path){
   }catch{cleanupUnknown=true;try{await attach?.stopAndWait();}catch{}}}
   return{schema:'soty.source-cold-supervisor-receipt.v1',passed:passed&&!cleanupUnknown,phase,cleanupUnknown,
     launchDiagnostic:launchDiagnostic??sourceColdLaunchDiagnostic(failure),
-    ...(sourceResult?{sourcePassed:sourceResult.passed===true,sourceCleanupUnknown:sourceResult.cleanupUnknown===true,sourcePhase:['seed','archive','dry_inspect','restore','compare','entry','negatives'].includes(sourceResult.phase)?sourceResult.phase:'unknown'}:{}),
+    ...(sourceResult?{sourcePassed:sourceResult.passed===true,sourceCleanupUnknown:sourceResult.cleanupUnknown===true,sourcePhase:['seed','archive','dry_inspect','restore','compare','entry','negatives'].includes(sourceResult.phase)?sourceResult.phase:'unknown',
+      sourceCode:sourceResult.code==='none'?'none':sourceColdFailureCode({code:sourceResult.code})}:{}),
     authenticationProved:false,models:false,productionReady:false};
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){try{check(process.argv.length===3);const result=await launchSourceColdSupervisor(resolve(process.argv[2]));console.log(JSON.stringify(result));if(!result.passed)process.exitCode=1;}

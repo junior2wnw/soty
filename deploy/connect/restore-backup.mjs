@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
-import { readEncryptedBackup, readEncryptedPass, createRestoreParser, formatFailure, formatFailureCode } from './backup-format.mjs';
+import { readEncryptedBackup, readEncryptedPass, createRestoreParser, createOrdinaryNativeRestoreSpecialization, formatFailure, formatFailureCode } from './backup-format.mjs';
 import { captureRestoreTarget, openRestoreSink } from './restore-sink.mjs';
 
 const HEX = /^[a-f0-9]{64}$/;
@@ -49,7 +49,7 @@ function capture(input) {
     sourceWitness: Object.freeze(witness), limits: Object.freeze(capturedLimits), signal };
 }
 
-export async function inspectRestorableBackup(input) {
+async function inspectBackup(input, specialization = null) {
   try {
     const started = performance.now(), options = capture(input);
     let lastProgress = started;
@@ -63,14 +63,16 @@ export async function inspectRestorableBackup(input) {
     check();
     const result = await readEncryptedBackup({ file: options.file, privateKeyPem: options.privateKeyPem,
       restore: { expectedSha256: options.expectedSha256, expectedManifestSha256: options.expectedManifestSha256,
-        sourceWitness: options.sourceWitness, limits: options.limits, check } });
+        sourceWitness: options.sourceWitness, limits: options.limits, check } }, specialization);
     check();
-    return Object.freeze({ ...result, strictProfile: 'soty.restore-manifest.v1', inventoryMatched: true });
+    return Object.freeze({ ...result, strictProfile: specialization === null ? 'soty.restore-manifest.v1' : 'soty.ordinary-native.restore.v1', inventoryMatched: true });
   } catch (error) {
     const observed = formatFailureCode(error), code = CODES.has(observed) ? observed : 'restore_io_failed';
     throw Object.assign(new Error(code), { code, stack: `Error: ${code}` });
   }
 }
+// Existing Root/R0 ports never receive a caller-selected specialization.
+export const inspectRestorableBackup = input => inspectBackup(input);
 
 const CHUNK = 64 * 1024;
 const EXTRACT_LIMIT_KEYS = [...LIMIT_KEYS.filter(key => key !== 'archiveBytes'), 'freeSpaceReserveBytes'];
@@ -183,7 +185,7 @@ class OwnedInput {
   }
 }
 
-export async function extractOwnedBackup(value) {
+async function extractBackup(value, specialization = null) {
   let input, sink, parser, failure, receipt, failed = false;
   try {
     // The unsupported platform branch does not even inspect caller properties.
@@ -192,7 +194,7 @@ export async function extractOwnedBackup(value) {
     input = new OwnedInput(options.input, options.limits, options.signal);
     const check = progress => input.check(progress);
     check(); sink = await openRestoreSink(options.target, options.limits, check);
-    parser = createRestoreParser({ ...options, check }, sink);
+    parser = createRestoreParser({ ...options, check }, sink, specialization);
     const digest = createHash('sha256'); let plaintextBytes = 0;
     for (;;) {
       const chunk = await input.read();
@@ -219,6 +221,7 @@ export async function extractOwnedBackup(value) {
   }
   return Object.freeze(receipt);
 }
+export const extractOwnedBackup = value => extractBackup(value);
 
 const SEND_CODES = new Set([...CODES, 'restore_cleanup_pending']);
 function captureSender(value) {
@@ -361,7 +364,7 @@ async function unchangedSource(handle, expected, check) {
   } finally { extra.fill(0); }
 }
 
-export async function sendAuthenticatedBackup(value) {
+async function sendBackup(value, specialization = null) {
   let owner, handle, receipt, failure, failed = false;
   const closeFile = async () => {
     if (!handle) return;
@@ -381,9 +384,9 @@ export async function sendAuthenticatedBackup(value) {
     const restore = { expectedSha256: options.expectedSha256, expectedManifestSha256: options.expectedManifestSha256,
       sourceWitness: options.sourceWitness, limits: options.limits, check };
     const passOptions = { handle, privateKeyPem: options.privateKeyPem, restore };
-    const first = await readEncryptedPass(passOptions);
+    const first = await readEncryptedPass(passOptions, null, specialization);
     await unchangedSource(handle, before, check);
-    const second = await readEncryptedPass(passOptions, owner);
+    const second = await readEncryptedPass(passOptions, owner, specialization);
     await unchangedSource(handle, before, check);
     if (second.receipt.sha256 !== first.receipt.sha256 || second.plaintextSha256 !== first.plaintextSha256
         || second.plaintextBytes !== first.plaintextBytes) throw formatFailure('restore_authentication_failed');
@@ -404,4 +407,18 @@ export async function sendAuthenticatedBackup(value) {
     throw Object.assign(new Error(code), { code, stack: `Error: ${code}` });
   }
   return Object.freeze(receipt);
+}
+export const sendAuthenticatedBackup = value => sendBackup(value);
+
+/** Separately named Source helper-only factory. The realm comes from trusted
+ * Source configuration, never archive/body/author metadata. Fixed Native3
+ * specialization grants no Native identity, role, token or Root authority. */
+export function createOrdinaryNativeRestorePorts(options) {
+  if (!options || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw formatFailure();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  if (Reflect.ownKeys(descriptors).length !== 1 || !Object.hasOwn(descriptors, 'realmId')
+      || !descriptors.realmId.enumerable || !Object.hasOwn(descriptors.realmId, 'value')) throw formatFailure();
+  const specialization = createOrdinaryNativeRestoreSpecialization(descriptors.realmId.value);
+  return Object.freeze({ inspect: input => inspectBackup(input, specialization),
+    send: input => sendBackup(input, specialization), extract: input => extractBackup(input, specialization) });
 }

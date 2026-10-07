@@ -8,6 +8,20 @@ const MAX_HEADER = 16 * 1024, MAX_METADATA = 4 * 1024 * 1024, CHUNK_BYTES = 64 *
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0');
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const failures = new WeakMap();
+const ordinaryNativeProfiles = new WeakMap();
+// Internal constructor-only specialization. No path/store/version is selected
+// by archive metadata or a public reader option; Root/R0 always default below.
+export function createOrdinaryNativeRestoreSpecialization(realmId) {
+  if (typeof realmId !== 'string' || !/^[a-z][a-z0-9.-]{0,63}$/u.test(realmId)) throw formatFailure();
+  const profile = Object.freeze(Object.create(null));
+  ordinaryNativeProfiles.set(profile, Object.freeze({ realmId, path: 'native/native.sqlite',
+    store: 'ordinary-native', format: 'soty.ordinary-native.v3', readerObjects: 29 }));
+  return profile;
+}
+function nativeProfile(profile) {
+  if (profile === null) return null;
+  const value = ordinaryNativeProfiles.get(profile); if (!value) throw formatFailure(); return value;
+}
 export function formatFailure(code = 'restore_archive_invalid') {
   const error = new Error(code); failures.set(error, code); return error;
 }
@@ -107,7 +121,7 @@ function add(value, amount, maximum) {
 // Producers and the separate cold-source witness must implement this same contract.
 class RestoreInventory {
   files = new Map(); seen = new Set(); headers = 0; dataBytes = 0; externalCount = 0; externalBytes = 0;
-  constructor(options, sink = null) { this.options = options; this.sink = sink; }
+  constructor(options, sink = null, sourceProfile = null) { this.options = options; this.sink = sink; this.sourceProfile = sourceProfile; }
   async metadata(metadata) {
     const { limits, sourceWitness, expectedManifestSha256 } = this.options;
     if (!metadata.restoreManifest) incomplete();
@@ -170,6 +184,17 @@ class RestoreInventory {
     }).sort((a, b) => compare(a.id, b.id));
     add(this.dataBytes, this.externalBytes, limits.extractedBytes);
     const projectedInventory = { files, stores, external };
+    if (this.sourceProfile) {
+      const profile = this.sourceProfile, checkpoint = metadata.sourceNativeCheckpoint;
+      exact(checkpoint, ['schema', 'realmId', 'readerFormat', 'readerObjects', 'nativeIdentitySha256']);
+      if (checkpoint.schema !== 'soty.ordinary-native-checkpoint.v1' || checkpoint.realmId !== profile.realmId
+          || checkpoint.readerFormat !== 3 || checkpoint.readerObjects !== profile.readerObjects
+          || typeof checkpoint.nativeIdentitySha256 !== 'string' || !HEX.test(checkpoint.nativeIdentitySha256)) invalid();
+      const store = stores[0], database = this.files.get(profile.path);
+      if (stores.length !== 1 || store.id !== profile.store || store.required !== true || store.present !== true
+          || store.format !== profile.format || store.identitySha256 !== checkpoint.nativeIdentitySha256
+          || !store.paths.includes(profile.path) || database?.type !== 'file' || database.size < 100) incomplete();
+    }
     const inventorySha256 = hash(JSON.stringify(projectedInventory));
     const projectedManifest = { version: 1, generationId: manifest.generationId,
       checkpointSha256: manifest.checkpointSha256, inventory: projectedInventory };
@@ -228,8 +253,11 @@ class RestoreInventory {
 class TarVerifier {
   header = Buffer.alloc(512); headerUsed = 0; remaining = 0; padding = 0;
   entry = null; zeroBlocks = 0; ended = false; count = 0; rooms = 0; sqlite = 0; emptySqlite = 0;
-  connectorStore = false; nextPax = {}; globalPax = {}; longName = null; longLink = null;
-  constructor(policy = null) { this.policy = policy; }
+  requiredDatabaseSeen = false; nextPax = {}; globalPax = {}; longName = null; longLink = null;
+  constructor(policy = null, sourceProfile = null) {
+    this.policy = policy; this.requiredDatabase = sourceProfile?.path ?? 'connector-store.sqlite';
+    if (sourceProfile && !policy) invalid();
+  }
   async feed(chunk) {
     let at = 0;
     while (at < chunk.length) {
@@ -298,7 +326,7 @@ class TarVerifier {
       if (['1', '2'].includes(type)) legacyName(linkName);
     } else if (size > MAX_METADATA) invalid();
     const sqliteName = !extension && name.endsWith('.sqlite');
-    const emptySqlite = sqliteName && size === 0 && name !== 'connector-store.sqlite' && ['0', '7'].includes(type);
+    const emptySqlite = sqliteName && size === 0 && name !== this.requiredDatabase && ['0', '7'].includes(type);
     const sqlite = sqliteName && !emptySqlite;
     if (sqlite && (!['0', '7'].includes(type) || size < 100)) invalid();
     this.entry = { name, type, size, uid, gid, mode: permissions, extension, sqlite, emptySqlite,
@@ -331,7 +359,7 @@ class TarVerifier {
         if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) !== 0 || entry.size % pageSize !== 0) invalid();
         if (![1, 2].includes(entry.prefix[18]) || ![1, 2].includes(entry.prefix[19])) invalid();
         this.sqlite++;
-        if (entry.name === 'connector-store.sqlite') this.connectorStore = true;
+        if (entry.name === this.requiredDatabase) this.requiredDatabaseSeen = true;
       }
       await this.policy?.finishEntry(entry);
     }
@@ -340,7 +368,7 @@ class TarVerifier {
   async finish() {
     if (!this.ended || this.headerUsed || this.remaining || this.padding || this.entry
         || Object.keys(this.nextPax).length || this.longName !== null || this.longLink !== null
-        || !this.connectorStore || !this.count) invalid();
+        || !this.requiredDatabaseSeen || !this.count) invalid();
     return { archiveEntries: this.count, roomFiles: this.rooms, sqliteFiles: this.sqlite, emptySqliteFiles: this.emptySqlite,
       ...((await this.policy?.finish()) ?? {}) };
   }
@@ -349,7 +377,7 @@ class TarVerifier {
 class PlaintextVerifier {
   sizeBytes = Buffer.alloc(4); sizeUsed = 0; metadataSize = null; metadataBuffer = null; metadataBytes = 0;
   metadataReady = false;
-  constructor(policy = null) { this.policy = policy; this.tar = new TarVerifier(policy); }
+  constructor(policy = null, sourceProfile = null) { this.policy = policy; this.tar = new TarVerifier(policy, sourceProfile); }
   async feed(chunk) {
     let at = 0;
     if (this.metadataSize === null) {
@@ -382,8 +410,9 @@ class PlaintextVerifier {
 }
 // Internal fixed-profile seam used only by the private extraction API. Public
 // verifier/dry ports still accept no sink, stream, plaintext callback or output.
-export function createRestoreParser(restore, sink) {
-  return new PlaintextVerifier(new RestoreInventory(restore, sink));
+export function createRestoreParser(restore, sink, specialization = null) {
+  const sourceProfile = nativeProfile(specialization);
+  return new PlaintextVerifier(new RestoreInventory(restore, sink, sourceProfile), sourceProfile);
 }
 async function readExactly(handle, size, position, check) {
   const bytes = Buffer.alloc(size); let at = 0;
@@ -408,7 +437,8 @@ function backupPrivateKey(privateKeyPem) {
 // output, when present, is restore-backup's private OwnedOutput, never an API
 // option accepted by R0/dry. Its write waits for the supplied callback even if
 // native destroy has already emitted close, so feed may safely wipe afterwards.
-async function encryptedPass(handle, privateKey, restore, output = null) {
+async function encryptedPass(handle, privateKey, restore, output = null, specialization = null) {
+    const sourceProfile = nativeProfile(specialization);
     const check = restore?.check;
     check?.();
     const stat = await handle.stat(); check?.();
@@ -440,7 +470,7 @@ async function encryptedPass(handle, privateKey, restore, output = null) {
     const tag = await readExactly(handle, 16, stat.size - 16, check);
     cipher.setAAD(prefix); cipher.setAuthTag(tag);
     const digest = createHash('sha256').update(prefix), plainDigest = restore ? createHash('sha256') : null;
-    const parser = new PlaintextVerifier(restore ? new RestoreInventory(restore) : null);
+    const parser = new PlaintextVerifier(restore ? new RestoreInventory(restore, null, sourceProfile) : null, sourceProfile);
     const encrypted = Buffer.alloc(CHUNK_BYTES), ciphertextEnd = stat.size - 16;
     let plaintextBytes = 0;
     const feed = async plain => {
@@ -473,22 +503,22 @@ async function encryptedPass(handle, privateKey, restore, output = null) {
 
 // Private same-FD seam. Only the fixed sender uses its second argument; no
 // plaintext is returned and there is no alternate crypto/parser implementation.
-export async function readEncryptedPass({ handle, privateKeyPem, restore }, output = null) {
+export async function readEncryptedPass({ handle, privateKeyPem, restore }, output = null, specialization = null) {
   restore.check();
   const privateKey = backupPrivateKey(privateKeyPem);
   restore.check();
-  return encryptedPass(handle, privateKey, restore, output);
+  return encryptedPass(handle, privateKey, restore, output, specialization);
 }
 
 // Preserve legacy key-before-open ordering, counts, close and final check.
-export async function readEncryptedBackup({ file, privateKeyPem, restore = null }) {
+export async function readEncryptedBackup({ file, privateKeyPem, restore = null }, specialization = null) {
   const check = restore?.check;
   check?.();
   const privateKey = backupPrivateKey(privateKeyPem);
   check?.();
   const handle = await open(file, 'r');
   let result;
-  try { result = await encryptedPass(handle, privateKey, restore); }
+  try { result = await encryptedPass(handle, privateKey, restore, null, specialization); }
   finally { await handle.close(); }
   check?.();
   return result.receipt;
