@@ -17,6 +17,8 @@ deploy/**
 !deploy/apps/
 deploy/apps/**
 !deploy/apps/*.mjs
+!deploy/apps/fixtures/
+!deploy/apps/fixtures/apps6-reader.literal.mjs
 !deploy/connector/
 deploy/connector/**
 !deploy/connector/*.mjs
