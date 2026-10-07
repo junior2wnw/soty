@@ -487,6 +487,19 @@ var ScopedConnectorHost = (() => {
     assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4194304 }
   });
   var STANDARD_SELECTED_SOURCE = deepFreeze({ id: "soty.standard-resource", version: 1, digest: digest(STANDARD_SOURCE_CONTRACT) });
+  var { nativeCallbackPath: _nativePath, ...authV2 } = STANDARD_SOURCE_CONTRACT.auth;
+  var STANDARD_SOURCE_CONTRACT_2 = deepFreeze({
+    ...STANDARD_SOURCE_CONTRACT,
+    auth: {
+      ...authV2,
+      callbackPath: "/api/embed/callback",
+      callbackOrigin: "approved-embed-https",
+      loginProof: "durable-source-native-before-oidc.v1",
+      correlation: "handoff-state-original-slot.v1",
+      completionRecovery: "current-original-slot-readonly-receipt.v1"
+    }
+  });
+  var STANDARD_SELECTED_SOURCE_V2 = deepFreeze({ id: "soty.standard-resource", version: 2, digest: digest(STANDARD_SOURCE_CONTRACT_2) });
 
   // modules/apps/scoped-embed/resource-route-adapters.mjs
   var MiB = 1048576;
@@ -549,6 +562,10 @@ var ScopedConnectorHost = (() => {
   adapters.set(
     STANDARD_SELECTED_SOURCE.id + ":1:" + STANDARD_SELECTED_SOURCE.digest,
     Object.freeze({ pin: STANDARD_SELECTED_SOURCE, kind: STANDARD_SOURCE_CONTRACT.kind, contract: STANDARD_SOURCE_CONTRACT })
+  );
+  adapters.set(
+    STANDARD_SELECTED_SOURCE_V2.id + ":2:" + STANDARD_SELECTED_SOURCE_V2.digest,
+    Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V2, kind: STANDARD_SOURCE_CONTRACT_2.kind, contract: STANDARD_SOURCE_CONTRACT_2 })
   );
   function selectedRouteAdapter(input) {
     const profile = selectedResourceProfile(input);
@@ -3532,7 +3549,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.6";
+const connectorVersion = "1.4.7";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

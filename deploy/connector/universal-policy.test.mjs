@@ -16,7 +16,7 @@ import { readStorageFormat } from './storage-probe.mjs';
 import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { createHttpApp } from '../../server/http-app.js';
-import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
+import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 
 const origin = 'https://soty.fixture.invalid', issuer = origin + '/human-identity';
 const random = () => randomBytes(32).toString('base64url');
@@ -394,6 +394,34 @@ test('selected HIVE callback follows its exact compiled Native HTTPS pin; embed 
   await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
   await configured({ ...profile, nativeOrigin: 'http://127.0.0.1:4317' }, 'http://127.0.0.1:4317/account/soty/callback');
   await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_human_invalid'));
+});
+
+test('standard Source2 callback is the exact approved embed HTTPS route while Source1 retains its Native callback', async t => {
+  const f = await fixture(t), source = path.join(f.root, 'standard-selected.json');
+  const base = selectedConfiguration(f).profiles[0];
+  const profile = { ...base, schema: 'soty.selected-human-embed.v2', sourceProfile: STANDARD_SELECTED_SOURCE_V2,
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId: base.appId,
+      resourceId: 'standard:selected', selection: { kind: 'soty.resource.v1', nativeId: ' Resource / Exact ', incarnationId: 'native-incarnation' } },
+    nativeOrigin: 'https://native.fixture.invalid' };
+  const plan = { ...f.plan, selected: { source, migrationConfigured: true } };
+  async function configured(value, redirect) {
+    f.human.clients[0].redirectUri = redirect;
+    await writeFile(f.humanSource, JSON.stringify(f.human));
+    await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [value] }), { mode: 0o600 });
+  }
+  for (const [pin, redirect] of [[STANDARD_SELECTED_SOURCE, profile.nativeOrigin + '/soty/callback'],
+    [STANDARD_SELECTED_SOURCE_V2, profile.embedOrigin + '/api/embed/callback']]) {
+    await configured({ ...profile, sourceProfile: pin }, redirect);
+    const handle = await prepared(t, f, plan);
+    assert.equal(publicUniversalPolicy(handle).selected.profileCount, 1);
+  }
+  for (const redirect of [profile.nativeOrigin + '/api/embed/callback', profile.nativeOrigin + '/soty/callback',
+    profile.embedOrigin + '/soty/callback', 'https://foreign.fixture.invalid/api/embed/callback']) {
+    await configured(profile, redirect);
+    await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  }
+  await configured({ ...profile, sourceProfile: { ...STANDARD_SELECTED_SOURCE_V2, digest: '0'.repeat(64) } }, profile.embedOrigin + '/api/embed/callback');
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
 });
 
 test('selected policy rejects foreign/missing Human clients and inherited unapproved registry', async t => {

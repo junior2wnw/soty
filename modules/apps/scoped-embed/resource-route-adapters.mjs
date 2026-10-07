@@ -62,8 +62,12 @@ export function selectedRouteAdapter(input) {
 export function selectedClientRedirect(input) {
   const profile = selectedResourceProfile(input), adapter = selectedRouteAdapter(profile);
   const auth = adapter.contract.auth;
-  need(auth.callbackOrigin === undefined || auth.callbackOrigin === 'embed', 'scoped_embed_adapter_unapproved', 403);
-  return (auth.callbackOrigin === 'embed' ? profile.embedOrigin : profile.nativeOrigin) + auth.nativeCallbackPath;
+  if (auth.callbackOrigin === 'approved-embed-https') {
+    need(auth.callbackPath === '/api/embed/callback', 'scoped_embed_adapter_unapproved', 403);
+    return profile.embedOrigin + auth.callbackPath;
+  }
+  need(auth.callbackOrigin === undefined && typeof auth.nativeCallbackPath === 'string', 'scoped_embed_adapter_unapproved', 403);
+  return profile.nativeOrigin + auth.nativeCallbackPath;
 }
 
 /** HIVE's existing Native RP callback stays exact; a handoff is only a UI
