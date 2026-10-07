@@ -16,6 +16,7 @@ import {
   SCOPED_EMBED_LIMITS,
 } from "./profile.mjs";
 
+export const PUBLIC_ASSET_LIMITS=Object.freeze({active:4,queued:32,waitMs:8000});
 const requestHeaders = new Set([
   "accept",
   "accept-language",
@@ -156,8 +157,22 @@ export function createLocalScopedEmbedBroker({
   );
   const signer = resources ? createResourceSourceProofSigner({ profile, key, clock }) : createSourceProofSigner({ profile: raw, key, clock });
   const jars = new Map();
+  const assetQueue=[],assetControllers=new Set();let assetActive=0;
   let active = 0,
     closedBroker = false;
+  function assetError(code,status){try{need(false,code,status);}catch(error){return error;}}
+  function assetSlot(){assetActive++;const controller=new AbortController();assetControllers.add(controller);let released=false;
+    return{controller,release(){if(released)return;released=true;assetControllers.delete(controller);assetActive--;
+      if(!closedBroker&&assetQueue.length){const next=assetQueue.shift();next.cleanup();next.resolve(assetSlot());}}};}
+  function acquireAsset(signal){need(!closedBroker,'scoped_embed_closed',503);need(!signal?.aborted,'scoped_embed_cancelled',499);
+    if(assetActive<PUBLIC_ASSET_LIMITS.active)return Promise.resolve(assetSlot());
+    need(assetQueue.length<PUBLIC_ASSET_LIMITS.queued,'scoped_embed_assets_busy',503);
+    return new Promise((resolve,reject)=>{let timer;const item={resolve,reject,cleanup(){clearTimeout(timer);signal?.removeEventListener('abort',cancel);}};
+      const remove=()=>{const index=assetQueue.indexOf(item);if(index>=0)assetQueue.splice(index,1);item.cleanup();};
+      const cancel=()=>{remove();reject(assetError('scoped_embed_cancelled',499));};
+      timer=setTimeout(()=>{remove();reject(assetError('scoped_embed_assets_busy',503));},PUBLIC_ASSET_LIMITS.waitMs);timer.unref?.();
+      signal?.addEventListener('abort',cancel,{once:true});assetQueue.push(item);
+    });}
   function pruneJars() {
     const now = clock();
     for (const [id, jar] of jars) if (jar.expiresAt <= now) jars.delete(id);
@@ -269,12 +284,17 @@ export function createLocalScopedEmbedBroker({
         );
         selectedHeaders[name] = value;
       }
-      need(
+      let assetLease;
+      if(route.credentialFree){await current(captured);local(captured);
+        try{assetLease=await acquireAsset(signal);}catch(error){if(error.code!=='scoped_embed_assets_busy')throw error;
+          await current(captured);local(captured);need(!signal?.aborted,'scoped_embed_cancelled',499);
+          return Object.freeze({status:503,headers:Object.freeze({'content-type':'application/json','cache-control':'no-store','retry-after':'1'}),body:Buffer.from('{"error":{"code":"scoped_embed_assets_busy"}}')});}
+      }else{need(
         active < SCOPED_EMBED_LIMITS.inflight && !closedBroker,
         "scoped_embed_busy",
         429,
       );
-      active++;
+      active++;}
       try {
         const currentContext = await current(captured);
         local(currentContext);
@@ -287,13 +307,13 @@ export function createLocalScopedEmbedBroker({
           429,
         );
         const jar = stored?.cookies ?? {},
-          cookie = Object.entries(jar)
+          cookie = route.credentialFree ? '' : Object.entries(jar)
             .filter(([, value]) => value.token && value.expiresAt > clock())
             .map(([name, value]) => name + "=" + value.token)
             .join("; ");
         // The Source virtual host is fixed in the approved profile; only the
         // actual network destination is the separately pinned local port.
-        const proof = signer.headers({
+        const proof = route.credentialFree ? {} : signer.headers({
           context: currentContext,
           method,
           path,
@@ -321,12 +341,7 @@ export function createLocalScopedEmbedBroker({
           method,
           redirect: "manual",
           credentials: "omit",
-          signal: signal
-            ? AbortSignal.any([
-                signal,
-                AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs),
-              ])
-            : AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs),
+          signal: AbortSignal.any([...(signal?[signal]:[]),...(assetLease?[assetLease.controller.signal]:[]),AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)]),
           headers: outboundHeaders,
           ...(["GET", "HEAD"].includes(method) ? {} : { body: requestBody }),
         });
@@ -360,8 +375,10 @@ export function createLocalScopedEmbedBroker({
         // the original Root scope. A failed write reply is not proof of none.
         await current(currentContext);
         local(currentContext);
+        const incomingCookies=response.headers.getSetCookie?.()??[];
+        if(route.credentialFree)need(incomingCookies.length===0&&!response.headers.get('location')&&[200,206,304].includes(response.status),'scoped_embed_public_asset_invalid',502);
         const incoming = cookies(
-          response.headers.getSetCookie?.() ?? [],
+          incomingCookies,
           clock(),
           approvedCookies,
           resources ? 86400 : 300,
@@ -373,7 +390,7 @@ export function createLocalScopedEmbedBroker({
           "scoped_embed_capacity",
           429,
         );
-        jars.set(currentContext.reference.id, {
+        if(!route.credentialFree)jars.set(currentContext.reference.id, {
           expiresAt: currentContext.expiresAt,
           cookies: { ...jar, ...incoming },
         });
@@ -441,7 +458,7 @@ export function createLocalScopedEmbedBroker({
           body: Buffer.concat(parts.map((part) => Buffer.from(part))),
         });
       } finally {
-        active--;
+        if(assetLease)assetLease.release();else active--;
       }
     },
     forget(reference) {
@@ -450,6 +467,8 @@ export function createLocalScopedEmbedBroker({
     },
     close() {
       closedBroker = true;
+      for(const controller of assetControllers)controller.abort();
+      for(const item of assetQueue.splice(0)){item.cleanup();item.reject(assetError('scoped_embed_closed',503));}
       jars.clear();
     },
   });

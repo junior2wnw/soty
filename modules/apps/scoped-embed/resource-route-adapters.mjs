@@ -34,9 +34,16 @@ const hiveContract = capture({ schema: 'soty.source-route-adapter.v1', kind: 'hi
     rule('feedback-write', ['POST'], '/api/embed/feedback/accept', 32768, 262144),
   ], assets: { path: '/assets/', extensions: ['js', 'css', 'woff2', 'svg', 'png'], responseBytes: 4 * MiB } });
 
-export const HIVE_SELECTED_SOURCE = Object.freeze({ id: 'hive.selected-project', version: 1, digest: hash(hiveContract) });
-const hive = Object.freeze({ pin: HIVE_SELECTED_SOURCE, kind: hiveContract.kind, contract: hiveContract });
-const adapters = new Map([[HIVE_SELECTED_SOURCE.id + ':1:' + HIVE_SELECTED_SOURCE.digest, hive]]);
+// Version1 is the accepted kernel contract. Never expand an existing pin when
+// a later Native UI build needs additional paths.
+export const HIVE_SELECTED_KERNEL_SOURCE = Object.freeze({ id: 'hive.selected-project', version: 1, digest: hash(hiveContract) });
+const editorContract=capture({...hiveContract,assets:{responseBytes:4*MiB,credentialFree:true,redirects:false,queries:false,
+  paths:[{prefix:'/_next/static/chunks/',extensions:['js']},{prefix:'/_next/static/css/',extensions:['css']},
+    {prefix:'/_next/static/media/',extensions:['woff2','svg','png']}]}});
+export const HIVE_SELECTED_SOURCE = Object.freeze({ id: 'hive.selected-project', version: 2, digest: hash(editorContract) });
+const hive = Object.freeze({ pin: HIVE_SELECTED_KERNEL_SOURCE, kind: hiveContract.kind, contract: hiveContract });
+const editor=Object.freeze({pin:HIVE_SELECTED_SOURCE,kind:editorContract.kind,contract:editorContract});
+const adapters = new Map([hive,editor].map(adapter=>[adapter.pin.id+':'+adapter.pin.version+':'+adapter.pin.digest,adapter]));
 export function selectedRouteAdapter(input) {
   const profile = selectedResourceProfile(input);
   const pin = profile.sourceProfile, adapter = adapters.get(pin.id + ':' + pin.version + ':' + pin.digest);
@@ -65,9 +72,15 @@ export function selectedRoute(input, method, path) {
   const url = new URL(path, 'https://fixed.invalid');
   need(url.pathname + url.search === path && !url.hash && !url.pathname.includes('%') && !url.pathname.includes('..'),
     'scoped_embed_route_denied', 403);
-  if (['GET', 'HEAD'].includes(method) && !url.search
+  if (adapter===hive && ['GET', 'HEAD'].includes(method) && !url.search
     && /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg|png)$/u.test(url.pathname))
     return Object.freeze({ kind: 'public-ui', requestBytes: 0, responseBytes: adapter.contract.assets.responseBytes });
+  if(adapter===editor&&['GET','HEAD'].includes(method)&&!url.search){
+    for(const asset of adapter.contract.assets.paths){if(!url.pathname.startsWith(asset.prefix))continue;
+      const leaf=url.pathname.slice(asset.prefix.length),match=/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}\.([a-z0-9]+)$/u.exec(leaf);
+      if(match&&asset.extensions.includes(match[1]))return Object.freeze({kind:'public-ui',requestBytes:0,responseBytes:adapter.contract.assets.responseBytes,credentialFree:true,redirects:false});
+    }
+  }
   const route = adapter.contract.rules.find(value => value.path === url.pathname && value.methods.includes(method));
   need(route, 'scoped_embed_route_denied', 403);
   const entries = [...url.searchParams.entries()];

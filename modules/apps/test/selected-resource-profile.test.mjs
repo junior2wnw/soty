@@ -20,7 +20,7 @@ test('future reviewed Source kinds share the format; unknown handlers/pins canno
   assert.equal(selectedResourceProfile(future).resource.selection.kind, 'future.document.v7');
   assert.throws(() => selectedRouteAdapter(future), { code: 'scoped_embed_adapter_unapproved' });
   for (const field of ['digest', 'id', 'version']) {
-    const value = profile(); value.sourceProfile[field] = field === 'version' ? 2 : field === 'id' ? 'other.source' : 'f'.repeat(64);
+    const value = profile(); value.sourceProfile[field] = field === 'version' ? 3 : field === 'id' ? 'other.source' : 'f'.repeat(64);
     assert.throws(() => selectedRouteAdapter(value), { code: 'scoped_embed_adapter_unapproved' });
   }
 });

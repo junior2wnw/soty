@@ -951,7 +951,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
             if(stream.scopedRecord) {
-              const profile=stream.scopedRecord.profile,route=embedRoute(profile,stream.req.method,stream.req.url).kind;
+              const profile=stream.scopedRecord.profile,routeDefinition=embedRoute(profile,stream.req.method,stream.req.url),route=routeDefinition.kind;
+              if(routeDefinition.credentialFree&&frame.headers?.['retry-after']!==undefined){assertApps(frame.status===503&&frame.headers['retry-after']==='1','app_bad_head');stream.res.setHeader('Retry-After','1');}
               if(frame.auth!==undefined) {
                 assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='continued'?route==='auth-continue'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
                 scopedGateway.captureHead(stream.scopedRecord,frame.auth);

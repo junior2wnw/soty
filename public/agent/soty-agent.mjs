@@ -475,9 +475,22 @@ var ScopedConnectorHost = (() => {
     ],
     assets: { path: "/assets/", extensions: ["js", "css", "woff2", "svg", "png"], responseBytes: 4 * MiB }
   });
-  var HIVE_SELECTED_SOURCE = Object.freeze({ id: "hive.selected-project", version: 1, digest: hash(hiveContract) });
-  var hive = Object.freeze({ pin: HIVE_SELECTED_SOURCE, kind: hiveContract.kind, contract: hiveContract });
-  var adapters = /* @__PURE__ */ new Map([[HIVE_SELECTED_SOURCE.id + ":1:" + HIVE_SELECTED_SOURCE.digest, hive]]);
+  var HIVE_SELECTED_KERNEL_SOURCE = Object.freeze({ id: "hive.selected-project", version: 1, digest: hash(hiveContract) });
+  var editorContract = capture({ ...hiveContract, assets: {
+    responseBytes: 4 * MiB,
+    credentialFree: true,
+    redirects: false,
+    queries: false,
+    paths: [
+      { prefix: "/_next/static/chunks/", extensions: ["js"] },
+      { prefix: "/_next/static/css/", extensions: ["css"] },
+      { prefix: "/_next/static/media/", extensions: ["woff2", "svg", "png"] }
+    ]
+  } });
+  var HIVE_SELECTED_SOURCE = Object.freeze({ id: "hive.selected-project", version: 2, digest: hash(editorContract) });
+  var hive = Object.freeze({ pin: HIVE_SELECTED_KERNEL_SOURCE, kind: hiveContract.kind, contract: hiveContract });
+  var editor = Object.freeze({ pin: HIVE_SELECTED_SOURCE, kind: editorContract.kind, contract: editorContract });
+  var adapters = new Map([hive, editor].map((adapter) => [adapter.pin.id + ":" + adapter.pin.version + ":" + adapter.pin.digest, adapter]));
   function selectedRouteAdapter(input) {
     const profile = selectedResourceProfile(input);
     const pin2 = profile.sourceProfile, adapter = adapters.get(pin2.id + ":" + pin2.version + ":" + pin2.digest);
@@ -504,8 +517,15 @@ var ScopedConnectorHost = (() => {
       "scoped_embed_route_denied",
       403
     );
-    if (["GET", "HEAD"].includes(method) && !url.search && /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg|png)$/u.test(url.pathname))
+    if (adapter === hive && ["GET", "HEAD"].includes(method) && !url.search && /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg|png)$/u.test(url.pathname))
       return Object.freeze({ kind: "public-ui", requestBytes: 0, responseBytes: adapter.contract.assets.responseBytes });
+    if (adapter === editor && ["GET", "HEAD"].includes(method) && !url.search) {
+      for (const asset of adapter.contract.assets.paths) {
+        if (!url.pathname.startsWith(asset.prefix)) continue;
+        const leaf = url.pathname.slice(asset.prefix.length), match = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}\.([a-z0-9]+)$/u.exec(leaf);
+        if (match && asset.extensions.includes(match[1])) return Object.freeze({ kind: "public-ui", requestBytes: 0, responseBytes: adapter.contract.assets.responseBytes, credentialFree: true, redirects: false });
+      }
+    }
     const route = adapter.contract.rules.find((value) => value.path === url.pathname && value.methods.includes(method));
     need(route, "scoped_embed_route_denied", 403);
     const entries = [...url.searchParams.entries()];
@@ -657,6 +677,7 @@ var ScopedConnectorHost = (() => {
   }
 
   // modules/apps/scoped-embed/local-broker.mjs
+  var PUBLIC_ASSET_LIMITS = Object.freeze({ active: 4, queued: 32, waitMs: 8e3 });
   var requestHeaders = /* @__PURE__ */ new Set([
     "accept",
     "accept-language",
@@ -780,7 +801,62 @@ var ScopedConnectorHost = (() => {
     );
     const signer = resources ? createResourceSourceProofSigner({ profile, key, clock }) : createSourceProofSigner({ profile: raw, key, clock });
     const jars = /* @__PURE__ */ new Map();
+    const assetQueue = [], assetControllers = /* @__PURE__ */ new Set();
+    let assetActive = 0;
     let active = 0, closedBroker = false;
+    function assetError(code, status) {
+      try {
+        need(false, code, status);
+      } catch (error) {
+        return error;
+      }
+    }
+    function assetSlot() {
+      assetActive++;
+      const controller = new AbortController();
+      assetControllers.add(controller);
+      let released = false;
+      return { controller, release() {
+        if (released) return;
+        released = true;
+        assetControllers.delete(controller);
+        assetActive--;
+        if (!closedBroker && assetQueue.length) {
+          const next = assetQueue.shift();
+          next.cleanup();
+          next.resolve(assetSlot());
+        }
+      } };
+    }
+    function acquireAsset(signal) {
+      need(!closedBroker, "scoped_embed_closed", 503);
+      need(!signal?.aborted, "scoped_embed_cancelled", 499);
+      if (assetActive < PUBLIC_ASSET_LIMITS.active) return Promise.resolve(assetSlot());
+      need(assetQueue.length < PUBLIC_ASSET_LIMITS.queued, "scoped_embed_assets_busy", 503);
+      return new Promise((resolve, reject) => {
+        let timer;
+        const item = { resolve, reject, cleanup() {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", cancel);
+        } };
+        const remove = () => {
+          const index = assetQueue.indexOf(item);
+          if (index >= 0) assetQueue.splice(index, 1);
+          item.cleanup();
+        };
+        const cancel = () => {
+          remove();
+          reject(assetError("scoped_embed_cancelled", 499));
+        };
+        timer = setTimeout(() => {
+          remove();
+          reject(assetError("scoped_embed_assets_busy", 503));
+        }, PUBLIC_ASSET_LIMITS.waitMs);
+        timer.unref?.();
+        signal?.addEventListener("abort", cancel, { once: true });
+        assetQueue.push(item);
+      });
+    }
     function pruneJars() {
       const now = clock();
       for (const [id, jar] of jars) if (jar.expiresAt <= now) jars.delete(id);
@@ -873,12 +949,27 @@ var ScopedConnectorHost = (() => {
           );
           selectedHeaders[name] = value;
         }
-        need(
-          active < SCOPED_EMBED_LIMITS.inflight && !closedBroker,
-          "scoped_embed_busy",
-          429
-        );
-        active++;
+        let assetLease;
+        if (route.credentialFree) {
+          await current(captured);
+          local(captured);
+          try {
+            assetLease = await acquireAsset(signal);
+          } catch (error) {
+            if (error.code !== "scoped_embed_assets_busy") throw error;
+            await current(captured);
+            local(captured);
+            need(!signal?.aborted, "scoped_embed_cancelled", 499);
+            return Object.freeze({ status: 503, headers: Object.freeze({ "content-type": "application/json", "cache-control": "no-store", "retry-after": "1" }), body: Buffer.from('{"error":{"code":"scoped_embed_assets_busy"}}') });
+          }
+        } else {
+          need(
+            active < SCOPED_EMBED_LIMITS.inflight && !closedBroker,
+            "scoped_embed_busy",
+            429
+          );
+          active++;
+        }
         try {
           const currentContext2 = await current(captured);
           local(currentContext2);
@@ -890,8 +981,8 @@ var ScopedConnectorHost = (() => {
             "scoped_embed_capacity",
             429
           );
-          const jar = stored?.cookies ?? {}, cookie = Object.entries(jar).filter(([, value]) => value.token && value.expiresAt > clock()).map(([name, value]) => name + "=" + value.token).join("; ");
-          const proof = signer.headers({
+          const jar = stored?.cookies ?? {}, cookie = route.credentialFree ? "" : Object.entries(jar).filter(([, value]) => value.token && value.expiresAt > clock()).map(([name, value]) => name + "=" + value.token).join("; ");
+          const proof = route.credentialFree ? {} : signer.headers({
             context: currentContext2,
             method,
             path,
@@ -918,10 +1009,7 @@ var ScopedConnectorHost = (() => {
             method,
             redirect: "manual",
             credentials: "omit",
-            signal: signal ? AbortSignal.any([
-              signal,
-              AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)
-            ]) : AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs),
+            signal: AbortSignal.any([...signal ? [signal] : [], ...assetLease ? [assetLease.controller.signal] : [], AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)]),
             headers: outboundHeaders,
             ...["GET", "HEAD"].includes(method) ? {} : { body: requestBody }
           });
@@ -951,8 +1039,10 @@ var ScopedConnectorHost = (() => {
           }
           await current(currentContext2);
           local(currentContext2);
+          const incomingCookies = response.headers.getSetCookie?.() ?? [];
+          if (route.credentialFree) need(incomingCookies.length === 0 && !response.headers.get("location") && [200, 206, 304].includes(response.status), "scoped_embed_public_asset_invalid", 502);
           const incoming = cookies(
-            response.headers.getSetCookie?.() ?? [],
+            incomingCookies,
             clock(),
             approvedCookies,
             resources ? 86400 : 300
@@ -963,7 +1053,7 @@ var ScopedConnectorHost = (() => {
             "scoped_embed_capacity",
             429
           );
-          jars.set(currentContext2.reference.id, {
+          if (!route.credentialFree) jars.set(currentContext2.reference.id, {
             expiresAt: currentContext2.expiresAt,
             cookies: { ...jar, ...incoming }
           });
@@ -1052,7 +1142,8 @@ var ScopedConnectorHost = (() => {
             body: Buffer.concat(parts.map((part) => Buffer.from(part)))
           });
         } finally {
-          active--;
+          if (assetLease) assetLease.release();
+          else active--;
         }
       },
       forget(reference) {
@@ -1061,6 +1152,11 @@ var ScopedConnectorHost = (() => {
       },
       close() {
         closedBroker = true;
+        for (const controller of assetControllers) controller.abort();
+        for (const item of assetQueue.splice(0)) {
+          item.cleanup();
+          item.reject(assetError("scoped_embed_closed", 503));
+        }
         jars.clear();
       }
     });
@@ -3377,7 +3473,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.4";
+const connectorVersion = "1.4.5";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

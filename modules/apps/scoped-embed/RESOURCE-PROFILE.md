@@ -21,6 +21,22 @@ Project read/response4MiB, mutation1MiB, feedback submit1.5M/get2MiB/list64KiB;
 legacy v1 1MiB не расширяется. Capacity error предшествует отдаче тела;
 4MiB не являются гарантией поддержки всех Native canvases.
 
+Source profile1 (`HIVE_SELECTED_KERNEL_SOURCE`) остаётся прежним kernel pin и
+не получает новые пути. Profile2 (`HIVE_SELECTED_SOURCE`) отдельно допускает
+Native Vinext public JS `/_next/static/chunks/`, CSS `/_next/static/css/` и
+fonts/images `/_next/static/media/`: только safe leaf и reviewed extensions,
+без query, nested paths, percent encoding, redirects и Source cookie/MAC/subject.
+Каждый файл ограничен4MiB; текущая исходная Root authority проверяется до/после
+чтения. Это новый compiled Source approval, не новый Apps DB format. Старый
+profile1 не превращается автоматически в profile2. Full editor browser evidence
+и actual Source+Root session renewal остаются отдельными gates.
+
+Public profile2 assets используют отдельную FIFO:4 active, не более32 ожидающих,
+ожидание не более8s. Private/auth/write capacity остаётся4. Cancel/close освобождают
+ожидания; после ожидания до Source fetch проверяются fresh Root/target/profile.
+Переполнение/таймаут возвращает503 и fixed `Retry-After:1` без Source fetch;
+очередь не повторяет запросы и не является durable execution/retry ledger.
+
 Native handoff — exact approved origin `/soty/connect?intent=<opaque43>`,
 не bearer-token и не permission. HIVE использует прежний confidential Native RP
 client и exact `/account/soty/callback`; Root issuer остаётся независимым.
