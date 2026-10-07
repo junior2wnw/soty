@@ -7,7 +7,8 @@ async function ready(t){const f=await createScopedGatewayFixture({t,renewal:true
   const consent=await f.nativeConsent(page);assert.equal(consent.status,200);return f;}
 async function continuation(f,value,requestId=random()) {
   const session=await f.wire.request(f.embedded+'/_soty/session',{body:{ticket:new URL(value.launchUrl).hash.slice(1)}});
-  assert.equal(session.status,200);const response=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId}});
+  assert.equal(session.status,200);const response=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId},
+    ...(session.body.renewal?{headers:{'x-soty-boot-check':session.body.sessionCheck}}:{})});
   return{session,response,requestId};
 }
 test('actual installed channel Root renew→Source RP/Native ACL ACK reuses consent and same request receipt', {skip:!renewalSourceAvailable},async t=>{
@@ -79,7 +80,8 @@ test('actual Source continuation lost wire ACK reads the durable receipt, withou
     aliases:f.planner().store.db.prepare("SELECT count(*) AS n FROM planner_soty_private WHERE kind='session'").get().n,
     receipts:f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rebind_receipts').get().n});
   const before=count(),args={appId:f.appId,handle:initial.scopedCloseHandle,requestId:random()},value=await f.reader.client.extension('apps.scoped.renew',args);
-  assert.equal((await f.wire.request(f.embedded+'/_soty/session',{body:{ticket:new URL(value.launchUrl).hash.slice(1)}})).status,200);
+  const candidate=await f.wire.request(f.embedded+'/_soty/session',{body:{ticket:new URL(value.launchUrl).hash.slice(1)}});assert.equal(candidate.status,200);
+  const candidateHeaders={'x-soty-boot-check':candidate.body.sessionCheck};
   let dropped=false;
   const loseResponse=(req,res)=>{
     if(req.url!=='/api/embed/session-continue'||dropped)return;
@@ -90,7 +92,7 @@ test('actual Source continuation lost wire ACK reads the durable receipt, withou
     };
   };
   f.planner().server.prependListener('request',loseResponse);
-  const unknown=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:args.requestId}});
+  const unknown=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:args.requestId},headers:candidateHeaders});
   f.planner().server.removeListener('request',loseResponse);
   assert.equal(dropped,true);assert.ok(unknown.status>=500);
   const committed=count();assert.equal(committed.grants,before.grants);assert.equal(committed.anchors,before.anchors);
@@ -98,7 +100,7 @@ test('actual Source continuation lost wire ACK reads the durable receipt, withou
   const pending=await f.reader.client.extension('apps.scoped.context',{appId:f.appId,handle:value.scopedCloseHandle});
   assert.equal(pending.sourceSession,undefined,'committed Source alias alone is not a Root ACK');
   await f.restartSource();
-  const recovered=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:args.requestId}});
+  const recovered=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:args.requestId},headers:candidateHeaders});
   assert.equal(recovered.status,200);assert.equal(recovered.body?.ready,true);assert.deepEqual(count(),committed);
   assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,200);
   assert.equal((await f.reader.client.extension('apps.scoped.context',{appId:f.appId,handle:value.scopedCloseHandle})).sourceSession?.ready,true);
