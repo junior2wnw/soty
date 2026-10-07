@@ -163,8 +163,21 @@ function pageClient(config, allowPath) {
       const checked = await requestJson('GET', undefined, issued.sessionCheck);
       if (offPage || generation !== currentGeneration) return;
       if (checked.sessionCheck !== issued.sessionCheck) throw { code: 'cookie_check' };
+      if(config.scoped){
+        if(typeof issued.scopedRequestId!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.scopedRequestId))throw{code:'app_scoped_context_closed'};
+        let ready=false;
+        try{const response=await fetch('/api/embed/session-continue',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',
+          headers:{'content-type':'application/json'},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
+          const bytes=await response.arrayBuffer();if(bytes.byteLength>1024)throw{code:'app_scoped_continue_invalid'};
+          const value=JSON.parse(new TextDecoder().decode(bytes));ready=response.ok&&value.schema==='soty.source-session-continuation.v1'&&value.ready===true;
+        }catch{if(config.renewal)throw{code:'app_scoped_continue_unknown'};}
+        if(offPage||generation!==currentGeneration)return;
+        if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};
+          window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
+      }
       show('opening', true); navigate(path, currentGeneration);
-    } catch (error) { if (!offPage && generation === currentGeneration) failure(error, checkingCookie ? 'cookie' : 'network'); }
+    } catch (error) { if (!offPage && generation === currentGeneration){if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
+      failure(error, checkingCookie ? 'cookie' : 'network');} }
     finally { if (generation === currentGeneration) busy = false; }
   }
   reset.addEventListener('click', async () => {
@@ -184,8 +197,9 @@ function pageClient(config, allowPath) {
   if (config.mode === 'boot') void boot();
 }
 
-function render({ mode, state, shellUrl, publicResetPath, nonce }) {
-  const config = { mode, initialState: state, shellUrl, publicResetPath, copy, errorStates: statesFor(publicResetPath) };
+function render({ mode, state, shellUrl, publicResetPath, nonce,scoped=false,renewal=false,parentOrigin }) {
+  const config = { mode, initialState: state, shellUrl, publicResetPath, copy, errorStates: statesFor(publicResetPath),
+    ...(scoped?{scoped:true,renewal,parentOrigin}:{}) };
   const text = copy[state];
   const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
@@ -194,8 +208,8 @@ function render({ mode, state, shellUrl, publicResetPath, nonce }) {
 <script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()});</script></body></html>`;
 }
 
-export function renderBootPage({ shellUrl, publicResetPath, nonce } = {}) {
-  return render({ mode: 'boot', state: 'loading', shellUrl: shellAddress(shellUrl, true), publicResetPath: resetPath(publicResetPath), nonce });
+export function renderBootPage({ shellUrl, publicResetPath, nonce,scoped=false,renewal=false,parentOrigin } = {}) {
+  return render({ mode: 'boot', state: 'loading', shellUrl: shellAddress(shellUrl, true), publicResetPath: resetPath(publicResetPath), nonce,scoped,renewal,parentOrigin });
 }
 
 export function renderStatusPage({ error, shellUrl, publicResetPath, nonce } = {}) {

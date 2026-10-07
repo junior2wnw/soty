@@ -225,7 +225,7 @@ export function createClientWithStorage(options, storage) {
     if (requireCurrent) await assertCurrent(actor);
     // Capture the real authenticated local signer before any challenge/network
     // await. The caller receives no signer object or generic retained RPC port.
-    const cleanupCapture=normalized.scopedAppCleanup===true && op==='apps.launch'
+    const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew'].includes(op)
       ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now()}):null;
     const digest = await sha256(canonicalJson(args));
     const challenge = await post({ op: 'challenge', args: { operation: op, digest } });

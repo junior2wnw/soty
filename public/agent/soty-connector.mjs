@@ -220,6 +220,7 @@ var ScopedConnectorHost = (() => {
       return "public-ui";
     if (["GET", "POST"].includes(method) && path === "/api/embed/login") return "auth-start";
     if (method === "GET" && path === "/api/embed/session-status" && !url.search) return "auth-read";
+    if (method === "POST" && path === "/api/embed/session-continue" && !url.search) return "auth-continue";
     if (method === "GET" && path === "/api/embed/callback")
       return "auth-callback";
     if (method === "GET" && path === "/api/embed/complete-link")
@@ -361,6 +362,28 @@ var ScopedConnectorHost = (() => {
   // modules/apps/scoped-embed/local-broker.mjs
   var import_node_http = __require("node:http");
   var import_node_stream = __require("node:stream");
+
+  // modules/apps/scoped-embed/source-continuation.mjs
+  function sourceContinuationAck(input, now = Date.now()) {
+    const value = capture(input);
+    need(value.schema === "soty.source-session-continuation.v1", "scoped_embed_continue_invalid", 502);
+    if (value.ready === false) {
+      closed(value, ["schema", "ready", "reason"]);
+      need(value.reason === "login_required", "scoped_embed_continue_invalid", 502);
+      return Object.freeze({ ready: false, reason: value.reason });
+    }
+    closed(value, ["schema", "ready", "sessionExpiresAt", "accessExpiresAt", "renewable", "receiptDigest"]);
+    need(value.ready === true && typeof value.renewable === "boolean" && Number.isSafeInteger(value.sessionExpiresAt) && value.sessionExpiresAt > now && value.sessionExpiresAt <= now + 86401e3 && Number.isSafeInteger(value.accessExpiresAt) && value.accessExpiresAt > now && value.accessExpiresAt <= Math.min(value.sessionExpiresAt, now + 301e3) && typeof value.receiptDigest === "string" && /^[a-f0-9]{64}$/.test(value.receiptDigest), "scoped_embed_continue_invalid", 502);
+    return Object.freeze({
+      ready: true,
+      sessionExpiresAt: value.sessionExpiresAt,
+      accessExpiresAt: value.accessExpiresAt,
+      renewable: value.renewable,
+      receiptDigest: value.receiptDigest
+    });
+  }
+
+  // modules/apps/scoped-embed/local-broker.mjs
   var requestHeaders = /* @__PURE__ */ new Set([
     "accept",
     "accept-language",
@@ -684,6 +707,17 @@ var ScopedConnectorHost = (() => {
           const location = response.headers.get("location");
           if (location) out.location = redirect(location, kind);
           let auth;
+          if (kind === "auth-continue" && response.status === 200) {
+            const body2 = Buffer.concat(parts.map((part) => Buffer.from(part)));
+            need(body2.length <= 1024, "scoped_embed_continue_invalid", 502);
+            let value;
+            try {
+              value = JSON.parse(body2.toString("utf8"));
+            } catch {
+              need(false, "scoped_embed_continue_invalid", 502);
+            }
+            auth = { kind: "continued", ack: sourceContinuationAck(value, clock()) };
+          }
           if (kind === "auth-read" && response.status === 200) {
             const bytes2 = Buffer.concat(parts.map((part) => Buffer.from(part)));
             need(bytes2.length <= 128, "scoped_embed_auth_invalid", 502);
@@ -3061,7 +3095,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.2";
+const connectorVersion = "1.4.3";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

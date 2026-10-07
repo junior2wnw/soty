@@ -65,7 +65,7 @@ try {
       void helper(req, res).catch(error => send(res, 400, { code: safeCode(error) }));
     }); } }] });
   await vite.listen();
-  fixture = await createScopedGatewayFixture({ frontPort, appPort, backendPort, distDir: root, t: { after: callback => { closeFixture = callback; } } });
+  fixture = await createScopedGatewayFixture({ frontPort, appPort, backendPort, distDir: root,renewal:process.env.SOTY_GATEWAY_RENEWAL_FIXTURE==='1', t: { after: callback => { closeFixture = callback; } } });
   // Ephemeral fixture certificate. It is not installed into any trust store and
   // never represents a production TLS validation result.
   const keyFile = join(fixture.directory, 'tls.key'), certFile = join(fixture.directory, 'tls.crt');

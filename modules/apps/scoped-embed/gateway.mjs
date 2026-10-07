@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createScopedEmbedAuthority } from './authority.mjs';
 import { capture, closed, hash, need, SCOPED_EMBED_LIMITS } from './profile.mjs';
+import {sourceContinuationAck} from './source-continuation.mjs';
 
 const nonce = () => randomBytes(32).toString('base64url');
 const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
@@ -39,7 +40,7 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
     open({actor,appId,domainId,target}) {
       sweep(); const profile=admissions.require(target);
       const context=authority.open({actor,appId,domainId,targetRevision:target.revision}), handle=nonce();
-      const record={context,profile,handleHash:hash(handle),session:null};records.set(context.reference.id,record);handles.set(record.handleHash,record);
+      const record={context,profile,handleHash:hash(handle),session:null,sourceSession:null};records.set(context.reference.id,record);handles.set(record.handleHash,record);
       return { record, closeHandle:handle };
     },
     attach(record,session) { current(record); record.session=session; return record; },
@@ -49,6 +50,9 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
       return current(record,connector);
     },
     context(record) { return current(record); },
+    sourceContext(record){current(record);const state=record.sourceSession;
+      if(!state||state.ready!==true||state.accessExpiresAt<=clock()||state.sessionExpiresAt<=clock())return state?.ready===false?{ready:false,reason:'login_required'}:null;
+      return{ready:true,renewable:state.renewable,sessionExpiresAt:state.sessionExpiresAt,accessExpiresAt:state.accessExpiresAt};},
     ownedContext(actor,appId,handle) {
       need(opaque(handle),'app_scoped_context_closed',403);sweep();
       const record=handles.get(hash(handle));
@@ -58,6 +62,8 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
     },
     captureHead(record, auth) {
       current(record); if(auth===undefined)return;
+      if(auth?.kind==='continued'){closed(auth,['kind','ack']);const parsed=sourceContinuationAck({schema:'soty.source-session-continuation.v1',...auth.ack},clock());
+        current(record);record.sourceSession=parsed;return;}
       const value=capture(auth);closed(value,['kind','digest']);
       need(['start','completion','cancel'].includes(value.kind),'app_scoped_auth_binding_invalid',403);
       if(value.kind==='cancel') {const prior=authStates.get(value.digest);need(!prior||prior.record===record,'app_scoped_auth_binding_conflict',403);authStates.delete(value.digest);return;}

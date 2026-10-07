@@ -200,6 +200,19 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,
     scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot}):null,
+    prepareRenewal(result){requireValue(current()&&scoped&&selected,'invalid_app_scoped_launch');
+      requireValue(result.runtimeProfile===scoped.profile&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
+      const source=captureSourcePin(result.scopedSource);requireValue(source&&scoped.source&&source.id===scoped.source.id&&source.version===scoped.source.version
+        &&source.digest===scoped.source.digest,'invalid_app_scoped_launch');
+      const url=validateAppLaunchUrl(result.url,shellUrl),boot=new URL(url);
+      requireValue(boot.origin===selected.origin&&[...boot.searchParams.keys()].join(',')==='path,mode'
+        &&boot.searchParams.get('path')===selected.path&&boot.searchParams.get('mode')==='renew','invalid_app_scoped_launch');
+      const entry=validateAppEntry(result.entry,{appId:selected.appId,domainId:selected.domainId,path:selected.path},shellUrl);
+      requireValue(entry.origin===selected.origin&&Number.isSafeInteger(result.scopedSlotExpiresAt)&&result.scopedSlotExpiresAt>Date.now()
+        &&result.scopedSlotExpiresAt<=Date.now()+310000&&typeof result.scopedRenewalRequestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(result.scopedRenewalRequestId),'invalid_app_scoped_launch');
+      return Object.freeze({url,handle:result.scopedCloseHandle,requestId:result.scopedRenewalRequestId,source,expiresAt:result.scopedSlotExpiresAt,cleanup:result.scopedCleanup,slot:Object.freeze({})});},
+    commitRenewal(previous,next){if(!current()||scoped?.slot!==previous.slot)return false;const old=scoped;
+      scoped=Object.freeze({profile:old.profile,handle:next.handle,source:next.source,cleanup:next.cleanup,slot:next.slot});abandon(old);return true;},
     async openExternal(openPopup) {
       if (!current()) return 'stale';
       if (externalPending) return 'busy';

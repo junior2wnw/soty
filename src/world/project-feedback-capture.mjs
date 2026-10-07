@@ -41,7 +41,7 @@ const peerSnapshot = value => value && Object.freeze({ approved: value.approved,
  * assertPeer checks original account/target/slot with the installed host.
  * capture MUST show an explicit Root picker/recorder/preview before returning
  * selected bytes. It does not submit/upload or create a feedback grant. */
-export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture, timeoutMs = 180000 } = {}) {
+export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,preparePeer,onCaptureActive, timeoutMs = 180000 } = {}) {
   if (!view?.addEventListener || [readPeer, assertPeer, capture].some(value => typeof value !== 'function')
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 180000) throw new Error('capture_host_invalid');
   let disposed = false, outstanding = null, seenPeer = null;
@@ -52,7 +52,7 @@ export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,
       projectId: request.projectId, contextRevision: request.contextRevision, kind: request.kind, ...extra }); } catch { /* A detached Source gets no data. */ }
   };
   const listener = event => {
-    const request = projectCaptureRequest(event.data), peer = peerSnapshot(readPeer());
+    const request = projectCaptureRequest(event.data);let peer = peerSnapshot(readPeer());
     if (!request || !peer || peer.approved !== true || !origin(peer.origin) || !id(peer.appId) || !id(peer.sourceId)
       || !id(peer.accountId) || !Number.isSafeInteger(peer.generation) || !peer.slot || event.source !== peer.window
       || event.origin !== peer.origin || request.sourceId !== peer.sourceId || event.ports?.length !== 1) return;
@@ -65,10 +65,12 @@ export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,
     seen.add(request.requestId);
     const controller = new AbortController(), task = { controller, port, request, peer };
     outstanding = task;
-    let active = true, completed = false;
+    let active = true, completed = false,leaseActive=false;
+    const releaseLease=()=>{if(!leaseActive)return;leaseActive=false;onCaptureActive?.(false);};
     const fail = code => {
       if (!active || completed) return;
       completed = true; active = false; controller.abort();
+      releaseLease();
       send(port, request, 'capture_error', { code }); port.close();
     };
     task.fail = fail;
@@ -82,10 +84,19 @@ export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,
     };
     port.start?.();
     const timer = setTimeout(() => fail('capture_timeout'), timeoutMs);
-    const guard = setInterval(() => { if (!live(peer)) fail('capture_context_changed'); }, 250);
+    let preparing=typeof preparePeer==='function';
+    const guard = setInterval(() => { if(!preparing&&!live(peer)) fail('capture_context_changed'); }, 250);
     const operation = (async () => {
       try {
+        if(preparing){const before=peer;
+          if(await preparePeer(controller.signal)!==true||controller.signal.aborted||!active)throw new Error('capture_context_changed');
+          const next=peerSnapshot(readPeer());
+          if(!next||next.window!==before.window||next.origin!==before.origin||next.sourceId!==before.sourceId||next.appId!==before.appId
+            ||next.accountId!==before.accountId)throw new Error('capture_context_changed');
+          peer=next;task.peer=next;preparing=false;
+        }
         await current();
+        leaseActive=true;onCaptureActive?.(true);
         const selected = await capture({ appId: peer.appId, title: peer.title, request, signal: controller.signal });
         await current();
         const attachments = selectedPayload(selected, request.kind);
@@ -96,7 +107,7 @@ export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,
       } catch (error) {
         fail(error?.name === 'AbortError' ? 'capture_cancelled' : error?.message === 'capture_context_changed' ? 'capture_context_changed' : 'capture_failed');
       } finally {
-        active = false; controller.abort(); clearTimeout(timer); clearInterval(guard); port.onmessage = null;
+        active = false; controller.abort();releaseLease(); clearTimeout(timer); clearInterval(guard); port.onmessage = null;
         if (outstanding === task) outstanding = null;
       }
     })();

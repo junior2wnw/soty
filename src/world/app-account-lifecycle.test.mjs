@@ -12,6 +12,7 @@ import * as appDeployment from './app-deployment.mjs';
 import * as projectCapture from './project-feedback-capture.mjs';
 import * as projectPicker from './project-feedback-picker.mjs';
 import * as appProjectCapture from './app-project-capture.mjs';
+import * as appScopedRenewal from './app-scoped-renewal.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -74,6 +75,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './project-feedback-capture.mjs': projectCapture,
     './project-feedback-picker.mjs': projectPicker,
     './app-project-capture.mjs': appProjectCapture,
+    './app-scoped-renewal.mjs': appScopedRenewal,
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },

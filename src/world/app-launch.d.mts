@@ -25,6 +25,8 @@ export function createAppLauncher(options: {
   isCurrent(): boolean;
   runtimeProfile():string|null;
   scopedCapture():{handle:string;source:unknown;slot:object}|null;
+  prepareRenewal(result:{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedCleanup?:(()=>Promise<void>)|undefined}):import('./app-scoped-renewal.mjs').ScopedRenewReply;
+  commitRenewal(previous:{slot:object},next:import('./app-scoped-renewal.mjs').ScopedRenewReply):boolean;
   openExternal(openPopup: () => AppLaunchPopup | null): Promise<'opened' | 'blocked' | 'stale' | 'busy'>;
   dispose(): void;
 };

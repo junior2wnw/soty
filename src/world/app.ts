@@ -1593,6 +1593,10 @@ class WorldApplication {
             ...(result.runtimeProfile?{runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle}:{}),
             ...(result.scopedSource?{scopedSource:result.scopedSource}:{}),
             ...(cleanup?{scopedCleanup:cleanup}:{})};}),
+      renew:this.options.openApp?undefined:parameters=>this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown}>('apps.scoped.renew',{...parameters}).then(result=>({
+        url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
+        scopedSlotExpiresAt:result.scopedSlotExpiresAt,scopedRenewalRequestId:result.scopedRenewalRequestId,scopedSource:result.scopedSource,scopedCleanup:this.options.appSlotCleanup?.(result)??undefined,
+      })),
       onNavigate: (next, navigation) => {
         if (!current()) return;
         if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; }

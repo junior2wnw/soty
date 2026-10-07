@@ -14,6 +14,8 @@ function fixture(t, options = {}) {
   const view = { addEventListener(name, value) { assert.equal(name, 'message'); listener = value; },
     removeEventListener(_name, value) { if (listener === value) listener = undefined; } };
   const handle = mountProjectCaptureBridge({ view, readPeer: () => peer,
+    ...(options.preparePeer?{preparePeer:signal=>options.preparePeer(peer,signal)}:{}),
+    ...(options.onCaptureActive?{onCaptureActive:options.onCaptureActive}:{}),
     async assertPeer(value, signal) { assertions++; return options.assertPeer ? options.assertPeer(value, signal) : true; },
     async capture(value) { captureCalls++; return options.capture ? options.capture(value) : payload(); },
     timeoutMs: options.timeoutMs || 8000 });
@@ -41,6 +43,18 @@ test('only exact current peer can open Root selection, response contains no slot
   assert.deepEqual(Object.keys(result).sort(), ['attachments', 'contextRevision', 'kind', 'projectId', 'requestId', 'schema', 'sourceId', 'type']);
   const replay = await f.deliver().next;
   assert.equal(replay.code, 'capture_replayed'); assert.equal(f.counts().captureCalls, 1);
+});
+test('pre-picker renewal captures the new slot; renewal during selection discards old media',async t=>{
+  let old,prepared;const f=fixture(t,{async preparePeer(peer){old=peer.slot;peer.slot={};peer.generation++;prepared=peer.slot;return true;},
+    async assertPeer(peer){assert.equal(peer.slot===prepared,true);assert.equal(peer.slot===old,false);return true;}});
+  assert.equal((await f.deliver().next).type,'capture_result');
+  let release,begun;const waiting=new Promise(done=>{release=done;}),started=new Promise(done=>{begun=done;});
+  const second=fixture(t,{async preparePeer(){return true;},async capture(){begun();await waiting;return payload();}}),reply=second.deliver();
+  await started;second.peer.slot={};second.peer.generation++;release();assert.equal((await reply.next).code,'capture_context_changed');
+});
+test('pre-picker preparation cannot retarget the source window/account even before the dialog',async t=>{
+  const f=fixture(t,{async preparePeer(peer){peer.accountId='different-account';return true;}});
+  assert.equal((await f.deliver().next).code,'capture_context_changed');assert.equal(f.counts().captureCalls,0);
 });
 
 test('foreign window/origin/source/profile and actor/slot fields are denied before Root capture', async t => {

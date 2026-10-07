@@ -11,14 +11,15 @@ import {createClientWithStorage} from '../../../connect/browser/client.mjs';
 import {runtimeTargetDigest,SCOPED_RUNTIME_PROFILE} from '../../server/schema.mjs';
 
 export const sourceRoot=resolve(process.env.SOTY_PLANNER_GATEWAY_SOURCE_ROOT||'C:/Users/Junio/.codex/worktrees/planner-scoped-source');
-let sourceAvailable=false,source,sdk,createSotyBffProtocol;
+let sourceAvailable=false,renewalSourceAvailable=false,source,sdk,createSotyBffProtocol;
 try{await access(join(sourceRoot,'server/soty-source-host.mjs'));await access(join(sourceRoot,'node_modules/tsx/dist/esm/api/index.mjs'));sourceAvailable=true;}
 catch{if(process.env.SOTY_PLANNER_GATEWAY_SOURCE_ROOT)throw new Error('Explicit selected Source package unavailable');}
 if(sourceAvailable){const {tsImport}=await import(pathToFileURL(join(sourceRoot,'node_modules/tsx/dist/esm/api/index.mjs')).href);
   source=await tsImport(pathToFileURL(join(sourceRoot,'server/main.ts')).href,import.meta.url);
   ({createSotyBffProtocol}=await tsImport(pathToFileURL(join(sourceRoot,'server/soty-protocol.ts')).href,import.meta.url));
-  sdk=await import(pathToFileURL(join(sourceRoot,'server/soty-source-host.mjs')).href);}
-export {sourceAvailable};
+  sdk=await import(pathToFileURL(join(sourceRoot,'server/soty-source-host.mjs')).href);
+  try{await access(join(sourceRoot,'server/soty-rp-format.ts'));renewalSourceAvailable=true;}catch{} }
+export {sourceAvailable,renewalSourceAvailable};
 const random=()=>randomBytes(32).toString('base64url');
 const wait=ms=>new Promise(done=>setTimeout(done,ms));
 export async function until(check,timeout=10000){const end=Date.now()+timeout;while(Date.now()<end){const value=await check();if(value)return value;await wait(30);}throw new Error('scoped_fixture_timeout');}
@@ -27,7 +28,7 @@ const memory=()=>{let value;return{async read(){return structuredClone(value??nu
 
 /** Synthetic/temp-only environment. All app admission, Connect, installed
  * channel, HTTP and Source/OIDC operations below use actual product services. */
-export async function createScopedGatewayFixture({frontPort,appPort,backendPort:requestedBackendPort,distDir,t}={}) {
+export async function createScopedGatewayFixture({frontPort,appPort,backendPort:requestedBackendPort,distDir,t,renewal=false}={}) {
   assert.ok(sourceAvailable);
   const directory=await mkdtemp(join(tmpdir(),'soty-scoped-full-')),runtimeDir=join(directory,'runtime'),dataDir=join(directory,'root'),dist=distDir||join(directory,'dist');
   await mkdir(runtimeDir);if(!distDir){await mkdir(dist);await writeFile(join(dist,'index.html'),'<!doctype html><title>Synthetic Root interaction</title>');}
@@ -76,16 +77,16 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
   const created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Планировщик · Synthetic project',port:sourcePort,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
   const appId=created.app.id,embedded=`https://${appId}.localhost:${appTlsPort}`,issuer=origin+'/human-identity',clientSecret=random(),sourceKey=randomBytes(32);
   const privateJwk=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({format:'jwk'});Object.assign(privateJwk,{kid:'scoped-fixture',use:'sig',alg:'RS256'});
-  const humanIdentity={enabled:true,issuer,registryId:'soty',environmentId:'production',clients:[{id:'planner-scoped-fixture',label:'Synthetic selected Planner',redirectUri:embedded+'/api/embed/callback',clientSecret}],
-    jwks:{keys:[privateJwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'scoped-fixture'};
+  const humanIdentity={enabled:true,issuer,registryId:'soty',environmentId:'production',clients:[{id:'planner-scoped-fixture',label:'Synthetic selected Planner',redirectUri:embedded+'/api/embed/callback',clientSecret,...(renewal?{version:2}:{})}],
+    jwks:{keys:[privateJwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'scoped-fixture',...(renewal?{renewal:{admissionEnabled:true,clientIds:['planner-scoped-fixture']}}:{})};
   const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:[ 'fixture_scoped_link_12345678901234567',claim.hostDeviceId,claim.connectorId].join('|'),port:sourcePort,entryPath:'/embed',profile:SCOPED_RUNTIME_PROFILE};
   target.digest=runtimeTargetDigest(target);
   const profile={schema:SCOPED_RUNTIME_PROFILE,appId,connector:{linkId:'fixture_scoped_link_12345678901234567',hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId},
     target:{revision:target.revision,digest:target.digest},sourceProfile:{id:'planner.selected-workspace',version:1,digest:'9'.repeat(64)},
     resource:{registryId:'soty',tenantId:owner.account.accountId,environmentId:'production',appId,resourceId:'planner:selected',workspaceId},issuer,clientId:'planner-scoped-fixture',embedOrigin:embedded,nativeOrigin:native,parentOrigin:origin};
   await stopChild();await root.locals.closeServices();
-  const selectedOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,scopedEmbedProfiles:[profile]};root=createHttpApp(dist,selectedOptions);
-  const rpProfile={issuer,clientId:profile.clientId,clientSecret,redirectUri:embedded+'/api/embed/callback'},rp=createSotyBffProtocol(rpProfile);
+  const selectedOptions={...rootOptions,humanIdentity,humanIdentityRenewalMigration:renewal,allowScopedEmbedMigration:true,scopedEmbedProfiles:[profile]};root=createHttpApp(dist,selectedOptions);
+  const rpProfile={issuer,clientId:profile.clientId,clientSecret,redirectUri:embedded+'/api/embed/callback',...(renewal?{renewalProfile:'soty.human-rp-renewal.v1'}:{})},rp=createSotyBffProtocol(rpProfile);
   const authorityReader=sdk.createSourceAuthorityClient({profile,key:sourceKey,connectorPort});
   const verifier=sdk.createSourceProofVerifier({profile,key:sourceKey,consumeNonce(nonce,expires){
     const db=planner.store.db;db.exec('CREATE TABLE IF NOT EXISTS fixture_source_nonce(nonce TEXT PRIMARY KEY,expires_at INTEGER NOT NULL)');
@@ -93,7 +94,8 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
     if(db.prepare('SELECT count(*) AS n FROM fixture_source_nonce').get().n>=4096)return false;
     try{db.prepare('INSERT INTO fixture_source_nonce VALUES(?,?)').run(nonce,expires);return true;}catch{return false;}}});
   const sourceOptions={dbPath:sourceDb,port:sourcePort,host:'127.0.0.1',scheduler:false,production:true,embed:{nativeOrigin:native,embedOrigin:embedded,parentOrigin:origin,workspaceId,profile:rpProfile,sessionKey:random(),
-    bridge:{consentDigest:sdk.sourceConsentDigest(profile),verifyReady:request=>verifier.verifyReady(request),verifyRequest:(request,body)=>verifier.verify(request,{body}),continuation:request=>verifier.context(request).reference,
+    ...(renewal?{renewal:{admissionEnabled:true,allowMigration:true}}:{}),
+    bridge:{consentDigest:sdk.sourceConsentDigest(profile),verifyReady:request=>verifier.verifyReady(request),verifyRequest:(request,body)=>verifier.verify(request,{body}),continuation:request=>verifier.context(request).reference,context:request=>verifier.context(request),
       assertCurrent:async request=>{await authorityReader({reference:verifier.context(request).reference,connector:profile.connector});}},
     currentSotySubject:sdk.createSourceCurrentSubjectPort({profile,verifier,readAuthority:authorityReader,verifyHuman:async proof=>({issuer,subject:await rp.currentSubject(proof.accessToken,proof.subject)})})}};
   planner=await source.createPlannerServer(sourceOptions);await planner.listen();
@@ -109,10 +111,10 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
   const wire=new FixtureWire({backendPort,sourcePort,embedded,native,origin});let serial=0;
   async function launch(signer=reader){const value=await signer.client.extension('apps.launch',{appId});const url=new URL(value.launchUrl);
     const session=await wire.request(embedded+'/_soty/session',{body:{ticket:url.hash.slice(1)}});assert.equal(session.status,200);return value;}
-  async function login(signer=reader){let result=await wire.request(embedded+'/api/embed/login');assert.equal(result.status,302);
+  async function login(signer=reader,long=renewal){let result=await wire.request(embedded+'/api/embed/login');assert.equal(result.status,302);
     result=await wire.request(result.location);assert.ok([302,303].includes(result.status));const flow=result.location;
     await wire.request(flow);const context=(await wire.request(flow.href+'/context')).body;
-    await signer.client.extension('identity.human.approve',{interactionId:context.interactionId,browserNonce:context.browserNonce,csrf:context.csrf,requestId:'scoped-decision-'+(++serial),decision:'approve',expectedAccountId:signer.account.accountId},{expectedAccountId:signer.account.accountId});
+    await signer.client.extension('identity.human.approve',{interactionId:context.interactionId,browserNonce:context.browserNonce,csrf:context.csrf,requestId:'scoped-decision-'+(++serial),decision:'approve',expectedAccountId:signer.account.accountId,...(long?{stayInAppSeconds:86400}:{})},{expectedAccountId:signer.account.accountId});
     result=await wire.request(flow.href+'/complete',{fields:{csrf:context.csrf}});assert.equal(result.status,303);result=await wire.request(result.location);
     if(result.status===200){const action=/<form method="post" action="([^"]+)">/.exec(result.text)?.[1];const fields=Object.fromEntries([...result.text.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"\/>/g)].map(match=>[match[1],match[2]]));result=await wire.request(action,{fields});result=await wire.request(result.location);}
     assert.ok([302,303].includes(result.status));return wire.request(result.location,{withoutAppCookie:true});}

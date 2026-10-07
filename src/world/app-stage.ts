@@ -15,11 +15,13 @@ import './project-feedback-picker.css';
 import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
 import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
 import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
+import {createScopedSlotRenewal,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
+  renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
@@ -154,7 +156,38 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
         appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
   };
+  let renewalFrame:HTMLIFrameElement|null=null;
+  const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:()=>{
+    const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
+  },readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
+    async request(args){if(!options.renew)throw new Error('scoped_renewal_unavailable');
+      const reply=await options.renew({appId:app.appId,...args,expectedAccountId:accountId});return launcher.prepareRenewal(reply);},
+    async bootstrap(reply:ScopedRenewReply){return new Promise<'ready'|'login_required'|'unknown'>(resolve=>{
+      const hidden=el('iframe');hidden.hidden=true;hidden.setAttribute('aria-hidden','true');hidden.tabIndex=-1;
+      hidden.sandbox.add('allow-scripts','allow-same-origin');renewalFrame=hidden;let finished=false;
+      const finish=(value:'ready'|'login_required'|'unknown')=>{if(finished)return;finished=true;clearTimeout(timeout);view.removeEventListener('message',receive);
+        controller.signal.removeEventListener('abort',cancel);hidden.remove();if(renewalFrame===hidden)renewalFrame=null;resolve(value);};
+      const cancel=()=>finish('unknown');
+      const receive=(event:MessageEvent)=>{if(event.source!==hidden.contentWindow||event.origin!==selectedEntry?.origin)return;
+        const data=event.data;if(!data||typeof data!=='object'||data.schema!=='soty.app-slot-ready.v1'||typeof data.ready!=='boolean'
+          ||Object.keys(data).some(key=>!['schema','requestId','ready','unknown'].includes(key))||data.ready&&data.requestId!==reply.requestId)return;
+        finish(data.ready?'ready':data.unknown===true?'unknown':'login_required');};
+      view.addEventListener('message',receive);controller.signal.addEventListener('abort',cancel,{once:true});
+      const timeout=setTimeout(()=>finish('unknown'),12000);hidden.src=reply.url;screen.append(hidden);
+    });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;return true;},
+    onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.');
+      else if(state==='login_required')showMessage('Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
+      else if(state==='ready')showMessage('');},
+  });
+  let renewalTimer:number|null=null;
+  runtime.addEventListener('load',()=>{if(current()&&options.renew&&launcher.runtimeProfile()==='soty.selected-human-embed.v1'){
+    if(renewalTimer===null)renewalTimer=view.setInterval(()=>{if(current()&&host.ownerDocument.visibilityState==='visible')void renewal.tick().catch(()=>{frameGeneration++;});},30000);
+    void renewal.probe().catch(()=>{});
+  }},{capture:true,signal:controller.signal});
+  let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
+    onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
+    async preparePeer(signal){if(signal.aborted||!current())return false;return options.renew?renewal.ensure(190000):true;},
     async assertPeer(peer,signal){
       const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);
       if(signal.aborted||!current()||!binding||!source||peer.slot!==binding.slot)return false;
@@ -314,6 +347,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();renewal.dispose();if(renewalTimer!==null)view.clearInterval(renewalTimer);renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

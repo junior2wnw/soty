@@ -69,6 +69,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const scopedAdmissions = createScopedAdmissionRegistry({ db, profiles: scopedEmbedProfiles, clock: now });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
   let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway;
+  const scopedRenewals=new Map();
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
@@ -77,6 +78,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if(scopedEmbedProfiles.length && typeof withHumanSubjectAuthority==='function') scopedGateway=createScopedGateway({
       admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,clock:now,
       onClose(record) {
+        for(const [key,value]of scopedRenewals)if(value.record===record)scopedRenewals.delete(key);
         for(const stream of [...live.values()])if(stream.scopedRecord===record)closeStream(stream,'app_access_revoked');
         const channel=channels.get(connectorKey(record.profile.connector));
         if(channel?.bindingVersion===2)send(channel,{type:'scoped-context-closed',channelId:channel.channelId,appId:record.context.appId,reference:record.context.reference});
@@ -133,8 +135,41 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (keys.has(channel.key) || (channel.bindingVersion === 2 && runtimeBindings.getState(channel, event.appId).state !== 'unavailable')) sync(channel);
       }
     } });
-  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context']),
+  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context','apps.scoped.renew']),
     async executeAsync({ op, args = {}, actor }) {
+      if(op==='apps.scoped.renew'){
+        args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId']);const id=appId(args.appId);
+        assertApps(scopedGateway&&typeof args.handle==='string'&&/^[A-Za-z0-9_-]{43}$/.test(args.handle)
+          &&typeof args.requestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(args.requestId),'app_scoped_renew_invalid',403);
+        for(const [key,value]of scopedRenewals)if(value.record.context.expiresAt<=now())scopedRenewals.delete(key);
+        const key=digest(id+'\0'+args.requestId),intent=digest(args.handle),prior=scopedRenewals.get(key);
+        assertActor(actor);
+        let issued;
+        if(prior){assertApps(prior.intent===intent&&prior.accountId===actor.accountId&&prior.deviceId===actor.deviceId,'app_scoped_renew_conflict',409);
+          scopedGateway.context(prior.record);issued=prior;
+        }else{
+          assertApps(scopedRenewals.size<256,'app_scoped_renew_busy',429);
+          const {record:old,context:first}=scopedGateway.ownedContext(actor,id,args.handle);
+          assertApps(old.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
+          const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});
+          await Promise.resolve();assertActor(actor);const {record,context:fresh}=scopedGateway.ownedContext(actor,id,args.handle);
+          assertApps(record===old&&JSON.stringify(first)===JSON.stringify(fresh),'app_scoped_context_closed',403);
+          const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,first.entry.domainId);
+          assertApps(domain&&domain.origin===first.entry.origin,'app_scoped_context_closed',403);
+          const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor});assertRuntimeBinding(decision,{requireReady:true});
+          const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))}),next=scoped.record.context;
+          const same=['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
+            &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]));
+          if(!same){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
+          issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId};scopedRenewals.set(key,issued);
+        }
+        assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
+        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId});
+        return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
+          runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
+          scopedRenewalRequestId:args.requestId,
+          entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:'/embed'}};
+      }
       if(op==='apps.scoped.context') {
         args=authenticatedArgs(actor,args);exact(args,['appId','handle']);const id=appId(args.appId);
         assertApps(scopedGateway,'app_scoped_context_closed',403);
@@ -142,7 +177,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           assertActor(actor);const {record,context}=scopedGateway.ownedContext(actor,id,args.handle);
           assertApps(record.session&&sessions.get(record.session.sessionKey)===record.session,'app_scoped_context_closed',403);
           const decision=publications.recheckAccess(record.session.decision);assertRuntimeBinding(decision,{requireReady:true});
-          return {ready:true,appId:id,scopedSource:{...context.sourceProfile},target:{...context.target},expiresAt:context.expiresAt};
+          const sourceSession=scopedGateway.sourceContext(record);
+          return {ready:true,appId:id,scopedSource:{...context.sourceProfile},target:{...context.target},expiresAt:context.expiresAt,
+            ...(sourceSession?{sourceSession}:{} )};
         };
         // This deferred signed operation never joins the old slot actor to the
         // new dispatch transaction. Original authority is freshly fenced twice.
@@ -626,9 +663,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       res.statusCode = 204; res.end(); return;
     }
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
-      assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path') && internalUrl.searchParams.getAll('path').length <= 1, 'invalid_app_path');
+      assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path'||selected&&key==='mode') && internalUrl.searchParams.getAll('path').length <= 1
+        &&internalUrl.searchParams.getAll('mode').length<=1&&(!internalUrl.searchParams.has('mode')||internalUrl.searchParams.get('mode')==='renew'),'invalid_app_path');
       const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
-      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath) });
+      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath),scoped:selected,
+        renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin });
       setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(html); return;
@@ -659,7 +698,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // A preview embedded in Soty does not depend on unrestricted third-party
       // cookies, and cannot reuse the session from an unrelated top-level site.
       res.setHeader('Set-Cookie', `__Host-${cookieName}=${value}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=3600`);
-      json(res, 200, { ok: true, entryPath: ticket.entryPath, sessionCheck }); return;
+      json(res, 200, { ok: true, entryPath: ticket.entryPath, sessionCheck,
+        ...(ticket.scopedRecord?{scopedRequestId:ticket.scopedRecord.context.reference.id}:{}),...(ticket.rebind?{renewal:true,renewalRequestId:ticket.renewalRequestId}:{}) }); return;
     }
     if (path === '/_soty/session' && req.method === 'DELETE') {
       // Reset is an explicit new anonymous entry. It never bypasses the current
@@ -907,7 +947,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             if(stream.scopedRecord) {
               const profile=stream.scopedRecord.profile,route=scopedRoute(stream.req.method,stream.req.url);
               if(frame.auth!==undefined) {
-                assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
+                assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='continued'?route==='auth-continue'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
                 scopedGateway.captureHead(stream.scopedRecord,frame.auth);
               }
               const sourcePolicy=frame.headers?.['content-security-policy'];

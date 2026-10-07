@@ -10,7 +10,7 @@ export function captureSourcePin(value) {
   return Object.freeze({id:value.id,version:value.version,digest:value.digest});
 }
 export function matchesScopedCaptureContext(value,{appId,source},now=Date.now()) {
-  if(!ownRecord(value,['ready','appId','scopedSource','target','expiresAt'],['ok'])||value.ready!==true||value.appId!==appId
+  if(!ownRecord(value,['ready','appId','scopedSource','target','expiresAt'],['ok','sourceSession'])||value.ready!==true||value.appId!==appId
     ||(Object.hasOwn(value,'ok')&&value.ok!==true)||!Number.isSafeInteger(value.expiresAt)||value.expiresAt<=now||value.expiresAt>now+310000)return false;
   const pin=captureSourcePin(value.scopedSource);
   return !!pin&&pin.id===source.id&&pin.version===source.version&&pin.digest===source.digest

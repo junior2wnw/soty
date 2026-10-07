@@ -1,6 +1,7 @@
 import { createSourceProofSigner } from "./source-proof.mjs";
 import { request as nodeHttpRequest } from "node:http";
 import { Readable } from "node:stream";
+import {sourceContinuationAck} from './source-continuation.mjs';
 import {
   capture,
   closed,
@@ -386,6 +387,9 @@ export function createLocalScopedEmbedBroker({
         const location = response.headers.get("location");
         if (location) out.location = redirect(location, kind);
         let auth;
+        if(kind==='auth-continue'&&response.status===200){const body=Buffer.concat(parts.map(part=>Buffer.from(part)));need(body.length<=1024,'scoped_embed_continue_invalid',502);
+          let value;try{value=JSON.parse(body.toString('utf8'));}catch{need(false,'scoped_embed_continue_invalid',502);}
+          auth={kind:'continued',ack:sourceContinuationAck(value,clock())};}
         if(kind==='auth-read' && response.status===200) {
           const bytes=Buffer.concat(parts.map(part=>Buffer.from(part)));need(bytes.length<=128,'scoped_embed_auth_invalid',502);
           let value;try{value=JSON.parse(bytes.toString('utf8'));}catch{need(false,'scoped_embed_auth_invalid',502);}

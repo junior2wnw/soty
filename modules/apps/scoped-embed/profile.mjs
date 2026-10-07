@@ -241,6 +241,7 @@ export function scopedRoute(method, input) {
     return "public-ui";
   if (["GET", "POST"].includes(method) && path === "/api/embed/login") return "auth-start";
   if (method === 'GET' && path === '/api/embed/session-status' && !url.search) return 'auth-read';
+  if (method === 'POST' && path === '/api/embed/session-continue' && !url.search) return 'auth-continue';
   if (method === "GET" && path === "/api/embed/callback")
     return "auth-callback";
   if (method === "GET" && path === "/api/embed/complete-link")
