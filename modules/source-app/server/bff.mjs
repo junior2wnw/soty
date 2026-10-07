@@ -319,7 +319,10 @@ export function createSourceAppBff(options) {
       // Basic continuation never changes Source authority or creates a long
       // session. S2 durable resume/rebind requires an explicit storage consumer.
       send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: false,
-        sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt), accessExpiresAt: current.proof.expiresAt,
+        sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt),
+        // This is the usable Basic access bound. A raw AT may outlive the
+        // original Source session or Root slot; the ACK must not widen either.
+        accessExpiresAt: Math.min(current.proof.expiresAt, current.proof.sessionExpiresAt, context.expiresAt),
         receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }); return;
     }
     const operation = url.pathname === '/api/embed/query' ? 'read' : url.pathname === '/api/embed/invoke' ? 'execute' : url.pathname === '/api/embed/receipt' ? 'readProof' : null;
