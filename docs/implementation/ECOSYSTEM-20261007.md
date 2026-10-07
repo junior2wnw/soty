@@ -24,6 +24,10 @@
 
 ## Выпуск 2: проекты SSH Dev в «Поиске»
 
+Текущее состояние 07.10.2026: Тавыш, Переметрика и Поведай зарегистрированы владельцем; именные адреса активны с личными допусками, `listed=false`. Они не добавлены автоматически в «Моё». Публичный общий каталог и native-вход ещё не приняты: проверяются сохранение прежних аккаунтов, cookie/Origin/CSRF, данные и холодное восстановление. «ХочуИпотеку» требует отдельного составного фронта из двух существующих сервисов; один статический порт не обслуживает его API. Прежние домены сохранены.
+
+Отдельный art-кандидат `ec50df727f47ea374a5668631868fe6cbcd75c76` содержит только оформление и четыре WebP Переметрики. Первая попытка его выкладки отклонена после тайм-аута реального восстановления; штатно восстановлен прежний `25b3d4` с одним writer и рабочим хранилищем. Непринятая попытка не является внедрением. Повтор возможен после независимого разбора и восстановления копии в отдельном экземпляре; свидетельства — `D:/соты/output/soty-implementation-20261007/release-art/`.
+
 1. Снять свежий inventory реальных процессов, источников, health и публичных доменов. Уже зарегистрированные HIVE/NFC переиспользовать; разные владельцы остаются разными владельцами.
 2. Для каждого проекта: старый вход → карточка «Поиска» → предварительный просмотр → открыть → добавить в своё пространство → вернуться → повторно войти. Приватные кабинеты/проекты не становятся публичными из-за публикации карточки.
 3. Первыми квалифицировать Тавыш и Переметрику, затем Поведай и остальные действующие пользовательские сайты. Не считать 502 готовым приложением. Отсутствующий Planner сначала развернуть с правильным входом; Scope оставить ограниченным до квалификации его публичной границы.
@@ -39,7 +43,7 @@
 |---|---|---|
 | P0.1 Identity → inference tenant | Connect principal; account budget; request identity; revoke/ABA/replay | verified-component в отдельной commerce ветке; host/RP/CSRF integration pending |
 | P0.2 Device ceremony/vault | отдельные signing/wrapping ключи; proof of possession; generation CAS; device revoke | pending integration |
-| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | удержания и reconciliation core verified-component; trusted supplier worker, historical pending и leases pending |
+| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | удержания, reconciliation и admission-only leases verified-component; trusted supplier worker, route pin, historical pending и production integration pending |
 | P0.4 Personal memory | неизменяемый scope; trusted admission; erase/tombstones; durable restore floor; cross-account и replay | verified-component; production admission не подключён |
 | P0.5 Executor | key-free guest; approved roots/egress; resources; cancellation stop receipt; no host fallback | pending |
 
