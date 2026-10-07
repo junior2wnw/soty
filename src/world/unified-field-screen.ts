@@ -2,6 +2,7 @@ import './unified-field.css';
 import { createFieldDocument, fieldEntityKey, type FieldDocument, type FieldEntityRef } from '../../modules/field/contract.mjs';
 import { createUnifiedField, type FieldDirectoryEntity, type UnifiedField, type UnifiedFieldMode, type UnifiedFieldSummary, type UnifiedFieldViewState } from './unified-field';
 import { nextFieldSlot } from './unified-field-state.mjs';
+import { createPersonalFieldDocument, ensureFieldEntityPlacement } from './app-field-placement.mjs';
 import { layoutUnifiedField, fieldBounds, rectPoints } from './unified-field-layout.mjs';
 import { fitFieldCamera } from './unified-field-camera.mjs';
 import { createFieldSearchPlacement } from './unified-field-search.mjs';
@@ -24,13 +25,14 @@ export interface UnifiedFieldScreenOptions {
   onCreate(kind: 'app' | 'community' | 'device' | 'person' | 'assistant'): void;
   onAppSettings?: (app: DirectoryApp) => void;
   onMessage(message: string, error?: boolean): void;
+  onContextChange?(contextId: string): void;
   resolveArt?: (entity: FieldDirectoryEntity) => import('./app-art.mjs').AppArt | null;
 }
 export interface UnifiedFieldScreen {
   element: HTMLElement; ready: Promise<void>;
   setMode(mode: UnifiedFieldMode, query?: string, filter?: FieldFilter): void;
   attachHeaderSearch(header: HTMLElement): void;
-  focusSearch(): void; openAdd(): void; refresh(): Promise<void>;
+  focusSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(): Promise<void>;
   hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
 }
 
@@ -208,6 +210,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }));
   }
   function updateSummary(next: UnifiedFieldSummary): void {
+    if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()) options.onContextChange?.(next.focusContextId);
     if (mode === 'mine' && selected?.shortcutId) {
       const inspected = next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId);
       if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
@@ -243,7 +246,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   function applyPersistence(next: FieldPersistenceState): void {
     if (!current()) return; state = next; updateStatus();
     if (!engine && next.state !== 'loading' && next.document.contexts.length) { mountEngine(next); loading.hidden = true; }
-    if (engine && next.state === 'saved' && !engine.hasUnsavedChanges()) { engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved' }); updateMineFilter(); }
+    if (engine && next.state === 'saved' && !engine.hasUnsavedChanges()) {
+      const previousRefs = new Set(engine.snapshot().shortcuts.map(shortcut => fieldEntityKey(shortcut.entity)));
+      const newRefs = next.document.shortcuts.some(shortcut => !previousRefs.has(fieldEntityKey(shortcut.entity)));
+      engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved' }); updateMineFilter();
+      // A layout received from another window/device contains references, not
+      // names or access. Resolve new identities through the existing directory.
+      if (newRefs) run(loadMine());
+    }
   }
   function exportLayout(): void {
     const url = URL.createObjectURL(new Blob([JSON.stringify(persistence.exportPending(), null, 2)], { type: 'application/json' }));
@@ -405,7 +415,25 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const submit = button('Добавить', 'plus', 'sw-button-primary');
     submit.disabled = !doc.contexts.length;
     submit.addEventListener('click', () => { submit.disabled = true; const contextId = select.value;
-      changeMode('mine'); merge([item]); engine?.update({ entities: [...allMetadata(), item] }); run(engine?.addShortcut(item.entity, contextId).then(() => { if (current()) { instance.close(); engine?.focusContext(contextId); updateMineFilter(); options.onMessage('Добавлено на поле'); } }).finally(() => { submit.disabled = false; })); });
+      const latest = engine?.snapshot(); if (!latest) { submit.disabled = false; return; }
+      let placement: ReturnType<typeof ensureFieldEntityPlacement>;
+      try { placement = ensureFieldEntityPlacement(latest, { entity: item.entity, contextId, shortcutId: crypto.randomUUID() }); }
+      catch (error) { submit.disabled = false; report(error); return; }
+      if (!placement.changed) {
+        const state = persistence.getState();
+        if (state.state === 'conflict') { submit.disabled = false; options.onMessage('Поле изменилось. Проверьте расстановку.', true); return; }
+        if (persistence.hasUnsavedChanges() || !state.localDurable) { submit.disabled = false; options.onMessage('Расстановка ещё не сохранена', true); return; }
+        instance.close(); changeMode('mine'); engine?.focusContext(contextId);
+        options.onMessage(state.pendingCount ? 'Уже добавлено на устройстве · ждём подключения' : 'Уже на вашем поле'); return;
+      }
+      changeMode('mine'); merge([item]); engine?.update({ entities: [...allMetadata(), item] });
+      run(engine?.addShortcut(item.entity, contextId).then(receipt => {
+        if (!current()) return; updateMineFilter();
+        if (receipt?.status === 'conflict') { options.onMessage('Поле изменилось. Проверьте расстановку.', true); return; }
+        if (receipt?.status === 'volatile' && !receipt.localDurable) { options.onMessage('Расстановка ещё не сохранена', true); return; }
+        instance.close(); engine?.focusContext(contextId);
+        options.onMessage(receipt?.status === 'volatile' ? 'Добавлено на устройстве · ждём подключения' : 'Добавлено на поле');
+      }).finally(() => { submit.disabled = false; })); });
     instance.body.append(el('p', '', item.title), labeledField('Пространство', select), submit);
     if (!doc.contexts.length) instance.body.append(button('Создать пространство', 'plus', '', () => { instance.close(); newContext(); }));
   }
@@ -508,8 +536,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (!cachedField) mountEngine(loaded); else cachedField.update({ document: loaded.document, revision: loaded.projectedRevision });
     await engine!.ready; if (!current()) return;
     if (loaded.revision === 0 && loaded.document.contexts.length === 0 && loaded.localDurable && loaded.state !== 'conflict') {
-      const initial = createFieldDocument(); initial.contexts.push({ contextId: 'personal', title: 'Личное', x: 0, y: 0 });
-      for (const item of BUILTINS) initial.shortcuts.push({ shortcutId: `builtin-${item.entity.id}`, entity: item.entity, contextId: 'personal', slot: nextFieldSlot(initial, 'personal', item.entity.kind) });
+      const initial = createPersonalFieldDocument();
       // Only this account's accepted pinned refs are eligible for the one-time migration.
       const refs = [...new Set(options.pinnedApps ?? [])].slice(0, 100).filter(id => /^[A-Za-z0-9_-]{3,160}$/u.test(id)).map(id => ({ kind: 'app' as const, id }));
       if (refs.length) { const resolved = await directory.resolve(refs); if (!current()) return; merge(resolved.items); for (const item of resolved.items) initial.shortcuts.push({ shortcutId: crypto.randomUUID(), entity: item.entity, contextId: 'personal', slot: nextFieldSlot(initial, 'personal', item.entity.kind) }); }
@@ -523,7 +550,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   return {
     element, ready,
     setMode(next, query, nextFilter) { if (!current()) return; if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
-    attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); }, openAdd,
+    attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); },
+    focusContext(contextId) { if (current()) engine?.focusContext(contextId); }, openAdd,
     async refresh() { await ready; if (!current()) return; await loadMine(); if (mode === 'search') await searchDirectory(); },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },

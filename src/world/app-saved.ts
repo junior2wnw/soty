@@ -1,6 +1,6 @@
 import './app-engagement.css';
 import { button, el } from './dom';
-import { createDialog, errorText, type WorldDialog } from './dialogs';
+import { createDialog, errorText, type DialogReturnTarget, type WorldDialog } from './dialogs';
 import { createAppSavedState, dispatchAppSavedIntent, normalizeAppEntry, normalizeAppSavedSnapshot } from './app-saved-state.mjs';
 import type { AppEntry, SavedIntent, SavedPending, SavedSnapshot } from './app-saved-state.mjs';
 import type { WorldApi } from './types';
@@ -12,6 +12,8 @@ export interface EngagementStorageOptions {
 export interface AppSavedOptions extends EngagementStorageOptions {
   api: WorldApi; accountId: string; entry: AppEntry & { name?: string };
   isCurrent(): boolean; onChanged?(): void;
+  asBookmark?: boolean;
+  dialogReturnTarget?: DialogReturnTarget;
 }
 export interface AppSavedHandle { dispose(): void; refresh(): Promise<void>; }
 
@@ -72,7 +74,7 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
   const disabled = (): boolean => busy || loading;
   function closeDialog(): void { const previous = dialog; dialog = null; previous?.close(); }
   function openDialog(title: string): WorldDialog {
-    closeDialog(); const value = createDialog(title, () => { if (dialog === value) dialog = null; });
+    closeDialog(); const value = createDialog(title, () => { if (dialog === value) dialog = null; }, options.dialogReturnTarget);
     value.element.classList.add('se-dialog'); dialog = value; return value;
   }
   function render(): void {
@@ -81,10 +83,12 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
     control.setAttribute('aria-pressed', String(!!snapshot?.entry));
     control.setAttribute('aria-disabled', String(disabled()));
     const different = !!snapshot?.entry && !sameAppEntry(snapshot.entry, entry);
-    const label = busy ? 'Проверяем…' : lastPending || error ? 'Проверить' : snapshot?.entry ? 'Сохранено' : 'Сохранить';
+    const label = busy ? 'Проверяем…' : lastPending || error ? 'Проверить' : snapshot?.entry ? options.asBookmark ? 'В закладках' : 'Сохранено' : options.asBookmark ? 'В закладки' : 'Сохранить';
     const span = control.querySelector('span')!; if (span.textContent !== label) span.textContent = label;
     control.title = lastPending ? 'Проверить прежнее изменение сохранённых' : error || (different ? 'Сохранён другой вход в это приложение' : snapshot?.entry ? 'Убрать из сохранённых' : 'Сохранить в аккаунте');
-    control.setAttribute('aria-label', 'Сохранить приложение');
+    control.setAttribute('aria-label', options.asBookmark
+      ? lastPending || error ? 'Проверить закладку этого приложения' : different ? 'Изменить закладку этого приложения' : snapshot?.entry ? 'Убрать этот вход из закладок' : 'Сохранить этот вход в закладки'
+      : 'Сохранить приложение');
     control.dataset.state = loading ? 'loading' : lastPending ? 'pending' : error ? 'error' : snapshot?.entry ? different ? 'different-entry' : 'saved' : 'unsaved';
     const message = error || notice; if (live.textContent !== message) live.textContent = message;
   }

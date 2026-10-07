@@ -9,13 +9,19 @@ const preferred = Object.freeze({ app: [[0, 0], [-25, 19], [6, 19]], builtin: [[
 const candidates = hexSpiral(12).map(([q, r]) => [q * 24, r * 24]);
 
 export function nextFieldSlot(document, contextId, kind = 'app') {
-  if (!document.contexts.some(context => context.contextId === contextId)) fail('field_context_missing');
+  const context = document.contexts.find(context => context.contextId === contextId);
+  if (!context) fail('field_context_missing');
   const existing = document.shortcuts.filter(shortcut => shortcut.contextId === contextId);
   const occupied = new Set(existing.map(shortcut => shortcut.slot.join(',')));
-  const footprints = existing.map(shortcut => { const polygon = fieldFootprint(shortcut.entity.kind, fieldSlotToPoint(shortcut.slot)); return { polygon, bounds: fieldBounds(polygon) }; });
+  const contexts = new Map(document.contexts.map(value => [value.contextId, value]));
+  const worldPoint = (slot, origin) => { const point = fieldSlotToPoint(slot); return { x: origin.x + point.x, y: origin.y + point.y }; };
+  const footprints = document.shortcuts.map(shortcut => {
+    const origin = contexts.get(shortcut.contextId); if (!origin) fail('field_context_missing');
+    const polygon = fieldFootprint(shortcut.entity.kind, worldPoint(shortcut.slot, origin)); return { polygon, bounds: fieldBounds(polygon) };
+  });
   const slot = [...(preferred[kind] ?? preferred.app), ...candidates].find(value => {
     if (occupied.has(value.join(','))) return false;
-    const polygon = fieldFootprint(kind, fieldSlotToPoint(value)), bounds = fieldBounds(polygon);
+    const polygon = fieldFootprint(kind, worldPoint(value, context)), bounds = fieldBounds(polygon);
     return !footprints.some(other => fieldBoundsOverlap(bounds, other.bounds, 10) && fieldPolygonsOverlap(polygon, other.polygon, 10));
   });
   if (!slot) fail('field_context_full');

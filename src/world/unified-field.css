@@ -7,6 +7,8 @@
   --uf-motion-panel: 160ms;
   --uf-ease: cubic-bezier(.2,.8,.2,1);
   display: flex;
+  flex: 1;
+  width: 100%;
   position: relative;
   flex-direction: column;
   min-width: 0;
@@ -62,6 +64,7 @@
 .uf-context-title.is-icon-only>.sw-icon { width: 26px; height: 26px; }
 .uf-node-app,.uf-node-builtin { isolation: isolate; filter: drop-shadow(0 0 5px color-mix(in srgb,var(--uf-art-accent,var(--sw-control-border)) 24%,transparent)) drop-shadow(0 6px 13px #00000016); }
 .uf-node-app,.uf-node-builtin,.uf-node-community { clip-path: var(--uf-hex-clip); }
+.uf-node-person { min-width: calc(44px * var(--uf-label-scale)); min-height: calc(44px * var(--uf-label-scale)); }
 .uf-node-app::before,.uf-node-builtin::before { content: ''; position: absolute; inset: 0; z-index: -2; clip-path: var(--uf-hex-clip); background: linear-gradient(135deg,color-mix(in srgb,var(--uf-art-accent,var(--sw-control-border)) 80%,#f5f4f0),var(--uf-art-accent,var(--sw-control-border)) 28%,color-mix(in srgb,var(--uf-art-accent,var(--sw-control-border)) 72%,var(--uf-art-base,var(--sw-surface))) 57%,var(--uf-art-accent,var(--sw-control-border))); }
 .uf-node-app::after,.uf-node-builtin::after { content: ''; position: absolute; inset: 3px; z-index: 1; clip-path: var(--uf-hex-clip); background: linear-gradient(to bottom,transparent 52%,#101112b3 64%,#101112d9 84%,#101112f2); pointer-events: none; }
 .uf-node-app:not(.has-art)::after,.uf-node-builtin:not(.has-art)::after { background: var(--uf-art-base,var(--sw-surface)); }

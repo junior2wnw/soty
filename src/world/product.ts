@@ -19,19 +19,28 @@ export const capabilities: readonly Capability[] = [
   { id: 'appearance', title: 'Оформление', detail: 'Тема, яркость и движение', symbol: 'settings', color: 'sage', category: 'Инструменты' },
 ];
 export interface RecentAction { route: string; title: string; symbol: string; }
-export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; }
+export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; lastSpace?: string; }
 const defaults: CapabilityId[] = ['notes', 'apps', 'devices', 'agent'];
 const deskKey = (accountId: string): string => `soty.desk.v1:${encodeURIComponent(accountId)}`;
+// Context IDs are opaque field identities, not routes or filenames.
+const isSpaceId = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+  && value.length <= 128 && value === value.trim() && !/[\u0000-\u001f\u007f-\u009f\p{Surrogate}]/u.test(value);
 export function loadDeskPreferences(accountId: string): DeskPreferences {
   try {
     const value = JSON.parse(localStorage.getItem(deskKey(accountId)) ?? '{}');
     return { favorites: Array.isArray(value.favorites) ? [...new Set<CapabilityId>(value.favorites.filter((id: unknown) => capabilities.some(item => item.id === id)))].slice(0, 8) : [...defaults],
+      ...(isSpaceId(value.lastSpace) ? { lastSpace: value.lastSpace } : {}),
       pinnedApps: Array.isArray(value.pinnedApps) ? [...new Set<string>(value.pinnedApps.filter((id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(id)))].slice(0, 200) : [],
       recent: Array.isArray(value.recent) ? value.recent.filter((item: RecentAction) => item && typeof item.route === 'string' && /^(?:notes|app|community)\/[A-Za-z0-9_-]{3,160}(?:\/[A-Za-z0-9_-]{3,160})?$/.test(item.route) && typeof item.title === 'string' && typeof item.symbol === 'string').slice(0, 6).map((item: RecentAction) => ({ route: item.route, title: item.title.slice(0, 100), symbol: item.symbol.slice(0, 20) })) : [] };
   } catch { return { favorites: [...defaults], recent: [] }; }
 }
-export function saveDeskPreferences(accountId: string, value: DeskPreferences): void {
-  try { localStorage.setItem(deskKey(accountId), JSON.stringify(value)); } catch { /* Favorites are optional; core data is saved independently. */ }
+export function saveDeskPreferences(accountId: string, value: DeskPreferences, options: { selectedSpace?: boolean } = {}): void {
+  try {
+    // An unrelated write in an older tab must not undo a newer space choice.
+    const lastSpace = options.selectedSpace ? value.lastSpace : loadDeskPreferences(accountId).lastSpace;
+    const { lastSpace: _previousSpace, ...other } = value;
+    localStorage.setItem(deskKey(accountId), JSON.stringify({ ...other, ...(isSpaceId(lastSpace) ? { lastSpace } : {}) }));
+  } catch { /* Favorites are optional; core data is saved independently. */ }
 }
 
 export function createLibrary({ favorites, open, toggle }: { favorites: CapabilityId[]; open(id: CapabilityId): void; toggle(id: CapabilityId): boolean }): HTMLElement {

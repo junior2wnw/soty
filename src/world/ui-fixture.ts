@@ -45,7 +45,22 @@ const sha = async (value: unknown): Promise<string> => [...new Uint8Array(await 
 const fixtureFieldKey = 'soty.qa.unified-field.v4';
 let fixtureField: { revision: number; document: FieldDocument; contentHash: string; updatedAt: number } | null = null;
 const fieldReceipts = new Map<string, { revision: number; contentHash: string; committedAt: number }>();
-const fixtureApp = (app: WorldAppRecord) => ({ id: app.appId, name: app.name, ownerAccountId: app.ownerAccountId ?? self.profileId, state: 'ready', createdAt: 1, updatedAt: 1, access: 'owner', canManage: true, entry: { appId: app.appId, domainId: `dom_${app.appId.slice(4)}`, origin: location.origin, path: '/' } });
+// A loopback-only peer keeps the real launch boundary in UI checks. These
+// deterministic specimen tickets carry no account or production authority.
+const fixtureRuntime = new URL(new URLSearchParams(location.search).get('appOrigin') ?? 'http://127.0.0.1:5324');
+if (fixtureRuntime.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(fixtureRuntime.hostname) || fixtureRuntime.origin === location.origin || fixtureRuntime.href !== fixtureRuntime.origin + '/') throw new Error('Invalid UI fixture peer');
+const fixtureApp = (app: WorldAppRecord) => ({ id: app.appId, name: app.name, ownerAccountId: app.ownerAccountId ?? self.profileId, state: 'ready', createdAt: 1, updatedAt: 1, access: 'owner', canManage: true, entry: { appId: app.appId, domainId: `dom_${app.appId.slice(4)}`, origin: fixtureRuntime.origin, path: '/' } });
+const fixtureEntry = (args: Record<string, unknown>) => {
+    if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture account changed'), { code: 'authentication_required' });
+    const app = apps.find(value => value.appId === args.appId);
+    if (!app) throw Object.assign(new Error('Fixture app absent'), { code: 'app_not_found' });
+    const entry = fixtureApp(app).entry;
+    if (args.domainId !== undefined && args.domainId !== entry.domainId) throw Object.assign(new Error('Fixture domain absent'), { code: 'app_domain_not_found' });
+    return { ...entry, path: typeof args.path === 'string' ? args.path : entry.path };
+};
+let fixtureSavedRevision = 0;
+const fixtureSaved = new Map<string, Record<string, unknown>>();
+const fixtureSavedReceipts = new Map<string, { args: string; result: unknown }>();
 const now = Date.now();
 const history: Record<string, WorldMessage[]> = {};
 for (const group of groups) {
@@ -57,7 +72,22 @@ for (const group of groups) {
 }
 const notes: Record<string, Record<string, unknown>> = {};
 const proposal = { schema: 'soty.local-app.v1', name: 'Покупки', port: 5324, entryPath: '/', sourceJobId: 'qa-agent-task' };
-let draftRegistered = false;
+// The specimen registry survives HMR/reload just like its field, so a valid
+// newly registered ref is not replaced with an unavailable tile during QA.
+const fixtureRegistryKey = 'soty.qa.app-registry.v1';
+interface FixtureRegistration { appId: string; name: string; port: number; entryPath: string; body: string }
+let registrations: FixtureRegistration[] = [];
+try {
+    const raw = localStorage.getItem(fixtureRegistryKey);
+    if (raw && raw.length < 64_000) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length <= 30 && parsed.every(value => value && /^app-[a-f0-9]{32}$/.test(value.appId) && typeof value.name === 'string' && value.name.length <= 64 && Number.isInteger(value.port) && value.port >= 1024 && value.port <= 65535 && typeof value.entryPath === 'string' && value.entryPath.startsWith('/') && typeof value.body === 'string' && value.body.length < 2048)) registrations = parsed;
+    }
+} catch { /* The explicit development specimen has no production storage. */ }
+const addRegisteredProjection = (value: FixtureRegistration): void => {
+    apps.push({ appId: value.appId, name: value.name, coverKey: 'notes', symbol: 'list', status: 'ready', ownerAccountId: self.profileId });
+};
+registrations.forEach(addRegisteredProjection);
 const api: WorldApi = { async request<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
         let result: unknown;
         const group = groups.find(item => item.communityId === args.communityId) || groups[0]!;
@@ -172,13 +202,14 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                     actions: { canEdit: app.ownerAccountId === self.profileId, canPublish: false, canPreview: false, canReserveName: false } };
                 break;
             }
-            case 'apps.register':
-                if (!draftRegistered) {
-                    apps.push({ appId: 'qa-shopping', name: String(args.name || 'Покупки'), coverKey: 'notes', symbol: 'list', status: 'ready', ownerAccountId: self.profileId });
-                    draftRegistered = true;
-                }
-                result = { app: { id: 'qa-shopping', name: 'Покупки', ownerAccountId: self.profileId, hostDeviceId: 'qa-notebook', connectorId: 'qa-connector', port: 5324, entryPath: '/', state: 'ready', grants: { accountIds: [], communityIds: [] } } };
+            case 'apps.register': {
+                const body = JSON.stringify(args), existing = registrations.find(value => value.port === Number(args.port));
+                if (existing && existing.body !== body) throw Object.assign(new Error('Fixture port already registered'), { code: 'app_port_already_registered' });
+                const value = existing ?? { appId: `app-${crypto.randomUUID().replaceAll('-', '')}`, name: String(args.name || 'Покупки'), port: Number(args.port), entryPath: String(args.entryPath || '/'), body };
+                if (!existing) { localStorage.setItem(fixtureRegistryKey, JSON.stringify([...registrations, value])); registrations.push(value); addRegisteredProjection(value); }
+                result = { app: { id: value.appId, name: value.name, ownerAccountId: self.profileId, hostDeviceId: 'qa-notebook', connectorId: 'qa-connector', port: value.port, entryPath: value.entryPath, state: 'ready', grants: { accountIds: [], communityIds: [] } } };
                 break;
+            }
             case 'apps.update': {
                 const app = apps.find(item => item.appId === args.appId);
                 if (app) {
@@ -190,7 +221,34 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 break;
             }
             case 'apps.launch':
-                result = { launchUrl: `http://127.0.0.1:5324/?app=${encodeURIComponent(String(args.appId))}` };
+                { const entry = fixtureEntry(args);
+                result = { launchUrl: `${entry.origin}/_soty/boot?path=${encodeURIComponent(entry.path)}#${'A'.repeat(43)}`, entry }; }
+                break;
+            case 'apps.entry.get':
+                result = { entry: fixtureEntry(args) };
+                break;
+            case 'apps.saved.get':
+                fixtureEntry(args);
+                result = { revision: fixtureSavedRevision, entry: fixtureSaved.get(String(args.appId)) ?? null };
+                break;
+            case 'apps.saved.set': {
+                const entry = fixtureEntry(args), old = fixtureSavedReceipts.get(String(args.requestId));
+                if (old) {
+                    if (old.args !== JSON.stringify(args)) throw Object.assign(new Error('Fixture saved intent changed'), { code: 'apps_saved_request_conflict' });
+                    result = { ...(old.result as object), replayed: true }; break;
+                }
+                if (args.expectedRevision !== fixtureSavedRevision) throw Object.assign(new Error('Fixture saved changed'), { code: 'apps_saved_revision_conflict' });
+                fixtureSavedRevision++;
+                if (args.saved) {
+                    const app = apps.find(value => value.appId === entry.appId)!;
+                    fixtureSaved.set(entry.appId, { ...entry, label: app.name, savedRevision: fixtureSavedRevision, updatedAt: Date.now(), current: { name: app.name, status: 'ready', canManage: true } });
+                } else fixtureSaved.delete(entry.appId);
+                result = { requestId: args.requestId, replayed: false, receipt: { appId: entry.appId, saved: args.saved, revision: fixtureSavedRevision, committedAt: Date.now() }, current: { revision: fixtureSavedRevision, entry: fixtureSaved.get(entry.appId) ?? null } };
+                fixtureSavedReceipts.set(String(args.requestId), { args: JSON.stringify(args), result: structuredClone(result) }); break;
+            }
+            case 'apps.saved.list':
+                if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture account changed'), { code: 'authentication_required' });
+                result = { revision: fixtureSavedRevision, entries: [...fixtureSaved.values()].sort((a, b) => Number(b.savedRevision) - Number(a.savedRevision)).slice(0, 20), nextCursor: null };
                 break;
             case 'apps.agent.create':
                 if (args.expectedAccountId !== self.profileId || args.hostDeviceId !== 'qa-notebook' || args.connectorId !== 'qa-connector') throw Object.assign(new Error('Локальный пример: другой владелец или компьютер'), { code: 'authentication_required' });
