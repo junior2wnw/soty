@@ -1,0 +1,22 @@
+# Operator-only template. Replace IMAGE with the measured Source image digest;
+# never use a tag or give this service the Docker socket. Native HTTPS entry is
+# configured separately with the exact fixed portal from the private loader.
+services:
+  source:
+    image: REPLACE_WITH_MEASURED_SOURCE_IMAGE_DIGEST
+    user: "1000:1000"
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    cpus: 1
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=67108864,uid=1000,gid=1000,mode=700
+    volumes:
+      - source-data:/data
+    restart: "no"
+volumes:
+  source-data:

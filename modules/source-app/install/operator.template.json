@@ -1,0 +1,22 @@
+{
+  "schema": "soty.ordinary-source.operator.v1",
+  "profile": {
+    "schema": "soty.selected-human-embed.v2",
+    "appId": "REPLACE_WITH_APPROVED_APP_ID",
+    "connector": {"linkId": "REPLACE_APPROVED_LINK", "hostDeviceId": "REPLACE_APPROVED_DEVICE", "connectorId": "REPLACE_APPROVED_CONNECTOR"},
+    "target": {"revision": 1, "digest": "REPLACE_WITH_APPROVED_64_HEX_TARGET_DIGEST"},
+    "sourceProfile": {"id": "soty.standard-resource", "version": 2, "digest": "f68eee3d56a1da3269e8586783a457c4eef24e2673088dbd4951cdf0008e2b84"},
+    "resource": {"registryId": "soty", "environmentId": "production", "tenantId": "REPLACE_APPROVED_TENANT", "appId": "REPLACE_WITH_APPROVED_APP_ID", "resourceId": "REPLACE_APPROVED_RESOURCE", "selection": {"kind": "soty.resource.v1", "nativeId": "REPLACE_NATIVE_RESOURCE", "incarnationId": "REPLACE_NATIVE_INCARNATION"}},
+    "issuer": "https://REPLACE_ROOT_HOST/human-identity",
+    "clientId": "REPLACE_APPROVED_CLIENT",
+    "embedOrigin": "https://REPLACE_APPROVED_EMBED_HOST",
+    "nativeOrigin": "https://REPLACE_REACHABLE_NATIVE_HOST",
+    "parentOrigin": "https://REPLACE_ROOT_HOST"
+  },
+  "connectorPort": 49424,
+  "listener": {"host": "127.0.0.1", "port": 5317},
+  "storage": {"directory": "/data/native", "keyId": "source-key-1", "cipherKeyFile": "cipher.key"},
+  "rp": {"clientSecretFile": "client.key", "transportKeyFile": "transport.key"},
+  "native": {"realmId": "my-app", "resourceTitle": "Мой проект"},
+  "policy": {"newEmptyGuest": false, "linkedLogin": false}
+}
