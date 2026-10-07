@@ -9,19 +9,21 @@ const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value
 
 export function createScopedGateway({ admissions, withAppAuthority, withHumanSubjectAuthority, clock = Date.now, onClose = () => {} }) {
   const authority = createScopedEmbedAuthority({ profiles: admissions.profiles(), withAppAuthority, withHumanSubjectAuthority, clock });
-  const records = new Map(), handles = new Map(), closedHandles = new Map(), authStates = new Map(), completions = new Map();
+  const records = new Map(), handles = new Map(), closedHandles = new Map(), authStates = new Map(), completions = new Map(), attempts=new Map();
   function sweep() {
-    for (const record of [...records.values()]) if (record.context.expiresAt <= clock()) stop(record);
+    for (const record of [...records.values()]) if (record.context.expiresAt <= clock()) stop(record,true);
     for (const [key,item] of closedHandles) if(item.expiresAt<=clock())closedHandles.delete(key);
+    for(const[key,item]of attempts)if(item.expiresAt<=clock())attempts.delete(key);
   }
   function current(record, connector) {
     need(record && records.get(record.context.reference.id) === record, 'app_scoped_context_closed', 403);
-    let value;try{value=authority.read({ reference: record.context.reference, connector: connector ?? record.profile.connector });}catch(error){stop(record);throw error;}
+    let value;try{value=authority.read({ reference: record.context.reference, connector: connector ?? record.profile.connector });}catch(error){stop(record,record.context.expiresAt<=clock());throw error;}
     need(value.target.digest === record.context.target.digest, 'app_scoped_context_changed', 403);
     return value;
   }
-  function stop(record) {
+  function stop(record,expired=false) {
     if (records.get(record.context.reference.id) !== record) return;
+    if(!expired)attempts.delete(record.handleHash);
     records.delete(record.context.reference.id); handles.delete(record.handleHash);
     if(closedHandles.size>=SCOPED_EMBED_LIMITS.continuations)closedHandles.delete(closedHandles.keys().next().value);
     closedHandles.set(record.handleHash, { appId: record.context.appId, accountId:record.context.rootPrincipal.accountId,
@@ -39,8 +41,13 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
   return Object.freeze({
     open({actor,appId,domainId,target}) {
       sweep(); const profile=admissions.require(target);
+      if(profile.schema==='soty.selected-human-embed.v2')need(attempts.size<SCOPED_EMBED_LIMITS.continuations,'app_scoped_attempt_busy',429);
       const context=authority.open({actor,appId,domainId,targetRevision:target.revision}), handle=nonce();
       const record={context,profile,handleHash:hash(handle),session:null,sourceSession:null};records.set(context.reference.id,record);handles.set(record.handleHash,record);
+      // A bounded RAM witness permits ONLY a freshly signed attempt. It grants
+      // no Source session, carries no cookie and does not make the old ref live.
+      // Source must independently confirm its durable current Native consent.
+      if(profile.schema==='soty.selected-human-embed.v2')attempts.set(record.handleHash,Object.freeze({context,expiresAt:context.expiresAt+86400000}));
       return { record, closeHandle:handle };
     },
     attach(record,session) { current(record); record.session=session; return record; },
@@ -59,6 +66,14 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
       need(record&&record.context.appId===appId&&actor?.accountId===record.context.rootPrincipal.accountId
         &&actor?.deviceId===record.context.rootPrincipal.deviceId,'app_scoped_context_closed',403);
       return {record,context:current(record)};
+    },
+    ownedAttempt(actor,appId,handle){
+      need(opaque(handle),'app_scoped_context_closed',403);sweep();const key=hash(handle),live=handles.get(key),witness=attempts.get(key);
+      if(live?.profile.schema!=='soty.selected-human-embed.v2'&&!witness)return this.ownedContext(actor,appId,handle);
+      const context=witness?.context;
+      need(context&&context.appId===appId&&actor?.accountId===context.rootPrincipal.accountId&&actor?.deviceId===context.rootPrincipal.deviceId,
+        'app_scoped_context_closed',403);
+      return{record:live??null,context,sourceOnly:true};
     },
     captureHead(record, auth) {
       current(record); if(auth===undefined)return;
@@ -86,13 +101,15 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
     },
     abandon(actor, appId, handle) {
       need(opaque(handle),'app_scoped_close_invalid',403);sweep();const key=hash(handle),record=handles.get(key),prior=closedHandles.get(key);
-      need(record?record.context.appId===appId:!prior||prior.appId===appId,'app_scoped_close_unavailable',403);
-      const owner=record?.context.rootPrincipal??prior;
+      const attempt=attempts.get(key)?.context;
+      need(record?record.context.appId===appId:(!prior||prior.appId===appId)&&(!attempt||attempt.appId===appId),'app_scoped_close_unavailable',403);
+      const owner=record?.context.rootPrincipal??attempt?.rootPrincipal??prior;
       need(!owner||actor?.accountId===owner.accountId&&actor?.deviceId===owner.deviceId,'app_scoped_close_unavailable',403);
-      if(record)stop(record);return Object.freeze({closed:true});
+      if(record)stop(record);attempts.delete(key);return Object.freeze({closed:true});
     },
-    invalidateApp(appId) {for(const record of [...records.values()])if(record.context.appId===appId)stop(record);},
+    invalidateApp(appId) {for(const record of [...records.values()])if(record.context.appId===appId)stop(record);
+      for(const[key,item]of attempts)if(item.context.appId===appId)attempts.delete(key);},
     invalidate(record) {stop(record);},
-    close() {for(const record of [...records.values()])stop(record);authority.close();authStates.clear();completions.clear();handles.clear();closedHandles.clear();},
+    close() {for(const record of [...records.values()])stop(record);authority.close();authStates.clear();completions.clear();handles.clear();closedHandles.clear();attempts.clear();},
   });
 }

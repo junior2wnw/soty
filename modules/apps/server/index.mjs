@@ -150,17 +150,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           scopedGateway.context(prior.record);issued=prior;
         }else{
           assertApps(scopedRenewals.size<256,'app_scoped_renew_busy',429);
-          const {record:old,context:first}=scopedGateway.ownedContext(actor,id,args.handle);
-          assertApps(old.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
-          const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});
-          await Promise.resolve();assertActor(actor);const {record,context:fresh}=scopedGateway.ownedContext(actor,id,args.handle);
+          const {record:old,context:first,sourceOnly}=scopedGateway.ownedAttempt(actor,id,args.handle);
+          if(!sourceOnly){assertApps(old?.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
+            const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});}
+          await Promise.resolve();assertActor(actor);const {record,context:fresh}=scopedGateway.ownedAttempt(actor,id,args.handle);
           assertApps(record===old&&JSON.stringify(first)===JSON.stringify(fresh),'app_scoped_context_closed',403);
           const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,first.entry.domainId);
           assertApps(domain&&domain.origin===first.entry.origin,'app_scoped_context_closed',403);
           const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor});assertRuntimeBinding(decision,{requireReady:true});
           const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))}),next=scoped.record.context;
-          const same=['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
-            &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]));
+          const same=sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
+            &&['rootPrincipal','humanPrincipal','sourceProfile','resource'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]))
+            :['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
+              &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]));
           if(!same){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
           issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId};scopedRenewals.set(key,issued);
         }
