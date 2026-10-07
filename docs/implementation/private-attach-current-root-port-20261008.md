@@ -18,4 +18,12 @@ Node24.19 Windows, канонические Git bytes: 149/149 PASS, 0 FAIL/SKIP
 
 Core ранее отдельно проверен: Windows51, Linux sender/parser46, независимые peer11 и peer58. Эти результаты имеют свой scope и не складываются в число новых тестов. Actual Linux port qualification и independent source review этой новой closure ещё предстоят.
 
+## Независимый разбор и исправления
+
+Проверенная отдельно версия `404b1e` прошла actual Linux195 tests:194 PASS, 1 явно условный Windows-only skip, 0 FAIL/CANCEL, Node24.15, public deploy bind только read-only, UID1000/noNetwork/noCaps, контейнер остановлен без OOM. Это native channel/crypto/source proof; physical strict receiver и production operator не запускались.
+
+Независимый source review нашёл три конкретных дефекта: `current-core-pins.json` имел CRLF в checkout и LF в Git; warm допускал ramfs/overlay; capture неверных options находился вне общей отмены. Новая версия сохраняет canonicalLF JSON, отвергает tmpfs/ramfs/overlay/aufs/rootfs для physical data и закрывает client и все собственные readiness leases при любой ошибке, включая counterfeit lease. Поздний warm результат после закрытия не публикует lease. Current Core5 остаются exact903.
+
+После исправлений Windows160/160 PASS, 0 FAIL/SKIP/CANCEL, включая 11 новых проверок полного byte freeze, ephemeral mounts и getter/proxy/unknown options/invalid limits/fake lease. Контрольные суммы manifest дополнительно сверяются с Git index перед commit. Для новой версии независимый retake и actual Linux206 suite выполняются отдельно; успех предыдущего195 не переносится на неё.
+
 Ни Engine/network/model operations, ни установка, публикация, миграция или serving activation переносом не выполнялись.

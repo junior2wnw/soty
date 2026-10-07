@@ -45,7 +45,7 @@ export async function receiveStrictBackup(value, payload) {
     const found=rows.filter(row=>row.path===path);
     if (found.length!==1 || !found[0].options.includes('rw')
       || (type && (found[0].type!==type || !found[0].options.includes('noexec') || !found[0].options.includes('nosuid')))
-      || (!type && found[0].type==='tmpfs')) fail('receiver_topology_invalid');
+      || (!type && ['tmpfs','ramfs','overlay','aufs','rootfs'].includes(found[0].type))) fail('receiver_topology_invalid');
   }
   if ((await readdir('/owned')).sort().join(',')!=='target'
     || (await readdir('/owned/target')).sort().join(',')!=='config,data'

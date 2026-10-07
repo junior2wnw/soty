@@ -16,7 +16,7 @@ export const SOURCE_FILES = Object.freeze({
   protocol: 'wire-protocol.mjs', warmProbe: 'linux-warm-preflight.mjs', driver: 'warm-receiver.mjs', entry: 'linux-fd-entry.mjs',
 });
 const RETAINED = Object.freeze({
-  receiver: '15ba92a26eb3f3a0457d8be89396a022fe60df72ab6b762ee2b5caba88377e1c',
+  receiver: '6255d3af1c8f621b179b9c02f83f8b807fbd750608ecc0b18732befce57e8119',
   restore: 'aea0951ddf0b400734a85bdfc0be6f36de889679562b8c46cf000b55176f5eed',
   format: '083859bfb497031c7e70473f35ea208c2ff6ad707323f822184c68867f5d0b79',
   sink: '5bc3246b7ce7869085c604f6b6686668d20be69d46b90bb4ea24fb1ba1c2ddb3',
@@ -75,7 +75,7 @@ async function prepare(specValue, { io, uid, sourceRoot, check }) {
       if (matches.length !== 1) fail('warm_topology_invalid');
       const row = matches[0];
       if (!row.options.includes('rw') || type && (row.type !== type || !row.options.includes('noexec') || !row.options.includes('nosuid'))
-        || !type && row.type === 'tmpfs') fail('warm_topology_invalid');
+        || !type && ['tmpfs','ramfs','overlay','aufs','rootfs'].includes(row.type)) fail('warm_topology_invalid');
     }
     for (const key of SOURCE_KEYS) {
       const mount = effectiveMount(rows, sourcePath(key));
