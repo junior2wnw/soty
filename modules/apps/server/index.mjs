@@ -167,7 +167,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
         assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId});
         return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
-          runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
+          runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
           scopedRenewalRequestId:args.requestId,
           entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:'/embed'}};
       }

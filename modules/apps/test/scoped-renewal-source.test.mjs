@@ -19,6 +19,7 @@ test('actual installed channel Root renew→Source RP/Native ACL ACK reuses cons
     receipts:f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rebind_receipts').get().n});
   const before=nativeCounts(),requestId=random(),args={appId:f.appId,handle:initial.scopedCloseHandle,requestId};
   const value=await f.reader.client.extension('apps.scoped.renew',args),renewed=await continuation(f,value,requestId);
+  assert.equal(value.runtimeProfile,f.profile.schema,'renewal returns the exact approved runtime profile');
   assert.equal(renewed.response.status,200);assert.equal(renewed.response.body?.ready,true);
   const context=await f.reader.client.extension('apps.scoped.context',{appId:f.appId,handle:value.scopedCloseHandle});
   assert.equal(context.sourceSession?.ready,true);assert.equal(context.sourceSession?.renewable,true);
