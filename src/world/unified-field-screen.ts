@@ -100,6 +100,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let activeSearchScene = createFieldDocument();
   let searchResponseScope = '';
   let searchGeneration = 0, mineGeneration = 0, searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let mineResolvedGeneration = -1;
+  let mineConfirmedGeneration = -1;
+  let mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
+  let mineFilterAdmitted = false;
   let activeSearches = 0, queuedSearch: ((admitted: boolean) => void) | null = null;
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
   let previewOpener: HTMLElement | null = null;
@@ -188,11 +192,29 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   wide.addEventListener('change', placeSearch, { signal });
   function updateMineFilter(): void {
     if (!engine || mode !== 'mine') return;
-    engine.update({ filter: queries.mine, visibleKinds: filter === 'all' ? ['app', 'builtin', 'person', 'community', 'device'] : filter === 'app' ? ['app', 'builtin'] : [filter] });
+    const doc = summary?.document ?? engine.snapshot();
+    let initialEntities: FieldDirectoryEntity[] | undefined;
+    if (!mineFilterAdmitted) {
+      const query = queries.mine.trim().toLocaleLowerCase('ru');
+      const contextMatch = !!query && doc.contexts.some(context => context.title.toLocaleLowerCase('ru').includes(query));
+      const knownMatch = doc.shortcuts.some(shortcut => {
+        const key = fieldEntityKey(shortcut.entity), item = metadata.get(key);
+        return mineKnownRefs.has(key) && item && matches(item, queries.mine, filter);
+      });
+      if (mineConfirmedGeneration !== mineGeneration || query && !contextMatch && !knownMatch && doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity)))) {
+        updateMineEmpty(doc); return;
+      }
+      initialEntities = allMetadata();
+      mineFilterAdmitted = true;
+    }
+    engine.update({ ...(initialEntities ? { entities: initialEntities } : {}), filter: queries.mine, visibleKinds: filter === 'all' ? ['app', 'builtin', 'person', 'community', 'device'] : filter === 'app' ? ['app', 'builtin'] : [filter] });
     updateMineEmpty(summary?.document ?? engine.snapshot());
   }
   function updateMineEmpty(doc: FieldDocument): void {
     if (mode !== 'mine') return;
+    if (mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error') {
+      empty.hidden = true; emptyDocument = null; return;
+    }
     const scope = `${queries.mine}:${filter}`;
     if (doc === emptyDocument && scope === emptyScope && metadataRevision === emptyMetadataRevision) return;
     emptyDocument = doc; emptyScope = scope; emptyMetadataRevision = metadataRevision;
@@ -203,6 +225,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       return item && matches(item, matchingContexts.has(shortcut.contextId) ? '' : queries.mine, filter);
     }).length;
     empty.hidden = count > 0 || !!query && matchingContexts.size > 0;
+    if (!empty.hidden && (element.dataset.mineState === 'error' || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
+      empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(loadMine()))); return;
+    }
     if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'В этом разделе пока пусто' : 'Здесь будет ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Добавьте приложение, человека или сообщество.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить на поле', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
       if (queries.mine) { searchInput.value = ''; inputChanged(); searchInput.focus(); }
       else if (filter !== 'all') { filter = 'all'; filtersByMode.mine = 'all'; updateChrome(); inputChanged(true); }
@@ -245,10 +270,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function applyPersistence(next: FieldPersistenceState): void {
     if (!current()) return; state = next; updateStatus();
-    if (!engine && next.state !== 'loading' && next.document.contexts.length) { mountEngine(next); loading.hidden = true; }
+    if (!engine && next.state !== 'loading' && next.document.contexts.length) mountEngine(next);
     if (engine && next.state === 'saved' && !engine.hasUnsavedChanges()) {
       const previousRefs = new Set(engine.snapshot().shortcuts.map(shortcut => fieldEntityKey(shortcut.entity)));
       const newRefs = next.document.shortcuts.some(shortcut => !previousRefs.has(fieldEntityKey(shortcut.entity)));
+      if (newRefs) { mineResolvedGeneration = -1; empty.hidden = true; }
       engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved' }); updateMineFilter();
       // A layout received from another window/device contains references, not
       // names or access. Resolve new identities through the existing directory.
@@ -327,19 +353,42 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   async function loadMine(): Promise<void> {
     if (!engine) return; const generation = ++mineGeneration;
-    const resolved = await directory.resolve(engine.snapshot().shortcuts.map(shortcut => shortcut.entity));
-    if (!current() || generation !== mineGeneration) return;
-    // Removing authority drops display metadata, while retaining the user's own shortcut for recovery/removal.
-    for (const ref of resolved.unavailable) metadata.set(fieldEntityKey(ref), { entity: ref, title: resolved.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner' }); merge(resolved.items);
-    const first = await directory.loadMine({ limit: 60 });
-    if (!current() || generation !== mineGeneration) return;
-    available = first.items; availableCursor = first.cursor; merge(first.items); pruneMetadata(); engine.update({ entities: allMetadata() }); updateMineFilter();
-    if (selected) {
-      const latest = metadata.get(fieldEntityKey(selected.item.entity));
-      if (!latest || resolved.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
-      else if (JSON.stringify(latest) !== JSON.stringify(selected.item)) openPreview(latest, selected.shortcutId);
+    const resolvedUnavailableRefs = new Set<string>();
+    mineConfirmedGeneration = -1;
+    empty.hidden = true; element.dataset.mineState = 'loading';
+    mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
+    try {
+      const resolved = await directory.resolve(engine.snapshot().shortcuts.map(shortcut => shortcut.entity));
+      if (!current() || generation !== mineGeneration) return;
+      for (const ref of resolved.unavailable) resolvedUnavailableRefs.add(fieldEntityKey(ref));
+      // Removing authority drops display metadata, while retaining the user's own shortcut for recovery/removal.
+      for (const ref of resolved.unavailable) metadata.set(fieldEntityKey(ref), { entity: ref, title: resolved.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner' }); merge(resolved.items);
+      mineKnownRefs = new Set([...BUILTINS.map(item => fieldEntityKey(item.entity)), ...resolved.items.map(item => fieldEntityKey(item.entity)),
+        ...(resolved.errors.length ? [] : resolved.unavailable.map(ref => fieldEntityKey(ref)))]);
+      mineConfirmedGeneration = generation;
+      const first = await directory.loadMine({ limit: 60 });
+      if (!current() || generation !== mineGeneration) return;
+      available = first.items; availableCursor = first.cursor; merge(first.items); pruneMetadata();
+      mineResolvedGeneration = generation;
+      element.dataset.mineState = engine.snapshot().shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))) ? 'unknown' : 'ready';
+      engine.update({ entities: allMetadata() }); updateMineFilter();
+      if (selected) {
+        const latest = metadata.get(fieldEntityKey(selected.item.entity));
+        if (!latest || resolved.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
+        else if (JSON.stringify(latest) !== JSON.stringify(selected.item)) openPreview(latest, selected.shortcutId);
+      }
+      if (firstResolve && mode === 'mine') { firstResolve = false; if (wide.matches) engine.fitOverview(); else engine.focusContext(engine.snapshot().contexts[0]?.contextId ?? ''); }
+    } catch (error) {
+      if (current() && generation === mineGeneration) {
+        for (const shortcut of engine.snapshot().shortcuts) if (!mineKnownRefs.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Ждёт подключения', symbol: 'lock', source: 'owner' });
+        metadataRevision++; element.dataset.mineState = 'error'; emptyDocument = null;
+        engine.update({ entities: allMetadata() }); updateMineFilter();
+        if (selected && (!mineKnownRefs.has(fieldEntityKey(selected.item.entity)) || resolvedUnavailableRefs.has(fieldEntityKey(selected.item.entity)))) closePreview(false);
+      }
+      throw error;
+    } finally {
+      if (current() && generation === mineGeneration) { loading.hidden = true; if (mineResolvedGeneration !== generation) element.dataset.mineState = 'error'; }
     }
-    if (firstResolve && mode === 'mine') { firstResolve = false; if (wide.matches) engine.fitOverview(); else engine.focusContext(engine.snapshot().contexts[0]?.contextId ?? ''); }
   }
   function closePreview(restore = true): void {
     preview?.remove(); preview = null;
@@ -520,6 +569,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function mountEngine(loaded: FieldPersistenceState): void {
     state = loaded;
+    mineFilterAdmitted = false;
     if (loaded.document.contexts.length) firstResolve = false;
     for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Проверяем доступ', symbol: 'lock', source: 'owner' });
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
