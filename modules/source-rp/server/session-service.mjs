@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { SourceRpError, check } from './protocol.mjs';
 
 export const SOURCE_RP_LIMITS = Object.freeze({ seconds: 86400, heads: 4096, perAccount: 8, inFlight: 16,
-  gcBatch: 128, rotations: 512, earlyRefreshMs: 30000, waitMs: 6000, staleClaimMs: 20000 });
+  gcBatch: 128, rotations: 512, earlyRefreshMs: 30000, minimumAccessRemainingMaxMs: 240000, waitMs: 6000, staleClaimMs: 20000 });
 const keys = Object.freeze(['sessionIdHash', 'profileDigest', 'bindingDigest', 'sessionExpiresAt', 'accessExpiresAt', 'revision',
   'state', 'proofCipher', 'keyId', 'claimId', 'claimedAt', 'lastAttemptId', 'createdAt', 'updatedAt']);
 const markerKeys = Object.freeze(['sessionIdHash', 'profileDigest', 'bindingDigest', 'issuer', 'subject', 'sessionExpiresAt', 'createdAt']);
@@ -12,6 +12,18 @@ const stamp = value => Number.isSafeInteger(value) && value > 0;
 const exact = (value, fields) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
 const equalHead = (a, b) => keys.every(key => a[key] === b[key]);
+function hostMinimum(input) {
+  if (input === undefined) return 0;
+  check(input && typeof input === 'object' && !Array.isArray(input)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(input)), 'source_rp_options_invalid', 400);
+  const fields = Object.getOwnPropertyDescriptors(input);
+  check(Reflect.ownKeys(fields).every(key => key === 'minimumAccessRemainingMs'
+    && fields[key].enumerable && Object.hasOwn(fields[key], 'value')), 'source_rp_options_invalid', 400);
+  const value = fields.minimumAccessRemainingMs ? fields.minimumAccessRemainingMs.value : 0;
+  check(Number.isSafeInteger(value) && value >= 0 && value <= SOURCE_RP_LIMITS.minimumAccessRemainingMaxMs,
+    'source_rp_options_invalid', 400);
+  return value;
+}
 function closedProof(value) {
   check(exact(value, ['accessToken', 'refreshToken', 'nonce'])
     && [value.accessToken, value.refreshToken].every(token => typeof token === 'string' && token.length >= 16
@@ -113,12 +125,16 @@ export function createSourceRpSessionService(options) {
     const head = await read(marker); await authority(marker, captured); return head;
   }
   return Object.freeze({
-    async currentProof(inputMarker) {
+    async currentProof(inputMarker, hostOptions) {
+      // Private Source orchestration only. This option creates no permission,
+      // never enters HTTP/author JSON, and cannot extend the absolute deadline.
+      const minimum = hostMinimum(hostOptions);
       const marker = validateMarker(inputMarker), captured = await storage.captureSourceAuthority(marker);
       let head = await read(marker); await authority(marker, captured);
       if (head.state === 'refreshing') head = await wait(marker, captured);
       if (head.state === 'idle' && head.accessExpiresAt < head.sessionExpiresAt
-        && head.accessExpiresAt - now() <= SOURCE_RP_LIMITS.earlyRefreshMs) {
+        && head.sessionExpiresAt - now() >= minimum
+        && head.accessExpiresAt - now() <= Math.max(SOURCE_RP_LIMITS.earlyRefreshMs, minimum)) {
         check(head.revision < SOURCE_RP_LIMITS.rotations, 'authentication_required', 401);
         const flightKey = marker.profileDigest + ':' + marker.bindingDigest + ':' + marker.sessionIdHash;
         let pending = inFlight.get(flightKey);

@@ -31,11 +31,24 @@ atomic transaction.
 assertCurrent}` после fresh userinfo. AT/RT не возвращаются в DTO/HTTP/browser.
 Source затем отдельно решает свои ACL. Никаких TTL authorization caches.
 
+Optional host-only `currentProof(marker,{minimumAccessRemainingMs})` принимает
+закрытый integer0..240000. По умолчанию прежний30s threshold. Trusted Source
+continuation может выбрать фиксированные190000 перед180s capture; caller JSON,
+manifest, header или browser никогда не задают minimum/force. При достаточном
+absolute family lifetime и idle head выполняется одна прежняя CAS/RT rotation,
+если remaining<=max(30s,minimum). Unknown не повторяет RT,512 bound сохраняется.
+Near absolute end или short provider AT не запускают loop; полученный ACTUAL
+expiry и свежая Native authority всё равно проверяются consumer/Root ensure.
+Никакой новый срок или permission не выводится из requested minimum.
+
 Проверка пакета: `node --test --test-concurrency=1 modules/source-rp/test/*.test.mjs`.
-В этом пакете 15 проверок: real Root OIDC/подписанный выбор/отзыв устройства,
+Базовый pin725 имеет15 проверок: real Root OIDC/подписанный выбор/отзыв устройства,
 controlled-clock после 300 секунд/restart, lost COMMIT ACK и unknown RT,
 два настоящих OS процесса с одной зашифрованной synthetic SQLite базой и одним
 refresh send. Synthetic storage — test contract, не production adapter.
+Отдельный additive minimum-access delta добавляет real maintained Root AT130→RT
+при minimum190, current Native CAS/revoke/unknown, concurrency/default30,
+closed getter/value bounds, short AT/absolute end/no-loop и512 bound.
 
 Consumers Planner SQLite и Поведай PostgreSQL устанавливают собственный формат
 хранения, native sessions, migrations и guards. Эти интеграции, настоящий браузер

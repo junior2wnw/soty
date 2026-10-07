@@ -67,3 +67,17 @@ test('host-only protocol rejects unreviewed URLs/fields; cold discovery outage r
   assert.throws(() => createSourceRpProtocol({ ...profile, issuer: 'http://private.example/human-identity' }));
   await assert.rejects(createSourceRpProtocol(profile).ready(), error => error.status === 503);
 });
+
+test('actual maintained Root RT proactively replaces AT130 for trusted minimum190 without extending Source lifetime',async t=>{
+  const advance=controlledClock(t),{f,protocol,login}=await rootProtocol(t),start=Date.now(),initial=await login(true);
+  const directory=mkdtempSync(join(tmpdir(),'source-rp-minimum-http-')),native=sqliteSource(join(directory,'source.sqlite'));
+  t.after(()=>{native.close();rmSync(directory,{recursive:true,force:true,maxRetries:3,retryDelay:100});});
+  const marker={sessionIdHash:digest(random()),profileDigest:digest('actual-profile-minimum'),bindingDigest:digest('native-selected-one'),
+    issuer:f.issuer,subject:initial.subject,createdAt:start,sessionExpiresAt:start+86400000};
+  await native.seed(marker,{accessToken:initial.accessToken,refreshToken:initial.refreshToken,nonce:initial.nonce},initial.expiresAt);
+  const options={storagePort:native.storagePort,protocol,profileDigest:marker.profileDigest,keyId:native.keyId,encrypt:native.encrypt,decrypt:native.decrypt};
+  advance(170);const ordinary=await createSourceRpSessionService(options).currentProof(marker);assert.equal(ordinary.sessionGeneration,0);
+  const proof=await createSourceRpSessionService(options).currentProof(marker,{minimumAccessRemainingMs:190000});
+  assert.equal(proof.sessionGeneration,1);assert.ok(proof.expiresAt-Date.now()>190000);assert.equal(proof.sessionExpiresAt,marker.sessionExpiresAt);
+  await proof.assertCurrent();
+});

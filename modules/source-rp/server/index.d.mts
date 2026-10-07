@@ -37,11 +37,15 @@ export interface SourceRpServiceOptions<Authority=unknown> {
 }
 /** Opaque host result after fresh userinfo. Credentials remain inside the service. */
 export interface SourceRpCurrentProof {readonly issuer:string;readonly sub:string;readonly expiresAt:number;readonly sessionExpiresAt:number;readonly sessionGeneration:number;assertCurrent():Promise<void>}
+/** Trusted Source host only, never an HTTP/manifest/author-controlled option.
+ * One bounded rotation may be attempted; the result's ACTUAL expiry must still
+ * be checked. Insufficient absolute lifetime/short provider AT does not loop. */
+export interface SourceRpCurrentProofOptions {minimumAccessRemainingMs?:number}
 export class SourceRpError extends Error {readonly code:string;readonly status:number;constructor(code:string,status?:number)}
 export function createSourceRpProtocol(profile:SourceRpProfile,options?:{clock?:()=>number}):SourceRpProtocol&{readonly profile:SourceRpProfile};
-export const SOURCE_RP_LIMITS:Readonly<{seconds:86400;heads:4096;perAccount:8;inFlight:16;gcBatch:128;rotations:512;earlyRefreshMs:30000;waitMs:6000;staleClaimMs:20000}>;
+export const SOURCE_RP_LIMITS:Readonly<{seconds:86400;heads:4096;perAccount:8;inFlight:16;gcBatch:128;rotations:512;earlyRefreshMs:30000;minimumAccessRemainingMaxMs:240000;waitMs:6000;staleClaimMs:20000}>;
 export function sourceRpCipherBinding(marker:SourceRpMarker,revision:number):string;
 export function createSourceRpSessionService<Authority>(options:SourceRpServiceOptions<Authority>):{
-  currentProof(marker:SourceRpMarker):Promise<SourceRpCurrentProof>;
+  currentProof(marker:SourceRpMarker,hostOptions?:SourceRpCurrentProofOptions):Promise<SourceRpCurrentProof>;
   compactExpired():Promise<void>;
 };

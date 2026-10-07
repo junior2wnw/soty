@@ -84,3 +84,56 @@ test('absolute 24h cannot slide on refresh and fails when source marker exceeds 
   const f = await fixture(t); await assert.rejects(f.service.currentProof({ ...f.marker, sessionExpiresAt: f.marker.createdAt + 86400001 }), error => error.status === 401);
   f.advance(86400000); await assert.rejects(f.service.currentProof(f.marker), error => error.status === 401); assert.equal(f.counts().refreshCalls, 0);
 });
+
+test('host minimum190 refreshes actual AT130 once, default remains30 and absolute end never slides',async t=>{
+  const f=await fixture(t);f.advance(170000);
+  const ordinary=await f.service.currentProof(f.marker);assert.equal(ordinary.sessionGeneration,0);assert.equal(f.counts().refreshCalls,0);
+  const second=createSourceRpSessionService(f.options);
+  const proofs=await Promise.all([f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000}),second.currentProof(f.marker,{minimumAccessRemainingMs:190000})]);
+  assert.equal(f.counts().refreshCalls,1);assert.equal(proofs.every(proof=>proof.sessionGeneration===1),true);
+  assert.equal(proofs.every(proof=>proof.sessionExpiresAt===f.marker.sessionExpiresAt),true);
+  assert.equal(f.native.head(f.marker.sessionIdHash).accessExpiresAt-f.marker.createdAt-170000,300000);
+});
+
+test('minimum is a closed bounded host option: invalid values/fields/getters never reach source storage or issuer',async t=>{
+  const f=await fixture(t);let invoked=false;
+  const getter=Object.defineProperty({},'minimumAccessRemainingMs',{enumerable:true,get(){invoked=true;return 190000;}});
+  for(const input of [null,[],false,{minimumAccessRemainingMs:-1},{minimumAccessRemainingMs:240001},
+    {minimumAccessRemainingMs:1.5},{minimumAccessRemainingMs:null},{minimumAccessRemainingMs:'190000'},
+    {minimumAccessRemainingMs:190000,force:true},getter,Object.assign(Object.create({}),{minimumAccessRemainingMs:190000})]){
+    await assert.rejects(f.service.currentProof(f.marker,input),error=>error.code==='source_rp_options_invalid');
+  }
+  assert.equal(invoked,false);assert.deepEqual(f.counts(),{refreshCalls:0,userinfoCalls:0});
+  await f.service.currentProof(f.marker,{});assert.equal(f.counts().refreshCalls,0);
+});
+
+test('short provider AT and near absolute end return actual expiry, never spin or move the deadline',async t=>{
+  const f=await fixture(t);f.advance(170000);let sends=0;
+  f.protocol.renew=async input=>{sends++;return{accessToken:random(),refreshToken:random(),nonce:input.nonce,expiresAt:f.marker.createdAt+230000};};
+  const proof=await f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000});
+  assert.equal(sends,1);assert.equal(proof.expiresAt,f.marker.createdAt+230000);assert.equal(proof.sessionExpiresAt,f.marker.sessionExpiresAt);
+  f.advance(86400000-300000);
+  const before=f.native.head(f.marker.sessionIdHash);f.native.overwrite({...before,accessExpiresAt:f.marker.sessionExpiresAt-30000});
+  const nearEnd=await f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000});
+  assert.equal(nearEnd.expiresAt,f.marker.sessionExpiresAt-30000);assert.equal(sends,1);
+});
+
+test('minimum path retains unknown old RT/no takeover and fresh native revoke fence',async t=>{
+  const f=await fixture(t);f.advance(170000);let sends=0;
+  f.protocol.renew=async()=>{sends++;throw new SourceRpError('source_rp_refresh_unknown',503);};
+  await assert.rejects(f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000}),error=>error.code==='source_rp_refresh_unknown');
+  const proof=await f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000});assert.equal(proof.sessionGeneration,0);assert.equal(sends,1);
+  f.native.revoke(f.marker.sessionIdHash);await assert.rejects(f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000}),error=>error.status===401);assert.equal(sends,1);
+});
+
+test('minimum path fresh Source authority after awaited claim prevents RT send',async t=>{
+  const f=await fixture(t),claim=f.native.storagePort.claim;f.advance(170000);
+  f.native.storagePort.claim=async input=>{const result=await claim(input);f.native.revoke(f.marker.sessionIdHash);return result;};
+  await assert.rejects(f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000}),error=>error.status===401);
+  assert.equal(f.counts().refreshCalls,0);assert.equal(f.native.head(f.marker.sessionIdHash).state,'revoked');
+});
+
+test('minimum path cannot bypass the existing 512 rotation bound',async t=>{
+  const f=await fixture(t);f.advance(170000);f.native.overwrite({...f.native.head(f.marker.sessionIdHash),revision:512});
+  await assert.rejects(f.service.currentProof(f.marker,{minimumAccessRemainingMs:190000}),error=>error.status===401);assert.equal(f.counts().refreshCalls,0);
+});
