@@ -1,6 +1,13 @@
 # U1: closed declaration and local admission reference
 
-Status: prototype package on serving revision5a854855; no production integration.
+Status: accepted U1 declaration decision. The ephemeral reference described here
+is the original prototype; it is not the current durable runtime receipt. The
+implementation now also has Source-fenced durable registration/admission and
+mandatory feedback provisioning. See the [current delivery matrix](../implementation/universal-delivery-matrix-20261007.md)
+and [verified Apps7 image/cold-restore receipt](../implementation/universal-apps7-image-canary-20261007.md)
+for implemented, tested and remaining work. The production Soty image has not
+been updated by this implementation task; Source integration and author self-service
+must not be inferred from this ADR.
 
 Keep .soty/app.json as the current deployment contract. Introduce the independent
 soty.app-agent.v1 declaration validated by modules/app-contract. Authors describe
