@@ -59,6 +59,8 @@ deploy/connector/fixtures/notes-v1/**
 !deploy/connect/
 deploy/connect/**
 !deploy/connect/*.mjs
+!deploy/connect/private-attach/
+!deploy/connect/private-attach/**
 install-op-cases
 usb-recovery-backup-*
 windows-media-tool
