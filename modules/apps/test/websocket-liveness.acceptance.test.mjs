@@ -356,9 +356,32 @@ test('R3 malformed mask, RSV, continuation and oversized frames are rejected at 
     const id = f.gate.log.find(entry => entry.path === path).id;
     (item.from === 'client' ? client.ws : peer.ws)._socket.write(item.bytes);
     await closed(client.ws);
-    assert.ok(f.gate.log.some(entry => entry.direction === 'toConnector' && entry.type === 'cancel' && entry.id === id && entry.error === item.code), item.code);
+    // Browser EOF and the cancel packet use independent real connections.
+    // Observe connector delivery instead of assuming its callback ran first.
+    await until(() => f.gate.log.some(entry => entry.direction === 'toConnector' && entry.type === 'cancel' && entry.id === id && entry.error === item.code), item.code);
     assert.equal(peer.messageCount, 0); assert.equal(f.runtime.status().connected, true);
   }
+  await echoed(neighbor.ws);
+});
+
+test('R3 browser closure does not imply the independent connector cancel has already arrived', { timeout: 12_000 }, async t => {
+  const f = await fixture(t), client = await f.open('/delayed-invalid-cancel');
+  const neighbor = await f.open('/neighbor-delayed-cancel', { entry: f.neighborEntry });
+  const peer = f.A.peers.get('/delayed-invalid-cancel');
+  const id = f.gate.log.find(entry => entry.path === '/delayed-invalid-cancel').id, held = [];
+  f.gate.hooks.toConnector = packet => {
+    if (packet.frame.type === 'cancel' && packet.frame.id === id) { held.push(packet); return false; }
+  };
+  client.ws._socket.write(encodeFrame(1));
+  await closed(client.ws);
+  await until(() => held.length === 1, 'real invalid-frame cancel is waiting on independent connection');
+  assert.equal(f.gate.log.some(entry => entry.direction === 'toConnector' && entry.type === 'cancel' && entry.id === id), false);
+  assert.equal(held[0].frame.error, 'app_websocket_invalid_frame');
+  f.gate.hooks.toConnector = null; held[0].forward();
+  await until(() => f.gate.log.some(entry => entry.direction === 'toConnector' && entry.type === 'cancel' && entry.id === id && entry.error === 'app_websocket_invalid_frame'), 'real cancel delivered');
+  await closed(peer.ws);
+  assert.equal(peer.messageCount, 0);
+  assert.equal(f.runtime.status().connected, true);
   await echoed(neighbor.ws);
 });
 
