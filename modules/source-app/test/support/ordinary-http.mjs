@@ -63,13 +63,15 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNat
       entry: { domainId: 'synthetic_' + realm.realmId, origin: realm.embedOrigin }, target: realm.profile.target, policyEpoch: 1, expiresAt: Date.now() + 300000 };
     realm.options = { databasePath: realm.databasePath, realmId: realm.realmId, key: realm.cipherKey, keyId: 'fixture-' + realm.realmId, format: embedOidc ? 2 : 1 };
     realm.restart = () => {
-      realm.bff?.close(); realm.store?.close(); realm.store = createOrdinaryAppStore({ ...realm.options, initialize: !realm.initialized });
+      const mark=phase=>stageSink(realm.realmId+'.'+phase);mark('store.begin');
+      realm.bff?.close(); realm.store?.close(); realm.store = createOrdinaryAppStore({ ...realm.options, initialize: !realm.initialized });mark('store.ready');
       if (!realm.initialized) {
-        realm.store.createResource({ id: 'selected', incarnationId: 'one', title: 'Synthetic ' + realm.realmId });
-        realm.store.createPrincipal('native-participant'); realm.store.createPrincipal('native-owner');
-        realm.store.grant('selected', 'native-participant', 'participant'); realm.store.grant('selected', 'native-owner', 'owner');
-        realm.nativeToken = realm.store.createNativeSession('native-participant'); realm.initialized = true;
+        realm.store.createResource({ id: 'selected', incarnationId: 'one', title: 'Synthetic ' + realm.realmId });mark('seed.resource');
+        realm.store.createPrincipal('native-participant');mark('seed.participant');realm.store.createPrincipal('native-owner');mark('seed.owner');
+        realm.store.grant('selected', 'native-participant', 'participant');mark('seed.participant-grant');realm.store.grant('selected', 'native-owner', 'owner');mark('seed.owner-grant');
+        realm.nativeToken = realm.store.createNativeSession('native-participant');mark('seed.native-session');realm.initialized = true;
       }
+      mark('native-port.begin');
       let native = createOrdinaryAppNativePort({ store: realm.store, resourceId: 'selected', incarnationId: 'one', afterCommit: () => realm.afterCommit?.() });
       if (asyncNativeAuthority) { const original = native;
         native = createSourceNativeAuthorityPort({ ...original,
@@ -79,10 +81,11 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNat
             realm.finalChecks = (realm.finalChecks ?? 0) + 1; return original.withCurrent(proof, binding, apply); },
         });
       }
+      mark('native-port.ready');mark('bff.begin');
       realm.bff = createSourceAppBff({ profile: realm.profile, transportKey: realm.key, connectorPort: realm.ipc.address().port,
         storage: realm.store.storage, native,
         rp: { issuer: root.issuer, clientId: client.id, clientSecret: client.clientSecret, redirectUri: client.redirectUri },
-        ui: { appLabel: 'Synthetic ' + realm.realmId, resourceLabel: 'Выбранный проект' } });
+        ui: { appLabel: 'Synthetic ' + realm.realmId, resourceLabel: 'Выбранный проект' } });mark('bff.ready');
     };
     realm.restart(); nativeJar.set('ordinary_native_' + realm.realmId, realm.nativeToken);
     const signer = createResourceSourceProofSigner({ profile: realm.profile, key: realm.key });
