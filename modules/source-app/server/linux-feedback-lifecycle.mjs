@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {check,SourceAppError,digest} from './wire.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT} from './linux-feedback-local-placement.mjs';
+import {linuxFeedbackFailure} from './linux-feedback-diagnostic.mjs';
 
 // Internal host implementation only. This module is not a package/RPC export;
 // author JSON cannot supply a command runner, filesystem port or packet plan.
@@ -31,23 +32,27 @@ export function createLocalWslHostDockerCommandRunner(binary){
 }
 
 function commandRunner(binary,captureArgs){
-  function start(args,{limit=16384,timeout=15000,signal}={}){
+  function start(args,{limit=16384,timeout=15000,signal,collectExitOneReceipt=false}={}){
     const child=spawn(binary,captureArgs(args),{stdio:['ignore','pipe','pipe'],env:{PATH:'/usr/bin:/bin'},windowsHide:true});
-    const chunks=[];let bytes=0,failed=false,closed=false,force,timer;
-    function stop(){
-      if(closed)return;failed=true;child.kill('SIGTERM');
+    const chunks=[];let bytes=0,failed=false,closed=false,force,timer,exitClass='none';
+    function stop(reason='interrupted'){
+      if(closed)return;failed=true;if(exitClass==='none')exitClass=reason;child.kill('SIGTERM');
       force??=setTimeout(()=>{if(!closed)child.kill('SIGKILL');},500);
     }
+    const aborted=()=>stop('aborted');
     const result=new Promise((resolve,reject)=>{
-      child.once('error',()=>{failed=true;});
-      child.stdout.on('data',part=>{bytes+=part.length;if(bytes>limit)stop();else chunks.push(part);});
+      child.once('error',()=>{failed=true;exitClass='spawn_failed';});
+      child.stdout.on('data',part=>{bytes+=part.length;if(bytes>limit)stop('output_limit');else chunks.push(part);});
       child.stderr.resume();
       child.once('close',code=>{
-        closed=true;clearTimeout(timer);clearTimeout(force);signal?.removeEventListener('abort',stop);
-        if(failed||code!==0)reject(new SourceAppError('source_feedback_processor_unknown',503));
+        closed=true;clearTimeout(timer);clearTimeout(force);signal?.removeEventListener('abort',aborted);
+        // Only the fixed public supervisor fixture asks for bounded JSON on
+        // exit1. Worker/Native execution uses the unchanged exit0-only default.
+        if(failed||code!==0&&!(collectExitOneReceipt===true&&code===1)){const error=new SourceAppError('source_feedback_processor_unknown',503);
+          error.linuxCliDiagnostic=Object.freeze({exitClass:exitClass==='none'?'nonzero':exitClass});reject(error);}
         else resolve(Buffer.concat(chunks).toString('utf8').trim());
       });
-      timer=setTimeout(stop,timeout);signal?.addEventListener('abort',stop,{once:true});if(signal?.aborted)stop();
+      timer=setTimeout(()=>stop('timeout'),timeout);signal?.addEventListener('abort',aborted,{once:true});if(signal?.aborted)aborted();
     });
     // Observation may fail before the consumer reaches await result.
     result.catch(()=>{});
@@ -58,23 +63,25 @@ function commandRunner(binary,captureArgs){
 
 const emptyList=value=>value===null||Array.isArray(value)&&value.length===0;
 const emptyObject=value=>value===null||value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===0;
-const equal=(a,b)=>digest(a)===digest(b);
+const equal=(a,b)=>a!==undefined&&b!==undefined&&digest(a)===digest(b);
 export function assertFixedLinuxSpec(actual,plan){
-  check(actual&&/^[a-f0-9]{64}$/u.test(actual.id)&&actual.name==='/'+plan.name&&actual.image===plan.image
-    &&actual.labels?.[plan.label]===plan.packetSha256&&['created','running','exited'].includes(actual.state)
-    &&actual.user==='1000:1000'&&actual.workdir==='/probe'&&actual.readonly===true&&actual.network==='none'
-    &&actual.memory===134217728&&actual.swap===134217728&&actual.pids===32&&actual.nanoCpus===1000000000
-    &&actual.cpuPeriod===0&&actual.cpuQuota===0&&actual.cpuShares===0&&actual.cpuRealtimePeriod===0&&actual.cpuRealtimeRuntime===0&&actual.cpuCount===0&&actual.cpuPercent===0&&actual.cpusetCpus===''&&actual.cpusetMems===''
-    &&equal(actual.ulimits,[{Name:'core',Soft:0,Hard:0}])&&actual.log?.Type==='none'&&emptyObject(actual.log.Config)
-    &&actual.privileged===false&&equal(actual.caps,['ALL'])&&emptyList(actual.capAdd)&&equal(actual.security,['no-new-privileges'])
-    &&emptyList(actual.devices)&&emptyList(actual.deviceRequests)&&emptyList(actual.deviceRules)
-    &&emptyList(actual.binds)&&emptyList(actual.volumesFrom)&&emptyObject(actual.ports)&&actual.publishPorts===false
-    &&actual.pidMode===''&&actual.ipcMode==='private'&&actual.utsMode===''
-    &&actual.restart?.Name==='no'&&actual.restart.MaximumRetryCount===0
-    &&equal(actual.entrypoint,['/usr/bin/timeout'])&&equal(actual.cmd,plan.command)&&equal(actual.tmpfs,plan.tmpfs)
-    &&Array.isArray(actual.mounts)&&actual.mounts.length===1&&actual.mounts[0].Type==='bind'
-    &&actual.mounts[0].Source===plan.packetDirectory&&actual.mounts[0].Destination==='/probe'
-    &&actual.mounts[0].RW===false&&actual.mounts[0].Propagation==='rprivate','source_feedback_processor_not_ready',503);
+  const a=actual??{},groups={
+    identity:/^[a-f0-9]{64}$/u.test(a.id)&&a.name==='/'+plan.name&&a.image===plan.image&&a.labels?.[plan.label]===plan.packetSha256,
+    state:['created','running','exited'].includes(a.state),
+    limits:a.memory===134217728&&a.swap===134217728&&a.pids===32,
+    cpu:a.nanoCpus===1000000000&&a.cpuPeriod===0&&a.cpuQuota===0&&a.cpuShares===0&&a.cpuRealtimePeriod===0&&a.cpuRealtimeRuntime===0&&a.cpuCount===0&&a.cpuPercent===0&&a.cpusetCpus===''&&a.cpusetMems==='',
+    hardening:a.user==='1000:1000'&&a.workdir==='/probe'&&a.readonly===true&&a.network==='none'
+      &&equal(a.ulimits,[{Name:'core',Soft:0,Hard:0}])&&a.log?.Type==='none'&&emptyObject(a.log.Config)
+      &&a.privileged===false&&equal(a.caps,['ALL'])&&emptyList(a.capAdd)&&equal(a.security,['no-new-privileges'])
+      &&emptyList(a.devices)&&emptyList(a.deviceRequests)&&emptyList(a.deviceRules),
+    namespaces:emptyList(a.binds)&&emptyList(a.volumesFrom)&&emptyObject(a.ports)&&a.publishPorts===false
+      &&a.pidMode===''&&a.ipcMode==='private'&&a.utsMode===''&&a.restart?.Name==='no'&&a.restart.MaximumRetryCount===0,
+    command:equal(a.entrypoint,['/usr/bin/timeout'])&&equal(a.cmd,plan.command)&&equal(a.tmpfs,plan.tmpfs),
+    mounts:Array.isArray(a.mounts)&&a.mounts.length===1&&a.mounts[0].Type==='bind'
+      &&a.mounts[0].Source===plan.packetDirectory&&a.mounts[0].Destination==='/probe'&&a.mounts[0].RW===false&&a.mounts[0].Propagation==='rprivate',
+  };
+  const mismatch=Object.entries(groups).filter(([,valid])=>!valid).map(([name])=>name);
+  if(mismatch.length){const error=new SourceAppError('source_feedback_processor_not_ready',503);error.specMismatchGroups=Object.freeze(mismatch);throw error;}
   return actual;
 }
 
@@ -88,7 +95,7 @@ function createArgs(plan){return ['create','--pull=never','--name',plan.name,'--
 /** Lifecycle kernel shared by the real fixed host and controlled failure
  * tests. A failed/unknown cleanup never returns output to Native final SQL. */
 export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,beforeStart,onEvidence}){
-  let packetOwned=false,createAttempted=false,ownedId,attach,primary,output,stopping;
+  let packetOwned=false,createAttempted=false,ownedId,attach,primary,output,stopping,stage='packet';
   let cleanupUnknown=false,observerFailed=false,stopped=false,exitCode=null,oom=null,containerRemoved=false,packetRemoved=false;
   const evidence=extra=>({scenario:plan.scenario,engineRef:plan.engineRef,packetSha256:plan.packetSha256,
     workerSha256:plan.workerSha256,synthetic:true,...extra});
@@ -116,28 +123,28 @@ export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,befo
     await fs.writeFile(plan.packetDirectory+'/worker.mjs',plan.workerSource,{mode:0o600});
     await fs.writeFile(plan.packetDirectory+'/input.json',plan.packetText,{mode:0o600});
     check(!signal.aborted,'source_feedback_processor_unknown',503);
-    createAttempted=true;
+    stage='create';createAttempted=true;
     const returnedId=await commands.run(createArgs(plan));
     // The daemon name is a locator, never authority. Verify every selected
     // immutable spec before either START or adopting an ID for cleanup.
-    const created=await inspect(plan.name);ownedId=created.id;
+    stage='created_spec';const created=await inspect(plan.name);ownedId=created.id;
     check(returnedId===ownedId&&created.state==='created','source_feedback_processor_unknown',503);
-    check(typeof beforeStart==='function','source_feedback_processor_not_ready',503);await beforeStart();
+    stage='authority';check(typeof beforeStart==='function','source_feedback_processor_not_ready',503);await beforeStart();
     signal.addEventListener('abort',onAbort,{once:true});check(!signal.aborted,'source_feedback_processor_unknown',503);
-    attach=commands.start(['start','--attach',ownedId],{limit:plan.budget.outputBytes,timeout:plan.budget.wallMs+plan.budget.cleanupMs+5000,signal});
+    stage='start';attach=commands.start(['start','--attach',ownedId],{limit:plan.budget.outputBytes,timeout:plan.budget.wallMs+plan.budget.cleanupMs+5000,signal});
     attach.result.catch(()=>{});
     const deadline=Date.now()+2000;
-    while(Date.now()<deadline){
+    stage='running_spec';while(Date.now()<deadline){
       const live=await inspect(ownedId);check(live.id===ownedId,'source_feedback_processor_unknown',503);
       if(live.state==='running'){emit({phase:'started'});break;}
       if(live.state==='exited')break;await sleep(20);
     }
-    const stdout=await attach.result;check(!signal.aborted,'source_feedback_processor_unknown',503);
-    const after=await inspect(ownedId);check(after.id===ownedId&&after.state==='exited'&&after.exitCode===0&&after.oom===false,'source_feedback_processor_unknown',503);
-    const result=JSON.parse(stdout);
+    stage='attach';const stdout=await attach.result;check(!signal.aborted,'source_feedback_processor_unknown',503);
+    stage='stopped_spec';const after=await inspect(ownedId);check(after.id===ownedId&&after.state==='exited'&&after.exitCode===0&&after.oom===false,'source_feedback_processor_unknown',503);
+    stage='receipt';const result=JSON.parse(stdout);
     // Parsing/closed receipt validation belongs to the fixed engine caller.
     output=result;
-  }catch(error){primary=error;}
+  }catch(error){primary=error;try{emit({phase:'failure',stage,...linuxFeedbackFailure(error)});}catch{}}
   finally{
     signal.removeEventListener('abort',onAbort);
     if(createAttempted&&!ownedId){
@@ -176,7 +183,8 @@ export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,befo
         await fs.rm(plan.packetDirectory,{recursive:true,force:false,maxRetries:5,retryDelay:30});packetRemoved=true;
       }catch{cleanupUnknown=true;}
     }
-    try{emit({phase:'cleanup',stopped,exitCode,oom,containerRemoved,packetRemoved,cleanupUnknown,observerFailed});}catch{}
+    try{emit({phase:'cleanup',stopped,exitCode,oom,containerRemoved,packetRemoved,cleanupUnknown,observerFailed,
+      ...(primary?{failureStage:stage,...linuxFeedbackFailure(primary)}:{})});}catch{}
   }
   if(cleanupUnknown)throw new SourceAppError('source_feedback_processor_cleanup_unknown',503);
   if(primary)throw primary;

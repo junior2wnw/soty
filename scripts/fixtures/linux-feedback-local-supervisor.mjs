@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {createLocalWslHostDockerCommandRunner} from '../../modules/source-app/server/linux-feedback-lifecycle.mjs';
 import {canonical,digest} from '../../modules/source-app/server/wire.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../../modules/source-app/server/linux-feedback-local-placement.mjs';
+import {linuxFeedbackFailure} from '../../modules/source-app/server/linux-feedback-diagnostic.mjs';
 
 // PUBLIC Node18-compatible HOST guard. Operator config is reviewed immutable
 // SHA/GID data, not publisher/HTTP input. The Source runtime runs on Node24.
@@ -72,7 +73,7 @@ async function cleanup(item){
 }
 
 async function main(){
-let runDirectory,ownDirectory=false,ownJobs=false,result,primary,cleanupUnknown=false;const cleanupEvidence=[];
+let runDirectory,ownDirectory=false,ownJobs=false,result,primary,cleanupUnknown=false,stage='preflight';const cleanupEvidence=[];
 try{
   check(process.platform==='linux'&&process.getuid()===1000&&process.argv.length===3);await checkedDirectory(LAB);
   const packetDirectory=resolve(dirname(process.argv[2]));check(packetDirectory.startsWith(LAB+'/linux-feedback-local-jobs-')&&/^linux-feedback-local-jobs-[a-f0-9]{32}$/u.test(packetDirectory.slice(LAB.length+1)));
@@ -89,7 +90,7 @@ try{
   const manifest=JSON.parse((await readBounded(packetDirectory+'/manifest.json',65536)).toString('utf8'));
   check(manifest.schema==='soty.source-feedback-local-linux-packet.v1'&&manifest.image===WORKER&&manifest.nonce===packetDirectory.slice(-32)
     &&manifest.fixtureSha256===config.fixtureSha256&&manifest.supervisorSha256===config.supervisorSha256&&manifest.nativeRevokeSha256===config.nativeRevokeSha256
-    &&same(manifest.externalRootImports,IMPORTS)&&manifest.sourceFiles.length===38&&manifest.placementDigest===digest(placement)&&manifest.cases===7
+    &&same(manifest.externalRootImports,IMPORTS)&&manifest.sourceFiles.length===39&&manifest.placementDigest===digest(placement)&&manifest.cases===7
     &&manifest.models===false&&manifest.productionReady===false);
   const cliPath=await fs.realpath(placement.dockerHostBinary);check(cliPath===placement.dockerHostBinary);check(sha(await readBounded(cliPath,134217728))===config.dockerCliSha256);
   const socket=await fs.lstat(placement.socketHost);check(socket.isSocket()&&!socket.isSymbolicLink()&&socket.gid===placement.socketGid&&config.socketGid===placement.socketGid&&(socket.mode&0o777)===0o660&&await fs.realpath(placement.socketHost)===placement.socketHost);
@@ -99,7 +100,7 @@ try{
   const stub=runDirectory+'/lab-parent';await fs.mkdir(stub,{mode:0o700});await fs.mkdir(stub+'/source-feedback-jobs',{mode:0o700});
   const jobs=LAB+'/source-feedback-jobs';await fs.mkdir(jobs,{mode:0o700});ownJobs=true;await checkedDirectory(jobs);check((await fs.readdir(jobs)).length===0);
   const common={label:sha(JSON.stringify(config)),groups:[],memory:134217728,pids:32,tmpfs:{'/tmp':'rw,nosuid,nodev,noexec,size=1048576,uid=1000,gid=1000,mode=700','/data':'rw,nosuid,nodev,noexec,size=1048576,uid=1000,gid=1000,mode=700'}};
-  const tools=await create({...common,role:'worker-tools',name:'codex-soty-feedback-tools-'+config.nonce,image:WORKER,command:['--input-type=module','-e',toolScript],mounts:[]});
+  stage='worker_tools';const tools=await create({...common,role:'worker-tools',name:'codex-soty-feedback-tools-'+config.nonce,image:WORKER,command:['--input-type=module','-e',toolScript],mounts:[]});
   tools.attach=commands.start(['start','--attach',tools.id],{limit:1024,timeout:10000});const toolResult=JSON.parse(await tools.attach.result);
   const toolState=assertSupervisorContainer(await inspect(tools.id),tools.spec);check(toolState.state==='exited'&&toolState.exitCode===0&&!toolState.oom&&toolResult.toolsPresent===true&&/^v24\./u.test(toolResult.node));
   const spec={...common,role:'joint-source',name:'codex-soty-feedback-supervisor-'+config.nonce,image:config.rootImage,
@@ -107,21 +108,22 @@ try{
     tmpfs:{...common.tmpfs,'/tmp':'rw,nosuid,nodev,noexec,size=268435456,uid=1000,gid=1000,mode=700'},mounts:[
       {source:packetDirectory,target:'/probe',rw:false},{source:cliPath,target:'/usr/bin/docker',rw:false},
       {source:placement.socketHost,target:placement.socketContainer,rw:false},{source:stub,target:LAB,rw:false},{source:jobs,target:jobs,rw:true}]};
-  const supervisor=await create(spec);
+  stage='supervisor_create';const supervisor=await create(spec);
   // Read-only extraction of exactly four public runtime imports. Nothing
   // from image configuration, secrets or private Root data is copied.
-  for(let i=0;i<IMPORTS.length;i++){
+  stage='runtime_imports';for(let i=0;i<IMPORTS.length;i++){
     const copy=join(runDirectory,'runtime-'+i+'.mjs');await commands.run(['cp','-L',supervisor.id+':'+IMPORTS[i],copy]);check(sha(await readBounded(copy))===config.imports[i].sha256);
   }
   check((await fs.readdir(jobs)).length===0);
-  supervisor.attach=commands.start(['start','--attach',supervisor.id],{limit:131072,timeout:180000});
+  stage='supervisor_attach';supervisor.attach=commands.start(['start','--attach',supervisor.id],{limit:131072,timeout:180000,collectExitOneReceipt:true});
   const output=JSON.parse(await supervisor.attach.result),state=assertSupervisorContainer(await inspect(supervisor.id),spec);
-  check(state.state==='exited'&&state.exitCode===0&&!state.oom&&output.schema==='soty.source-feedback-linux-receipt.v1'
+  stage='source_receipt';check(state.state==='exited'&&[0,1].includes(state.exitCode)&&!state.oom&&output.schema==='soty.source-feedback-linux-receipt.v1'
     &&output.nonce===manifest.nonce&&output.image===WORKER&&output.placementDigest===digest(placement)&&output.synthetic===true&&output.models===false&&output.productionReady===false
-    &&output.passed===true&&Array.isArray(output.results)&&output.results.length===7&&output.results.every(item=>item.passed===true));
+    &&typeof output.passed==='boolean'&&Array.isArray(output.results)&&output.results.length<=7);
   result={schema:'soty.source-feedback-local-supervisor-receipt.v1',nonce:config.nonce,rootImage:config.rootImage,rootRevision:config.rootRevision,
     workerImage:WORKER,placementDigest:digest(placement),sourceCommit:manifest.sourceCommit,fixtureSha256:config.fixtureSha256,manifestSha256:config.manifestSha256,
-    importsVerified:4,sourceFiles:38,workerTools:toolResult,sourceResult:output,models:false,productionReady:false};
+    importsVerified:4,sourceFiles:39,workerTools:toolResult,sourceResult:output,models:false,productionReady:false};
+  check(state.exitCode===0&&output.passed===true&&output.results.length===7&&output.results.every(item=>item.passed===true));
 }catch(error){primary=error;}
 finally{
   for(const item of containers.reverse()){const evidence=await cleanup(item);cleanupEvidence.push(evidence);if(evidence.cleanupUnknown)cleanupUnknown=true;}
@@ -131,7 +133,8 @@ finally{
   if(!cleanupUnknown&&ownDirectory){try{await checkedDirectory(runDirectory);await fs.rm(runDirectory,{recursive:true,force:false,maxRetries:5,retryDelay:30});}catch{cleanupUnknown=true;}}
 }
 // Full env/inspect/CLI errors are never emitted, even on refusal.
-if(primary||cleanupUnknown){console.log(JSON.stringify({schema:'soty.source-feedback-local-supervisor-receipt.v1',passed:false,cleanupUnknown,cleanupEvidence,models:false,productionReady:false}));process.exitCode=1;}
+if(primary||cleanupUnknown){console.log(JSON.stringify({schema:'soty.source-feedback-local-supervisor-receipt.v1',passed:false,stage,
+  diagnostic:linuxFeedbackFailure(primary),cleanupUnknown,cleanupEvidence,...(result?{sourceResult:result.sourceResult}:{}),models:false,productionReady:false}));process.exitCode=1;}
 else console.log(JSON.stringify({...result,passed:true,cleanupUnknown:false,cleanupEvidence}));
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url)await main();

@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {SourceAppError} from '../server/wire.mjs';
 import {assertFixedLinuxSpec,runFixedLinuxPacket,createDockerCommandRunner} from '../server/linux-feedback-lifecycle.mjs';
+import {linuxFeedbackFailure} from '../server/linux-feedback-diagnostic.mjs';
 
 // Controlled host failures are lifecycle evidence, not Linux/Docker isolation
 // acceptance. The actual installed Source→OS packet remains a separate gate.
@@ -91,6 +92,22 @@ test('unknown CREATE with foreign identity/spec never adopts or deletes that con
     const f=fixture({createUnknown:true,specDelta});await assert.rejects(f.run(),error=>error.code==='source_feedback_processor_cleanup_unknown');
     assert.equal(f.state.starts,0);assert.equal(f.state.kills,0);assert.equal(f.state.removes,0);
   }
+});
+
+test('safe failure identifies exact lifecycle phase/spec group while raw error/CLI strings never enter evidence',async()=>{
+  const f=fixture({specDelta:{nanoCpus:0}});await assert.rejects(f.run());
+  const failure=f.state.evidence.find(item=>item.phase==='failure');assert.equal(failure.stage,'created_spec');
+  assert.equal(failure.code,'source_feedback_processor_not_ready');assert.deepEqual(failure.specMismatchGroups,['cpu']);
+  assert.equal(f.state.packetRemoves,0);assert.equal(f.state.evidence.at(-1).cleanupUnknown,true);
+  const raw=Object.assign(new Error('private-token-value'),{code:'private-token-value',stderr:'private-token-value',linuxCliDiagnostic:{exitClass:'private-token-value'},specMismatchGroups:['private-token-value']});
+  assert.equal(JSON.stringify(linuxFeedbackFailure(raw)).includes('private-token-value'),false);
+  const getter=Object.defineProperty({},'code',{get(){throw Error('do-not-call');}});assert.equal(linuxFeedbackFailure(getter).code,'unclassified');
+});
+
+test('real owned CLI exit1 stays rejected for workers; only fixed supervisor diagnostic option collects bounded JSON',async()=>{
+  const runner=createDockerCommandRunner(process.execPath),args=['--input-type=module','-e','console.log(JSON.stringify({synthetic:true}));process.exitCode=1'];
+  await assert.rejects(runner.run(args),error=>linuxFeedbackFailure(error).cliExitClass==='nonzero');
+  assert.deepEqual(JSON.parse(await runner.run(args,{collectExitOneReceipt:true})),{synthetic:true});
 });
 
 test('a successful CREATE response with foreign spec cannot START or delete an unproved ID',async()=>{
