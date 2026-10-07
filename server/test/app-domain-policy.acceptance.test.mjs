@@ -85,15 +85,48 @@ test('the development exception checks every shell and never treats a loopback-l
     /apps_zone_trusted_sites_required/u);
 });
 
-test('HTTP startup revalidates a retained named site even when new claims are disabled', { timeout: 20_000 }, async () => {
+// Failure-only diagnostics: no error/reason, argv, configuration or payload.
+function observeStartupPhase(signal, emit = value => console.log(JSON.stringify(value))) {
+  const phases = ['directory', 'initial_create', 'initial_close', 'snapshot', 'child_a', 'child_b', 'verify_child_a', 'verify_child_b', 'cleanup'];
+  let phase = 'directory', finished = false, abortReported = false;
+  const report = code => {
+    try {
+      emit({ schema: 'soty.http-startup-test-diagnostic.v1', code, phase });
+    } catch { /* Diagnostics must preserve the original failure. */ }
+  };
+  const aborted = () => {
+    if (finished || abortReported) return;
+    abortReported = true; report('test_aborted');
+  };
+  signal.addEventListener('abort', aborted, { once: true });
+  if (signal.aborted) aborted();
+  return Object.freeze({
+    at(next) {
+      if (finished) return;
+      if (!phases.includes(next)) throw new Error('invalid_startup_diagnostic_phase');
+      phase = next;
+    },
+    childFailed() {
+      if (finished) return;
+      if (phase !== 'child_a' && phase !== 'child_b') throw new Error('invalid_startup_child_phase');
+      report('child_failed');
+    },
+    finish() {
+      finished = true; phase = 'finished'; signal.removeEventListener('abort', aborted);
+    },
+  });
+}
+test('HTTP startup revalidates a retained named site even when new claims are disabled', { timeout: 20_000 }, async t => {
+  const diagnostic = observeStartupPhase(t.signal);
+  try {
   const directory = await mkdtemp(join(tmpdir(), 'soty-zone-acceptance-'));
   const configuration = { dataDir: directory, connectOrigins: publicShells,
     appOriginTemplate: 'https://{appId}.legacy.other.online', namedAppZone: 'https://apps.soty.online',
     gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' } };
   try {
-    const first = createHttpApp(directory, configuration);
-    await first.locals.closeServices();
-    const before = await readFile(join(directory, 'apps', 'registry.sqlite'));
+    diagnostic.at('initial_create'); const first = createHttpApp(directory, configuration);
+    diagnostic.at('initial_close'); await first.locals.closeServices();
+    diagnostic.at('snapshot'); const before = await readFile(join(directory, 'apps', 'registry.sqlite'));
     // A separate process also proves that refused startup releases its open
     // services. It receives only synthetic configuration, never host credentials.
     const source = `
@@ -106,16 +139,23 @@ test('HTTP startup revalidates a retained named site even when new claims are di
     `;
     const env = Object.fromEntries(['SystemRoot', 'WINDIR', 'TEMP', 'TMP']
       .filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]]));
-    for (const newlyTrustedShell of ['https://login.soty.online', 'https://child.apps.soty.online']) {
-      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source,
+    for (const [childIndex, newlyTrustedShell] of ['https://login.soty.online', 'https://child.apps.soty.online'].entries()) {
+      diagnostic.at(childIndex === 0 ? 'child_a' : 'child_b');
+      let stdout;
+      try {
+      ({ stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source,
         JSON.stringify({ ...configuration, namedAppZone: '', connectOrigins: [...publicShells, newlyTrustedShell] })],
-      { env, timeout: 8_000, maxBuffer: 128 * 1024 });
+      { env, timeout: 8_000, maxBuffer: 128 * 1024 }));
+      } catch (error) { diagnostic.childFailed(); throw error; }
+      diagnostic.at(childIndex === 0 ? 'verify_child_a' : 'verify_child_b');
       assert.equal(stdout.trim(), 'retained-zone-rejected');
       assert.deepEqual(await readFile(join(directory, 'apps', 'registry.sqlite')), before);
     }
   } finally {
+    diagnostic.at('cleanup');
     assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
     assert.ok(basename(directory).startsWith('soty-zone-acceptance-'));
     await rm(directory, { recursive: true, force: true });
   }
+  } finally { diagnostic.finish(); }
 });
