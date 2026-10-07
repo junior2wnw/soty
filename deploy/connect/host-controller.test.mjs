@@ -433,7 +433,7 @@ test('recovered v3 START receipt rechecks current Apps format and never repeats 
   const state = await f.readState(), operation = state.transaction.operation;
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3'); assert.equal(operation.storageGuard.apps, 'empty');
   f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', notes: 'empty', capabilities: 'empty', rooms: 1, apps: 8 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', notes: 'empty', capabilities: 'empty', rooms: 1, apps: 9 });
   const controller = f.create(); controller.state = state;
   const starts = f.engine.events.filter(event => event.startsWith('start:')).length;
   await assert.rejects(controller.reconcileOperation(), /storage_probe_invalid/);
@@ -445,7 +445,7 @@ test('recovered v3 START receipt rechecks current Apps format and never repeats 
   assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
 });
 
-for (const previous of [2, 3, 4, 5]) test(`pending Apps${previous} START receipt cannot settle against Apps${previous + 1} data or repeat an already submitted start`, async () => {
+for (const previous of [2, 3, 4, 5, 6, 7]) test(`pending Apps${previous} START receipt cannot settle against Apps${previous + 1} data or repeat an already submitted start`, async () => {
   const f = await fixture(); f.engine.ignore = 'start';
   const command = f.deps.command;
   f.deps.command = async (...args) => {
