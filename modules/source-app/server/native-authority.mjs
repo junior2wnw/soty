@@ -5,9 +5,9 @@ const approvedCommits = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
-  const value = fields(options, ['capture', 'withCurrent'], ['rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
+  const value = fields(options, ['capture', 'withCurrent'], ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
   check(typeof value.capture === 'function' && typeof value.withCurrent === 'function' && value.withCurrent.constructor?.name !== 'AsyncFunction');
-  for (const key of ['rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
+  for (const key of ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
     check(value[key] === undefined || typeof value[key] === 'function');
   if (value.feedback !== undefined) {
     const feedback = fields(value.feedback, ['context', 'list', 'get', 'submit'], ['reply', 'status', 'accept']);
@@ -42,6 +42,16 @@ export function createNativeAuthorityRuntime(port) {
       return result;
     } finally { live = false; fencing = false; }
   }
+  /** Fresh host-only Source check OUTSIDE a Native transaction. A PG hook
+   * queries current SQL authority; it cannot replace the synchronous final
+   * checkpoint, create permission, return rows or use a JSON proof wrapper. */
+  async function assertCurrent(proof) {
+    const captured = proofs.get(proof);
+    check(!closed && captured && !fencing, 'source_app_authority_invalid', 503);
+    if (port.assertCurrent === undefined) { withCurrent(proof, () => true); return; }
+    const result = await port.assertCurrent(captured.native, captured.binding);
+    check(!closed && !fencing && proofs.get(proof) === captured && result === undefined, 'source_app_authority_invalid', 503);
+  }
   function operationCommit(proof) {
     let open = true, used = false, entered = false, poisoned = false;
     const capability = Object.freeze({ commit(action) {
@@ -57,12 +67,12 @@ export function createNativeAuthorityRuntime(port) {
     }, mayHaveCommitted() { return entered; } };
   }
   async function invoke(proof, method, input, { mutation = false, bytes = 65536 } = {}) {
-    const captured = proofs.get(proof); withCurrent(proof, () => true);
+    const captured = proofs.get(proof); await assertCurrent(proof);
     const payload = deepFreeze(jsonCopy(input, { bytes })), final = mutation ? operationCommit(proof) : null;
     try {
       const result = await method(captured.native, captured.binding, payload, final?.capability);
       final?.seal(); final?.assertUsed();
-      withCurrent(proof, () => true);
+      await assertCurrent(proof);
       return deepFreeze(jsonCopy(result, { bytes }));
     } catch (error) {
       // Once a Native action has run, a later denial, invalid response or lost
@@ -79,9 +89,10 @@ export function createNativeAuthorityRuntime(port) {
       const native = await port.capture(selected, nativeRequest);
       check(!closed && native && typeof native === 'object', 'source_app_native_access_denied', 403);
       const proof = Object.freeze(Object.create(null)); proofs.set(proof, { native, binding: selected });
-      withCurrent(proof, () => true); return proof;
+      await assertCurrent(proof); return proof;
     },
     withCurrent,
+    assertCurrent,
     rememberLogin(proof, intent) {
       const captured = proofs.get(proof), input = fields(intent, ['interactionIdHash', 'expiresAt']);
       check(/^[a-f0-9]{64}$/u.test(input.interactionIdHash) && Number.isSafeInteger(input.expiresAt) && input.expiresAt > 0
@@ -99,7 +110,7 @@ export function createNativeAuthorityRuntime(port) {
       check(/^[a-f0-9]{64}$/u.test(selectedIntent.interactionIdHash) && Number.isSafeInteger(selectedIntent.expiresAt) && selectedIntent.expiresAt > 0);
       const native = await port.recoverLogin(selected, Object.freeze(reference), Object.freeze(selectedIntent));
       check(!closed && native && typeof native === 'object', 'source_app_native_access_denied', 403);
-      const proof = Object.freeze(Object.create(null)); proofs.set(proof, { native, binding: selected }); withCurrent(proof, () => true); return proof;
+      const proof = Object.freeze(Object.create(null)); proofs.set(proof, { native, binding: selected }); await assertCurrent(proof); return proof;
     },
     commitIdentity(proof, identity, { createEmptyGuest = false } = {}) {
       const captured = proofs.get(proof);

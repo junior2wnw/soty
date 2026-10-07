@@ -12,12 +12,13 @@ import { createResourceSourceProofSigner } from '../../../apps/scoped-embed/reso
 import { createOrdinaryAppStore } from '../../examples/ordinary-app/store.mjs';
 import { createOrdinaryAppNativePort } from '../../examples/ordinary-app/native.mjs';
 import { digest } from '../../server/wire.mjs';
+import { createSourceNativeAuthorityPort } from '../../server/native-authority.mjs';
 
 const opaque = () => randomBytes(32).toString('base64url');
 /** Native browser cookies are shared by hostname, NEVER by port. Embed jars
  * here model a private per-Source broker, not browser isolation on 127.0.0.1.
  * Root authority IPC is controlled; installed HTTP/WS remains a separate gate. */
-export async function createOrdinaryHttpFixture(t, { embedOidc = false } = {}) {
+export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNativeAuthority = false } = {}) {
   const root = await environment(t, { renewal: false }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
   const realms = [], sockets = new Set(), nativeJar = new Map();
   for (const [index, realmId] of ['board', 'library'].entries()) {
@@ -65,9 +66,17 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false } = {}) {
         realm.store.grant('selected', 'native-participant', 'participant'); realm.store.grant('selected', 'native-owner', 'owner');
         realm.nativeToken = realm.store.createNativeSession('native-participant'); realm.initialized = true;
       }
+      let native = createOrdinaryAppNativePort({ store: realm.store, resourceId: 'selected', incarnationId: 'one', afterCommit: () => realm.afterCommit?.() });
+      if (asyncNativeAuthority) { const original = native;
+        native = createSourceNativeAuthorityPort({ ...original,
+          async assertCurrent(proof, binding) { assert.equal(realm.store.inTransaction(), false); realm.asyncChecks = (realm.asyncChecks ?? 0) + 1;
+            await realm.beforeAsyncCheck?.(); original.withCurrent(proof, binding, () => true); },
+          withCurrent(proof, binding, apply) { assert.equal(realm.store.inTransaction(), true, 'BFF synchronous Native fence is final-only');
+            realm.finalChecks = (realm.finalChecks ?? 0) + 1; return original.withCurrent(proof, binding, apply); },
+        });
+      }
       realm.bff = createSourceAppBff({ profile: realm.profile, transportKey: realm.key, connectorPort: realm.ipc.address().port,
-        storage: realm.store.storage, native: createOrdinaryAppNativePort({ store: realm.store, resourceId: 'selected', incarnationId: 'one',
-          afterCommit: () => realm.afterCommit?.() }),
+        storage: realm.store.storage, native,
         rp: { issuer: root.issuer, clientId: client.id, clientSecret: client.clientSecret, redirectUri: client.redirectUri },
         ui: { appLabel: 'Synthetic ' + realm.realmId, resourceLabel: 'Выбранный проект' } });
     };

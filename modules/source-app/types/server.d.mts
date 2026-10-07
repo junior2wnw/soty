@@ -10,6 +10,10 @@ export interface NativeBinding {identity:{issuer:string;subject:string};rootPrin
 export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
   capture(binding:Readonly<NativeBinding>,nativeBrowserRequest?:IncomingMessage):Promise<Proof>;
+  /** Fresh authoritative Source SQL check outside transaction locks; returns
+   * no rows/permission DTO. Required by an async-SQL Native implementation. */
+  assertCurrent?:(proof:Proof,binding:Readonly<NativeBinding>)=>Promise<void>;
+  /** Synchronous final checkpoint inside the actual Native transaction. */
   withCurrent<T>(proof:Proof,binding:Readonly<NativeBinding>,action:()=>T):T;
   rememberLogin?:(proof:Proof,binding:Readonly<NativeBinding>,intent:{interactionIdHash:string;expiresAt:number})=>{idHash:string;version:1;bindingDigest:string};
   recoverLogin?:(binding:Readonly<NativeBinding>,marker:{idHash:string;version:1;bindingDigest:string},intent:{interactionIdHash:string;expiresAt:number})=>Promise<Proof>;

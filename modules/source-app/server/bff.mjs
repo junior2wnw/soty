@@ -63,7 +63,7 @@ export function createSourceAppBff(options) {
     } finally { open = false; }
   }
   async function postCommit(context, authority) {
-    try { await freshRoot(context); native.withCurrent(authority, () => true); }
+    try { await freshRoot(context); await native.assertCurrent(authority); await freshRoot(context); }
     catch { throw new SourceAppError('source_app_effect_unknown', 503); }
   }
   async function freshRoot(context) {
@@ -97,7 +97,7 @@ export function createSourceAppBff(options) {
     }
     await freshRoot(context);
     const authority = await native.capture(binding(context, { issuer: proof.issuer, subject: proof.sub }, operation, session.idHash));
-    native.withCurrent(authority, () => true);
+    await native.assertCurrent(authority); await freshRoot(context);
     return { session, proof, authority };
   }
   async function currentSession(req, context, operation, hostOptions) {
@@ -106,7 +106,7 @@ export function createSourceAppBff(options) {
   }
   async function completeIdentity(interaction, identity, authority) {
     check(identity.issuer === profile.issuer && identity.subject === interaction.context.humanPrincipal.subject, 'source_app_identity_mismatch', 403);
-    await freshRoot(interaction.context); native.withCurrent(authority, () => true);
+    await freshRoot(interaction.context); await native.assertCurrent(authority); await freshRoot(interaction.context);
     const sessionToken = nonce(), completion = nonce();
     const result = await storageCommit(store.completeInteraction, [{ idHash: interaction.idHash, revision: interaction.revision + 1, completionToken: completion,
       session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
@@ -183,10 +183,10 @@ export function createSourceAppBff(options) {
         // remain maintained SDK values; no vendor49/auth algorithm changes.
         const location = new URL(intent.location); location.searchParams.set('state', form.get('intent')); intent.state = form.get('intent'); intent.location = location.href;
         const authority = await native.capture(binding(interaction.context, interaction.context.humanPrincipal, 'link'), req);
-        native.withCurrent(authority, () => true); await freshRoot(interaction.context);
+        await native.assertCurrent(authority); await freshRoot(interaction.context);
         const remembered = await storageCommit(store.claimInteraction, [interaction.idHash, interaction.revision, intent],
           () => native.rememberLogin(authority, { interactionIdHash: interaction.idHash, expiresAt: interaction.expiresAt }));
-        check(remembered === true, 'source_app_intent_unavailable', 409); await freshRoot(interaction.context); native.withCurrent(authority, () => true);
+        check(remembered === true, 'source_app_intent_unavailable', 409); await freshRoot(interaction.context); await native.assertCurrent(authority); await freshRoot(interaction.context);
       } else check(await store.claimInteraction(interaction.idHash, interaction.revision, intent) === true, 'source_app_intent_unavailable', 409);
       res.writeHead(303, { location: intent.location, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end(); return;
     }
@@ -291,7 +291,7 @@ export function createSourceAppBff(options) {
           && !url.searchParams.has('error') && interaction.protocolIntent.state === url.searchParams.get('state'), 'source_app_callback_denied', 403);
         const authority = await native.recoverLogin(binding(context, context.humanPrincipal, 'link'), interaction.nativeLoginMarker,
           { interactionIdHash: interaction.idHash, expiresAt: interaction.expiresAt });
-        await freshRoot(context); native.withCurrent(authority, () => true);
+        await freshRoot(context); await native.assertCurrent(authority); await freshRoot(context);
         check(await store.claimCallback(interaction.idHash, interaction.revision) === true, 'source_app_intent_unavailable', 409);
         const identity = await protocol.exchange(new URL(req.url, profile.embedOrigin), interaction.protocolIntent);
         interaction = await completeIdentity(interaction, identity, authority);
@@ -324,7 +324,7 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, operation);
       const data = await native.call(current.authority, operation, args);
       if (operation === 'execute') await postCommit(context, current.authority);
-      else { await freshRoot(context); native.withCurrent(current.authority, () => true); }
+      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context); }
       send(res, 200, { ok: true, data }); return;
     }
     const feedbackOperation = new Map([
@@ -337,7 +337,7 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, 'feedback.' + feedbackOperation);
       const data = await native.feedback(current.authority, feedbackOperation, args);
       if (['submit', 'reply', 'status', 'accept'].includes(feedbackOperation)) await postCommit(context, current.authority);
-      else { await freshRoot(context); native.withCurrent(current.authority, () => true); }
+      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context); }
       let output;
       try { output = feedbackOutput(feedbackOperation, data); }
       catch { throw new SourceAppError(['submit', 'reply', 'status', 'accept'].includes(feedbackOperation) ? 'source_app_effect_unknown' : 'source_app_response_invalid', 503); }

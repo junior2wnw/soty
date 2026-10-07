@@ -46,6 +46,15 @@ Async подготовка и network находятся вне транзакц
 SDK проверяет Native authority на границе записи; он не создаёт Native транзакцию
 и не делает произвольный legacy write безопасным автоматически.
 
+Для Source с async SQL (например, PostgreSQL) constructor может предоставить
+`assertCurrent(proof,binding):Promise<void>`: настоящая свежая SQL-проверка вне
+транзакционных locks, без permission DTO/TTL cache. Sync `withCurrent` тогда
+остаётся final checkpoint внутри самой Native транзакции. Storage должен до
+final callback захватить точные Native rows/locks через свой private request
+context, а перед COMMIT выполнить свой final SQL/deadline check. Этот SPI
+проверен на actual SQLite/current SQL и BFF; PostgreSQL consumer, миграция и
+deployment требуют отдельной проверки. SQL snapshot в RAM не делает PG current.
+
 После входа в mutating action ошибка, отзыв доступа или потеря ACK означают
 `source_app_effect_unknown`, а не rollback. SDK не повторяет apply; Source
 `readProof` возвращает квитанцию при текущих Native правах. Callback вне операции,
