@@ -9,6 +9,9 @@ import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
 import * as appFullscreen from './app-fullscreen.mjs';
 import * as appDeployment from './app-deployment.mjs';
+import * as projectCapture from './project-feedback-capture.mjs';
+import * as projectPicker from './project-feedback-picker.mjs';
+import * as appProjectCapture from './app-project-capture.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -62,6 +65,9 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './hive-device-bridge.mjs': hiveDeviceBridge,
     './app-fullscreen.mjs': appFullscreen,
     './app-deployment.mjs': appDeployment,
+    './project-feedback-capture.mjs': projectCapture,
+    './project-feedback-picker.mjs': projectPicker,
+    './app-project-capture.mjs': appProjectCapture,
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
