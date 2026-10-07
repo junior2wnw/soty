@@ -516,6 +516,11 @@ test('two independent SQLite writers cannot both accept different intents at the
   const intents = [f.args({ requestId: 'concurrent-a' }), f.args({ requestId: 'concurrent-b' })];
   const a = worker({ config, source: source(), actor, args: intents[0] });
   const b = worker({ config, source: source(), actor, args: intents[1] });
+  const exits = [a, b].map(({ child }) => new Promise((resolve, reject) => {
+    child.once('exit', code => { try { assert.equal(code, 0); resolve(); } catch (error) { reject(error); } });
+    child.once('error', reject);
+  }));
+  exits.forEach(done => done.catch(() => {}));
   t.after(() => { if (!a.child.killed) a.child.kill(); if (!b.child.killed) b.child.kill(); });
   await Promise.all([a.next(), b.next()]); a.child.send({ go: true }); b.child.send({ go: true });
   const results = await Promise.all([a.next(), b.next()]);
@@ -524,6 +529,9 @@ test('two independent SQLite writers cannot both accept different intents at the
   // Under CPU/IO pressure the bounded100ms SQLite wait may expire before the
   // winning COMMIT. Both refusals are valid; neither may create a second effect.
   assert.ok(['registration_revision_conflict', 'registration_busy'].includes(results[losingIndex].code));
+  // IPC acknowledgement proves the decision, not completion of the worker's
+  // close/checkpoint. Reopen only after both actual processes release the DB.
+  await Promise.all(exits);
   const service = f.open(); assert.equal(f.call(service, 'history', f.readArgs).items.length, 1);
   // A later exact retry now sees the committed head, never a second admission.
   throws(() => f.call(service, 'admit', intents[losingIndex]), 'registration_revision_conflict');
