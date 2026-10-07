@@ -122,9 +122,12 @@ test('metadata refresh, remote document and phone-to-desktop resize preserve the
   assertPersonal(engine, viewState);
   engine.resize(1280, 800);
   assertPersonal(engine, viewState);
-  engine.update({ document: structuredClone(before), revision: 2, acceptRemote: true });
+  const remote = structuredClone(before);
+  remote.contexts[0].title = 'Студия после синхронизации';
+  engine.update({ document: remote, revision: 2, acceptRemote: true });
   assertPersonal(engine, viewState);
-  assert.deepEqual(engine.state().document, before);
+  assert.deepEqual(engine.state().document, remote);
+  assert.deepEqual(engine.state().document.shortcuts, before.shortcuts);
 });
 
 test('initial phone focus honors the chosen space instead of the first default context', () => {
