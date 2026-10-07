@@ -5,7 +5,7 @@
 | Часть | Принятый результат | Что ещё требуется |
 |---|---|---|
 | FIELD/UI | frozenf88: мобильные кнопки, контекст поля в обычном desktop flow, stage без обрезания; независимый UI review и полный отдельный образ R8 | Fresh combined image, браузерный сценарий, сохранность реальных данных и выпуск |
-| Общий source merge | PRIMARY03c2 + FIELDf88 объединены в d4be692; семь пересечений разрешены владельцем, independent cross-profile source probes пройдены | Общая сборка и runtime/cold/browser gates; source merge не означает внедрение |
+| Общий source merge | PRIMARY03c2 + FIELDf88 объединены в d4be692; семь пересечений разрешены владельцем, independent cross-profile source probes пройдены. Общие Types/Vite exit0, World1417/1396PASS21SKIP, Platform368/367PASS1BasicwallSKIP | Свежий image и runtime/cold/browser gates; source merge не означает внедрение |
 | Personal agent | Memory/provider/call библиотеки перенесены отдельно как inactive SOURCE | Trusted admission, реальный controller, signed calls/media, память и budget integration; paid вызовов0 |
 | Private Docker Attach | Один физический synthetic Linux запуск: 5cases, 48.047s, positive195791 plaintext, negativebody0; independent tar/SQLite readback и cleanup receipt приняты | Production host authority, актуальный Root/Source dependency closure, real SOTYBAK и старый→candidate→старый boot/config/data proofs |
 | HoChu | Старый домен имеет принятый frontend1f; новый pagedV6 и ручной refresh-kit28189e7 committed/pushed | Полный свежий capture, операторский cadence≤18h, static release/rollback и mobile performance; automatic shipping HOLD |
