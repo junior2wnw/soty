@@ -16,6 +16,41 @@ function clock(t) {
 const rows = (f, fn) => { const db=new DatabaseSync(f.identityPath,{readOnly:true});try{return fn(db);}finally{db.close();} };
 async function longLogin(f, rp) { return f.login(rp, f.actor, f.wire, undefined, 86400); }
 
+test('a second crossing between maintained Grant TTL and its adapter COMMIT preserves the exact approved deadline', async t => {
+  const advance = clock(t); let crossed = false;
+  const f = await environment(t, { serviceDecorator: service => ({ ...service, sdk: { ...service.sdk,
+    upsert(input) {
+      if (input.model === 'Grant' && input.approvedBinding?.stayInAppSeconds && !crossed) { crossed = true; advance(1); }
+      return service.sdk.upsert(input);
+    },
+  } }) });
+  await longLogin(f, f.rps[0]); assert.equal(crossed, true);
+  const limits = rows(f, db => ({ end: db.prepare('SELECT session_expires_at AS n FROM human_identity_grant_bindings').get().n,
+    grant: db.prepare("SELECT expires_at AS n FROM human_identity_artifacts WHERE model='Grant'").get().n,
+    beyond: db.prepare("SELECT count(*) AS n FROM human_identity_artifacts a JOIN human_identity_grant_bindings b ON b.grant_hash=a.grant_hash WHERE a.expires_at>b.session_expires_at").get().n }));
+  assert.equal(limits.grant, limits.end); assert.equal(limits.beyond, 0);
+  advance(310); assert.equal((await f.wire.request(f.rps[0].origin + '/me')).status, 200);
+});
+
+test('a second crossing before maintained RT COMMIT clamps storage and cannot accept an expiration beyond the family', async t => {
+  const advance = clock(t); let crossed = false;
+  const f = await environment(t, { serviceDecorator: service => ({ ...service, sdk: { ...service.sdk,
+    upsert(input) {
+      if (input.model === 'RefreshToken' && !crossed) { crossed = true; advance(1); }
+      return service.sdk.upsert(input);
+    },
+  } }) });
+  await longLogin(f, f.rps[0]); assert.equal(crossed, true);
+  const token = f.rps[0].verificationFixture().refreshToken, saved = f.identity.sdk.find('RefreshToken', token);
+  const end = rows(f, db => db.prepare('SELECT session_expires_at AS n FROM human_identity_grant_bindings').get().n);
+  assert.equal(saved.exp, end);
+  assert.equal(rows(f, db => db.prepare("SELECT max(expires_at) AS n FROM human_identity_artifacts WHERE model='RefreshToken'").get().n), end);
+  assert.throws(() => f.identity.sdk.upsert({ model: 'RefreshToken', id: randomBytes(32).toString('base64url'),
+    payload: { ...saved, jti: randomBytes(32).toString('base64url'), exp: end + 1 }, expiresIn: 86400,
+    request: { clientId: f.rps[0].clientId, grantType: 'authorization_code' } }), /human_identity_grant_invalid/u);
+  advance(310); assert.equal((await f.wire.request(f.rps[0].origin + '/me')).status, 200);
+});
+
 test('v1 default remains short, rejects RefreshToken model and does not silently migrate', async t => {
   const f=await environment(t,{renewal:false});await f.login();assert.equal(f.identity.schemaVersion,1);
   assert.equal(f.rps[0].verificationFixture().refreshToken,undefined);

@@ -327,15 +327,19 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
           && Number.isSafeInteger(expiresIn) && expiresIn > 0 && expiresIn <= (schemaVersion === 2 && ['Grant','RefreshToken'].includes(model) ? RENEWAL_LIMITS.sessionSeconds : 3600), 'human_identity_artifact_invalid');
         const payload = data(input), binding = bindingFromPayload(model, payload, approvedBinding, clientId);
         const apply = () => {
+          const committedAt = epoch(); let expiresAt = committedAt + expiresIn;
           if (TOKEN_MODELS.has(model)) require(activeBinding(bindingForHash(hashId('Grant', payload.grantId))), 'human_identity_actor_revoked', 403);
           if (TOKEN_MODELS.has(model)) {
             const family = bindingForHash(hashId('Grant', payload.grantId));
-            require(!family.stay_in_app_seconds || epoch() + expiresIn <= family.session_expires_at && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
+            if (family.stay_in_app_seconds) {
+              require(Number.isSafeInteger(payload.exp) && payload.exp > committedAt && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
+              expiresAt = Math.min(expiresAt, payload.exp, family.session_expires_at);
+            }
           }
           if (model === 'RefreshToken') {
             const family = bindingForHash(hashId('Grant', payload.grantId));
             require(family?.stay_in_app_seconds && request?.clientId === family.client_id && ['authorization_code', 'refresh_token'].includes(request.grantType)
-              && epoch() + expiresIn <= family.session_expires_at && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
+              && payload.exp <= family.session_expires_at, 'human_identity_grant_invalid', 403);
             require(db.prepare("SELECT count(*) AS n FROM human_identity_artifacts WHERE model='RefreshToken' AND grant_hash=? AND id_hash<>?").get(family.grant_hash, hashId(model, rawId)).n < RENEWAL_LIMITS.refreshRowsPerFamily,
               'human_identity_capacity', 429);
           }
@@ -365,7 +369,9 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
               const occupied = db.prepare('SELECT grant_hash FROM human_identity_grant_bindings WHERE interaction_hash=?').get(binding.interactionHash);
               require(!occupied, 'human_identity_grant_conflict', 409);
               const stay = approval.stay_in_app_seconds || 0, end = stay ? approval.approved_at + stay : null;
-              require(!stay || binding.stayInAppSeconds === stay && binding.sessionExpiresAt === end && end > epoch() && epoch() + expiresIn <= end, 'human_identity_grant_unreviewed', 403);
+              require(!stay || binding.stayInAppSeconds === stay && binding.sessionExpiresAt === end && end > committedAt
+                && Number.isSafeInteger(payload.exp) && payload.exp > committedAt && payload.exp <= end, 'human_identity_grant_unreviewed', 403);
+              if (stay) expiresAt = Math.min(expiresAt, payload.exp, end);
               if (stay) {
                 require(db.prepare('SELECT count(*) AS n FROM human_identity_grant_bindings WHERE stay_in_app_seconds>0 AND revoked_at IS NULL AND session_expires_at>?').get(epoch()).n < RENEWAL_LIMITS.activeFamilies,
                   'human_identity_capacity', 429);
@@ -374,15 +380,26 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
               }
               db.prepare(`INSERT INTO human_identity_grant_bindings VALUES(?,?,?,?,?,?,?,?,NULL${schemaVersion === 2 ? ',?,?' : ''})`).run(grantHash, binding.accountId, binding.deviceId,
                 binding.clientId, binding.interactionHash, authority.client.profileDigest, authority.generation, epoch(), ...(schemaVersion === 2 ? [stay, end] : []));
-            } else require(prior && activeBinding(existing), 'human_identity_actor_revoked', 403);
+            } else {
+              require(prior && activeBinding(existing), 'human_identity_actor_revoked', 403);
+              if (existing.stay_in_app_seconds) {
+                require(Number.isSafeInteger(payload.exp) && payload.exp > committedAt && payload.exp <= existing.session_expires_at,
+                  'human_identity_grant_unreviewed', 403);
+                expiresAt = Math.min(expiresAt, payload.exp, existing.session_expires_at);
+              }
+            }
           }
+          // The engine calculated a relative TTL before awaiting its adapter.
+          // Crossing a second must neither reject that exact valid deadline nor
+          // retain an artifact beyond its already approved absolute expiration.
+          require(expiresAt > epoch(), 'human_identity_interaction_expired', 410);
           const encrypted = encrypt(model, hash, payload), grantHash = model === 'Grant' ? hash : payload.grantId ? hashId('Grant', payload.grantId) : binding?.grantHash || null;
           db.prepare(`INSERT INTO human_identity_artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?${schemaVersion === 2 ? ',?' : ''})
             ON CONFLICT(model,id_hash) DO UPDATE SET payload_cipher=excluded.payload_cipher,payload_digest=excluded.payload_digest,
               expires_at=excluded.expires_at,${schemaVersion === 2 ? 'retain_until=excluded.retain_until,' : ''}uid_hash=excluded.uid_hash,account_id=excluded.account_id,
               device_id=excluded.device_id,client_id=excluded.client_id,grant_hash=excluded.grant_hash`)
             .run(model, hash, encrypted.bytes, encrypted.digest, keyId, binding?.accountId || null, binding?.deviceId || null,
-              artifactClientId, grantHash, payload.uid ? digest(payload.uid) : null, browserHash, epoch() + expiresIn, prior?.consumed_at ?? null, epoch(), ...(schemaVersion === 2 ? [model === 'RefreshToken' ? bindingForHash(grantHash).session_expires_at : epoch() + expiresIn] : []));
+              artifactClientId, grantHash, payload.uid ? digest(payload.uid) : null, browserHash, expiresAt, prior?.consumed_at ?? null, committedAt, ...(schemaVersion === 2 ? [model === 'RefreshToken' ? bindingForHash(grantHash).session_expires_at : expiresAt] : []));
         };
         return binding ? fenced(binding, apply) : transaction(apply);
       },
