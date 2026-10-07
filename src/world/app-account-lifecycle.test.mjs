@@ -27,6 +27,7 @@ class ElementPort {
   parent = null;
   handlers = new Map();
   children = []; open = true; isConnected = true; textContent = ''; changes = 0; dataset = {}; tagName = ''; className = '';
+  attributes = new Map();
   classList = { add() {}, remove() {}, toggle() {} };
   append(...nodes) { for (const node of nodes) if (node instanceof ElementPort) node.parent = this; this.children.push(...nodes); this.changes++; }
   prepend(...nodes) { this.children.unshift(...nodes); this.changes++; }
@@ -44,8 +45,9 @@ class ElementPort {
   addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, new Set()); this.handlers.get(type).add(fn); }
   removeEventListener(type, fn) { this.handlers.get(type)?.delete(fn); }
   emit(type) { for (const fn of [...this.handlers.get(type) || []]) fn(); }
-  setAttribute() {}
-  removeAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
   contains(node) { return node === this || this.children.some(child => child instanceof ElementPort && child.contains(node)); }
   focus() {}
   remove() { this.isConnected = false; if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); this.parent = null; }
@@ -130,6 +132,45 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   } };
   return { app, Controller, view, timers, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+test('first local identity keeps a visible status while the real profile request is pending', async () => {
+  const f = fixture({ initial: '' }), pending = deferred(), original = f.app.api.request;
+  f.setLocal('account-A');
+  f.app.renderCurrent = () => f.app.main.replaceChildren(new ElementPort());
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(); await turn();
+  assert.equal(f.app.deskAccount, 'account-A'); assert.equal(f.app.profile, null);
+  const status = f.app.main.children[0];
+  assert.equal(status.getAttribute('role'), 'status'); assert.equal(status.getAttribute('aria-live'), 'polite');
+  assert.equal(status.children[0].textContent, 'Проверяем аккаунт');
+  assert.equal(f.app.apps.length, 0); assert.equal(f.app.results.people.length, 0);
+  pending.resolve({ profile: { profileId: 'account-A', displayName: 'verified-A' } }); await refreshing;
+  assert.equal(f.app.profile.profileId, 'account-A'); assert.equal(f.app.main.contains(status), false);
+});
+
+test('pending account switch clears private content and stale reply cannot restore it', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request;
+  f.setLocal('account-B');
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(true); await turn();
+  assert.equal(f.app.profile, null); assert.equal(f.app.apps.length, 0); assert.equal(f.app.communities.length, 0);
+  assert.equal(f.app.main.children[0].children[0].textContent, 'Проверяем аккаунт');
+  f.setLocal('account-C');
+  pending.resolve({ profile: { profileId: 'account-B', displayName: 'private-B' } }); await refreshing;
+  assert.equal(f.app.profile, null); assert.equal(f.app.apps.length, 0);
+  assert.equal(f.app.main.children[0].textContent, 'Соты ждут вас');
+});
+
+test('same-account pending refresh retains the live application without inserting a boot status', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request, screen = new ElementPort();
+  const dialog = f.app.dialog(); let disposed = 0;
+  f.app.appSettingsDialog = dialog; f.app.appStage = { dispose() { disposed++; } }; f.app.main.append(screen);
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(); await turn();
+  assert.equal(f.app.main.children[0], screen); assert.equal(disposed, 0);
+  pending.resolve({ profile: { profileId: 'account-A', displayName: 'verified-A' } }); await refreshing;
+  assert.equal(f.app.main.children[0], screen); assert.equal(disposed, 0); assert.equal(dialog.element.open, true);
+});
 
 test('actual refresh A → offline B → online B clears every private cache before B metadata is available', async () => {
   const f = fixture(), oldDialog = f.app.dialog();

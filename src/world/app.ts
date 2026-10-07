@@ -200,7 +200,7 @@ class WorldApplication {
         const local = await this.options.localAccount();
         if (this.destroyed || sequence !== this.requestSequence) return;
         if (!local.accountId) throw Object.assign(new Error('No local identity'), { code: 'authentication_required' });
-        this.transitionAccount(local.accountId);
+        if (this.transitionAccount(local.accountId)) this.main.append(this.loading('Проверяем аккаунт'));
       }
       const [profile, mine] = await Promise.all([
         this.api.request<{ profile: WorldProfile }>('world.profile.get', {}),
@@ -314,7 +314,10 @@ class WorldApplication {
       .finally(() => { outbox.dispose(); if (this.fieldOutbox === outbox) this.fieldOutbox = null; });
   }
 
-  private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
+  private loading(label: string): HTMLElement {
+    const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
+    node.append(el('span', '', label)); return node;
+  }
   private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
   private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
