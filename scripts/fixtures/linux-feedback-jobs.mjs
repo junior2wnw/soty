@@ -42,6 +42,8 @@ for(const scenario of ['success','cpu','wall','cancel','scratch','output']){
     }else await assert.rejects(realm.instance.processing.process(jobId));
     assert.equal(realm.instance.store.db.prepare('SELECT status FROM native_tickets WHERE id=?').get(ticket.id).status,'received');
     assert.ok(evidence.some(item=>item.stopped),'owned processor must actually stop');
+    const cleanup=evidence.filter(item=>item.phase==='cleanup');assert.equal(cleanup.length,1);
+    assert.equal(cleanup[0].cleanupUnknown,false);assert.equal(cleanup[0].containerRemoved,true);assert.equal(cleanup[0].packetRemoved,true);
     if(scenario==='cpu')assert.ok(evidence.some(item=>item.exitCode===137),'real RLIMIT_CPU SIGKILL');
     results.push({scenario,passed:true,outcome,state:job.state,receipts,elapsedMs,evidence,oauthCounts:f.oauthCounts,rootProof:'actual signed Connect/Human + installed HTTP/WS + maintained currentuserinfo',models:false});
   }finally{for(const hook of hooks.reverse())await hook();}
