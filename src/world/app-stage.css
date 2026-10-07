@@ -32,6 +32,7 @@
   .sa-discussion { flex: 1; width: 100%; border: 0; }
 }
 @media (max-width: 760px) {
+  .sw-app>.sw-main:has(>.sa-stage) { padding: 0; }
   .sa-toolbar { min-height: 56px; padding: 6px 8px; gap: 4px; }
   .sa-title h2 { font-size: 14px; }
   .sa-title p { display: none; }
