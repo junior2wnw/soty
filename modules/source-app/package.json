@@ -1,0 +1,14 @@
+{
+  "name": "@soty/source-app",
+  "version": "0.1.0-preview.1",
+  "type": "module",
+  "engines": { "node": ">=24.15.0" },
+  "exports": {
+    "./server": { "types": "./types/server.d.mts", "import": "./dist/server.mjs" },
+    "./browser": { "types": "./types/browser.d.mts", "import": "./dist/browser.mjs" }
+  },
+  "files": ["dist", "types", "README.md"],
+  "scripts": { "build": "node scripts/build.mjs", "prepack": "node scripts/build.mjs" },
+  "dependencies": { "openid-client": "6.8.4" },
+  "devDependencies": { "esbuild": "0.27.7" }
+}

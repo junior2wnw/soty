@@ -1,5 +1,7 @@
 import { capture, hash, need } from './profile.mjs';
 import { selectedResourceProfile } from './resource-profile.mjs';
+import { STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE } from '../../source-app/server/standard-profile.mjs';
+export { STANDARD_SELECTED_SOURCE };
 
 // This is host code, not author-supplied routes. Future reviewed Source adapters
 // add a handler here without another Apps database format or broader v1 routes.
@@ -44,6 +46,8 @@ export const HIVE_SELECTED_SOURCE = Object.freeze({ id: 'hive.selected-project',
 const hive = Object.freeze({ pin: HIVE_SELECTED_KERNEL_SOURCE, kind: hiveContract.kind, contract: hiveContract });
 const editor=Object.freeze({pin:HIVE_SELECTED_SOURCE,kind:editorContract.kind,contract:editorContract});
 const adapters = new Map([hive,editor].map(adapter=>[adapter.pin.id+':'+adapter.pin.version+':'+adapter.pin.digest,adapter]));
+adapters.set(STANDARD_SELECTED_SOURCE.id + ':1:' + STANDARD_SELECTED_SOURCE.digest,
+  Object.freeze({ pin: STANDARD_SELECTED_SOURCE, kind: STANDARD_SOURCE_CONTRACT.kind, contract: STANDARD_SOURCE_CONTRACT }));
 export function selectedRouteAdapter(input) {
   const profile = selectedResourceProfile(input);
   const pin = profile.sourceProfile, adapter = adapters.get(pin.id + ':' + pin.version + ':' + pin.digest);
