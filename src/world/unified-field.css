@@ -68,7 +68,7 @@
 .uf-node-app::before,.uf-node-builtin::before { content: ''; position: absolute; inset: 0; z-index: -2; clip-path: var(--uf-hex-clip); background: linear-gradient(135deg,color-mix(in srgb,var(--uf-art-accent,var(--sw-control-border)) 80%,#f5f4f0),var(--uf-art-accent,var(--sw-control-border)) 28%,color-mix(in srgb,var(--uf-art-accent,var(--sw-control-border)) 72%,var(--uf-art-base,var(--sw-surface))) 57%,var(--uf-art-accent,var(--sw-control-border))); }
 .uf-node-app::after,.uf-node-builtin::after { content: ''; position: absolute; inset: 3px; z-index: 1; clip-path: var(--uf-hex-clip); background: linear-gradient(to bottom,transparent 52%,#101112b3 64%,#101112d9 84%,#101112f2); pointer-events: none; }
 .uf-node-app:not(.has-art)::after,.uf-node-builtin:not(.has-art)::after { background: var(--uf-art-base,var(--sw-surface)); }
-.uf-art { position: absolute; inset: 3px; width: calc(100% - 6px); height: calc(100% - 6px); object-fit: cover; object-position: var(--uf-focal-position,50% 40%); clip-path: var(--uf-hex-clip); pointer-events: none; }
+.uf-art { position: absolute; inset: 3px; width: calc(100% - 6px); height: calc(100% - 6px); object-fit: cover; object-position: var(--uf-focal-position,50% 40%); background-color: var(--uf-art-base,var(--sw-surface)); clip-path: var(--uf-hex-clip); pointer-events: none; }
 .uf-art>img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: var(--uf-focal-position,50% 40%); }
 .uf-art[hidden] { display: none; }
 .uf-hex-frame { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; overflow: visible; pointer-events: none; }

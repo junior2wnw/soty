@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "bindings": {
+    "bind-014171b96ce7a4cfc8ea12c4f10db6a4fdaae05d41cb458ca4474343a50f3c0a": "tavysh",
     "chess": "chess",
     "notes": "notes"
   },
