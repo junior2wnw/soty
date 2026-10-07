@@ -1,0 +1,72 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createOrdinaryHttpFixture } from './support/ordinary-http.mjs';
+import { digest } from '../server/wire.mjs';
+
+test('two actual durable Native Source realms use the SAME compiled adapter without Root code/DDL changes; shared-host Native login and same-app supersession', { timeout: 25000 }, async t => {
+  const roots = ['../../apps/server/schema.mjs', '../../apps/scoped-embed/resource-route-adapters.mjs', '../server/bff.mjs'];
+  const before = await Promise.all(roots.map(path => readFile(new URL(path, import.meta.url)).then(digest)));
+  const f = await createOrdinaryHttpFixture(t), [board, library] = f.realms;
+  assert.equal(board.profile.sourceProfile.digest, library.profile.sourceProfile.digest);
+  assert.equal(board.profile.resource.selection.nativeId, library.profile.resource.selection.nativeId);
+  // Native forms for separate apps coexist on the SAME hostname/cookie jar.
+  const pendingBoard = await board.beginNative(), pendingLibrary = await library.beginNative();
+  const boardAuthorize = await board.authorizeNative(pendingBoard), libraryAuthorize = await library.authorizeNative(pendingLibrary);
+  await board.finishNative((await board.completeOidc(boardAuthorize)).callback);
+  await library.finishNative((await library.completeOidc(libraryAuthorize)).callback);
+  const boardInput = { operation: 'items.create', title: 'Board-only synthetic item' }, libraryInput = { operation: 'items.create', title: 'Library-only synthetic item' };
+  assert.equal((await board.request('/api/embed/invoke', { method: 'POST', data: { requestId: 'source-board-item-0001', input: boardInput } })).status, 200);
+  assert.equal((await library.request('/api/embed/invoke', { method: 'POST', data: { requestId: 'source-library-item-0001', input: libraryInput } })).status, 200);
+  const read = realm => realm.request('/api/embed/query', { method: 'POST', data: { requestId: 'source-realm-read-0001', input: { operation: 'items.list' } } });
+  assert.equal((await read(board)).value.data.items[0].title, boardInput.title);
+  assert.equal((await read(library)).value.data.items[0].title, libraryInput.title);
+  assert.equal((await board.request('/api/embed/query', { method: 'POST', jar: library.embedJar, data: { requestId: 'source-cross-realm-0001', input: { operation: 'items.list' } } })).status, 401);
+  board.restart(); library.restart(); assert.equal((await read(board)).status, 200); assert.equal((await read(library)).status, 200);
+  // Basic remains Basic after SQL/Source restart, not an inferred 24h session.
+  const continued = await board.request('/api/embed/session-continue', { method: 'POST', data: { requestId: 'source-continue-0001' } });
+  assert.equal(continued.value.renewable, false);
+  const first = await board.beginNative(), firstAuthorize = await board.authorizeNative(first), olderCallback = (await board.completeOidc(firstAuthorize)).callback;
+  const second = await board.beginNative();
+  const oldForm = await board.request('/soty/authorize', { method: 'POST', native: true, form: first.form });
+  assert.equal(oldForm.status, 409); assert.equal(oldForm.value.error.code, 'source_app_intent_superseded');
+  const superseded = await board.request(olderCallback.pathname + olderCallback.search, { native: true });
+  assert.equal(superseded.status, 409); assert.equal(superseded.value.error.code, 'source_app_intent_superseded');
+  assert.equal((await library.request('/api/embed/session-status')).value.ready, true);
+  await board.finishNative((await board.completeOidc(await board.authorizeNative(second))).callback);
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_links').get().n, 1);
+  const after = await Promise.all(roots.map(path => readFile(new URL(path, import.meta.url)).then(digest))); assert.deepEqual(after, before);
+});
+
+test('actual Source HTTP lost COMMIT ACK reconciles exact receipt after restart without another effect; Native and controlled Root authority denial preserve private boundary', { timeout: 20000 }, async t => {
+  const f = await createOrdinaryHttpFixture(t), [board] = f.realms;
+  await board.finishNative((await board.completeOidc(await board.authorizeNative(await board.beginNative()))).callback);
+  const input = { operation: 'items.create', title: 'Committed once despite transport loss' }, args = { requestId: 'source-lost-ack-0001', input };
+  board.dropPath = '/api/embed/invoke'; await assert.rejects(board.request('/api/embed/invoke', { method: 'POST', data: args }));
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n, 1); board.restart();
+  const proof = await board.request('/api/embed/receipt', { method: 'POST', data: { requestId: args.requestId, input: { inputDigest: digest(input) } } });
+  assert.equal(proof.status, 200); assert.equal(proof.value.data.outcome, 'committed');
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n, 1);
+  const replay = await board.request('/api/embed/invoke', { method: 'POST', data: args }); assert.equal(replay.value.data.replayed, true);
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n, 1);
+  const context = await board.request('/api/embed/feedback/context'); assert.equal(context.value.data.canSubmit, true);
+  const submitted = await board.request('/api/embed/feedback', { method: 'POST', data: { requestId: 'source-ticket-0001', body: 'Synthetic context issue', attachments: [] } });
+  assert.equal(submitted.value.data.ticket.canManage, false);
+  const denied = await board.request('/api/embed/feedback/status', { method: 'POST', data: { requestId: 'source-status-deny-0001', ticketId: submitted.value.data.ticket.id, expectedRevision: 1, status: 'ready_to_check' } });
+  assert.equal(denied.status, 403); assert.equal(denied.value.error.code, 'ordinary_native_support_denied');
+  const sessions = board.store.db.prepare('SELECT * FROM source_sessions').all(); assert.equal(sessions.length, 1);
+  const stored = await board.store.storage.readSession(sessions[0].id_hash), bytes = await readFile(board.databasePath);
+  assert.equal(bytes.includes(Buffer.from(stored.accessToken)), false); assert.equal(bytes.includes(Buffer.from(stored.cookieToken)), false);
+  f.nativeJar.set('ordinary_native_board', f.nativeJar.get('ordinary_native_library'));
+  const mismatchedNative = await board.beginNative(), callback = (await board.completeOidc(await board.authorizeNative(mismatchedNative))).callback;
+  const rejected = await board.request(callback.pathname + callback.search, { native: true }); assert.equal(rejected.status, 403);
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM source_sessions').get().n, 1);
+  board.afterCommit = () => { board.rootLive = false; };
+  const afterRootDeny = await board.request('/api/embed/invoke', { method: 'POST', data: { requestId: 'source-root-deny-0001', input: { operation: 'items.create', title: 'Committed before controlled Root deny' } } });
+  assert.equal(afterRootDeny.status, 503); assert.equal(afterRootDeny.value.error.code, 'source_app_effect_unknown');
+  assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n, 2);
+  assert.equal((await board.request('/api/embed/query', { method: 'POST', data: { requestId: 'source-root-deny-0002', input: { operation: 'items.list' } } })).status, 403);
+  board.rootLive = true; board.afterCommit = null;
+  board.store.revokeMembership('selected', 'native-participant'); assert.equal((await board.request('/api/embed/session-status')).value.ready, false);
+  assert.equal((await board.request('/api/embed/receipt', { method: 'POST', data: { requestId: args.requestId, input: { inputDigest: digest(input) } } })).status, 403);
+});

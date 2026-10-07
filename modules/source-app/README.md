@@ -100,3 +100,21 @@ BFF HTTP тест использует настоящий maintained Root OIDC �
 но controlled IPC/RAM store: он **не подтверждает installed channel**, durability,
 production TLS, browser UX, long session или готовность стороннего приложения.
 Эти gates добавляются обычным SQLite example и двумя независимыми Source realms.
+
+## Исполнимый обычный Source
+
+`@soty/source-app/example` содержит настоящее новое SQLite приложение и небольшой
+интерфейс без React. Native роли, две независимые identity proof, selected consent,
+item/feedback receipts и шифрование закрытого BFF состояния проверяются его
+Source, а не полем owner в Сотах. Две разные realm работают с одним adapter;
+повторный Source не требует Root code/DDL diff. Native support — только Native
+владелец; reporter принимает решение о закрытии обращения.
+
+Проверены real OIDC/HTTP +durable Source restart/unknown ACK и два OS writer
+processes на synthetic базах. MAC IPC в этом gate контролируемый. Пока есть
+blocker: example callback Native `/soty/callback` не совпадает с обязательным
+embed HTTPS callback release policy. Установленный канал, browser UX и production
+не приняты; наличие bundle не делает приложение Ready. Callback/Native proof
+correlation будет согласована отдельной поправкой без ослабления Root policy.
+Точные проверки и ограничения — `docs/implementation/source-app-ordinary-acceptance.md`
+в Root checkout. ASR/OCR/agent queue и managed reviews здесь не внедрены.

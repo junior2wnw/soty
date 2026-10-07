@@ -5,7 +5,8 @@
   "engines": { "node": ">=24.15.0" },
   "exports": {
     "./server": { "types": "./types/server.d.mts", "import": "./dist/server.mjs" },
-    "./browser": { "types": "./types/browser.d.mts", "import": "./dist/browser.mjs" }
+    "./browser": { "types": "./types/browser.d.mts", "import": "./dist/browser.mjs" },
+    "./example": { "types": "./types/example.d.mts", "import": "./dist/example.mjs" }
   },
   "files": ["dist", "types", "README.md"],
   "scripts": { "build": "node scripts/build.mjs", "prepack": "node scripts/build.mjs" },
