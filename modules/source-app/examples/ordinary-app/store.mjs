@@ -15,12 +15,13 @@ export function createOrdinaryAppStore(options) {
   check(typeof value.databasePath === 'string' && typeof value.realmId === 'string' && /^[a-z][a-z0-9.-]{0,63}$/u.test(value.realmId)
     && Buffer.isBuffer(value.key) && value.key.length === 32 && /^[a-zA-Z0-9_.-]{1,64}$/u.test(value.keyId));
   check(existsSync(value.databasePath) || value.initialize === true, 'ordinary_source_storage_not_ready', 503);
-  const db = new DatabaseSync(value.databasePath), clock = value.clock ?? Date.now, key = Buffer.from(value.key);
-  db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-  const objects = db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();
   const requestedFormat = value.format ?? 1; check([1,2,3].includes(requestedFormat) && (value.allowLoginProofMigration === undefined || typeof value.allowLoginProofMigration === 'boolean')
     &&(value.allowFeedbackJobsMigration===undefined||typeof value.allowFeedbackJobsMigration==='boolean'));
+  const db = new DatabaseSync(value.databasePath), clock = value.clock ?? Date.now, key = Buffer.from(value.key);
+  let objects;try{db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');objects=db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();}
+  catch(error){db.close();key.fill(0);throw error;}
   if (objects.length === 0) {
+    if(value.initialize!==true){db.close();key.fill(0);}
     check(value.initialize === true, 'ordinary_source_storage_not_ready', 503);
     db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId);
       // Keep the independent format/FK oracle inside the SAME initialization
