@@ -8,7 +8,13 @@
 
 Состояния: `pending`, `implementing`, `reviewing`, `verified-component`, `verified-integration`, `deployed`. Неисполненный сценарий не получает PASS. Критерий «100 из 100» означает выполнение согласованных проверяемых требований, а не доказанное мировое первенство.
 
+Checkpoint07.10.2026,17:13UTC: отдельный ХочуИпотеку source-выпуск `efe93375d9faf8c56631053f36e5827ff7588323` committed/pushed. Независимые146 source-проверок и реальный первый uncached215→оригинальная планировка→Back сохранили этаж24 и11/11 без повторного раскрытия. На320/393/844 исправлены заголовки, попадание в44px brand и контрастный счётчик10px. V6 изменяет только две CSS-строки и документ; runtime/data/test pins сохранены, тесты V5 не выдаются за новый запуск V6. Refresh kit v2 принят Root26PASS и повтором budget-контрпримера, но actual capture/регулярное обновление/static deployment/mobile performance ещё не закрыты. Публичный старый домен остаётся на1f; alias restricted/inactive.
+
+R6 полный Soty image build отказал: неизменный SDK June тест отменён после30s; историческая причина не установлена. Диагностическая source-капсула исправила неподтверждённый output tar, Root11PASS; Linux SDK timing ею ещё не проверен. Warm Linux V4 source15PASS, независимые pins/history приняты; физический запуск остановился на созданном, ещё не запущенном initializer из-за канонического Docker CAP_CHOWN. Проверка сохраняет ограничение одной capability; точное исправление и отдельный physical gate выполняются перед следующей попыткой. Serving выпускARTec50 не меняется от source-приёмки.
+
 ## Выпуск 1: добавление приложения на личное поле
+
+Внедрён 07.10.2026: `25b3d482e7da7b3b7c7f8b2ca51cb6af21bf9c63`, immutable image `sha256:e0486fef91f2eb09220a2afae964629151f87d4b4dd007141a627df29699555a`. Живой HIVE проверен на desktop и 320 px; сохранение выбранного пространства, возврат и отсутствие дубля подтверждены. Первый выпуск был отклонён из-за сброса пространства; автоматический откат с сохранением принятого ярлыка проверен, дефект исправлен. Backend и схема не менялись. Свидетельства: `D:/соты/output/soty-implementation-20261007/release-r2/deploy-proof/` и `research/UI-RELEASE-ACCEPTANCE.md`.
 
 1. Подтвердить базовый выпуск и сохранность рабочего дерева. База: 698a75f82ba9780494e10e1bf060781e94095b5e. Отдельная ветка codex/soty-ecosystem-20261007; исходные и соседние незавершённые изменения не переносить.
 2. Разделить две операции: личный ярлык сущности и закладка конкретного входа. Основной «+» выбирает пространство; закладка доступна в меню приложения. Отдельный ярлык не даёт доступа и не публикует приложение.
@@ -21,6 +27,24 @@
 9. Commit/push → неизменяемый образ → SSH Dev → проверка публичной страницы и реального HIVE. Не смешивать выпуск с миграцией незавершённого U1.
 
 ## Выпуск 2: проекты SSH Dev в «Поиске»
+
+Checkpoint 07.10.2026, 11:54 UTC: frontend «ХочуИпотеку» `1f0caed6b05774d0da139c6238b6137fd68a8e3c` committed/pushed и опубликован на прежнем https://hochuipoteku.ru/. Отдельный clean deployclone, 94/94 проверки без пропусков, сборка, immutable archive, сверка всех 30 файлов и одноразовая promotion receipt. Root прошёл публичный сценарий: первый холодный timeout → честная ошибка → ручной Retry → 21 328 записей → «Культура»371 → этаж24/все11 → объект215/71,4м²/16 065 000 с исходным планом → досье/главная. Неподтверждённая валюта не становится рублями и ипотечным расчётом. Настоящие pointer-клики Zoom in/out на320px, landscape844px, телефон393px и клавиатурное сохранение взноса после Tab проверены; нет заявления о физических Safari/универсальной скорости. Старый домен, producer/API, данные и прежний frontend49 сохранены. Alias Сот bound/inactive, listing не включён: это следующий отдельный пункт квалификации. Свидетельство: `D:/соты/output/soty-implementation-20261007/research/hochu-frontend-release-1f/BROWSER-ACCEPTANCE.md`.
+
+HIVE source `005cda35c29f8e5358de99e9be7b7753861745d1` и immutable image `sha256:b886a34ff84c2fd9d45a61ffe49b1691f3d38ee13b8167c575f4d343a90b80a5` прошли полную сборку: World1271/1265PASS/0FAIL/0CANCEL/6условныхSKIP, другие проверки и image preflight. Реальная R4 cold restore отклонена: исходный120s transport deadline, неполная передача, receiver phase неизвестен. Candidate никогда не запускался; browsercanary не начинался. Прежний ART ec50/d9f7 восстановлен, ready/oneWriter подтверждены11:24. Во время backup/gate была остановка сервиса; прежнее историческое «не останавливался» ниже относится к R3. Зашифрованная backup, failed proofs и quarantine volume сохранены; собственные restore/helper observers сверены и удалены без удаления volume. Новая публикация до устранения причины и отдельного повторного доказательства не допускается.
+
+Компактный lossless media codec v2: Unicode-ошибка независимо закрыта, 33 pins/24Python+29NodePASS, точное сохранение исходных полей и provenance проверено. Это standalone source-компонент: около625МБ RSS/3,8s decode и отсутствие sync cancellation не приняты для телефона; routes/capabilities/client/producer integration не менялись. Исторические v1 HOLD и причины прежнего отказа сохранены. Следующий performance-пункт должен обеспечить ограниченную по памяти доставку нужного пользователю поднабора с сохранением facts/identity/release, а не выдавать уменьшенный gzip за решённый UX.
+
+Ниже сохранены исторические checkpoints; этот checkpoint и свежие receipts определяют текущий статус.
+
+Checkpoint 07.10.2026, 09:45 UTC: публичный визуальный выпуск остаётся `ec50df727f47ea374a5668631868fe6cbcd75c76`. Исправление первого HIVE-входа подготовлено в `332df3e7a2493a38cfb25a4fa4e1878fe2996ad0`; отдельная поправка проверки конкурирующих сохранений — в `3fd06063dc34398a30176a9175d2f71237786a8f`. Последняя полная сборка отклонена: 1271 сценарий, 1264 PASS, 0 FAIL, 1 CANCEL, 6 условных SKIP. Отмена в `server/test/app-domain-policy.acceptance.test.mjs:88` при прежнем лимите 20 s исследуется; исходники, образ и публичная приёмка учитываются раздельно. Этот кандидат не внедрён, рабочий выпуск не останавливался.
+
+«ХочуИпотеку»: подготовленный и опубликованный в Git frontend `4cff9cf52a670bf9af7fe26e968b1c1addaf8c48` прошёл 76 связанных проверок и авторские визуальные сценарии. Независимый холодный браузерный прогон обнаружил неподтверждённый каталог и ложное сообщение о проверенных данных на главной. Поэтому frontend-публикация не принята. Отдельная исправляющая ветка сохраняет исходные временные бюджеты, вводит честные loading/error/retry состояния и одну безусловную повторную загрузку после exposed 304 в пределах того же исходного deadline. Историческая причина браузерного сбоя не считается доказанной одним успешным сетевым повтором.
+
+Компактный каталог имеет отдельный gate: все строки, порядок, идентификаторы, факты и происхождение данных должны сохраняться. Независимый source-review v2 закрыл потерю `reported_fact_observations`. На фактическом опубликованном наборе 9156 квартир нормализаторы и данные совпадают, однако размер практически не уменьшился. Обработка полной коллекции предложений остановилась на установленном лимите; ускорение, полный набор предложений и интеграция ещё не приняты. Публичная копия сохраняется только в исследовательском output для локальных повторных проверок без новых крупных GET. Нельзя компенсировать размер молчаливым удалением конфликтов или исходных наблюдений.
+
+Текущее состояние 07.10.2026: Тавыш, Переметрика и Поведай зарегистрированы владельцем; именные адреса активны с личными допусками, `listed=false`. Они не добавлены автоматически в «Моё». Публичный общий каталог и native-вход ещё не приняты: проверяются сохранение прежних аккаунтов, cookie/Origin/CSRF, данные и холодное восстановление. «ХочуИпотеку» требует отдельного составного фронта из двух существующих сервисов; один статический порт не обслуживает его API. Прежние домены сохранены.
+
+Визуальный выпуск внедрён 07.10.2026: source `ec50df727f47ea374a5668631868fe6cbcd75c76`, image `sha256:d9f7d11dd7ddc7641ab80141cae9f373f65861be79c8435ca2a4125d7023ae97`. Он содержит оформление и четыре WebP Переметрики; backend и схема сохранены. Свежий холодный цикл проверил семь SQLite-хранилищ и 8227 строк, включая фактический запуск прежнего образа. Браузерная приёмка desktop929/320 завершена за171.956s при целевом180s/пределе240s. Production: один writer, готовое хранилище, прежняя конфигурация, сохранённый остановленный образ. Публичная проверка:90files/56covers/146checks и прежние адреса. Четыре ранее отклонённые попытки сохранены как история, их подтверждения не переиспользованы. Атомарная передача нового подтверждения прошла34 независимых Linux-проверки; свидетeльства — `D:/соты/output/soty-implementation-20261007/release-art-r5/`. Временный сбой первого desktop-входа в HIVE при двух параллельных вкладках исследуется отдельно; повторный вход и мобильный вход сработали. Именные проекты ещё restricted/notlisted до native-квалификации.
 
 1. Снять свежий inventory реальных процессов, источников, health и публичных доменов. Уже зарегистрированные HIVE/NFC переиспользовать; разные владельцы остаются разными владельцами.
 2. Для каждого проекта: старый вход → карточка «Поиска» → предварительный просмотр → открыть → добавить в своё пространство → вернуться → повторно войти. Приватные кабинеты/проекты не становятся публичными из-за публикации карточки.
@@ -35,23 +59,27 @@
 
 | Подплан | Пункты и обязательная проверка | Текущее состояние |
 |---|---|---|
-| P0.1 Identity → inference tenant | Connect principal; account budget; request identity; revoke/ABA/replay | pending integration |
+| P0.1 Identity → inference tenant | Connect principal; account budget; request identity; revoke/ABA/replay | verified-component в отдельной commerce ветке; host/RP/CSRF integration pending |
 | P0.2 Device ceremony/vault | отдельные signing/wrapping ключи; proof of possession; generation CAS; device revoke | pending integration |
-| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | pending |
+| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | удержания, reconciliation, admission-only leases и supplier route pin verified-component в commerce c8d1449; route59PASS+6independent probes; trusted durable worker, historical pending и production integration pending |
 | P0.4 Personal memory | неизменяемый scope; trusted admission; erase/tombstones; durable restore floor; cross-account и replay | verified-component; production admission не подключён |
 | P0.5 Executor | key-free guest; approved roots/egress; resources; cancellation stop receipt; no host fallback | pending |
 
 ## P1: личный агент и единый UX
 
+Checkpoint 07.10.2026, 15:00 UTC: отдельная source-ветка `codex/soty-chat-targets-20261007`, commit1e5e67274eb1cb19f0e20070f55b08b30970e25f, принята независимым browser retake. На320/393px исправлены реальные неверные нажатия перекрывающихся стрелок, в коротком окне — перекрытие счётчика floating-кнопкой и отправка за границей при6000 символах. Шесть размеров Chromium, поиск8→7→8, ответ/отмена/Back/длинный черновик/возврат вниз прошли; source-only, production ещё не обновлён. R6 получает отдельный canonical archive и новые image/cold/browser receipts; старые failed proofs не переиспользуются. Чаты с настоящими людьми, физический Safari и голос этим retake не проверены.
+
 | Подплан | Пункты и обязательная проверка | Текущее состояние |
 |---|---|---|
-| P1.1 GLM | exact zai-org/GLM-5.3-Flash; bounded stream assembly; validated tools; abort/unknown usage; no implicit retry | implementing |
+| P1.1 GLM | exact zai-org/GLM-5.3-Flash; bounded stream assembly; validated tools; abort/unknown usage; no implicit retry | verified-component; live transport/controller/paid dispatch pending |
 | P1.2 AIST/U1 | existing envelope1.0; trusted profiles; existing grants/effect ledger; version pins; data_only | proposal examples verified; integration pending |
 | P1.3 Controller | task identity; resource/model budgets; U1 dispatch; domain proof; idempotent resume | pending |
 | P1.4 Memory UX | «Запомнить»/«только здесь»; audience; export/delete; stale sources | pending |
-| P1.5 Поле/чат | placements и entity отдельно; search visibility; Telegram-понятные controls; drafts; mobile/focus | release 1 under review |
+| P1.5 Поле/чат | placements и entity отдельно; search visibility; Telegram-понятные controls; drafts; mobile/focus | placements release 1 deployed; последующие agent/voice сценарии pending |
 
 ## P2: разговор
+
+Checkpoint 07.10.2026, 13:02 UTC: P2.3 локальный CallCoordinator source-компонент перенесён в `modules/personal-agent/call/`, verified-component. 62/62 проверки после переноса и independent peer62+10прежних+3дополнительных PASS. Исправлены накопление отменённых работ и reentrant смена аккаунта/закрытие/getters; все прежние HOLD доказательства сохранены. Микрофон по умолчанию выключен; late permission/result очищаются, same-account navigation сохраняет звонок; предел16ownership groups удерживается до фактического settlement/cleanup. Отдельные agent/recording/transcript features не включаются join. Это локальная библиотека с trusted ports, **не** signed Connect admission, SFU/TURN, UI кнопка или внедрённый звонок. Порядок реального подключения и оставшиеся gates: `modules/personal-agent/call/INTEGRATION.md`. Микрофон/сеть/paid calls не запускались.
 
 1. P2.1: выделить transcript/turn/epoch/scheduler из реального voice donor; не переносить чужой business context. Текстовый GLM brain и audio provider — разные компоненты.
 2. P2.2: live call admission на account/device/membership; проверять удаление и повторный вход со старым JWT; TURN budget отдельно.
