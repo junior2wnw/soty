@@ -3,6 +3,7 @@ import {Readable} from 'node:stream';
 import {readFile,writeFile,lstat,realpath} from 'node:fs/promises';
 import {createHash,generateKeyPairSync} from 'node:crypto';
 import {join} from 'node:path';
+import {isDeepStrictEqual} from 'node:util';
 import {encryptBackup} from '../../../deploy/connect/backup.mjs';
 import {inspectRestorableBackup} from '../../../deploy/connect/restore-backup.mjs';
 import {assertInstalledSourceImage} from './image-guard.mjs';
@@ -10,6 +11,7 @@ import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedb
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
 
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex'),check=value=>{if(!value)throw Error('source_cold_guard_refused');};
+const same=isDeepStrictEqual;
 const limits={archiveBytes:16777216,plaintextBytes:16777216,fileBytes:4194304,extractedBytes:8388608,entries:64,headers:128,pathBytes:4096,pathDepth:8,externalFiles:4,externalBytes:131072,wallMs:30000,idleMs:10000};
 const owned=[];
 function command(args,input,limit=2097152){
@@ -24,21 +26,21 @@ function command(args,input,limit=2097152){
 const run=async(args,input,limit)=>await command(args,input,limit).done;
 const inspect=async id=>JSON.parse((await run(['inspect',id])).toString());
 export function assertSourceColdContainer(item,actual){const c=actual[0];check(/^[a-f0-9]{64}$/.test(c.Id)&&(item.id===null||c.Id===item.id)&&c.Name==='/'+item.name&&c.Image===item.image&&c.Config.Labels['io.soty.source.cold']===item.nonce
-  &&c.Config.User==='1000:1000'&&c.Config.WorkingDir==='/app/source-app'&&JSON.stringify(c.Config.Env)===JSON.stringify(item.expectedEnv)
-  &&(!c.HostConfig.GroupAdd||c.HostConfig.GroupAdd.length===0)&&JSON.stringify(c.HostConfig.Tmpfs)===JSON.stringify(item.tmpfs)
+  &&c.Config.User==='1000:1000'&&c.Config.WorkingDir==='/app/source-app'&&same(c.Config.Env,item.expectedEnv)
+  &&(!c.HostConfig.GroupAdd||c.HostConfig.GroupAdd.length===0)&&same(c.HostConfig.Tmpfs,item.tmpfs)
   &&c.HostConfig.ReadonlyRootfs===true&&c.HostConfig.NetworkMode==='none'&&c.HostConfig.Privileged===false
   &&c.HostConfig.Memory===268435456&&c.HostConfig.MemorySwap===268435456&&c.HostConfig.PidsLimit===64
   &&c.HostConfig.NanoCpus===1000000000&&c.HostConfig.CpuPeriod===0&&c.HostConfig.CpuQuota===0&&c.HostConfig.CpuShares===0
-  &&c.HostConfig.CpusetCpus===''&&c.HostConfig.CpusetMems===''&&JSON.stringify(c.HostConfig.CapDrop)===JSON.stringify(['ALL'])
-  &&(!c.HostConfig.CapAdd||c.HostConfig.CapAdd.length===0)&&JSON.stringify(c.HostConfig.SecurityOpt)===JSON.stringify(['no-new-privileges'])
+  &&c.HostConfig.CpusetCpus===''&&c.HostConfig.CpusetMems===''&&same(c.HostConfig.CapDrop,['ALL'])
+  &&(!c.HostConfig.CapAdd||c.HostConfig.CapAdd.length===0)&&same(c.HostConfig.SecurityOpt,['no-new-privileges'])
   &&(!c.HostConfig.Devices||c.HostConfig.Devices.length===0)&&(!c.HostConfig.DeviceRequests||c.HostConfig.DeviceRequests.length===0)
   &&(!c.HostConfig.DeviceCgroupRules||c.HostConfig.DeviceCgroupRules.length===0)&&(!c.HostConfig.Binds||c.HostConfig.Binds.length===0)
   &&(!c.HostConfig.VolumesFrom||c.HostConfig.VolumesFrom.length===0)&&(!c.HostConfig.PortBindings||Object.keys(c.HostConfig.PortBindings).length===0)
   &&c.HostConfig.PublishAllPorts===false&&c.HostConfig.PidMode===''&&c.HostConfig.IpcMode==='private'&&c.HostConfig.UTSMode===''
   &&c.HostConfig.RestartPolicy.Name==='no'&&c.HostConfig.RestartPolicy.MaximumRetryCount===0&&c.HostConfig.LogConfig.Type==='none'
   &&Object.keys(c.HostConfig.LogConfig.Config??{}).length===0
-  &&JSON.stringify(c.HostConfig.Ulimits)===JSON.stringify([{Name:'core',Soft:0,Hard:0}])
-  &&JSON.stringify(c.Config.Entrypoint)===JSON.stringify(['/usr/local/bin/node'])&&JSON.stringify(c.Config.Cmd)===JSON.stringify(item.argv)
+  &&same(c.HostConfig.Ulimits,[{Name:'core',Soft:0,Hard:0}])
+  &&same(c.Config.Entrypoint,['/usr/local/bin/node'])&&same(c.Config.Cmd,item.argv)
   &&c.Mounts.length===2&&c.Mounts.filter(m=>m.Type==='volume').length===1&&c.Mounts.some(m=>m.Type==='volume'&&m.Name===item.volume&&m.Destination===item.target&&m.RW===item.rw)
   &&c.Mounts.filter(m=>m.Type==='bind').length===1&&c.Mounts.some(m=>m.Type==='bind'&&m.Source===item.packet&&m.Destination==='/probe'&&m.RW===false&&m.Propagation==='rprivate')
   &&c.HostConfig.Mounts.filter(m=>m.Type==='volume').length===1

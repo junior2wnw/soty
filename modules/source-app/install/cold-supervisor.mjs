@@ -4,12 +4,15 @@ import {readFile,lstat,realpath,mkdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {isDeepStrictEqual} from 'node:util';
 import {createLocalWslHostDockerCommandRunner} from '../server/linux-feedback-lifecycle.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedback-local-placement.mjs';
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
 const commands=createLocalWslHostDockerCommandRunner(placement.dockerHostBinary),sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const check=value=>{if(!value)throw Error('source_cold_supervisor_refused');};
-const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+// Docker's JSON objects may have different key insertion order. Array order,
+// values and extra/missing fields still have to match the reviewed spec.
+const same=isDeepStrictEqual;
 export function assertSourceColdSupervisor(actual,spec){
   const c=actual[0],h=c.HostConfig;
   check(/^[a-f0-9]{64}$/.test(c.Id)&&c.Name==='/'+spec.name&&c.Image===profile.supervisorImage&&c.Config.User==='1000:1000'
