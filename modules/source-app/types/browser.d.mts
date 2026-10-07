@@ -19,3 +19,4 @@ export const SOURCE_FEEDBACK_LIMITS:Readonly<{bodyChars:8000;totalAttachmentByte
 export function createSourceFeedbackController(options?:{api?:Pick<FeedbackClient,'context'|'submit'>;isCurrent?:()=>boolean;requestId?:()=>string;onChange?:(value:unknown)=>void}):{
   snapshot():unknown;open():Promise<boolean>;setDraft(value:FeedbackDraft):boolean;send():Promise<boolean>;invalidate():void;dispose():void;
 };
+export {createSourceFeedbackProcessingClient} from './processing.mjs';

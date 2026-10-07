@@ -70,6 +70,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   root=createHttpApp(dist,activeOptions);
   for(const realm of realms){realm.options={profile:realm.profile,transportKey:realm.key,connectorPort,rp:{issuer:realm.profile.issuer,clientId:realm.profile.clientId,clientSecret:realm.clientSecret,redirectUri:realm.embedded+'/api/embed/callback'},
     databasePath:realm.databasePath,realmId:realm.realmId,cipherKey:realm.cipherKey,keyId:'synthetic-'+realm.realmId,appLabel:'Synthetic '+realm.realmId};
+    if(options.feedbackProcessing)realm.options.feedbackProcessing=options.feedbackProcessing;
     realm.options.allowEmptyGuest=options.emptyGuestBrowser===true;
     realm.instance=await createOrdinaryAppServer({...realm.options,initialize:true,newResource:{title:'Selected synthetic project',guestEmpty:options.emptyGuestBrowser===true}});
     realm.observeResponse=()=>realm.instance.server.prependListener('request',(req,res)=>{
@@ -79,7 +80,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
       res.end=(...args)=>{if(res.statusCode===200){res.destroy();return res;}return end(...args);};
     });realm.observeResponse();
     if(!options.emptyGuestBrowser){realm.instance.store.createPrincipal('native-participant');realm.instance.store.createPrincipal('native-owner');realm.instance.store.grant('selected','native-participant','participant');realm.instance.store.grant('selected','native-owner','owner');
-      realm.nativeToken=realm.instance.store.createNativeSession('native-participant');}await realm.instance.listen();
+      realm.nativeToken=realm.instance.store.createNativeSession(options.libraryNativeOwner&&realm.realmId==='library'?'native-owner':'native-participant');}await realm.instance.listen();
   }
   await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:realms.map(realm=>({profile:realm.profile,key:realm.key.toString('base64url')}))}));startChild(true);
   await until(async()=>{try{return(await wireHttp(connectorPort,'/apps/claim',{origin,body:{}})).status===200;}catch{return false;}},60000);

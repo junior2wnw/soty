@@ -25,8 +25,8 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
   for (const path of [...inputs].sort()) sourceFiles.push({ path: relative(resolve(packageRoot, '../..'), path).replaceAll('\\', '/'), sha256: sha(await readFile(path)) });
   const outputs = [];
   await mkdir(join(outdir, 'assets'), { recursive: true });
-  for (const name of ['app.js', 'app.css']) await copyFile(join(packageRoot, 'examples/ordinary-app/assets', name), join(outdir, 'assets', name));
-  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs', 'assets/app.js', 'assets/app.css']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
+  for (const name of ['app.js', 'app.css','processing.js']) await copyFile(join(packageRoot, 'examples/ordinary-app/assets', name), join(outdir, 'assets', name));
+  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
   const manifest = { schema: 'soty.source-app.build.v1', packageVersion: '0.1.0-preview.1', esbuild: esbuild.version,
     protocolDependency: { name: 'openid-client', version: '6.8.4' }, sourceFiles, outputs };
   await writeFile(join(outdir, 'provenance.json'), JSON.stringify(manifest, null, 2) + '\n'); return manifest;

@@ -2,11 +2,13 @@ import { createSourceNativeAuthorityPort, isSourceNativeCommitPort } from '../..
 import { check, fields, digest, nonce, jsonCopy } from '../../server/wire.mjs';
 import { SOURCE_FEEDBACK_LIMITS } from '../../shared/feedback-wire.mjs';
 import { validateFeedbackAttachments } from '../../../feedback/server/media.mjs';
+import { createOrdinaryFeedbackJobs } from './feedback-jobs.mjs';
 
 /** Actual example Native implementation. Every role/resource decision and
  * durable receipt belongs to this Source SQL database, never Root metadata. */
-export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, beforeCommit, afterCommit } = {}) {
+export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, beforeCommit, afterCommit, feedbackProcessing } = {}) {
   const { db } = store, proofs = new WeakMap();
+  const jobs=feedbackProcessing?createOrdinaryFeedbackJobs({store,resourceId,incarnationId,...feedbackProcessing}):null;
   const nativeCookie = 'ordinary_native_' + store.realmId;
   function cookie(req) {
     const values = String(req?.headers?.cookie ?? '').split(';').map(value => value.trim()).filter(value => value.startsWith(nativeCookie + '='));
@@ -124,7 +126,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     },
     withCurrent(proof, binding, apply) { inspect(proof, binding); return apply(); },
     rememberLogin(proof, binding, intent) {
-      check(store.format === 2 && store.inTransaction(), 'ordinary_native_login_proof_not_ready', 503);
+      check(store.format >= 2 && store.inTransaction(), 'ordinary_native_login_proof_not_ready', 503);
       inspect(proof, binding); const captured = proofs.get(proof), idHash = digest(nonce()), bindingDigest = digest(binding);
       check(intent.expiresAt > store.clock(), 'ordinary_native_login_proof_denied', 403);
       const cipher = store.encrypt('NativeLoginProof', idHash, 0, captured);
@@ -133,7 +135,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
       return { idHash, version: 1, bindingDigest };
     },
     async recoverLogin(binding, marker, intent) {
-      check(store.format === 2, 'ordinary_native_login_proof_not_ready', 503);
+      check(store.format >= 2, 'ordinary_native_login_proof_not_ready', 503);
       const row = db.prepare('SELECT * FROM native_login_proofs WHERE id_hash=?').get(marker.idHash);
       check(row && row.binding_digest === digest(binding) && row.binding_digest === marker.bindingDigest
         && row.interaction_hash === intent.interactionIdHash && row.expires_at === intent.expiresAt && row.expires_at > store.clock(), 'ordinary_native_login_proof_denied', 403);
@@ -143,11 +145,21 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     linkVerifiedIdentity: (proof, binding, identity) => link(proof, binding, identity, false),
     ...(allowEmptyGuest ? { createEmptyGuest: (proof, binding, identity) => link(proof, binding, identity, true) } : {}),
     async read(proof, binding, args) {
+      if(jobs&&['feedback.job.status','feedback.job.result','feedback.processing.context','feedback.processing.ticket'].includes(args.input?.operation)){const result=jobs.read(inspect(proof,binding),args.input);inspect(proof,binding);return result;}
       inspect(proof, binding); const input = fields(args.input, ['operation']); check(input.operation === 'items.list', 'ordinary_native_operation_denied', 403);
       const rows = db.prepare('SELECT id,title,revision,created_at AS createdAt FROM native_items WHERE resource_id=? ORDER BY created_at,id LIMIT 100').all(resourceId);
       inspect(proof, binding); return { items: rows.map(row => ({ ...row })), requestId: args.requestId };
     },
     async execute(proof, binding, args, final) {
+      if(jobs&&['feedback.processing.consent','feedback.job.grant','feedback.job.revoke'].includes(args.input?.operation)){
+        check(isSourceNativeCommitPort(final));await beforeCommit?.(args.input.operation);
+        const result=store.tx(()=>{const actor=inspect(proof,binding);
+          const prior=db.prepare('SELECT input_digest FROM native_receipts WHERE resource_id=? AND principal_id=? AND request_id=?').get(resourceId,actor.principalId,args.requestId);
+          if(!prior)jobs.validate(actor,args.input,args.requestId);
+          return final.commit(()=>receipt(actor,args,args.input,inputDigest=>({
+          requestId:args.requestId,inputDigest,outcome:'committed',replayed:false,data:jobs.execute(actor,args.input,args.requestId)})));});
+        await afterCommit?.(args.input.operation);return result;
+      }
       const input = fields(args.input, ['operation', 'title']); check(input.operation === 'items.create' && typeof input.title === 'string' && input.title.trim().length > 0 && input.title.length <= 500);
       check(isSourceNativeCommitPort(final)); await beforeCommit?.('items.create');
       const result = store.tx(() => { const actor = inspect(proof, binding); return final.commit(() => receipt(actor, args, args.input, inputDigest => {

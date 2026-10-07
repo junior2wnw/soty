@@ -70,7 +70,19 @@ const feedback = createSourceFeedbackController({ api: createSourceFeedbackClien
   byId('feedback-send').disabled = snapshot.state === 'sending' || snapshot.state === 'loading' || snapshot.state === 'login_required'
     || snapshot.context?.ready !== true || snapshot.context?.canSubmit !== true;
   byId('feedback-body').disabled = snapshot.pending;
+  byId('feedback-file').disabled = snapshot.pending;
 } });
 byId('feedback-open').addEventListener('click', async () => { byId('feedback').hidden = false; await feedback.open(); });
-byId('feedback-send').addEventListener('click', async () => { feedback.setDraft({ body: byId('feedback-body').value, attachments: [] }); if (await feedback.send()) byId('feedback-body').value = ''; });
+byId('feedback-send').addEventListener('click', async () => {
+  try{
+    const file=byId('feedback-file').files[0],attachments=[];
+    if(file){if(file.size>1048576)throw new Error('large');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);
+      attachments.push({kind:file.type.startsWith('audio/')?'audio':'image',name:file.name,mimeType:file.type,dataBase64:btoa(binary)});}
+    if(!feedback.snapshot().pending)feedback.setDraft({ body: byId('feedback-body').value, attachments });
+    if(await feedback.send()){byId('feedback-body').value='';byId('feedback-file').value='';}
+  }catch{byId('feedback-state').textContent='Выберите PNG, JPEG, WebP, WebM или Ogg размером до 1 МиБ.';}
+});
+if(document.querySelector('main').dataset.processing==='true'){
+  const {mountProcessingUi}=await import('/assets/processing.js');mountProcessingUi({isCurrent:()=>!disposed});
+}
 addEventListener('pagehide', () => { disposed = true; clearTimeout(polling); feedback.dispose(); }, { once: true });

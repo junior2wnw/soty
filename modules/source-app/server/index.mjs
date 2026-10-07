@@ -5,3 +5,5 @@ export { SOURCE_FEEDBACK_LIMITS } from '../shared/feedback-wire.mjs';
 // Reuse the maintained protocol/service, including finite/CAS/unknown rules.
 // These exports do not implement Native roles or make a long session ready.
 export { createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE } from '../../source-rp/server/index.mjs';
+export {createFeedbackProcessorEngine,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './feedback-job-contract.mjs';
+export {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';

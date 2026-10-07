@@ -37,11 +37,13 @@ export interface SourceStoragePort {
   readTokenProof(session:unknown):Promise<{accessToken:string;expiresAt:number}>;revokeSession(hash:string):Promise<void>;
 }
 export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp:SourceRpProfile;
-  clock?:()=>number;allowCreateEmptyGuest?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:{currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>}}):{
-  readonly profile:SourceProfile;handleRequest(req:IncomingMessage,res:ServerResponse):Promise<boolean>;close():void;
+  clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:{currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>}}):{
+  readonly profile:SourceProfile;/** Private host proof; never a response/body/persisted permission. */currentFeedbackJobProof(sessionHash:string):Promise<object>;
+  handleRequest(req:IncomingMessage,res:ServerResponse):Promise<boolean>;close():void;
 };
 export const STANDARD_SELECTED_SOURCE:Readonly<{id:'soty.standard-resource';version:1;digest:string}>;
 export const STANDARD_SOURCE_CONTRACT:Readonly<unknown>;
 export const STANDARD_SELECTED_SOURCE_V2:Readonly<{id:'soty.standard-resource';version:2;digest:string}>;
 export const STANDARD_SOURCE_CONTRACT_2:Readonly<unknown>;
 export {SOURCE_FEEDBACK_LIMITS} from './browser.mjs';
+export {createFeedbackProcessorEngine,createFeedbackJobEnforcer,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './processing.mjs';

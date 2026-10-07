@@ -8,6 +8,7 @@ import { validateSourceFeedbackInput } from './feedback-wire.mjs';
 import { feedbackOutput } from '../shared/feedback-wire.mjs';
 import { parseSourceJson } from '../shared/strict-json.mjs';
 import { sourceEmbedRoute, sourceBodyHeaders } from './router.mjs';
+import { createFeedbackJobAuthorityProof } from './feedback-job-authority.mjs';
 import { fields, check, digest, nonce, opaque, requestId, jsonCopy, deepFreeze, syncResult, SourceAppError } from './wire.mjs';
 
 const COOKIE = 'soty_rp_session', LINK = 'soty_rp_link';
@@ -26,7 +27,7 @@ function html(text) { return String(text).replaceAll('&', '&amp;').replaceAll('<
  * or turns an OIDC identity into a Native permission on its own. */
 export function createSourceAppBff(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native', 'rp'],
-    ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions']);
+    ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled']);
   const profile = selectedResourceProfile(value.profile), clock = value.clock ?? Date.now;
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
@@ -34,6 +35,7 @@ export function createSourceAppBff(options) {
   const embedOidc = digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE_V2);
   check((embedOidc || digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE)) && profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
+  check(value.processingProofEnabled===undefined||typeof value.processingProofEnabled==='boolean');
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
     : fields(value.ui, ['appLabel', 'resourceLabel']);
   check(Object.values(labels).every(label => typeof label === 'string' && label.isWellFormed() && label.trim().length > 0 && label.length <= 160
@@ -112,7 +114,8 @@ export function createSourceAppBff(options) {
       session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
         rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
         createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
-        accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion) } }],
+        accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
+        ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) } }],
       () => native.commitIdentity(authority, { issuer: identity.issuer, subject: identity.subject }, { createEmptyGuest: value.allowCreateEmptyGuest === true }));
     check(result === true, 'source_app_commit_unknown', 503); await postCommit(interaction.context, authority);
     return store.getInteraction(interaction.idHash);
@@ -224,7 +227,8 @@ export function createSourceAppBff(options) {
         session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
           rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
           createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
-          accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion) } }], () => {
+          accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
+          ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) } }], () => {
         return native.commitIdentity(authority, { issuer: identity.issuer, subject: identity.subject }, { createEmptyGuest: value.allowCreateEmptyGuest === true });
       });
       check(result === true, 'source_app_commit_unknown', 503);
@@ -350,7 +354,20 @@ export function createSourceAppBff(options) {
     }
     throw new SourceAppError('source_app_route_unavailable', 404);
   }
-  return Object.freeze({ profile, async handleRequest(req, res) {
+  return Object.freeze({ profile,
+    /** Constructor-only worker port. processingContext is an encrypted locator,
+     * not authority; every call obtains new actual Root/RP/Native proof. */
+    async currentFeedbackJobProof(sessionHash){
+      check(value.processingProofEnabled===true&&/^[a-f0-9]{64}$/u.test(sessionHash),'source_feedback_processor_not_ready',503);
+      const session=await store.readSession(sessionHash);check(session?.processingContext,'source_feedback_processor_not_ready',503);
+      const context=session.processingContext,current=await proveSession(session,context,'execute');
+      return createFeedbackJobAuthorityProof({sessionHash,
+        bindingDigest:digest(binding(context,session.identity,'execute',sessionHash)),
+        expiresAt:Math.min(current.proof.expiresAt,current.proof.sessionExpiresAt,session.expiresAt,context.expiresAt),
+        async assertCurrent(){await proveSession(await store.readSession(sessionHash),context,'execute');},
+        withCurrent(action){check(!closed&&context.expiresAt>clock(),'source_app_root_changed',403);return native.withCurrent(current.authority,action);}});
+    },
+    async handleRequest(req, res) {
     let url;
     try { url = new URL(req.url, profile.nativeOrigin); }
     catch { send(res, 400, { ok: false, error: { code: 'source_app_input_invalid', retryable: false } }); return true; }

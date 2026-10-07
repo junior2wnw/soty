@@ -10,11 +10,17 @@ import { tmpdir } from 'node:os';
 import { getCACertificates, setDefaultCACertificates } from 'node:tls';
 import { createServer as createViteServer } from 'vite';
 import { createOrdinaryInstalledFixture, freePort } from '../../modules/source-app/test/support/ordinary-installed.mjs';
+import { createFeedbackProcessorEngine } from '../../modules/source-app/server/feedback-job-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const frontPort = Number(process.env.SOTY_ORDINARY_FIXTURE_PORT || 5261), backendPort = await freePort(), appPort = await freePort();
 if (!Number.isInteger(frontPort) || frontPort < 1024 || frontPort > 65535) throw new Error('fixture_port_invalid');
 const origin = 'https://127.0.0.1:' + frontPort;
+const jobsFixture=process.env.SOTY_ORDINARY_FEEDBACK_JOBS_FIXTURE==='1';
+const jobBudget={wallMs:5000,cpuMs:1000,cleanupMs:1000,scratchBytes:65536,outputBytes:16000,mediaBytes:1024,attachments:1,parallel:1};
+const feedbackProcessing={policy:{schema:'soty.feedback.processing-policy.v1',ref:{id:'local.synthetic-policy',version:1,digest:'b'.repeat(64)},purposes:['ocr'],
+  localOnly:true,requiresReporterConsent:true,maxBudget:jobBudget},engines:[createFeedbackProcessorEngine({ref:{id:'local.synthetic-ocr',version:1,digest:'a'.repeat(64)},
+  purposes:['ocr'],localOnly:true,synthetic:true,process:async()=>{throw new Error('fixture_processor_not_ready');}})]};
 let fixture, closeFixture, vite, tls, tlsDirectory, closed = false; const sockets = new Set();
 const safeCode = error => /^[A-Za-z0-9_:-]{1,120}$/.test(error?.code || '') ? error.code : 'fixture_failed';
 function send(res,status,value) { res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'}).end(JSON.stringify(value)); }
@@ -31,7 +37,10 @@ async function helper(req,res) {
     principals:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_principals').get().n,links:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_links').get().n,
     consents:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_consents').get().n,items:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n,
     tickets:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_tickets').get().n,interactions:realm.instance.store.db.prepare('SELECT count(*) AS n FROM source_interactions').get().n,
-    sessions:realm.instance.store.db.prepare('SELECT count(*) AS n FROM source_sessions').get().n,nativeForm:realm.lastNativeForm??null})),sourceCookiesInjected:false,humanCookiesInjected:false,oauthCounts:fixture.oauthCounts});
+    sessions:realm.instance.store.db.prepare('SELECT count(*) AS n FROM source_sessions').get().n,
+    ...(jobsFixture?{processingConsents:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_processing_consents').get().n,
+      processingGrants:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_processor_grants').get().n,jobs:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_feedback_jobs').get().n,
+      processorReceipts:realm.instance.store.db.prepare('SELECT count(*) AS n FROM native_processor_receipts').get().n}:{}),nativeForm:realm.lastNativeForm??null})),sourceCookiesInjected:false,humanCookiesInjected:false,oauthCounts:fixture.oauthCounts});
   return send(res,404,{code:'fixture_route_not_found'});
 }
 async function cleanup(){if(closed)return;closed=true;sockets.forEach(socket=>socket.destroy());await Promise.allSettled([vite?.close(),tls?new Promise(done=>tls.close(done)):undefined]);await closeFixture?.();if(tlsDirectory)await rm(tlsDirectory,{recursive:true,force:true,maxRetries:5,retryDelay:30});}
@@ -53,7 +62,8 @@ try {
     '/api':{target:'https://127.0.0.1:'+backendPort,ws:true},'/human-identity':{target:'https://127.0.0.1:'+backendPort,changeOrigin:false}}},plugins:[{name:'ordinary-source-test-only',configureServer(server){server.middlewares.use((req,res,next)=>{
       if(!req.url?.startsWith('/__fixture/'))return next();if(req.headers.host!=='127.0.0.1:'+frontPort||req.headers.origin&&req.headers.origin!==origin||req.method==='POST'&&req.headers.origin!==origin)return send(res,403,{code:'fixture_origin_denied',safeRequest:{method:req.method,host:req.headers.host??'absent',origin:req.headers.origin??'absent'}});
       void helper(req,res).catch(error=>send(res,400,{code:safeCode(error)}));});}}]});await vite.listen();
-  fixture=await createOrdinaryInstalledFixture({after:callback=>{closeFixture=callback;}},{frontPort,frontOrigin:origin,backendPort,backendTls:{key,cert},appPort,distDir:root,emptyGuestBrowser:true,extraCa:certFile});
+  fixture=await createOrdinaryInstalledFixture({after:callback=>{closeFixture=callback;}},{frontPort,frontOrigin:origin,backendPort,backendTls:{key,cert},appPort,distDir:root,emptyGuestBrowser:true,extraCa:certFile,
+    ...(jobsFixture?{feedbackProcessing}:{})});
   const hosts=new Set(fixture.realms.map(realm=>new URL(realm.embedded).host));
   tls=createTlsServer({key,cert},(req,res)=>{if(!hosts.has(req.headers.host))return res.writeHead(403).end();fixture.root()(req,res);});
   tls.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});await new Promise(done=>tls.listen(appPort,'127.0.0.1',done));

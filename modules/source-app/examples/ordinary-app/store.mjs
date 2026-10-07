@@ -4,27 +4,30 @@ import { existsSync } from 'node:fs';
 import { ORDINARY_SCHEMA, ORDINARY_SCHEMA_2, ORDINARY_META_2, ORDINARY_LOGIN_PROOF_DDL } from './schema.mjs';
 import { verifyOrdinaryReader1 } from './reader.mjs';
 import { verifyOrdinaryReader2 } from './reader2.mjs';
+import { verifyOrdinaryReader3 } from './reader3.mjs';
+import { ORDINARY_SCHEMA_3, ORDINARY_META_3, ORDINARY_JOB_DDL } from './job-schema.mjs';
 import { check, fields, digest, jsonCopy, nonce, opaque, syncResult } from '../../server/wire.mjs';
 
 /** The example has one actual Native SQL authority. Only host configuration
  * creates it; no Root/body owner flag or RP shadow creates Native permissions. */
 export function createOrdinaryAppStore(options) {
-  const value = fields(options, ['databasePath', 'realmId', 'key', 'keyId'], ['initialize', 'clock', 'format', 'allowLoginProofMigration']);
+  const value = fields(options, ['databasePath', 'realmId', 'key', 'keyId'], ['initialize', 'clock', 'format', 'allowLoginProofMigration','allowFeedbackJobsMigration']);
   check(typeof value.databasePath === 'string' && typeof value.realmId === 'string' && /^[a-z][a-z0-9.-]{0,63}$/u.test(value.realmId)
     && Buffer.isBuffer(value.key) && value.key.length === 32 && /^[a-zA-Z0-9_.-]{1,64}$/u.test(value.keyId));
   check(existsSync(value.databasePath) || value.initialize === true, 'ordinary_source_storage_not_ready', 503);
   const db = new DatabaseSync(value.databasePath), clock = value.clock ?? Date.now, key = Buffer.from(value.key);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const objects = db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();
-  const requestedFormat = value.format ?? 1; check([1,2].includes(requestedFormat) && (value.allowLoginProofMigration === undefined || typeof value.allowLoginProofMigration === 'boolean'));
+  const requestedFormat = value.format ?? 1; check([1,2,3].includes(requestedFormat) && (value.allowLoginProofMigration === undefined || typeof value.allowLoginProofMigration === 'boolean')
+    &&(value.allowFeedbackJobsMigration===undefined||typeof value.allowFeedbackJobsMigration==='boolean'));
   if (objects.length === 0) {
     check(value.initialize === true, 'ordinary_source_storage_not_ready', 503);
-    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId); db.exec('COMMIT'); }
+    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId); db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
   let reader;
   try {
-    reader = verifyOrdinaryReader2(db, value.realmId);
+    reader = verifyOrdinaryReader3(db, value.realmId);
     if (requestedFormat === 2 && reader.format === 1) {
       check(value.allowLoginProofMigration === true, 'ordinary_source_migration_required', 503);
       verifyOrdinaryReader1(db, value.realmId); db.exec('BEGIN IMMEDIATE');
@@ -35,6 +38,13 @@ export function createOrdinaryAppStore(options) {
         db.exec(ORDINARY_LOGIN_PROOF_DDL); verifyOrdinaryReader2(db, value.realmId); db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
       reader = verifyOrdinaryReader2(db, value.realmId);
+    }
+    if(requestedFormat===3&&reader.format<3){
+      check(reader.format===2&&value.allowFeedbackJobsMigration===true,'ordinary_source_jobs_migration_required',503);
+      verifyOrdinaryReader2(db,value.realmId);db.exec('BEGIN IMMEDIATE');
+      try{db.exec('DROP TABLE native_meta; '+ORDINARY_META_3+';');db.prepare('INSERT INTO native_meta VALUES(3,?)').run(value.realmId);
+        db.exec(ORDINARY_JOB_DDL);verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+      reader=verifyOrdinaryReader3(db,value.realmId);
     }
   } catch (error) { db.close(); throw error; }
   db.exec('PRAGMA journal_mode=WAL;');
