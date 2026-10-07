@@ -10,6 +10,8 @@
 
 ## Выпуск 1: добавление приложения на личное поле
 
+Внедрён 07.10.2026: `25b3d482e7da7b3b7c7f8b2ca51cb6af21bf9c63`, immutable image `sha256:e0486fef91f2eb09220a2afae964629151f87d4b4dd007141a627df29699555a`. Живой HIVE проверен на desktop и 320 px; сохранение выбранного пространства, возврат и отсутствие дубля подтверждены. Первый выпуск был отклонён из-за сброса пространства; автоматический откат с сохранением принятого ярлыка проверен, дефект исправлен. Backend и схема не менялись. Свидетельства: `D:/соты/output/soty-implementation-20261007/release-r2/deploy-proof/` и `research/UI-RELEASE-ACCEPTANCE.md`.
+
 1. Подтвердить базовый выпуск и сохранность рабочего дерева. База: 698a75f82ba9780494e10e1bf060781e94095b5e. Отдельная ветка codex/soty-ecosystem-20261007; исходные и соседние незавершённые изменения не переносить.
 2. Разделить две операции: личный ярлык сущности и закладка конкретного входа. Основной «+» выбирает пространство; закладка доступна в меню приложения. Отдельный ярлык не даёт доступа и не публикует приложение.
 3. После регистрации использовать canonical app ID подписанного ответа. Сообщение «Проект подключён»; затем выбор личного пространства. Не выдавать регистрацию за добавление ярлыка.
@@ -35,9 +37,9 @@
 
 | Подплан | Пункты и обязательная проверка | Текущее состояние |
 |---|---|---|
-| P0.1 Identity → inference tenant | Connect principal; account budget; request identity; revoke/ABA/replay | pending integration |
+| P0.1 Identity → inference tenant | Connect principal; account budget; request identity; revoke/ABA/replay | verified-component в отдельной commerce ветке; host/RP/CSRF integration pending |
 | P0.2 Device ceremony/vault | отдельные signing/wrapping ключи; proof of possession; generation CAS; device revoke | pending integration |
-| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | pending |
+| P0.3 Gateway | bounded leases; общий reserve/settle; unknown held; supplier reconciliation; quotas/revoke | удержания и reconciliation core verified-component; trusted supplier worker, historical pending и leases pending |
 | P0.4 Personal memory | неизменяемый scope; trusted admission; erase/tombstones; durable restore floor; cross-account и replay | verified-component; production admission не подключён |
 | P0.5 Executor | key-free guest; approved roots/egress; resources; cancellation stop receipt; no host fallback | pending |
 
@@ -45,11 +47,11 @@
 
 | Подплан | Пункты и обязательная проверка | Текущее состояние |
 |---|---|---|
-| P1.1 GLM | exact zai-org/GLM-5.3-Flash; bounded stream assembly; validated tools; abort/unknown usage; no implicit retry | implementing |
+| P1.1 GLM | exact zai-org/GLM-5.3-Flash; bounded stream assembly; validated tools; abort/unknown usage; no implicit retry | verified-component; live transport/controller/paid dispatch pending |
 | P1.2 AIST/U1 | existing envelope1.0; trusted profiles; existing grants/effect ledger; version pins; data_only | proposal examples verified; integration pending |
 | P1.3 Controller | task identity; resource/model budgets; U1 dispatch; domain proof; idempotent resume | pending |
 | P1.4 Memory UX | «Запомнить»/«только здесь»; audience; export/delete; stale sources | pending |
-| P1.5 Поле/чат | placements и entity отдельно; search visibility; Telegram-понятные controls; drafts; mobile/focus | release 1 under review |
+| P1.5 Поле/чат | placements и entity отдельно; search visibility; Telegram-понятные controls; drafts; mobile/focus | placements release 1 deployed; последующие agent/voice сценарии pending |
 
 ## P2: разговор
 
