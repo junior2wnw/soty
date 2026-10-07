@@ -55,6 +55,15 @@ export function selectedRouteAdapter(input) {
   return adapter;
 }
 
+/** Exact OAuth callback from reviewed host code. The private registry supplies
+ * origins/pins, never an arbitrary callback path or a redirect exception. */
+export function selectedClientRedirect(input) {
+  const profile = selectedResourceProfile(input), adapter = selectedRouteAdapter(profile);
+  const auth = adapter.contract.auth;
+  need(auth.callbackOrigin === undefined || auth.callbackOrigin === 'embed', 'scoped_embed_adapter_unapproved', 403);
+  return (auth.callbackOrigin === 'embed' ? profile.embedOrigin : profile.nativeOrigin) + auth.nativeCallbackPath;
+}
+
 /** HIVE's existing Native RP callback stays exact; a handoff is only a UI
  * continuation to native consent, never a login token or permission receipt. */
 export function selectedNativeHandoff(input, value) {

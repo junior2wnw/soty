@@ -16,6 +16,7 @@ import { readStorageFormat } from './storage-probe.mjs';
 import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { createHttpApp } from '../../server/http-app.js';
+import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 
 const origin = 'https://soty.fixture.invalid', issuer = origin + '/human-identity';
 const random = () => randomBytes(32).toString('base64url');
@@ -361,6 +362,38 @@ test('selected Source policy binds private exact file, approved Human redirect a
   // Semantic JSON is unchanged; exact bytes/identity are still privately fenced.
   await writeFile(source, JSON.stringify(selected, null, 2));
   await assert.rejects(assertUniversalPolicyCurrent(restored), failCode('universal_policy_file_changed'));
+});
+
+test('selected HIVE callback follows its exact compiled Native HTTPS pin; embed substitution and unknown pins deny', async t => {
+  const f = await fixture(t), source = path.join(f.root, 'hive-selected.json');
+  const base = selectedConfiguration(f).profiles[0];
+  const profile = { ...base, schema: 'soty.selected-human-embed.v2', sourceProfile: HIVE_SELECTED_SOURCE,
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId: base.appId,
+      resourceId: 'hive:selected', selection: { kind: 'hive.project.v1', nativeId: ' Project / Exact ', incarnationId: 'native-incarnation' } },
+    nativeOrigin: 'https://hive.fixture.invalid' };
+  const plan = { ...f.plan, selected: { source, migrationConfigured: true } };
+  async function configured(value, redirect) {
+    f.human.clients[0].redirectUri = redirect;
+    await writeFile(f.humanSource, JSON.stringify(f.human));
+    await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [value] }), { mode: 0o600 });
+  }
+  const callback = profile.nativeOrigin + '/account/soty/callback';
+  for (const pin of [HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE]) {
+    await configured({ ...profile, sourceProfile: pin }, callback);
+    const handle = await prepared(t, f, plan);
+    assert.equal(publicUniversalPolicy(handle).selected.profileCount, 1);
+  }
+  for (const redirect of [profile.embedOrigin + '/api/embed/callback', profile.nativeOrigin + '/callback', 'https://foreign.fixture.invalid/account/soty/callback']) {
+    await configured(profile, redirect);
+    await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  }
+  await configured({ ...profile, sourceProfile: { ...HIVE_SELECTED_SOURCE, digest: '0'.repeat(64) } }, callback);
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  // A loopback Native rehearsal does not become a production HTTP callback.
+  await configured({ ...profile, nativeOrigin: 'http://127.0.0.1:4317' }, profile.embedOrigin + '/api/embed/callback');
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  await configured({ ...profile, nativeOrigin: 'http://127.0.0.1:4317' }, 'http://127.0.0.1:4317/account/soty/callback');
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_human_invalid'));
 });
 
 test('selected policy rejects foreign/missing Human clients and inherited unapproved registry', async t => {

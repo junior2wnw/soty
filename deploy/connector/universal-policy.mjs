@@ -8,6 +8,7 @@ import { SafeError } from './docker-api.mjs';
 import { storageReaders, storageReaderLabel } from './storage-guard.mjs';
 import { canonicalJson } from '../../modules/capabilities/server/validation.mjs';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
+import { selectedClientRedirect } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
   captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
@@ -252,10 +253,16 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       if (selected.configured) {
         check(human.configured, 'universal_policy_selected_human_required');
         const clients = parse(files.find(value => value.target === humanPrivateTarget).bytes).clients;
-        for (const profile of registry.profiles) check(profile.issuer === human.issuer && context.shellOrigins.includes(profile.parentOrigin)
-          && profile.embedOrigin.startsWith('https:') && approvedNativeTransport(profile.nativeOrigin)
-          && clients.some(client => client.id === profile.clientId && client.redirectUri === profile.embedOrigin + '/api/embed/callback'),
-        'universal_policy_selected_human_required');
+        for (const profile of registry.profiles) {
+          let redirectUri;
+          try { redirectUri = profile.schema === 'soty.selected-human-embed.v1'
+            ? profile.embedOrigin + '/api/embed/callback' : selectedClientRedirect(profile); }
+          catch { fail('universal_policy_selected_human_required'); }
+          check(profile.issuer === human.issuer && context.shellOrigins.includes(profile.parentOrigin)
+            && profile.embedOrigin.startsWith('https:') && approvedNativeTransport(profile.nativeOrigin)
+            && clients.some(client => client.id === profile.clientId && client.redirectUri === redirectUri),
+          'universal_policy_selected_human_required');
+        }
       }
     }
     const environment = [{ name: settings.operator, value: '1' }, ...(plan.phase === 'legacy-baseline' ? [] : [
