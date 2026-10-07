@@ -11,6 +11,7 @@ if(git(['status','--porcelain','--untracked-files=all','--','modules/source-app/
 const nonce=randomBytes(16).toString('hex'),directory=join(root,'output','source-cold-'+nonce);await mkdir(directory);
 const require=createRequire(import.meta.url),esbuild=createRequire(require.resolve('vite'))('esbuild');if(esbuild.version!=='0.27.7')throw Error('source_cold_build_tool_required');
 for(const [input,output] of [['cold-source-fixture.mjs','fixture.mjs'],['cold-extract-fixture.mjs','extract.mjs'],['cold-runner.mjs','runner.mjs'],['cold-guardian.mjs','guardian.mjs'],['cold-entry-fixture.mjs','entry.mjs'],['cold-supervisor.mjs','supervisor.mjs']])await esbuild.build({entryPoints:[join(root,'modules/source-app/install',input)],outfile:join(directory,output),bundle:true,platform:'node',target:output==='supervisor.mjs'?'node18':'node24',format:'esm',logLevel:'silent',
+  define:{__SOTY_SOURCE_COLD_BUNDLE__:'true'},
   plugins:[{name:'exact-source-cold',setup(build){build.onLoad({filter:/\.mjs$/},args=>{const path=relative(root,args.path).replaceAll('\\','/');
     if(path.startsWith('../'))throw Error('source_cold_path_denied');const bytes=git(['show',sourceCommit+':'+path]);files.set(path,sha(bytes));return{contents:bytes.toString('utf8'),loader:'js'};});}}]});
 const manifest={schema:'soty.source-cold-packet.v1',nonce,sourceCommit,fixtureSha256:sha(await readFile(join(directory,'fixture.mjs'))),

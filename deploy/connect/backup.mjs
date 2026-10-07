@@ -79,7 +79,10 @@ export async function backupStoppedContainer({ containerId, publicKeyFile, direc
     return { ...receipt, ok: true, receiptPath: file, sha256: digest.digest('hex') };
   } catch (error) { helper.kill(); await unlink(file).catch(() => {}); throw error; }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+// Only the separately reviewed Source cold fixture bundle sets this compile
+// constant. Direct production CLI/import behavior is unchanged by default.
+const sourceColdBundle = typeof __SOTY_SOURCE_COLD_BUNDLE__ !== 'undefined' && __SOTY_SOURCE_COLD_BUNDLE__ === true;
+if (!sourceColdBundle && process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     const [containerId, publicKeyFile, directory] = process.argv.slice(2);
     console.log(JSON.stringify(await backupStoppedContainer({ containerId, publicKeyFile, directory })));

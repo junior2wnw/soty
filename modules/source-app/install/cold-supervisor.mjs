@@ -8,6 +8,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {createLocalWslHostDockerCommandRunner} from '../server/linux-feedback-lifecycle.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedback-local-placement.mjs';
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
+import {sourceColdLaunchDiagnostic} from './cold-launch-diagnostic.mjs';
 const commands=createLocalWslHostDockerCommandRunner(placement.dockerHostBinary),sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const check=value=>{if(!value)throw Error('source_cold_supervisor_refused');};
 // Docker's JSON objects may have different key insertion order. Array order,
@@ -31,7 +32,7 @@ export function assertSourceColdSupervisor(actual,spec){
 }
 async function inspect(id){return JSON.parse(await commands.run(['inspect',id],{limit:65536}));}
 export async function launchSourceColdSupervisor(path){
-  let item,attach,passed=false,cleanupUnknown=false,phase='preflight',sourceResult;
+  let item,attach,passed=false,cleanupUnknown=false,phase='preflight',sourceResult,failure,launchDiagnostic;
   try{
     check(process.platform==='linux'&&process.getuid()===1000&&resolve(path)===path);const directory=dirname(path),stat=await lstat(path);
     check(stat.isFile()&&!stat.isSymbolicLink()&&stat.uid===1000&&(stat.mode&0o777)===0o600&&stat.size<=8192&&await realpath(path)===path);
@@ -45,6 +46,9 @@ export async function launchSourceColdSupervisor(path){
     const socket=await lstat(placement.socketHost);check(socket.isSocket()&&!socket.isSymbolicLink()&&socket.gid===1001&&(socket.mode&0o777)===0o660&&await realpath(placement.socketHost)===placement.socketHost);
     const base=JSON.parse(await commands.run(['image','inspect',profile.supervisorImage],{limit:65536}))[0];check(base.Id===profile.supervisorImage);
     const stub=directory+'/lab-parent';await mkdir(stub,{mode:0o700});
+    // The read-only parent bind needs this one public empty nested target
+    // before OCI overlays the exact reviewed packet bind. No whole LAB mount.
+    await mkdir(stub+'/source-cold-'+config.nonce,{mode:0o700});
     item={nonce:config.nonce,name:'codex-soty-source-cold-supervisor-'+config.nonce,directory,expectedEnv:base.Config.Env.slice(),argv:[directory+'/guardian.mjs',path],id:null,
       tmpfs:{'/tmp':'rw,nosuid,nodev,noexec,size=268435456,uid=1000,gid=1000,mode=700','/data':'rw,nosuid,nodev,noexec,size=1048576,uid=1000,gid=1000,mode=700'},
       mounts:[{source:stub,target:placement.lab,rw:false},{source:directory,target:directory,rw:true},{source:placement.dockerHostBinary,target:profile.dockerBinary,rw:false},{source:placement.socketHost,target:profile.socket,rw:false}]};
@@ -56,12 +60,15 @@ export async function launchSourceColdSupervisor(path){
     phase='run';attach=commands.start(['start','--attach',item.id],{timeout:180000,limit:65536,collectExitOneReceipt:true});
     sourceResult=JSON.parse(await attach.result);const stopped=assertSourceColdSupervisor(await inspect(item.id),item);check(stopped.State.Status==='exited'&&!stopped.State.OOMKilled&&stopped.State.ExitCode===0);
     passed=sourceResult.schema==='soty.source-cold-receipt.v1'&&sourceResult.passed===true&&sourceResult.cleanupUnknown===false;
-  }catch{passed=false;}
-  finally{if(item)try{const c=assertSourceColdSupervisor(await inspect(item.id??item.name),item);item.id=c.Id;if(c.State.Running)await commands.run(['kill','--signal','SIGKILL',c.Id]);
+  }catch(error){passed=false;failure=error;}
+  finally{if(item)try{const c=assertSourceColdSupervisor(await inspect(item.id??item.name),item);item.id=c.Id;
+    launchDiagnostic=sourceColdLaunchDiagnostic(failure,c.State);
+    if(c.State.Running)await commands.run(['kill','--signal','SIGKILL',c.Id]);
     await attach?.stopAndWait();const final=assertSourceColdSupervisor(await inspect(c.Id),item);check(!final.State.Running);await commands.run(['rm',c.Id]);
     check(await commands.run(['container','ls','--all','--no-trunc','--filter','id='+c.Id,'--format','{{.ID}}'],{limit:128})==='');
   }catch{cleanupUnknown=true;try{await attach?.stopAndWait();}catch{}}}
   return{schema:'soty.source-cold-supervisor-receipt.v1',passed:passed&&!cleanupUnknown,phase,cleanupUnknown,
+    launchDiagnostic:launchDiagnostic??sourceColdLaunchDiagnostic(failure),
     ...(sourceResult?{sourcePassed:sourceResult.passed===true,sourceCleanupUnknown:sourceResult.cleanupUnknown===true,sourcePhase:['seed','archive','dry_inspect','restore','compare','entry','negatives'].includes(sourceResult.phase)?sourceResult.phase:'unknown'}:{}),
     authenticationProved:false,models:false,productionReady:false};
 }
