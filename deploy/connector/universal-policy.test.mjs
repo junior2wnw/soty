@@ -375,6 +375,21 @@ test('selected policy rejects foreign/missing Human clients and inherited unappr
   assert.throws(() => applyUniversalPolicy(inherited, handle), failCode('universal_policy_preexisting_configuration'));
 });
 
+test('reviewed installed Native consent permits explicit loopback ports and rejects external HTTP', async t => {
+  const f = await fixture(t); f.human.clients[0].redirectUri = 'https://alpha.fixture.invalid/api/embed/callback';
+  await writeFile(f.humanSource, JSON.stringify(f.human));
+  const registry = selectedConfiguration(f), source = path.join(f.root, 'local-native.json');
+  const plan = { ...f.plan, selected: { source, migrationConfigured: true } };
+  for (const nativeOrigin of ['http://localhost:43123', 'http://127.0.0.1:43123', 'http://[::1]:43123']) {
+    registry.profiles[0].nativeOrigin = nativeOrigin; await writeFile(source, JSON.stringify(registry), { mode: 0o600 });
+    const handle = await prepared(t, f, plan); assert.equal(publicUniversalPolicy(handle).selected.profileCount, 1);
+  }
+  registry.profiles[0].nativeOrigin = 'http://localhost:81'; await writeFile(source, JSON.stringify(registry));
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_invalid'));
+  registry.profiles[0].nativeOrigin = 'http://native.fixture.invalid:43123'; await writeFile(source, JSON.stringify(registry));
+  await assert.rejects(prepareUniversalPolicy(plan, f.options));
+});
+
 test('empty migration-only registry measures actual factory schema7 and feature-off factory never migrates', async t => {
   const f = await fixture(t), source = path.join(f.root, 'selected-empty.json');
   await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [] }), { mode: 0o600 });

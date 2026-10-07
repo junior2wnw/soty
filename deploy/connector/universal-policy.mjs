@@ -211,6 +211,12 @@ function validateReviews(value) {
     return { configurationDigest: digest(value), providerCount: value.providers.length, bindingCount: value.bindings.length };
   } catch { fail('universal_policy_reviews_invalid'); } finally { service?.close(); }
 }
+function approvedNativeTransport(value) {
+  const url = new URL(value);
+  return url.protocol === 'https:' || url.protocol === 'http:'
+    && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    && /^\d{4,5}$/u.test(url.port) && Number(url.port) >= 1024 && Number(url.port) <= 65535;
+}
 
 /** Trusted local operator input only. Secret witnesses remain private, process-local
  * and disposable; a JSON receipt cannot reconstruct or authorize this handle. */
@@ -247,7 +253,7 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
         check(human.configured, 'universal_policy_selected_human_required');
         const clients = parse(files.find(value => value.target === humanPrivateTarget).bytes).clients;
         for (const profile of registry.profiles) check(profile.issuer === human.issuer && context.shellOrigins.includes(profile.parentOrigin)
-          && profile.embedOrigin.startsWith('https:') && profile.nativeOrigin.startsWith('https:')
+          && profile.embedOrigin.startsWith('https:') && approvedNativeTransport(profile.nativeOrigin)
           && clients.some(client => client.id === profile.clientId && client.redirectUri === profile.embedOrigin + '/api/embed/callback'),
         'universal_policy_selected_human_required');
       }

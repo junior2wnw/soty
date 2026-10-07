@@ -7,8 +7,11 @@ Universal rollout policy v1 принимает необязательный оп
 HTTP body и browser origin не создают эту конфигурацию.
 
 Непустой registry требует действующий Human issuer, exact registered client и
-exact redirect `embedOrigin/api/embed/callback`; все Source origins должны быть
-HTTPS. Profile namespace/target/resource/connector pins проходят прежний закрытый
+exact redirect `embedOrigin/api/embed/callback`; Root/embed/issuer должны быть
+HTTPS. Native consent использует HTTPS либо explicit loopback origin
+localhost/127.0.0.1/[::1] с фиксированным портом1024..65535 из того же reviewed
+installed profile. External HTTP, автоматическое DNS получение и пользовательские
+destination URLs не допускаются. Profile namespace/target/resource/connector pins проходят прежний закрытый
 validator. Это статический review, без сетевого probe/DNS ownership или разрешения
 читать Source project. Source выполняет свой native auth/ACL независимо.
 
@@ -30,9 +33,10 @@ Loader передаёт explicit presence registry, включая empty registr
 подавляют новые profiles/migration в factory; совместимый baseline читает schema7,
 но не включает новый shared access от случайно переданного feature option.
 
-Проверка на Windows: targeted33tests/32PASS/1explicit file-symlink privilege skip,
+Проверка на Windows: targeted34tests/33PASS/1explicit file-symlink privilege skip,
 а combined rollout/runtime103tests/102PASS/1тот же skip. Включены exact private file,
 encrypted witness/replacement, foreign/missing RP client denial, inherited registry
 denial, candidate/baseline reader6 denial, actual factory migration7 и feature-off
-factory schema6, explicit empty registry0. CLI/Linus image gates выполняются отдельно;
+factory schema6, explicit empty registry0 и loopback Native transport. Отдельные
+CLI/rollout/Docker API tests18/18PASS. Linux image gates выполняются отдельно;
 эти counts не заменяют actual new-image release.
