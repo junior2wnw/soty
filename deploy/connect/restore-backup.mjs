@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
+import { types } from 'node:util';
 import { readEncryptedBackup, readEncryptedPass, createRestoreParser, createOrdinaryNativeRestoreSpecialization, formatFailure, formatFailureCode } from './backup-format.mjs';
 import { captureRestoreTarget, openRestoreSink } from './restore-sink.mjs';
 
@@ -300,6 +301,17 @@ class OwnedOutput {
     }
     if (this.failure) throw this.failure;
   }
+  async beforeBody(boundary, authenticated) {
+    this.check();
+    let settled = false, rejected = false;
+    const fence = Object.freeze({ check: () => this.check(), authenticated });
+    const pending = Promise.resolve().then(() => { this.check(); return boundary(fence); });
+    pending.then(() => { settled = true; this.wake(); }, () => { rejected = true; settled = true; this.wake(); });
+    while (!settled && !this.failure) await new Promise(resolve => { this.waiter = resolve; });
+    this.check();
+    if (rejected) throw formatFailure('restore_io_failed');
+    // A readiness ACK is not byte progress and cannot extend either deadline.
+  }
   async write(chunk) {
     this.check();
     if (!Buffer.isBuffer(chunk) || chunk.length > CHUNK || this.operation) throw formatFailure('restore_limit_exceeded');
@@ -364,7 +376,7 @@ async function unchangedSource(handle, expected, check) {
   } finally { extra.fill(0); }
 }
 
-async function sendBackup(value, specialization = null) {
+async function sendBackup(value, specialization = null, beforeBody = null) {
   let owner, handle, receipt, failure, failed = false;
   const closeFile = async () => {
     if (!handle) return;
@@ -386,6 +398,11 @@ async function sendBackup(value, specialization = null) {
     const passOptions = { handle, privateKeyPem: options.privateKeyPem, restore };
     const first = await readEncryptedPass(passOptions, null, specialization);
     await unchangedSource(handle, before, check);
+    if (beforeBody !== null) {
+      await owner.beforeBody(beforeBody, Object.freeze({ expectedSha256: first.receipt.sha256,
+        expectedManifestSha256: options.expectedManifestSha256, sourceWitness: options.sourceWitness }));
+      await unchangedSource(handle, before, check);
+    }
     const second = await readEncryptedPass(passOptions, owner, specialization);
     await unchangedSource(handle, before, check);
     if (second.receipt.sha256 !== first.receipt.sha256 || second.plaintextSha256 !== first.plaintextSha256
@@ -409,6 +426,20 @@ async function sendBackup(value, specialization = null) {
   return Object.freeze(receipt);
 }
 export const sendAuthenticatedBackup = value => sendBackup(value);
+
+/** Private host composition only. The existing sender's closed options remain
+ * unchanged; HTTP/author JSON cannot install a callback. The hook receives only
+ * the completed authentication pins and a deadline/cancellation fence. It grants
+ * no engine, Native role, current source lease or proof of serving STOP. */
+export function createStagedAuthenticatedBackupSender(options) {
+  if (types.isProxy(options) || !options || typeof options !== 'object'
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) throw formatFailure();
+  const fields = Object.getOwnPropertyDescriptors(options), entry = fields.beforeBody;
+  if (Reflect.ownKeys(fields).length !== 1 || !entry || !entry.enumerable || !Object.hasOwn(entry, 'value')
+      || typeof entry.value !== 'function' || types.isProxy(entry.value)) throw formatFailure();
+  const beforeBody = entry.value;
+  return Object.freeze({ send: value => sendBackup(value, null, beforeBody) });
+}
 
 /** Separately named Source helper-only factory. The realm comes from trusted
  * Source configuration, never archive/body/author metadata. Fixed Native3
