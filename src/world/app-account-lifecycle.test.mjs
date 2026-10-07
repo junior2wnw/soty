@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
+import * as appBootRecovery from './app-boot-recovery.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
@@ -29,12 +30,16 @@ const deferred = () => { let resolve, reject; const promise = new Promise((yes, 
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const failure = code => Object.assign(new Error(code), { code });
 class ElementPort {
+  parent = null;
+  handlers = new Map();
   children = []; open = true; isConnected = true; textContent = ''; changes = 0; dataset = {}; tagName = ''; className = '';
+  attributes = new Map();
   classList = { add() {}, remove() {}, toggle() {} };
-  append(...nodes) { this.children.push(...nodes); this.changes++; }
+  append(...nodes) { for (const node of nodes) if (node instanceof ElementPort) node.parent = this; this.children.push(...nodes); this.changes++; }
   prepend(...nodes) { this.children.unshift(...nodes); this.changes++; }
   insertBefore(node, target) { const index = this.children.indexOf(target); if (index < 0) this.append(node); else this.children.splice(index, 0, node); }
-  replaceChildren(...nodes) { this.children = nodes; this.changes++; }
+  replaceChildren(...nodes) { for (const node of this.children) if (node instanceof ElementPort) node.parent = null; this.children = []; this.append(...nodes); }
+  after(...nodes) { if (!this.parent) return; const index = this.parent.children.indexOf(this); for (const node of nodes) if (node instanceof ElementPort) node.parent = this.parent; this.parent.children.splice(index + 1, 0, ...nodes); }
   querySelector(selector) {
     for (const child of this.children) {
       if (!(child instanceof ElementPort)) continue;
@@ -44,29 +49,38 @@ class ElementPort {
     return null;
   }
   listeners = new Map();
-  addEventListener(name, callback) { this.listeners.set(name, callback); }
-  reportValidity() { return true; }
-  setAttribute() {}
-  removeAttribute() {}
+  reportValidity(){return true;}
+  addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, new Set()); this.handlers.get(type).add(fn);this.listeners.set(type,fn); }
+  removeEventListener(type, fn) { this.handlers.get(type)?.delete(fn); }
+  emit(type) { for (const fn of [...this.handlers.get(type) || []]) fn(); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
   contains(node) { return node === this || this.children.some(child => child instanceof ElementPort && child.contains(node)); }
   focus() {}
-  remove() { this.isConnected = false; }
+  remove() { this.isConnected = false; if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); this.parent = null; }
 }
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
-  const view = Object.assign(new EventTarget(), { location, Node: ElementPort, navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
+  const timers = new Map(); let timerId = 0;
+  const view = Object.assign(new EventTarget(), { location, Node: ElementPort, crypto, btoa,
+    setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
+    navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   const discussionCalls = { refresh: 0 };
-  const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '' });
+  const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
+    ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
+  const makeButton = (label, _icon, className, callback) => { const value = makeElement('button', className, label); if (callback) value.addEventListener('click', callback); return value; };
   const ports = {
-    './dom': { el: makeElement, button: label => makeElement('button', '', label), iconButton: label => makeElement('button', '', label), emptyState: label => makeElement('div', '', label),
+    './dom': { el: makeElement, button:makeButton,iconButton:(label,icon,callback)=>makeButton(label,icon,'',callback), emptyState: label => makeElement('div', '', label),
       textInput: (value = '', placeholder = '') => Object.assign(makeElement('input'), { value, placeholder }),
       labeledField: (label, control) => { const element = makeElement('label', '', label); element.append(control); return element; } },
     './dialogs': { errorText: error => error.code ?? 'failure' },
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
+    './app-boot-recovery.mjs': appBootRecovery,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
@@ -133,7 +147,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
+  return { app, Controller, view, timers, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
 
 test('actual app onboarding cannot paint a delayed device list after A switches to B', async () => {
@@ -159,6 +173,45 @@ test('actual app onboarding pins A at dispatch and ignores a late success after 
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
   pending.resolve({ app: { id: 'synthetic-accepted-A' } }); await turn();
   assert.equal(f.app.lastToast, undefined); assert.equal(f.personalFrames.length, 0); assert.equal(dialog.element.open, false);
+});
+
+test('first local identity keeps a visible status while the real profile request is pending', async () => {
+  const f = fixture({ initial: '' }), pending = deferred(), original = f.app.api.request;
+  f.setLocal('account-A');
+  f.app.renderCurrent = () => f.app.main.replaceChildren(new ElementPort());
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(); await turn();
+  assert.equal(f.app.deskAccount, 'account-A'); assert.equal(f.app.profile, null);
+  const status = f.app.main.children[0];
+  assert.equal(status.getAttribute('role'), 'status'); assert.equal(status.getAttribute('aria-live'), 'polite');
+  assert.equal(status.children[0].textContent, 'Проверяем аккаунт');
+  assert.equal(f.app.apps.length, 0); assert.equal(f.app.results.people.length, 0);
+  pending.resolve({ profile: { profileId: 'account-A', displayName: 'verified-A' } }); await refreshing;
+  assert.equal(f.app.profile.profileId, 'account-A'); assert.equal(f.app.main.contains(status), false);
+});
+
+test('pending account switch clears private content and stale reply cannot restore it', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request;
+  f.setLocal('account-B');
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(true); await turn();
+  assert.equal(f.app.profile, null); assert.equal(f.app.apps.length, 0); assert.equal(f.app.communities.length, 0);
+  assert.equal(f.app.main.children[0].children[0].textContent, 'Проверяем аккаунт');
+  f.setLocal('account-C');
+  pending.resolve({ profile: { profileId: 'account-B', displayName: 'private-B' } }); await refreshing;
+  assert.equal(f.app.profile, null); assert.equal(f.app.apps.length, 0);
+  assert.equal(f.app.main.children[0].textContent, 'Соты ждут вас');
+});
+
+test('same-account pending refresh retains the live application without inserting a boot status', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request, screen = new ElementPort();
+  const dialog = f.app.dialog(); let disposed = 0;
+  f.app.appSettingsDialog = dialog; f.app.appStage = { dispose() { disposed++; } }; f.app.main.append(screen);
+  f.app.api.request = (op, args) => op === 'world.profile.get' ? pending.promise : original(op, args);
+  const refreshing = f.app.refresh(); await turn();
+  assert.equal(f.app.main.children[0], screen); assert.equal(disposed, 0);
+  pending.resolve({ profile: { profileId: 'account-A', displayName: 'verified-A' } }); await refreshing;
+  assert.equal(f.app.main.children[0], screen); assert.equal(disposed, 0); assert.equal(dialog.element.open, true);
 });
 
 test('actual refresh A → offline B → online B clears every private cache before B metadata is available', async () => {
@@ -255,6 +308,81 @@ test('same-account settings refresh retains the running app and existing window'
 const stageAppId = `app-${'c'.repeat(32)}`, stageDomainId = `dom_${'d'.repeat(32)}`;
 const stageResponse = path => ({ url: `https://runtime.example/_soty/boot?${new URLSearchParams({ path })}#${'e'.repeat(43)}`,
   entry: { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path } });
+const stageBinding = { schema: 'soty.app-launch-binding.v1', policyEpoch: 1, targetRevision: 1,
+  targetDigest: 'b'.repeat(64), profile: 'soty.relay-restricted.v1', bindingFloor: 1 };
+function bootHint(f, frame) {
+  frame.emit('load'); const sent = frame.contentWindow.sent.at(-1); assert.ok(sent);
+  assert.equal(sent.origin, 'https://runtime.example');
+  const data = { schema: 'soty.app-boot-failure.v1', appId: stageAppId, nonce: sent.data.nonce, error: 'app_session_check_failed' };
+  return () => f.view.dispatchEvent(Object.assign(new Event('message'), { data, source: frame.contentWindow, origin: 'https://runtime.example', ports: [] }));
+}
+async function recoveryStage(request) {
+  const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' });
+  const f = fixture({ hash: '#' + route }); f.app.options.openApp = request;
+  await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
+  return f;
+}
+
+test('actual stage uses one fresh launch per original open and offers a manual action after a repeated untrusted hint', async () => {
+  const calls = [], f = await recoveryStage(async (_app, args) => { calls.push(args); return { ...stageResponse('/'), launchBinding: stageBinding }; });
+  const first = f.app.main.querySelector('iframe'), emit = bootHint(f, first); emit(); emit(); await turn();
+  const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A' });
+  bootHint(f, second)(); await turn(); assert.equal(calls.length, 2);
+  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /Откройте приложение заново/u);
+  f.app.cleanScreen(); assert.equal(f.timers.size, 0);
+});
+
+test('actual controller account ABA during recovery cannot mount or display a late former-account response', async () => {
+  const pending = deferred(); let calls = 0;
+  const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
+  const first = f.app.main.querySelector('iframe'); bootHint(f, first)(); await turn(); assert.equal(calls, 2);
+  f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
+  pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn();
+  assert.equal(f.app.appStage, null); assert.equal(f.app.main.querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0);
+  assert.equal(f.timers.size, 0);
+});
+
+test('actual route Back during recovery disposes the watcher and never replaces the new screen', async () => {
+  const pending = deferred(); let calls = 0;
+  const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
+  bootHint(f, f.app.main.querySelector('iframe'))(); await turn();
+  f.location.hash = '#mine'; f.app.cleanScreen(); pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn();
+  assert.equal(f.app.main.querySelector('iframe'), null); assert.equal(f.app.main.children.length, 0); assert.equal(calls, 2);
+});
+
+test('observed grant removal and same-ID reactivation cancel an in-flight recovery without reviving its nonce', async () => {
+  const pending = deferred(); let calls = 0;
+  const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
+  const stage = f.app.appStage, original = f.app.main.querySelector('iframe');
+  const granted = { appId: stageAppId, name: 'Editor', grants: { accountIds: ['account-A'], communityIds: [] } };
+  stage.updateApp(granted); const emit = bootHint(f, original); emit(); await turn();
+  stage.updateApp({ ...granted, grants: { accountIds: [], communityIds: [] } }); stage.updateApp(granted);
+  pending.resolve({ ...stageResponse('/'), launchBinding: stageBinding }); await turn(); emit(); await turn();
+  assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2); f.app.cleanScreen();
+});
+
+test('actual stage rejects source drift and lost ACK with a clear manual recovery action', async () => {
+  for (const mode of ['source-drift', 'lost-ack']) {
+    let calls = 0;
+    const f = await recoveryStage(async () => {
+      if (++calls === 1) return { ...stageResponse('/'), launchBinding: stageBinding };
+      if (mode === 'lost-ack') throw failure('NETWORK_TIMEOUT');
+      return { ...stageResponse('/'), launchBinding: { ...stageBinding, policyEpoch: 2 } };
+    });
+    const original = f.app.main.querySelector('iframe'); bootHint(f, original)(); await turn();
+    assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2);
+    assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+    assert.equal(f.app.main.querySelector('.sa-message').hidden, false); f.app.cleanScreen();
+  }
+});
+
+test('legacy launch response mounts its runtime without requiring new metadata or a recovery message channel', async () => {
+  let calls = 0; const f = await recoveryStage(async () => { calls++; return stageResponse('/'); });
+  const original = f.app.main.querySelector('iframe'); original.emit('load'); await turn();
+  assert.equal(original.contentWindow.sent.length, 0); assert.equal(calls, 1); assert.equal(f.timers.size, 0); f.app.cleanScreen();
+});
 
 test('actual stage preserves a discussion through initial metadata and rename, but refreshes changed access', async () => {
   const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' }, undefined, { panel: 'discussion' });

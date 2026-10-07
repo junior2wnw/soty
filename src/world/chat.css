@@ -138,10 +138,12 @@
 .sw-app[data-motion=off] .sw-composer>[data-state=sending] .sw-icon { animation: none; }
 
 @media (pointer:coarse) {
-  .sw-app .sw-message-actions { width: 30px; height: 44px; min-height: 44px; opacity: .6; }
+  .sw-app .sw-message-actions { width: 44px; height: 44px; min-height: 44px; opacity: .6; }
+  .sw-app .sw-chat-jump { width: 44px; height: 44px; min-height: 44px; }
   .sw-app .sw-chat-menu-item { min-height: 44px; }
   .sw-app .sw-chat-header>.sw-icon-button { min-height: 44px; height: 44px; }
   .sw-app .sw-composer>.sw-button { min-height: 44px; height: 44px; width: 44px; }
+  .sw-app .sw-composer-reply>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; }
 }
 
 @media (max-width:1100px) and (min-width:721px) {
@@ -204,9 +206,16 @@
   .sw-app .sw-composer>.sw-button { width: 44px; height: 44px; min-height: 44px; }
   .sw-app .sw-chat-header>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; padding: 10px; }
   .sw-app .sw-chat-search { grid-template-columns: 18px minmax(60px,1fr) 44px 44px 44px; }
+  .sw-app .sw-chat-search>.sw-icon { grid-column: 1; grid-row: 1; }
+  .sw-app .sw-chat-search>input { grid-column: 2; grid-row: 1; }
+  .sw-app .sw-chat-search>.sw-icon-button:nth-last-child(3) { grid-column: 3; }
+  .sw-app .sw-chat-search>.sw-icon-button:nth-last-child(2) { grid-column: 4; }
+  .sw-app .sw-chat-search>.sw-icon-button:last-child { grid-column: 5; }
   .sw-app .sw-chat-search .sw-icon-button { width: 44px; height: 44px; min-height: 44px; }
-  .sw-app .sw-message-actions { width: 30px; height: 44px; min-height: 44px; padding: 6px; opacity: 1; }
+  .sw-app .sw-message-actions { width: 44px; height: 44px; min-height: 44px; padding: 6px; opacity: 1; }
   .sw-app .sw-message-actions>.sw-icon { width: 13px; height: 13px; }
+  .sw-app .sw-chat-jump { width: 44px; height: 44px; min-height: 44px; }
+  .sw-app .sw-composer-reply>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; }
 }
 
 @media (max-width:720px) {
@@ -225,4 +234,25 @@
 @media (max-width:359px) {
   html[data-soty-short-viewport=true] .sw-inbox-discover>span { display: none; }
   html[data-soty-short-viewport=true] .sw-app .sw-inbox-discover { width: 44px; justify-content: center; }
+}
+
+@media (max-width:1100px) {
+  html[data-soty-short-viewport=true] .sw-app .sw-chat:has(.sw-chat-search:not([hidden])) .sw-chat-jump { display: none; }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-header { padding-block: 6px; min-height: 57px; }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-search { padding-block: 5px; }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-messages { padding-block: 6px; }
+  html[data-soty-short-viewport=true] .sw-app .sw-composer-dock { padding-top: 6px; padding-bottom: max(6px,env(safe-area-inset-bottom)); }
+  html[data-soty-short-viewport=true] .sw-app .sw-composer-reply { padding-block: 4px; }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-error { padding-bottom: 4px; }
+  html[data-soty-short-viewport=true] .sw-app .sw-composer>textarea { max-height: calc(var(--soty-visible-height,100dvh) * .2); overflow-y: auto; }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat:has(.sw-chat-search:not([hidden])):has(.sw-composer-reply:not([hidden])) .sw-composer>textarea { max-height: calc(var(--soty-visible-height,100dvh) * .1); }
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-header>.sw-icon-button,
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-search .sw-icon-button,
+  html[data-soty-short-viewport=true] .sw-app .sw-message-actions,
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-jump,
+  html[data-soty-short-viewport=true] .sw-app .sw-composer>.sw-button,
+  html[data-soty-short-viewport=true] .sw-app .sw-composer-reply>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; }
+}
+@media (min-width:721px) and (max-width:1100px) {
+  html[data-soty-short-viewport=true] .sw-app .sw-chat-search { grid-template-columns: 18px minmax(60px,1fr) auto 44px 44px 44px; }
 }

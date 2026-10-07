@@ -331,13 +331,59 @@ async function marker(f, name) {
   return JSON.parse(readFileSync(join(f.directory, name), 'utf8'));
 }
 
+function savedShape(f) {
+  return f.sql(db => ({
+    heads: db.prepare('SELECT count(*) AS n FROM app_saved_heads').get().n,
+    entries: db.prepare('SELECT count(*) AS n FROM app_saved_entries').get().n,
+    receipts: db.prepare('SELECT count(*) AS n FROM app_saved_receipts').get().n,
+    revisions: db.prepare('SELECT revision FROM app_saved_heads ORDER BY account_id').all().map(row => row.revision),
+  }));
+}
+
 test('D1 two real processes racing different apps with one account revision admit exactly one desired state', { timeout: 15000 }, async t => {
   const f = await environment(t), a = await f.app(), b = await f.app();
-  const first = writer(f, 'a', reader, f.saveArgs(a.id)), second = writer(f, 'b', readerPhone, f.saveArgs(b.id));
+  // Capture each desired intent once. A known pre-commit busy response is
+  // retryable, but never means the stale desired state passed the CAS.
+  const args = [f.saveArgs(a.id), f.saveArgs(b.id)], actors = [reader, readerPhone];
+  const original = JSON.stringify(args);
+  const first = writer(f, 'a', actors[0], args[0]), second = writer(f, 'b', actors[1], args[1]);
   await Promise.all([marker(f, 'ready-a'), marker(f, 'ready-b')]); writeFileSync(join(f.directory, 'start-writers'), 'go');
   const outcomes = await Promise.all([marker(f, 'done-a'), marker(f, 'done-b')]);
   assert.equal(outcomes.filter(value => value.value).length, 1);
-  assert.equal(outcomes.find(value => value.error)?.error.code, 'apps_saved_revision_conflict');
+  assert.equal(outcomes.filter(value => value.error).length, 1);
   assert.equal((await first.finished).status, 0); assert.equal((await second.finished).status, 0);
+  f.reopen(); assert.deepEqual(savedShape(f), { heads: 1, entries: 1, receipts: 1, revisions: [1] });
+  const loser = outcomes.findIndex(value => value.error);
+  let denied = outcomes[loser];
+  if (denied.error.code === 'world_authority_busy') {
+    // Both original writers have settled before a fresh real process retries
+    // exactly the losing actor/body/requestId/expectedRevision, without a new
+    // intent or a wider authority-fence deadline.
+    const retry = writer(f, 'retry', actors[loser], args[loser]);
+    await marker(f, 'ready-retry'); denied = await marker(f, 'done-retry');
+    assert.equal((await retry.finished).status, 0);
+  }
+  assert.equal(JSON.stringify(args), original);
+  assert.equal(denied.error?.code, 'apps_saved_revision_conflict');
   f.reopen(); assert.equal(f.list().revision, 1); assert.equal(f.list().entries.length, 1);
+  assert.deepEqual(savedShape(f), { heads: 1, entries: 1, receipts: 1, revisions: [1] });
+});
+
+for (const heldFile of ['world', 'apps']) test('D1 known ' + heldFile + ' contention leaves no effect and the same stale intent still conflicts in a fresh process', { timeout: 15000 }, async t => {
+  const f = await environment(t), a = await f.app(), b = await f.app();
+  const winner = f.saveArgs(a.id), loser = f.saveArgs(b.id), original = JSON.stringify(loser);
+  const holder = new DatabaseSync(heldFile === 'world' ? f.worldPath : f.databasePath);
+  holder.exec('BEGIN IMMEDIATE');
+  try { assert.throws(() => f.call('apps.saved.set', loser, readerPhone), code(heldFile === 'world' ? 'world_authority_busy' : 'apps_saved_busy')); }
+  finally { holder.exec('ROLLBACK'); holder.close(); }
+  assert.deepEqual(savedShape(f), { heads: 0, entries: 0, receipts: 0, revisions: [] });
+  assert.equal(f.call('apps.saved.set', winner, reader).current.revision, 1);
+  assert.deepEqual(savedShape(f), { heads: 1, entries: 1, receipts: 1, revisions: [1] });
+  const retry = writer(f, 'retry', readerPhone, loser);
+  await marker(f, 'ready-retry'); writeFileSync(join(f.directory, 'start-writers'), 'go');
+  const denied = await marker(f, 'done-retry');
+  assert.equal((await retry.finished).status, 0);
+  assert.equal(JSON.stringify(loser), original);
+  assert.equal(denied.error?.code, 'apps_saved_revision_conflict');
+  f.reopen(); assert.deepEqual(savedShape(f), { heads: 1, entries: 1, receipts: 1, revisions: [1] });
 });

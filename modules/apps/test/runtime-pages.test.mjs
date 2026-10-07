@@ -14,7 +14,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function browser(markup, { framed = false, hash = '#' + ticket, responses = [], cleanThrows = false } = {}) {
   const scripts = [...markup.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gu)];
   assert.equal(scripts.length, 1);
-  const elements = new Map(), calls = [], events = [], navigations = [], listeners = new Map(), timers = new Map();
+  const elements = new Map(), calls = [], events = [], navigations = [], listeners = new Map(), timers = new Map(), parentMessages = [];
   let timerId = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, { hidden: true, disabled: false, textContent: '', dataset: {}, attributes: new Map(), handlers: new Map(),
@@ -28,6 +28,7 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
     replace(path) { events.push(['navigate', path]); navigations.push(path); } };
   const window = { addEventListener(type, callback) { listeners.set(type, callback); } };
   window.self = window; window.top = framed ? {} : window;
+  const parent = { postMessage(data, origin) { parentMessages.push({ data: structuredClone(data), origin }); } }; window.parent = framed ? parent : window;
   const context = { window, location, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController,
     history: { replaceState(_state, _title, path) { events.push(['cleanup', path]); if (cleanThrows) throw new Error('blocked history'); location.hash = ''; } },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
@@ -41,7 +42,7 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
     },
   };
   vm.runInNewContext(scripts[0][1], context, { timeout: 1000 });
-  return { context, element, calls, events, navigations, timers,
+  return { context, element, calls, events, navigations, timers, parent, parentMessages,
     click: id => element(id).handlers.get('click')?.(),
     emit: (type, event = {}) => listeners.get(type)?.(event),
     expire: () => { for (const value of [...timers.values()]) value.callback(); },
@@ -63,6 +64,41 @@ test('renderers use shared graphite palette and regular rounded hex geometry, wi
   assert.match(page, /role="status" aria-live="polite"/u);
   assert.equal((page.match(/<script\b/gu) || []).length, 1); assert.ok(page.includes(`<script nonce="${nonce}">`));
   assert.doesNotMatch(page, /<script[^>]+src=|<link[^>]+href=|<img[^>]+src=/u);
+});
+
+test('only the recognized cookie-check failure sends one nonce-bound non-authoritative retry hint, before or after watch handshake', async () => {
+  const appId='app-'+ 'a'.repeat(32), watch={schema:'soty.app-boot-watch.v1',appId,nonce:'n'.repeat(43)};
+  for(const early of [true,false]){
+    const env=browser(renderBootPage({shellUrl}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck}),response({ok:false,error:'app_session_check_failed'},false)]});
+    const handshake=()=>env.emit('message',{data:watch,origin:'https://soty.example',source:env.parent,ports:[]});
+    if(early)handshake();await flush();if(!early)handshake();await flush();
+    assert.deepEqual(env.parentMessages,[{origin:'https://soty.example',data:{schema:'soty.app-boot-failure.v1',appId,nonce:watch.nonce,error:'app_session_check_failed'}}]);
+    handshake();assert.equal(env.parentMessages.length,1);assert.equal(env.calls.length,2);assert.deepEqual(env.navigations,[]);
+  }
+});
+
+test('wrong parent/origin/nonce/selectors and every other admission/check error cannot cause automatic recovery hints', async () => {
+  const watch={schema:'soty.app-boot-watch.v1',appId:'app-'+ 'a'.repeat(32),nonce:'n'.repeat(43)};
+  const env=browser(renderBootPage({shellUrl}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck}),response({ok:false,error:'app_session_check_failed'},false)]});await flush();
+  for(const event of [{data:watch,origin:'https://evil.example',source:env.parent},
+    {data:watch,origin:'https://soty.example',source:{}},{data:{...watch,accountId:'caller'},origin:'https://soty.example',source:env.parent},
+    {data:{...watch,nonce:'bad'},origin:'https://soty.example',source:env.parent}])env.emit('message',event);
+  assert.equal(env.parentMessages.length,0);
+  for(const error of ['apps_access_denied','app_access_changed','app_access_expired','app_ticket_invalid','private_internal_error']){
+    const child=browser(renderBootPage({shellUrl}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck}),response({ok:false,error},false)]});
+    child.emit('message',{data:watch,origin:'https://soty.example',source:child.parent,ports:[]});await flush();assert.equal(child.parentMessages.length,0);
+  }
+});
+
+test('pagehide/history restoration cannot revive a failure hint or reuse its cleared ticket', async()=>{
+  const env=browser(renderBootPage({shellUrl}),{framed:true,responses:[response({ok:true,entryPath:'/',sessionCheck}),response({ok:false,error:'app_session_check_failed'},false)]});await flush();env.emit('pagehide');env.emit('pageshow',{persisted:true});
+  env.emit('message',{data:{schema:'soty.app-boot-watch.v1',appId:'app-'+ 'a'.repeat(32),nonce:'n'.repeat(43)},origin:'https://soty.example',source:env.parent,ports:[]});assert.equal(env.parentMessages.length,0);assert.equal(env.calls.length,2);
+});
+
+test('parent origins are the existing exact embedding allowlist, with no wildcard or arbitrary callback URL',()=>{
+  for(const parentOrigins of [[],['*'],['https://soty.example/path'],['https://user:pass@soty.example']])assert.throws(()=>renderBootPage({shellUrl,parentOrigins}));
+  assert.doesNotThrow(()=>renderBootPage({shellUrl,parentOrigins:['https://soty.example','https://retained.example']}));
+  assert.doesNotThrow(()=>renderBootPage({shellUrl,parentOrigins:Array.from({length:9},(_,index)=>'https://retained'+index+'.example')}),'existing trusted embedding settings have no eight-origin limit');
 });
 
 test('only HTTP(S) shell URLs, local runtime paths and canonical 16-byte nonce are accepted', () => {

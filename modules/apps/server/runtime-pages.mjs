@@ -112,6 +112,24 @@ function pageClient(config, allowPath) {
   const topLevel = window.top === window.self, controllers = new Set();
   document.body.dataset.framed = String(!topLevel);
   let busy = false, navigated = false, offPage = false, generation = 0;
+  let recoveryParentOrigin = '', recoveryNonce = '', recoveryApp = '', recoveryFailure = false, recoverySent = false;
+  function notifyRecovery() {
+    if (!recoveryParentOrigin || !recoveryFailure || recoverySent || offPage || navigated) return;
+    recoverySent = true;
+    try { window.parent.postMessage({ schema: 'soty.app-boot-failure.v1', appId: recoveryApp,
+      nonce: recoveryNonce, error: 'app_session_check_failed' }, recoveryParentOrigin); } catch { /* Manual recovery stays visible. */ }
+    recoveryParentOrigin = '';
+  }
+  window.addEventListener('message', event => {
+    const data = event.data;
+    if (config.mode !== 'boot' || topLevel || offPage || navigated || recoverySent || recoveryParentOrigin
+      || event.source !== window.parent || !config.parentOrigins.includes(event.origin) || event.ports?.length
+      || !data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).sort().join(',') !== 'appId,nonce,schema'
+      || data.schema !== 'soty.app-boot-watch.v1' || !/^app-[a-f0-9]{32}$/.test(data.appId || '')
+      || !/^[A-Za-z0-9_-]{43}$/.test(data.nonce || '')) return;
+    recoveryParentOrigin = event.origin; recoveryNonce = data.nonce; recoveryApp = data.appId;
+    notifyRecovery();
+  });
   function show(state, pending = false) {
     const text = config.copy[state] || config.copy.unavailable;
     title.textContent = text[0]; detail.textContent = text[1];
@@ -176,8 +194,11 @@ function pageClient(config, allowPath) {
           window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
       }
       show('opening', true); navigate(path, currentGeneration);
-    } catch (error) { if (!offPage && generation === currentGeneration){if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
-      failure(error, checkingCookie ? 'cookie' : 'network');} }
+    } catch (error) { if (!offPage && generation === currentGeneration) {
+      if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
+      failure(error,checkingCookie?'cookie':'network');
+      recoveryFailure=!config.scoped&&checkingCookie&&error?.responseFailed===true&&error?.code==='app_session_check_failed';notifyRecovery();
+    } }
     finally { if (generation === currentGeneration) busy = false; }
   }
   reset.addEventListener('click', async () => {
@@ -187,7 +208,8 @@ function pageClient(config, allowPath) {
     catch (error) { if (!offPage && generation === currentGeneration) failure(error); }
     finally { if (generation === currentGeneration) busy = false; }
   });
-  window.addEventListener('pagehide', () => { offPage = true; generation++; for (const controller of controllers) controller.abort(); });
+  window.addEventListener('pagehide', () => { offPage = true; generation++; recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
+    for (const controller of controllers) controller.abort(); });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
     offPage = false; busy = false; navigated = false;
@@ -197,8 +219,8 @@ function pageClient(config, allowPath) {
   if (config.mode === 'boot') void boot();
 }
 
-function render({ mode, state, shellUrl, publicResetPath, nonce,scoped=false,renewal=false,parentOrigin }) {
-  const config = { mode, initialState: state, shellUrl, publicResetPath, copy, errorStates: statesFor(publicResetPath),
+function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[],scoped=false,renewal=false,parentOrigin }) {
+  const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorStates: statesFor(publicResetPath),
     ...(scoped?{scoped:true,renewal,parentOrigin}:{}) };
   const text = copy[state];
   const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
@@ -208,8 +230,11 @@ function render({ mode, state, shellUrl, publicResetPath, nonce,scoped=false,ren
 <script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()});</script></body></html>`;
 }
 
-export function renderBootPage({ shellUrl, publicResetPath, nonce,scoped=false,renewal=false,parentOrigin } = {}) {
-  return render({ mode: 'boot', state: 'loading', shellUrl: shellAddress(shellUrl, true), publicResetPath: resetPath(publicResetPath), nonce,scoped,renewal,parentOrigin });
+export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins,scoped=false,renewal=false,parentOrigin } = {}) {
+  const shell = shellAddress(shellUrl, true), origins = parentOrigins ?? [new URL(shell).origin];
+  if (!Array.isArray(origins) || !origins.length
+    || origins.some(origin => typeof origin !== 'string' || new URL(shellAddress(origin, true)).origin !== origin)) throw new TypeError('invalid_parent_origins');
+  return render({ mode: 'boot', state: 'loading', shellUrl: shell, publicResetPath: resetPath(publicResetPath), nonce, parentOrigins: origins,scoped,renewal,parentOrigin });
 }
 
 export function renderStatusPage({ error, shellUrl, publicResetPath, nonce } = {}) {

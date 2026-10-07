@@ -23,7 +23,7 @@ import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, s
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
-import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry } from './app-launch.mjs';
+import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSettings } from './app-settings';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
@@ -200,7 +200,7 @@ class WorldApplication {
         const local = await this.options.localAccount();
         if (this.destroyed || sequence !== this.requestSequence) return;
         if (!local.accountId) throw Object.assign(new Error('No local identity'), { code: 'authentication_required' });
-        this.transitionAccount(local.accountId);
+        if (this.transitionAccount(local.accountId)) this.main.append(this.loading('Проверяем аккаунт'));
       }
       const [profile, mine] = await Promise.all([
         this.api.request<{ profile: WorldProfile }>('world.profile.get', {}),
@@ -314,7 +314,10 @@ class WorldApplication {
       .finally(() => { outbox.dispose(); if (this.fieldOutbox === outbox) this.fieldOutbox = null; });
   }
 
-  private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
+  private loading(label: string): HTMLElement {
+    const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
+    node.append(el('span', '', label)); return node;
+  }
   private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
   private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
@@ -1620,10 +1623,11 @@ class WorldApplication {
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current,
       request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
-        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
+        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?:AppLaunchBinding;runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
           const cleanup=this.options.appSlotCleanup?.(result);return{url:result.launchUrl,entry:result.entry,
             ...(result.runtimeProfile?{runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle}:{}),
             ...(result.scopedSource?{scopedSource:result.scopedSource}:{}),
+            ...(result.launchBinding===undefined?{}:{launchBinding:result.launchBinding}),
             ...(cleanup?{scopedCleanup:cleanup}:{})};}),
       renew:this.options.openApp?undefined:parameters=>this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown}>('apps.scoped.renew',{...parameters}).then(result=>({
         url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
@@ -1703,6 +1707,13 @@ class WorldApplication {
           if (!current()) return;
           if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
           dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
+          // Registration changes the owner's available directory even when
+          // the independent placement chooser is closed without adding a cell.
+          const field = this.unifiedField;
+          const fieldCurrent = (): boolean => accountCurrent() && sequence === this.screenSequence && field === this.unifiedField;
+          if (field) void field.ready.then(async () => {
+            if (fieldCurrent()) await field.refresh({ preserveView: true });
+          }).catch(reason => { if (fieldCurrent()) this.toast(errorText(reason), true); });
           this.openAppFieldPlacement({ appId: result.app.id, name: result.app.name }, contextId => {
             if (!accountCurrent()) return;
             this.homeQuery = ''; this.unifiedFieldFilters.mine = 'all';

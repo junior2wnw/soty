@@ -1,6 +1,7 @@
 export interface AppLaunchTarget { readonly appId: string; readonly domainId?: string; readonly path?: string }
 export interface AppLaunchRequest extends AppLaunchTarget { readonly expectedAccountId: string }
 export interface AppResolvedEntry { readonly appId: string; readonly domainId: string; readonly origin: string; readonly path: string }
+export interface AppLaunchBinding { readonly schema: 'soty.app-launch-binding.v1'; readonly policyEpoch: number; readonly targetRevision: number; readonly targetDigest: string; readonly profile: 'soty.relay-restricted.v1'; readonly bindingFloor: 1 | 2 }
 export interface AppLaunchPresentation { readonly panel: 'discussion'; readonly conversationId?: string; readonly administrative?: true }
 export interface AppLaunchIntent { readonly kind: 'app' | 'launch'; readonly target: AppLaunchTarget; readonly communityId?: string; readonly presentation?: AppLaunchPresentation; readonly route: string }
 export interface AppLaunchPopup { opener: unknown; readonly closed: boolean; location: { replace(url: string): void }; close(): void }
@@ -13,16 +14,19 @@ export function parseAppLaunchRoute(hash: string): AppLaunchIntent | null;
 export function sameAppLaunchLocation(first: AppLaunchIntent | null, next: AppLaunchIntent | null, resolved?: AppResolvedEntry | null): boolean;
 export function validateAppLaunchUrl(value: unknown, shellUrl: string): string;
 export function validateAppEntry(value: unknown, target: AppLaunchTarget, shellUrl: string, launchUrl?: string): AppResolvedEntry;
+export function validateAppLaunchBinding(value: unknown): AppLaunchBinding;
+export function sameAppLaunchBinding(first: AppLaunchBinding | null, next: AppLaunchBinding | null): boolean;
 export function createAppLauncher(options: {
   target: AppLaunchTarget; accountId: string; shellUrl: string;
   isCurrent(accountId: string): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
   abandonScoped?(parameters:{appId:string;handle:string}):Promise<unknown>;
   resolveEntry?(parameters: AppLaunchRequest): Promise<{ entry: AppResolvedEntry }>;
 }): {
   readonly parameters: AppLaunchRequest;
   entry(): AppResolvedEntry | null;
-  launch(): Promise<string | null>;
+  binding(): AppLaunchBinding | null;
+  launch(options?: { requireSameBinding?: boolean }): Promise<string | null>;
   isCurrent(): boolean;
   runtimeProfile():string|null;
   scopedCapture():{handle:string;source:unknown;slot:object}|null;

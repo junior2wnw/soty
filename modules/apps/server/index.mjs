@@ -527,6 +527,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
         ...(scoped?{runtimeProfile:decision.profile,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt,
           scopedSource:{...scoped.record.context.sourceProfile}}:{}),
+        ...(!scoped?{launchBinding:{schema:'soty.app-launch-binding.v1',policyEpoch:decision.policyEpoch,targetRevision:decision.targetRevision,targetDigest:decision.targetDigest,profile:decision.profile,bindingFloor:decision.requiredBindingVersion}}:{}),
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
     if (op === 'apps.revoke') {
@@ -670,7 +671,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         &&internalUrl.searchParams.getAll('mode').length<=1&&(!internalUrl.searchParams.has('mode')||internalUrl.searchParams.get('mode')==='renew'),'invalid_app_path');
       const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
       const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath),scoped:selected,
-        renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin });
+        renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin,parentOrigins:[...origins] });
       setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(html); return;
