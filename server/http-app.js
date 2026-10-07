@@ -44,12 +44,14 @@ export async function waitForRejectedHttpStart(error) {
 }
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, scopedEmbedProfiles = [] } = {}) {
+  allowScopedEmbedMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
-  if(typeof allowScopedEmbedMigration!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
-  scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);});
+  if(typeof allowScopedEmbedMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
+  allowScopedEmbedMigration = universalEnabled && allowScopedEmbedMigration;
+  scopedEmbedRegistryConfigured = universalEnabled && scopedEmbedRegistryConfigured;
+  scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, human,
@@ -248,6 +250,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
+    selectedProfiles: scopedEmbedProfiles, selectedMigrationConfigured: allowScopedEmbedMigration,
+    selectedRegistryConfigured: scopedEmbedRegistryConfigured,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });
   app.locals.closeServices = async () => {

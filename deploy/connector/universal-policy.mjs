@@ -10,25 +10,27 @@ import { canonicalJson } from '../../modules/capabilities/server/validation.mjs'
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
-  UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
+  captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
 export const UNIVERSAL_POLICY_SCHEMA = 'soty.universal-rollout-policy.v1';
 export { UNIVERSAL_RUNTIME_SCHEMA };
 export const universalModeLabel = 'io.soty.universal.legacy';
 export const humanPrivateTarget = '/run/secrets/soty-human-identity.json';
 export const reviewsTarget = '/run/config/soty-reviews-bindings.json';
+export const selectedTarget = '/run/config/soty-selected-embed.json';
 const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human: 'SOTY_HUMAN_IDENTITY_ENABLED',
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
-  operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED' });
+  operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
+  selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
 const fail = (code = 'universal_policy_invalid') => { throw new SafeError(code); };
 const check = (value, code) => { if (!value) fail(code); };
 // Unlike public descriptors, this local private channel permits cryptographic
 // byte strings that happen to contain a token-looking prefix. Shapes are closed
 // separately; no value reaches a receipt merely because it passed this copy.
-function safe(value, code = 'universal_policy_invalid') {
+function safe(value, code = 'universal_policy_invalid', maximum = MAX_FILE) {
   let nodes = 0, bytes = 0;
-  const budget = count => { bytes += count; check(bytes <= MAX_FILE, code); };
+  const budget = count => { bytes += count; check(bytes <= maximum, code); };
   function copy(item, depth) {
     check(++nodes <= 4096 && depth <= 18, code);
     if (item === null || typeof item === 'boolean') { budget(5); return item; }
@@ -47,7 +49,7 @@ function safe(value, code = 'universal_policy_invalid') {
     }
     return result;
   }
-  const captured = copy(value, 0); check(Buffer.byteLength(canonicalJson(captured)) <= MAX_FILE, code); return captured;
+  const captured = copy(value, 0); check(Buffer.byteLength(canonicalJson(captured)) <= maximum, code); return captured;
 }
 const closed = (value, keys, optional = []) => {
   check(value && typeof value === 'object' && !Array.isArray(value)
@@ -67,9 +69,9 @@ function stateFor(handle) {
   const state = handles.get(handle); check(state?.active === true, 'universal_policy_handle_invalid'); return state;
 }
 function forget(state) { state.active = false; for (const file of state.files) file.bytes.fill(0); }
-function parse(bytes) {
+function parse(bytes, maximum = MAX_FILE) {
   try {
-    check(bytes.byteLength <= MAX_FILE, 'universal_policy_file_invalid');
+    check(bytes.byteLength <= maximum, 'universal_policy_file_invalid');
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); let pos = 0, nodes = 0;
     const require = value => check(value, 'universal_policy_file_invalid');
     const whitespace = () => { while (pos < text.length && /[ \r\n\t]/u.test(text[pos])) pos++; };
@@ -94,7 +96,7 @@ function parse(bytes) {
       for (const [literal, result] of [['true', true], ['false', false], ['null', null]]) if (text.startsWith(literal, pos)) { pos += literal.length; return result; }
       const number = /^-?(?:0|[1-9][0-9]*)/u.exec(text.slice(pos)); require(number); pos += number[0].length; return Number(number[0]);
     }
-    const result = value(0); whitespace(); require(pos === text.length); return safe(result, 'universal_policy_file_invalid');
+    const result = value(0); whitespace(); require(pos === text.length); return safe(result, 'universal_policy_file_invalid', maximum);
   } catch { fail('universal_policy_file_invalid'); }
 }
 async function filesystemContext(options) {
@@ -131,31 +133,31 @@ async function inspectChain(source, context, { missingFinal = false } = {}) {
   }
   check(await realpath(missingFinal ? path.dirname(source) : source) === (missingFinal ? path.dirname(source) : source), 'universal_policy_file_invalid'); return evidence;
 }
-function inspectStat(stat, visibility, context) {
-  check(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size > 0n && stat.size <= BigInt(MAX_FILE), 'universal_policy_file_invalid');
+function inspectStat(stat, visibility, context, maximum = MAX_FILE) {
+  check(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size > 0n && stat.size <= BigInt(maximum), 'universal_policy_file_invalid');
   if (context.posix) {
     const mode = Number(stat.mode);
     check(Number(stat.uid) === context.ownerUid && (mode & 0o400) !== 0 && (mode & 0o111) === 0
       && (mode & (visibility === 'private' ? 0o077 : 0o022)) === 0, 'universal_policy_file_permissions');
   }
 }
-async function readBounded(source, visibility, context) {
+async function readBounded(source, visibility, context, maximum = MAX_FILE) {
   let descriptor, bytes;
   try {
-    const chain = await inspectChain(source, context), before = await lstat(source, { bigint: true }); inspectStat(before, visibility, context);
+    const chain = await inspectChain(source, context), before = await lstat(source, { bigint: true }); inspectStat(before, visibility, context, maximum);
     descriptor = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
-    const opened = await descriptor.stat({ bigint: true }); inspectStat(opened, visibility, context);
+    const opened = await descriptor.stat({ bigint: true }); inspectStat(opened, visibility, context, maximum);
     check(sameIdentity(identity(before), identity(opened)), 'universal_policy_file_changed');
-    bytes = Buffer.alloc(MAX_FILE + 1); let length = 0;
+    bytes = Buffer.alloc(maximum + 1); let length = 0;
     while (length < bytes.length) {
       const result = await descriptor.read(bytes, length, bytes.length - length, length);
       if (!result.bytesRead) break; length += result.bytesRead;
     }
-    check(length > 0 && length <= MAX_FILE && BigInt(length) === opened.size, 'universal_policy_file_invalid');
+    check(length > 0 && length <= maximum && BigInt(length) === opened.size, 'universal_policy_file_invalid');
     const after = await descriptor.stat({ bigint: true }), named = await lstat(source, { bigint: true });
     check(sameIdentity(identity(opened), identity(after)) && sameIdentity(identity(opened), identity(named))
       && JSON.stringify(chain) === JSON.stringify(await inspectChain(source, context)), 'universal_policy_file_changed');
-    const captured = Buffer.from(bytes.subarray(0, length)); return { source, visibility, bytes: captured, identity: identity(opened), chain };
+    const captured = Buffer.from(bytes.subarray(0, length)); return { source, visibility, maximum, bytes: captured, identity: identity(opened), chain };
   } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_file_invalid'); }
   finally { bytes?.fill(0); if (descriptor) await descriptor.close(); }
 }
@@ -215,32 +217,51 @@ function validateReviews(value) {
 export async function prepareUniversalPolicy(input, options = { shellOrigins: [] }) {
   const files = []; let context;
   try {
-    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews']);
+    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected']);
     check(plan.schema === UNIVERSAL_POLICY_SCHEMA && ['legacy-baseline', 'features'].includes(plan.phase));
-    check(plan.phase === 'features' || plan.human === null && plan.reviews === null);
+    check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected);
     context = await filesystemContext(options);
     let human = { configured: false }, reviews = validateReviews({ providers: [], bindings: [] });
     if (plan.human !== null) {
       closed(plan.human, ['issuer', 'source']); exactPath(plan.human.source);
       check(typeof plan.human.issuer === 'string' && plan.human.issuer.length <= 1024);
-      const file = await readBounded(plan.human.source, 'private', context); files.push(file);
+      const file = await readBounded(plan.human.source, 'private', context); file.target = humanPrivateTarget; files.push(file);
       human = validateHuman(parse(file.bytes), plan.human.issuer, context);
     }
     if (plan.reviews !== null) {
       closed(plan.reviews, ['source', 'sha256']); exactPath(plan.reviews.source); check(typeof plan.reviews.sha256 === 'string' && HEX.test(plan.reviews.sha256));
       check(plan.reviews.source !== plan.human?.source, 'universal_policy_file_invalid');
-      const file = await readBounded(plan.reviews.source, 'nonsecret', context); files.push(file);
+      const file = await readBounded(plan.reviews.source, 'nonsecret', context); file.target = reviewsTarget; files.push(file);
       reviews = validateReviews(parse(file.bytes));
       check(createHash('sha256').update(file.bytes).digest('hex') === plan.reviews.sha256, 'universal_policy_reviews_hash_mismatch');
+    }
+    let selected;
+    if (plan.selected !== undefined && plan.selected !== null) {
+      closed(plan.selected, ['source', 'migrationConfigured']); exactPath(plan.selected.source);
+      check(typeof plan.selected.migrationConfigured === 'boolean' && !files.some(file => file.source === plan.selected.source));
+      const file = await readBounded(plan.selected.source, 'private', context, 131072); file.target = selectedTarget; files.push(file);
+      const registry = parse(file.bytes, 131072); closed(registry, ['schema', 'profiles']);
+      check(registry.schema === 'soty.selected-embed-registry.v1');
+      selected = captureSelectedPreparedness({ profiles: registry.profiles, migrationConfigured: plan.selected.migrationConfigured });
+      if (selected.configured) {
+        check(human.configured, 'universal_policy_selected_human_required');
+        const clients = parse(files.find(value => value.target === humanPrivateTarget).bytes).clients;
+        for (const profile of registry.profiles) check(profile.issuer === human.issuer && context.shellOrigins.includes(profile.parentOrigin)
+          && profile.embedOrigin.startsWith('https:') && profile.nativeOrigin.startsWith('https:')
+          && clients.some(client => client.id === profile.clientId && client.redirectUri === profile.embedOrigin + '/api/embed/callback'),
+        'universal_policy_selected_human_required');
+      }
     }
     const environment = [{ name: settings.operator, value: '1' }, ...(plan.phase === 'legacy-baseline' ? [] : [
       { name: settings.universal, value: 'true' }, { name: settings.human, value: human.configured ? '1' : '0' },
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
       ...(plan.reviews ? [{ name: settings.reviews, value: reviewsTarget }] : []),
+      ...(selected ? [{ name: settings.selected, value: selectedTarget },
+        { name: settings.selectedMigration, value: selected.migrationConfigured ? '1' : '0' }] : []),
     ])];
-    const mounts = files.map(file => ({ source: file.source, target: file.visibility === 'private' ? humanPrivateTarget : reviewsTarget, readOnly: true, visibility: file.visibility }));
+    const mounts = files.map(file => ({ source: file.source, target: file.target, readOnly: true, visibility: file.visibility }));
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
-      human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) } };
+      human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) }, ...(selected ? { selected } : {}) };
     const receipt = freeze({ ...publicValue, policyDigest: digest(publicValue) }), handle = Object.freeze(Object.create(null));
     handles.set(handle, { active: true, context, files, receipt }); return handle;
   } catch (error) { files.forEach(file => file.bytes.fill(0)); if (error instanceof SafeError) throw error; fail(); }
@@ -264,7 +285,7 @@ export async function assertUniversalPolicyCurrent(handle) {
   const state = stateFor(handle);
   try {
     for (const file of state.files) {
-      const current = await readBounded(file.source, file.visibility, state.context);
+      const current = await readBounded(file.source, file.visibility, state.context, file.maximum);
       try {
         check(state.active && sameIdentity(file.identity, current.identity) && JSON.stringify(file.chain) === JSON.stringify(current.chain)
           && file.bytes.length === current.bytes.length && timingSafeEqual(file.bytes, current.bytes), 'universal_policy_file_changed');
@@ -386,6 +407,7 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === '1', 'universal_policy_reader_baseline_required');
     if (receipt.phase === 'features' && receipt.human.renewal) check(original.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
+    if (receipt.selected) check(candidate.apps.includes(7) && (receipt.phase !== 'features' || original.apps.includes(7)), 'universal_policy_reader_baseline_required');
     return freeze({ schema: 'soty.universal-image-prerequisites.v1', phase: receipt.phase,
       candidateImage: candidateImage.Id, originalImage: originalImage.Id, fixtureOnly: receipt.fixtureOnly });
   } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_image_invalid'); }
@@ -399,7 +421,7 @@ export function captureUniversalPreparedness(input) {
 export function assertUniversalPreparedness(handle, input, { allowFixture = false } = {}) {
   const expected = stateFor(handle).receipt, runtime = safe(input, 'universal_policy_runtime_invalid');
   check(typeof allowFixture === 'boolean' && (!expected.fixtureOnly || allowFixture), 'universal_policy_fixture_not_production');
-  closed(runtime, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews']);
+  closed(runtime, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected']);
   check(runtime.schema === UNIVERSAL_RUNTIME_SCHEMA && [runtime.compiledLegacyMode, runtime.universalConfigured, runtime.reviewsConfigured, runtime.humanHttpEnabled]
     .every(value => typeof value === 'boolean'), 'universal_policy_runtime_invalid');
   const baseline = expected.phase === 'legacy-baseline';
@@ -407,5 +429,6 @@ export function assertUniversalPreparedness(handle, input, { allowFixture = fals
     && runtime.humanHttpEnabled === expected.human.configured && canonicalJson(runtime.human) === canonicalJson(expected.human)
     && canonicalJson(runtime.reviews) === canonicalJson({ configurationDigest: expected.reviews.configurationDigest,
       providerCount: expected.reviews.providerCount, bindingCount: expected.reviews.bindingCount }), 'universal_policy_runtime_mismatch');
+  check(canonicalJson(runtime.selected ?? null) === canonicalJson(expected.selected ?? null), 'universal_policy_runtime_mismatch');
   return freeze({ ok: true, schema: UNIVERSAL_RUNTIME_SCHEMA, phase: expected.phase, policyDigest: expected.policyDigest, fixtureOnly: expected.fixtureOnly });
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { captureUniversalPreparedness, validateUniversalPreparedness } from '../universal-preparedness.mjs';
+import { captureUniversalPreparedness, captureSelectedPreparedness, validateUniversalPreparedness } from '../universal-preparedness.mjs';
 import { captureUniversalPreparedness as capturePolicyPreparedness } from '../../../deploy/connector/universal-policy.mjs';
 import { createHumanIdentityHostProfile } from '../../human-identity/profile.mjs';
 import { createReviewsService } from '../../reviews/server/index.mjs';
@@ -27,6 +27,18 @@ test('pure runtime capture and deploy re-export preserve exact default/v1 measur
   const host = profile(options()), old = capture(host); assert.equal(old.human.renewal, undefined);
   assert.deepEqual(old, capturePolicyPreparedness({ ...inputs, compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
     humanHttpEnabled: true, humanProfile: host })); assert.equal(Buffer.byteLength(JSON.stringify(old)) < 65536, true);
+});
+
+test('selected migration measurement is explicit and cannot contradict baseline or serialize hidden fields', () => {
+  const value = captureSelectedPreparedness({ migrationConfigured: true });
+  assert.equal(value.configured, false); assert.equal(value.profileCount, 0); assert.equal(value.migrationConfigured, true);
+  assert.equal(Object.isFrozen(value), true);
+  const dto = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: null, humanHttpEnabled: false, selectedMigrationConfigured: true });
+  assert.deepEqual(dto.selected, value);
+  assert.throws(() => validateUniversalPreparedness({ ...dto, selected: { ...value, token: 'never-serialized' } }));
+  assert.throws(() => validateUniversalPreparedness({ ...dto, compiledLegacyMode: true, universalConfigured: false, reviewsConfigured: false }));
+  assert.throws(() => captureSelectedPreparedness({ profiles: [{}] }));
 });
 
 test('v2 eligibility and operational admission off are measured without changing client pins or private fingerprinting', () => {

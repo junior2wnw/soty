@@ -49,7 +49,7 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
       ...(issuer ? { humanIdentity: { enabled: flag === '1', issuer, registryId: 'soty', environmentId: 'production',
         ...(flag === '1' ? humanSecrets(filename) : {}) } } : {}),
       ...(reviews ? { reviewsConfiguration: fileValue(reviews, 65536) } : {}),
-      ...(selected?{scopedEmbedProfiles:selected.profiles}:{}),
+      ...(selected?{scopedEmbedProfiles:selected.profiles,scopedEmbedRegistryConfigured:true}:{}),
       ...(selectedMigration==='1'?{allowScopedEmbedMigration:true}:{}),
     };
   } catch { invalid(); }

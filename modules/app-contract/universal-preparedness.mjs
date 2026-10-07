@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonicalJson, freezeDeep } from '../capabilities/server/validation.mjs';
 import { HUMAN_IDENTITY_PROFILE, HUMAN_RENEWAL_PROFILE, HUMAN_RENEWAL_LIMITS } from '../human-identity/profile.mjs';
 import { createReviewsService } from '../reviews/server/index.mjs';
+import { scopedEmbedProfile } from '../apps/scoped-embed/profile.mjs';
 
 export const UNIVERSAL_RUNTIME_SCHEMA = 'soty.universal-preparedness.v1';
 export const UNIVERSAL_RUNTIME_MAX_BYTES = 65536;
@@ -46,19 +47,38 @@ function reviewsWire(value) {
     && (value.bindingCount === 0 || value.providerCount > 0));
   return { configurationDigest: value.configurationDigest, providerCount: value.providerCount, bindingCount: value.bindingCount };
 }
+function selectedWire(value) {
+  record(value, ['configured', 'migrationConfigured', 'profileCount', 'registryDigest']);
+  check(typeof value.configured === 'boolean' && typeof value.migrationConfigured === 'boolean'
+    && number(value.profileCount, 64) && value.configured === (value.profileCount > 0) && hex(value.registryDigest));
+  return { configured: value.configured, migrationConfigured: value.migrationConfigured,
+    profileCount: value.profileCount, registryDigest: value.registryDigest };
+}
+/** Static reviewed Source pins only; neither liveness nor a native project grant. */
+export function captureSelectedPreparedness({ profiles = [], migrationConfigured = false } = {}) {
+  check(Array.isArray(profiles) && profiles.length <= 64 && typeof migrationConfigured === 'boolean');
+  const pins = profiles.map(profile => scopedEmbedProfile(profile));
+  const keys = pins.map(profile => `${profile.appId}:${profile.target.revision}`);
+  check(new Set(keys).size === keys.length);
+  pins.sort((a, b) => (a.appId < b.appId ? -1 : a.appId > b.appId ? 1 : 0) || a.target.revision - b.target.revision);
+  return freezeDeep(selectedWire({ configured: pins.length > 0, migrationConfigured,
+    profileCount: pins.length, registryDigest: hash(pins) }));
+}
 /** Sanitize an exact bounded measurement, never turn its metadata into authority. */
 export function validateUniversalPreparedness(value) {
   try {
-    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews']);
+    record(value, ['schema', 'compiledLegacyMode', 'universalConfigured', 'reviewsConfigured', 'humanHttpEnabled', 'human', 'reviews'], ['selected']);
     check(value.schema === UNIVERSAL_RUNTIME_SCHEMA && [value.compiledLegacyMode, value.universalConfigured, value.reviewsConfigured, value.humanHttpEnabled]
       .every(item => typeof item === 'boolean'));
     const human = humanWire(value.human), reviews = reviewsWire(value.reviews);
+    const selected = value.selected === undefined ? undefined : selectedWire(value.selected);
     check(value.humanHttpEnabled === human.configured && (!value.reviewsConfigured || value.universalConfigured)
       && (!value.humanHttpEnabled || value.universalConfigured)
       && (!value.compiledLegacyMode || !value.universalConfigured && !value.reviewsConfigured && !value.humanHttpEnabled)
       && (value.reviewsConfigured || reviews.providerCount === 0 && reviews.bindingCount === 0));
+    check(!selected || value.universalConfigured && !value.compiledLegacyMode && (!selected.configured || value.humanHttpEnabled));
     const result = { schema: value.schema, compiledLegacyMode: value.compiledLegacyMode, universalConfigured: value.universalConfigured,
-      reviewsConfigured: value.reviewsConfigured, humanHttpEnabled: value.humanHttpEnabled, human, reviews };
+      reviewsConfigured: value.reviewsConfigured, humanHttpEnabled: value.humanHttpEnabled, human, reviews, ...(selected ? { selected } : {}) };
     check(Buffer.byteLength(canonicalJson(result)) <= UNIVERSAL_RUNTIME_MAX_BYTES); return freezeDeep(result);
   } catch { throw new UniversalPreparednessError(); }
 }
@@ -87,7 +107,8 @@ export function captureHumanPreparedness(profile) {
 }
 /** Pure host measurement after service/HTTP construction. No IO, DB, network or deployment imports. */
 export function captureUniversalPreparedness({ compiledLegacyMode, universalConfigured, reviewsConfigured,
-  humanProfile, humanHttpEnabled, reviewsPreparedness, reviewsConfiguration = { providers: [], bindings: [] } }) {
+  humanProfile, humanHttpEnabled, reviewsPreparedness, reviewsConfiguration = { providers: [], bindings: [] },
+  selectedProfiles = [], selectedMigrationConfigured = false, selectedRegistryConfigured = false }) {
   let service;
   try {
     let reviews;
@@ -99,7 +120,11 @@ export function captureUniversalPreparedness({ compiledLegacyMode, universalConf
       reviews = service.preparedness();
     }
     check(typeof humanHttpEnabled === 'boolean' && humanHttpEnabled === Boolean(humanProfile?.enabled));
+    check(typeof selectedRegistryConfigured === 'boolean' && typeof selectedMigrationConfigured === 'boolean' && Array.isArray(selectedProfiles));
     return validateUniversalPreparedness({ schema: UNIVERSAL_RUNTIME_SCHEMA, compiledLegacyMode, universalConfigured, reviewsConfigured,
-      humanHttpEnabled, human: captureHumanPreparedness(humanProfile), reviews });
+      humanHttpEnabled, human: captureHumanPreparedness(humanProfile), reviews,
+      ...(selectedProfiles.length || selectedMigrationConfigured || selectedRegistryConfigured ? {
+        selected: captureSelectedPreparedness({ profiles: selectedProfiles, migrationConfigured: selectedMigrationConfigured }),
+      } : {}) });
   } catch { throw new UniversalPreparednessError(); } finally { service?.close(); }
 }

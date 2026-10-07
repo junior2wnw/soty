@@ -9,7 +9,7 @@ import path from 'node:path';
 import { prepareUniversalPolicy, publicUniversalPolicy, assertUniversalPolicyCurrent, disposeUniversalPolicy,
   applyUniversalPolicy, assertUniversalImagePrerequisites, captureUniversalPreparedness, assertUniversalPreparedness,
   sealUniversalPolicy, restoreUniversalPolicy,
-  UNIVERSAL_POLICY_SCHEMA, universalModeLabel, humanPrivateTarget, reviewsTarget } from './universal-policy.mjs';
+  UNIVERSAL_POLICY_SCHEMA, universalModeLabel, humanPrivateTarget, reviewsTarget, selectedTarget } from './universal-policy.mjs';
 import { createConfig, preservationHash } from './rollout.mjs';
 import { currentStorageReaders, storageReaderLabel, assertStorageCompatible } from './storage-guard.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
@@ -36,6 +36,15 @@ function reviewConfiguration() {
   return { providers: [{ ...providerRef, origin: 'https://reviews.fixture.invalid' }], bindings: [{
     scope: { registryId: 'soty', tenantId: 'owner.fixture', appId: 'app.alpha', environmentId: 'production' },
     localSubject: { kind: 'app', id: 'app.alpha' }, providerRef, subjectRef, providerSubjectId: 'subject_' + '3'.repeat(32), providerEntityType: 'product', mode: 'public-read' }] };
+}
+function selectedConfiguration(f) {
+  const appId = 'app-' + '4'.repeat(32), embedOrigin = 'https://alpha.fixture.invalid';
+  return { schema: 'soty.selected-embed-registry.v1', profiles: [{ schema: 'soty.selected-human-embed.v1', appId,
+    connector: { linkId: 'source-link', hostDeviceId: 'source-device', connectorId: 'source-connector' },
+    target: { revision: 2, digest: '5'.repeat(64) }, sourceProfile: { id: 'planner.selected-workspace', version: 1, digest: '6'.repeat(64) },
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId,
+      resourceId: 'planner:selected', workspaceId: 'selected-workspace' }, issuer, clientId: f.human.clients[0].id,
+    parentOrigin: origin, embedOrigin, nativeOrigin: 'https://native.fixture.invalid' }] };
 }
 async function fixture(t) {
   const root = await mkdtemp(path.join(await realpath(tmpdir()), 'soty-universal-policy-'));
@@ -314,4 +323,82 @@ test('renewal operational policy is explicit public measurement and requires a r
   assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
   const changed = { ...dto, human: { ...dto.human, renewal: { ...dto.human.renewal, admissionEnabled: true } } };
   assert.throws(() => assertUniversalPreparedness(handle, changed, { allowFixture: true }), failCode('universal_policy_runtime_mismatch'));
+});
+
+test('selected Source policy binds private exact file, approved Human redirect and reader7 baseline', async t => {
+  const f = await fixture(t); f.human.clients[0].redirectUri = 'https://alpha.fixture.invalid/api/embed/callback';
+  await writeFile(f.humanSource, JSON.stringify(f.human));
+  const selected = selectedConfiguration(f), source = path.join(f.root, 'selected.json');
+  await writeFile(source, JSON.stringify(selected), { mode: 0o600 });
+  const plan = { ...f.plan, selected: { source, migrationConfigured: true } }, handle = await prepared(t, f, plan);
+  const receipt = publicUniversalPolicy(handle);
+  assert.equal(receipt.selected.profileCount, 1); assert.equal(receipt.selected.migrationConfigured, true);
+  assert.equal(receipt.mounts.at(-1).target, selectedTarget); assert.equal(receipt.mounts.at(-1).visibility, 'private');
+  const config = applyUniversalPolicy(createConfig(original(), image('0').Id, 'c'.repeat(40)), handle);
+  assert.ok(config.Env.includes('SOTY_SELECTED_EMBED_REGISTRY_FILE=' + selectedTarget));
+  assert.ok(config.Env.includes('SOTY_SELECTED_EMBED_MIGRATION=1'));
+  const loaded = loadUniversalConfiguration({ SOTY_HUMAN_IDENTITY_ENABLED: '1', SOTY_HUMAN_IDENTITY_ISSUER: issuer,
+    SOTY_HUMAN_IDENTITY_KEYS_FILE: f.humanSource, SOTY_SELECTED_EMBED_REGISTRY_FILE: source, SOTY_SELECTED_EMBED_MIGRATION: '1' });
+  const human = createHumanIdentityHostProfile(loaded.humanIdentity, { shellOrigins: [origin] });
+  const dto = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: human, humanHttpEnabled: true, reviewsConfiguration: f.reviews,
+    selectedProfiles: loaded.scopedEmbedProfiles, selectedMigrationConfigured: loaded.allowScopedEmbedMigration });
+  assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
+  assert.throws(() => assertUniversalPreparedness(handle, { ...dto, selected: { ...dto.selected, registryDigest: '0'.repeat(64) } },
+    { allowFixture: true }), failCode('universal_policy_runtime_mismatch'));
+  const old = JSON.parse(currentStorageReaders); old.readers.apps = old.readers.apps.filter(version => version !== 7);
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('1', JSON.stringify(old), 'b') }),
+    failCode('universal_policy_reader_baseline_required'));
+  assert.throws(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(old)), originalImage: image('1', undefined, 'b') }),
+    failCode('universal_policy_reader_baseline_required'));
+  assert.equal(assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('1', undefined, 'b') }).phase, 'features');
+  const publicText = JSON.stringify(receipt);
+  assert.equal(publicText.includes(selected.profiles[0].resource.workspaceId), false);
+  assert.equal(publicText.includes(sha(await readFile(source))), false);
+  const key = randomBytes(32), sealed = await sealUniversalPolicy(handle, { key, keyId: 'selected-custody' });
+  const restored = await restoreUniversalPolicy(plan, sealed.packet, f.options, { key, keyId: 'selected-custody', expectedWitnessId: sealed.witnessId });
+  t.after(() => { try { disposeUniversalPolicy(restored); } catch {} });
+  // Semantic JSON is unchanged; exact bytes/identity are still privately fenced.
+  await writeFile(source, JSON.stringify(selected, null, 2));
+  await assert.rejects(assertUniversalPolicyCurrent(restored), failCode('universal_policy_file_changed'));
+});
+
+test('selected policy rejects foreign/missing Human clients and inherited unapproved registry', async t => {
+  const f = await fixture(t), registry = selectedConfiguration(f), source = path.join(f.root, 'selected.json');
+  await writeFile(source, JSON.stringify(registry), { mode: 0o600 });
+  const plan = { ...f.plan, selected: { source, migrationConfigured: false } };
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  await assert.rejects(prepareUniversalPolicy({ ...plan, human: null }, f.options), failCode('universal_policy_selected_human_required'));
+  await assert.rejects(prepareUniversalPolicy({ ...baselinePlan(), selected: plan.selected }, f.options), failCode('universal_policy_invalid'));
+  const handle = await prepared(t, f);
+  const inherited = createConfig(original(), image('0').Id, 'c'.repeat(40)); inherited.Env.push('SOTY_SELECTED_EMBED_REGISTRY_FILE=/unapproved/file');
+  assert.throws(() => applyUniversalPolicy(inherited, handle), failCode('universal_policy_preexisting_configuration'));
+});
+
+test('empty migration-only registry measures actual factory schema7 and feature-off factory never migrates', async t => {
+  const f = await fixture(t), source = path.join(f.root, 'selected-empty.json');
+  await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [] }), { mode: 0o600 });
+  const plan = { ...emptyFeatures(), selected: { source, migrationConfigured: true } }, handle = await prepared(t, f, plan);
+  const dist = path.join(f.root, 'dist'); await mkdir(dist); await writeFile(path.join(dist, 'index.html'), '<!doctype html>');
+  const dataDir = path.join(f.root, 'feature-data');
+  const app = createHttpApp(dist, { dataDir, connectOrigins: [origin], appHosting: {}, appOriginTemplate: 'https://{appId}.apps.fixture.invalid',
+    namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: true, allowScopedEmbedMigration: true });
+  f.beforeRemove.push(() => app.locals.closeServices());
+  assert.equal((await readStorageFormat(dataDir)).apps, 7);
+  assert.equal(assertUniversalPreparedness(handle, app.locals.captureUniversalPreparedness(), { allowFixture: true }).ok, true);
+  const offDir = path.join(f.root, 'baseline-data');
+  const off = createHttpApp(dist, { dataDir: offDir, connectOrigins: [origin], appHosting: {}, appOriginTemplate: 'https://{appId}.apps.fixture.invalid',
+    namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: false, allowScopedEmbedMigration: true, scopedEmbedProfiles: [{}] });
+  f.beforeRemove.push(() => off.locals.closeServices());
+  assert.equal((await readStorageFormat(offDir)).apps, 6);
+  assert.equal(off.locals.captureUniversalPreparedness().selected, undefined);
+  const disabledPlan = { ...emptyFeatures(), selected: { source, migrationConfigured: false } };
+  const disabled = await prepared(t, f, disabledPlan);
+  const loaded = loadUniversalConfiguration({ SOTY_SELECTED_EMBED_REGISTRY_FILE: source, SOTY_SELECTED_EMBED_MIGRATION: '0' });
+  const noMigration = createHttpApp(dist, { ...loaded, dataDir: path.join(f.root, 'disabled-registry-data'), connectOrigins: [origin],
+    appHosting: {}, appOriginTemplate: 'https://{appId}.apps.fixture.invalid', namedAppZone: '', discoveryOrigin: '' });
+  f.beforeRemove.push(() => noMigration.locals.closeServices());
+  assert.equal(noMigration.locals.captureUniversalPreparedness().selected.profileCount, 0);
+  assert.equal(noMigration.locals.captureUniversalPreparedness().selected.migrationConfigured, false);
+  assert.equal(assertUniversalPreparedness(disabled, noMigration.locals.captureUniversalPreparedness(), { allowFixture: true }).ok, true);
 });
