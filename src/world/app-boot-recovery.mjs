@@ -68,4 +68,3 @@ export function createAppBootRecovery({ view, appId: expectedApp, getFrame, isCu
   }
   return { bind, cancel: stop, dispose() { disposed = true; stop(); }, attempted: () => attempted };
 }
-
