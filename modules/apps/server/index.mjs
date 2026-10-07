@@ -740,6 +740,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
   }
   function handleRequest(req, res) {
+    if (closed) { setStatusPolicy(res); respondFailure(req, res, 503, 'app_server_closed'); return true; }
     const app = appForRequest(req); if (!app) return false;
     const failure = hostFailure(app);
     if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return true; }
@@ -792,6 +793,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     try { channel.ws.send(payload); return true; } catch { return false; }
   }
   function handleUpgrade(req, socket, head) {
+    // An upgrade already queued by HTTP may outlive service shutdown/rebind.
+    // Refuse before any host-classifier or registry statement touches the DB.
+    if (closed) { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n'); return true; }
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return true; }

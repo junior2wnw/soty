@@ -153,6 +153,20 @@ test('device offline is distinct from stopped service; registry survives reload'
   assert.equal(reopened.execute({ actor: owner, op: 'apps.devices' }).devices.length, 1); reopened.close();
 });
 
+test('closed Apps service refuses late HTTP and WebSocket ingress before touching finalized statements', { timeout: 10000 }, async t => {
+  const env = await setup(); t.after(() => env.close());
+  env.service.close();
+  const page = await http(env.port, '/', { host: env.appHost });
+  assert.equal(page.status, 503);
+  assert.deepEqual(JSON.parse(page.body), { ok: false, error: 'app_server_closed' });
+  for (const path of ['/api/apps/channel', '/late-upgrade']) {
+    const result = await http(env.port, path, { host: env.appHost, origin: env.appOrigin,
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64') } });
+    assert.equal(result.status, 503);
+    assert.equal(result.body.length, 0);
+  }
+});
+
 test('registration retry keeps the stable app id and cannot silently change parameters', async t => {
   const env = await setup(); t.after(env.close);
   const args = { hostDeviceId: 'host_test', connectorId: 'connector_test', name: 'Покупки', port: env.sample.port, grants: { communityIds: ['community_family'] } };

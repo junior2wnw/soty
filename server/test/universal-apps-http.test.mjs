@@ -37,9 +37,13 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
   const origin = `http://127.0.0.1:${server.address().port}`;
   const dataDir = join(folder, 'data');
   t.after(async () => {
-    runtime?.stop(); clients.forEach(client => client.dispose()); await app?.locals.closeServices();
+    runtime?.stop(); clients.forEach(client => client.dispose());
+    // Match production shutdown: stop ingress and close its owned sockets
+    // before waiting for MCP exchanges and persistence services to settle.
+    const listenersClosed = Promise.all([source, server].map(item => new Promise(done => item.close(done))));
     connections.forEach(socket => socket.destroy());
-    await Promise.all([source, server].map(item => new Promise(done => item.close(done))));
+    await app?.locals.closeServices();
+    await listenersClosed;
     assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-universal-http-/);
     await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
