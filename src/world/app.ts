@@ -1630,25 +1630,32 @@ class WorldApplication {
     }).catch(() => { /* Optional names never change the exact admitted entry. */ });
   }
   private openAddApp(communityId?: string, selectedDevice?: string): void {
-    const dialog = this.dialog('Добавить приложение'); dialog.body.append(this.loading('Ищем ваши устройства'));
-    void this.api.request<{ devices: DeviceProjection[] }>('apps.devices', {}).then(result => {
-      if (!dialog.element.open) return;
+    const accountId = this.deskAccount, accountCurrent = this.accountTask();
+    if (!accountId || !accountCurrent()) return;
+    const dialog = this.dialog('Подключить приложение'); dialog.body.append(this.loading('Ищем ваши устройства'));
+    const current = (): boolean => accountCurrent() && dialog.element.open;
+    void this.api.request<{ devices: DeviceProjection[] }>('apps.devices', { expectedAccountId: accountId }).then(result => {
+      if (!current()) return;
       const devices = result.devices.filter(device => device.claimed);
       if (!devices.length) { dialog.body.replaceChildren(emptyState('Подключите компьютер', 'Проект будет работать на вашем устройстве и открываться здесь.', button('Подключить устройство', 'laptop', 'sw-button-primary', () => { dialog.close(); this.runHook(this.options.connectDevice); }), 'laptop')); return; }
       const form = el('form'); const name = textInput('', 'Например, Галерея выходных', 64); name.required = true;
-      const device = el('select', 'sw-select'); devices.forEach(item => { const option = el('option', '', `${item.name}${item.online ? '' : ' · не в сети'}`); option.value = item.hostDeviceId; option.selected = item.hostDeviceId === selectedDevice; device.append(option); });
+      const preferredDevice = devices.find(item => item.hostDeviceId === selectedDevice) ?? devices.find(item => item.online) ?? devices[0];
+      const device = el('select', 'sw-select'); devices.forEach(item => { const option = el('option', '', `${item.name}${item.online ? '' : ' · не в сети'}`); option.value = item.hostDeviceId; option.selected = item === preferredDevice; device.append(option); });
       const port = el('input', 'sw-input'); port.type = 'number'; port.min = '1024'; port.max = '65535'; port.placeholder = '3000'; port.required = true;
       const path = textInput('/', '/'); path.pattern = '/.*';
       const audience = el('select', 'sw-select'); const privateOption = el('option', '', 'Только мне'); privateOption.value = ''; audience.append(privateOption);
       this.communities.filter(group => group.membership?.state === 'active' && group.permissions.canModerate).forEach(group => { const option = el('option', '', group.name); option.value = group.communityId; option.selected = group.communityId === communityId; audience.append(option); });
-      const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Добавить соту', 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit';
-      form.append(labeledField('Название', name), labeledField('Устройство', device), labeledField('Порт проекта', port, 'Проект уже должен работать на этом компьютере.'), labeledField('Начальная страница', path), labeledField('Кому открыть', audience), error, save);
+      const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Подключить приложение', 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit';
+      const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Другая начальная страница'), labeledField('Путь внутри приложения', path, 'Оставьте /, чтобы открыть главную страницу.'));
+      const status = el('p', 'sw-muted'); status.setAttribute('role', 'status');
+      form.append(el('p', 'sw-muted', 'Один раз подключите работающий проект. После этого он будет открываться из ваших Сот.'), labeledField('Название приложения', name), labeledField('Где работает проект', device), labeledField('Порт проекта', port, 'Число после localhost: в адресе проекта. Например, 3000.'), labeledField('Кому открыть', audience), advanced, error, status);
+      pinDialogSubmit(dialog, form, save);
       form.addEventListener('submit', event => {
-        event.preventDefault(); const chosen = devices.find(item => item.hostDeviceId === device.value); if (!chosen || !form.reportValidity()) return;
-        save.disabled = true; error.textContent = '';
-        void this.api.request('apps.register', { hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(() => { dialog.close(); this.toast('Приложение добавлено в ваши соты'); if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else { this.navigate('mine'); } }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
+        event.preventDefault(); const chosen = devices.find(item => item.hostDeviceId === device.value); if (!current() || save.disabled || !chosen || !form.reportValidity()) return;
+        save.disabled = true; error.textContent = ''; status.textContent = 'Подключаем приложение…';
+        void this.api.request('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(() => { if (!current()) return; dialog.close(); this.toast('Приложение добавлено в ваши соты'); if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else { this.navigate('mine'); } }).catch(reason => { if (current()) { status.textContent = ''; error.textContent = errorText(reason); } }).finally(() => { if (current()) save.disabled = false; });
       }); dialog.body.replaceChildren(form); name.focus();
-    }).catch(error => { if (dialog.element.open) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
+    }).catch(error => { if (current()) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
   }
 
   private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void, returnTarget = this.appDialogReturnTarget(app.appId)): void {

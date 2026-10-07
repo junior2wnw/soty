@@ -22,6 +22,8 @@ const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const stageSource = await readFile(new URL('./app-stage.ts', import.meta.url), 'utf8');
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
+const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const failure = code => Object.assign(new Error(code), { code });
@@ -40,7 +42,9 @@ class ElementPort {
     }
     return null;
   }
-  addEventListener() {}
+  listeners = new Map();
+  addEventListener(name, callback) { this.listeners.set(name, callback); }
+  reportValidity() { return true; }
   setAttribute() {}
   removeAttribute() {}
   contains(node) { return node === this || this.children.some(child => child instanceof ElementPort && child.contains(node)); }
@@ -55,7 +59,9 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const discussionCalls = { refresh: 0 };
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '' });
   const ports = {
-    './dom': { el: makeElement, button: label => makeElement('button', '', label), iconButton: label => makeElement('button', '', label), emptyState: label => makeElement('div', '', label) },
+    './dom': { el: makeElement, button: label => makeElement('button', '', label), iconButton: label => makeElement('button', '', label), emptyState: label => makeElement('div', '', label),
+      textInput: (value = '', placeholder = '') => Object.assign(makeElement('input'), { value, placeholder }),
+      labeledField: (label, control) => { const element = makeElement('label', '', label); element.append(control); return element; } },
     './dialogs': { errorText: error => error.code ?? 'failure' },
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
@@ -73,6 +79,9 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };
+  const dialogsModule = { exports: {} };
+  vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
+  ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController });
   ports['./app-stage'] = stageModule.exports;
@@ -124,6 +133,31 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   } };
   return { app, Controller, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+test('actual app onboarding cannot paint a delayed device list after A switches to B', async () => {
+  const f = fixture(), pending = deferred(); let received;
+  f.app.api = { request(op, args) { assert.equal(op, 'apps.devices'); received = args; return pending.promise; } };
+  f.app.openAddApp(); const dialog = f.dialogs.at(-1), before = dialog.body.changes;
+  assert.equal(received.expectedAccountId, 'account-A'); f.app.transitionAccount('account-B');
+  pending.resolve({ devices: [{ claimed: true, online: true, hostDeviceId: 'old-A-host', connectorId: 'old-A-connector', name: 'Private A device' }] }); await turn();
+  assert.equal(dialog.body.changes, before); assert.equal(dialog.element.open, false);
+});
+
+test('actual app onboarding pins A at dispatch and ignores a late success after A to B to A', async () => {
+  const f = fixture(), pending = deferred(), calls = [];
+  f.app.api = { request(op, args) { calls.push({ op, args: structuredClone(args) });
+    if (op === 'apps.devices') return Promise.resolve({ devices: [{ claimed: true, online: true, hostDeviceId: 'host-A', connectorId: 'connector-A', name: 'A device' }] });
+    assert.equal(op, 'apps.register'); return pending.promise; } };
+  f.app.openAddApp(); await turn(); const dialog = f.dialogs.at(-1), form = dialog.body.children[0];
+  const collect = (element, tag) => [element, ...element.children.flatMap(child => child instanceof ElementPort ? collect(child, tag) : [])].filter(child => child.tagName === tag);
+  const inputs = collect(form, 'input'), selectors = collect(form, 'select');
+  inputs[0].value = 'Synthetic A project'; inputs[1].value = '3000'; selectors[0].value = 'host-A'; selectors[1].value = '';
+  const event = { preventDefault() {} }; form.listeners.get('submit')(event); form.listeners.get('submit')(event);
+  const dispatched = calls.filter(call => call.op === 'apps.register'); assert.equal(dispatched.length, 1); assert.equal(dispatched[0].args.expectedAccountId, 'account-A');
+  f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
+  pending.resolve({ app: { id: 'synthetic-accepted-A' } }); await turn();
+  assert.equal(f.app.lastToast, undefined); assert.equal(f.personalFrames.length, 0); assert.equal(dialog.element.open, false);
+});
 
 test('actual refresh A → offline B → online B clears every private cache before B metadata is available', async () => {
   const f = fixture(), oldDialog = f.app.dialog();
