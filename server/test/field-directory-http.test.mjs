@@ -20,37 +20,53 @@ function localIdentityStore() {
 async function environment(t) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-field-signed-http-')), dataDir = join(directory, 'data'), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Isolated field API acceptance</title>');
-  const clients = [], sockets = new Set(); let app, serial = 0;
+  const clients = [], sockets = new Set(); let app, serial = 0, phase = 'start-listener';
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const port = server.address().port, origin = `http://127.0.0.1:${port}`;
   app = createHttpApp(dist, { dataDir, connectOrigins: [origin], appOriginTemplate: `http://{appId}.legacy.localhost:${port}`, namedAppZone: `http://named.localhost:${port}` });
   server.on('upgrade', (req, socket, head) => { if (!app.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
-  t.after(async () => { clients.forEach(client => client.dispose()); await app.locals.closeServices(); sockets.forEach(socket => socket.destroy());
-    await new Promise(done => server.close(done)); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); });
+  t.after(async () => {
+    if (t.signal.aborted) t.diagnostic(`field fixture cancelled during ${phase}`);
+    clients.forEach(client => client.dispose());
+    // Match production shutdown: stop ingress and owned sockets before stores.
+    // A bounded test failure must not leave a live callback against closed SQL.
+    const stopped = new Promise(done => server.close(done));
+    sockets.forEach(socket => socket.destroy());
+    await stopped; await app.locals.closeServices();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  });
   async function client(label) {
     const value = createClientWithStorage({ projectId: 'soty', endpoint: `${origin}/api/connect/rpc`,
       fetch: (url, options) => fetch(url, { ...options, headers: { ...options.headers, origin } }) }, localIdentityStore());
-    clients.push(value); return { client: value, account: await value.bootstrap(label) };
+    clients.push(value); phase = 'signed-client-bootstrap'; return { client: value, account: await value.bootstrap(label) };
   }
   const owner = await client('Автор'), member = await client('Участник'), outsider = await client('Внешний');
+  phase = 'native-profiles';
   for (const actor of [owner, member, outsider]) await actor.client.extension('world.profile.get', {}, { expectedAccountId: actor.account.accountId });
   const identity = { linkId: 'field_test_link_0123456789012345678901234567', hostDeviceId: 'field_private_host', connectorId: 'field_private_connector' };
   const token = randomBytes(32).toString('base64url'), claimCode = randomBytes(32).toString('base64url');
+  phase = 'connector-register';
   const response = await fetch(`${origin}/api/connectors/register`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, scope: 'Dev', protocol: 2, capabilities: ['apps'] }) });
   assert.equal((await response.json()).ok, true);
   const ws = new WebSocket(`${origin.replace('http:', 'ws:')}/api/apps/channel`), frames = [];
   ws.on('message', raw => frames.push(JSON.parse(raw.toString()))); ws.on('error', () => {});
-  await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
+  phase = 'connector-websocket-open';
+  await until(() => ws.readyState === WebSocket.OPEN, 'connector websocket did not open');
+  phase = 'connector-authenticate';
   ws.send(JSON.stringify({ type: 'auth', schema: 'soty.apps-channel.v1', ...identity, token, name: 'Только мой ноутбук' }));
   await until(() => frames.some(frame => frame.type === 'ready'), 'connector did not authenticate');
+  phase = 'connector-claim-ready';
   ws.send(JSON.stringify({ type: 'claim', claimDigest: createHash('sha256').update(claimCode).digest('hex') }));
   await until(() => frames.some(frame => frame.type === 'claim-ready'), 'claim was not acknowledged');
   const ids = { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId };
-  await owner.client.extension('apps.claim', { ...ids, claimCode }); const closed = new Promise(done => ws.once('close', done)); ws.close(); await closed;
-  const call = (actor, op, args = {}) => actor.client.extension(op, args, { expectedAccountId: actor.account.accountId });
+  phase = 'signed-connector-claim';
+  await owner.client.extension('apps.claim', { ...ids, claimCode });
+  phase = 'connector-websocket-close'; ws.close();
+  await until(() => ws.readyState === WebSocket.CLOSED, 'connector websocket did not close');
+  const call = (actor, op, args = {}) => { phase = `signed-${op}`; return actor.client.extension(op, args, { expectedAccountId: actor.account.accountId }); };
   const field = (actor, op, args = {}) => call(actor, op, { expectedAccountId: actor.account.accountId, ...args });
   const create = async (name, grants = {}) => (await call(owner, 'apps.register', { ...ids, name, grants, port: 23000 + ++serial, entryPath: '/initial' })).app;
   async function publish(id, listed) {
