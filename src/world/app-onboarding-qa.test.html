@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подключение приложения — только проверка интерфейса</title>
+<style>body{margin:0;font:14px system-ui}aside.qa{padding:8px 12px;background:#fff8db;color:#3a351f}#qa-host{height:calc(100dvh - 60px)}</style>
+<aside class="qa">Изолированная проверка интерфейса. Синтетические API и данные; общий вход и подключение сервера здесь не проверяются.</aside><div id="qa-host"></div>
+<script type="module">
+  if (!import.meta.env.DEV) throw new Error('Development fixture only');
+  if (!location.hostname.match(/^(localhost|127\.0\.0\.1)$/)) throw new Error('loopback fixture only');
+  const memory = new Map();
+  Object.defineProperty(window, 'localStorage', { value: { getItem:k=>memory.get(k)??null,setItem:(k,v)=>memory.set(k,String(v)),removeItem:k=>memory.delete(k),clear:()=>memory.clear(),key:i=>[...memory.keys()][i]??null,get length(){return memory.size;} } });
+  const { mountWorldApp } = await import('/src/world/app.ts');
+  const accountId='synthetic-onboarding-author', requests=[];
+  const api={async request(op,args={}) { requests.push({op,accountPinned:args.expectedAccountId===accountId});
+    if(op==='world.profile.get')return {profile:{profileId:accountId,displayName:'Автор стенда',bio:'',interests:[],avatarColor:'#DDA149',revision:1}};
+    if(op==='world.community.list')return {communities:[]};
+    if(op==='apps.devices')return {devices:[{hostDeviceId:'synthetic-offline',connectorId:'synthetic-offline-connector',name:'Старый компьютер',claimed:true,online:false},{hostDeviceId:'synthetic-online',connectorId:'synthetic-online-connector',name:'Мой компьютер',claimed:true,online:true}]};
+    if(op==='apps.saved.list')return {revision:0,entries:[],nextCursor:null};
+    if(op==='notes.list')return {notes:[]};
+    if(op==='apps.list'||op==='apps.catalog')return {apps:[]};
+    if(op==='apps.register')throw Object.assign(new Error('Synthetic offline response'),{code:'app_offline'});
+    throw new Error('Unexpected UI fixture operation');
+  }};
+  mountWorldApp(document.querySelector('#qa-host'), {api,localAccount:async()=>({accountId,label:'Синтетический профиль'}),listApps:async()=>[],listDevices:async()=>[],openLegacy(){},openAccount(){},connectDevice(){},agentCreate(){}});
+  window.onboardingQa={read:()=>({requestCount:requests.length,registered:requests.filter(r=>r.op==='apps.register').length,lastDeviceReadPinned:requests.filter(r=>r.op==='apps.devices').at(-1)?.accountPinned===true,allRegistrationsPinned:requests.filter(r=>r.op==='apps.register').every(r=>r.accountPinned)})};
+</script></html>
