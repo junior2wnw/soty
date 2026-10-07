@@ -18,8 +18,11 @@ const opaque = () => randomBytes(32).toString('base64url');
 /** Native browser cookies are shared by hostname, NEVER by port. Embed jars
  * here model a private per-Source broker, not browser isolation on 127.0.0.1.
  * Root authority IPC is controlled; installed HTTP/WS remains a separate gate. */
-export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNativeAuthority = false } = {}) {
+export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNativeAuthority = false, stageSink = () => {} } = {}) {
+  // Diagnostics are fixed phase names only. Never URLs/state/cookies/claims.
+  stageSink('root.begin');
   const root = await environment(t, { renewal: false }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
+  stageSink('root.ready');
   const realms = [], sockets = new Set(), nativeJar = new Map();
   for (const [index, realmId] of ['board', 'library'].entries()) {
     const realm = { realmId, key: randomBytes(32), cipherKey: randomBytes(32), embedJar: new Map(), bff: null, store: null, dropPath: null };
@@ -42,9 +45,10 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNat
     Object.assign(realm, { server, ipc, index, rootLive: true, nativeOrigin: 'http://localhost:' + server.address().port,
       embedOrigin: 'http://127.0.0.1:' + server.address().port, databasePath: join(directory, realmId + '.sqlite') }); realms.push(realm);
   }
-  let configured;
+  stageSink('source.listeners.ready');let configured;
   await root.configureClients(clients => { configured = clients.map((client, index) => ({ ...client, version: 2,
     redirectUri: embedOidc ? realms[index].embedOrigin + '/api/embed/callback' : realms[index].nativeOrigin + '/soty/callback' })); return configured; });
+  stageSink('root.clients.ready');
   for (const realm of realms) {
     const client = configured[realm.index], appId = 'app-' + (realm.index === 0 ? 'a' : 'b').repeat(32);
     realm.client = client; realm.profile = selectedResourceProfile({ schema: 'soty.selected-human-embed.v2', appId,
@@ -118,9 +122,12 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNat
     };
   }
   t.after(async () => {
+    stageSink('source.cleanup.begin');
     realms.forEach(realm => { realm.bff.close(); realm.store.close(); }); sockets.forEach(socket => socket.destroy());
     await Promise.all(realms.flatMap(realm => [realm.server, realm.ipc]).map(server => new Promise(done => server.close(done))));
     await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
+    stageSink('source.cleanup.end');
   });
+  stageSink('source.ready');
   return { root, realms, nativeJar, directory, digest };
 }

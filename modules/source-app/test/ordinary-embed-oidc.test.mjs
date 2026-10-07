@@ -52,7 +52,9 @@ test('Source callback COMMIT wire loss recovers only exact completion receipt vi
 });
 
 test('Standard2 Native form alone permits exact reviewed issuer redirect; null/missing/foreign Origin and same-host wrong-port cannot use valid CSRF/body, unknown query cannot extend CSP', { timeout: 15000 }, async t => {
-  const f = await createOrdinaryHttpFixture(t, { embedOidc: true }), [realm] = f.realms, intent = await realm.beginNative();
+  const stages=[],started=performance.now(),mark=phase=>stages.push({phase,elapsedMs:Math.ceil(performance.now()-started)});
+  t.after(()=>t.diagnostic(JSON.stringify({schema:'soty.source-fixture-stages.v1',stages})));
+  const f = await createOrdinaryHttpFixture(t, { embedOidc: true,stageSink:phase=>mark('standard2.'+phase) }), [realm] = f.realms, intent = await realm.beginNative();mark('standard2.native.ready');
   const rootOrigin = new URL(realm.profile.issuer).origin;
   assert.equal(intent.page.policy.referrer, 'origin');
   assert.equal(intent.page.policy.csp, "default-src 'none'; style-src 'self'; form-action 'self' " + rootOrigin + "; frame-ancestors 'none'");
@@ -66,9 +68,9 @@ test('Standard2 Native form alone permits exact reviewed issuer redirect; null/m
   const extra = await realm.request('/soty/connect?intent=' + intent.form.intent + '&issuer=https%3A%2F%2Fforeign.invalid', { native: true });
   assert.equal(extra.status, 400); assert.equal(extra.policy.csp.includes(rootOrigin), false);
   assert.equal(realm.store.db.prepare('SELECT count(*) AS n FROM native_login_proofs').get().n, 0);
-  const authorized = await request({ origin: realm.nativeOrigin }); assert.equal(authorized.status, 303);
+  const authorized = await request({ origin: realm.nativeOrigin }); assert.equal(authorized.status, 303);mark('standard2.authorized');
   assert.equal(realm.store.db.prepare('SELECT count(*) AS n FROM native_login_proofs').get().n, 1);
-  const old = await createOrdinaryHttpFixture(t), legacy = await old.realms[0].beginNative();
+  const old = await createOrdinaryHttpFixture(t,{stageSink:phase=>mark('standard1.'+phase)}), legacy = await old.realms[0].beginNative();mark('standard1.native.ready');
   assert.equal(legacy.page.policy.referrer, 'no-referrer'); assert.match(legacy.page.policy.csp, /form-action 'self';/u);
 });
 
