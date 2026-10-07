@@ -23,11 +23,11 @@ export async function prepareSourceInstallationPacket(){
     ({contents:new TextDecoder('utf-8',{fatal:true}).decode(source(resolve(args.path))),loader:'js'}));}};
   let esbuild;try{esbuild=require('esbuild');}catch{esbuild=createRequire(require.resolve('vite'))('esbuild');}
   if(esbuild.version!=='0.27.7')throw Error('source_install_build_tool_required');
-  for(const name of ['reader','reader2'])await esbuild.build({entryPoints:[join(root,'modules/source-app/install',name+'-cli.mjs')],
+  for(const name of ['reader','reader2','image-guard'])await esbuild.build({entryPoints:[join(root,'modules/source-app/install',name==='image-guard'?name+'.mjs':name+'-cli.mjs')],
     outfile:join(dist,name+'.mjs'),bundle:true,platform:'node',format:'esm',target:'node24',logLevel:'silent',plugins:[plugin]});
   const publicFiles=['Dockerfile','README.md','operator.template.json','compose.template.yaml'];
   for(const name of publicFiles)await writeFile(join(directory,name),source(join(root,'modules/source-app/install',name)));
-  const files=[...publicFiles,...built.outputs.map(output=>'dist/'+output.path),'dist/reader.mjs','dist/reader2.mjs','dist/provenance.json'];
+  const files=[...publicFiles,...built.outputs.map(output=>'dist/'+output.path),'dist/reader.mjs','dist/reader2.mjs','dist/image-guard.mjs','dist/provenance.json'];
   const artifacts=await Promise.all(files.map(async path=>({path,sha256:sha(await readFile(join(directory,path)))})));
   const manifest={schema:'soty.source-installation-packet.v1',nonce,sourceCommit,baseImage:'sha256:8fd1a16e5239acbe8be0377489a9cd0cac7cf56e73c1be8e5f6a4762bc9e7725',
     baseRevision:'b02f6517346c2275462060b84b3de0fd75bd30aa',protocol:{name:'openid-client',version:'6.8.4'},nativeReader:3,legacyReader:2,

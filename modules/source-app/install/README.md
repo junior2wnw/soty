@@ -28,6 +28,8 @@ Derived Source image использует pinned whole-green Root8fd исклю�
 
 `compose.template.yaml` — операторская спецификация одного Source, с measured immutable image digest и explicit named volume вместо anonymous `/data`. Она не запускается CLI автора и не создаёт connector/client/grants. На другом host/Root server without installed connector тот же template не доказывает transport. Build выполняют по exact canonical Git packet `Dockerfile`; после build отдельно измеряют image/Reader3 и проверяют compatible baseline BEFORE first format3 write. Публичный packet не включает operator.json, ключи, cookies или Native данные.
 
+При build обязательны `SOURCE_REVISION=<полный SHA Source>` и `PACKET_MANIFEST_SHA256=<из проверенного packet>`; отсутствующие/неверные параметры отказывают. Source image переопределяет унаследованную Root revision собственными Source/packet/Reader labels, parentOCI8fd хранится отдельно. Root storage/universal/connect labels намеренно fail-closed: это не Root rollback image. Source image witness не заменяет actual literal ReaderCLI или Native permission. На Windows данный loader проверяет формы/пути, но POSIX600/700 custody не доказывает Windows ACL; Linux custody/image/cold acceptance отдельны.
+
 ## Данные и откат
 
 ДоimageSTART нужен независимый Reader3. Старый Reader2 отвергает Native3 BEFORESTART; готовая compatible Reader3 baseline нужна до3write. При неподдерживаемом schema/key/Native grant Source отказывает, не открывает legacy bypass. Current/compatible Source image/cold должны сохранить все Native IDs/receipts/FKs/encrypted session bytes и private config/key equality.
