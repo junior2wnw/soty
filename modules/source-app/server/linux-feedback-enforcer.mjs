@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
-import {fields,check,digest} from './wire.mjs';
+import {fields,check,digest,deepFreeze} from './wire.mjs';
 import {feedbackJobInput,feedbackJobBudget,createFeedbackProcessorEngine} from './feedback-job-contract.mjs';
 import {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
 import {LINUX_FEEDBACK_WORKER_SOURCE} from './linux-feedback-worker-source.mjs';
@@ -14,6 +14,11 @@ const modes=['success','cpu','wall','cancel','scratch','output'];
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const maxBudget=Object.freeze({wallMs:60000,cpuMs:10000,cleanupMs:2000,scratchBytes:2097152,outputBytes:32768,mediaBytes:1048576,attachments:3,parallel:1});
 const sleep=ms=>new Promise(done=>setTimeout(done,ms));
+// One separately reviewed diagnostic run. The historical WSL placement/engine3
+// stays byte-for-byte unchanged; retained uncertain packets are never reused.
+export const DIAGNOSTIC_LINUX_FEEDBACK_PLACEMENT=deepFreeze({...LOCAL_LINUX_FEEDBACK_PLACEMENT,
+  id:'soty.feedback.local-linux-wsl-diagnostics',version:1,
+  directory:LOCAL_LINUX_FEEDBACK_PLACEMENT.lab+'/source-feedback-jobs-diag-c962047a89ef40c1b33a105d7e61a924'});
 
 /** Narrow LAB host port. Docker custody belongs to the trusted supervisor,
  * NEVER to the processor/author JSON. No real model/user media is enabled.
@@ -26,14 +31,17 @@ export function createSyntheticLinuxFeedbackProcessor(options){
 export function createSyntheticLocalLinuxFeedbackProcessor(options){
   return processor(options,LOCAL_LINUX_FEEDBACK_PLACEMENT);
 }
-function processor(options,placement){
+export function createSyntheticDiagnosticLinuxFeedbackProcessor(options){
+  return processor(options,DIAGNOSTIC_LINUX_FEEDBACK_PLACEMENT,4);
+}
+function processor(options,placement,engineVersion=placement?3:2){
   const value=fields(options,['directory'],['dockerBinary','scenario','onEvidence']);
   const directory=value.directory,docker=value.dockerBinary??'/usr/bin/docker',scenario=value.scenario??'success';
   const lab=placement?.lab??LAB;
   check(directory===(placement?.directory??LAB+'/source-feedback-jobs')&&docker==='/usr/bin/docker'&&modes.includes(scenario)
     &&(value.onEvidence===undefined||typeof value.onEvidence==='function'),'source_feedback_processor_not_ready',503);
-  const workerSha256=sha(LINUX_FEEDBACK_WORKER_SOURCE),ref=Object.freeze({id:'local.synthetic-linux.'+scenario,version:placement?3:2,
-    digest:digest(placement?{schema:'soty.synthetic-linux-feedback.v3',placement,
+  const workerSha256=sha(LINUX_FEEDBACK_WORKER_SOURCE),ref=Object.freeze({id:'local.synthetic-linux.'+scenario,version:engineVersion,
+    digest:digest(placement?{schema:'soty.synthetic-linux-feedback.v'+engineVersion,placement,
       image:SYNTHETIC_FEEDBACK_IMAGE,workerSha256,scenario,purpose:'ocr',maxBudget}
       :{schema:'soty.synthetic-linux-feedback.v2',lifecycleProfile:'soty.fixed-linux-feedback-lifecycle.v2',
       image:SYNTHETIC_FEEDBACK_IMAGE,workerSha256,scenario,purpose:'ocr',maxBudget})});
