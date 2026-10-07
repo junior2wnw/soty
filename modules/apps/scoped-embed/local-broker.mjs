@@ -301,12 +301,19 @@ export function createLocalScopedEmbedBroker({
         need(!signal?.aborted, "scoped_embed_cancelled", 499);
         pruneJars();
         const stored = jars.get(currentContext.reference.id);
+        const { expiresAt: _retentionDeadline, ...immutableContext } = currentContext;
+        const contextDigest = hash(immutableContext);
+        need(!stored || stored.contextDigest === contextDigest, 'scoped_embed_authority_changed', 403);
         need(
           stored || jars.size < SCOPED_EMBED_LIMITS.continuations,
           "scoped_embed_capacity",
           429,
         );
-        const jar = stored?.cookies ?? {},
+        const capturedJar = stored ?? (route.credentialFree ? null : {
+          contextDigest, expiresAt: currentContext.expiresAt, cookies: {},
+        });
+        if (!stored && capturedJar) jars.set(currentContext.reference.id, capturedJar);
+        const jar = capturedJar?.cookies ?? {},
           cookie = route.credentialFree ? '' : Object.entries(jar)
             .filter(([, value]) => value.token && value.expiresAt > clock())
             .map(([name, value]) => name + "=" + value.token)
@@ -373,8 +380,16 @@ export function createLocalScopedEmbedBroker({
         }
         // Buffer before releasing protected bytes, then independently recheck
         // the original Root scope. A failed write reply is not proof of none.
-        await current(currentContext);
-        local(currentContext);
+        const finalContext = await current(currentContext);
+        local(finalContext);
+        const { expiresAt: finalDeadline, ...finalImmutable } = finalContext;
+        need(hash(finalImmutable) === contextDigest, 'scoped_embed_authority_changed', 403);
+        if (!route.credentialFree) {
+          need(jars.get(currentContext.reference.id) === capturedJar, 'scoped_embed_authority_changed', 403);
+          // Retention only: every dispatch still requires current Root authority
+          // and independently checks each Source cookie's own expiry.
+          capturedJar.expiresAt = Math.max(capturedJar.expiresAt, finalDeadline);
+        }
         const incomingCookies=response.headers.getSetCookie?.()??[];
         if(route.credentialFree)need(incomingCookies.length===0&&!response.headers.get('location')&&[200,206,304].includes(response.status),'scoped_embed_public_asset_invalid',502);
         const incoming = cookies(
@@ -390,10 +405,13 @@ export function createLocalScopedEmbedBroker({
           "scoped_embed_capacity",
           429,
         );
-        if(!route.credentialFree)jars.set(currentContext.reference.id, {
-          expiresAt: currentContext.expiresAt,
-          cookies: { ...jar, ...incoming },
-        });
+        if(!route.credentialFree) {
+          // Another response may have installed/removed a Source cookie while
+          // this request was awaiting bytes. Never restore its old snapshot.
+          const latest = jars.get(currentContext.reference.id);
+          need(latest === capturedJar && latest.contextDigest === contextDigest, 'scoped_embed_authority_changed', 403);
+          latest.cookies = { ...latest.cookies, ...incoming };
+        }
         const out = {};
         for (const name of [
           "content-type",

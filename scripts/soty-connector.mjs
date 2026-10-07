@@ -16,7 +16,7 @@ import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal 
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.7";
+const connectorVersion = "1.4.8";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

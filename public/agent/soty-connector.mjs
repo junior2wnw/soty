@@ -1052,12 +1052,21 @@ var ScopedConnectorHost = (() => {
           need(!signal?.aborted, "scoped_embed_cancelled", 499);
           pruneJars();
           const stored = jars.get(currentContext2.reference.id);
+          const { expiresAt: _retentionDeadline, ...immutableContext } = currentContext2;
+          const contextDigest = hash(immutableContext);
+          need(!stored || stored.contextDigest === contextDigest, "scoped_embed_authority_changed", 403);
           need(
             stored || jars.size < SCOPED_EMBED_LIMITS.continuations,
             "scoped_embed_capacity",
             429
           );
-          const jar = stored?.cookies ?? {}, cookie = route.credentialFree ? "" : Object.entries(jar).filter(([, value]) => value.token && value.expiresAt > clock()).map(([name, value]) => name + "=" + value.token).join("; ");
+          const capturedJar = stored ?? (route.credentialFree ? null : {
+            contextDigest,
+            expiresAt: currentContext2.expiresAt,
+            cookies: {}
+          });
+          if (!stored && capturedJar) jars.set(currentContext2.reference.id, capturedJar);
+          const jar = capturedJar?.cookies ?? {}, cookie = route.credentialFree ? "" : Object.entries(jar).filter(([, value]) => value.token && value.expiresAt > clock()).map(([name, value]) => name + "=" + value.token).join("; ");
           const proof = route.credentialFree ? {} : signer.headers({
             context: currentContext2,
             method,
@@ -1113,8 +1122,14 @@ var ScopedConnectorHost = (() => {
               reader.releaseLock();
             }
           }
-          await current(currentContext2);
-          local(currentContext2);
+          const finalContext = await current(currentContext2);
+          local(finalContext);
+          const { expiresAt: finalDeadline, ...finalImmutable } = finalContext;
+          need(hash(finalImmutable) === contextDigest, "scoped_embed_authority_changed", 403);
+          if (!route.credentialFree) {
+            need(jars.get(currentContext2.reference.id) === capturedJar, "scoped_embed_authority_changed", 403);
+            capturedJar.expiresAt = Math.max(capturedJar.expiresAt, finalDeadline);
+          }
           const incomingCookies = response.headers.getSetCookie?.() ?? [];
           if (route.credentialFree) need(incomingCookies.length === 0 && !response.headers.get("location") && [200, 206, 304].includes(response.status), "scoped_embed_public_asset_invalid", 502);
           const incoming = cookies(
@@ -1129,10 +1144,11 @@ var ScopedConnectorHost = (() => {
             "scoped_embed_capacity",
             429
           );
-          if (!route.credentialFree) jars.set(currentContext2.reference.id, {
-            expiresAt: currentContext2.expiresAt,
-            cookies: { ...jar, ...incoming }
-          });
+          if (!route.credentialFree) {
+            const latest = jars.get(currentContext2.reference.id);
+            need(latest === capturedJar && latest.contextDigest === contextDigest, "scoped_embed_authority_changed", 403);
+            latest.cookies = { ...latest.cookies, ...incoming };
+          }
           const out = {};
           for (const name of [
             "content-type",
@@ -3549,7 +3565,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.7";
+const connectorVersion = "1.4.8";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
