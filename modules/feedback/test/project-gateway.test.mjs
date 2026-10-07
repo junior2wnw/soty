@@ -114,6 +114,27 @@ test('Source revoke after read and before reply releases no private content', as
   await denied(f.execute('get', { projectId: 'one', ticketId: 'ticket-one' }), 'project_feedback_access_denied');
 });
 
+test('get admits maximum bounded media and escaped conversation, but rejects over-budget aggregates', async t => {
+  const fullMedia = Buffer.alloc(1048576).toString('base64');
+  const messages = Array.from({ length: 25 }, (_, i) => ({ id: `message-${i}`, kind: 'support',
+    body: '"'.repeat(i === 24 ? 4608 : 8000), createdAt: 1 }));
+  const fixture = oversized => ({ async read(value, read) {
+    const result = await read(value);
+    result.ticket.attachments = [{ id: 'image-one', kind: 'image', name: 'selected.png', mimeType: 'image/png',
+      byteLength: 1048576, dataBase64: fullMedia }];
+    result.ticket.messages = oversized ? Array.from({ length: 90 }, (_, i) => ({ id: `message-${i}`, kind: 'support',
+      body: '"'.repeat(8000), createdAt: 1 })) : messages;
+    return result;
+  } });
+  const f = host(t, fixture(false));
+  const reply = await f.execute('get', { projectId: 'one', ticketId: 'ticket-one' });
+  assert.equal(reply.ticket.attachments[0].byteLength, 1048576);
+  assert.equal(reply.ticket.messages.reduce((sum, message) => sum + Buffer.byteLength(message.body), 0), 196608);
+  assert.ok(Buffer.byteLength(JSON.stringify(reply)) > 1750000);
+  const tooLarge = host(t, fixture(true));
+  await denied(tooLarge.execute('get', { projectId: 'one', ticketId: 'ticket-one' }), 'project_feedback_payload_too_large');
+});
+
 test('same SQLite native ACL denies commit after an awaited preparation', async t => {
   const f = host(t, { async commit(value, commit, db) {
     await turn(); db.exec("UPDATE native_acl SET allowed=0,epoch=epoch+1 WHERE project='one'"); return commit(value); } });

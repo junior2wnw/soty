@@ -191,7 +191,10 @@ export function createProjectFeedbackGateway({ sourceId, captureVerifiedActor, w
             const value = await (WRITES.has(op) ? commit : read)({ protocol: PROJECT_FEEDBACK_PROTOCOL,
               op, args, authority: context, assertCurrent: current, signal: controller.signal });
             await current();
-            const reply = capture(value, op === 'get' ? 1500000 : 262144);
+            // A lawful 1MiB attachment expands in base64, and the bounded
+            // conversation can double when JSON escapes quotes/backslashes.
+            // Individual media/conversation limits still apply below.
+            const reply = capture(value, op === 'get' ? 2097152 : 262144);
             exact(reply, op === 'context' ? ['context'] : op === 'list' ? ['tickets', 'nextCursor']
               : WRITES.has(op) ? ['requestId', 'replayed', 'receipt', 'ticket'] : ['ticket']);
             if (WRITES.has(op)) check(reply.requestId === args.requestId && typeof reply.replayed === 'boolean', 'project_feedback_receipt_invalid', 502);
