@@ -6,6 +6,7 @@ import { canonicalOAuthJson } from '../capabilities/server/oauth-profile.mjs';
 import { HumanIdentityError, HUMAN_IDENTITY_PROFILE, requireHuman as require, closed, data, digest, id, uid, nonce, synchronous } from './profile.mjs';
 import { initializeHumanIdentitySchema } from './schema.mjs';
 import { HUMAN_RENEWAL_LIMITS as RENEWAL_LIMITS } from './profile.mjs';
+import { createUserinfoBudgetAuthority } from '../../server/userinfo-budget-authority.js';
 
 export const HUMAN_IDENTITY_OPERATIONS = Object.freeze(['identity.human.approve']);
 const MODELS = new Set(['Session', 'Interaction', 'Grant', 'AuthorizationCode', 'RefreshToken', 'AccessToken']);
@@ -220,7 +221,47 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     };
     return row.account_id ? fenced({ accountId: row.account_id, deviceId: row.device_id }, load) : load();
   }
+  function userinfoBudgetProof(rawToken) {
+    require(!stopped, 'human_identity_closed', 503);
+    const captured = db.prepare("SELECT * FROM human_identity_artifacts WHERE model='AccessToken' AND id_hash=?")
+      .get(hashId('AccessToken', rawToken));
+    if (!captured || captured.expires_at <= epoch() || captured.consumed_at !== null
+      || !captured.account_id || !captured.device_id || !captured.grant_hash
+      || synchronous(actorActive({ accountId: captured.account_id, deviceId: captured.device_id })) !== true) return null;
+    try {
+      return fenced({ accountId: captured.account_id, deviceId: captured.device_id }, () => {
+        // Read again inside the actual Connect/World fence; the first lookup is
+        // only an actor locator. No declared client/account/header grants a key.
+        const row = db.prepare("SELECT * FROM human_identity_artifacts WHERE model='AccessToken' AND id_hash=?")
+          .get(captured.id_hash), binding = row && bindingForHash(row.grant_hash);
+        if (!row || row.expires_at <= epoch() || row.consumed_at !== null || !activeBinding(binding)
+          || row.account_id !== captured.account_id || row.device_id !== captured.device_id
+          || binding.account_id !== row.account_id || binding.device_id !== row.device_id || binding.client_id !== row.client_id) return null;
+        const grant = db.prepare("SELECT expires_at FROM human_identity_artifacts WHERE model='Grant' AND id_hash=?").get(row.grant_hash);
+        if (!grant || grant.expires_at <= epoch()) return null;
+        const payload = decrypt('AccessToken', row.id_hash, row.payload_cipher, row.key_id, row.payload_digest);
+        if (payload.kind !== 'AccessToken' || payload.aud !== undefined || payload.jti !== rawToken
+          || hashId('Grant', payload.grantId) !== row.grant_hash || payload.accountId !== row.account_id
+          || payload.clientId !== row.client_id || !Number.isSafeInteger(payload.exp) || payload.exp <= epoch()
+          || typeof payload.scope !== 'string' || !payload.scope.split(' ').includes('openid')) return null;
+        const authority = clientAuthority(row.client_id);
+        return {
+          // Devices, grants and newly issued ATs share this account/client rate
+          // window. They remain exact currentness checks below, not key inputs.
+          key: digest(['soty.human.userinfo-budget.v1', profile.issuer, profile.registryId, profile.environmentId,
+            row.client_id, authority.generation, authority.client.profileDigest, row.account_id]),
+          pin: digest([row.id_hash, row.payload_digest, row.key_id, row.account_id, row.device_id, row.client_id,
+            row.grant_hash, row.expires_at, binding.profile_digest, binding.client_generation, binding.session_expires_at ?? null]),
+        };
+      });
+    } catch (error) {
+      if (error instanceof HumanIdentityError && error.code === 'human_identity_actor_revoked') return null;
+      throw error;
+    }
+  }
+  const userinfoBudget = createUserinfoBudgetAuthority(userinfoBudgetProof);
   return Object.freeze({
+    userinfoBudget,
     /** Host-only expected-subject mapping for an already captured signed Root
      * actor. This is neither an OIDC token nor permission in an application. */
     withSubjectAuthority(request, callback) {

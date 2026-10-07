@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { consumeUserinfoBudget, isUserinfoBudgetAuthority } from './userinfo-budget-authority.js';
 
 export class OAuthIngressError extends Error {
   constructor(code) { super(code); this.name = 'OAuthIngressError'; this.code = code; }
@@ -8,6 +9,7 @@ export const OAUTH_HTTP_LIMITS = Object.freeze({
   bodyBytes: 16384, bodyTimeoutMs: 10000, requests: 16, requestsPerPeer: 4,
   attempts: 120, windowMs: 60000, peers: 2048, urlBytes: 8192,
 });
+export const HUMAN_USERINFO_HTTP_LIMITS = Object.freeze({ attempts: 600, hostAttempts: 9600, slots: 2048 });
 
 export function oauthSingleHeader(req, name) {
   let value;
@@ -57,16 +59,35 @@ function formHeaders(req, maximum) {
  * The owner MUST release in finally after awaiting its entire handler (for the
  * Provider, public provider.use + await next()). Socket close is not completion
  * of async adapter work. The peer is never inferred from forwarding headers. */
-export function createOAuthIngress({ limits = {} } = {}) {
+export function createOAuthIngress({ limits = {}, userinfoBudget, userinfoLimits = {} } = {}) {
   check(limits && typeof limits === 'object' && !Array.isArray(limits), 'oauth_configuration_invalid');
   check(Object.keys(limits).every(key => Object.hasOwn(OAUTH_HTTP_LIMITS, key)), 'oauth_configuration_invalid');
   const bounds = { ...OAUTH_HTTP_LIMITS, ...limits };
   for (const [key, value] of Object.entries(bounds)) {
     check(Number.isSafeInteger(value) && value > 0 && value <= OAUTH_HTTP_LIMITS[key], 'oauth_configuration_invalid');
   }
-  const peers = new Map(); let active = 0;
+  check(userinfoBudget === undefined || isUserinfoBudgetAuthority(userinfoBudget), 'oauth_configuration_invalid');
+  check(userinfoLimits && typeof userinfoLimits === 'object' && !Array.isArray(userinfoLimits)
+    && Object.keys(userinfoLimits).every(key => Object.hasOwn(HUMAN_USERINFO_HTTP_LIMITS, key)), 'oauth_configuration_invalid');
+  const userinfoBounds = { ...HUMAN_USERINFO_HTTP_LIMITS, ...userinfoLimits };
+  for (const [key, value] of Object.entries(userinfoBounds)) {
+    check(Number.isSafeInteger(value) && value > 0 && value <= HUMAN_USERINFO_HTTP_LIMITS[key], 'oauth_configuration_invalid');
+  }
+  const peers = new Map(), users = new Map(); let active = 0, userSweep;
+  const host = { since: performance.now(), attempts: 0 };
+  function compactUsers(now) {
+    // Fixed work per enter, no live-slot eviction and no grant/history deletion.
+    // A continuing iterator prevents a busy early key starving expired tails.
+    userSweep ||= users.entries();
+    for (let index = 0; index < 64; index++) {
+      const next = userSweep.next();
+      if (next.done) { userSweep = undefined; break; }
+      const [key, item] = next.value;
+      if (item.active === 0 && now - item.since >= OAUTH_HTTP_LIMITS.windowMs) users.delete(key);
+    }
+  }
   return Object.freeze({
-    enter(req, res) {
+    enter(req, res, budgetReference) {
       const target = req.originalUrl || req.url;
       check(typeof target === 'string' && Buffer.byteLength(target) <= bounds.urlBytes);
       const now = performance.now(), peer = req.socket?.remoteAddress;
@@ -77,13 +98,25 @@ export function createOAuthIngress({ limits = {} } = {}) {
         check(peers.size < bounds.peers, 'temporarily_unavailable');
         item = { since: now, attempts: 0, active: 0 }; peers.set(peer, item);
       } else if (now - item.since >= bounds.windowMs) { item.since = now; item.attempts = 0; }
-      check(item.attempts < bounds.attempts, 'rate_limit'); item.attempts++;
+      const userKey = userinfoBudget ? consumeUserinfoBudget(userinfoBudget, req, budgetReference) : undefined;
+      let user;
+      if (userKey) {
+        compactUsers(now);
+        user = users.get(userKey);
+        if (!user) {
+          check(users.size < userinfoBounds.slots, 'temporarily_unavailable');
+          user = { since: now, attempts: 0, active: 0 }; users.set(userKey, user);
+        } else if (now - user.since >= OAUTH_HTTP_LIMITS.windowMs) { user.since = now; user.attempts = 0; }
+        if (now - host.since >= OAUTH_HTTP_LIMITS.windowMs) { host.since = now; host.attempts = 0; }
+        check(user.attempts < userinfoBounds.attempts && host.attempts < userinfoBounds.hostAttempts, 'rate_limit');
+        user.attempts++; host.attempts++;
+      } else { check(item.attempts < bounds.attempts, 'rate_limit'); item.attempts++; }
       check(active < bounds.requests && item.active < bounds.requestsPerPeer, 'temporarily_unavailable');
-      active++; item.active++;
+      active++; item.active++; if (user) user.active++;
       let released = false, reading = false;
       const release = () => {
         if (released) return;
-        released = true; active--; item.active--;
+        released = true; active--; item.active--; if (user) user.active--;
       };
       return Object.freeze({
         release,

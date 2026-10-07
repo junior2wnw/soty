@@ -13,9 +13,10 @@ function domain(action) {
 }
 
 /** Maintained OIDC engine; the signed Connect bridge is a private interaction authentication port. */
-export function createHumanIdentityProvider({ profile, service }) {
+export function createHumanIdentityProvider({ profile, service, ingressLimits = {}, userinfoLimits = {} }) {
   if (!profile?.enabled || !service) throw new HumanIdentityError('human_identity_disabled', 503);
-  const staged = new AsyncLocalStorage(), requests = new AsyncLocalStorage(), ingress = createOAuthIngress(), providerKeys = profile.providerKeys();
+  const staged = new AsyncLocalStorage(), requests = new AsyncLocalStorage(),
+    ingress = createOAuthIngress({ limits: ingressLimits, userinfoBudget: service.userinfoBudget, userinfoLimits }), providerKeys = profile.providerKeys();
   const tokenRequest = () => { const ctx = Provider.ctx?.oidc; return ctx?.client ? Object.freeze({ clientId: ctx.client.clientId, grantType: ctx.params?.grant_type }) : undefined; };
   class Adapter {
     constructor(model) { this.model = model; }
@@ -86,7 +87,8 @@ export function createHumanIdentityProvider({ profile, service }) {
     if (!ctx.response.get('Content-Security-Policy')) ctx.set('Content-Security-Policy',
       "default-src 'none';script-src 'self';base-uri 'none';form-action 'self';frame-ancestors 'self'");
     try {
-      lease = ingress.enter(ctx.req, ctx.res); if (ctx.method === 'POST') ctx.req.body = await lease.readForm();
+      const budgetReference = service.userinfoBudget?.capture(ctx.req);
+      lease = ingress.enter(ctx.req, ctx.res, budgetReference); if (ctx.method === 'POST') ctx.req.body = await lease.readForm();
       await next();
       // Adapter commits do not make the whole SDK pipeline atomic. A failure
       // after consume closes this family; its consumed RT tombstone is retained.
