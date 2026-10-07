@@ -73,6 +73,8 @@ Checkpoint 07.10.2026, 09:45 UTC: публичный визуальный вып
 
 ## P2: разговор
 
+Checkpoint 07.10.2026, 13:02 UTC: P2.3 локальный CallCoordinator source-компонент перенесён в `modules/personal-agent/call/`, verified-component. 62/62 проверки после переноса и independent peer62+10прежних+3дополнительных PASS. Исправлены накопление отменённых работ и reentrant смена аккаунта/закрытие/getters; все прежние HOLD доказательства сохранены. Микрофон по умолчанию выключен; late permission/result очищаются, same-account navigation сохраняет звонок; предел16ownership groups удерживается до фактического settlement/cleanup. Отдельные agent/recording/transcript features не включаются join. Это локальная библиотека с trusted ports, **не** signed Connect admission, SFU/TURN, UI кнопка или внедрённый звонок. Порядок реального подключения и оставшиеся gates: `modules/personal-agent/call/INTEGRATION.md`. Микрофон/сеть/paid calls не запускались.
+
 1. P2.1: выделить transcript/turn/epoch/scheduler из реального voice donor; не переносить чужой business context. Текстовый GLM brain и audio provider — разные компоненты.
 2. P2.2: live call admission на account/device/membership; проверять удаление и повторный вход со старым JWT; TURN budget отдельно.
 3. P2.3: компактная кнопка звонка; микрофон выключен до явного действия; прослушивание, mute, завершение, приглашение агента и запись — отдельные понятные состояния. Чат и участие не дают агенту tool authority.
