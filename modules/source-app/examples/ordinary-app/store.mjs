@@ -18,40 +18,44 @@ export function createOrdinaryAppStore(options) {
   const requestedFormat = value.format ?? 1; check([1,2,3].includes(requestedFormat) && (value.allowLoginProofMigration === undefined || typeof value.allowLoginProofMigration === 'boolean')
     &&(value.allowFeedbackJobsMigration===undefined||typeof value.allowFeedbackJobsMigration==='boolean'));
   const db = new DatabaseSync(value.databasePath), clock = value.clock ?? Date.now, key = Buffer.from(value.key);
-  let objects;try{db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');objects=db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();}
-  catch(error){db.close();key.fill(0);throw error;}
-  if (objects.length === 0) {
-    if(value.initialize!==true){db.close();key.fill(0);}
-    check(value.initialize === true, 'ordinary_source_storage_not_ready', 503);
-    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId);
-      // Keep the independent format/FK oracle inside the SAME initialization
-      // transaction: an unrecognized authority schema must never commit.
-      verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT'); }
-    catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
-  }
   let reader;
   try {
+    db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+    const objects=db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();
+    if(objects.length===0){
+      check(value.initialize===true,'ordinary_source_storage_not_ready',503);
+      db.exec('BEGIN IMMEDIATE');
+      db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat===2?ORDINARY_SCHEMA_2:ORDINARY_SCHEMA);
+      db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat,value.realmId);
+      // Verify independent format/FK oracle before the initialization commits.
+      verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT');
+    }
     reader = verifyOrdinaryReader3(db, value.realmId);
     if (requestedFormat === 2 && reader.format === 1) {
       check(value.allowLoginProofMigration === true, 'ordinary_source_migration_required', 503);
       verifyOrdinaryReader1(db, value.realmId); db.exec('BEGIN IMMEDIATE');
-      try {
-        // native_meta has no inbound FK. Preserve every other Native/BFF row
-        // verbatim; the only replaced row is this explicitly versioned marker.
-        db.exec('DROP TABLE native_meta; ' + ORDINARY_META_2 + ';'); db.prepare('INSERT INTO native_meta VALUES(2,?)').run(value.realmId);
-        db.exec(ORDINARY_LOGIN_PROOF_DDL); verifyOrdinaryReader2(db, value.realmId); db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      // native_meta has no inbound FK. Preserve every other Native/BFF row
+      // verbatim; the only replaced row is this explicitly versioned marker.
+      db.exec('DROP TABLE native_meta; ' + ORDINARY_META_2 + ';'); db.prepare('INSERT INTO native_meta VALUES(2,?)').run(value.realmId);
+      db.exec(ORDINARY_LOGIN_PROOF_DDL); verifyOrdinaryReader2(db, value.realmId); db.exec('COMMIT');
       reader = verifyOrdinaryReader2(db, value.realmId);
     }
     if(requestedFormat===3&&reader.format<3){
       check(reader.format===2&&value.allowFeedbackJobsMigration===true,'ordinary_source_jobs_migration_required',503);
       verifyOrdinaryReader2(db,value.realmId);db.exec('BEGIN IMMEDIATE');
-      try{db.exec('DROP TABLE native_meta; '+ORDINARY_META_3+';');db.prepare('INSERT INTO native_meta VALUES(3,?)').run(value.realmId);
-        db.exec(ORDINARY_JOB_DDL);verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+      db.exec('DROP TABLE native_meta; '+ORDINARY_META_3+';');db.prepare('INSERT INTO native_meta VALUES(3,?)').run(value.realmId);
+      db.exec(ORDINARY_JOB_DDL);verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT');
       reader=verifyOrdinaryReader3(db,value.realmId);
     }
-  } catch (error) { db.close(); throw error; }
-  db.exec('PRAGMA journal_mode=WAL;');
+    db.exec('PRAGMA journal_mode=WAL;');
+  }catch(error){
+    // Cleanup cannot replace the primary rejection or leave a live key when
+    // BEGIN/ROLLBACK/reader/WAL itself fails. close rolls back any remaining TX.
+    try{if(db.isTransaction)db.exec('ROLLBACK');}catch{}
+    try{db.close();}catch{}
+    finally{key.fill(0);}
+    throw error;
+  }
   let closed = false, transaction = false;
   function current() { check(!closed, 'ordinary_source_closed', 503); }
   function tx(action) {
