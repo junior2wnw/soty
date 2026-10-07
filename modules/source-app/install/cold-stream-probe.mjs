@@ -18,7 +18,7 @@ const limits={archiveBytes:16777216,plaintextBytes:16777216,fileBytes:4194304,ex
 const realmId=SOURCE_COLD_NATIVE_REALM,ports=createOrdinaryNativeRestorePorts({realmId});
 async function pin(path){const file=await open(path,'r');try{const s=await file.stat({bigint:true}),text=await readFile('/proc/self/fdinfo/'+file.fd,'ascii');
   check(s.isDirectory()&&s.uid===1000n&&(s.mode&0o7777n)===0o700n);return{path,dev:s.dev,ino:s.ino,mountId:Number(text.match(/^mnt_id:\s*([1-9]\d*)$/mu)[1])};}finally{await file.close();}}
-let phase='preflight',result,passed=false,duplexOutputDenied=false,duplexInputDenied=false;
+let phase='preflight',result,passed=false,duplexOutputDenied=false,receiverEmitCloseDenied=false,receiverReads=0;
 try{
   check(process.platform==='linux'&&process.getuid()===1000&&process.version==='v24.15.0');process.umask(0o077);
   const targetRoot=await lstat('/target');check(targetRoot.isDirectory()&&!targetRoot.isSymbolicLink()&&targetRoot.uid===1000&&(targetRoot.mode&0o777)===0o700&&(await readdir('/target')).length===0);
@@ -41,18 +41,23 @@ try{
   const input={targetId,privateKeyPem:keys.privateKey,expectedSha256:sha(await readFile(backup)),expectedManifestSha256:sha(JSON.stringify(manifest)),sourceWitness:witness,limits};
   await mkdir('/target/restore',{mode:0o700});await mkdir('/target/restore/data',{mode:0o700});await mkdir('/target/restore/config',{mode:0o700});
   const ns=await stat('/proc/self/ns/mnt',{bigint:true}),target={targetId,mountNamespace:{dev:ns.dev,ino:ns.ino},namespace:await pin('/target/restore'),dataRoot:await pin('/target/restore/data'),configRoot:await pin('/target/restore/config')};
-  phase='duplex_negatives';const duplex=new PassThrough({highWaterMark:65536});
+  phase='sender_duplex_negative';const duplex=new PassThrough({highWaterMark:65536});
   try{await ports.send({file:backup,privateKeyPem:input.privateKeyPem,expectedSha256:input.expectedSha256,expectedManifestSha256:input.expectedManifestSha256,sourceWitness:witness,limits,output:duplex});}
   catch(error){duplexOutputDenied=sourceColdFailureCode(error)==='restore_archive_invalid';}
-  const{archiveBytes,...extractLimits}=limits;
-  try{await ports.extract({input:duplex,target,expectedManifestSha256:input.expectedManifestSha256,sourceWitness:witness,limits:{...extractLimits,freeSpaceReserveBytes:16777216}});}
-  catch(error){duplexInputDenied=sourceColdFailureCode(error)==='restore_archive_invalid';}
-  check(duplexOutputDenied&&duplexInputDenied&&duplex.destroyed===false&&(await readdir(target.dataRoot.path)).length===0);duplex.destroy();
+  check(duplexOutputDenied&&duplex.destroyed===false);duplex.destroy();
+  // Receiver permits suitable Readable/Duplex inputs. Test its ACTUAL fresh
+  // profile guard separately, without adopting a valid input and waiting idle.
+  phase='receiver_profile_negative';const{archiveBytes,...extractLimits}=limits;
+  const invalidInput=new Readable({emitClose:false,highWaterMark:65536,read(){receiverReads++;this.push(null);}});
+  try{await ports.extract({input:invalidInput,target,expectedManifestSha256:input.expectedManifestSha256,sourceWitness:witness,limits:{...extractLimits,freeSpaceReserveBytes:16777216}});}
+  catch(error){receiverEmitCloseDenied=sourceColdFailureCode(error)==='restore_archive_invalid';}
+  check(receiverEmitCloseDenied&&receiverReads===0&&invalidInput.destroyed===false&&(await readdir(target.dataRoot.path)).length===0
+    &&(await readdir(target.configRoot.path)).length===0);invalidInput.destroy();
   phase='native_streams';result=await transferColdNativeThroughRam(ports,input,target);input.privateKeyPem='';keys.privateKey='';check(result?.passed===true);
   const restored=readOrdinaryFormat3('/target/restore/data/native/native.sqlite',realmId);check(restored.format===3&&restored.objects===29);
   check(sha(await readFile('/target/restore/data/native/native.sqlite'))===sha(await readFile(database)));
   passed=true;phase='done';
 }catch(error){console.log(JSON.stringify({schema:'soty.source-native-stream-probe.v1',passed:false,phase,code:sourceColdFailureCode(error),nodeVersion:process.version,
-  duplexOutputDenied,duplexInputDenied,...(result?{transfer:result}:{}),syntheticOriginal:true,physicalColdProved:false,productionReady:false}));process.exitCode=1;}
-if(passed)console.log(JSON.stringify({schema:'soty.source-native-stream-probe.v1',passed:true,phase,nodeVersion:process.version,duplexOutputDenied,duplexInputDenied,
+  duplexOutputDenied,receiverEmitCloseDenied,receiverReads,...(result?{transfer:result}:{}),syntheticOriginal:true,physicalColdProved:false,productionReady:false}));process.exitCode=1;}
+if(passed)console.log(JSON.stringify({schema:'soty.source-native-stream-probe.v1',passed:true,phase,nodeVersion:process.version,duplexOutputDenied,receiverEmitCloseDenied,receiverReads,
   transfer:result,syntheticOriginal:true,physicalColdProved:false,productionReady:false}));
