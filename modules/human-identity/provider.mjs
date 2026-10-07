@@ -45,7 +45,11 @@ export function createHumanIdentityProvider({ profile, service }) {
   const prefix = (profile.secure ? '__Host-' : '') + 'soty_human_';
   const provider = new Provider(profile.issuer, {
     adapter: Adapter, clients: profile.providerClients(), jwks: providerKeys.jwks,
-    cookies: { keys: providerKeys.cookieKeys, names: { session: prefix + 'session', interaction: prefix + 'interaction', resume: prefix + 'resume' },
+    // The maintained SDK pins resume to /authorize/:uid after short options.
+    // __Host- requires Path=/ and Chrome would reject that scoped cookie.
+    // Keep the SDK's narrow path, Secure and absent Domain; other cookies stay __Host-.
+    cookies: { keys: providerKeys.cookieKeys, names: { session: prefix + 'session', interaction: prefix + 'interaction',
+      resume: (profile.secure ? '__Secure-' : '') + 'soty_human_resume' },
       long: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: profile.secure ? '/' : '/human-identity', maxAge: 600000 },
       short: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: profile.secure ? '/' : '/human-identity', maxAge: 300000 } },
     responseTypes: ['code'], scopes: ['openid', 'profile'], claims: { openid: ['sub'], profile: ['name', 'preferred_username'] },
