@@ -2,7 +2,7 @@ FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-jsonschema git \
+  && apt-get install -y --no-install-recommends python3 python3-jsonschema git openssl \
   && ln -s /usr/bin/python3 /usr/local/bin/python \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable \
