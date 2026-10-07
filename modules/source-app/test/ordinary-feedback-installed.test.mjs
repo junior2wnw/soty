@@ -38,6 +38,26 @@ test('Source3: same installed Apps/profile2/query/invoke/receipt, real Root OIDC
   assert.equal(f.realms[0].profile.sourceProfile.digest,f.realms[1].profile.sourceProfile.digest);
   assert.equal(f.realms[0].instance.store.format,3);assert.equal(f.realms[1].instance.store.format,3);
 });
+test('actual Native revoke reaches the SAME host-owned executor before wall, outside SQL; no result/receipt or automatic rerun', {timeout:120000},async t=>{
+  let entered,aborted=false,activeStore;const started=new Promise(resolve=>{entered=resolve;});
+  const enforcer=createFeedbackJobEnforcer({engine:processing.engines[0],platform:'linux',maxBudget:budget,syntheticTestOnly:true,
+    execute:({signal})=>new Promise((_resolve,reject)=>{entered();signal.addEventListener('abort',()=>{
+      assert.equal(activeStore.inTransaction(),false,'abort listener cannot run inside Native SQL');aborted=true;reject(new Error('owned cancellation'));},{once:true});})});
+  const f=await createOrdinaryInstalledFixture(t,{feedbackProcessing:{...processing,enforcer},libraryNativeOwner:true}),realm=f.realms[1];
+  activeStore=realm.instance.store;await realm.launch();await f.login(realm);
+  const call=async(route,input,requestId)=>f.wire(realm.embedded+'/api/embed/'+route,{body:{requestId,input}});
+  const report=await f.wire(realm.embedded+'/api/embed/feedback',{body:{requestId:'actual-cancel-report-0001',body:'Synthetic private PNG',attachments}});assert.equal(report.status,200);
+  const ticket=report.value.data.ticket,base={ticketId:ticket.id,ticketRevision:ticket.revision,attachmentDigest:feedbackAttachmentDigest(attachments),purpose:'ocr',policyRef};
+  assert.equal((await call('invoke',{operation:'feedback.processing.consent',...base,expiresInSeconds:120},'actual-cancel-consent-0001')).status,200);
+  const grant=await call('invoke',{operation:'feedback.job.grant',...base,engineRef,budget,expiresInSeconds:60},'actual-cancel-grant-0001');assert.equal(grant.status,200);
+  const jobId=grant.value.data.data.jobId,pending=realm.instance.processing.process(jobId);const rejected=assert.rejects(pending,error=>error.code==='ordinary_feedback_job_outcome_unknown');await started;
+  const state=await call('query',{operation:'feedback.job.status',jobId},'actual-cancel-status-0001');assert.equal(state.status,200);assert.equal(state.value.data.state,'started');
+  const before=performance.now(),revoke=await call('invoke',{operation:'feedback.job.revoke',jobId,expectedRevision:state.value.data.revision},'actual-cancel-revoke-0001');assert.equal(revoke.status,200);
+  await rejected;assert.equal(aborted,true);assert.ok(performance.now()-before<2000,'abort must precede 5000ms admitted wall');
+  assert.equal(activeStore.db.prepare('SELECT count(*) AS n FROM native_processor_receipts').get().n,0);
+  assert.equal(activeStore.db.prepare('SELECT state FROM native_feedback_jobs WHERE id=?').get(jobId).state,'unknown');
+  await assert.rejects(realm.instance.processing.process(jobId));assert.equal(activeStore.db.prepare('SELECT status FROM native_tickets WHERE id=?').get(ticket.id).status,'received');
+});
 test('installed current Root/RP proof at Source SQL claim/final: synthetic executor result commits once; closing original real Root slot during held process prevents result', {timeout:120000},async t=>{
   let entered,release,held=false,calls=0;const started=new Promise(resolve=>{entered=resolve;}),wait=new Promise(resolve=>{release=resolve;});
   const enforcer=createFeedbackJobEnforcer({engine:processing.engines[0],platform:'linux',maxBudget:budget,syntheticTestOnly:true,

@@ -2,13 +2,14 @@ import { createSourceNativeAuthorityPort, isSourceNativeCommitPort } from '../..
 import { check, fields, digest, nonce, jsonCopy } from '../../server/wire.mjs';
 import { SOURCE_FEEDBACK_LIMITS } from '../../shared/feedback-wire.mjs';
 import { validateFeedbackAttachments } from '../../../feedback/server/media.mjs';
-import { createOrdinaryFeedbackJobs } from './feedback-jobs.mjs';
+import { createOrdinaryFeedbackJobs,requireOrdinaryFeedbackJobs } from './feedback-jobs.mjs';
 
 /** Actual example Native implementation. Every role/resource decision and
  * durable receipt belongs to this Source SQL database, never Root metadata. */
-export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, beforeCommit, afterCommit, feedbackProcessing } = {}) {
+export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, beforeCommit, afterCommit, feedbackProcessing, feedbackJobs } = {}) {
   const { db } = store, proofs = new WeakMap();
-  const jobs=feedbackProcessing?createOrdinaryFeedbackJobs({store,resourceId,incarnationId,...feedbackProcessing}):null;
+  check(!(feedbackJobs&&feedbackProcessing),'ordinary_feedback_jobs_not_ready',503);
+  const jobs=feedbackJobs?requireOrdinaryFeedbackJobs(feedbackJobs,store,resourceId,incarnationId):feedbackProcessing?createOrdinaryFeedbackJobs({store,resourceId,incarnationId,...feedbackProcessing}):null;
   const nativeCookie = 'ordinary_native_' + store.realmId;
   function cookie(req) {
     const values = String(req?.headers?.cookie ?? '').split(';').map(value => value.trim()).filter(value => value.startsWith(nativeCookie + '='));

@@ -39,3 +39,9 @@ Engine/enforcer constructor brand подтверждает custody, не sandbox
 * Отдельный Root guarded Linux fixed probe8/8 на image `c03a61d12e03870747e9013860fc36e23e53920da9b07ea1e795b3fef9628ae6` (revision56fe2cb, Node24.15). Hard RLIMIT_CPU1s SIGKILL1008ms/cgroup1002577µs; wall507ms/cancel257ms; scratch ENOSPC2MiB; FS/net/subprocess denied. PreSTART spec/mounts/UID1000/no-net/read-only/128MiB/pids32/tmpfs/data/no-anonymous-volume independently checked, stopped0/noOOM. Receipt `/home/ai2/codex-soty-universal-20261007-9f8dcd71/feedback-enforcer-f4da3ee4d349ede5c1a63a619a539b7f-root-public.json`; `models:false,sourceJobsReady:false`. Этот probe не соединён с Source jobs и не измеряет модель.
 
 Следующий обязательный шаг — reviewed fixed host executor + real job→sandbox gate с exact approved engine/pin, current Source proof и result/cancel/CPU/wall/lost-ACK evidence; затем Source3 Linux reader/image/compatible cold gate. Production и remote self-service readiness этими тестами не заявляются.
+
+## Отдельная delta отмены
+
+Review исходного `0cecf09` выявил два job service: Native revoke и host process держали разные RAM maps. Final Native deny запрещал результат, но не доставлял отмену текущему executor. Новая delta создаёт один constructor-branded service на точных store/resource/incarnation; Native и server.processing разделяют тот же service. BFF current-proof port связывается приватной lazy closure, не полем JSON.
+
+Actual installed Native invoke/revoke с held executor теперь доставляет Abort до admitted wall, вне Native SQL; result/receipt отсутствует и повторная обработка запрещена. Контроль с исходным Index `0cecf09` действительно падает на требовании ранней отмены, а не только сравнивает implementation. Межпроцессная отмена остаётся отдельной bounded-poll/OS-kill задачей Linux bridge; same-process Abort не считается мгновенной распределённой отменой. Callback, игнорирующий Abort, не является hard wall guard.

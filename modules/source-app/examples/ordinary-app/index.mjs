@@ -23,14 +23,17 @@ export async function createOrdinaryAppServer(options) {
       store.createResource({ id: value.profile.resource.selection.nativeId, incarnationId: value.profile.resource.selection.incarnationId,
         title: resource.title, guestEmpty: resource.guestEmpty === true });
     }
+    let bff;
+    // One private Source job service owns claim and cancellation. No separate
+    // Native and host maps, and no permission/service object arrives in JSON.
+    const jobs=processing?createOrdinaryFeedbackJobs({store,resourceId:value.profile.resource.selection.nativeId,incarnationId:value.profile.resource.selection.incarnationId,
+      ...processing,currentProof:sessionHash=>{check(bff,'source_feedback_processor_not_ready',503);return bff.currentFeedbackJobProof(sessionHash);}}):null;
     const native = createOrdinaryAppNativePort({ store, resourceId: value.profile.resource.selection.nativeId,
       incarnationId: value.profile.resource.selection.incarnationId, allowEmptyGuest: value.allowEmptyGuest === true,
-      ...(processing?{feedbackProcessing:{policy:processing.policy,engines:processing.engines}}:{}) });
-    const bff = createSourceAppBff({ profile: value.profile, transportKey: value.transportKey, connectorPort: value.connectorPort, rp: value.rp, storage: store.storage, native,
+      ...(jobs?{feedbackJobs:jobs}:{}) });
+    bff = createSourceAppBff({ profile: value.profile, transportKey: value.transportKey, connectorPort: value.connectorPort, rp: value.rp, storage: store.storage, native,
       allowCreateEmptyGuest: value.allowEmptyGuest === true, processingProofEnabled:processing!==null,
       ui: { appLabel: label, resourceLabel: 'Выбранный проект' }, ...(value.clock ? { clock: value.clock } : {}) });
-    const jobs=processing?createOrdinaryFeedbackJobs({store,resourceId:value.profile.resource.selection.nativeId,incarnationId:value.profile.resource.selection.incarnationId,
-      ...processing,currentProof:sessionHash=>bff.currentFeedbackJobProof(sessionHash)}):null;
     const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
     const page = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(label)}</title>
       <link rel="stylesheet" href="/assets/ordinary-app.css"><main data-native-origin="${escape(value.profile.nativeOrigin)}" data-processing="${processing!==null}"><h1>${escape(label)}</h1><p id="state" role="status">Проверяем подключение…</p>

@@ -2,6 +2,10 @@ import { check,fields,digest,nonce,jsonCopy } from '../../server/wire.mjs';
 import { feedbackProcessingPolicy,feedbackJobIntent,feedbackJobRequest,feedbackAttachmentDigest,assertFeedbackJobLifetime,feedbackProcessorEngine,feedbackProcessorOutput } from '../../server/feedback-job-contract.mjs';
 import { feedbackJobAuthority } from '../../server/feedback-job-authority.mjs';
 import { feedbackJobEnforcer,assertFeedbackHostBounds } from '../../server/feedback-job-enforcer.mjs';
+const services=new WeakMap();
+export function requireOrdinaryFeedbackJobs(service,store,resourceId,incarnationId){
+  const scope=services.get(service);check(scope?.store===store&&scope.resourceId===resourceId&&scope.incarnationId===incarnationId,'ordinary_feedback_jobs_not_ready',503);return service;
+}
 
 /** Source-owned Native SQL, never Root/body ownership. Only the Native adapter
  * calls execute with its private current proof inside final SQL commit. The
@@ -105,7 +109,7 @@ export function createOrdinaryFeedbackJobs({store,resourceId,incarnationId,polic
   function markUnknown(jobId,claimHash){
     store.tx(()=>db.prepare("UPDATE native_feedback_jobs SET state='unknown',revision=revision+1 WHERE id=? AND claim_hash=? AND state='started'").run(jobId,claimHash));
   }
-  return Object.freeze({
+  const service=Object.freeze({
     policy,
     validate(actor,input,requestId){check(store.inTransaction(),'ordinary_native_transaction_required',503);
       if(input.operation==='feedback.processing.consent')return consent(actor,input,false);
@@ -196,4 +200,5 @@ export function createOrdinaryFeedbackJobs({store,resourceId,incarnationId,polic
     },
     close(){for(const controller of running.values())controller.abort();},
   });
+  services.set(service,{store,resourceId,incarnationId});return service;
 }
