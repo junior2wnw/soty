@@ -1,6 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyFieldCommand, createFieldHistory, nextFieldSlot, recordFieldHistory, undoFieldHistory } from './unified-field-state.mjs';
+import { fieldSlotToPoint, fieldFootprint, fieldPolygonsOverlap } from './unified-field-layout.mjs';
+
+test('automatic add avoids objects in adjacent spaces without moving an existing object', () => {
+  const source = fixture(); source.contexts[1].x = 0;
+  const before = structuredClone(source), slot = nextFieldSlot(source, 'home', 'app');
+  const added = applyFieldCommand(source, { type: 'add-shortcut', shortcutId: 'new', entity: { kind: 'app', id: 'new-project' }, contextId: 'home' });
+  const origin = source.contexts[1], point = fieldSlotToPoint(slot);
+  const polygon = fieldFootprint('app', { x: origin.x + point.x, y: origin.y + point.y });
+  for (const shortcut of source.shortcuts) {
+    const context = source.contexts.find(value => value.contextId === shortcut.contextId), other = fieldSlotToPoint(shortcut.slot);
+    assert.equal(fieldPolygonsOverlap(polygon, fieldFootprint(shortcut.entity.kind, { x: context.x + other.x, y: context.y + other.y }), 10), false);
+  }
+  assert.deepEqual(source, before); assert.deepEqual(added.document.shortcuts.slice(0, 2), source.shortcuts);
+  assert.deepEqual(added.document.contexts, source.contexts); assert.deepEqual(added.document.shortcuts.at(-1).slot, slot);
+});
 
 const fixture = () => ({ schema: 'soty.field.v1', contexts: [{ contextId: 'work', title: 'Работа', x: 0, y: 0 }, { contextId: 'home', title: 'Дома', x: 900, y: 0 }],
   shortcuts: [{ shortcutId: 'a', entity: { kind: 'app', id: 'hive' }, contextId: 'work', slot: [0, 0] },

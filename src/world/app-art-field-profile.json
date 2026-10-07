@@ -10,11 +10,54 @@
     "tavysh": "field-tavysh"
   },
   "bindings": {
+    "bind-014171b96ce7a4cfc8ea12c4f10db6a4fdaae05d41cb458ca4474343a50f3c0a": "field-tavysh",
+    "bind-4c122b9b77cc5a4791f641594c8b4e025537527fbac6794a09e36cbb24582eff": "art-e1b1e5b009dd4b709666997c51c9b7dd",
     "bind-ed7232c5f5d14982b822da1b782c9c3677334f8e3ba191d4ed0cb6688e2c92f9": "field-hive",
     "chess": "field-chess",
     "notes": "field-notes"
   },
   "assets": {
+    "art-e1b1e5b009dd4b709666997c51c9b7dd": {
+      "key": "art-e1b1e5b009dd4b709666997c51c9b7dd",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#202A29",
+        "accent": "#B4E5DE",
+        "ink": "#F0FAF7"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-e1b1e5b009dd4b709666997c51c9b7dd/v001-8e6db250dc65/cover-160.8e8abc3bad60.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-e1b1e5b009dd4b709666997c51c9b7dd/v001-8e6db250dc65/cover-320.f3a90b5473c9.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-e1b1e5b009dd4b709666997c51c9b7dd/v001-8e6db250dc65/cover-640.950a30d60452.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-e1b1e5b009dd4b709666997c51c9b7dd/v001-8e6db250dc65/cover-960.e9b67672798d.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "note"
+    },
     "field-canvas": {
       "key": "field-canvas",
       "version": 1,

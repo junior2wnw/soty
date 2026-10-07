@@ -25,6 +25,7 @@ export interface AppStageOptions {
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
+  onPlaceInField?(app: WorldAppRecord): void;
   onCommunity?(communityId: string): void;
   onRemember?(intent: AppLaunchIntent, app: WorldAppRecord): void;
 }
@@ -81,6 +82,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
+  const field = iconButton('Добавить на моё поле', 'plus', () => {
+    closeMore();
+    void fullscreen.leave().then(() => { if (current()) options.onPlaceInField?.(app); })
+      .catch(() => showMessage('Не удалось открыть поле. Попробуйте ещё раз.'));
+  });
+  field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
@@ -142,8 +149,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     void fullscreen.leave().then(() => current() ? options.onAccount() : undefined).catch(() => showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'))
       .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
   });
-  moreBody.append(publicReviews, external, refresh, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
-  header.append(back, title, savedHost, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
+  const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
+  bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
+  moreBody.append(publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
@@ -235,8 +244,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     const entry = launcher.entry();
     if (!entry || selectedEntry || !current()) return;
     selectedEntry = entry;
+    field.disabled = false;
     const pinned = routeWith(intent.presentation); options.onNavigate(pinned, { replace: true }); intent = pinned;
-    savedHost.hidden = false; saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current });
+    bookmark.hidden = false; savedHost.hidden = false;
+    saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current, asBookmark: true,
+      dialogReturnTarget: { isCurrent: current, resolve: () => moreBody.hidden ? more : savedHost.querySelector<HTMLButtonElement>('button') ?? more } });
     if (discussion) void discussion.updateEntry(entry).catch(() => showMessage('Не удалось обновить обсуждение. Откройте его ещё раз.'));
     // A local-only panel is mounted only once resolution has settled. It is
     // never upgraded using a later guess from optional catalogue metadata.

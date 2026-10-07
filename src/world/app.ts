@@ -4,6 +4,8 @@ import './shell.css';
 import './chat.css';
 import './community.css';
 import { mountAppStage, type AppStageHandle } from './app-stage';
+import { createAppFieldPlacementController, type AppFieldPlacementController, type AppFieldPlacementSnapshot } from './app-field-placement-browser';
+import { createFieldPersistence } from './field-persistence';
 import { preferredInspectionEntry } from './app-deployment.mjs';
 import { mountAppLibrary } from './app-library';
 import './experience.css';
@@ -64,6 +66,9 @@ class WorldApplication {
   private readonly dialogs = new Set<WorldDialog>();
   private appSettingsDialog: WorldDialog | null = null;
   private appSettingsRouteClose: ((resume: () => void) => void) | null = null;
+  private appPlacementDialog: WorldDialog | null = null;
+  private appPlacementController: AppFieldPlacementController | null = null;
+  private appPlacementRouteClose: ((resume?: () => void) => void) | null = null;
   private readonly theme: ThemeController;
   private readonly pwa = getPwaController();
   private readonly formEdits = watchFormEdits();
@@ -105,6 +110,7 @@ class WorldApplication {
   private groupReturn: 'mine' | 'world' | 'messages' = 'mine';
   private field: HexField | null = null;
   private unifiedField: UnifiedFieldScreen | null = null;
+  private fieldOutbox: ReturnType<typeof createFieldPersistence> | null = null;
   private unifiedFieldView: UnifiedFieldViewState = {};
   private unifiedFieldFilter: FieldFilter = 'all';
   private unifiedFieldFilters: Record<'mine' | 'world', FieldFilter> = { mine: 'all', world: 'all' };
@@ -146,6 +152,7 @@ class WorldApplication {
       if (recovered) {
         this.notesHandle?.reconnect();
         this.unifiedField?.reconnect();
+        this.syncFieldOutbox();
         if (!this.profile && this.deskAccount) void this.refresh(true);
       }
     });
@@ -178,7 +185,7 @@ class WorldApplication {
 
   destroy(): void {
     this.destroyed = true; this.requestSequence++; this.screenSequence++;
-    this.controller.abort(); this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
+    this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
@@ -207,10 +214,11 @@ class WorldApplication {
       }
       const sameAccount = !this.transitionAccount(profile.profile.profileId);
       this.profile = profile.profile; this.communities = mine.communities; this.homeStatus.communities = 'ready';
+      this.syncFieldOutbox();
       this.renderNavigation();
       // A same-account shell refresh is not navigation. The owner window and
       // its running app keep their draft, selection and existing connection.
-      if (sameAccount && this.appSettingsDialog?.element.open) { this.routeLoaded = true; return; }
+      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)) { this.routeLoaded = true; return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; return; }
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) return; }
@@ -228,7 +236,7 @@ class WorldApplication {
         if (local?.accountId) {
           const changed = this.transitionAccount(local.accountId);
           const sameScreen = !changed && this.deskAccount === accountAtStart && this.screenSequence === screenAtStart;
-          if (sameScreen && this.appSettingsDialog?.element.open) return;
+          if (sameScreen && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)) return;
           if (sameScreen && this.appStage) { this.toast(errorText(error), true); return; }
           if (sameScreen && this.unifiedField) { this.unifiedField.reconnect(); return; }
           if (sameScreen && preserveNote && this.notesHandle) { this.toast(errorText(error), true); return; }
@@ -269,6 +277,7 @@ class WorldApplication {
     const next = typeof accountId === 'string' && accountId.trim() ? accountId : '';
     if (next === this.deskAccount) return false;
     this.deskAccount = next; this.accountGeneration++; this.homeRequest++;
+    this.fieldOutbox?.dispose(); this.fieldOutbox = null;
     this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
     this.profile = null; this.communities = []; this.apps = []; this.devices = []; this.homeNotes = null;
     this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine'; this.groupTab = 'about';
@@ -279,7 +288,7 @@ class WorldApplication {
     this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
     this.homeQuery = ''; this.homeFilter = 'all'; this.discoveryApps.clear();
     this.fieldState = createHexFieldState(); this.homeFieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
-    this.unifiedFieldView = {};
+    this.unifiedFieldView = this.desk.lastSpace ? { mineContext: this.desk.lastSpace, mineFit: 'context' } : {};
     this.unifiedFieldFilter = 'all';
     this.unifiedFieldFilters = { mine: 'all', world: 'all' };
     this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
@@ -294,10 +303,21 @@ class WorldApplication {
     return () => !this.destroyed && Boolean(accountId) && accountId === this.deskAccount && generation === this.accountGeneration;
   }
 
+  /** Drain only the existing durable journal. No placement or conflict choice
+   * is generated here; navigation never strands an app-stage offline intent. */
+  private syncFieldOutbox(): void {
+    if (this.destroyed || !this.deskAccount || this.fieldOutbox || this.unifiedField || this.connection !== 'online') return;
+    const current = this.accountTask();
+    const outbox = createFieldPersistence({ api: this.api, accountId: this.deskAccount, isCurrent: current });
+    this.fieldOutbox = outbox;
+    void outbox.load().catch(() => { /* Durable pending intents remain for reconnect or the field. */ })
+      .finally(() => { outbox.dispose(); if (this.fieldOutbox === outbox) this.fieldOutbox = null; });
+  }
+
   private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
-  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
-  private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
-  private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
+  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
+  private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
   private toast(message: string, isError = false): void {
@@ -308,6 +328,9 @@ class WorldApplication {
   private runHook(hook: () => void | Promise<void>): void { void Promise.resolve().then(hook).catch(error => this.toast(errorText(error), true)); }
   private afterNoteSaved(action: () => void): void {
     if (this.destroyed || this.noteActionPending) return;
+    if (this.appPlacementDialog?.element.open && this.appPlacementRouteClose) {
+      this.appPlacementRouteClose(() => this.afterNoteSaved(action)); return;
+    }
     const sequence = this.screenSequence;
     if (!this.screenHasUnsavedChanges()) { action(); return; }
     this.noteActionPending = true;
@@ -479,6 +502,14 @@ class WorldApplication {
 
   private async openRoute(): Promise<boolean> {
     if (this.destroyed || (!this.profile && !this.deskAccount)) return false;
+    if (this.appPlacementDialog?.element.open && this.appPlacementRouteClose) {
+      if (location.hash !== this.activeRoute) {
+        const accountCurrent = this.accountTask(), sequence = this.screenSequence;
+        history.pushState({ soty: true }, '', this.activeRoute);
+        this.appPlacementRouteClose(() => { if (accountCurrent() && this.screenSequence === sequence) history.back(); });
+      }
+      return true;
+    }
     if (this.appSettingsDialog?.element.open && this.appSettingsRouteClose) {
       if (location.hash !== this.activeRoute) {
         const accountCurrent = this.accountTask(), sequence = this.screenSequence;
@@ -562,6 +593,7 @@ class WorldApplication {
       viewState: this.unifiedFieldView, ...(this.desk.pinnedApps ? { pinnedApps: this.desk.pinnedApps } : {}),
       ...(this.options.fieldArt ? { resolveArt: this.options.fieldArt } : {}),
       onMessage: (message, error) => { if (isCurrent()) this.toast(message, error); },
+      onContextChange: contextId => { if (isCurrent()) { this.desk.lastSpace = contextId; this.saveDesk(true); } },
       onAppSettings: app => { if (isCurrent()) this.openAppSettings({ appId: app.id, name: app.name, status: app.state, ownerAccountId: app.ownerAccountId, entry: app.entry }); },
       onRoute: (mode, query, filter) => {
         if (!isCurrent()) return; this.view = mode === 'search' ? 'world' : 'mine'; this.preferences.view = this.view;
@@ -1397,7 +1429,7 @@ class WorldApplication {
     dialog.body.append(body);
   }
 
-  private saveDesk(): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk); }
+  private saveDesk(selectedSpace = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace }); }
   private remember(route: string, title: string, symbol: string): void { this.desk.recent = [{ route, title: title.slice(0, 100), symbol }, ...this.desk.recent.filter(item => item.route !== route)].slice(0, 6); this.saveDesk(); }
   private searchCount(totals: WorldSearch['totals']): string { return `${totals.communitiesExact === false ? `${totals.communities}+ сообществ` : nounCount(totals.communities, 'сообщество', 'сообщества', 'сообществ')} · ${totals.peopleExact === false ? `${totals.people}+ человек` : nounCount(totals.people, 'человек', 'человека', 'человек')}`; }
 
@@ -1613,6 +1645,11 @@ class WorldApplication {
         await this.options.openAccount('recovery'); if (current()) await this.refresh();
       },
       onSettings: (value, onUpdated) => { if (current()) this.openAppSettings(value, onUpdated); },
+      onPlaceInField: value => { if (current()) this.openAppFieldPlacement(value, contextId => {
+        if (!current()) return;
+        this.unifiedFieldView.mineContext = contextId; this.unifiedFieldView.mineFit = 'context'; this.unifiedFieldView.mineSelection = '';
+        this.desk.lastSpace = contextId; this.saveDesk(true);
+      }); },
       onCommunity: id => this.afterNoteSaved(() => { if (current()) void this.openGroup(id, 'chat'); }),
       onRemember: (next, value) => { if (current()) this.remember(next.route, value.name, 'grid'); },
     });
@@ -1634,10 +1671,10 @@ class WorldApplication {
     }).catch(() => { /* Optional names never change the exact admitted entry. */ });
   }
   private openAddApp(communityId?: string, selectedDevice?: string): void {
-    const accountId = this.deskAccount, accountCurrent = this.accountTask();
+    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
     if (!accountId || !accountCurrent()) return;
     const dialog = this.dialog('Подключить приложение'); dialog.body.append(this.loading('Ищем ваши устройства'));
-    const current = (): boolean => accountCurrent() && dialog.element.open;
+    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open;
     void this.api.request<{ devices: DeviceProjection[] }>('apps.devices', { expectedAccountId: accountId }).then(result => {
       if (!current()) return;
       const devices = result.devices.filter(device => device.claimed);
@@ -1649,17 +1686,124 @@ class WorldApplication {
       const path = textInput('/', '/'); path.pattern = '/.*';
       const audience = el('select', 'sw-select'); const privateOption = el('option', '', 'Только мне'); privateOption.value = ''; audience.append(privateOption);
       this.communities.filter(group => group.membership?.state === 'active' && group.permissions.canModerate).forEach(group => { const option = el('option', '', group.name); option.value = group.communityId; option.selected = group.communityId === communityId; audience.append(option); });
-      const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Подключить приложение', 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit';
+      const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Подключить проект', 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit';
+      let registering = false;
       const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Другая начальная страница'), labeledField('Путь внутри приложения', path, 'Оставьте /, чтобы открыть главную страницу.'));
       const status = el('p', 'sw-muted'); status.setAttribute('role', 'status');
       form.append(el('p', 'sw-muted', 'Один раз подключите работающий проект. После этого он будет открываться из ваших Сот.'), labeledField('Название приложения', name), labeledField('Где работает проект', device), labeledField('Порт проекта', port, 'Число после localhost: в адресе проекта. Например, 3000.'), labeledField('Кому открыть', audience), advanced, error, status);
       pinDialogSubmit(dialog, form, save);
       form.addEventListener('submit', event => {
-        event.preventDefault(); const chosen = devices.find(item => item.hostDeviceId === device.value); if (!current() || save.disabled || !chosen || !form.reportValidity()) return;
-        save.disabled = true; error.textContent = ''; status.textContent = 'Подключаем приложение…';
-        void this.api.request('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(() => { if (!current()) return; dialog.close(); this.toast('Приложение добавлено в ваши соты'); if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else { this.navigate('mine'); } }).catch(reason => { if (current()) { status.textContent = ''; error.textContent = errorText(reason); } }).finally(() => { if (current()) save.disabled = false; });
+        event.preventDefault(); const chosen = devices.find(item => item.hostDeviceId === device.value);
+        if (!current() || registering || !chosen || !form.reportValidity()) return;
+        registering = true; save.disabled = true; error.textContent = ''; status.textContent = 'Подключаем приложение…';
+        for (const control of [name, device, port, path, audience]) control.disabled = true;
+        // The registry returns the canonical identity. A field placement is a
+        // separate private choice, never proof of publication or a new grant.
+        void this.api.request<{ app: { id: string; name: string } }>('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(result => {
+          if (!current()) return;
+          if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
+          dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
+          this.openAppFieldPlacement({ appId: result.app.id, name: result.app.name }, contextId => {
+            if (!accountCurrent()) return;
+            this.homeQuery = ''; this.unifiedFieldFilters.mine = 'all';
+            this.navigate('mine'); const field = this.unifiedField;
+            const showPlacement = (): boolean => accountCurrent() && field === this.unifiedField && this.view === 'mine' && !this.group && !this.appStage;
+            void field?.ready.then(async () => {
+              if (!showPlacement()) return;
+              await field.refresh();
+              if (showPlacement()) field.focusContext(contextId);
+            }).catch(reason => { if (showPlacement()) this.toast(errorText(reason), true); });
+          });
+        }).catch(reason => { if (current()) { status.textContent = ''; error.textContent = errorText(reason); } })
+          .finally(() => { registering = false; if (current()) { save.disabled = false; for (const control of [name, device, port, path, audience]) control.disabled = false; } });
       }); dialog.body.replaceChildren(form); name.focus();
     }).catch(error => { if (current()) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
+  }
+
+  private openAppFieldPlacement(app: Pick<WorldAppRecord, 'appId' | 'name'>, onPlaced?: (contextId: string) => void): void {
+    const accountId = this.deskAccount, sequence = this.screenSequence, accountCurrent = this.accountTask();
+    if (this.destroyed || !accountId || this.appPlacementDialog?.element.open || !/^app-[a-f0-9]{32}$/.test(app.appId)) return;
+    let placement: AppFieldPlacementController | null = null, busy = false;
+    let pendingClose: (() => void) | null = null;
+    const dialog = this.dialog('На моё поле', () => {
+      placement?.dispose();
+      if (this.appPlacementDialog === dialog) { this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; }
+    }); this.appPlacementDialog = dialog;
+    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open;
+    const error = el('p', 'sw-error'); error.setAttribute('role', 'status');
+    const stack = el('div', 'sw-stack'), retry = button('Проверить ещё раз', 'refresh', 'sw-button-quiet');
+    const finishClose = (resume?: () => void): void => {
+      const allowed = accountCurrent() && sequence === this.screenSequence;
+      dialog.close({ restoreFocus: !resume }); if (allowed) resume?.();
+    };
+    const leave = button('Закрыть всё равно', 'close', 'sw-button-quiet', () => { if (pendingClose) pendingClose(); else finishClose(); }); leave.hidden = true;
+    const copy = el('p', 'sw-muted', app.name), hint = el('p', 'sw-muted', 'Выберите пространство на вашем поле.');
+    dialog.body.append(copy, hint, stack, error, retry, leave); retry.hidden = true;
+    const report = (code?: string): void => {
+      if (!current()) return;
+      error.textContent = ['field_revision_conflict', 'field_workspace_changed', 'app_field_selection_changed', 'field_context_missing'].includes(code ?? '')
+        ? 'Поле изменилось. Проверьте пространства перед добавлением.'
+        : code === 'field_local_storage_unavailable' || code === 'field_local_capacity'
+          ? 'Выбор ещё не сохранён. Освободите место на устройстве и повторите.'
+          : 'Не удалось подтвердить сохранение. Проверьте поле ещё раз.';
+      retry.hidden = false;
+      leave.hidden = !placement?.hasUnsavedChanges();
+    };
+    const render = (snapshot: AppFieldPlacementSnapshot): void => {
+      if (!current()) return;
+      stack.replaceChildren();
+      leave.hidden = !placement?.hasUnsavedChanges();
+      const blocked = snapshot.pendingCount > 0 || snapshot.persistence === 'conflict' || !snapshot.localDurable;
+      for (const context of snapshot.contexts) {
+        const choose = button(context.title, context.placed ? 'check' : 'plus', 'sw-button-quiet sw-button-wide', () => {
+          if (!current() || busy || !placement) return;
+          busy = true; error.textContent = ''; retry.hidden = true;
+          stack.querySelectorAll('button').forEach(control => { control.disabled = true; });
+          void placement.place({ contextId: context.contextId, generation: snapshot.generation }).then(result => {
+            if (!current()) return;
+            if (result.status === 'saved' && result.shortcutId) {
+              dialog.close(); this.toast(result.changed ? `На поле «${context.title}»` : `Уже на поле «${context.title}»`);
+              if (accountCurrent() && sequence === this.screenSequence) onPlaced?.(context.contextId);
+            } else if (result.status === 'pending' && result.shortcutId && result.snapshot.localDurable) {
+              dialog.close(); this.toast('Сота сохранена на устройстве. Ожидает синхронизации.'); this.syncFieldOutbox();
+              if (accountCurrent() && sequence === this.screenSequence) onPlaced?.(context.contextId);
+            } else { render(result.snapshot); report(result.errorCode); }
+          }).catch(reason => { if (current()) report(String(reason?.code ?? '')); })
+            .finally(() => { busy = false; if (current()) { const latest = placement?.getSnapshot(); if (latest) render(latest); } });
+        });
+        choose.disabled = busy || blocked;
+        choose.setAttribute('aria-label', context.placed ? `Уже в пространстве «${context.title}»` : `Добавить в пространство «${context.title}»`);
+        if (context.placed) choose.append(el('small', 'sw-muted', 'Уже здесь'));
+        else if (context.willCreate) choose.append(el('small', 'sw-muted', 'Создать пространство'));
+        stack.append(choose);
+      }
+      if (blocked || snapshot.errorCode) report(snapshot.errorCode);
+    };
+    const requestClose = (resume?: () => void): void => {
+      if (!current()) return;
+      if (placement?.hasUnsavedChanges()) { pendingClose = () => finishClose(resume); report('field_local_storage_unavailable'); return; }
+      if (pendingClose && !resume) pendingClose(); else finishClose(resume);
+    };
+    this.appPlacementRouteClose = requestClose;
+    const protectLocal = (event: Event): void => {
+      event.preventDefault(); event.stopImmediatePropagation(); requestClose();
+    };
+    dialog.element.addEventListener('cancel', protectLocal, { capture: true });
+    dialog.element.querySelector('.sw-dialog-header button')?.addEventListener('click', protectLocal, { capture: true });
+    dialog.element.addEventListener('keydown', event => { if (event.key === 'Escape') protectLocal(event); }, { capture: true });
+    try {
+      placement = createAppFieldPlacementController({ api: this.api, accountId, appId: app.appId, isCurrent: current,
+        initialAppIds: [...new Set(this.desk.pinnedApps ?? [])].filter(id => /^app-[a-f0-9]{32}$/.test(id)).slice(0, 100) });
+      this.appPlacementController = placement;
+      retry.addEventListener('click', () => {
+        if (!current() || busy || !placement) return;
+        busy = true; retry.disabled = true; error.textContent = ''; retry.hidden = true;
+        void placement.retry().then(render).catch(reason => report(String(reason?.code ?? '')))
+          .finally(() => { busy = false; if (current()) { retry.disabled = false; const latest = placement?.getSnapshot(); if (latest) render(latest); } });
+      });
+      stack.append(this.loading('Проверяем поле'));
+      void placement.load().then(render).catch(reason => report(String(reason?.code ?? '')));
+    } catch (reason) { report(String((reason as {code?: string})?.code ?? '')); }
   }
 
   private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void, returnTarget = this.appDialogReturnTarget(app.appId)): void {

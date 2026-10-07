@@ -10,6 +10,10 @@
 .sa-title p { margin: 2px 0 0; font-size: 12px; line-height: 18px; color: var(--sw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sa-toolbar [aria-expanded=true] { background: var(--sw-selected); color: var(--sw-ink); }
 .sa-saved { flex: none; min-width: 44px; }
+.sa-toolbar>[data-stage-control=field][hidden] { display: none; }
+.sa-bookmark { padding: 10px 8px; border-top: 1px solid var(--sw-line); }
+.sa-bookmark-label { margin: 0 0 8px; color: var(--sw-muted); font-size: 12px; line-height: 18px; }
+.sa-bookmark .se-saved-control { width: 100%; min-height: 44px; justify-content: flex-start; }
 .sa-saved[hidden], .sa-message[hidden], .sa-discussion[hidden], .sa-more-body[hidden], .sa-more-body>[hidden] { display: none; }
 .sa-more { position: relative; flex: none; }
 .sa-more-body { position: absolute; inset-inline-end: 0; top: calc(100% + 8px); display: flex; flex-direction: column; width: min(288px, calc(100vw - 32px)); padding: 6px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--sw-surface); box-shadow: 0 12px 32px rgb(0 0 0 / 14%); max-height: min(70dvh, 380px); overflow-y: auto; overscroll-behavior: contain; }
@@ -32,8 +36,6 @@
   .sa-title h2 { font-size: 14px; }
   .sa-title p { display: none; }
   .sa-toolbar { padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right)); }
-  .sa-saved .se-saved-control { width: 44px; min-width: 44px; height: 44px; padding: 0; }
-  .sa-saved .se-saved-control>span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .sa-more-body { animation: sa-reveal 120ms ease-out; transform-origin: top right; }

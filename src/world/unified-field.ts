@@ -186,9 +186,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   function focusContext(contextId: string): void {
     const context = layout.contexts.find(item => item.contextId === contextId); if (!context) return;
     const view = viewportSize(), compact = view.width < 720;
-    const core = layout.nodes.filter(node => node.contextId === contextId && !['person', 'device'].includes(node.kind));
-    const bounds = compact && core.length ? fieldBounds(core.flatMap(node => node.footprint), 16) : context.bounds;
-    contextFocus[mode] = contextId; setCamera(fitFieldCamera(bounds, view, { padding: compact && core.length ? 12 : 44, maxScale: 1, minScale: .45 }), 'context');
+    const members = layout.nodes.filter(node => node.contextId === contextId);
+    const bounds = compact && members.length ? fieldBounds(members.flatMap(node => node.footprint), 16) : context.bounds;
+    contextFocus[mode] = contextId; setCamera(fitFieldCamera(bounds, view, { padding: compact ? 24 : 44, maxScale: 1, minScale: compact ? .2 : .45 }), 'context');
   }
   function rebuild(): void {
     const priorFocus = document.activeElement instanceof HTMLElement && plane.contains(document.activeElement) ? document.activeElement : null;
@@ -205,7 +205,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (!layout.nodes.some(node => node.shortcutId === selectedId)) selectedId = '';
     if (contextFocus[mode] && !layout.contexts.some(context => context.contextId === contextFocus[mode])) { contextFocus[mode] = ''; initialized[mode] = false; }
     if (!initialized[mode] && viewport.clientWidth && viewport.clientHeight) {
-      if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(contextFocus[mode] || layout.contexts[0].contextId); else fitOverview();
+      if (contextFocus[mode]) focusContext(contextFocus[mode]);
+      else if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(layout.contexts[0].contextId);
+      else fitOverview();
     } else if (!gesture && !moving && viewport.clientWidth && viewport.clientHeight) {
       if (cameraFit[mode] === 'overview') fitOverview();
       else if (cameraFit[mode] === 'context' && contextFocus[mode]) focusContext(contextFocus[mode]);
@@ -258,7 +260,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
 
   function render(): void {
     if (destroyed || inPointerFrame) return;
-    const current = activeLayout(), view = viewportSize(), cam = camera(), level = arranging ? 'detail' : fieldLevelOfDetail(cam.scale, viewport.dataset.lod as 'overview' | 'context' | 'detail' | undefined);
+    const current = activeLayout(), view = viewportSize(), cam = camera();
+    const level = arranging ? 'detail' : view.width < 720 && contextFocus[mode] ? 'context' : fieldLevelOfDetail(cam.scale, viewport.dataset.lod as 'overview' | 'context' | 'detail' | undefined);
     viewport.dataset.mode = contextFocus[mode] ? 'focus' : 'overview'; viewport.dataset.side = mode; viewport.dataset.lod = level;
     viewport.dataset.persistence = persistence; viewport.classList.toggle('is-arranging', arranging); viewport.classList.toggle('is-moving', !!moving || !!contextPreview);
     viewport.style.setProperty('--uf-scale', String(cam.scale)); viewport.style.setProperty('--uf-label-scale', String(1 / cam.scale));
@@ -286,7 +289,10 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       const headerY = context.body.top + metrics.contourPadding - (headerHeight / 2 + 12) / cam.scale;
       title.style.left = `${context.header.x + context.header.width / 2 - context.body.left}px`; title.style.top = `${headerY - context.body.top}px`; title.style.width = `${context.header.width}px`; title.style.height = `${headerHeight}px`;
       const centre = { x: context.header.x + context.header.width / 2, y: headerY };
-      const nearest = visibleContexts.filter(other => other.contextId !== context.contextId && Math.abs((other.header.y + other.header.height / 2 - centre.y) * cam.scale) < 72)
+      const nearest = visibleContexts.filter(other => {
+        const otherHeaderY = other.body.top + metrics.contourPadding - (headerHeight / 2 + 12) / cam.scale;
+        return other.contextId !== context.contextId && Math.abs((otherHeaderY - centre.y) * cam.scale) < 72;
+      })
         .map(other => Math.abs((other.header.x + other.header.width / 2 - centre.x) * cam.scale));
       const screenX = (centre.x - cam.x) * cam.scale + view.width / 2;
       const edgeRoom = cameraFit[mode] === 'overview' ? 2 * Math.max(0, Math.min(screenX - 8, view.width - screenX - 8)) : view.width - 24;
