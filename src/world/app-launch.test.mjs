@@ -170,3 +170,12 @@ test('a synchronous request failure closes the blank window and remains reportab
   const window = makePopup(); await assert.rejects(launcher.openExternal(() => window), failure);
   assert.equal(window.closed, true); assert.deepEqual(window.visits, []);
 });
+
+test('approved capture pin gets a private per-launch slot; source mutation, refresh and account switch never retarget it',async()=>{
+  const source={id:'planner.selected-workspace',version:1,digest:'a'.repeat(64)},fixtureReply={url:boot(),runtimeProfile:'soty.selected-human-embed.v1',scopedCloseHandle:'C'.repeat(43),scopedSource:source};
+  const {launcher,state}=fixture(async()=>fixtureReply);await launcher.launch();const first=launcher.scopedCapture();
+  assert.deepEqual(first.source,source);assert.deepEqual(first.slot,{});assert.ok(Object.isFrozen(first.slot));
+  source.id='hive';assert.equal(first.source.id,'planner.selected-workspace');
+  source.id='planner.selected-workspace';await launcher.launch();assert.notEqual(launcher.scopedCapture().slot,first.slot);
+  state.accountId='account-b';assert.equal(launcher.scopedCapture(),null);launcher.dispose();
+});

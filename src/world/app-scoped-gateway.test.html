@@ -24,7 +24,7 @@ async function start(){
   const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId:info.appId}));history.replaceState(null,'','#'+intent.route);const token=++generation;
   const api={request:(method,args)=>accountClient.extension(method,args??{}, {expectedAccountId:accountId})};
   stage=mountAppStage(host,{api,accountId,app:{appId:app.id,name:app.name,status:app.state,ownerAccountId:app.ownerAccountId},intent,isCurrent:()=>token===generation,
-    async request(args){const value=await accountClient.extension('apps.launch',args,{expectedAccountId:accountId});return{url:value.launchUrl,entry:value.entry,runtimeProfile:value.runtimeProfile,scopedCloseHandle:value.scopedCloseHandle,scopedCleanup:accountClient.appSlotCleanup(value)};},
+    async request(args){const value=await accountClient.extension('apps.launch',args,{expectedAccountId:accountId});return{url:value.launchUrl,entry:value.entry,runtimeProfile:value.runtimeProfile,scopedCloseHandle:value.scopedCloseHandle,scopedSource:value.scopedSource,scopedCleanup:accountClient.appSlotCleanup(value)};},
     onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){stage?.dispose();},async onAccount(){await close();},onSettings(){}});
   await stage.ready;show('Проект открыт. Войдите через Соты внутри приложения и подтвердите один проект в Планировщике.');
 }

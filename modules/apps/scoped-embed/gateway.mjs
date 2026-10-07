@@ -49,6 +49,13 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
       return current(record,connector);
     },
     context(record) { return current(record); },
+    ownedContext(actor,appId,handle) {
+      need(opaque(handle),'app_scoped_context_closed',403);sweep();
+      const record=handles.get(hash(handle));
+      need(record&&record.context.appId===appId&&actor?.accountId===record.context.rootPrincipal.accountId
+        &&actor?.deviceId===record.context.rootPrincipal.deviceId,'app_scoped_context_closed',403);
+      return {record,context:current(record)};
+    },
     captureHead(record, auth) {
       current(record); if(auth===undefined)return;
       const value=capture(auth);closed(value,['kind','digest']);

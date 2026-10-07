@@ -5,6 +5,8 @@ import {readStorageFormat} from '../../../deploy/connector/storage-probe.mjs';
 import {assertStorageCompatible,currentStorageReaders,storageReaderLabel} from '../../../deploy/connector/storage-guard.mjs';
 import {join} from 'node:path';
 import {createClientWithStorage} from '../../connect/browser/client.mjs';
+import {signMessage} from '../../connect/browser/crypto.mjs';
+import {digestArgs} from '../../connect/server/index.mjs';
 
 test('actual installed Apps channel → private Human subject → selected Source BFF/OIDC/native consent → scoped HTTP, close and current revoke',{
   skip:sourceAvailable?false:'Optional packaged selected Planner Source absent',timeout:90000},async t=>{
@@ -81,7 +83,8 @@ test('actual installed prepare requires Origin, one-use CSRF and original slot; 
   assert.equal(ready.status,200);assert.equal(ready.body.schema,'planner.embed-login-authorization.v1');
   const state=new URL(ready.body.authorizationUrl).searchParams.get('state');
   assert.equal((await f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:second.body.csrf}})).status,401,'prepared CSRF cannot be replayed');
-  assert.equal((await f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:second.body.csrf,cancel:true}})).status,200);
+  const cancelled=await f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:second.body.csrf,cancel:true}});
+  assert.equal(cancelled.status,200,/^[A-Za-z0-9_:-]{1,120}$/.test(cancelled.body?.code??'')?cancelled.body.code:'cancel must acknowledge');
   assert.equal((await f.wire.request(f.embedded+'/api/embed/callback?state='+encodeURIComponent(state)+'&code=synthetic',{withoutAppCookie:true})).status,403);
   const old=await prepare();await f.owner.client.extension('apps.update',{appId:f.appId,grants:{accountIds:[],communityIds:[]}});
   assert.equal((await f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:old.body.csrf}})).status,403);
@@ -139,4 +142,39 @@ test('Apps7 exact admission composes real universal registration and mandatory f
   await f.restartRoot({scopedEmbedProfiles:[]});
   await assert.rejects(f.owner.client.extension('apps.universal.get',{appId:f.appId,expectedAccountId:f.owner.account.accountId}),error=>error.code==='app_scoped_admission_required');
   await assert.rejects(f.reader.client.extension('apps.feedback.context',{appId:f.appId}),error=>error.code==='app_scoped_admission_required');
+});
+
+test('signed scoped context returns only approved source pin and refuses foreign/same-account-other-device/closed handles', {
+  skip:sourceAvailable?false:'Optional packaged selected Planner Source absent',timeout:90000},async t=>{
+  const f=await createScopedGatewayFixture({t}),launch=await f.launch();
+  assert.deepEqual(launch.scopedSource,f.profile.sourceProfile);
+  const args={appId:f.appId,handle:launch.scopedCloseHandle},context=await f.reader.client.extension('apps.scoped.context',args);
+  assert.deepEqual(Object.keys(context).sort(),['appId','expiresAt','ok','ready','scopedSource','target']);
+  assert.equal(context.ready,true);assert.deepEqual(context.scopedSource,f.profile.sourceProfile);assert.deepEqual(context.target,f.profile.target);
+  await assert.rejects(f.foreign.client.extension('apps.scoped.context',args),error=>error.code==='app_scoped_context_closed');
+  const store={value:null,async read(){return structuredClone(this.value);},async claim(value){this.value??=structuredClone(value);return structuredClone(this.value);},
+    async compareAndSwap(revision,value){assert.equal(this.value.localRevision,revision);this.value=structuredClone(value);return structuredClone(value);}};
+  const sibling=createClientWithStorage({projectId:'soty',endpoint:f.backendOrigin+'/api/connect/rpc',fetch:f.reader.fetch},store);t.after(()=>sibling.dispose());
+  const start=await sibling.startEnrollment('Synthetic same-account distinct device');await f.reader.client.approveEnrollment(start.requestId,f.reader.account.accountId);
+  await sibling.previewEnrollment(start.requestId);await sibling.finishEnrollment(start.requestId,f.reader.account.accountId);
+  await assert.rejects(sibling.extension('apps.scoped.context',args),error=>error.code==='app_scoped_context_closed');
+  await f.reader.client.extension('apps.scoped.close',args);
+  await assert.rejects(f.reader.client.extension('apps.scoped.context',args),error=>error.code==='app_scoped_context_closed');
+});
+
+test('actual signed Root grant revoke during scoped context async boundary prevents the ready projection', {
+  skip:sourceAvailable?false:'Optional packaged selected Planner Source absent',timeout:90000},async t=>{
+  const f=await createScopedGatewayFixture({t}),launch=await f.launch(),service=f.root().locals.connectService;
+  const args={appId:f.appId,grants:{accountIds:[],communityIds:[]}},challenge=await service.handle({origin:f.origin,op:'challenge',args:{operation:'apps.update',digest:digestArgs(args)}});
+  assert.equal(challenge.ok,true);const actor=(await f.owner.storage.read()).installations.find(value=>value.deviceId===f.owner.account.deviceId);
+  const proof={challengeId:challenge.challengeId,publicJwk:actor.signingPublicJwk,signature:await signMessage(actor,challenge.message)};
+  const original=service.withActorAuthorityFence;let armed=true,revoked;
+  service.withActorAuthorityFence=(current,callback)=>{
+    const result=original(current,callback);
+    if(armed){armed=false;queueMicrotask(()=>{revoked=service.handle({origin:f.origin,op:'apps.update',args,proof});});}
+    return result;
+  };t.after(()=>{service.withActorAuthorityFence=original;});
+  await assert.rejects(f.reader.client.extension('apps.scoped.context',{appId:f.appId,handle:launch.scopedCloseHandle}));
+  assert.equal((await revoked).ok,true,'revocation uses real signed Core verification and actual Apps grant mutation');
+  assert.equal((await f.wire.request(f.embedded+'/api/embed/session-status')).status,403);
 });

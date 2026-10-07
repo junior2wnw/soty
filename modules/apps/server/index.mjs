@@ -133,8 +133,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (keys.has(channel.key) || (channel.bindingVersion === 2 && runtimeBindings.getState(channel, event.appId).state !== 'unavailable')) sync(channel);
       }
     } });
-  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare']),
+  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context']),
     async executeAsync({ op, args = {}, actor }) {
+      if(op==='apps.scoped.context') {
+        args=authenticatedArgs(actor,args);exact(args,['appId','handle']);const id=appId(args.appId);
+        assertApps(scopedGateway,'app_scoped_context_closed',403);
+        const read=()=>{
+          assertActor(actor);const {record,context}=scopedGateway.ownedContext(actor,id,args.handle);
+          assertApps(record.session&&sessions.get(record.session.sessionKey)===record.session,'app_scoped_context_closed',403);
+          const decision=publications.recheckAccess(record.session.decision);assertRuntimeBinding(decision,{requireReady:true});
+          return {ready:true,appId:id,scopedSource:{...context.sourceProfile},target:{...context.target},expiresAt:context.expiresAt};
+        };
+        // This deferred signed operation never joins the old slot actor to the
+        // new dispatch transaction. Original authority is freshly fenced twice.
+        const first=read();await Promise.resolve();const fresh=read();
+        assertApps(JSON.stringify(first)===JSON.stringify(fresh),'app_scoped_context_closed',403);return fresh;
+      }
       assertApps(op === 'apps.source.prepare', 'unsupported_operation');
       args = authenticatedArgs(actor, args);
       return sources.execute({ op, actor, args });
@@ -471,7 +485,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       }
       tickets.set(digest(ticket), { decision, entryPath,...(scoped?{scopedRecord:scoped.record}:{}) });
       return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
-        ...(scoped?{runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt}:{}),
+        ...(scoped?{runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt,
+          scopedSource:{...scoped.record.context.sourceProfile}}:{}),
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
     if (op === 'apps.revoke') {

@@ -146,6 +146,25 @@ explicit text/voice/screenshot preview+Send, idempotency/lost-ACK/revoke gates.
 App-level Root feedback и его Apps7 metadata smoke не заменяют эти права.
 Parent media capture без Source receiver ещё не означает отправку обращения.
 
+Отдельный Stage capture slice использует только signed `scopedSource` из approved
+Source profile (pilot ASCII128 `planner.selected-workspace`), private RAM slot и
+`apps.scoped.context`. Context — deferred signed operation: новый authenticated A
+не присоединяет старый actor pointer к текущему dispatcher; original-slot authority
+проверяется fresh standalone. Exact A account+device, active slot/session,
+Connect/Human/client generation, target/admission и private runtime binding
+проверяются до/после async boundary. Ответ только source pin/target/expiry/ready,
+без Source resource IDs, keys/userinfo. Другое устройство того же account,
+foreign/closed handle и signed grant revoke во время await дают отказ.
+Source/native DB namespace не используется для вывода capture Source ID.
+
+Actual Apps7 Stage + admitted Source iframe + MessageChannel + native PNG preview
+и Source bytes-only reply проверены отдельным Chrome script
+`scripts/fixtures/scoped-gateway-capture.browser.mjs`; same iframe сохраняется,
+public SDK profile switch закрывает preview/stage без передачи bytes новому peer.
+Requester явно synthetic, перед request читает настоящий selected Source API;
+Native feedback submit/queue этим script не внедрены. Media selection ≤3min,
+original slot/basic proof ≤5min/300s; long-session promise отсутствует.
+
 Managed reviews: нужен реальный provider write/auth/moderation port, approved
 namespace+subject binding, durable author/proof semantics, own guest/profile path,
 per-call author/tenant/resource grants и actual publish/revoke/receipt tests.

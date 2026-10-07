@@ -15,7 +15,7 @@ export function validateAppEntry(value: unknown, target: AppLaunchTarget, shellU
 export function createAppLauncher(options: {
   target: AppLaunchTarget; accountId: string; shellUrl: string;
   isCurrent(accountId: string): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void> }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
   abandonScoped?(parameters:{appId:string;handle:string}):Promise<unknown>;
   resolveEntry?(parameters: AppLaunchRequest): Promise<{ entry: AppResolvedEntry }>;
 }): {
@@ -24,6 +24,7 @@ export function createAppLauncher(options: {
   launch(): Promise<string | null>;
   isCurrent(): boolean;
   runtimeProfile():string|null;
+  scopedCapture():{handle:string;source:unknown;slot:object}|null;
   openExternal(openPopup: () => AppLaunchPopup | null): Promise<'opened' | 'blocked' | 'stale' | 'busy'>;
   dispose(): void;
 };

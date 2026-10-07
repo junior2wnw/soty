@@ -3,6 +3,8 @@ const domainIdPattern = /^dom_[a-f0-9]{32}$/u;
 const contextIdPattern = /^[A-Za-z0-9_-]{3,160}$/u;
 const conversationIdPattern = /^conv_[a-f0-9]{32}$/u;
 
+import {captureSourcePin} from './app-project-capture.mjs';
+
 export class AppLaunchError extends Error {
   constructor(code) { super(code); this.name = 'AppLaunchError'; this.code = code; }
 }
@@ -151,7 +153,9 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
       if(result.runtimeProfile!==undefined||result.scopedCloseHandle!==undefined) {
         requireValue(result.runtimeProfile==='soty.selected-human-embed.v1'&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
         requireValue(result.scopedCleanup===undefined||typeof result.scopedCleanup==='function','invalid_app_scoped_launch');
-        binding=Object.freeze({profile:result.runtimeProfile,handle:result.scopedCloseHandle,cleanup:result.scopedCleanup});
+        const source=captureSourcePin(result.scopedSource);
+        binding=Object.freeze({profile:result.runtimeProfile,handle:result.scopedCloseHandle,cleanup:result.scopedCleanup,
+          source,slot:Object.freeze({})});
       }
       if (!current()) {abandon(binding);return null;}
       const url = validateAppLaunchUrl(result?.url, shellUrl);
@@ -195,6 +199,7 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     launch,
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,
+    scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot}):null,
     async openExternal(openPopup) {
       if (!current()) return 'stale';
       if (externalPending) return 'busy';

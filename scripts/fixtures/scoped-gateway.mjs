@@ -2,7 +2,7 @@
 // Helpers below are a test harness, never production authorization.
 import { createServer as createTlsServer } from 'node:https';
 import { execFile } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -54,6 +54,9 @@ async function cleanup() {
 process.on('SIGINT', () => void cleanup().then(() => process.exit(0)));
 process.on('SIGTERM', () => void cleanup().then(() => process.exit(0)));
 try {
+  await mkdir(join(root,'output','playwright'),{recursive:true});
+  // A 2×2 synthetic raster exported by native Canvas, not personal media.
+  await writeFile(join(root,'output','playwright','scoped-capture-selected.png'),Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4AWIqn+36H4SZGKAAAAAA///TQrpwAAAABklEQVQDAD4YBLFsqVAqAAAAAElFTkSuQmCC','base64'));
   vite = await createViteServer({ root, configFile: join(root, 'vite.config.ts'), server: { host: '127.0.0.1', port: frontPort, strictPort: true,
     proxy: { '/api': { target: `http://127.0.0.1:${backendPort}`, ws: true }, '/human-identity': { target: `http://127.0.0.1:${backendPort}`, changeOrigin: false } } },
     plugins: [{ name: 'scoped-loopback-test-harness', configureServer(server) { server.middlewares.use((req, res, next) => {

@@ -11,11 +11,15 @@ import { mountAppFullscreen } from './app-fullscreen.mjs';
 import { icon } from './icons';
 import { mountAppFeedback, type AppFeedbackHandle } from './app-feedback';
 import { mountAppReviews, type AppReviewsHandle } from './app-reviews';
+import './project-feedback-picker.css';
+import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
+import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
+import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;scopedCleanup?:()=>Promise<void> }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
@@ -46,7 +50,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const initial = options.intent, accountId = options.accountId;
   let intent = initial, app = options.app, selectedEntry: AppResolvedEntry | null = null;
   let disposed = false, runtimeStarted = false, runtimePending = false, accountPending = false;
-  let routeGeneration = 0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
+  let routeGeneration = 0, frameGeneration=0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
   let presentationVersion = 0, applyingPresentation = false;
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
@@ -144,6 +148,21 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
   });
+  const readCapturePeer=():ProjectCapturePeer|null=>{
+    const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source),frame=runtime.querySelector('iframe');
+    return current()&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
+      ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
+        appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
+  };
+  const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
+    async assertPeer(peer,signal){
+      const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);
+      if(signal.aborted||!current()||!binding||!source||peer.slot!==binding.slot)return false;
+      const result=await options.api.request<unknown>('apps.scoped.context',{appId:app.appId,handle:binding.handle});
+      const fresh=readCapturePeer();return !signal.aborted&&!!fresh&&fresh.slot===peer.slot&&fresh.window===peer.window
+        &&fresh.generation===peer.generation&&matchesScopedCaptureContext(result,{appId:app.appId,source});
+    },capture:parameters=>pickProjectFeedbackMedia({...parameters,document:host.ownerDocument}),
+  });
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
     // was actually admitted. A named route always keeps its exact domain ID.
@@ -205,6 +224,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
       frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(launcher.runtimeProfile()==='soty.selected-human-embed.v1'?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      frameGeneration++;
       runtime.replaceChildren(frame);
     } catch (reason) {
       if (!current()) return;
@@ -294,6 +314,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }
