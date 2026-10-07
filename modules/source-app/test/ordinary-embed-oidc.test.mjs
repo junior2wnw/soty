@@ -71,3 +71,26 @@ test('Standard2 Native form alone permits exact reviewed issuer redirect; null/m
   const old = await createOrdinaryHttpFixture(t), legacy = await old.realms[0].beginNative();
   assert.equal(legacy.page.policy.referrer, 'no-referrer'); assert.match(legacy.page.policy.csp, /form-action 'self';/u);
 });
+
+test('completed Standard2 recovery is state-only: extra code/wrong or correct issuer/error cannot exchange again or broaden receipt; current exact state remains readable', { timeout: 15000 }, async t => {
+  const f = await createOrdinaryHttpFixture(t, { embedOidc: true }), [realm] = f.realms;
+  const originalFetch = globalThis.fetch; let tokenRequests = 0;
+  globalThis.fetch = (input, options) => { const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    if (url.origin === f.root.origin && url.pathname === '/human-identity/token') tokenRequests++;
+    return originalFetch(input, options); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const native = await realm.beginNative(), authorized = await realm.authorizeNative(native), callback = (await realm.completeOidc(authorized)).callback;
+  await realm.finishNative(callback);
+  assert.equal(tokenRequests,1);
+  const before = Object.fromEntries(['source_interactions','source_sessions','native_links','native_consents'].map(name =>
+    [name, realm.store.db.prepare('SELECT count(*) AS n FROM ' + name).get().n]));
+  for (const fields of [{code:'not-a-new-code'}, {iss:'https://foreign.invalid/human-identity'}, {iss:realm.profile.issuer},
+    {error:'access_denied'}, {error_description:'denied'}, {code:'not-a-new-code',iss:realm.profile.issuer}]) {
+    const query = new URLSearchParams({state:native.form.intent,...fields}), denied = await realm.request('/api/embed/callback?' + query);
+    assert.equal(denied.status,403);
+  }
+  assert.equal((await realm.request('/api/embed/callback?state=' + native.form.intent)).status,200);
+  const after = Object.fromEntries(Object.keys(before).map(name => [name,realm.store.db.prepare('SELECT count(*) AS n FROM '+name).get().n]));
+  assert.deepEqual(after,before);
+  assert.equal(tokenRequests,1,'actual maintained exchange ran exactly once, negative recovery never sends another token request');
+});

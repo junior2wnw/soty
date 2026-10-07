@@ -281,6 +281,11 @@ export function createSourceAppBff(options) {
       let interaction = await store.getInteraction(digest(url.searchParams.get('state')));
       check(interaction && digest(interaction.context.reference) === digest(context.reference)
         && digest(interaction.context) === digest(context) && interaction.expiresAt > clock(), 'source_app_completion_denied', 403);
+      if (embedOidc && interaction.phase === 'completed') {
+        // Recovery is only the exact already-committed receipt. An old/new
+        // code, issuer or OAuth error must not be presented as a fresh success.
+        check([...url.searchParams.keys()].join(',') === 'state', 'source_app_completion_denied', 403);
+      }
       if (embedOidc && interaction.phase === 'claimed') {
         check(url.searchParams.get('iss') === profile.issuer && typeof url.searchParams.get('code') === 'string' && url.searchParams.get('code').length > 0
           && !url.searchParams.has('error') && interaction.protocolIntent.state === url.searchParams.get('state'), 'source_app_callback_denied', 403);
