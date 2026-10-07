@@ -5,9 +5,9 @@ const approvedCommits = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
-  const value = fields(options, ['capture', 'withCurrent'], ['verifyLegacy', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
+  const value = fields(options, ['capture', 'withCurrent'], ['linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
   check(typeof value.capture === 'function' && typeof value.withCurrent === 'function' && value.withCurrent.constructor?.name !== 'AsyncFunction');
-  for (const key of ['verifyLegacy', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
+  for (const key of ['linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
     check(value[key] === undefined || typeof value[key] === 'function');
   if (value.feedback !== undefined) {
     const feedback = fields(value.feedback, ['context', 'list', 'get', 'submit'], ['reply', 'status', 'accept']);

@@ -71,17 +71,26 @@ test('actual maintained Root OIDC + controlled private bridge establishes Basic 
     rp: { issuer: root.issuer, clientId: client.id, clientSecret: client.clientSecret, redirectUri: client.redirectUri } });
   const signer = createResourceSourceProofSigner({ profile, key });
   const jars = new Map();
-  async function request(origin, path, { method = 'GET', data, form, signed = false, requestOrigin = origin } = {}) {
+  async function request(origin, path, { method = 'GET', data, form, signed = false, requestOrigin = origin, raw, contentType } = {}) {
     const jar = jars.get(origin) ?? new Map(); jars.set(origin, jar);
     const cookie = [...jar].map(([name, value]) => name + '=' + value).join('; ');
-    const body = form ? Buffer.from(new URLSearchParams(form).toString()) : data ? Buffer.from(JSON.stringify(data)) : Buffer.alloc(0);
+    const body = raw ?? (form ? Buffer.from(new URLSearchParams(form).toString()) : data ? Buffer.from(JSON.stringify(data)) : Buffer.alloc(0));
     const response = await fetch(origin + path, { method, redirect: 'manual', headers: { ...(cookie ? { cookie } : {}),
-      ...(method === 'POST' ? { origin: requestOrigin, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json' } : {}),
+      ...(method === 'POST' ? { origin: requestOrigin, 'content-type': contentType ?? (form ? 'application/x-www-form-urlencoded' : 'application/json') } : {}),
       ...(signed ? signer.headers({ context, method, path, body, cookie }) : {}) }, ...(method === 'POST' ? { body } : {}) });
     for (const header of response.headers.getSetCookie()) { const pair = header.split(';')[0], split = pair.indexOf('='); jar.set(pair.slice(0, split), pair.slice(split + 1)); }
     const text = await response.text(); let value; try { value = JSON.parse(text); } catch {}
     return { status: response.status, text, value, location: response.headers.get('location') };
   }
+  // Direct Source boundary, without relying on a signed/compiled Root route.
+  for (const method of ['GET', 'POST', 'HEAD']) assert.equal((await request(embedOrigin, '/api/embed/feedback/unknown', { method, data: {} })).status, 404);
+  assert.equal((await request(embedOrigin, '/api/embed/feedback/reply', { method: 'HEAD' })).status, 404);
+  for (const path of ['/api/embed/feedback?limit=1&limit=2', '/api/embed/feedback/ticket?ticketId=a&ticketId=b', '/api/embed/feedback/context?actor=owner'])
+    assert.equal((await request(embedOrigin, path)).status, 400);
+  assert.equal((await request(embedOrigin, '/api/embed/query', { method: 'POST', data: {}, contentType: 'text/plain' })).status, 415);
+  assert.equal((await request(embedOrigin, '/api/embed/query', { method: 'POST', raw: Buffer.alloc(65537, 32) })).status, 413);
+  assert.equal((await request(embedOrigin, '/api/embed/query', { method: 'POST', raw: Buffer.from([0xff]), signed: true })).status, 400);
+  assert.equal((await request(embedOrigin, '/api/embed/query', { method: 'POST', raw: Buffer.from('{"requestId":"a","request\\u0049d":"b","input":{}}'), signed: true })).status, 400);
   assert.equal((await request(embedOrigin, '/api/embed/login', { method: 'POST', data: {}, signed: true, requestOrigin: 'https://foreign.invalid' })).status, 403);
   const start = await request(embedOrigin, '/api/embed/login', { method: 'POST', data: {}, signed: true }); assert.equal(start.status, 200);
   const handoff = new URL(start.value.nativeUrl), nativePage = await request(nativeOrigin, handoff.pathname + handoff.search); assert.equal(nativePage.status, 200);

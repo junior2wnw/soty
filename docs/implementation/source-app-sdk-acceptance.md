@@ -50,6 +50,10 @@ Node24.19.0 / pnpm10.30.0.
   state, body identity claims and Basic reuse on a different Root slot deny.
   This test has a **controlled MAC IPC + RAM Source store**, not installed
   connector/Native durable storage; its passing is part of the 15 tests.
+  The additive Source-router closure also directly probes unknown feedback
+  suffixes, HEAD mutators, duplicate/unknown query keys, wrong Content-Type,
+  byte overflow, invalid UTF-8 and decoded duplicate body keys before dispatch;
+  these direct Source negatives do not rely on signed Root route rejection.
 
 Native effect boundaries are real SQLite transactions with synthetic rows:
 revoke before final commit produces effects0/receipts0; lost ACK after COMMIT
@@ -74,6 +78,8 @@ deadline and `renewable:false`. Common RP exports do not establish a durable
 long session. Native legacy linking requires both old Native proof and new
 verified OIDC proof; no email merge or Root-owner promotion. Explicit guest mode
 requires an app-owned new-empty policy, not rights on old data.
+The Native capture and transactional link hooks own the actual dual-proof
+assertion; no separate unused verifyLegacy hook is exposed.
 
 Private feedback draft is bound to its original context; unknown ACK retains
 the exact request/body/media. Source support/reporter roles remain Native-owned.

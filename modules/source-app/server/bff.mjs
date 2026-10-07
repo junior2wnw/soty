@@ -7,6 +7,7 @@ import { STANDARD_SELECTED_SOURCE } from './standard-profile.mjs';
 import { validateSourceFeedbackInput } from './feedback-wire.mjs';
 import { feedbackOutput } from '../shared/feedback-wire.mjs';
 import { parseSourceJson } from '../shared/strict-json.mjs';
+import { sourceEmbedRoute, sourceBodyHeaders } from './router.mjs';
 import { fields, check, digest, nonce, opaque, requestId, jsonCopy, deepFreeze, syncResult, SourceAppError } from './wire.mjs';
 
 const COOKIE = 'soty_rp_session', INTENT = 'soty_rp_intent', LINK = 'soty_rp_link';
@@ -43,7 +44,7 @@ export function createSourceAppBff(options) {
   const verifier = createResourceSourceProofVerifier({ profile, key: value.transportKey, consumeNonce: store.consumeNonce, clock });
   const readAuthority = createSourceAuthorityClient({ profile, key: value.transportKey, connectorPort: value.connectorPort, clock });
   const semanticDigest = resourceConsentDigest(profile);
-  let closed = false;
+  const responseLimits = new WeakMap(); let closed = false;
   async function storageCommit(method, args, action) {
     let open = true, entered = false, poisoned = false;
     const final = () => {
@@ -100,7 +101,9 @@ export function createSourceAppBff(options) {
     return proveSession(await store.readSession(digest(token)), context, operation, hostOptions);
   }
   function send(res, status, data, headers = {}) {
-    const bytes = Buffer.from(JSON.stringify(data)); check(bytes.length <= 1500000, 'source_app_payload_limit', 413);
+    const bytes = Buffer.from(JSON.stringify(data)), limit = responseLimits.get(res);
+    check(bytes.length <= (limit?.responseBytes ?? 1500000), ['write', 'feedback-write'].includes(limit?.kind)
+      ? 'source_app_effect_unknown' : 'source_app_response_invalid', 503);
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', ...headers }); res.end(bytes);
   }
   function page(res, title, body, headers = {}) {
@@ -113,9 +116,10 @@ export function createSourceAppBff(options) {
     for await (const part of req) { bytes += part.length; check(bytes <= limit, 'source_app_payload_limit', 413); parts.push(part); }
     return Buffer.concat(parts, bytes);
   }
-  function parse(bytes) { try { return jsonCopy(parseSourceJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes)), { bytes: 1500000 }); } catch (error) { if (error instanceof SourceAppError) throw error; throw new SourceAppError('source_app_input_invalid'); } }
+  function parse(bytes) { try { return jsonCopy(parseSourceJson(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)), { bytes: 1500000 }); } catch (error) { if (error instanceof SourceAppError) throw error; throw new SourceAppError('source_app_input_invalid'); } }
   async function nativeRoute(req, res, url) {
     check(req.headers.host === new URL(profile.nativeOrigin).host, 'source_app_origin_denied', 403);
+    if (['GET', 'HEAD'].includes(req.method)) sourceBodyHeaders(req, 0);
     if (url.pathname === '/soty/connect') {
       check(req.method === 'GET' && [...url.searchParams.keys()].join(',') === 'intent' && opaque(url.searchParams.get('intent')));
       const interaction = await store.getInteraction(digest(url.searchParams.get('intent')));
@@ -133,7 +137,11 @@ export function createSourceAppBff(options) {
     }
     if (url.pathname === '/soty/authorize') {
       check(req.method === 'POST' && req.headers.origin === profile.nativeOrigin, 'source_app_origin_denied', 403);
-      const bytes = await body(req, 4096), form = new URLSearchParams(bytes.toString('utf8'));
+      check(typeof req.headers['content-type'] === 'string' && /^application\/x-www-form-urlencoded(?:\s*;\s*charset=utf-8)?$/iu.test(req.headers['content-type'])
+        && req.headers['content-encoding'] === undefined, 'source_app_content_type_invalid', 415);
+      const bytes = await body(req, 4096); let decoded;
+      try { decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new SourceAppError('source_app_input_invalid'); }
+      const form = new URLSearchParams(decoded);
       check([...form.keys()].sort().join(',') === 'consent,csrf,intent,scope' && [...form.keys()].every(key => form.getAll(key).length === 1)
         && form.get('scope') === semanticDigest && form.get('consent') === 'yes'
         && cookie(req, INTENT) === form.get('intent') && cookie(req, 'soty_source_csrf') === form.get('csrf'), 'source_app_csrf_denied', 403);
@@ -186,10 +194,11 @@ export function createSourceAppBff(options) {
     throw new SourceAppError('source_app_route_unavailable', 404);
   }
   async function embedRoute(req, res, url) {
+    const route = sourceEmbedRoute(req, url); sourceBodyHeaders(req, route.requestBytes); responseLimits.set(res, route);
     if (url.pathname === '/api/embed/transport-ready') {
       const headers = await verifier.verifyReady(req); res.writeHead(204, { ...headers, 'cache-control': 'no-store' }); res.end(); return;
     }
-    const limit = url.pathname === '/api/embed/feedback' ? 1500000 : 65536, bytes = ['GET', 'HEAD'].includes(req.method) ? Buffer.alloc(0) : await body(req, limit);
+    const bytes = ['GET', 'HEAD'].includes(req.method) ? Buffer.alloc(0) : await body(req, route.requestBytes);
     const context = await verifier.verify(req, { body: bytes }); await freshRoot(context);
     if (!['GET', 'HEAD'].includes(req.method)) check(req.headers.origin === profile.embedOrigin, 'source_app_origin_denied', 403);
     const input = bytes.length ? parse(bytes) : {};
@@ -244,10 +253,12 @@ export function createSourceAppBff(options) {
       else { await freshRoot(context); native.withCurrent(current.authority, () => true); }
       send(res, 200, { ok: true, data }); return;
     }
-    if (url.pathname.startsWith('/api/embed/feedback')) {
-      const feedbackOperation = url.pathname === '/api/embed/feedback/context' ? 'context' : url.pathname === '/api/embed/feedback/ticket' ? 'get'
-        : url.pathname === '/api/embed/feedback/reply' ? 'reply' : url.pathname === '/api/embed/feedback/status' ? 'status'
-          : url.pathname === '/api/embed/feedback/accept' ? 'accept' : req.method === 'GET' ? 'list' : 'submit';
+    const feedbackOperation = new Map([
+      ['GET /api/embed/feedback/context', 'context'], ['GET /api/embed/feedback/ticket', 'get'],
+      ['POST /api/embed/feedback/reply', 'reply'], ['POST /api/embed/feedback/status', 'status'], ['POST /api/embed/feedback/accept', 'accept'],
+      ['GET /api/embed/feedback', 'list'], ['POST /api/embed/feedback', 'submit'],
+    ]).get(req.method + ' ' + url.pathname);
+    if (feedbackOperation) {
       const args = validateSourceFeedbackInput(feedbackOperation, ['GET', 'HEAD'].includes(req.method) ? Object.fromEntries(url.searchParams) : input);
       const current = await currentSession(req, context, 'feedback.' + feedbackOperation);
       const data = await native.feedback(current.authority, feedbackOperation, args);
@@ -266,10 +277,13 @@ export function createSourceAppBff(options) {
     throw new SourceAppError('source_app_route_unavailable', 404);
   }
   return Object.freeze({ profile, async handleRequest(req, res) {
-    const url = new URL(req.url, profile.nativeOrigin);
+    let url;
+    try { url = new URL(req.url, profile.nativeOrigin); }
+    catch { send(res, 400, { ok: false, error: { code: 'source_app_input_invalid', retryable: false } }); return true; }
     if (!url.pathname.startsWith('/soty/') && !url.pathname.startsWith('/api/embed/')) return false;
     try {
-      check(!closed && !url.pathname.includes('%') && !url.pathname.includes('..'), 'source_app_route_unavailable', 404);
+      check(!closed && req.url === url.pathname + url.search && req.url.startsWith('/') && !req.url.startsWith('//')
+        && !url.pathname.includes('%') && !url.pathname.includes('..'), 'source_app_route_unavailable', 404);
       if (url.pathname.startsWith('/soty/')) await nativeRoute(req, res, url); else await embedRoute(req, res, url);
     } catch (error) {
       if (!res.headersSent) send(res, Number.isInteger(error.status) ? error.status : 503, { ok: false, error: { code: error.code || 'source_app_unknown', retryable: !error.status || error.status >= 500 } });

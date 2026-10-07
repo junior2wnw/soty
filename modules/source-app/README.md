@@ -28,6 +28,9 @@ Manifest, регистрация, одобренный профиль и уст�
 
 Для связи старого аккаунта нужны одновременно новая проверенная OIDC identity и
 текущая независимая Native сессия. Автоматического объединения по email нет.
+Реальная проверка двух proof находится в Native `capture(binding, browserRequest)`
+и final `linkVerifiedIdentity` внутри транзакции; отдельного невызванного
+`verifyLegacy` hook нет. Приложение обязано проверить обе части и текущую сессию.
 Explicit guest policy может создать только новый пустой Native principal/resource;
 права на старый выбранный ресурс таким способом не создаются.
 
@@ -66,6 +69,9 @@ Transport key остаётся на trusted connector/Source hosts. Один exa
 fixed routes не допускают произвольные URL/команды/legacy endpoints. UI labels —
 public текст trusted constructor, не resource authority. Собственный Native вход
 нужно сохранять отдельно от `/soty/*` и `/api/embed/*`.
+Source самостоятельно проверяет exact method/path/query multimap, Content-Type,
+UTF-8 и byte limits перед dispatch. Неизвестный feedback suffix, повторный query
+key и HEAD на мутацию запрещены независимо от compiled Root router.
 
 Текущий BFF slice — **Basic300**, original Root slot и явный Native consent.
 Импорт RP49 не включает long session автоматически. Долговечный long consumer,
