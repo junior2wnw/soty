@@ -1,5 +1,6 @@
 import {spawn} from 'node:child_process';
 import {check,SourceAppError,digest} from './wire.mjs';
+import {LOCAL_LINUX_FEEDBACK_PLACEMENT} from './linux-feedback-local-placement.mjs';
 
 // Internal host implementation only. This module is not a package/RPC export;
 // author JSON cannot supply a command runner, filesystem port or packet plan.
@@ -7,9 +8,31 @@ export const LINUX_FEEDBACK_INSPECT_FORMAT='{"id":{{json .Id}},"name":{{json .Na
 
 /** Waits for CLOSE, including pipes, even after timeout/output overflow. All
  * spawned commands belong to this supervisor; stderr is never disclosed. */
-export function createDockerCommandRunner(binary){
+export function createDockerCommandRunner(binary){return commandRunner(binary,args=>args);}
+
+// A separate constructor-approved local placement. Never inherit DOCKER_HOST
+// or accept a caller-selected daemon/context. This fixed socket is mounted only
+// into the trusted supervisor, not the processor container.
+function localWslDockerArgs(args,socket){
+  check(Array.isArray(args)&&args.length>0&&args.every(arg=>typeof arg==='string'
+    &&!['--host','-H','--context','--config','-c'].includes(arg)&&!/^--(?:host|context|config)=/u.test(arg)&&!/^-(?:H|c)./u.test(arg)),
+  'source_feedback_processor_not_ready',503);
+  return ['--host','unix://'+socket,...args];
+}
+export const fixedLocalWslDockerArgs=args=>localWslDockerArgs(args,LOCAL_LINUX_FEEDBACK_PLACEMENT.socketContainer);
+export const fixedLocalWslHostDockerArgs=args=>localWslDockerArgs(args,LOCAL_LINUX_FEEDBACK_PLACEMENT.socketHost);
+export function createLocalWslDockerCommandRunner(binary){
+  check(binary==='/usr/bin/docker','source_feedback_processor_not_ready',503);
+  return commandRunner(binary,fixedLocalWslDockerArgs);
+}
+export function createLocalWslHostDockerCommandRunner(binary){
+  check(binary===LOCAL_LINUX_FEEDBACK_PLACEMENT.dockerHostBinary,'source_feedback_processor_not_ready',503);
+  return commandRunner(binary,fixedLocalWslHostDockerArgs);
+}
+
+function commandRunner(binary,captureArgs){
   function start(args,{limit=16384,timeout=15000,signal}={}){
-    const child=spawn(binary,args,{stdio:['ignore','pipe','pipe'],env:{PATH:'/usr/bin:/bin'},windowsHide:true});
+    const child=spawn(binary,captureArgs(args),{stdio:['ignore','pipe','pipe'],env:{PATH:'/usr/bin:/bin'},windowsHide:true});
     const chunks=[];let bytes=0,failed=false,closed=false,force,timer;
     function stop(){
       if(closed)return;failed=true;child.kill('SIGTERM');

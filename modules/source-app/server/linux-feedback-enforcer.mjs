@@ -5,7 +5,8 @@ import {fields,check,digest} from './wire.mjs';
 import {feedbackJobInput,feedbackJobBudget,createFeedbackProcessorEngine} from './feedback-job-contract.mjs';
 import {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
 import {LINUX_FEEDBACK_WORKER_SOURCE} from './linux-feedback-worker-source.mjs';
-import {createDockerCommandRunner,runFixedLinuxPacket} from './linux-feedback-lifecycle.mjs';
+import {createDockerCommandRunner,createLocalWslDockerCommandRunner,runFixedLinuxPacket} from './linux-feedback-lifecycle.mjs';
+import {LOCAL_LINUX_FEEDBACK_PLACEMENT} from './linux-feedback-local-placement.mjs';
 
 export const SYNTHETIC_FEEDBACK_IMAGE='sha256:c03a61d12e03870747e9013860fc36e23e53920da9b07ea1e795b3fef9628ae6';
 const LAB='/home/ai2/codex-soty-universal-20261007-9f8dcd71';
@@ -18,20 +19,34 @@ const sleep=ms=>new Promise(done=>setTimeout(done,ms));
  * NEVER to the processor/author JSON. No real model/user media is enabled.
  * Host/current Native proof remains the Source job service's responsibility. */
 export function createSyntheticLinuxFeedbackProcessor(options){
+  return processor(options,null);
+}
+/** NEW immutable local-Linux placement. Resources and process protocol are
+ * unchanged; its engine3 digest also pins the fixed daemon/path/cleanup policy. */
+export function createSyntheticLocalLinuxFeedbackProcessor(options){
+  return processor(options,LOCAL_LINUX_FEEDBACK_PLACEMENT);
+}
+function processor(options,placement){
   const value=fields(options,['directory'],['dockerBinary','scenario','onEvidence']);
   const directory=value.directory,docker=value.dockerBinary??'/usr/bin/docker',scenario=value.scenario??'success';
-  check(directory===LAB+'/source-feedback-jobs'&&docker==='/usr/bin/docker'&&modes.includes(scenario)
+  const lab=placement?.lab??LAB;
+  check(directory===(placement?.directory??LAB+'/source-feedback-jobs')&&docker==='/usr/bin/docker'&&modes.includes(scenario)
     &&(value.onEvidence===undefined||typeof value.onEvidence==='function'),'source_feedback_processor_not_ready',503);
-  const workerSha256=sha(LINUX_FEEDBACK_WORKER_SOURCE),ref=Object.freeze({id:'local.synthetic-linux.'+scenario,version:2,
-    digest:digest({schema:'soty.synthetic-linux-feedback.v2',lifecycleProfile:'soty.fixed-linux-feedback-lifecycle.v2',
+  const workerSha256=sha(LINUX_FEEDBACK_WORKER_SOURCE),ref=Object.freeze({id:'local.synthetic-linux.'+scenario,version:placement?3:2,
+    digest:digest(placement?{schema:'soty.synthetic-linux-feedback.v3',placement,
+      image:SYNTHETIC_FEEDBACK_IMAGE,workerSha256,scenario,purpose:'ocr',maxBudget}
+      :{schema:'soty.synthetic-linux-feedback.v2',lifecycleProfile:'soty.fixed-linux-feedback-lifecycle.v2',
       image:SYNTHETIC_FEEDBACK_IMAGE,workerSha256,scenario,purpose:'ocr',maxBudget})});
   const engine=createFeedbackProcessorEngine({ref,purposes:['ocr'],localOnly:true,synthetic:true,process:async()=>{throw new Error('fixed_enforcer_required');}});
-  const commands=createDockerCommandRunner(docker);let prepared=false;
+  const commands=placement?createLocalWslDockerCommandRunner(docker):createDockerCommandRunner(docker);let prepared=false;
   function supported(budget){budget=feedbackJobBudget(budget);return budget.cpuMs>=1000&&budget.cpuMs%1000===0&&budget.cleanupMs>=500;}
   async function prepare(){
     check(process.platform==='linux'&&process.getuid()===1000,'source_feedback_processor_not_ready',503);
-    const parent=await fs.lstat(LAB);check(parent.isDirectory()&&!parent.isSymbolicLink()&&parent.uid===1000&&(parent.mode&0o777)===0o700,'source_feedback_processor_not_ready',503);
-    check(resolve(directory)===directory&&await fs.realpath(LAB)===LAB,'source_feedback_processor_not_ready',503);
+    const parent=await fs.lstat(lab);check(parent.isDirectory()&&!parent.isSymbolicLink()&&parent.uid===1000&&(parent.mode&0o777)===0o700,'source_feedback_processor_not_ready',503);
+    check(resolve(directory)===directory&&await fs.realpath(lab)===lab,'source_feedback_processor_not_ready',503);
+    if(placement){const socket=await fs.lstat(placement.socketContainer);
+      check(socket.isSocket()&&!socket.isSymbolicLink()&&socket.gid===placement.socketGid&&(socket.mode&0o777)===0o660
+        &&await fs.realpath(placement.socketContainer)===placement.socketContainer,'source_feedback_processor_not_ready',503);}
     await fs.mkdir(directory,{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
     const current=await fs.lstat(directory);check(current.isDirectory()&&!current.isSymbolicLink()&&current.uid===1000&&(current.mode&0o777)===0o700,'source_feedback_processor_not_ready',503);
     check(JSON.parse(await commands.run(['image','inspect',SYNTHETIC_FEEDBACK_IMAGE,'--format','{{json .Id}}']))===SYNTHETIC_FEEDBACK_IMAGE,'source_feedback_processor_not_ready',503);
@@ -63,5 +78,6 @@ export function createSyntheticLinuxFeedbackProcessor(options){
   }
   const enforcer=createFeedbackJobEnforcer({engine,platform:'linux',maxBudget,syntheticTestOnly:false,
     assertHostBounds:({engineRef,budget})=>prepared&&process.platform==='linux'&&digest(engineRef)===digest(ref)&&supported(budget),execute});
-  return Object.freeze({engine,enforcer,prepare,ref,workerSha256,image:SYNTHETIC_FEEDBACK_IMAGE,productionReady:false});
+  return Object.freeze({engine,enforcer,prepare,ref,workerSha256,image:SYNTHETIC_FEEDBACK_IMAGE,productionReady:false,
+    ...(placement?{placement}: {})});
 }
