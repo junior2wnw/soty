@@ -1,0 +1,174 @@
+{
+  "schema": "soty.private-attach.current-root-source-freeze.v1",
+  "sourceOnly": true,
+  "base": "404b1e0604109bbba3c948a477557a06bbfcb3fc",
+  "currentCore": "90335314a663441d34148e8c312e3e4d42350eb7",
+  "runtimeFiles": 13,
+  "files": [
+    {
+      "path": "deploy/connect/private-attach/current-core-pins.json",
+      "bytes": 880,
+      "sha256": "4afa72235addb3b130d0926549a3c39d02718f23cac797178d69f7ed78ba4bb1"
+    },
+    {
+      "path": "deploy/connect/private-attach/framing.mjs",
+      "bytes": 7563,
+      "sha256": "1cdb97c329f322e48cdb9858082465d57b146624fecd3c52d70c8f02753d23ca"
+    },
+    {
+      "path": "deploy/connect/private-attach/host-client.mjs",
+      "bytes": 5239,
+      "sha256": "0e81fcee6f2665aab5b213b91300794a9ccc329bc57f454a9349a48d833dcca4"
+    },
+    {
+      "path": "deploy/connect/private-attach/native-supervisor.mjs",
+      "bytes": 2502,
+      "sha256": "31007223ad2952311d97e3d42cb19d52f26de9d3d36d16df130622fffedbbe23"
+    },
+    {
+      "path": "deploy/connect/private-attach/receiver-limits.mjs",
+      "bytes": 399,
+      "sha256": "7c28281649fd848c33eb2df9c8480161cff13b4d190493a4ebb52838887c7a68"
+    },
+    {
+      "path": "deploy/connect/private-attach/staged-sender-adapter.mjs",
+      "bytes": 2968,
+      "sha256": "320d9534bf5a9e67cb563ea5973f74549c13f3f1c2d74ea8795ca19493d5c7f0"
+    },
+    {
+      "path": "deploy/connect/private-attach/strict-receiver.mjs",
+      "bytes": 4326,
+      "sha256": "6255d3af1c8f621b179b9c02f83f8b807fbd750608ecc0b18732befce57e8119"
+    },
+    {
+      "path": "deploy/connect/private-attach/supervisor-core.mjs",
+      "bytes": 5848,
+      "sha256": "803a7a1c4d82c5bf1c7f2cf7db5f400cdec613e5675eb8ce4d3c032f832ac0db"
+    },
+    {
+      "path": "deploy/connect/private-attach/test/bridge.test.mjs",
+      "bytes": 9463,
+      "sha256": "2a9b769ea86e7926d55754bcff5095f18c0a0eba0fa3a7d53dbd5d65ba23a76d"
+    },
+    {
+      "path": "deploy/connect/private-attach/test/clocks.test.mjs",
+      "bytes": 8568,
+      "sha256": "e096fe0e6eb51a7165da2c07ddb12b311d46ba290811689886a249a8a64dd49c"
+    },
+    {
+      "path": "deploy/connect/private-attach/test/current-root-peer-regressions.test.mjs",
+      "bytes": 3375,
+      "sha256": "50a453e97f817b5b14972b64ca29164b9c9b8c6a8c62cc1b455f3b752bef4496"
+    },
+    {
+      "path": "deploy/connect/private-attach/test/strict-sender-fixture.mjs",
+      "bytes": 5763,
+      "sha256": "934268b14999e60083fb01c543a5b87d052607378320ece8fb9241a2dd7705e8"
+    },
+    {
+      "path": "deploy/connect/private-attach/test/synthetic-child.mjs",
+      "bytes": 1626,
+      "sha256": "668e5dc0b0d1035e7cda53f3bd8672b3f68ff6ea561a4682336bd630a28ed31b"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/fixture/owned-child.mjs",
+      "bytes": 2341,
+      "sha256": "ae2a28f2dc1a839ee9306f73dad3e2fda181171d7d76bf4270686f3456210dd7"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/fixture/owned-child.test.mjs",
+      "bytes": 2164,
+      "sha256": "01b625475daf3694b0df4074e4d4d17a8f0522fd9757728ff9db3b8d924ac9f6"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/cancellation.test.mjs",
+      "bytes": 15348,
+      "sha256": "ef46977867dd04b3991a580073585a22000aa3e946a178498b158e942dc6df9e"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/closed-data.test.mjs",
+      "bytes": 14082,
+      "sha256": "e6d12370079ee4174435aa3a1602fd6bca1ebd710435a8430b0ef7020335ec96"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/peer-exact-retake.test.mjs",
+      "bytes": 3678,
+      "sha256": "7a61d2cdf3aeed08f28d1e0fc81c92a19e61c2d8e2e04eade7c627f60b21a91f"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/readiness-boundary.mjs",
+      "bytes": 13050,
+      "sha256": "39a110b6aa52d086b893081c76a466c50386bcd31ef456da6bc84be9567490a5"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/readiness.test.mjs",
+      "bytes": 11903,
+      "sha256": "cd73746bc385e1bcb5155afc6bbf3227bac1662403386761952adc913731dfa6"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/readiness/staged-test-adapter.mjs",
+      "bytes": 305,
+      "sha256": "c32f0222a7ce58f4e21e2fd254b83dca2792d64c4a5cd02e6bc0e6c2a18b0a38"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/dispatch-fence.test.mjs",
+      "bytes": 4612,
+      "sha256": "4f9094a540f55e133a11a3d8a45db5453ce268258216b554d2cacc71ab44674f"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/linux-fd-entry.mjs",
+      "bytes": 1888,
+      "sha256": "586755c6274e0904f019362728a10d11d99353318fb9ae8a78b94cd4fd5db501"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/linux-warm-preflight.mjs",
+      "bytes": 12475,
+      "sha256": "08abdf255e12efa13f64e329b66db135a8cb829644f6f35efd4d804131e10cf0"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/peer-exact-retake.test.mjs",
+      "bytes": 3890,
+      "sha256": "b7cee9efc868bf289e5ec2bdedcb1f6a72cab3e1b04e8fd9d69adb192dc2422a"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/synthetic-fixture.mjs",
+      "bytes": 8525,
+      "sha256": "3b6812c9cf4b1f4c2a24a137c4eb63e2de19d2f0d887069a2c65967ef4c04149"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/warm-receiver.mjs",
+      "bytes": 13609,
+      "sha256": "b851e0004c46afcf6c9a82c083135dbe7b1161c4dfb6a818bdb0f9f84b117eef"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/warm-receiver.test.mjs",
+      "bytes": 24864,
+      "sha256": "a712bbeab8c2b7ea5d3fdf2e174bf131ed2eac5c6cb64cc87be741fc12de8dd8"
+    },
+    {
+      "path": "deploy/connect/private-attach/vendor/warm/wire-protocol.mjs",
+      "bytes": 14266,
+      "sha256": "853597aed741fdb0fdfff0e4d86687387516ce3ac24d15c85a8e0434e62cf289"
+    }
+  ],
+  "currentCoreFilesUnchanged": 5,
+  "windowsNode": "24.19.0",
+  "tests": 160,
+  "passed": 160,
+  "failed": 0,
+  "skipped": 0,
+  "cancelled": 0,
+  "durationMs": 45700.5508,
+  "linuxPortQualified": true,
+  "physicalReceiverQualified": false,
+  "productionActivated": false,
+  "testsPending": false,
+  "peerFindingsAddressed": 3,
+  "runtimeRevision": "deb51b422a63a5ecc59b5db7d71234af5b318c6f",
+  "linuxTests": 206,
+  "linuxPass": 205,
+  "linuxFail": 0,
+  "linuxSkip": 1,
+  "linuxExpectedConditionalSkip": 1,
+  "peerRetakePassed": true
+}

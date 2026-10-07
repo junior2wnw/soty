@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encryptBackup } from './backup.mjs';
 import { verifyEncryptedBackup } from './verify-backup.mjs';
-import { inspectRestorableBackup, sendAuthenticatedBackup } from './restore-backup.mjs';
+import { inspectRestorableBackup, sendAuthenticatedBackup, createStagedAuthenticatedBackupSender } from './restore-backup.mjs';
 
 // All bytes/keys are synthetic. No transport, real archive, shell key handling,
 // or production ACL claim. The fixture does not import the shared parser.
@@ -148,6 +148,90 @@ function releasedListeners(sink, signal) {
   assert.equal(sink.output.listenerCount('finish'), 0); assert.equal(sink.output.listenerCount('close'), 1);
   if (signal) assert.equal(getEventListeners(signal, 'abort').length, 0);
 }
+
+test('staged host port holds every byte after complete authentication until the actual readiness hook settles', { timeout: 15_000 }, async t => {
+  const f = await fixture(t), x = await f.encrypt(), sink = collector(), entered = deferred(), bound = deferred();
+  const reads = await observedReads(t); let hooks = 0;
+  const port = createStagedAuthenticatedBackupSender({ async beforeBody(fence) {
+    hooks++; assert.ok(Object.isFrozen(fence) && Object.isFrozen(fence.authenticated));
+    assert.deepEqual(Object.keys(fence).sort(), ['authenticated', 'check']);
+    assert.deepEqual(Object.keys(fence.authenticated).sort(), ['expectedManifestSha256', 'expectedSha256', 'sourceWitness']);
+    assert.ok(fence.authenticated.expectedSha256 === x.options.expectedSha256
+      && fence.authenticated.expectedManifestSha256 === x.options.expectedManifestSha256);
+    assert.equal(reads.passes, 1); assert.equal(sink.state.bytes, 0);
+    fence.check(); entered.resolve(); await bound.promise; fence.check();
+  } });
+  const pending = port.send({ ...x.options, output: sink.output });
+  await entered.promise; await turn(); assert.equal(sink.state.bytes, 0); assert.equal(sink.state.ends, 0);
+  bound.resolve(); const result = await pending;
+  assert.equal(hooks, 1); assert.equal(reads.passes, 2); assert.equal(result.authenticated, true);
+  assert.ok(Buffer.concat(sink.state.chunks).equals(x.plaintext)); allClosed(reads); releasedListeners(sink);
+});
+
+test('staged host hook cannot run before corrupt GCM is refused and cannot hide a changed held archive', { timeout: 15_000 }, async t => {
+  const f = await fixture(t), x = await f.encrypt(); let hooks = 0;
+  const port = createStagedAuthenticatedBackupSender({ beforeBody() { hooks++; } });
+  const corrupted = Buffer.from(x.ciphertext); corrupted[corrupted.length - 1] ^= 1;
+  const file = path.join(f.root, 'staged-corrupt.enc'); await writeFile(file, corrupted);
+  const failed = collector();
+  await assert.rejects(port.send({ ...x.options, file, expectedSha256: sha(corrupted), output: failed.output }), error => {
+    safeError(error, 'restore_authentication_failed'); return true;
+  });
+  assert.equal(hooks, 0); assert.equal(failed.state.bytes, 0); assert.equal(failed.state.ends, 0);
+  const changed = collector(), mutation = createStagedAuthenticatedBackupSender({ async beforeBody() {
+    hooks++; const handle = await open(x.options.file, 'r+');
+    try { await handle.write(Buffer.from([0]), 0, 1, 0); await handle.sync(); } finally { await handle.close(); }
+  } });
+  await assert.rejects(mutation.send({ ...x.options, output: changed.output }), error => {
+    safeError(error, 'restore_authentication_failed'); return true;
+  });
+  assert.equal(hooks, 1); assert.equal(changed.state.bytes, 0); assert.equal(changed.state.ends, 0);
+  assert.ok(changed.output.closed && failed.output.closed);
+});
+
+test('staged hook rejection and abort suppress body and a late completion cannot revive the sender', { timeout: 15_000 }, async t => {
+  const f = await fixture(t), x = await f.encrypt(), rejection = collector();
+  const rejected = createStagedAuthenticatedBackupSender({ beforeBody() { throw new Error('synthetic private hook error'); } });
+  await assert.rejects(rejected.send({ ...x.options, output: rejection.output }), error => {
+    safeError(error, 'restore_io_failed'); return true;
+  });
+  assert.equal(rejection.state.bytes, 0); assert.equal(rejection.state.ends, 0);
+  const controller = new AbortController(), cancelled = collector(), entered = deferred(), late = deferred();
+  const abortable = createStagedAuthenticatedBackupSender({ async beforeBody(fence) {
+    entered.resolve(); await late.promise; fence.check();
+  } });
+  const pending = abortable.send({ ...x.options, output: cancelled.output, signal: controller.signal });
+  await entered.promise; controller.abort();
+  await assert.rejects(pending, error => { safeError(error, 'restore_io_failed'); return true; });
+  late.resolve(); await turn(); assert.equal(cancelled.state.bytes, 0); assert.equal(cancelled.state.ends, 0);
+  assert.ok(cancelled.output.closed); releasedListeners(cancelled, controller.signal);
+});
+
+test('staged readiness checks cannot reset sender idle budget even when the hook never settles', { timeout: 15_000 }, async t => {
+  const f = await fixture(t), x = await f.encrypt(), sink = collector(); let checking;
+  const port = createStagedAuthenticatedBackupSender({ beforeBody(fence) {
+    checking = setInterval(() => { try { fence.check(); } catch { clearInterval(checking); } }, 10);
+    return new Promise(() => {});
+  } });
+  try {
+    await assert.rejects(port.send({ ...x.options, output: sink.output, limits: { ...x.options.limits, wallMs: 2000, idleMs: 200 } }), error => {
+      safeError(error, 'restore_timeout'); return true;
+    });
+    assert.equal(sink.state.bytes, 0); assert.equal(sink.state.ends, 0); assert.ok(sink.output.closed);
+  } finally { clearInterval(checking); }
+});
+
+test('staged factory rejects proxy/accessor options without invoking them and legacy sender still rejects callback fields', { timeout: 15_000 }, async t => {
+  let reads = 0;
+  const accessor = { get beforeBody() { reads++; return () => {}; } };
+  const proxy = new Proxy({}, { ownKeys() { reads++; return []; }, getPrototypeOf() { reads++; return Object.prototype; } });
+  for (const options of [null, {}, accessor, proxy, { beforeBody: new Proxy(() => {}, {}) }, { beforeBody() {}, extra: true }])
+    assert.throws(() => createStagedAuthenticatedBackupSender(options));
+  assert.equal(reads, 0);
+  const f = await fixture(t), x = await f.encrypt(), sink = collector();
+  await refused({ ...x.options, beforeBody() {} }, sink, 'restore_archive_invalid');
+  assert.equal(sink.state.bytes, 0); assert.equal(sink.state.ends, 0);
+});
 
 test('sender emits exact framing through native HWM1 drain before callback after two same-FD authenticated passes', { concurrency: false, timeout: 15_000 }, async t => {
   const f = await fixture(t), x = await f.encrypt(), sink = collector();
