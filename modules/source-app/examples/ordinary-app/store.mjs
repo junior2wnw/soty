@@ -22,7 +22,10 @@ export function createOrdinaryAppStore(options) {
     &&(value.allowFeedbackJobsMigration===undefined||typeof value.allowFeedbackJobsMigration==='boolean'));
   if (objects.length === 0) {
     check(value.initialize === true, 'ordinary_source_storage_not_ready', 503);
-    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId); db.exec('COMMIT'); }
+    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat===3?ORDINARY_SCHEMA_3:requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId);
+      // Keep the independent format/FK oracle inside the SAME initialization
+      // transaction: an unrecognized authority schema must never commit.
+      verifyOrdinaryReader3(db,value.realmId);db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
   let reader;
