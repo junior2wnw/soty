@@ -53,6 +53,8 @@ test('immutable image mode/revision/reader metadata and exact container ownershi
   assert.throws(()=>checkedImage(image,{id:baselineImage,legacy:0}),fails('canary_image_pin_mismatch'));
   const wrongReader=structuredClone(image),readers=JSON.parse(currentStorageReaders);readers.readers.humanIdentity=[1];wrongReader.Config.Labels['io.soty.storage.readers']=JSON.stringify(readers);
   assert.throws(()=>checkedImage(wrongReader,{id:featureImage,legacy:0}),fails('canary_human_reader2_required'));
+  const apps6=structuredClone(image),priorReaders=JSON.parse(currentStorageReaders);priorReaders.readers.apps=[1,2,3,4,5,6];apps6.Config.Labels['io.soty.storage.readers']=JSON.stringify(priorReaders);
+  assert.throws(()=>checkedImage(apps6,{id:featureImage,legacy:0}),fails('canary_apps_reader7_required'));
   const record={id:'4'.repeat(64),name:'owned',image:featureImage,nonce,role:'feature-one'};
   const container={Id:record.id,Name:'/owned',Image:featureImage,Config:{Labels:{[CANARY_LABEL]:nonce,[CANARY_LABEL+'.role']:record.role,[CANARY_LABEL+'.revision']:CANARY_REVISION}}};
   assert.equal(checkedOwnedContainer(container,record),container);assert.throws(()=>checkedOwnedContainer({...container,Image:baselineImage},record),fails('canary_container_identity'));
@@ -60,8 +62,10 @@ test('immutable image mode/revision/reader metadata and exact container ownershi
 });
 test('old reader3 refuses the real seven-store vector independently of new image labels, before any START',()=>{
   const image={Id:OLD_IMAGE,Config:{Labels:{'io.soty.storage.readers':JSON.stringify({version:3,readers:{rooms:[1,2],apps:[1,2,3,4,5,6],notes:[1,2],capabilities:[1,2,3]}})}}};
-  const seven={ok:true,schema:'soty.storage-format.v5',rooms:2,apps:6,notes:2,capabilities:3,appRegistration:1,feedback:1,humanIdentity:2};
+  const seven={ok:true,schema:'soty.storage-format.v5',rooms:2,apps:7,notes:2,capabilities:3,appRegistration:1,feedback:1,humanIdentity:2};
   assert.throws(()=>assertStorageCompatible(image,seven),fails('storage_reader_incompatible'));
+  const apps6={Id:'sha256:'+'8'.repeat(64),Config:{Labels:{'io.soty.storage.readers':JSON.stringify({version:5,readers:{rooms:[1,2],apps:[1,2,3,4,5,6],notes:[1,2],capabilities:[1,2,3],appRegistration:[1],feedback:[1],humanIdentity:[1,2]}})}}};
+  assert.throws(()=>assertStorageCompatible(apps6,seven),fails('storage_reader_incompatible'));
 });
 test('private ciphertext is authenticated to exact synthetic nonce, purpose and externally retained custody key',()=>{
   const key=randomBytes(32),value={marker:'synthetic-private-value',consumed:true},sealed=sealCanaryPayload(value,key,nonce,'coherent-backup');
@@ -112,7 +116,7 @@ test('every bounded evidence query prepares against actual Root seven-store cons
   createCapabilitiesService({databasePath:path.join(dataDir,'capabilities','capabilities.sqlite'),projectId:'soty',allowNativeMigration:true,actorActive:()=>false}).close();
   createCapabilitiesService({databasePath:path.join(dataDir,'capabilities','capabilities.sqlite'),projectId:'soty',allowOAuthMigration:true,actorActive:()=>false}).close();
   app=createHttpApp(dist,{dataDir,connectOrigins:[origin],appHosting:{},appOriginTemplate:'http://{appId}.localhost:8080',namedAppZone:'',discoveryOrigin:'',capabilityAudience:origin,nativeNotesEnabled:true,
-    universalAppsEnabled:true,humanIdentity,humanIdentityRenewalMigration:true});rooms=createRoomStore(dataDir);
+    universalAppsEnabled:true,humanIdentity,humanIdentityRenewalMigration:true,allowScopedEmbedMigration:true,scopedEmbedRegistryConfigured:true});rooms=createRoomStore(dataDir);
   for(const [store,[file,queries]]of Object.entries(CANARY_EVIDENCE_QUERIES)){const db=new DatabaseSync(path.join(dataDir,file),{readOnly:true});try{for(const query of Object.values(queries)){
     assert.match(query,/^SELECT /u);assert.match(query,/ LIMIT [0-9]+$/u);assert.ok(db.prepare(query).all().length<=16,'bounded '+store+' query');}}
     finally{db.close();}}

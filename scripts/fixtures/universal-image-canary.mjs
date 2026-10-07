@@ -7,11 +7,12 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
 export const CANARY_BASE = '/home/ai2/codex-soty-universal-20261007-9f8dcd71';
-export const CANARY_REVISION = '8e7a10468a144ed1842f9448adebc7099831cea3';
-export const CANARY_SOURCE = CANARY_BASE + '/source-8e7a104';
+export const CANARY_REVISION = '4a9a7d7f88a93402ac955169527896b1e665bb53';
+export const CANARY_SOURCE = CANARY_BASE + '/source-4a9a7d7';
 export const OLD_IMAGE = 'sha256:1c79c2a71aa3438472da8b197f03494908ee242e67fd76bb6a72d3da6340c7da';
-export const CANARY_BASELINE_IMAGE='sha256:c8754ba67f1883cb33417a970ef9947b0c1a499934d35f32f58f58a59c23c2e4';
-export const CANARY_FEATURE_IMAGE='sha256:21018c46a27f97ad419d37feb2ec1221ebcf10805ed8292fe67a6534f6f63558';
+export const CANARY_BASELINE_IMAGE='sha256:4cacf01e2e05897f67c6c12567a4af91dd91d8c4e0aafed605e3af19a30462d0';
+export const CANARY_FEATURE_IMAGE='sha256:9283aea6485b5f4c08bad9416c7d9470db38bb64c19ea1a9e256295cc9960d74';
+export const APPS6_BASELINE_IMAGE='sha256:c8754ba67f1883cb33417a970ef9947b0c1a499934d35f32f58f58a59c23c2e4';
 export const CANARY_LABEL = 'io.soty.synthetic-universal-canary';
 const imageId = value => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value);
 const require = (ok, code) => { if (!ok) throw Object.assign(new Error(code), { code }); };
@@ -21,10 +22,10 @@ export const CANARY_HARNESS_FILES=Object.freeze(['universal-canary-bff.mjs','uni
 // The runtime pins exact archive bytes and never normalizes its input.
 export const CANARY_SOURCE_PINS=Object.freeze({
   'deploy/connector/docker-api.mjs':'ede9d311989b1e6dad15e2110b7ce7b55a16f14f3b2fec4fd91d471f8d61f413',
-  'deploy/connector/storage-guard.mjs':'7882ff84dcfa534f29582774d6f8e6a66feb116a2a775defcd9ac82976ac6f2d',
-  'deploy/connector/storage-probe.mjs':'37f514d5303832aa262e7ccb2f965cb7b23c2055f549ed469eb3c89f5cf43866',
+  'deploy/connector/storage-guard.mjs':'00b09bc0e95ae372fa5da0d338acaed38fce9e5440155dc63b7cb552489f3ed1',
+  'deploy/connector/storage-probe.mjs':'a3c994e19e02808994f37a9abb3222bc65166fdd6fed2d4b988bfadc9275555c',
   'deploy/connector/storage-snapshot.mjs':'1db67a36458a3e525b4a292e4baedde68ceedb9e219c004a3b13696acefc2834',
-  'scripts/agent-modules/local-apps.mjs':'a6373d81239593b3860546573be55f2959a15d02f6a853377bfb010acea0006b',
+  'scripts/agent-modules/local-apps.mjs':'ceec1381fdd0987a189e5386f901abc696b49b007ba4854c4317a11cf6204de0',
 });
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 export function canaryHarnessManifest(entries) {
@@ -89,6 +90,7 @@ export function checkedImage(image, { id, legacy, revision = CANARY_REVISION }) 
   let declaration;try{declaration=JSON.parse(image.Config.Labels['io.soty.storage.readers']);}catch{throw Object.assign(new Error('canary_reader_metadata_invalid'),{code:'canary_reader_metadata_invalid'});}
   require(declaration?.version===5&&declaration.readers&&Array.isArray(declaration.readers.humanIdentity),'canary_reader_metadata_invalid');const readers=declaration.readers;
   require(readers.humanIdentity?.includes(1) && readers.humanIdentity?.includes(2), 'canary_human_reader2_required');
+  require(readers.apps?.includes(7), 'canary_apps_reader7_required');
   return id;
 }
 
@@ -152,9 +154,10 @@ async function controller(rawOptions) {
     await verifyCanaryHarness(options.fixtureHarness,options.harnessSha256);await verifyCanarySource(options.fixtureSource);};
   for(const directory of ['custody','private-state','receipts'])await mkdir(root+'/'+directory,{mode:0o700});
   const engine=new DockerApi({timeoutMs:120000}), prefix='soty-universal-canary-'+options.nonce;
-  const baseline=await engine.image(options.baselineImage),features=await engine.image(options.featureImage),old=await engine.image(OLD_IMAGE);
+  const baseline=await engine.image(options.baselineImage),features=await engine.image(options.featureImage),old=await engine.image(OLD_IMAGE),apps6=await engine.image(APPS6_BASELINE_IMAGE);
   checkedImage(baseline,{id:options.baselineImage,legacy:1});checkedImage(features,{id:options.featureImage,legacy:0});
   require(old.Id===OLD_IMAGE,'canary_old_image_identity');
+  require(apps6.Id===APPS6_BASELINE_IMAGE,'canary_apps6_image_identity');
   const owned=[],volumes=[];let step=0,active;
   async function note(name,value) {await checkRoot();const file=await open(root+'/receipts/'+String(++step).padStart(2,'0')+'-'+name+'.json','wx',0o600);
     try{await file.writeFile(JSON.stringify({schema:'soty.synthetic-canary-step.v1',step:name,...value}));await file.sync();}finally{await file.close();}
@@ -182,6 +185,8 @@ async function controller(rawOptions) {
       require(value.compiledLegacyMode===(mode==='baseline')&&value.universalConfigured===(mode==='feature')&&value.humanHttpEnabled===(mode==='feature'),'canary_runtime_mismatch');
       if(mode==='feature')require(value.human?.clientCount===2&&value.human?.renewal?.admissionEnabled===true
         &&value.human.renewal.maximumSessionSeconds===86400&&value.human.renewal.eligibleClientCount===2,'canary_renewal_not_prepared');
+      if(mode==='feature')require(value.selected?.configured===false&&value.selected.migrationConfigured===true&&value.selected.profileCount===0,
+        'canary_apps7_migration_not_prepared');
       await note(role,{runtimeMeasured:true,compiledLegacyMode:value.compiledLegacyMode,humanHttpEnabled:value.humanHttpEnabled,image});return;}
       await new Promise(done=>setTimeout(done,100)); }while(performance.now()<deadline);throw Object.assign(new Error('canary_entry_not_ready'),{code:'canary_entry_not_ready'});}
   async function stopEntry() {if(!active)return;const record=active;const before=await state(record);await checkRoot();if(before.State.Running)await engine.stop(record.id);
@@ -210,10 +215,12 @@ async function controller(rawOptions) {
     await note('baseline-no-new-stores',{format:first.schema,newStoresEmpty:true});
     await job('prepare-synthetic-human',data);await startEntry('feature-one',options.featureImage,data,'feature');
     await job('signed-feature',data,{networkContainer:active.id});await stopEntry();
-    const format=await probe('probe-seven',data);require(format.schema==='soty.storage-format.v5'&&format.rooms===2&&format.apps===6&&format.notes===2&&format.capabilities===3
+    const format=await probe('probe-seven',data);require(format.schema==='soty.storage-format.v5'&&format.rooms===2&&format.apps===7&&format.notes===2&&format.capabilities===3
       &&format.appRegistration===1&&format.feedback===1&&format.humanIdentity===2,'canary_seven_store_format');
     let denied=false;try{assertStorageCompatible(old,format);}catch(error){denied=error.code==='storage_reader_incompatible';}require(denied,'canary_old_reader_accepted');
-    await note('reader-gates',{...format,oldImage:OLD_IMAGE,oldReaderRefusedBeforeStart:true,oldContainerCreated:false});
+    let apps6Denied=false;try{assertStorageCompatible(apps6,format);}catch(error){apps6Denied=error.code==='storage_reader_incompatible';}require(apps6Denied,'canary_apps6_reader_accepted');
+    await note('reader-gates',{...format,oldImage:OLD_IMAGE,oldReaderRefusedBeforeStart:true,oldContainerCreated:false,
+      previousBaselineImage:APPS6_BASELINE_IMAGE,apps6ReaderRefusedBeforeStart:true,apps6ContainerCreated:false});
     await job('capture-evidence',data,{readOnlyData:true});await job('encrypted-backup',data,{readOnlyData:true});
     await startEntry('baseline-two',options.baselineImage,data,'baseline');await job('check-baseline',data,{networkContainer:active.id});await stopEntry();
     await job('compare-evidence',data,{readOnlyData:true});await note('cold-feature-to-baseline',{samePrivateEvidence:true,humanDisabled:true});

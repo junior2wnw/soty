@@ -106,7 +106,9 @@ async function entry(mode) {
   if(mode==='feature') {const config=JSON.parse(await boundedFile(ROOT+'/custody/synthetic-human.json',16*1024));({rpKey,...humanIdentity}=config);humanIdentity.artifactKey=Buffer.from(humanIdentity.artifactKey,'base64');}
   const {createHttpApp}=await import('/app/server/http-app.js');
   const app=createHttpApp('/app/dist',{dataDir:'/data',connectOrigins:[ORIGIN],appHosting:{},appOriginTemplate:'http://{appId}.localhost:8080',namedAppZone:'',discoveryOrigin:'',
-    capabilityAudience:ORIGIN,nativeNotesEnabled:true,universalAppsEnabled:mode==='feature',...(humanIdentity?{humanIdentity,humanIdentityRenewalMigration:true}:{})});
+    capabilityAudience:ORIGIN,nativeNotesEnabled:true,universalAppsEnabled:mode==='feature',
+    allowScopedEmbedMigration:mode==='feature',scopedEmbedRegistryConfigured:mode==='feature',
+    ...(humanIdentity?{humanIdentity,humanIdentityRenewalMigration:true}:{})});
   const source=createServer((_req,res)=>res.end('<!doctype html><title>Synthetic canary source</title>'));
   const server=createServer(app);server.keepAliveTimeout=65000;server.headersTimeout=70000;
   server.on('upgrade',(req,socket,head)=>{if(!app.locals.appsService.handleUpgrade(req,socket,head))socket.destroy();});
@@ -248,7 +250,8 @@ async function checkRestoredFeature() {
 export const CANARY_EVIDENCE_QUERIES=Object.freeze({
   rooms:['rooms-v2.sqlite',{state:'SELECT room_id,sequence,auth FROM room_state LIMIT 3',events:'SELECT room_id,sequence,payload_json FROM room_events ORDER BY sequence LIMIT 8'}],
   connect:['connect/accounts.sqlite',{accounts:'SELECT * FROM accounts LIMIT 4',devices:'SELECT * FROM installations LIMIT 4',vaults:'SELECT * FROM vaults LIMIT 4'}],
-  apps:['apps/registry.sqlite',{apps:'SELECT * FROM local_apps LIMIT 4',source:'SELECT * FROM app_runtime_targets ORDER BY app_id,revision LIMIT 8'}],
+  apps:['apps/registry.sqlite',{apps:'SELECT * FROM local_apps LIMIT 4',source:'SELECT * FROM app_runtime_targets ORDER BY app_id,revision LIMIT 8',
+    scoped:'SELECT * FROM app_scoped_embed_admissions LIMIT 4'}],
   notes:['notes/notes.sqlite',{meta:'SELECT * FROM notes_meta ORDER BY key LIMIT 8',notes:'SELECT * FROM notes ORDER BY id LIMIT 8',creates:'SELECT * FROM note_native_creates LIMIT 4'}],
   capabilities:['capabilities/capabilities.sqlite',{meta:'SELECT * FROM cap_metadata ORDER BY key LIMIT 16',invocations:'SELECT * FROM cap_invocations LIMIT 4',receipts:'SELECT * FROM cap_receipts LIMIT 4'}],
   registration:['app-registration/registry.sqlite',{heads:'SELECT * FROM registration_heads LIMIT 4',versions:'SELECT * FROM registration_versions ORDER BY generation LIMIT 4',receipts:'SELECT * FROM registration_receipts LIMIT 4'}],
