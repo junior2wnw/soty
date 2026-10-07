@@ -2,6 +2,8 @@ import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,
   type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
+import { createAppBootRecovery } from './app-boot-recovery.mjs';
+import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord } from './types';
@@ -13,7 +15,7 @@ import { icon } from './icons';
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry; launchBinding?: AppLaunchBinding }>;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
@@ -33,13 +35,14 @@ export function appLaunchFailure(error: unknown): { title: string; detail: strin
   if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Попробуйте снова, когда устройство подключится.' };
   if (['apps_access_denied', 'app_access_revoked', 'app_unavailable', 'authentication_required'].includes(code)) return { title: 'Этот вход недоступен', detail: 'Выберите другой аккаунт или попросите владельца проверить доступ.' };
   if (['apps_launch_busy', 'apps_entry_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже.' };
-  if (['invalid_app_launch_url', 'invalid_app_entry', 'invalid_app_path'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
+  if (['invalid_app_launch_url', 'invalid_app_entry', 'invalid_app_path', 'invalid_app_launch_binding'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
+  if (['app_launch_source_changed', 'app_launch_binding_required'].includes(code)) return { title: 'Вход изменился', detail: 'Откройте приложение заново.' };
   return { title: 'Не удалось открыть приложение', detail: 'Проверьте подключение и попробуйте ещё раз.' };
 }
 
 /** The runtime and the discussion have separate lifetimes. Presentation changes
- * never move, reparent or replace a running iframe. Only an explicit runtime
- * refresh obtains another ticket for the captured entry. */
+ * never move, reparent or replace a running iframe. An explicit refresh or one
+ * bounded boot recovery obtains another ticket for the captured entry. */
 export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppStageHandle {
   const initial = options.intent, accountId = options.accountId;
   let intent = initial, app = options.app, selectedEntry: AppResolvedEntry | null = null;
@@ -132,6 +135,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     isCurrent: expected => expected === accountId && current(), request: options.request,
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
   });
+  const recoveryRetry = button('Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
+  recoveryRetry.hidden = true; message.after(recoveryRetry);
+  const recovery = createAppBootRecovery({ view, appId: initial.target.appId, getFrame: () => runtime.querySelector('iframe'),
+    isCurrent: current, canRecover: () => !runtimePending,
+    recover: stillCurrent => launchRuntime(true, stillCurrent),
+    onFailure: () => { if (current()) { showMessage('Не удалось восстановить вход. Откройте приложение заново.'); recoveryRetry.hidden = false; } },
+  });
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
     // was actually admitted. A named route always keeps its exact domain ID.
@@ -185,22 +195,25 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ensureDiscussion(); showPanel();
     options.onRemember?.(pinned, app);
   }
-  async function launchRuntime(): Promise<void> {
-    if (!current() || runtimePending) return;
-    runtimeStarted = true; runtimePending = true; refresh.disabled = true; showMessage('');
+  async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true): Promise<void> {
+    const alive = () => current() && (!automatic || recoveryCurrent());
+    if (!alive() || runtimePending) return;
+    runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.hidden = true; showMessage('');
     const existingFrame = runtime.querySelector('iframe');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
-      const url = await launcher.launch();
-      if (!url || !current()) return;
+      const url = await launcher.launch({ requireSameBinding: automatic });
+      if (!url || !alive()) return;
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'); frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      recovery.bind(frame, { origin: launcher.entry()!.origin, binding: launcher.binding() });
       runtime.replaceChildren(frame);
     } catch (reason) {
-      if (!current()) return;
+      if (!alive()) return;
       captureEntry(); const failure = appLaunchFailure(reason);
       if (existingFrame) showMessage(`${failure.title}. ${failure.detail}`);
       else runtime.replaceChildren(emptyState(failure.title, failure.detail, button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
+      if (automatic) recoveryRetry.hidden = false;
     } finally {
       if (current()) { runtimePending = false; refresh.disabled = false; ensureDiscussion(); showPanel(); }
     }
@@ -261,6 +274,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     // The discussion already resolves and polls its own exact-entry authority.
     // Late initial metadata and title/device changes must not clear a loaded
     // conversation. Observed grant/policy changes still refresh immediately.
+    if (accessChanged) recovery.cancel();
     if (discussion && accessChanged) void discussion.refresh();
   }
   function updateCommunity(value: { communityId: string; name: string } | null): void {
@@ -284,6 +298,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; disposed = true; recovery.dispose(); fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

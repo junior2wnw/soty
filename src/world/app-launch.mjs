@@ -8,6 +8,22 @@ export class AppLaunchError extends Error {
 }
 function requireValue(condition, code) { if (!condition) throw new AppLaunchError(code); }
 
+/** Read-only server provenance, never a permission or a caller selector. */
+export function validateAppLaunchBinding(value) {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'bindingFloor,policyEpoch,profile,schema,targetDigest,targetRevision'
+    && value.schema === 'soty.app-launch-binding.v1'
+    && [value.policyEpoch, value.targetRevision].every(number => Number.isSafeInteger(number) && number > 0)
+    && typeof value.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(value.targetDigest) && value.profile === 'soty.relay-restricted.v1'
+    && [1, 2].includes(value.bindingFloor), 'invalid_app_launch_binding');
+  return Object.freeze({ schema: value.schema, policyEpoch: value.policyEpoch, targetRevision: value.targetRevision,
+    targetDigest: value.targetDigest, profile: value.profile, bindingFloor: value.bindingFloor });
+}
+export function sameAppLaunchBinding(first, next) {
+  return !!first && !!next && ['schema', 'policyEpoch', 'targetRevision', 'targetDigest', 'profile', 'bindingFloor']
+    .every(key => first[key] === next[key]);
+}
+
 /** A local HTTP target, never a return URL or a platform control endpoint. */
 export function validateAppLaunchPath(value) {
   requireValue(typeof value === 'string' && value.length > 0 && value.length <= 8192
@@ -132,6 +148,7 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
+  let originalBinding = null, bindingPinned = false;
   const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
@@ -140,15 +157,19 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin && selected.path === entry.path), 'invalid_app_entry');
     selected = entry;
   }
-  async function issue(initial) {
+  async function issue(initial, requireSameBinding = false) {
+    requireValue(!requireSameBinding || !!originalBinding, 'app_launch_binding_required');
     const args = parameters(), intended = { appId: args.appId,
       ...(args.domainId === undefined ? {} : { domainId: args.domainId }), ...(args.path === undefined ? {} : { path: args.path }) };
     let received = false;
     try {
       const result = await request(args); received = true;
       if (!current()) return null;
+      const binding = result?.launchBinding === undefined ? null : validateAppLaunchBinding(result.launchBinding);
+      requireValue(!requireSameBinding || sameAppLaunchBinding(originalBinding, binding), 'app_launch_source_changed');
       const url = validateAppLaunchUrl(result?.url, shellUrl);
       capture(result?.entry, intended, url);
+      if (!bindingPinned) { originalBinding = binding; bindingPinned = true; }
       return url;
     } catch (error) {
       if (!current()) return null;
@@ -164,25 +185,26 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
       throw error;
     }
   }
-  async function launch() {
+  async function launch({ requireSameBinding = false } = {}) {
     if (!current()) return null;
     if (initializing) {
       const outcome = await initializing;
       if (!current()) return null;
       if (!selected) throw outcome.error;
-      return issue(false);
+      return issue(false, requireSameBinding);
     }
-    if (selected) return issue(false);
+    if (selected) return issue(false, requireSameBinding);
     let finish;
     initializing = new Promise(resolve => { finish = resolve; });
     let failure;
-    try { return await issue(true); }
+    try { return await issue(true, requireSameBinding); }
     catch (error) { failure = error; throw error; }
     finally { finish({ error: failure }); initializing = null; }
   }
   return {
     get parameters() { return parameters(); },
     entry: () => current() ? selected : null,
+    binding: () => current() ? originalBinding : null,
     launch,
     isCurrent: current,
     async openExternal(openPopup) {

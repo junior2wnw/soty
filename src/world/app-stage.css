@@ -41,3 +41,4 @@
   .sa-more-body { animation: sa-reveal 120ms ease-out; transform-origin: top right; }
   @keyframes sa-reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 }
+.sa-recovery-retry { align-self: flex-start; margin: 0 16px 12px; }

@@ -112,6 +112,24 @@ function pageClient(config, allowPath) {
   const topLevel = window.top === window.self, controllers = new Set();
   document.body.dataset.framed = String(!topLevel);
   let busy = false, navigated = false, offPage = false, generation = 0;
+  let recoveryParentOrigin = '', recoveryNonce = '', recoveryApp = '', recoveryFailure = false, recoverySent = false;
+  function notifyRecovery() {
+    if (!recoveryParentOrigin || !recoveryFailure || recoverySent || offPage || navigated) return;
+    recoverySent = true;
+    try { window.parent.postMessage({ schema: 'soty.app-boot-failure.v1', appId: recoveryApp,
+      nonce: recoveryNonce, error: 'app_session_check_failed' }, recoveryParentOrigin); } catch { /* Manual recovery stays visible. */ }
+    recoveryParentOrigin = '';
+  }
+  window.addEventListener('message', event => {
+    const data = event.data;
+    if (config.mode !== 'boot' || topLevel || offPage || navigated || recoverySent || recoveryParentOrigin
+      || event.source !== window.parent || !config.parentOrigins.includes(event.origin) || event.ports?.length
+      || !data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).sort().join(',') !== 'appId,nonce,schema'
+      || data.schema !== 'soty.app-boot-watch.v1' || !/^app-[a-f0-9]{32}$/.test(data.appId || '')
+      || !/^[A-Za-z0-9_-]{43}$/.test(data.nonce || '')) return;
+    recoveryParentOrigin = event.origin; recoveryNonce = data.nonce; recoveryApp = data.appId;
+    notifyRecovery();
+  });
   function show(state, pending = false) {
     const text = config.copy[state] || config.copy.unavailable;
     title.textContent = text[0]; detail.textContent = text[1];
@@ -164,7 +182,15 @@ function pageClient(config, allowPath) {
       if (offPage || generation !== currentGeneration) return;
       if (checked.sessionCheck !== issued.sessionCheck) throw { code: 'cookie_check' };
       show('opening', true); navigate(path, currentGeneration);
-    } catch (error) { if (!offPage && generation === currentGeneration) failure(error, checkingCookie ? 'cookie' : 'network'); }
+    } catch (error) {
+      if (!offPage && generation === currentGeneration) {
+        failure(error, checkingCookie ? 'cookie' : 'network');
+        // The exact server check failure alone may request a bounded fresh
+        // launch. No cookies, ticket, identity, selectors or raw errors leave.
+        recoveryFailure = checkingCookie && error?.responseFailed === true && error?.code === 'app_session_check_failed';
+        notifyRecovery();
+      }
+    }
     finally { if (generation === currentGeneration) busy = false; }
   }
   reset.addEventListener('click', async () => {
@@ -174,7 +200,8 @@ function pageClient(config, allowPath) {
     catch (error) { if (!offPage && generation === currentGeneration) failure(error); }
     finally { if (generation === currentGeneration) busy = false; }
   });
-  window.addEventListener('pagehide', () => { offPage = true; generation++; for (const controller of controllers) controller.abort(); });
+  window.addEventListener('pagehide', () => { offPage = true; generation++; recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
+    for (const controller of controllers) controller.abort(); });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
     offPage = false; busy = false; navigated = false;
@@ -184,8 +211,8 @@ function pageClient(config, allowPath) {
   if (config.mode === 'boot') void boot();
 }
 
-function render({ mode, state, shellUrl, publicResetPath, nonce }) {
-  const config = { mode, initialState: state, shellUrl, publicResetPath, copy, errorStates: statesFor(publicResetPath) };
+function render({ mode, state, shellUrl, publicResetPath, nonce, parentOrigins = [] }) {
+  const config = { mode, initialState: state, shellUrl, publicResetPath, parentOrigins, copy, errorStates: statesFor(publicResetPath) };
   const text = copy[state];
   const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
@@ -194,8 +221,11 @@ function render({ mode, state, shellUrl, publicResetPath, nonce }) {
 <script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()});</script></body></html>`;
 }
 
-export function renderBootPage({ shellUrl, publicResetPath, nonce } = {}) {
-  return render({ mode: 'boot', state: 'loading', shellUrl: shellAddress(shellUrl, true), publicResetPath: resetPath(publicResetPath), nonce });
+export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins } = {}) {
+  const shell = shellAddress(shellUrl, true), origins = parentOrigins ?? [new URL(shell).origin];
+  if (!Array.isArray(origins) || !origins.length
+    || origins.some(origin => typeof origin !== 'string' || new URL(shellAddress(origin, true)).origin !== origin)) throw new TypeError('invalid_parent_origins');
+  return render({ mode: 'boot', state: 'loading', shellUrl: shell, publicResetPath: resetPath(publicResetPath), nonce, parentOrigins: origins });
 }
 
 export function renderStatusPage({ error, shellUrl, publicResetPath, nonce } = {}) {

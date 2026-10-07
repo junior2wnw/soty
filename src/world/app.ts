@@ -23,7 +23,7 @@ import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, s
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
-import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry } from './app-launch.mjs';
+import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSettings } from './app-settings';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
@@ -1620,7 +1620,8 @@ class WorldApplication {
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current,
       request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
-        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry }>('apps.launch', { ...parameters }).then(result => ({ url: result.launchUrl, entry: result.entry })),
+        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?: AppLaunchBinding }>('apps.launch', { ...parameters })
+          .then(result => ({ url: result.launchUrl, entry: result.entry, ...(result.launchBinding === undefined ? {} : { launchBinding: result.launchBinding }) })),
       onNavigate: (next, navigation) => {
         if (!current()) return;
         if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; }
@@ -1690,6 +1691,13 @@ class WorldApplication {
           if (!current()) return;
           if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
           dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
+          // Registration changes the owner's available directory even when
+          // the independent placement chooser is closed without adding a cell.
+          const field = this.unifiedField;
+          const fieldCurrent = (): boolean => accountCurrent() && sequence === this.screenSequence && field === this.unifiedField;
+          if (field) void field.ready.then(async () => {
+            if (fieldCurrent()) await field.refresh({ preserveView: true });
+          }).catch(reason => { if (fieldCurrent()) this.toast(errorText(reason), true); });
           this.openAppFieldPlacement({ appId: result.app.id, name: result.app.name }, contextId => {
             if (!accountCurrent()) return;
             this.homeQuery = ''; this.unifiedFieldFilters.mine = 'all';

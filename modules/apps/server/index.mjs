@@ -436,6 +436,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const ticket = secret();
       tickets.set(digest(ticket), { decision, entryPath });
       return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
+        launchBinding: { schema: 'soty.app-launch-binding.v1', policyEpoch: decision.policyEpoch,
+          targetRevision: decision.targetRevision, targetDigest: decision.targetDigest, profile: decision.profile,
+          bindingFloor: decision.requiredBindingVersion },
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
     if (op === 'apps.revoke') {
@@ -574,7 +577,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
       assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path') && internalUrl.searchParams.getAll('path').length <= 1, 'invalid_app_path');
       const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
-      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath) });
+      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath), parentOrigins: [...origins] });
       setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end(html); return;

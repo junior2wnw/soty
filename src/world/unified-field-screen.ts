@@ -32,7 +32,7 @@ export interface UnifiedFieldScreen {
   element: HTMLElement; ready: Promise<void>;
   setMode(mode: UnifiedFieldMode, query?: string, filter?: FieldFilter): void;
   attachHeaderSearch(header: HTMLElement): void;
-  focusSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(): Promise<void>;
+  focusSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>;
   hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
 }
 
@@ -284,7 +284,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     activeSearches--;
     if (queuedSearch) { const waiting = queuedSearch; queuedSearch = null; activeSearches++; waiting(true); }
   }
-  async function searchDirectory(append = false): Promise<void> {
+  async function searchDirectory(append = false, preserveView = false): Promise<void> {
     if (mode !== 'search') return;
     const generation = ++searchGeneration, query = queries.search, selectedFilter = filter;
     const freshScope = searchResponseScope !== `${query}:${selectedFilter}` || searchItems.length === 0;
@@ -301,7 +301,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       searchResponseScope = `${query}:${selectedFilter}`; pruneMetadata();
       const scene = searchPlacement.update(`${query}:${selectedFilter}`, searchItems, allMetadata()); activeSearchScene = scene;
       engine?.update({ entities: allMetadata(), searchDocument: scene, scope: `${query}:${selectedFilter}` });
-      if (freshScope && engine && scene.contexts.length) {
+      if (!preserveView && freshScope && engine && scene.contexts.length) {
         if (!wide.matches) engine.focusContext(scene.contexts[0]!.contextId);
         else {
           const layout = layoutUnifiedField(scene, allMetadata()), visibleContexts = layout.contexts.slice(0, 2);
@@ -552,7 +552,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     setMode(next, query, nextFilter) { if (!current()) return; if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
     attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); },
     focusContext(contextId) { if (current()) engine?.focusContext(contextId); }, openAdd,
-    async refresh() { await ready; if (!current()) return; await loadMine(); if (mode === 'search') await searchDirectory(); },
+    async refresh(refreshOptions) { await ready; if (!current()) return; await loadMine(); if (mode === 'search') await searchDirectory(false, refreshOptions?.preserveView === true); },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },
     reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); },
