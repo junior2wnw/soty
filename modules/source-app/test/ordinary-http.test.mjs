@@ -29,9 +29,9 @@ test('two actual durable Native Source realms use the SAME compiled adapter with
   const first = await board.beginNative(), firstAuthorize = await board.authorizeNative(first), olderCallback = (await board.completeOidc(firstAuthorize)).callback;
   const second = await board.beginNative();
   const oldForm = await board.request('/soty/authorize', { method: 'POST', native: true, form: first.form });
-  assert.equal(oldForm.status, 409); assert.equal(oldForm.value.error.code, 'source_app_intent_superseded');
+  assert.equal(oldForm.status, 409); assert.match(oldForm.text, /Этот вход заменён более новым/u); assert.equal(oldForm.text.includes('source_app_intent_superseded'), false);
   const superseded = await board.request(olderCallback.pathname + olderCallback.search, { native: true });
-  assert.equal(superseded.status, 409); assert.equal(superseded.value.error.code, 'source_app_intent_superseded');
+  assert.equal(superseded.status, 409); assert.match(superseded.text, /Этот вход заменён более новым/u);
   assert.equal((await library.request('/api/embed/session-status')).value.ready, true);
   await board.finishNative((await board.completeOidc(await board.authorizeNative(second))).callback);
   assert.equal(board.store.db.prepare('SELECT count(*) AS n FROM native_links').get().n, 1);

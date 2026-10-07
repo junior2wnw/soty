@@ -1,26 +1,42 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { ORDINARY_SCHEMA } from './schema.mjs';
+import { ORDINARY_SCHEMA, ORDINARY_SCHEMA_2, ORDINARY_META_2, ORDINARY_LOGIN_PROOF_DDL } from './schema.mjs';
 import { verifyOrdinaryReader1 } from './reader.mjs';
+import { verifyOrdinaryReader2 } from './reader2.mjs';
 import { check, fields, digest, jsonCopy, nonce, opaque, syncResult } from '../../server/wire.mjs';
 
 /** The example has one actual Native SQL authority. Only host configuration
  * creates it; no Root/body owner flag or RP shadow creates Native permissions. */
 export function createOrdinaryAppStore(options) {
-  const value = fields(options, ['databasePath', 'realmId', 'key', 'keyId'], ['initialize', 'clock']);
+  const value = fields(options, ['databasePath', 'realmId', 'key', 'keyId'], ['initialize', 'clock', 'format', 'allowLoginProofMigration']);
   check(typeof value.databasePath === 'string' && typeof value.realmId === 'string' && /^[a-z][a-z0-9.-]{0,63}$/u.test(value.realmId)
     && Buffer.isBuffer(value.key) && value.key.length === 32 && /^[a-zA-Z0-9_.-]{1,64}$/u.test(value.keyId));
   check(existsSync(value.databasePath) || value.initialize === true, 'ordinary_source_storage_not_ready', 503);
   const db = new DatabaseSync(value.databasePath), clock = value.clock ?? Date.now, key = Buffer.from(value.key);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   const objects = db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all();
+  const requestedFormat = value.format ?? 1; check([1,2].includes(requestedFormat) && (value.allowLoginProofMigration === undefined || typeof value.allowLoginProofMigration === 'boolean'));
   if (objects.length === 0) {
     check(value.initialize === true, 'ordinary_source_storage_not_ready', 503);
-    db.exec('BEGIN IMMEDIATE'); try { db.exec(ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(1,?)').run(value.realmId); db.exec('COMMIT'); }
+    db.exec('BEGIN IMMEDIATE'); try { db.exec(requestedFormat === 2 ? ORDINARY_SCHEMA_2 : ORDINARY_SCHEMA); db.prepare('INSERT INTO native_meta VALUES(?,?)').run(requestedFormat, value.realmId); db.exec('COMMIT'); }
     catch (error) { db.exec('ROLLBACK'); db.close(); throw error; }
   }
-  try { verifyOrdinaryReader1(db, value.realmId); } catch (error) { db.close(); throw error; }
+  let reader;
+  try {
+    reader = verifyOrdinaryReader2(db, value.realmId);
+    if (requestedFormat === 2 && reader.format === 1) {
+      check(value.allowLoginProofMigration === true, 'ordinary_source_migration_required', 503);
+      verifyOrdinaryReader1(db, value.realmId); db.exec('BEGIN IMMEDIATE');
+      try {
+        // native_meta has no inbound FK. Preserve every other Native/BFF row
+        // verbatim; the only replaced row is this explicitly versioned marker.
+        db.exec('DROP TABLE native_meta; ' + ORDINARY_META_2 + ';'); db.prepare('INSERT INTO native_meta VALUES(2,?)').run(value.realmId);
+        db.exec(ORDINARY_LOGIN_PROOF_DDL); verifyOrdinaryReader2(db, value.realmId); db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      reader = verifyOrdinaryReader2(db, value.realmId);
+    }
+  } catch (error) { db.close(); throw error; }
   db.exec('PRAGMA journal_mode=WAL;');
   let closed = false, transaction = false;
   function current() { check(!closed, 'ordinary_source_closed', 503); }
@@ -58,12 +74,17 @@ export function createOrdinaryAppStore(options) {
         db.prepare('INSERT INTO source_interactions VALUES(?,?,?,?,?,?)').run(record.idHash, record.revision, record.phase, record.expiresAt, cipher, value.keyId); });
     },
     async getInteraction(hash) { current(); return interaction(db.prepare('SELECT * FROM source_interactions WHERE id_hash=?').get(hash)); },
-    async claimInteraction(hash, revision, protocolIntent) {
+    async claimInteraction(hash, revision, protocolIntent, finalRememberNative) {
       const prior = interaction(db.prepare('SELECT * FROM source_interactions WHERE id_hash=?').get(hash)); if (!prior) return false;
-      const next = { ...prior, phase: 'claimed', revision: revision + 1, protocolIntent };
-      const cipher = encrypt('Interaction', hash, next.revision, next);
-      return tx(() => db.prepare("UPDATE source_interactions SET phase='claimed',revision=?,cipher=? WHERE id_hash=? AND revision=? AND phase='pending' AND expires_at>?")
-        .run(next.revision, cipher, hash, revision, clock()).changes === 1);
+      return tx(() => {
+        const current = db.prepare('SELECT phase,revision,expires_at FROM source_interactions WHERE id_hash=?').get(hash);
+        if (current?.phase !== 'pending' || current.revision !== revision || current.expires_at <= clock()) return false;
+        const nativeLoginMarker = finalRememberNative ? syncResult(finalRememberNative()) : undefined;
+        const next = { ...prior, phase: 'claimed', revision: revision + 1, protocolIntent, ...(nativeLoginMarker ? { nativeLoginMarker } : {}) };
+        const cipher = encrypt('Interaction', hash, next.revision, next);
+        return db.prepare("UPDATE source_interactions SET phase='claimed',revision=?,cipher=? WHERE id_hash=? AND revision=? AND phase='pending' AND expires_at>?")
+          .run(next.revision, cipher, hash, revision, clock()).changes === 1;
+      });
     },
     async claimCallback(hash, revision) {
       const prior = interaction(db.prepare('SELECT * FROM source_interactions WHERE id_hash=?').get(hash)); if (!prior) return false;
@@ -99,7 +120,7 @@ export function createOrdinaryAppStore(options) {
     async readTokenProof(currentSession) { return { accessToken: currentSession.accessToken, expiresAt: currentSession.expiresAt }; },
     async revokeSession(hash) { tx(() => { db.prepare('UPDATE source_sessions SET active=0 WHERE id_hash=?').run(hash); }); },
   });
-  return Object.freeze({ db, storage, clock, realmId: value.realmId, tx, inTransaction: () => transaction, encrypt, decrypt,
+  return Object.freeze({ db, storage, clock, realmId: value.realmId, format:reader.format, tx, inTransaction: () => transaction, encrypt, decrypt,
     /** Trusted Native provisioning only. These functions are never HTTP/RPC. */
     createResource({ id, incarnationId, title, guestEmpty = false }) { tx(() => { db.prepare('INSERT INTO native_resources VALUES(?,?,?,?,?)').run(id, incarnationId, value.realmId, title, guestEmpty ? 1 : 0); }); },
     createPrincipal(id) { tx(() => { db.prepare('INSERT INTO native_principals VALUES(?,?)').run(id, value.realmId); }); },

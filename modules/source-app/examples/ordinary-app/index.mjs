@@ -9,10 +9,11 @@ import { createOrdinaryAppNativePort } from './native.mjs';
  * supplied by approved deployment; no request/HTML author config is loaded. */
 export async function createOrdinaryAppServer(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'rp', 'databasePath', 'realmId', 'cipherKey', 'keyId'],
-    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'clock']);
+    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'clock', 'allowLoginProofMigration']);
   const label = value.appLabel ?? 'Моё приложение'; check(typeof label === 'string' && label.trim().length > 0 && label.length <= 160 && label.isWellFormed());
   const store = createOrdinaryAppStore({ databasePath: value.databasePath, realmId: value.realmId, key: value.cipherKey, keyId: value.keyId,
-    initialize: value.initialize === true, ...(value.clock ? { clock: value.clock } : {}) });
+    initialize: value.initialize === true, format:value.profile.sourceProfile.version===2?2:1,
+    allowLoginProofMigration:value.allowLoginProofMigration===true, ...(value.clock ? { clock: value.clock } : {}) });
   try {
     if (value.newResource) {
       const resource = fields(value.newResource, ['title'], ['guestEmpty']);
@@ -26,7 +27,8 @@ export async function createOrdinaryAppServer(options) {
       allowCreateEmptyGuest: value.allowEmptyGuest === true, ui: { appLabel: label, resourceLabel: 'Выбранный проект' }, ...(value.clock ? { clock: value.clock } : {}) });
     const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
     const page = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(label)}</title>
-      <link rel="stylesheet" href="/assets/ordinary-app.css"><main><h1>${escape(label)}</h1><p id="state" role="status">Проверяем подключение…</p>
+      <link rel="stylesheet" href="/assets/ordinary-app.css"><main data-native-origin="${escape(value.profile.nativeOrigin)}"><h1>${escape(label)}</h1><p id="state" role="status">Проверяем подключение…</p>
+      <button id="connect" type="button" hidden>Войти через Соты</button>
       <section id="content" hidden><form id="create"><label>Название записи<input id="title" maxlength="500" required></label><button>Добавить запись</button></form>
       <ul id="items"></ul><button id="feedback-open" type="button">Сообщить проблему</button><section id="feedback" hidden><h2>Сообщить проблему</h2>
       <p id="recipient"></p><label>Что произошло?<textarea id="feedback-body" maxlength="8000"></textarea></label><p>Сообщение и выбранные материалы увидит владелец приложения.</p>

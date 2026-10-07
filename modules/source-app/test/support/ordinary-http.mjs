@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { environment } from '../../../human-identity/test/support/renewal-fixture.mjs';
 import { createSourceAppBff } from '../../server/bff.mjs';
-import { STANDARD_SELECTED_SOURCE } from '../../server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from '../../server/standard-profile.mjs';
 import { selectedResourceProfile } from '../../../apps/scoped-embed/resource-profile.mjs';
 import { createResourceSourceProofSigner } from '../../../apps/scoped-embed/resource-proof.mjs';
 import { createOrdinaryAppStore } from '../../examples/ordinary-app/store.mjs';
@@ -17,7 +17,7 @@ const opaque = () => randomBytes(32).toString('base64url');
 /** Native browser cookies are shared by hostname, NEVER by port. Embed jars
  * here model a private per-Source broker, not browser isolation on 127.0.0.1.
  * Root authority IPC is controlled; installed HTTP/WS remains a separate gate. */
-export async function createOrdinaryHttpFixture(t) {
+export async function createOrdinaryHttpFixture(t, { embedOidc = false } = {}) {
   const root = await environment(t, { renewal: false }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
   const realms = [], sockets = new Set(), nativeJar = new Map();
   for (const [index, realmId] of ['board', 'library'].entries()) {
@@ -42,12 +42,13 @@ export async function createOrdinaryHttpFixture(t) {
       embedOrigin: 'http://127.0.0.1:' + server.address().port, databasePath: join(directory, realmId + '.sqlite') }); realms.push(realm);
   }
   let configured;
-  await root.configureClients(clients => { configured = clients.map((client, index) => ({ ...client, version: 2, redirectUri: realms[index].nativeOrigin + '/soty/callback' })); return configured; });
+  await root.configureClients(clients => { configured = clients.map((client, index) => ({ ...client, version: 2,
+    redirectUri: embedOidc ? realms[index].embedOrigin + '/api/embed/callback' : realms[index].nativeOrigin + '/soty/callback' })); return configured; });
   for (const realm of realms) {
     const client = configured[realm.index], appId = 'app-' + (realm.index === 0 ? 'a' : 'b').repeat(32);
     realm.client = client; realm.profile = selectedResourceProfile({ schema: 'soty.selected-human-embed.v2', appId,
       connector: { linkId: 'controlled_' + realm.realmId, hostDeviceId: 'synthetic_host', connectorId: 'synthetic_connector' }, target: { revision: 1, digest: (realm.index === 0 ? 'a' : 'b').repeat(64) },
-      sourceProfile: STANDARD_SELECTED_SOURCE, resource: { registryId: 'soty', environmentId: 'fixture', tenantId: root.actor.account.accountId, appId,
+      sourceProfile: embedOidc ? STANDARD_SELECTED_SOURCE_V2 : STANDARD_SELECTED_SOURCE, resource: { registryId: 'soty', environmentId: 'fixture', tenantId: root.actor.account.accountId, appId,
         resourceId: 'synthetic:' + realm.realmId, selection: { kind: 'soty.resource.v1', nativeId: 'selected', incarnationId: 'one' } },
       issuer: root.issuer, clientId: client.id, embedOrigin: realm.embedOrigin, nativeOrigin: realm.nativeOrigin, parentOrigin: root.origin });
     realm.context = { schema: 'soty.verified-launch-continuation.v2', reference: { id: opaque(), version: 1, digest: 'd'.repeat(64) },
@@ -55,7 +56,7 @@ export async function createOrdinaryHttpFixture(t) {
       rootPrincipal: { accountId: root.actor.account.accountId, deviceId: root.actor.account.deviceId }, humanPrincipal: { issuer: root.issuer,
         subject: root.actor.account.accountId, clientId: client.id, clientProfileDigest: root.profile.publicClients[realm.index].profileDigest, clientGeneration: 1 },
       entry: { domainId: 'synthetic_' + realm.realmId, origin: realm.embedOrigin }, target: realm.profile.target, policyEpoch: 1, expiresAt: Date.now() + 300000 };
-    realm.options = { databasePath: realm.databasePath, realmId: realm.realmId, key: realm.cipherKey, keyId: 'fixture-' + realm.realmId };
+    realm.options = { databasePath: realm.databasePath, realmId: realm.realmId, key: realm.cipherKey, keyId: 'fixture-' + realm.realmId, format: embedOidc ? 2 : 1 };
     realm.restart = () => {
       realm.bff?.close(); realm.store?.close(); realm.store = createOrdinaryAppStore({ ...realm.options, initialize: !realm.initialized });
       if (!realm.initialized) {
@@ -72,15 +73,18 @@ export async function createOrdinaryHttpFixture(t) {
     };
     realm.restart(); nativeJar.set('ordinary_native_' + realm.realmId, realm.nativeToken);
     const signer = createResourceSourceProofSigner({ profile: realm.profile, key: realm.key });
-    realm.request = async (path, { method = 'GET', data, form, native = false, signed = !native, jar: overrideJar } = {}) => {
+    realm.request = async (path, { method = 'GET', data, form, native = false, signed = !native, jar: overrideJar, headers: extraHeaders = {} } = {}) => {
       const jar = overrideJar ?? (native ? nativeJar : realm.embedJar), origin = native ? realm.nativeOrigin : realm.embedOrigin;
       const cookie = [...jar].map(([name, token]) => name + '=' + token).join('; '), body = form ? Buffer.from(new URLSearchParams(form).toString()) : data ? Buffer.from(JSON.stringify(data)) : Buffer.alloc(0);
-      const response = await fetch(origin + path, { method, redirect: 'manual', headers: { ...(cookie ? { cookie } : {}),
+      const headers = { ...(cookie ? { cookie } : {}),
         ...(method === 'POST' ? { origin, 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json' } : {}),
-        ...(signed ? signer.headers({ context: realm.context, method, path, body, cookie }) : {}) }, ...(method === 'POST' ? { body } : {}), signal: AbortSignal.timeout(5000) });
+        ...(signed ? signer.headers({ context: realm.context, method, path, body, cookie }) : {}), ...extraHeaders };
+      if (extraHeaders.origin === null) delete headers.origin;
+      const response = await fetch(origin + path, { method, redirect: 'manual', headers, ...(method === 'POST' ? { body } : {}), signal: AbortSignal.timeout(5000) });
       for (const raw of response.headers.getSetCookie()) { const pair = raw.split(';')[0], split = pair.indexOf('='); jar.set(pair.slice(0, split), pair.slice(split + 1)); }
       const text = await response.text(); let value; try { value = JSON.parse(text); } catch {}
-      return { status: response.status, value, text, location: response.headers.get('location') };
+      return { status: response.status, value, text, location: response.headers.get('location'), policy: {
+        referrer: response.headers.get('referrer-policy'), csp: response.headers.get('content-security-policy') } };
     };
     realm.beginNative = async () => {
       const start = await realm.request('/api/embed/login', { method: 'POST', data: {} }); assert.equal(start.status, 200);
@@ -95,6 +99,10 @@ export async function createOrdinaryHttpFixture(t) {
       await root.approve(flow); return root.complete(flow);
     };
     realm.finishNative = async callback => {
+      if (embedOidc) {
+        const linked = await realm.request(callback.pathname + callback.search); assert.equal(linked.status, 200);
+        const locator = realm.embedJar.get('soty_rp_link'), completed = await realm.request('/api/embed/complete-link?intent=' + locator); assert.equal(completed.status, 200); return completed;
+      }
       const result = await realm.request(callback.pathname + callback.search, { native: true }); assert.equal(result.status, 303);
       const url = new URL(result.location), linked = await realm.request(url.pathname + url.search); assert.equal(linked.status, 200);
       const locator = realm.embedJar.get('soty_rp_link'), completed = await realm.request('/api/embed/complete-link?intent=' + locator); assert.equal(completed.status, 200); return completed;

@@ -5,9 +5,9 @@ const approvedCommits = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
-  const value = fields(options, ['capture', 'withCurrent'], ['linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
+  const value = fields(options, ['capture', 'withCurrent'], ['rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
   check(typeof value.capture === 'function' && typeof value.withCurrent === 'function' && value.withCurrent.constructor?.name !== 'AsyncFunction');
-  for (const key of ['linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
+  for (const key of ['rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
     check(value[key] === undefined || typeof value[key] === 'function');
   if (value.feedback !== undefined) {
     const feedback = fields(value.feedback, ['context', 'list', 'get', 'submit'], ['reply', 'status', 'accept']);
@@ -82,6 +82,25 @@ export function createNativeAuthorityRuntime(port) {
       withCurrent(proof, () => true); return proof;
     },
     withCurrent,
+    rememberLogin(proof, intent) {
+      const captured = proofs.get(proof), input = fields(intent, ['interactionIdHash', 'expiresAt']);
+      check(/^[a-f0-9]{64}$/u.test(input.interactionIdHash) && Number.isSafeInteger(input.expiresAt) && input.expiresAt > 0
+        && typeof port.rememberLogin === 'function', 'source_app_native_login_not_ready', 503);
+      const marker = withCurrent(proof, () => syncResult(port.rememberLogin(captured.native, captured.binding, Object.freeze(input))));
+      const result = fields(marker, ['idHash', 'version', 'bindingDigest']);
+      check(result.version === 1 && /^[a-f0-9]{64}$/u.test(result.idHash) && /^[a-f0-9]{64}$/u.test(result.bindingDigest), 'source_app_authority_invalid', 503);
+      return Object.freeze(result);
+    },
+    async recoverLogin(binding, marker, intent) {
+      check(!closed && typeof port.recoverLogin === 'function', 'source_app_native_login_not_ready', 503);
+      const selected = deepFreeze(jsonCopy(binding)), reference = fields(marker, ['idHash', 'version', 'bindingDigest']);
+      check(reference.version === 1 && /^[a-f0-9]{64}$/u.test(reference.idHash) && /^[a-f0-9]{64}$/u.test(reference.bindingDigest), 'source_app_authority_invalid', 503);
+      const selectedIntent = fields(intent, ['interactionIdHash', 'expiresAt']);
+      check(/^[a-f0-9]{64}$/u.test(selectedIntent.interactionIdHash) && Number.isSafeInteger(selectedIntent.expiresAt) && selectedIntent.expiresAt > 0);
+      const native = await port.recoverLogin(selected, Object.freeze(reference), Object.freeze(selectedIntent));
+      check(!closed && native && typeof native === 'object', 'source_app_native_access_denied', 403);
+      const proof = Object.freeze(Object.create(null)); proofs.set(proof, { native, binding: selected }); withCurrent(proof, () => true); return proof;
+    },
     commitIdentity(proof, identity, { createEmptyGuest = false } = {}) {
       const captured = proofs.get(proof);
       const operation = createEmptyGuest ? 'createEmptyGuest' : 'linkVerifiedIdentity';

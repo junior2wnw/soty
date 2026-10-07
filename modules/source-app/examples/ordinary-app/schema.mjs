@@ -19,3 +19,10 @@ CREATE TABLE source_nonces(nonce TEXT PRIMARY KEY,expires_at INTEGER NOT NULL);
 CREATE TRIGGER native_link_immutable BEFORE UPDATE ON native_links BEGIN SELECT RAISE(ABORT,'native_link_immutable'); END;
 CREATE TRIGGER native_receipt_immutable BEFORE UPDATE ON native_receipts BEGIN SELECT RAISE(ABORT,'native_receipt_immutable'); END;
 `;
+
+export const ORDINARY_META_2 = 'CREATE TABLE native_meta(format INTEGER NOT NULL CHECK(format IN(1,2)),realm_id TEXT NOT NULL UNIQUE)';
+export const ORDINARY_LOGIN_PROOF_DDL = `
+CREATE TABLE native_login_proofs(id_hash TEXT PRIMARY KEY,interaction_hash TEXT NOT NULL UNIQUE REFERENCES source_interactions(id_hash),binding_digest TEXT NOT NULL,expires_at INTEGER NOT NULL,cipher TEXT NOT NULL,key_id TEXT NOT NULL);
+CREATE TRIGGER native_login_proof_immutable BEFORE UPDATE ON native_login_proofs BEGIN SELECT RAISE(ABORT,'native_login_proof_immutable'); END;
+`;
+export const ORDINARY_SCHEMA_2 = ORDINARY_SCHEMA.replace('CREATE TABLE native_meta(format INTEGER NOT NULL CHECK(format=1),realm_id TEXT NOT NULL UNIQUE)', ORDINARY_META_2) + ORDINARY_LOGIN_PROOF_DDL;

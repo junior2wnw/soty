@@ -123,6 +123,23 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
       inspect(proof, binding); return proof;
     },
     withCurrent(proof, binding, apply) { inspect(proof, binding); return apply(); },
+    rememberLogin(proof, binding, intent) {
+      check(store.format === 2 && store.inTransaction(), 'ordinary_native_login_proof_not_ready', 503);
+      inspect(proof, binding); const captured = proofs.get(proof), idHash = digest(nonce()), bindingDigest = digest(binding);
+      check(intent.expiresAt > store.clock(), 'ordinary_native_login_proof_denied', 403);
+      const cipher = store.encrypt('NativeLoginProof', idHash, 0, captured);
+      db.prepare('INSERT INTO native_login_proofs VALUES(?,?,?,?,?,?)').run(idHash, intent.interactionIdHash, bindingDigest, intent.expiresAt, cipher,
+        db.prepare('SELECT key_id FROM source_interactions WHERE id_hash=?').get(intent.interactionIdHash).key_id);
+      return { idHash, version: 1, bindingDigest };
+    },
+    async recoverLogin(binding, marker, intent) {
+      check(store.format === 2, 'ordinary_native_login_proof_not_ready', 503);
+      const row = db.prepare('SELECT * FROM native_login_proofs WHERE id_hash=?').get(marker.idHash);
+      check(row && row.binding_digest === digest(binding) && row.binding_digest === marker.bindingDigest
+        && row.interaction_hash === intent.interactionIdHash && row.expires_at === intent.expiresAt && row.expires_at > store.clock(), 'ordinary_native_login_proof_denied', 403);
+      const captured = store.decrypt('NativeLoginProof', row.id_hash, 0, row.cipher, row.key_id);
+      const proof = Object.freeze({}); proofs.set(proof, captured); inspect(proof, binding); return proof;
+    },
     linkVerifiedIdentity: (proof, binding, identity) => link(proof, binding, identity, false),
     ...(allowEmptyGuest ? { createEmptyGuest: (proof, binding, identity) => link(proof, binding, identity, true) } : {}),
     async read(proof, binding, args) {

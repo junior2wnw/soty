@@ -22,6 +22,10 @@ Manifest, регистрация, одобренный профиль и уст�
 - `SourceStoragePort`: долговечные encrypted interaction/session/one-use completion
   receipts, атомарные CAS и nonce store. PKCE, AT/RT и cookie никогда не попадают
   в Root/browser DTO или журналы.
+- Для нового Standard2 — Native `rememberLogin/recoverLogin`: Source сохраняет
+  независимый Native proof до OIDC и проверяет его текущую сессию/ресурс после
+  настоящего HTTPS callback. Marker остаётся в encrypted Source storage и не
+  является разрешением из JSON.
 - Необязательные `read`, `execute`, `readProof` и `feedback` hooks. Отсутствующий
   hook даёт явное «ещё не подключено». Source сам разделяет reporter/support;
   владелец приложения в Сотах не становится Source support или владельцем данных.
@@ -75,8 +79,10 @@ key и HEAD на мутацию запрещены независимо от com
 Native intent/CSRF cookies имеют namespace exact approved appId: разные локальные
 приложения могут входить параллельно на localhost. Порты не разделяют browser
 cookies. В одном Native browser/app текущая cookie correlation допускает один
-выбранный незавершённый вход: новый вход заменяет старый, старый form/callback
+выбранный незавершённый Native form: новый вход заменяет старый, старый form
 получает `source_app_intent_superseded`409 и требует явного повторного входа.
+Standard1 так же проверяет callback cookie; Standard2 после authorize использует
+свой долговечный captured proof + one-use CAS + текущий исходный Root slot.
 Это не per-intent browser correlation и не гарантия параллельных входов одного app.
 Fixed embed cookies остаются в приватном per-slot Root broker; прямые Source
 origins на одном hostname нельзя считать изолированными только разными портами.
@@ -99,7 +105,7 @@ Native SQLite commit/revoke/receipt restart проверены на synthetic д
 BFF HTTP тест использует настоящий maintained Root OIDC и signed consent,
 но controlled IPC/RAM store: он **не подтверждает installed channel**, durability,
 production TLS, browser UX, long session или готовность стороннего приложения.
-Эти gates добавляются обычным SQLite example и двумя независимыми Source realms.
+Эти проверки нужно отличать от настоящего installed/browser gate ниже.
 
 ## Исполнимый обычный Source
 
@@ -110,11 +116,31 @@ Source, а не полем owner в Сотах. Две разные realm раб
 повторный Source не требует Root code/DDL diff. Native support — только Native
 владелец; reporter принимает решение о закрытии обращения.
 
-Проверены real OIDC/HTTP +durable Source restart/unknown ACK и два OS writer
-processes на synthetic базах. MAC IPC в этом gate контролируемый. Пока есть
-blocker: example callback Native `/soty/callback` не совпадает с обязательным
-embed HTTPS callback release policy. Установленный канал, browser UX и production
-не приняты; наличие bundle не делает приложение Ready. Callback/Native proof
-correlation будет согласована отдельной поправкой без ослабления Root policy.
-Точные проверки и ограничения — `docs/implementation/source-app-ordinary-acceptance.md`
-в Root checkout. ASR/OCR/agent queue и managed reviews здесь не внедрены.
+Новый Source использует `STANDARD_SELECTED_SOURCE_V2`: callback находится на
+проверенном embed HTTPS `/api/embed/callback`. Standard1/pin1 остаются неизменны.
+Native format2 добавляет encrypted pending proof; migration1→2 явная до startup,
+старый независимый reader1 отказывается от2, текущий reader принимает1,2.
+Legacy Native IDs, receipts и encrypted basic bytes при migration сохраняются.
+
+Проверены реальные signed Apps/Human, установленный локально compiled connector
+HTTP/WS и actual Chrome HTTPS: два независимых realm, same iframe после входа,
+Source restart, Native revoke/private-route denial, private feedback и mobile390.
+Потеря Source ACK после COMMIT + consumed Root map восстанавливает прежнюю
+completion receipt после явного нажатия в том же текущем slot: код не
+обменивается повторно, новая identity/link/grant не создаётся. Root restart,
+foreign/expired/revoked scope не оживляют Basic. Source suite29/29, browser happy
+path13 checks и recovery6 checks проходят на synthetic данных.
+
+Это **same-machine** локальный путь. `localhost` автора на SSH Dev недоступен
+браузеру другого человека. Для remote publisher нужен отдельно проверенный,
+доступный браузеру Native/public HTTPS origin и Source-owned entry/deployment.
+`nativeOrigin=embedOrigin` сейчас не работает: compiled embed router не открывает
+Native `/soty/connect` и `/soty/authorize`. Example server использует локальный
+explicit port; remote consent/broker/onboarding и production image/TLS/release
+остаются отдельными gates. Тестовый connector построен локально, не опубликован.
+
+После completion UI проверяет актуальный `session-status` с backoff в том же
+iframe; Root «Обновить приложение» создаёт новый slot и не является Basic
+recovery. Long session, Source account switch UX, remote deployment, ASR/OCR,
+agent queue и managed reviews здесь не внедрены. Точные evidence и команды —
+`docs/implementation/source-app-standard2-acceptance.md` в Root checkout.

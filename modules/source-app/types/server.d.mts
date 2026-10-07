@@ -11,6 +11,8 @@ export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
   capture(binding:Readonly<NativeBinding>,nativeBrowserRequest?:IncomingMessage):Promise<Proof>;
   withCurrent<T>(proof:Proof,binding:Readonly<NativeBinding>,action:()=>T):T;
+  rememberLogin?:(proof:Proof,binding:Readonly<NativeBinding>,intent:{interactionIdHash:string;expiresAt:number})=>{idHash:string;version:1;bindingDigest:string};
+  recoverLogin?:(binding:Readonly<NativeBinding>,marker:{idHash:string;version:1;bindingDigest:string},intent:{interactionIdHash:string;expiresAt:number})=>Promise<Proof>;
   linkVerifiedIdentity?:(proof:Proof,binding:Readonly<NativeBinding>,identity:{issuer:string;subject:string})=>unknown;
   createEmptyGuest?:(proof:Proof,binding:Readonly<NativeBinding>,identity:{issuer:string;subject:string})=>unknown;
   read?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown)=>Promise<unknown>;
@@ -25,15 +27,17 @@ export function isSourceNativeCommitPort(value:unknown):value is NativeCommitPor
  * the supplied final callback once synchronously INSIDE the Native transaction. */
 export interface SourceStoragePort {
   consumeNonce(nonce:string,expiresAt:number):Promise<boolean>;createInteraction(record:unknown):Promise<void>;getInteraction(hash:string):Promise<any>;
-  claimInteraction(hash:string,revision:number,privatePkce:unknown):Promise<boolean>;claimCallback(hash:string,revision:number):Promise<boolean>;
+  claimInteraction(hash:string,revision:number,privatePkce:unknown,finalRememberNative?:()=>unknown):Promise<boolean>;claimCallback(hash:string,revision:number):Promise<boolean>;
   completeInteraction(record:unknown,finalNativeLink:()=>unknown):Promise<boolean>;
   readSession(hash:string):Promise<any>;readCompletion(hash:string):Promise<any>;consumeCompletion(hash:string,sessionHash:string,finalNativeAssert:()=>unknown):Promise<{token:string}|null>;
   readTokenProof(session:unknown):Promise<{accessToken:string;expiresAt:number}>;revokeSession(hash:string):Promise<void>;
 }
 export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp:SourceRpProfile;
-  clock?:()=>number;allowCreateEmptyGuest?:boolean;rpSessions?:{currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>}}):{
+  clock?:()=>number;allowCreateEmptyGuest?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:{currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>}}):{
   readonly profile:SourceProfile;handleRequest(req:IncomingMessage,res:ServerResponse):Promise<boolean>;close():void;
 };
 export const STANDARD_SELECTED_SOURCE:Readonly<{id:'soty.standard-resource';version:1;digest:string}>;
 export const STANDARD_SOURCE_CONTRACT:Readonly<unknown>;
+export const STANDARD_SELECTED_SOURCE_V2:Readonly<{id:'soty.standard-resource';version:2;digest:string}>;
+export const STANDARD_SOURCE_CONTRACT_2:Readonly<unknown>;
 export {SOURCE_FEEDBACK_LIMITS} from './browser.mjs';

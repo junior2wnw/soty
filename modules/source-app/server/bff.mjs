@@ -3,7 +3,7 @@ import { selectedResourceProfile, resourceConsentDigest } from '../../apps/scope
 import { createResourceSourceProofVerifier } from '../../apps/scoped-embed/resource-proof.mjs';
 import { createSourceAuthorityClient } from '../../apps/scoped-embed/source-authority-client.mjs';
 import { createNativeAuthorityRuntime } from './native-authority.mjs';
-import { STANDARD_SELECTED_SOURCE } from './standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from './standard-profile.mjs';
 import { validateSourceFeedbackInput } from './feedback-wire.mjs';
 import { feedbackOutput } from '../shared/feedback-wire.mjs';
 import { parseSourceJson } from '../shared/strict-json.mjs';
@@ -31,7 +31,8 @@ export function createSourceAppBff(options) {
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
   const INTENT = 'soty_native_intent_' + profile.appId.slice(4), CSRF = 'soty_native_csrf_' + profile.appId.slice(4);
-  check(digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE) && profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
+  const embedOidc = digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE_V2);
+  check((embedOidc || digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE)) && profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
     : fields(value.ui, ['appLabel', 'resourceLabel']);
@@ -43,7 +44,7 @@ export function createSourceAppBff(options) {
   const native = createNativeAuthorityRuntime(value.native);
   const protocol = createSourceRpProtocol(value.rp, { clock });
   check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
-    && value.rp.redirectUri === profile.nativeOrigin + '/soty/callback', 'source_app_profile_invalid', 503);
+    && value.rp.redirectUri === (embedOidc ? profile.embedOrigin + '/api/embed/callback' : profile.nativeOrigin + '/soty/callback'), 'source_app_profile_invalid', 503);
   const verifier = createResourceSourceProofVerifier({ profile, key: value.transportKey, consumeNonce: store.consumeNonce, clock });
   const readAuthority = createSourceAuthorityClient({ profile, key: value.transportKey, connectorPort: value.connectorPort, clock });
   const semanticDigest = resourceConsentDigest(profile);
@@ -103,14 +104,27 @@ export function createSourceAppBff(options) {
     const token = cookie(req, COOKIE); check(token, 'authentication_required', 401);
     return proveSession(await store.readSession(digest(token)), context, operation, hostOptions);
   }
+  async function completeIdentity(interaction, identity, authority) {
+    check(identity.issuer === profile.issuer && identity.subject === interaction.context.humanPrincipal.subject, 'source_app_identity_mismatch', 403);
+    await freshRoot(interaction.context); native.withCurrent(authority, () => true);
+    const sessionToken = nonce(), completion = nonce();
+    const result = await storageCommit(store.completeInteraction, [{ idHash: interaction.idHash, revision: interaction.revision + 1, completionToken: completion,
+      session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
+        rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
+        createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
+        accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion) } }],
+      () => native.commitIdentity(authority, { issuer: identity.issuer, subject: identity.subject }, { createEmptyGuest: value.allowCreateEmptyGuest === true }));
+    check(result === true, 'source_app_commit_unknown', 503); await postCommit(interaction.context, authority);
+    return store.getInteraction(interaction.idHash);
+  }
   function send(res, status, data, headers = {}) {
     const bytes = Buffer.from(JSON.stringify(data)), limit = responseLimits.get(res);
     check(bytes.length <= (limit?.responseBytes ?? 1500000), ['write', 'feedback-write'].includes(limit?.kind)
       ? 'source_app_effect_unknown' : 'source_app_response_invalid', 503);
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', ...headers }); res.end(bytes);
   }
-  function page(res, title, body, headers = {}) {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+  function page(res, title, body, headers = {}, status = 200) {
+    res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
       'content-security-policy': "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'", ...headers });
     res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + html(title) + '</title><main><h1>' + html(title) + '</h1>' + body + '</main></html>');
   }
@@ -126,16 +140,27 @@ export function createSourceAppBff(options) {
     if (url.pathname === '/soty/connect') {
       check(req.method === 'GET' && [...url.searchParams.keys()].join(',') === 'intent' && opaque(url.searchParams.get('intent')));
       const interaction = await store.getInteraction(digest(url.searchParams.get('intent')));
-      check(interaction && interaction.phase === 'pending' && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
+      check(interaction && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
       await freshRoot(interaction.context);
+      if (embedOidc && interaction.phase === 'completed') {
+        const session = await store.readCompletion(interaction.idHash); await proveSession(session, interaction.context, 'completion');
+        res.writeHead(303, { location: profile.embedOrigin + '/api/embed/callback?state=' + encodeURIComponent(url.searchParams.get('intent')),
+          'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end(); return;
+      }
+      check(interaction.phase === 'pending', 'source_app_intent_unavailable', 401);
       const csrf = nonce();
       page(res, 'Подключить «' + labels.appLabel + '»', '<p>Вход Сот подтвердит человека. Приложение отдельно проверит доступ к выбранному ресурсу.</p>'
+        + (value.allowCreateEmptyGuest === true ? '<p>Для нового пустого проекта приложение создаст отдельный профиль после подтверждения входа. Доступ к существующим данным не добавляется.</p>' : '')
         + '<form method="post" action="/soty/authorize"><input type="hidden" name="intent" value="' + html(url.searchParams.get('intent')) + '">'
         + '<input type="hidden" name="csrf" value="' + csrf + '"><input type="hidden" name="scope" value="' + semanticDigest + '">'
         + '<p>' + html(labels.resourceLabel) + '. Подключение не расширяет ваши права в приложении.</p>'
         + '<label><input type="checkbox" name="consent" value="yes" required>Подключить этот выбранный ресурс с моими текущими правами</label>'
         + '<button type="submit">Войти через Соты</button></form>',
-      { 'set-cookie': [cookieHeader(INTENT, url.searchParams.get('intent'), 300), cookieHeader(CSRF, csrf, 300)] });
+      { 'set-cookie': [cookieHeader(INTENT, url.searchParams.get('intent'), 300), cookieHeader(CSRF, csrf, 300)],
+        ...(embedOidc ? { 'referrer-policy': 'origin',
+          // Chromium checks form redirects as well as the first same-origin
+          // POST. Only this reviewed issuer may receive the fixed OIDC flow.
+          'content-security-policy': "default-src 'none'; style-src 'self'; form-action 'self' " + new URL(profile.issuer).origin + "; frame-ancestors 'none'" } : {}) });
       return;
     }
     if (url.pathname === '/soty/authorize') {
@@ -153,10 +178,20 @@ export function createSourceAppBff(options) {
       check(interaction && interaction.phase === 'pending' && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
       await freshRoot(interaction.context);
       const intent = await protocol.start(); await freshRoot(interaction.context);
-      check(await store.claimInteraction(interaction.idHash, interaction.revision, intent) === true, 'source_app_intent_unavailable', 409);
+      if (embedOidc) {
+        // Reuse the cryptorandom43 original handoff correlation. PKCE/nonce
+        // remain maintained SDK values; no vendor49/auth algorithm changes.
+        const location = new URL(intent.location); location.searchParams.set('state', form.get('intent')); intent.state = form.get('intent'); intent.location = location.href;
+        const authority = await native.capture(binding(interaction.context, interaction.context.humanPrincipal, 'link'), req);
+        native.withCurrent(authority, () => true); await freshRoot(interaction.context);
+        const remembered = await storageCommit(store.claimInteraction, [interaction.idHash, interaction.revision, intent],
+          () => native.rememberLogin(authority, { interactionIdHash: interaction.idHash, expiresAt: interaction.expiresAt }));
+        check(remembered === true, 'source_app_intent_unavailable', 409); await freshRoot(interaction.context); native.withCurrent(authority, () => true);
+      } else check(await store.claimInteraction(interaction.idHash, interaction.revision, intent) === true, 'source_app_intent_unavailable', 409);
       res.writeHead(303, { location: intent.location, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }); res.end(); return;
     }
     if (url.pathname === '/soty/callback') {
+      check(!embedOidc, 'source_app_route_unavailable', 404);
       check(req.method === 'GET', 'source_app_method_invalid', 405);
       const browser = cookie(req, INTENT); check(browser, 'source_app_intent_unavailable', 401);
       const interaction = await store.getInteraction(digest(browser));
@@ -210,9 +245,21 @@ export function createSourceAppBff(options) {
     const input = bytes.length ? parse(bytes) : {};
     if (url.pathname === '/api/embed/login') {
       fields(input, []); check(req.method === 'POST' && req.headers.origin === profile.embedOrigin, 'source_app_origin_denied', 403);
+      if (embedOidc) {
+        const original = cookie(req, 'soty_rp_intent');
+        if (original) {
+          const prior = await store.getInteraction(digest(original));
+          if (prior?.phase === 'completed') {
+            check(prior.expiresAt > clock() && digest(prior.context) === digest(context), 'source_app_completion_denied', 403);
+            const session = await store.readCompletion(prior.idHash); await proveSession(session, context, 'completion');
+            send(res, 200, { schema: 'soty.source-embed-auth.v1', nativeUrl: profile.nativeOrigin + '/soty/connect?intent=' + original }); return;
+          }
+        }
+      }
       const token = nonce(); await store.createInteraction({ idHash: digest(token), revision: 0, phase: 'pending',
         context, createdAt: clock(), expiresAt: Math.min(context.expiresAt, clock() + 300000) }); await freshRoot(context);
-      send(res, 200, { schema: 'soty.source-embed-auth.v1', nativeUrl: profile.nativeOrigin + '/soty/connect?intent=' + token }); return;
+      send(res, 200, { schema: 'soty.source-embed-auth.v1', nativeUrl: profile.nativeOrigin + '/soty/connect?intent=' + token },
+        embedOidc ? { 'set-cookie': cookieHeader('soty_rp_intent', token, 300) } : {}); return;
     }
     if (url.pathname === '/api/embed/complete-link') {
       check(req.method === 'GET' && [...url.searchParams.keys()].join(',') === 'intent' && opaque(url.searchParams.get('intent')));
@@ -225,17 +272,33 @@ export function createSourceAppBff(options) {
       });
       check(result && opaque(result.token), 'source_app_completion_denied', 403);
       await postCommit(context, current.authority);
-      send(res, 200, { ready: true }, { 'set-cookie': cookieHeader(COOKIE, result.token, Math.max(1, Math.floor((session.expiresAt - clock()) / 1000))) }); return;
+      const headers = { 'set-cookie': cookieHeader(COOKIE, result.token, Math.max(1, Math.floor((session.expiresAt - clock()) / 1000))) };
+      if (embedOidc) page(res, 'Приложение подключено', '<p>Вернитесь в открытую вкладку Сот. Приложение проверит подключение и покажет данные с вашими текущими правами.</p>', headers);
+      else send(res, 200, { ready: true }, headers); return;
     }
     if (url.pathname === '/api/embed/callback') {
-      check(req.method === 'GET' && [...url.searchParams.keys()].join(',') === 'state' && opaque(url.searchParams.get('state')));
-      const interaction = await store.getInteraction(digest(url.searchParams.get('state')));
-      check(interaction && interaction.phase === 'completed' && digest(interaction.context.reference) === digest(context.reference), 'source_app_completion_denied', 403);
+      check(req.method === 'GET' && opaque(url.searchParams.get('state')));
+      let interaction = await store.getInteraction(digest(url.searchParams.get('state')));
+      check(interaction && digest(interaction.context.reference) === digest(context.reference)
+        && digest(interaction.context) === digest(context) && interaction.expiresAt > clock(), 'source_app_completion_denied', 403);
+      if (embedOidc && interaction.phase === 'claimed') {
+        check(url.searchParams.get('iss') === profile.issuer && typeof url.searchParams.get('code') === 'string' && url.searchParams.get('code').length > 0
+          && !url.searchParams.has('error') && interaction.protocolIntent.state === url.searchParams.get('state'), 'source_app_callback_denied', 403);
+        const authority = await native.recoverLogin(binding(context, context.humanPrincipal, 'link'), interaction.nativeLoginMarker,
+          { interactionIdHash: interaction.idHash, expiresAt: interaction.expiresAt });
+        await freshRoot(context); native.withCurrent(authority, () => true);
+        check(await store.claimCallback(interaction.idHash, interaction.revision) === true, 'source_app_intent_unavailable', 409);
+        const identity = await protocol.exchange(new URL(req.url, profile.embedOrigin), interaction.protocolIntent);
+        interaction = await completeIdentity(interaction, identity, authority);
+      }
+      check(interaction.phase === 'completed' && (embedOidc || [...url.searchParams.keys()].join(',') === 'state'), 'source_app_completion_denied', 403);
       const session = await store.readCompletion(interaction.idHash); await proveSession(session, context, 'completion');
       check(opaque(interaction.completionToken), 'source_app_completion_denied', 403);
       // Root's private broker retains this HttpOnly link locator; it is not a
       // session token/subject/grant, and does not revive a closed Root slot.
-      page(res, 'Вход подтверждён', '<p>Вернитесь в приложение Сот.</p>', { 'set-cookie': cookieHeader(LINK, interaction.completionToken, 300) }); return;
+      page(res, 'Вход подтверждён', embedOidc
+        ? '<p>Завершите подключение выбранного ресурса.</p><a href="/api/embed/complete-link?intent=' + html(encodeURIComponent(interaction.completionToken)) + '">Завершить подключение</a>'
+        : '<p>Вернитесь в приложение Сот.</p>', { 'set-cookie': cookieHeader(LINK, interaction.completionToken, 300) }); return;
     }
     if (url.pathname === '/api/embed/session-status') {
       try { await currentSession(req, context, 'context'); send(res, 200, { ready: true }); }
@@ -292,7 +355,13 @@ export function createSourceAppBff(options) {
         && !url.pathname.includes('%') && !url.pathname.includes('..'), 'source_app_route_unavailable', 404);
       if (url.pathname.startsWith('/soty/')) await nativeRoute(req, res, url); else await embedRoute(req, res, url);
     } catch (error) {
-      if (!res.headersSent) send(res, Number.isInteger(error.status) ? error.status : 503, { ok: false, error: { code: error.code || 'source_app_unknown', retryable: !error.status || error.status >= 500 } });
+      if (!res.headersSent && url.pathname.startsWith('/soty/')) {
+        const superseded = error.code === 'source_app_intent_superseded', unknown = !error.status || error.status >= 500;
+        page(res, superseded ? 'Откройте вход заново' : unknown ? 'Вход пока не подтверждён' : 'Не удалось подтвердить вход',
+          '<p>' + (superseded ? 'Этот вход заменён более новым. Вернитесь в Соты и начните вход снова.'
+            : unknown ? 'Вернитесь в Соты и проверьте завершение входа. Если ответа нет, повторите вход явно; новый профиль создавать не нужно.'
+              : 'Подтвердите свой профиль в приложении и откройте вход заново из Сот.') + '</p>', {}, Number.isInteger(error.status) ? error.status : 503);
+      } else if (!res.headersSent) send(res, Number.isInteger(error.status) ? error.status : 503, { ok: false, error: { code: error.code || 'source_app_unknown', retryable: !error.status || error.status >= 500 } });
       else res.destroy();
     }
     return true;
