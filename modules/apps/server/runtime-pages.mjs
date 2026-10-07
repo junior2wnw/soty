@@ -185,9 +185,11 @@ function pageClient(config, allowPath) {
         if(typeof issued.scopedRequestId!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.scopedRequestId))throw{code:'app_scoped_context_closed'};
         let ready=false;
         try{const response=await fetch('/api/embed/session-continue',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',
-          headers:{'content-type':'application/json'},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
+          headers:{'content-type':'application/json',...(config.renewal?{'x-soty-boot-check':issued.sessionCheck}:{})},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
           const bytes=await response.arrayBuffer();if(bytes.byteLength>1024)throw{code:'app_scoped_continue_invalid'};
-          const value=JSON.parse(new TextDecoder().decode(bytes));ready=response.ok&&value.schema==='soty.source-session-continuation.v1'&&value.ready===true;
+          const value=JSON.parse(new TextDecoder().decode(bytes));
+          if(config.renewal&&(!response.ok||value.schema!=='soty.source-session-continuation.v1'||typeof value.ready!=='boolean'))throw{code:'app_scoped_continue_unknown'};
+          ready=response.ok&&value.schema==='soty.source-session-continuation.v1'&&value.ready===true;
         }catch{if(config.renewal)throw{code:'app_scoped_continue_unknown'};}
         if(offPage||generation!==currentGeneration)return;
         if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};

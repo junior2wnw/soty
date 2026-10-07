@@ -7,7 +7,8 @@ import { roundedHexPath } from '../../ui/hex.mjs';
 
 const shellUrl = 'https://soty.example/#app-entry?id=app-test&path=%2F';
 const ticket = 'T'.repeat(43), sessionCheck = 'C'.repeat(43), nonce = Buffer.from('1234567890abcdef').toString('base64');
-const response = (body, ok = true) => ({ ok, status: ok ? 200 : 403, json: async () => body });
+const response = (body, ok = true) => ({ ok, status: ok ? 200 : 403, json: async () => body,
+  arrayBuffer:async()=>new TextEncoder().encode(JSON.stringify(body)).buffer });
 const pending = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -29,7 +30,7 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
   const window = { addEventListener(type, callback) { listeners.set(type, callback); } };
   window.self = window; window.top = framed ? {} : window;
   const parent = { postMessage(data, origin) { parentMessages.push({ data: structuredClone(data), origin }); } }; window.parent = framed ? parent : window;
-  const context = { window, location, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController,
+  const context = { window, location, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController, AbortSignal, TextDecoder,
     history: { replaceState(_state, _title, path) { events.push(['cleanup', path]); if (cleanThrows) throw new Error('blocked history'); location.hash = ''; } },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     fetch(url, options) {
@@ -290,4 +291,29 @@ test('an HTTP failure at admission is distinguished from a network failure witho
   assert.equal(env.element('status-title').textContent, 'Приложение недоступно');
   assert.equal(env.element('status-detail').textContent.includes('private_database_detail'), false);
   assert.equal(env.calls.length, 1); assert.deepEqual(env.navigations, []);
+});
+
+test('renewal boot selects only its candidate with the checked marker; initial entry keeps the ordinary cookie route',async()=>{
+  for(const renewal of[false,true]){
+    const issued={ok:true,entryPath:'/embed',sessionCheck,scopedRequestId:'R'.repeat(43),...(renewal?{renewal:true,renewalRequestId:'synthetic-renewal-request'}:{})};
+    const env=browser(renderBootPage({shellUrl,scoped:true,renewal,parentOrigin:'https://soty.example'}),{framed:true,responses:[
+      response(issued),response({ok:true,sessionCheck}),response({schema:'soty.source-session-continuation.v1',ready:true})]});
+    await flush();await flush();
+    assert.equal(env.calls.length,3);assert.equal(env.calls[2].url,'/api/embed/session-continue');
+    assert.equal(env.calls[2].options.headers['x-soty-boot-check'],renewal?sessionCheck:undefined);
+    assert.deepEqual(JSON.parse(env.calls[2].options.body),{requestId:issued.scopedRequestId});
+    assert.equal(env.calls[2].options.credentials,'same-origin');
+    assert.equal(env.parentMessages.length,renewal?1:0);assert.deepEqual(env.navigations,renewal?[]:['/embed']);
+  }
+});
+
+test('only explicit verified ready:false is login_required; failed/invalid continuation remains unknown without POST retry',async()=>{
+  for(const next of[response({schema:'soty.source-session-continuation.v1',ready:false,reason:'login_required'}),
+    response({error:'app_scoped_candidate_changed'},false),response({schema:'soty.source-session-continuation.v1',ready:'caller'})]){
+    const env=browser(renderBootPage({shellUrl,scoped:true,renewal:true,parentOrigin:'https://soty.example'}),{framed:true,responses:[
+      response({ok:true,entryPath:'/embed',sessionCheck,scopedRequestId:'R'.repeat(43),renewal:true,renewalRequestId:'synthetic-renewal-request'}),response({ok:true,sessionCheck}),next]});
+    await flush();await flush();assert.equal(env.calls.length,3);assert.deepEqual(env.navigations,[]);
+    assert.equal(env.parentMessages.length,1);const reply=env.parentMessages[0].data;assert.equal(reply.ready,false);
+    assert.equal(reply.unknown===true,!next.ok||(await next.json()).ready==='caller');
+  }
 });
