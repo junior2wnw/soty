@@ -513,12 +513,34 @@ function worker(config) {
 test('two independent SQLite writers cannot both accept different intents at the same head revision', async t => {
   const f = fixture(t), initialized = f.open(); initialized.close();
   const config = { databasePath: f.databasePath, registryId: f.registryId, environmentId: f.environmentId, reviewedProfile: profile() };
-  const a = worker({ config, source: source(), actor, args: f.args({ requestId: 'concurrent-a' }) });
-  const b = worker({ config, source: source(), actor, args: f.args({ requestId: 'concurrent-b' }) });
+  const intents = [f.args({ requestId: 'concurrent-a' }), f.args({ requestId: 'concurrent-b' })];
+  const a = worker({ config, source: source(), actor, args: intents[0] });
+  const b = worker({ config, source: source(), actor, args: intents[1] });
   t.after(() => { if (!a.child.killed) a.child.kill(); if (!b.child.killed) b.child.kill(); });
   await Promise.all([a.next(), b.next()]); a.child.send({ go: true }); b.child.send({ go: true });
   const results = await Promise.all([a.next(), b.next()]);
   assert.equal(results.filter(result => result.ok).length, 1);
-  assert.equal(results.find(result => !result.ok).code, 'registration_revision_conflict');
+  const losingIndex = results.findIndex(result => !result.ok);
+  // Under CPU/IO pressure the bounded100ms SQLite wait may expire before the
+  // winning COMMIT. Both refusals are valid; neither may create a second effect.
+  assert.ok(['registration_revision_conflict', 'registration_busy'].includes(results[losingIndex].code));
   const service = f.open(); assert.equal(f.call(service, 'history', f.readArgs).items.length, 1);
+  // A later exact retry now sees the committed head, never a second admission.
+  throws(() => f.call(service, 'admit', intents[losingIndex]), 'registration_revision_conflict');
+  assert.equal(f.call(service, 'history', f.readArgs).items.length, 1);
+});
+
+test('a held independent SQLite writer refuses without a receipt and permits the same intent after release', t => {
+  const f = fixture(t), service = f.open(), other = new DatabaseSync(f.databasePath);
+  const intent = f.args({ requestId: 'bounded-lock' });
+  try {
+    other.exec('BEGIN IMMEDIATE');
+    try { throws(() => f.call(service, 'admit', intent), 'registration_busy'); }
+    finally { other.exec('ROLLBACK'); }
+  } finally { other.close(); }
+  assert.equal(f.call(service, 'history', f.readArgs).items.length, 0);
+  const accepted = f.call(service, 'admit', intent);
+  assert.equal(accepted.registration.revision, 1);
+  assert.equal(f.call(service, 'history', f.readArgs).items.length, 1);
+  assert.deepEqual(f.call(service, 'admit', intent).receipt, accepted.receipt);
 });
