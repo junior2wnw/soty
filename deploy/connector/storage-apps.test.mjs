@@ -211,7 +211,7 @@ test('both Apps marker and user_version must agree, including rejection of a dec
     ['soty.apps-registry.v5', 3], ['soty.apps-registry.v5', 4], ['soty.apps-registry.v5', 6],
     ...[0, 1, 2, 3, 4, 5, 7].map(version => ['soty.apps-registry.v6', version]),
     ...[0, 1, 2, 3, 4, 5, 6, 8].map(version => ['soty.apps-registry.v7', version]),
-    ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(version => ['soty.apps-registry.v8', version]), ['soty.apps-registry.v9', 9], ['unknown', 1]]) {
+    ...[0, 1, 2, 3, 4, 5, 6, 7, 9].map(version => ['soty.apps-registry.v8', version]), ['soty.apps-registry.v9', 9], ['unknown', 1]]) {
     const root = await directory(t); await v1(root);
     const db = new DatabaseSync(filename(root));
     try { db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(schema); db.exec('PRAGMA user_version=' + version); } finally { db.close(); }
