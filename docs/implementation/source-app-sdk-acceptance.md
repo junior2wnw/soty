@@ -14,6 +14,12 @@ permission, executable source hash, deployment proof or approved provider.
 Root must admit the exact Source/target/client/resource profile and install a
 connector binary containing the compiled adapter. No Apps format/DDL changes.
 Existing selected HIVE and legacy Planner routes/pins are preserved.
+Additive Native correlation fix namespaces only Native intent/CSRF by the exact
+approved appId; embed cookies/pin/Root DDL are unchanged. A single Native
+browser/app has one selected pending intent; replacement explicitly returns
+superseded409 for the older form/callback. This is not parallel same-app intent
+support. The shared-host parallel gate uses one hostname cookie jar across two
+Source apps; port-based cookie isolation is never assumed.
 
 Maintained `openid-client@6.8.4` and exact common Source RP49 are reused.
 Root source includes SDK extraction `c511a60` and additive minimum-access

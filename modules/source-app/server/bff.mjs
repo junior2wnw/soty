@@ -10,7 +10,7 @@ import { parseSourceJson } from '../shared/strict-json.mjs';
 import { sourceEmbedRoute, sourceBodyHeaders } from './router.mjs';
 import { fields, check, digest, nonce, opaque, requestId, jsonCopy, deepFreeze, syncResult, SourceAppError } from './wire.mjs';
 
-const COOKIE = 'soty_rp_session', INTENT = 'soty_rp_intent', LINK = 'soty_rp_link';
+const COOKIE = 'soty_rp_session', LINK = 'soty_rp_link';
 const cookie = (req, name) => {
   const header = String(req.headers.cookie || '');
   check(Buffer.byteLength(header) <= 4096, 'source_app_cookie_invalid', 401);
@@ -28,6 +28,9 @@ export function createSourceAppBff(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native', 'rp'],
     ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions']);
   const profile = selectedResourceProfile(value.profile), clock = value.clock ?? Date.now;
+  // Ports are not cookie boundaries. Only Native correlation cookies are
+  // namespaced; the fixed embed cookies stay private to each Root broker slot.
+  const INTENT = 'soty_native_intent_' + profile.appId.slice(4), CSRF = 'soty_native_csrf_' + profile.appId.slice(4);
   check(digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE) && profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
@@ -132,7 +135,7 @@ export function createSourceAppBff(options) {
         + '<p>' + html(labels.resourceLabel) + '. Подключение не расширяет ваши права в приложении.</p>'
         + '<label><input type="checkbox" name="consent" value="yes" required>Подключить этот выбранный ресурс с моими текущими правами</label>'
         + '<button type="submit">Войти через Соты</button></form>',
-      { 'set-cookie': [cookieHeader(INTENT, url.searchParams.get('intent'), 300), cookieHeader('soty_source_csrf', csrf, 300)] });
+      { 'set-cookie': [cookieHeader(INTENT, url.searchParams.get('intent'), 300), cookieHeader(CSRF, csrf, 300)] });
       return;
     }
     if (url.pathname === '/soty/authorize') {
@@ -143,8 +146,9 @@ export function createSourceAppBff(options) {
       try { decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new SourceAppError('source_app_input_invalid'); }
       const form = new URLSearchParams(decoded);
       check([...form.keys()].sort().join(',') === 'consent,csrf,intent,scope' && [...form.keys()].every(key => form.getAll(key).length === 1)
-        && form.get('scope') === semanticDigest && form.get('consent') === 'yes'
-        && cookie(req, INTENT) === form.get('intent') && cookie(req, 'soty_source_csrf') === form.get('csrf'), 'source_app_csrf_denied', 403);
+        && form.get('scope') === semanticDigest && form.get('consent') === 'yes', 'source_app_csrf_denied', 403);
+      check(cookie(req, INTENT) === form.get('intent'), 'source_app_intent_superseded', 409);
+      check(cookie(req, CSRF) === form.get('csrf'), 'source_app_csrf_denied', 403);
       const interaction = await store.getInteraction(digest(form.get('intent')));
       check(interaction && interaction.phase === 'pending' && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
       await freshRoot(interaction.context);
@@ -156,7 +160,9 @@ export function createSourceAppBff(options) {
       check(req.method === 'GET', 'source_app_method_invalid', 405);
       const browser = cookie(req, INTENT); check(browser, 'source_app_intent_unavailable', 401);
       const interaction = await store.getInteraction(digest(browser));
-      check(interaction && ['claimed', 'completed'].includes(interaction.phase) && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
+      check(interaction && interaction.expiresAt > clock(), 'source_app_intent_unavailable', 401);
+      check(interaction.protocolIntent?.state === url.searchParams.get('state'), 'source_app_intent_superseded', 409);
+      check(['claimed', 'completed'].includes(interaction.phase), 'source_app_intent_unavailable', 401);
       check([...url.searchParams].length <= 5 && [...url.searchParams].every(([key, value]) => ['code', 'state', 'iss', 'error', 'error_description'].includes(key)
         && url.searchParams.getAll(key).length === 1 && value.length <= 4096 && value.isWellFormed()
         && !/[\u0000-\u001f\u007f]/u.test(value)) && url.searchParams.get('state') === interaction.protocolIntent.state

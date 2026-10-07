@@ -103,7 +103,7 @@ test('actual maintained Root OIDC + controlled private bridge establishes Basic 
   const current = await root.wire.request(rootAuthorize.location.href + '/context'), flow = { rp: { redirectUri: client.redirectUri }, session: root.wire, location: rootAuthorize.location, context: current.body };
   await root.approve(flow); const finished = await root.complete(flow);
   const wrongState = new URL(finished.callback); wrongState.searchParams.set('state', opaque());
-  assert.equal((await request(nativeOrigin, wrongState.pathname + wrongState.search)).status, 403);
+  assert.equal((await request(nativeOrigin, wrongState.pathname + wrongState.search)).status, 409);
   const duplicatedState = new URL(finished.callback); duplicatedState.searchParams.append('state', duplicatedState.searchParams.get('state'));
   assert.equal((await request(nativeOrigin, duplicatedState.pathname + duplicatedState.search)).status, 403);
   assert.equal(linked, false); assert.equal(sessions.size, 0);

@@ -72,6 +72,14 @@ public текст trusted constructor, не resource authority. Собствен
 Source самостоятельно проверяет exact method/path/query multimap, Content-Type,
 UTF-8 и byte limits перед dispatch. Неизвестный feedback suffix, повторный query
 key и HEAD на мутацию запрещены независимо от compiled Root router.
+Native intent/CSRF cookies имеют namespace exact approved appId: разные локальные
+приложения могут входить параллельно на localhost. Порты не разделяют browser
+cookies. В одном Native browser/app текущая cookie correlation допускает один
+выбранный незавершённый вход: новый вход заменяет старый, старый form/callback
+получает `source_app_intent_superseded`409 и требует явного повторного входа.
+Это не per-intent browser correlation и не гарантия параллельных входов одного app.
+Fixed embed cookies остаются в приватном per-slot Root broker; прямые Source
+origins на одном hostname нельзя считать изолированными только разными портами.
 
 Текущий BFF slice — **Basic300**, original Root slot и явный Native consent.
 Импорт RP49 не включает long session автоматически. Долговечный long consumer,
