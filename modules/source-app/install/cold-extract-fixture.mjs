@@ -1,7 +1,7 @@
 // PRIVATE input stream; PUBLIC fixed code. Keys/archive metadata never enter
 // stdout, files, args or environment. Native directory is a fresh physical
 // named volume; this helper cannot choose an extraction destination.
-import {mkdir,lstat,stat,open,readFile} from 'node:fs/promises';
+import {mkdir,lstat,stat,open,readFile,readdir} from 'node:fs/promises';
 import {PassThrough} from 'node:stream';
 import {sendAuthenticatedBackup,extractOwnedBackup} from '../../../deploy/connect/restore-backup.mjs';
 const ROOT='/target',namespace=ROOT+'/restore',dataRoot=namespace+'/data',configRoot=namespace+'/config';
@@ -12,6 +12,7 @@ try{if(process.platform!=='linux'||process.getuid()!==1000)throw Error('platform
   for await(const chunk of process.stdin){size+=chunk.length;if(size>131072)throw Error('input');chunks.push(chunk);}
   const bytes=Buffer.concat(chunks),input=JSON.parse(bytes.toString('utf8'));bytes.fill(0);chunks.forEach(chunk=>chunk.fill(0));
   if(Object.keys(input).sort().join(',')!=='expectedManifestSha256,expectedSha256,limits,privateKeyPem,sourceWitness,targetId')throw Error('shape');
+  const root=await lstat(ROOT);if(!root.isDirectory()||root.isSymbolicLink()||root.uid!==1000||(root.mode&0o777)!==0o700||(await readdir(ROOT)).length!==0)throw Error('target');
   await mkdir(namespace,{mode:0o700});await mkdir(dataRoot,{mode:0o700});await mkdir(configRoot,{mode:0o700});
   const ns=await stat('/proc/self/ns/mnt',{bigint:true});
   const target={targetId:input.targetId,mountNamespace:{dev:ns.dev,ino:ns.ino},namespace:await pin(namespace),dataRoot:await pin(dataRoot),configRoot:await pin(configRoot)};

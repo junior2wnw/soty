@@ -34,6 +34,7 @@ async function seed(){
       store.db.prepare("INSERT INTO native_ticket_media VALUES('cold-ticket',0,?,?)").run(JSON.stringify({kind:'image',name:'synthetic.png',mimeType:'image/png',size:png.length}),png);
       store.db.prepare("INSERT INTO native_receipts VALUES('cold-resource','cold-reporter','cold-original-request',?,?)").run(sha('synthetic original intent'),JSON.stringify({synthetic:true,ticketId:'cold-ticket',revision:1}));
     });
+    await store.storage.createInteraction({idHash:sha('synthetic-cold-interaction'),revision:1,phase:'pending',expiresAt:Date.now()+10000,synthetic:true});
     // Real AES-GCM/AAD ciphertext, explicitly synthetic persistence data; no
     // forged RP session/token/issuer rows or executable permission are seeded.
     phase='seed_cipher';const cipher=store.encrypt('ColdWitness','checkpoint',0,{synthetic:true,nativeIds:['cold-owner','cold-reporter'],version:3});
@@ -51,6 +52,7 @@ async function snapshot(){
     data={reader,oldReaderRefused,foreignKeys:store.db.prepare('PRAGMA foreign_key_check').all().length,
       principals:store.db.prepare('SELECT count(*) n FROM native_principals').get().n,memberships:store.db.prepare('SELECT count(*) n FROM native_memberships').get().n,
       tickets:store.db.prepare('SELECT count(*) n FROM native_tickets').get().n,receipts:store.db.prepare('SELECT count(*) n FROM native_receipts').get().n,
+      interactionCipherDigest:sha(store.db.prepare('SELECT cipher FROM source_interactions LIMIT 1').get().cipher),
       mediaDigest:sha(store.db.prepare("SELECT bytes FROM native_ticket_media WHERE ticket_id='cold-ticket'").get().bytes),
       nativeIdentityDigest:sha(JSON.stringify(store.db.prepare('SELECT * FROM native_resources ORDER BY id').all())),
       rolesDigest:sha(JSON.stringify(store.db.prepare('SELECT * FROM native_memberships ORDER BY resource_id,principal_id').all())),cipherDigest:sha(cipher.cipher)};
@@ -63,6 +65,15 @@ async function snapshot(){
     if(stat.isDirectory())for(const child of (await readdir(path)).sort())await scan(join(path,child),name?name+'/'+child:child);}
   await scan(ROOT,'');return{schema:'soty.source-cold-witness.v1',synthetic:true,authenticationProved:false,models:false,productionReady:false,data,files};
 }
-try{if(process.platform!=='linux'||process.getuid()!==1000||process.argv.length!==3||!['seed','witness'].includes(process.argv[2]))throw Error('source_cold_usage');
-  process.umask(0o077);if(process.argv[2]==='seed')await seed();console.log(JSON.stringify(await snapshot()));
+async function negativeChecks(){
+  phase='negative_realm';let foreignRealmDenied=false;try{readOrdinaryFormat3(DB,'foreign-cold-realm');}catch{foreignRealmDenied=true;}
+  phase='negative_key';const wrong=randomBytes(32),store=createOrdinaryAppStore({databasePath:DB,realmId:REALM,key:wrong,keyId:'cold-key'});
+  let wrongCipherKeyDenied=false;try{const record=JSON.parse(await readFile('/data/native/cipher-witness.json','utf8'));
+    try{store.decrypt('ColdWitness','checkpoint',0,record.cipher,record.keyId);}catch{wrongCipherKeyDenied=true;}
+  }finally{store.close();wrong.fill(0);}
+  if(!foreignRealmDenied||!wrongCipherKeyDenied)throw Error('source_cold_negative_failed');
+  return{schema:'soty.source-cold-negative.v1',foreignRealmDenied,wrongCipherKeyDenied,authenticationProved:false,productionReady:false};
+}
+try{if(process.platform!=='linux'||process.getuid()!==1000||process.argv.length!==3||!['seed','witness','negatives'].includes(process.argv[2]))throw Error('source_cold_usage');
+  process.umask(0o077);if(process.argv[2]==='seed')await seed();console.log(JSON.stringify(process.argv[2]==='negatives'?await negativeChecks():await snapshot()));
 }catch{console.log(JSON.stringify({passed:false,phase,code:'source_cold_fixture_failed',productionReady:false}));process.exitCode=1;}
