@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {check,SourceAppError,digest} from './wire.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT} from './linux-feedback-local-placement.mjs';
-import {linuxFeedbackFailure} from './linux-feedback-diagnostic.mjs';
+import {linuxFeedbackFailure,linuxFeedbackCleanupFailure} from './linux-feedback-diagnostic.mjs';
 
 // Internal host implementation only. This module is not a package/RPC export;
 // author JSON cannot supply a command runner, filesystem port or packet plan.
@@ -97,23 +97,47 @@ function createArgs(plan){return ['create','--pull=never','--name',plan.name,'--
 export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,beforeStart,onEvidence}){
   let packetOwned=false,createAttempted=false,ownedId,attach,primary,output,stopping,stage='packet';
   let cleanupUnknown=false,observerFailed=false,stopped=false,exitCode=null,oom=null,containerRemoved=false,packetRemoved=false;
+  const cleanupFailures=[];
+  function recordCleanup(stage,error,reconciliation='unknown'){
+    if(cleanupFailures.length<16)cleanupFailures.push(linuxFeedbackCleanupFailure(stage,error,reconciliation));
+    if(reconciliation!=='stopped')cleanupUnknown=true;
+  }
   const evidence=extra=>({scenario:plan.scenario,engineRef:plan.engineRef,packetSha256:plan.packetSha256,
     workerSha256:plan.workerSha256,synthetic:true,...extra});
   function emit(extra){try{onEvidence?.(evidence(extra));}catch{observerFailed=true;throw new SourceAppError('source_feedback_processor_unknown',503);}}
-  async function inspect(locator){return assertFixedLinuxSpec(JSON.parse(await commands.run(['inspect','--format',LINUX_FEEDBACK_INSPECT_FORMAT,locator])),plan);}
+  async function inspect(locator,options){return assertFixedLinuxSpec(JSON.parse(await commands.run(['inspect','--format',LINUX_FEEDBACK_INSPECT_FORMAT,locator],options)),plan);}
   async function stopOwned(){
     if(!ownedId)return;if(stopping)return stopping;
     stopping=(async()=>{
+      let cleanupStage='stop_inspect';
       try{
         const stopDeadline=Date.now()+plan.budget.cleanupMs;
-        let state=await inspect(ownedId);check(state.id===ownedId,'source_feedback_processor_unknown',503);
-        if(state.state==='running'){
-          await commands.run(['kill','--signal','SIGTERM',ownedId]);await sleep(Math.min(500,plan.budget.cleanupMs));
-          state=await inspect(ownedId);if(state.state==='running')await commands.run(['kill','--signal','SIGKILL',ownedId]);
-          while(state.state==='running'&&Date.now()<stopDeadline){await sleep(20);state=await inspect(ownedId);}
-          if(state.state==='running')cleanupUnknown=true;
+        const remaining=()=>{const left=stopDeadline-Date.now();check(left>0,'source_feedback_processor_unknown',503);return{timeout:left};};
+        let state=await inspect(ownedId,remaining());check(state.id===ownedId,'source_feedback_processor_unknown',503);
+        async function killOnce(signalName,phase){
+          cleanupStage=phase;
+          try{await commands.run(['kill','--signal',signalName,ownedId],remaining());return null;}
+          catch(error){
+            // Kill and GNU timeout can race. One failed delivery is reconciled
+            // only by a fresh full immutable-spec proof of this exact stopped
+            // container, within the existing cleanup budget. Never retry kill.
+            cleanupStage='stop_reconcile';let after;
+            try{after=await inspect(ownedId,remaining());check(after.id===ownedId,'source_feedback_processor_unknown',503);}
+            catch(recoveryError){recordCleanup(phase,error);throw recoveryError;}
+            if(['created','exited'].includes(after.state)){recordCleanup(phase,error,'stopped');return after;}
+            throw error;
+          }
         }
-      }catch{cleanupUnknown=true;}
+        if(state.state==='running'){
+          const reconciled=await killOnce('SIGTERM','stop_term');if(reconciled)return;
+          await sleep(Math.min(500,Math.max(0,stopDeadline-Date.now())));
+          cleanupStage='stop_after_term';state=await inspect(ownedId,remaining());
+          if(state.state==='running'){const killed=await killOnce('SIGKILL','stop_kill');if(killed)return;}
+          cleanupStage='stop_wait';
+          while(state.state==='running'&&Date.now()<stopDeadline){await sleep(20);state=await inspect(ownedId,remaining());}
+          check(state.state!=='running','source_feedback_processor_unknown',503);
+        }
+      }catch(error){recordCleanup(cleanupStage,error);}
     })();return stopping;
   }
   const onAbort=()=>{void stopOwned();};
@@ -150,40 +174,42 @@ export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,befo
     if(createAttempted&&!ownedId){
       // CREATE is never retried. Unknown CLI delivery may still have created
       // the random exact name. Only a full proof may adopt it for cleanup.
-      try{ownedId=(await inspect(plan.name)).id;}catch{cleanupUnknown=true;}
+      try{ownedId=(await inspect(plan.name)).id;}catch(error){recordCleanup('create_recovery',error);}
     }
     if(ownedId){
       await stopOwned();
       // Observer/inspect failure may precede awaiting attach. Always close
       // and join our CLI, including its pipes, before returning or throwing.
-      try{await attach?.stopAndWait();}catch{cleanupUnknown=true;}
+      try{await attach?.stopAndWait();}catch(error){recordCleanup('attach_join',error);}
       try{
         const finalState=await inspect(ownedId);check(finalState.id===ownedId,'source_feedback_processor_unknown',503);
         stopped=['created','exited'].includes(finalState.state);exitCode=finalState.exitCode;oom=finalState.oom;
-        if(!stopped)cleanupUnknown=true;
-      }catch{cleanupUnknown=true;}
+        check(stopped,'source_feedback_processor_unknown',503);
+      }catch(error){recordCleanup('final_inspect',error);}
       // The ID was independently proved above. Best effort cleanup still
       // runs after observation failure, but cannot erase that uncertainty.
-      try{
+      let cleanupStage='container_rm';try{
         await commands.run(['rm','--force',ownedId]);
+        cleanupStage='container_absence';
         const remaining=await commands.run(['container','ls','--all','--no-trunc','--filter','id='+ownedId,'--format','{{.ID}}'],{limit:128});
         check(remaining==='','source_feedback_processor_unknown',503);containerRemoved=true;
-      }catch{cleanupUnknown=true;}
-    }else try{await attach?.stopAndWait();}catch{cleanupUnknown=true;}
+      }catch(error){recordCleanup(cleanupStage,error);}
+    }else try{await attach?.stopAndWait();}catch(error){recordCleanup('attach_join',error);}
     // Unknown container delivery/stop/removal retains this exact owned packet
     // for bounded operator cleanup. Do not erase data still reachable by an
     // uncertain processor, even though no Native result will be returned.
     if(packetOwned&&!cleanupUnknown){
-      try{
+      let cleanupStage='packet_lstat';try{
         const state=await fs.lstat(plan.packetDirectory);
-        check(state.isDirectory()&&!state.isSymbolicLink()&&state.uid===1000&&(state.mode&0o777)===0o700
-          &&await fs.realpath(plan.packetDirectory)===plan.packetDirectory
+        cleanupStage='packet_guard';check(state.isDirectory()&&!state.isSymbolicLink()&&state.uid===1000&&(state.mode&0o777)===0o700
           &&/^packet-[a-f0-9]{32}$/u.test(plan.packetDirectory.slice(plan.directory.length+1))
           &&plan.packetDirectory.startsWith(plan.directory+'/'),'source_feedback_processor_unknown',503);
+        cleanupStage='packet_realpath';check(await fs.realpath(plan.packetDirectory)===plan.packetDirectory,'source_feedback_processor_unknown',503);
+        cleanupStage='packet_rm';
         await fs.rm(plan.packetDirectory,{recursive:true,force:false,maxRetries:5,retryDelay:30});packetRemoved=true;
-      }catch{cleanupUnknown=true;}
+      }catch(error){recordCleanup(cleanupStage,error);}
     }
-    try{emit({phase:'cleanup',stopped,exitCode,oom,containerRemoved,packetRemoved,cleanupUnknown,observerFailed,
+    try{emit({phase:'cleanup',stopped,exitCode,oom,containerRemoved,packetRemoved,cleanupUnknown,observerFailed,cleanupFailures,
       ...(primary?{failureStage:stage,...linuxFeedbackFailure(primary)}:{})});}catch{}
   }
   if(cleanupUnknown)throw new SourceAppError('source_feedback_processor_cleanup_unknown',503);

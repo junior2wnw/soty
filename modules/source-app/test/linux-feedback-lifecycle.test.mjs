@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {SourceAppError} from '../server/wire.mjs';
 import {assertFixedLinuxSpec,runFixedLinuxPacket,createDockerCommandRunner} from '../server/linux-feedback-lifecycle.mjs';
-import {linuxFeedbackFailure} from '../server/linux-feedback-diagnostic.mjs';
+import {linuxFeedbackFailure,linuxFeedbackCleanupFailure} from '../server/linux-feedback-diagnostic.mjs';
 
 // Controlled host failures are lifecycle evidence, not Linux/Docker isolation
 // acceptance. The actual installed Source→OS packet remains a separate gate.
@@ -22,13 +22,14 @@ function fixture(options={}){
     binds:null,volumesFrom:null,ports:{},publishPorts:false,pidMode:'',ipcMode:'private',utsMode:'',restart:{Name:'no',MaximumRetryCount:0},
     tmpfs:plan.tmpfs,mounts:[{Type:'bind',Source:plan.packetDirectory,Destination:'/probe',RW:false,Propagation:'rprivate'}],state:'created',exitCode:0,oom:false};
   const state={creates:0,starts:0,kills:0,removes:0,packetRemoves:0,writes:0,joined:0,before:0,container:null,attachClosed:true,evidence:[]};
+  const controller=new AbortController();
   let finish,timer,inspectFault=false;
   const fs={
     async mkdir(){if(options.mkdirFault)throw new Error('mkdir_fault');},
     async writeFile(){state.writes++;if(options.writeFault===state.writes)throw new Error('write_fault');},
     async lstat(){return {isDirectory:()=>true,isSymbolicLink:()=>false,uid:1000,mode:0o700};},
     async realpath(path){return options.pathChanged?path+'-foreign':path;},
-    async rm(){state.packetRemoves++;if(options.packetRmFault)throw new Error('packet_rm_fault');}
+    async rm(){state.packetRemoves++;if(options.packetRmFault)throw Object.assign(new Error('private/path/not-logged'),{code:'EACCES'});}
   };
   const commands={
     async run(args){
@@ -42,6 +43,13 @@ function fixture(options={}){
         if(!state.container)throw new Error('not_found');return JSON.stringify(state.container);
       }
       if(args[0]==='kill'){
+        if(options.killRaceExited||options.killRaceRunning){
+          state.kills++;if(options.killRaceExited){state.container.state='exited';state.container.exitCode=143;}
+          // Abort closes the owned attach CLI even when the daemon process is
+          // still running; the latter must retain unknown cleanup authority.
+          finish?.(new SourceAppError('source_feedback_processor_unknown',503));
+          const error=new SourceAppError('source_feedback_processor_unknown',503);error.linuxCliDiagnostic={exitClass:'nonzero'};throw error;
+        }
         state.kills++;state.container.state='exited';state.container.exitCode=143;clearTimeout(timer);
         finish?.(new SourceAppError('source_feedback_processor_unknown',503));return '';
       }
@@ -60,8 +68,8 @@ function fixture(options={}){
       return {result,async stopAndWait(){state.joined++;clearTimeout(timer);finish(new SourceAppError('source_feedback_processor_unknown',503));await result.catch(()=>{});}};
     }
   };
-  const run=()=>runFixedLinuxPacket(plan,{fs,commands,sleep:async()=>{}},{signal:new AbortController().signal,beforeStart:async()=>{state.before++;},
-    onEvidence:item=>{state.evidence.push(item);if(options.observerFault&&item.phase==='started')throw new Error('observer_fault');}});
+  const run=()=>runFixedLinuxPacket(plan,{fs,commands,sleep:async()=>{}},{signal:controller.signal,beforeStart:async()=>{state.before++;},
+    onEvidence:item=>{state.evidence.push(item);if(options.abortOnStarted&&item.phase==='started')controller.abort();if(options.observerFault&&item.phase==='started')throw new Error('observer_fault');}});
   return {plan,spec,state,run};
 }
 
@@ -128,6 +136,23 @@ test('rm/inspect/packet cleanup failures block successful output and expose clea
     const f=fixture(option);await assert.rejects(f.run(),error=>error.code==='source_feedback_processor_cleanup_unknown');
     assert.equal(f.state.attachClosed,true);assert.equal(f.state.evidence.at(-1).cleanupUnknown,true);
   }
+});
+
+test('one failed kill is reconciled by fresh exact stopped proof; still-running or unknown stays retained',async()=>{
+  const stopped=fixture({held:true,abortOnStarted:true,killRaceExited:true});await assert.rejects(stopped.run());
+  assert.equal(stopped.state.kills,1);assert.equal(stopped.state.starts,1);assert.equal(stopped.state.packetRemoves,1);
+  const cleanup=stopped.state.evidence.at(-1);assert.equal(cleanup.cleanupUnknown,false);assert.equal(cleanup.stopped,true);
+  assert.deepEqual(cleanup.cleanupFailures,[{stage:'stop_term',code:'source_feedback_processor_unknown',cliExitClass:'nonzero',specMismatchGroups:[],fsClass:'none',reconciliation:'stopped'}]);
+  const running=fixture({held:true,abortOnStarted:true,killRaceRunning:true});await assert.rejects(running.run());
+  assert.equal(running.state.kills,1);assert.equal(running.state.packetRemoves,0);assert.equal(running.state.evidence.at(-1).cleanupUnknown,true);
+});
+
+test('cleanup diagnostics expose fixed phase/FS class only, not filesystem paths or arbitrary error properties',async()=>{
+  const f=fixture({packetRmFault:true});await assert.rejects(f.run());const cleanup=f.state.evidence.at(-1);
+  assert.equal(cleanup.cleanupFailures[0].stage,'packet_rm');assert.equal(cleanup.cleanupFailures[0].fsClass,'EACCES');
+  assert.equal(JSON.stringify(cleanup).includes('private/path'),false);
+  assert.deepEqual(linuxFeedbackCleanupFailure('caller-secret',{code:'caller-secret',path:'caller-secret'}),
+    {stage:'unknown',code:'unclassified',cliExitClass:'none',specMismatchGroups:[],fsClass:'none',reconciliation:'unknown'});
 });
 
 test('uncertain container removal/inspection retains owned reachable packet and cannot return Native output',async()=>{
