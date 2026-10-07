@@ -72,6 +72,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     databasePath:realm.databasePath,realmId:realm.realmId,cipherKey:realm.cipherKey,keyId:'synthetic-'+realm.realmId,appLabel:'Synthetic '+realm.realmId};
     if(options.feedbackProcessing)realm.options.feedbackProcessing=options.feedbackProcessing;
     realm.options.allowEmptyGuest=options.emptyGuestBrowser===true;
+    realm.options.allowLinkedLogin=options.allowLinkedLogin===true;
     realm.instance=await createOrdinaryAppServer({...realm.options,initialize:true,newResource:{title:'Selected synthetic project',guestEmpty:options.emptyGuestBrowser===true}});
     realm.observeResponse=()=>realm.instance.server.prependListener('request',(req,res)=>{
       if(req.url==='/soty/authorize')realm.lastNativeForm={method:req.method,origin:req.headers.origin??'absent',contentType:req.headers['content-type']?.split(';')[0]??'absent'};

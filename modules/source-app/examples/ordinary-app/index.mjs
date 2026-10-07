@@ -10,8 +10,9 @@ import { createOrdinaryFeedbackJobs } from './feedback-jobs.mjs';
  * supplied by approved deployment; no request/HTML author config is loaded. */
 export async function createOrdinaryAppServer(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'rp', 'databasePath', 'realmId', 'cipherKey', 'keyId'],
-    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'clock', 'allowLoginProofMigration','allowFeedbackJobsMigration','feedbackProcessing']);
+    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'allowLinkedLogin', 'clock', 'allowLoginProofMigration','allowFeedbackJobsMigration','feedbackProcessing']);
   const processing=value.feedbackProcessing===undefined?null:fields(value.feedbackProcessing,['policy','engines'],['enforcer']);
+  check(value.allowLinkedLogin===undefined||typeof value.allowLinkedLogin==='boolean','ordinary_native_configuration_invalid',503);
   const label = value.appLabel ?? 'Моё приложение'; check(typeof label === 'string' && label.trim().length > 0 && label.length <= 160 && label.isWellFormed());
   const store = createOrdinaryAppStore({ databasePath: value.databasePath, realmId: value.realmId, key: value.cipherKey, keyId: value.keyId,
     initialize: value.initialize === true, format:processing?3:value.profile.sourceProfile.version===2?2:1,
@@ -29,7 +30,7 @@ export async function createOrdinaryAppServer(options) {
     const jobs=processing?createOrdinaryFeedbackJobs({store,resourceId:value.profile.resource.selection.nativeId,incarnationId:value.profile.resource.selection.incarnationId,
       ...processing,currentProof:sessionHash=>{check(bff,'source_feedback_processor_not_ready',503);return bff.currentFeedbackJobProof(sessionHash);}}):null;
     const native = createOrdinaryAppNativePort({ store, resourceId: value.profile.resource.selection.nativeId,
-      incarnationId: value.profile.resource.selection.incarnationId, allowEmptyGuest: value.allowEmptyGuest === true,
+      incarnationId: value.profile.resource.selection.incarnationId, allowEmptyGuest: value.allowEmptyGuest === true,allowLinkedLogin:value.allowLinkedLogin===true,
       ...(jobs?{feedbackJobs:jobs}:{}) });
     bff = createSourceAppBff({ profile: value.profile, transportKey: value.transportKey, connectorPort: value.connectorPort, rp: value.rp, storage: store.storage, native,
       allowCreateEmptyGuest: value.allowEmptyGuest === true, processingProofEnabled:processing!==null,

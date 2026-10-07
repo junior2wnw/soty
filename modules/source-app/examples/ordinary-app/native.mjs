@@ -6,9 +6,10 @@ import { createOrdinaryFeedbackJobs,requireOrdinaryFeedbackJobs } from './feedba
 
 /** Actual example Native implementation. Every role/resource decision and
  * durable receipt belongs to this Source SQL database, never Root metadata. */
-export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, beforeCommit, afterCommit, feedbackProcessing, feedbackJobs } = {}) {
+export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, allowEmptyGuest = false, allowLinkedLogin = false, beforeCommit, afterCommit, feedbackProcessing, feedbackJobs } = {}) {
   const { db } = store, proofs = new WeakMap();
   check(!(feedbackJobs&&feedbackProcessing),'ordinary_feedback_jobs_not_ready',503);
+  check(typeof allowLinkedLogin==='boolean','ordinary_native_configuration_invalid',503);
   const jobs=feedbackJobs?requireOrdinaryFeedbackJobs(feedbackJobs,store,resourceId,incarnationId):feedbackProcessing?createOrdinaryFeedbackJobs({store,resourceId,incarnationId,...feedbackProcessing}):null;
   const nativeCookie = 'ordinary_native_' + store.realmId;
   function cookie(req) {
@@ -32,6 +33,15 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     const membership = db.prepare('SELECT * FROM native_memberships WHERE resource_id=? AND principal_id=?').get(resourceId, captured.principalId);
     check(session?.active === 1 && session.expires_at > store.clock() && session.principal_id === captured.principalId && session.generation === captured.sessionGeneration
       && membership?.active === 1 && membership.revision === captured.membershipRevision, 'ordinary_native_access_denied', 403);
+    if(captured.linkedLogin){
+      // A Source-owned current login grant, never a private-data proof. The
+      // BFF must independently exchange fresh OIDC before commitIdentity.
+      check(allowLinkedLogin&&binding.operation==='link','ordinary_native_proof_denied',403);
+      const link=db.prepare('SELECT principal_id FROM native_links WHERE issuer=? AND subject=?').get(binding.identity.issuer,binding.identity.subject);
+      const consent=db.prepare('SELECT native_session_hash FROM native_consents WHERE principal_id=? AND resource_id=? AND semantic_digest=? AND root_device_id=?')
+        .get(captured.principalId,resourceId,binding.semanticDigest,binding.rootPrincipal.deviceId);
+      check(link?.principal_id===captured.principalId&&consent?.native_session_hash===captured.nativeSessionHash,'ordinary_native_login_grant_denied',403);
+    }
     if (captured.sourceSessionHash) {
       const sourceSession = db.prepare('SELECT * FROM source_sessions WHERE id_hash=?').get(captured.sourceSessionHash);
       const link = db.prepare('SELECT * FROM native_links WHERE issuer=? AND subject=?').get(binding.identity.issuer, binding.identity.subject);
@@ -43,9 +53,14 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     }
     return { ...captured, role: membership.role };
   }
+  function dataActor(proof,binding){const actor=inspect(proof,binding);check(!actor.linkedLogin&&!actor.guest,'ordinary_native_login_only',403);return actor;}
   function link(proof, binding, identity, guest) {
     check(store.inTransaction(), 'ordinary_native_transaction_required', 503); let actor = inspect(proof, binding);
     check(identity.issuer === binding.identity.issuer && identity.subject === binding.identity.subject, 'ordinary_native_link_denied', 403);
+    // An app's new-empty policy stays enabled after first login. A returning
+    // current linked candidate authenticates the SAME principal; it cannot
+    // run the empty-resource creator a second time.
+    if(guest&&actor.linkedLogin){check(allowLinkedLogin,'ordinary_native_login_grant_denied',403);guest=false;}
     if (guest) {
       check(actor.guest === true, 'ordinary_guest_existing_resource_denied', 403);
       const principalId = 'native-' + nonce().slice(0, 20), nativeSessionHash = digest(nonce());
@@ -84,7 +99,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
   async function feedbackMutation(operation, proof, binding, args, final) {
     check(isSourceNativeCommitPort(final), 'ordinary_native_commit_required', 503); await beforeCommit?.(operation);
     return store.tx(() => {
-      const actor = inspect(proof, binding);
+      const actor = dataActor(proof, binding);
       const priorTicket = operation === 'submit' ? null : ticket(actor, args.ticketId);
       if (operation === 'status' || operation === 'reply' && priorTicket.canManage) check(actor.role === 'owner', 'ordinary_native_support_denied', 403);
       if (operation === 'accept') check(db.prepare('SELECT reporter_id FROM native_tickets WHERE id=?').get(args.ticketId).reporter_id === actor.principalId, 'ordinary_native_reporter_denied', 403);
@@ -111,17 +126,26 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
   }
   return createSourceNativeAuthorityPort({
     async capture(binding, req) {
-      resource(binding); let sourceSession, nativeSessionHash;
-      if (req) { const token = cookie(req); nativeSessionHash = token ? digest(token) : null; }
+      resource(binding); let sourceSession, nativeSessionHash,linkedLogin=false;
+      if (req) {
+        const token = cookie(req); nativeSessionHash = token ? digest(token) : null;
+        if(!token&&allowLinkedLogin&&binding.operation==='link'){
+          const link=db.prepare('SELECT principal_id FROM native_links WHERE issuer=? AND subject=?').get(binding.identity.issuer,binding.identity.subject);
+          const consent=link?db.prepare('SELECT native_session_hash FROM native_consents WHERE principal_id=? AND resource_id=? AND semantic_digest=? AND root_device_id=?')
+            .get(link.principal_id,resourceId,binding.semanticDigest,binding.rootPrincipal.deviceId):null;
+          if(consent){nativeSessionHash=consent.native_session_hash;linkedLogin=true;}
+        }
+      }
       else { sourceSession = db.prepare('SELECT * FROM source_sessions WHERE id_hash=?').get(binding.sessionIdHash); nativeSessionHash = sourceSession?.native_session_hash; }
       const session = nativeSessionHash ? db.prepare('SELECT * FROM native_sessions WHERE id_hash=?').get(nativeSessionHash) : null;
       const membership = session ? db.prepare('SELECT * FROM native_memberships WHERE resource_id=? AND principal_id=?').get(resourceId, session.principal_id) : null;
       const proof = Object.freeze({});
-      if (!session && req && allowEmptyGuest) proofs.set(proof, { guest: true, bindingDigest: digest(binding) });
+      if (!session && req && allowEmptyGuest&&!linkedLogin) proofs.set(proof, { guest: true, bindingDigest: digest(binding) });
       else {
         check(session && membership, 'ordinary_native_session_denied', 403);
         proofs.set(proof, { principalId: session.principal_id, nativeSessionHash, sessionGeneration: session.generation, membershipRevision: membership.revision,
           bindingDigest: digest(binding), ...(sourceSession ? { sourceSessionHash: sourceSession.id_hash } : {}) });
+        if(linkedLogin)proofs.set(proof,{...proofs.get(proof),linkedLogin:true});
       }
       inspect(proof, binding); return proof;
     },
@@ -146,15 +170,15 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     linkVerifiedIdentity: (proof, binding, identity) => link(proof, binding, identity, false),
     ...(allowEmptyGuest ? { createEmptyGuest: (proof, binding, identity) => link(proof, binding, identity, true) } : {}),
     async read(proof, binding, args) {
-      if(jobs&&['feedback.job.status','feedback.job.result','feedback.processing.context','feedback.processing.ticket'].includes(args.input?.operation)){const result=jobs.read(inspect(proof,binding),args.input);inspect(proof,binding);return result;}
-      inspect(proof, binding); const input = fields(args.input, ['operation']); check(input.operation === 'items.list', 'ordinary_native_operation_denied', 403);
+      if(jobs&&['feedback.job.status','feedback.job.result','feedback.processing.context','feedback.processing.ticket'].includes(args.input?.operation)){const result=jobs.read(dataActor(proof,binding),args.input);dataActor(proof,binding);return result;}
+      dataActor(proof, binding); const input = fields(args.input, ['operation']); check(input.operation === 'items.list', 'ordinary_native_operation_denied', 403);
       const rows = db.prepare('SELECT id,title,revision,created_at AS createdAt FROM native_items WHERE resource_id=? ORDER BY created_at,id LIMIT 100').all(resourceId);
-      inspect(proof, binding); return { items: rows.map(row => ({ ...row })), requestId: args.requestId };
+      dataActor(proof, binding); return { items: rows.map(row => ({ ...row })), requestId: args.requestId };
     },
     async execute(proof, binding, args, final) {
       if(jobs&&['feedback.processing.consent','feedback.job.grant','feedback.job.revoke'].includes(args.input?.operation)){
         check(isSourceNativeCommitPort(final));await beforeCommit?.(args.input.operation);
-        const result=store.tx(()=>{const actor=inspect(proof,binding);
+        const result=store.tx(()=>{const actor=dataActor(proof,binding);
           const prior=db.prepare('SELECT input_digest FROM native_receipts WHERE resource_id=? AND principal_id=? AND request_id=?').get(resourceId,actor.principalId,args.requestId);
           if(!prior)jobs.validate(actor,args.input,args.requestId);
           return final.commit(()=>receipt(actor,args,args.input,inputDigest=>({
@@ -163,27 +187,27 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
       }
       const input = fields(args.input, ['operation', 'title']); check(input.operation === 'items.create' && typeof input.title === 'string' && input.title.trim().length > 0 && input.title.length <= 500);
       check(isSourceNativeCommitPort(final)); await beforeCommit?.('items.create');
-      const result = store.tx(() => { const actor = inspect(proof, binding); return final.commit(() => receipt(actor, args, args.input, inputDigest => {
+      const result = store.tx(() => { const actor = dataActor(proof, binding); return final.commit(() => receipt(actor, args, args.input, inputDigest => {
         const id = 'item-' + nonce().slice(0, 20), now = store.clock(); db.prepare('INSERT INTO native_items VALUES(?,?,?,?,?)').run(id, resourceId, input.title, 1, now);
         return { requestId: args.requestId, inputDigest, outcome: 'committed', replayed: false, receipt: { id, revision: 1, createdAt: now } };
       })); });
       await afterCommit?.('items.create'); return result;
     },
     async readProof(proof, binding, args) {
-      const actor = inspect(proof, binding), input = fields(args.input, ['inputDigest']); check(/^[a-f0-9]{64}$/u.test(input.inputDigest));
+      const actor = dataActor(proof, binding), input = fields(args.input, ['inputDigest']); check(/^[a-f0-9]{64}$/u.test(input.inputDigest));
       const row = db.prepare('SELECT * FROM native_receipts WHERE resource_id=? AND principal_id=? AND request_id=?').get(resourceId, actor.principalId, args.requestId);
-      check(!row || row.input_digest === input.inputDigest, 'ordinary_native_request_conflict', 409); inspect(proof, binding);
+      check(!row || row.input_digest === input.inputDigest, 'ordinary_native_request_conflict', 409); dataActor(proof, binding);
       return row ? JSON.parse(row.result_json) : { requestId: args.requestId, inputDigest: input.inputDigest, outcome: 'not_applied' };
     },
     feedback: {
-      async context(proof, binding) { const actor = inspect(proof, binding); return { schema: 'soty.source-feedback.context.v1', ready: true, canSubmit: true,
+      async context(proof, binding) { const actor = dataActor(proof, binding); return { schema: 'soty.source-feedback.context.v1', ready: true, canSubmit: true,
         bindingDigest: digest({ realm: store.realmId, resourceId, incarnationId, principal: actor.principalId }), recipientLabel: 'Владелец приложения',
         limits: SOURCE_FEEDBACK_LIMITS, capabilities: { text: true, voice: true, screenshot: true, asr: false } }; },
-      async list(proof, binding, args) { const actor = inspect(proof, binding); check(!args.cursor, 'ordinary_native_cursor_unavailable', 400);
+      async list(proof, binding, args) { const actor = dataActor(proof, binding); check(!args.cursor, 'ordinary_native_cursor_unavailable', 400);
         const rows = actor.role === 'owner' ? db.prepare('SELECT id FROM native_tickets WHERE resource_id=? ORDER BY created_at,id LIMIT ?').all(resourceId, args.limit ?? 20)
           : db.prepare('SELECT id FROM native_tickets WHERE resource_id=? AND reporter_id=? ORDER BY created_at,id LIMIT ?').all(resourceId, actor.principalId, args.limit ?? 20);
         return { tickets: rows.map(row => ticket(actor, row.id)), nextCursor: null }; },
-      async get(proof, binding, args) { return { ticket: ticket(inspect(proof, binding), args.ticketId, true) }; },
+      async get(proof, binding, args) { return { ticket: ticket(dataActor(proof, binding), args.ticketId, true) }; },
       submit: (...args) => feedbackMutation('submit', ...args), reply: (...args) => feedbackMutation('reply', ...args),
       status: (...args) => feedbackMutation('status', ...args), accept: (...args) => feedbackMutation('accept', ...args),
     },
