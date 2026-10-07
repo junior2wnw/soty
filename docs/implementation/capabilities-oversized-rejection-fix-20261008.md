@@ -23,3 +23,11 @@
 ```
 
 Полный безопасный output — `output/body-causal/fix-final-tests.log`. Dependency resolver читает существующие Main dependencies; Main/config/node_modules не изменены. Fix требует независимого Root review перед merge. FullWorld/production/Engine/SourceCold не запускались этим кандидатом.
+
+После независимой проверки изменение `0904608a` объединено в отдельном кандидате Root. В объединённом checkout с установленными dependencies дополнительный resolver не нужен:
+
+```powershell
+& 'C:/Users/Junio/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe' --test --test-concurrency=2 server/test/capabilities-oversized-rejection.test.mjs server/test/capabilities-actions.test.mjs server/test/capabilities-actions-lifecycle.test.mjs server/test/capabilities-actions.independent.test.mjs
+```
+
+Проверка объединённого кандидата: 16/16 PASS, 0 fail/cancel/skip. Независимый дополнительный разбор 12 сценариев также прошёл; он проверил задержанные и chunked uploads, последующие REST/MCP/upgrade requests, пределы discard и освобождение ресурсов. Это отдельное доказательство HTTP поведения; готовность общего образа, холодного восстановления и публикации им не подтверждается.

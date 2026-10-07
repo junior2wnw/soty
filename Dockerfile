@@ -17,6 +17,7 @@ RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform pnpm run platform:test \
   && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
+  && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
 RUN pnpm prune --prod
 
