@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,">
+<title>Выбранный локальный проект · проверка шлюза</title>
+<style>body{margin:0;font:14px/1.5 system-ui}.qa{padding:10px;background:#f5f6f2}.qa button{min-height:44px;padding:8px;margin:3px}#result{overflow-wrap:anywhere}#host.sw-app{position:relative;inset:auto;z-index:auto;height:calc(100dvh - 190px);min-height:400px;display:flex}#host>.sa-stage{flex:1}</style>
+<section class="qa"><p>Изолированный localhost: только вымышленные проекты и профили. Настоящие подписанный Connect, установленный коннектор, Планировщик, OIDC и отдельное согласие на один проект. Вспомогательные кнопки относятся только к этому стенду.</p>
+<button id="start">Открыть тестовый проект</button><button id="restart">Перезапустить исходное приложение</button><button id="revoke">Отозвать тестовый доступ</button><button id="close">Закрыть текущий вход</button><button id="proof">Проверить границы и сохранность</button><button id="second">Подготовить второй тестовый профиль</button><button id="switch">Сменить профиль в другой вкладке</button><button id="restore">Вернуть исходный тестовый профиль</button>
+<p id="result" role="status" data-status="idle">Запустите scripts/fixtures/scoped-gateway.mjs.</p></section><main id="host" class="sw-app"></main>
+<script type="module">
+import './world.css';
+import {accountClient,observeAccount} from '../core/connect-client.ts';
+import {createConnectClient} from '../../modules/connect/browser/index.mjs';
+import {mountAppStage} from './app-stage.ts';
+import {formatAppLaunchRoute,parseAppLaunchRoute} from './app-launch.mjs';
+if(!import.meta.env.DEV||location.hostname!=='127.0.0.1')throw new Error('fixture_dev_only');
+const host=document.querySelector('#host'),output=document.querySelector('#result');let stage,info,accountId,secondId,generation=0;
+const code=error=>/^[A-Za-z0-9_:-]+$/.test(error?.code||'')?error.code:'fixture_check_failed';
+observeAccount(state=>{if(stage&&state.accountId!==accountId){generation++;stage.dispose();stage=null;show({synthetic:true,profileChanged:true});}});
+const show=(value,status='ready')=>{output.dataset.status=status;output.textContent=typeof value==='string'?value:JSON.stringify(value);};
+async function helper(path,input){const response=await fetch('/__fixture/'+path,{method:input===undefined?'GET':'POST',headers:input===undefined?{}:{'content-type':'application/json'},body:input===undefined?undefined:JSON.stringify(input),cache:'no-store'});const value=await response.json();if(!response.ok)throw Object.assign(new Error(value.code),{code:value.code});return value;}
+async function start(){
+  stage?.dispose();info=await helper('info');let local=await accountClient.getLocalState();if(!local.accountId)await accountClient.bootstrap('Синтетический профиль участника');
+  accountId=(await accountClient.getLocalState()).accountId;await helper('grant',{accountId});
+  const records=(await accountClient.extension('apps.list',{}, {expectedAccountId:accountId})).apps,app=records.find(value=>value.id===info.appId);if(!app)throw new Error('fixture_app_missing');
+  const intent=parseAppLaunchRoute(formatAppLaunchRoute({appId:info.appId}));history.replaceState(null,'','#'+intent.route);const token=++generation;
+  const api={request:(method,args)=>accountClient.extension(method,args??{}, {expectedAccountId:accountId})};
+  stage=mountAppStage(host,{api,accountId,app:{appId:app.id,name:app.name,status:app.state,ownerAccountId:app.ownerAccountId},intent,isCurrent:()=>token===generation,
+    async request(args){const value=await accountClient.extension('apps.launch',args,{expectedAccountId:accountId});return{url:value.launchUrl,entry:value.entry,runtimeProfile:value.runtimeProfile,scopedCloseHandle:value.scopedCloseHandle,scopedCleanup:accountClient.appSlotCleanup(value)};},
+    onNavigate(next){history.replaceState(null,'','#'+next.route);},onBack(){stage?.dispose();},async onAccount(){await close();},onSettings(){}});
+  await stage.ready;show('Проект открыт. Войдите через Соты внутри приложения и подтвердите один проект в Планировщике.');
+}
+async function close(){generation++;stage?.dispose();stage=null;show('Текущий вход закрыт. Данные исходного приложения сохранены.');}
+async function second(){const original=(await accountClient.getLocalState()).accountId;if(!original||!info)throw new Error('fixture_start_first');
+  const separate=createConnectClient({projectId:'soty',endpoint:'/api/connect/rpc',dbName:'scoped-fixture-second:'+info.appId});
+  try{await separate.bootstrap('Синтетический второй профиль');const kit=await separate.prepareRecovery();await separate.confirmRecovery(kit);
+    const linked=await accountClient.recover(kit,'Только синтетический стенд');secondId=linked.accountId;await accountClient.switchProfile(original);show({synthetic:true,twoExplicitProfiles:true});}finally{separate.dispose();}}
+async function switchProfile(){if(!secondId)throw new Error('fixture_second_profile_required');
+  const tab=createConnectClient({projectId:'soty',endpoint:'/api/connect/rpc',dbName:'soty-connect-v1',scopedAppCleanup:true});
+  try{await tab.switchProfile(secondId);generation++;stage?.dispose();stage=null;show({synthetic:true,profileSwitched:true});}finally{tab.dispose();}}
+for(const [id,action] of Object.entries({start,restart:async()=>show(await helper('restart-source',{})),revoke:async()=>show(await helper('revoke',{})),close,proof:async()=>show(await helper('proof')),second,switch:switchProfile,restore:async()=>{await accountClient.switchProfile(accountId);show({synthetic:true,originalProfileRestored:true});}}))document.querySelector('#'+id).addEventListener('click',()=>{
+  const button=document.querySelector('#'+id);button.disabled=true;output.dataset.action=id;output.dataset.status='pending';void action().catch(error=>show(code(error),'fail')).finally(()=>{button.disabled=false;if(output.dataset.status==='pending')output.dataset.status='ready';});});
+</script></html>

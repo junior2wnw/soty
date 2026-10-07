@@ -40,6 +40,8 @@ export interface ClientOptions {
   onState?: (state: LocalState) => void | Promise<void>;
   /** Reports state-notification or observer errors; never contains credential material. */
   onError?: (error: ConnectError) => void | Promise<void>;
+  /** Opt-in Root host profile; only RAM cleanup of its real admitted app slot. */
+  scopedAppCleanup?: boolean;
 }
 
 export interface AccountResult {
@@ -95,6 +97,9 @@ export interface RecoveryKit {
 }
 
 export interface ConnectClient {
+  /** Returns a fixed zero-argument cleanup only for this client's original
+   * signed reply; no identity, operation or arguments can be selected. */
+  appSlotCleanup(reply: unknown): (() => Promise<void>) | null;
   /** Optional context pins queue admission to the displayed account; it is not sent in the RPC payload. */
   extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string }): Promise<T>;
   bootstrap(label: string): Promise<AccountResult>;

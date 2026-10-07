@@ -18,7 +18,7 @@ const actorOf = value => { const actor = data({ accountId: value?.accountId, dev
 const hashId = (model, value) => digest(model + '\0' + value);
 
 /** Private SDK/store ports are not incoming operations. Connect signs approvals and fences later token use. */
-export function createHumanIdentityService({ databasePath, profile, actorActive, withAuthorityFence, readProfile = () => ({}), maxDatabaseBytes = 64 * 1024 * 1024,
+export function createHumanIdentityService({ databasePath, profile, actorActive, withAuthorityFence, withSubjectAuthorityFence, readProfile = () => ({}), maxDatabaseBytes = 64 * 1024 * 1024,
   now = Date.now, allowRenewalMigration = false } = {}) {
   require(typeof allowRenewalMigration === 'boolean', 'human_identity_renewal_configuration_invalid', 503);
   require(profile?.enabled === true, 'human_identity_disabled', 503);
@@ -221,6 +221,33 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     return row.account_id ? fenced({ accountId: row.account_id, deviceId: row.device_id }, load) : load();
   }
   return Object.freeze({
+    /** Host-only expected-subject mapping for an already captured signed Root
+     * actor. This is neither an OIDC token nor permission in an application. */
+    withSubjectAuthority(request, callback) {
+      require(request && typeof callback === 'function' && !['AsyncFunction','AsyncGeneratorFunction'].includes(callback.constructor?.name), 'human_identity_authority_fence_invalid', 500);
+      closed(request, ['actor','issuer','clientId']);
+      require(request.issuer === profile.issuer, 'human_identity_issuer_mismatch', 403);
+      require(typeof withSubjectAuthorityFence === 'function' && !['AsyncFunction','AsyncGeneratorFunction'].includes(withSubjectAuthorityFence.constructor?.name),
+        'human_identity_subject_authority_required', 503);
+      let active = true, entered = false, outcome;
+      try {
+        // Pass the original dispatcher object, never actorOf's field clone, into
+        // Connect's private reference check. The projection remains synchronous.
+        const result = withSubjectAuthorityFence(request.actor, () => {
+          require(active && !entered, 'human_identity_authority_fence_invalid', 500); entered = true;
+          const actor = actorOf(request.actor); authenticate(actor);
+          outcome = transaction(() => {
+            const authority = clientAuthority(request.clientId);
+            require(authority, 'human_identity_client_revoked', 403);
+            const subject = Object.freeze({ issuer: profile.issuer, subject: actor.accountId, clientId: request.clientId,
+              clientProfileDigest: authority.client.profileDigest, clientGeneration: authority.generation });
+            const value = synchronous(callback(subject)); authenticate(actor); return value;
+          });
+          return outcome;
+        });
+        synchronous(result); require(entered, 'human_identity_authority_fence_invalid', 500); return outcome;
+      } finally { active = false; }
+    },
     operations: new Set(HUMAN_IDENTITY_OPERATIONS), schemaVersion, renewalEnabled: schemaVersion === 2,
     prepareInteraction({ interactionId, browserNonce, parameters }) {
       uid(interactionId); nonce(browserNonce); const captured = paramsFor(parameters), intent = digest(captured);

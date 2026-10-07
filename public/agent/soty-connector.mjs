@@ -7,6 +7,867 @@ import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire as createScopedRequire } from "node:module";
+const { createConnectorScopedFactory } = ((require) => {
+"use strict";
+var ScopedConnectorHost = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+    get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+  }) : x)(function(x) {
+    if (typeof require !== "undefined") return require.apply(this, arguments);
+    throw Error('Dynamic require of "' + x + '" is not supported');
+  });
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // modules/apps/scoped-embed/connector-host.mjs
+  var connector_host_exports = {};
+  __export(connector_host_exports, {
+    createConnectorScopedFactory: () => createConnectorScopedFactory
+  });
+  var import_node_crypto3 = __require("node:crypto");
+
+  // modules/apps/scoped-embed/source-proof.mjs
+  var import_node_crypto2 = __require("node:crypto");
+
+  // modules/apps/scoped-embed/profile.mjs
+  var import_node_crypto = __require("node:crypto");
+  var SCOPED_EMBED_PROFILE = "soty.selected-human-embed.v1";
+  var SOURCE_PROOF_PROTOCOL = "soty.selected-source-request.v1";
+  var ScopedEmbedError = class extends Error {
+    constructor(code, status = 400) {
+      super(code);
+      this.code = code;
+      this.status = status;
+    }
+  };
+  function need(ok, code = "scoped_embed_invalid", status = 400) {
+    if (!ok) throw new ScopedEmbedError(code, status);
+  }
+  function capture(input, depth = 0) {
+    need(depth <= 16);
+    if (input === null || typeof input === "boolean") return input;
+    if (typeof input === "number") {
+      need(Number.isSafeInteger(input));
+      return input;
+    }
+    if (typeof input === "string") {
+      need(input.length <= 8192 && input.isWellFormed());
+      return input;
+    }
+    need(
+      input && typeof input === "object" && Object.getOwnPropertySymbols(input).length === 0
+    );
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    if (Array.isArray(input)) {
+      need(
+        input.length <= 64 && Object.keys(descriptors).length === input.length + 1
+      );
+      return Object.freeze(
+        Array.from({ length: input.length }, (_, i) => {
+          need(descriptors[i] && Object.hasOwn(descriptors[i], "value"));
+          return capture(descriptors[i].value, depth + 1);
+        })
+      );
+    }
+    need([Object.prototype, null].includes(Object.getPrototypeOf(input)));
+    const value = {};
+    for (const [key, p] of Object.entries(descriptors)) {
+      need(
+        key.length <= 128 && !["__proto__", "constructor", "prototype"].includes(key) && p.enumerable && Object.hasOwn(p, "value")
+      );
+      value[key] = capture(p.value, depth + 1);
+    }
+    return Object.freeze(value);
+  }
+  function closed(value, required, optional = []) {
+    need(
+      value && typeof value === "object" && !Array.isArray(value) && required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every(
+        (key) => required.includes(key) || optional.includes(key)
+      )
+    );
+    return value;
+  }
+  function identifier(value) {
+    need(
+      typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,179}$/u.test(value) && !value.includes("..")
+    );
+    return value;
+  }
+  function sha(value) {
+    need(typeof value === "string" && /^[a-f0-9]{64}$/u.test(value));
+    return value;
+  }
+  function canonical(value) {
+    if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+    if (value && typeof value === "object")
+      return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
+    return JSON.stringify(value);
+  }
+  var hash = (value) => (0, import_node_crypto.createHash)("sha256").update(typeof value === "string" ? value : canonical(value)).digest("hex");
+  function pin(value) {
+    closed(value, ["id", "version", "digest"]);
+    identifier(value.id);
+    need(Number.isSafeInteger(value.version) && value.version > 0);
+    sha(value.digest);
+    return value;
+  }
+  function continuation(value) {
+    closed(value, ["id", "version", "digest"]);
+    need(/^[A-Za-z0-9_-]{43}$/u.test(value.id) && value.version === 1);
+    sha(value.digest);
+    return value;
+  }
+  function connector(value) {
+    closed(value, ["linkId", "hostDeviceId", "connectorId"]);
+    Object.values(value).forEach(identifier);
+    return value;
+  }
+  function approvedOrigin(value) {
+    const url = new URL(value);
+    need(
+      value === url.origin && !url.username && !url.password && (url.protocol === "https:" || url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && Number(url.port) >= 1024),
+      "scoped_embed_origin_invalid"
+    );
+    return value;
+  }
+  function scopedEmbedProfile(input) {
+    const value = capture(input);
+    closed(value, [
+      "schema",
+      "appId",
+      "connector",
+      "target",
+      "sourceProfile",
+      "resource",
+      "issuer",
+      "clientId",
+      "embedOrigin",
+      "nativeOrigin",
+      "parentOrigin"
+    ]);
+    need(
+      value.schema === SCOPED_EMBED_PROFILE && /^app-[a-f0-9]{32}$/u.test(value.appId)
+    );
+    connector(value.connector);
+    closed(value.target, ["revision", "digest"]);
+    need(
+      Number.isSafeInteger(value.target.revision) && value.target.revision > 0
+    );
+    sha(value.target.digest);
+    pin(value.sourceProfile);
+    closed(value.resource, [
+      "registryId",
+      "tenantId",
+      "environmentId",
+      "appId",
+      "resourceId",
+      "workspaceId"
+    ]);
+    Object.values(value.resource).forEach(identifier);
+    need(value.resource.appId === value.appId);
+    approvedOrigin(value.embedOrigin);
+    approvedOrigin(value.nativeOrigin);
+    approvedOrigin(value.parentOrigin);
+    need(
+      new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname && value.parentOrigin !== value.embedOrigin
+    );
+    const issuer = new URL(value.issuer);
+    need(
+      issuer.href === value.issuer && issuer.pathname === "/human-identity" && issuer.origin === value.parentOrigin && !issuer.search && !issuer.hash
+    );
+    identifier(value.clientId);
+    return Object.freeze({ ...value, digest: hash(value) });
+  }
+  function scopedRoute(method, input) {
+    need(
+      typeof input === "string" && input.length <= 8192 && input.startsWith("/") && !input.startsWith("//") && !/[\\\s\u0000-\u001f\u007f]/u.test(input)
+    );
+    const url = new URL(input, "https://fixed.invalid");
+    need(
+      url.pathname + url.search === input && !url.hash,
+      "scoped_embed_route_denied",
+      403
+    );
+    let decoded;
+    try {
+      decoded = decodeURIComponent(url.pathname);
+    } catch {
+      need(false);
+    }
+    need(
+      decoded === url.pathname && !decoded.includes("..") && !decoded.startsWith("//"),
+      "scoped_embed_route_denied",
+      403
+    );
+    const path = url.pathname;
+    if (["GET", "HEAD"].includes(method) && (path === "/embed" || /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg|png)$/u.test(path)))
+      return "public-ui";
+    if (["GET", "POST"].includes(method) && path === "/api/embed/login") return "auth-start";
+    if (method === "GET" && path === "/api/embed/session-status" && !url.search) return "auth-read";
+    if (method === "GET" && path === "/api/embed/callback")
+      return "auth-callback";
+    if (method === "GET" && path === "/api/embed/complete-link")
+      return "auth-completion";
+    if (method === "GET" && [
+      "/api/embed/state",
+      "/api/embed/search",
+      "/api/embed/history",
+      "/api/embed/audit"
+    ].includes(path))
+      return "read";
+    if (["POST", "PATCH", "DELETE"].includes(method) && /^\/api\/embed\/entities(?:\/[A-Za-z0-9_.:-]{1,180})?$/u.test(path))
+      return "write";
+    if (method === "POST" && path === "/api/embed/files" || ["GET", "HEAD", "DELETE"].includes(method) && /^\/api\/(?:embed\/)?files\/[A-Za-z0-9_.:-]{1,180}$/u.test(path))
+      return method === "GET" || method === "HEAD" ? "file-read" : "file-write";
+    need(false, "scoped_embed_route_denied", 403);
+  }
+  var SCOPED_EMBED_LIMITS = Object.freeze({
+    requestBytes: 1048576,
+    responseBytes: 4194304,
+    headerBytes: 16384,
+    continuations: 256,
+    continuationMs: 3e5,
+    proofMs: 1e4,
+    inflight: 4,
+    callMs: 8e3
+  });
+
+  // modules/apps/scoped-embed/source-proof.mjs
+  var SOURCE_PROOF_HEADER = "x-soty-selected-proof";
+  var SOURCE_MAC_HEADER = "x-soty-selected-mac";
+  var SOURCE_PROBE_HEADER = "x-soty-selected-probe";
+  var SOURCE_READY_HEADER = "x-soty-selected-ready";
+  var token = (value) => need(
+    typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value),
+    "scoped_embed_proof_invalid",
+    403
+  );
+  function hostKey(key) {
+    need(Buffer.isBuffer(key) && key.length === 32, "scoped_embed_key_required");
+    return Buffer.from(key);
+  }
+  function mac(key, text) {
+    return (0, import_node_crypto2.createHmac)("sha256", key).update(text).digest("base64url");
+  }
+  function wireContext(input, profile) {
+    const context = capture(input);
+    closed(context, [
+      "schema",
+      "reference",
+      "profileDigest",
+      "appId",
+      "sourceProfile",
+      "resource",
+      "rootPrincipal",
+      "humanPrincipal",
+      "entry",
+      "target",
+      "policyEpoch",
+      "expiresAt"
+    ]);
+    closed(context.rootPrincipal, ["accountId", "deviceId"]);
+    Object.values(context.rootPrincipal).forEach(identifier);
+    closed(context.humanPrincipal, ["issuer", "subject", "clientId", "clientProfileDigest", "clientGeneration"]);
+    need(
+      context.humanPrincipal.issuer === profile.issuer && context.humanPrincipal.clientId === profile.clientId && typeof context.humanPrincipal.subject === "string" && context.humanPrincipal.subject.length > 0 && context.humanPrincipal.subject.length <= 128 && /^[a-f0-9]{64}$/.test(context.humanPrincipal.clientProfileDigest) && Number.isSafeInteger(context.humanPrincipal.clientGeneration) && context.humanPrincipal.clientGeneration > 0,
+      "scoped_embed_human_principal_invalid",
+      403
+    );
+    closed(context.entry, ["domainId", "origin"]);
+    identifier(context.entry.domainId);
+    need(
+      Number.isSafeInteger(context.policyEpoch) && context.policyEpoch > 0 && Number.isSafeInteger(context.expiresAt) && context.expiresAt > 0
+    );
+    continuation(context.reference);
+    need(
+      context.schema === "soty.verified-launch-continuation.v1" && context.profileDigest === profile.digest && context.appId === profile.appId && hash(context.sourceProfile) === hash(profile.sourceProfile) && hash(context.resource) === hash(profile.resource) && hash(context.target) === hash(profile.target) && context.entry.origin === profile.embedOrigin,
+      "scoped_embed_context_mismatch",
+      403
+    );
+    return context;
+  }
+  function createSourceProofSigner({
+    profile: raw,
+    key,
+    clock = Date.now
+  } = {}) {
+    const profile = scopedEmbedProfile(raw), secret2 = hostKey(key);
+    return Object.freeze({
+      probeHeaders() {
+        const value = Object.freeze({
+          schema: "soty.selected-source-probe.v1",
+          profileDigest: profile.digest,
+          nonce: (0, import_node_crypto2.randomBytes)(32).toString("base64url"),
+          expiresAt: clock() + SCOPED_EMBED_LIMITS.proofMs
+        });
+        const text = Buffer.from(JSON.stringify(value)).toString("base64url");
+        return { request: value, headers: { [SOURCE_PROBE_HEADER]: text, [SOURCE_MAC_HEADER]: mac(secret2, "probe\0" + text) } };
+      },
+      verifyReady(response, expected) {
+        const text = response.headers.get(SOURCE_READY_HEADER), signature = response.headers.get(SOURCE_MAC_HEADER);
+        token(signature);
+        need(typeof text === "string" && text.length <= 2048, "scoped_embed_probe_invalid", 503);
+        need((0, import_node_crypto2.timingSafeEqual)(Buffer.from(signature), Buffer.from(mac(secret2, "ready\0" + text))), "scoped_embed_probe_invalid", 503);
+        const value = capture(JSON.parse(Buffer.from(text, "base64url").toString("utf8")));
+        closed(value, ["schema", "profileDigest", "nonce", "expiresAt"]);
+        need(response.status === 204 && hash(value) === hash(expected) && value.expiresAt > clock(), "scoped_embed_probe_invalid", 503);
+        return true;
+      },
+      headers({ context, method, path, body = Buffer.alloc(0), cookie = "" }) {
+        const trusted = wireContext(context, profile);
+        scopedRoute(method, path);
+        need(
+          Buffer.isBuffer(body) && body.length <= SCOPED_EMBED_LIMITS.requestBytes
+        );
+        const value = {
+          schema: SOURCE_PROOF_PROTOCOL,
+          context: trusted,
+          method,
+          path,
+          bodyDigest: hash(body.toString("base64")),
+          cookieDigest: hash(cookie),
+          nonce: (0, import_node_crypto2.randomBytes)(32).toString("base64url"),
+          expiresAt: Math.min(
+            trusted.expiresAt,
+            clock() + SCOPED_EMBED_LIMITS.proofMs
+          )
+        };
+        const text = Buffer.from(JSON.stringify(value)).toString("base64url");
+        need(text.length <= 8192);
+        return Object.freeze({
+          [SOURCE_PROOF_HEADER]: text,
+          [SOURCE_MAC_HEADER]: mac(secret2, text)
+        });
+      }
+    });
+  }
+
+  // modules/apps/scoped-embed/local-broker.mjs
+  var import_node_http = __require("node:http");
+  var import_node_stream = __require("node:stream");
+  var requestHeaders = /* @__PURE__ */ new Set([
+    "accept",
+    "accept-language",
+    "content-type",
+    "if-none-match",
+    "range",
+    "if-range"
+  ]);
+  var cookieNames = /* @__PURE__ */ new Set([
+    "planner_soty_session",
+    "planner_soty_intent",
+    "planner_soty_link"
+  ]);
+  function fixedLocalHttp(url, options) {
+    const target = new URL(url);
+    need(
+      target.protocol === "http:" && target.hostname === "127.0.0.1",
+      "scoped_embed_destination_invalid"
+    );
+    return new Promise((resolve, reject) => {
+      const req = (0, import_node_http.request)(
+        {
+          hostname: "127.0.0.1",
+          port: Number(target.port),
+          path: target.pathname + target.search,
+          method: options.method,
+          headers: options.headers,
+          agent: false
+        },
+        (res) => resolve({
+          status: res.statusCode,
+          redirected: false,
+          headers: {
+            get(name) {
+              const value = res.headers[name.toLowerCase()];
+              return Array.isArray(value) ? value.join(",") : value ?? null;
+            },
+            getSetCookie() {
+              return res.headers["set-cookie"] ?? [];
+            }
+          },
+          body: import_node_stream.Readable.toWeb(res)
+        })
+      );
+      req.on(
+        "error",
+        () => reject(
+          Object.assign(new Error("scoped_embed_source_unconfirmed"), {
+            code: "scoped_embed_source_unconfirmed"
+          })
+        )
+      );
+      const abort = () => req.destroy(new Error("scoped_embed_cancelled"));
+      if (options.signal?.aborted) {
+        abort();
+        return;
+      }
+      options.signal?.addEventListener("abort", abort, { once: true });
+      req.once(
+        "close",
+        () => options.signal?.removeEventListener("abort", abort)
+      );
+      req.end(options.body);
+    });
+  }
+  function cookies(values, now) {
+    const result = {};
+    need(
+      Array.isArray(values) && values.length <= cookieNames.size,
+      "scoped_embed_cookie_invalid",
+      502
+    );
+    for (const raw of values ?? []) {
+      need(
+        typeof raw === "string" && raw.length <= 2048,
+        "scoped_embed_cookie_invalid",
+        502
+      );
+      const [pair, ...attributes] = raw.split(";").map((v) => v.trim()), split = pair.indexOf("="), name = pair.slice(0, split), token2 = pair.slice(split + 1);
+      need(
+        cookieNames.has(name) && (!token2 || /^[A-Za-z0-9_-]{43}$/u.test(token2)),
+        "scoped_embed_cookie_invalid",
+        502
+      );
+      const attrs = Object.fromEntries(
+        attributes.map((v) => {
+          const at = v.indexOf("=");
+          return at < 0 ? [v.toLowerCase(), true] : [v.slice(0, at).toLowerCase(), v.slice(at + 1)];
+        })
+      );
+      need(
+        attrs.httponly === true && attrs.path === "/" && attrs.samesite === "Lax" && attrs.domain === void 0 && Object.keys(attrs).every(
+          (k) => ["httponly", "path", "samesite", "secure", "max-age"].includes(k)
+        ) && /^\d+$/u.test(attrs["max-age"] ?? "") && Number(attrs["max-age"]) <= 300,
+        "scoped_embed_cookie_invalid",
+        502
+      );
+      need(!Object.hasOwn(result, name), "scoped_embed_cookie_invalid", 502);
+      result[name] = { token: token2, expiresAt: now + Number(attrs["max-age"]) * 1e3 };
+    }
+    return result;
+  }
+  function createLocalScopedEmbedBroker({
+    profile: raw,
+    localPort,
+    key,
+    readAuthority,
+    assertBinding,
+    fetch: fetcher = fixedLocalHttp,
+    clock = Date.now
+  } = {}) {
+    const profile = scopedEmbedProfile(raw);
+    need(
+      Number.isSafeInteger(localPort) && localPort >= 1024 && localPort <= 65535 && localPort !== 49424
+    );
+    need(
+      [readAuthority, assertBinding, fetcher].every(
+        (value) => typeof value === "function"
+      )
+    );
+    const signer = createSourceProofSigner({ profile: raw, key, clock });
+    const jars = /* @__PURE__ */ new Map();
+    let active = 0, closedBroker = false;
+    function pruneJars() {
+      const now = clock();
+      for (const [id, jar] of jars) if (jar.expiresAt <= now) jars.delete(id);
+    }
+    async function current(context) {
+      continuation(context.reference);
+      need(!closedBroker, "scoped_embed_closed", 503);
+      const now = await readAuthority({
+        reference: context.reference,
+        connector: profile.connector
+      });
+      need(
+        now.profileDigest === profile.digest && hash(now.reference) === hash(context.reference) && hash(now.rootPrincipal) === hash(context.rootPrincipal) && hash(now.humanPrincipal) === hash(context.humanPrincipal) && now.expiresAt > clock(),
+        "scoped_embed_authority_changed",
+        403
+      );
+      return now;
+    }
+    function local(context) {
+      const result = assertBinding(
+        Object.freeze({
+          appId: profile.appId,
+          target: profile.target,
+          sourceProfile: profile.sourceProfile,
+          resource: profile.resource,
+          connector: profile.connector,
+          context
+        })
+      );
+      need(result === true && !result?.then, "scoped_embed_binding_changed", 403);
+    }
+    function redirect(value, kind) {
+      const url = new URL(value, profile.embedOrigin);
+      if (url.origin === profile.embedOrigin) {
+        scopedRoute("GET", url.pathname + url.search);
+        return url.href;
+      }
+      if (kind === "auth-start") {
+        need(
+          url.origin === new URL(profile.issuer).origin && url.pathname === "/human-identity/authorize",
+          "scoped_embed_redirect_denied",
+          502
+        );
+        const params = url.searchParams;
+        need(
+          [...params.keys()].sort().join(",") === "client_id,code_challenge,code_challenge_method,nonce,redirect_uri,response_type,scope,state" && /^[A-Za-z0-9_-]{43}$/.test(params.get("state") ?? "") && /^[A-Za-z0-9_-]{43}$/.test(params.get("nonce") ?? "") && /^[A-Za-z0-9_-]{43}$/.test(params.get("code_challenge") ?? "") && params.get("scope") === "openid profile" && !url.username && !url.password && !url.hash && params.get("client_id") === profile.clientId && params.get("redirect_uri") === profile.embedOrigin + "/api/embed/callback" && params.get("response_type") === "code" && params.get("code_challenge_method") === "S256",
+          "scoped_embed_redirect_denied",
+          502
+        );
+        return url.href;
+      }
+      need(false, "scoped_embed_redirect_denied", 502);
+    }
+    return Object.freeze({
+      profile: profile.schema,
+      async probe(signal) {
+        const { request, headers } = signer.probeHeaders();
+        const response = await fetcher(`http://127.0.0.1:${localPort}/api/embed/transport-ready`, {
+          method: "HEAD",
+          headers: { ...headers, host: new URL(profile.embedOrigin).host, connection: "close" },
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)]) : AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)
+        });
+        signer.verifyReady(response, request);
+        return { state: "responding", httpStatus: 204 };
+      },
+      async dispatch({ context, method, path, headers = {}, body = Buffer.alloc(0) }, signal) {
+        const captured = capture(context), capturedHeaders = capture(headers), requestBody = Buffer.from(body), kind = scopedRoute(method, path);
+        closed(capturedHeaders, [], [...requestHeaders, "origin"]);
+        need(
+          requestBody.length <= SCOPED_EMBED_LIMITS.requestBytes,
+          "scoped_embed_request_limit",
+          413
+        );
+        need(
+          !capturedHeaders.origin || capturedHeaders.origin === profile.embedOrigin,
+          "scoped_embed_origin_invalid",
+          403
+        );
+        if (!["GET", "HEAD"].includes(method))
+          need(
+            capturedHeaders.origin === profile.embedOrigin,
+            "scoped_embed_csrf",
+            403
+          );
+        const selectedHeaders = {};
+        for (const [name, value] of Object.entries(capturedHeaders)) {
+          need(
+            typeof value === "string" && value.length <= 2048 && !/[\r\n\0]/u.test(value)
+          );
+          selectedHeaders[name] = value;
+        }
+        need(
+          active < SCOPED_EMBED_LIMITS.inflight && !closedBroker,
+          "scoped_embed_busy",
+          429
+        );
+        active++;
+        try {
+          const currentContext = await current(captured);
+          local(currentContext);
+          need(!signal?.aborted, "scoped_embed_cancelled", 499);
+          pruneJars();
+          const stored = jars.get(currentContext.reference.id);
+          need(
+            stored || jars.size < SCOPED_EMBED_LIMITS.continuations,
+            "scoped_embed_capacity",
+            429
+          );
+          const jar = stored?.cookies ?? {}, cookie = Object.entries(jar).filter(([, value]) => value.token && value.expiresAt > clock()).map(([name, value]) => name + "=" + value.token).join("; ");
+          const proof = signer.headers({
+            context: currentContext,
+            method,
+            path,
+            body: requestBody,
+            cookie
+          });
+          const outboundHeaders = {
+            ...selectedHeaders,
+            host: new URL(profile.embedOrigin).host,
+            ...proof,
+            ...cookie ? { cookie } : {},
+            connection: "close"
+          };
+          need(
+            Object.entries(outboundHeaders).reduce(
+              (bytes2, [name, value]) => bytes2 + Buffer.byteLength(name + ": " + value + "\r\n"),
+              2
+            ) <= SCOPED_EMBED_LIMITS.headerBytes,
+            "scoped_embed_header_limit",
+            431
+          );
+          local(currentContext);
+          const response = await fetcher(`http://127.0.0.1:${localPort}` + path, {
+            method,
+            redirect: "manual",
+            credentials: "omit",
+            signal: signal ? AbortSignal.any([
+              signal,
+              AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)
+            ]) : AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs),
+            headers: outboundHeaders,
+            ...["GET", "HEAD"].includes(method) ? {} : { body: requestBody }
+          });
+          need(
+            response.status >= 200 && response.status <= 599 && !response.redirected,
+            "scoped_embed_response_invalid",
+            502
+          );
+          const parts = [];
+          let bytes = 0;
+          if (response.body) {
+            const reader = response.body.getReader();
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                bytes += value.byteLength;
+                if (bytes > SCOPED_EMBED_LIMITS.responseBytes) {
+                  await reader.cancel();
+                  need(false, "scoped_embed_response_limit", 502);
+                }
+                parts.push(value);
+              }
+            } finally {
+              reader.releaseLock();
+            }
+          }
+          await current(currentContext);
+          local(currentContext);
+          const incoming = cookies(
+            response.headers.getSetCookie?.() ?? [],
+            clock()
+          );
+          pruneJars();
+          need(
+            jars.has(currentContext.reference.id) || jars.size < SCOPED_EMBED_LIMITS.continuations,
+            "scoped_embed_capacity",
+            429
+          );
+          jars.set(currentContext.reference.id, {
+            expiresAt: currentContext.expiresAt,
+            cookies: { ...jar, ...incoming }
+          });
+          const out = {};
+          for (const name of [
+            "content-type",
+            "content-disposition",
+            "etag",
+            "last-modified",
+            "cache-control",
+            "content-security-policy",
+            "referrer-policy",
+            "permissions-policy"
+          ]) {
+            const value = response.headers.get(name);
+            if (value) out[name] = value;
+          }
+          const location = response.headers.get("location");
+          if (location) out.location = redirect(location, kind);
+          let auth;
+          if (kind === "auth-read" && response.status === 200) {
+            const bytes2 = Buffer.concat(parts.map((part) => Buffer.from(part)));
+            need(bytes2.length <= 128, "scoped_embed_auth_invalid", 502);
+            let value;
+            try {
+              value = JSON.parse(bytes2.toString("utf8"));
+            } catch {
+              need(false, "scoped_embed_auth_invalid", 502);
+            }
+            closed(value, ["ready"]);
+            need(typeof value.ready === "boolean", "scoped_embed_auth_invalid", 502);
+          }
+          if (kind === "auth-start" && method === "POST" && response.status === 200) {
+            let value;
+            try {
+              value = JSON.parse(Buffer.concat(parts.map((part) => Buffer.from(part))).toString("utf8"));
+            } catch {
+              need(false, "scoped_embed_auth_invalid", 502);
+            }
+            if (value?.schema === "planner.embed-login-authorization.v1") {
+              closed(value, ["schema", "authorizationUrl"]);
+              need(typeof value.authorizationUrl === "string", "scoped_embed_auth_invalid", 502);
+              const url = new URL(redirect(value.authorizationUrl, kind));
+              need(url.origin === new URL(profile.issuer).origin && url.pathname === "/human-identity/authorize", "scoped_embed_auth_invalid", 502);
+              auth = { kind: "start", digest: hash(url.searchParams.get("state")) };
+            } else {
+              closed(value, ["schema", "cancelled", "stateDigest"]);
+              need(value.schema === "planner.embed-login-cancelled.v1" && value.cancelled === true && /^[a-f0-9]{64}$/.test(value.stateDigest), "scoped_embed_auth_invalid", 502);
+              auth = { kind: "cancel", digest: value.stateDigest };
+            }
+          }
+          if (kind === "auth-start" && out.location) {
+            const state = new URL(out.location).searchParams.get("state");
+            need(typeof state === "string" && /^[A-Za-z0-9_-]{43}$/.test(state), "scoped_embed_auth_invalid", 502);
+            auth = { kind: "start", digest: hash(state) };
+          } else if (kind === "auth-callback" && incoming.planner_soty_link?.token) {
+            auth = { kind: "completion", digest: hash(incoming.planner_soty_link.token) };
+          }
+          need(
+            Object.entries(out).reduce(
+              (bytes2, [name, value]) => bytes2 + Buffer.byteLength(name + ": " + value + "\r\n"),
+              2
+            ) <= SCOPED_EMBED_LIMITS.headerBytes,
+            "scoped_embed_header_limit",
+            502
+          );
+          return Object.freeze({
+            status: response.status,
+            headers: Object.freeze(out),
+            ...auth ? { auth: Object.freeze(auth) } : {},
+            body: Buffer.concat(parts.map((part) => Buffer.from(part)))
+          });
+        } finally {
+          active--;
+        }
+      },
+      forget(reference) {
+        continuation(reference);
+        jars.delete(reference.id);
+      },
+      close() {
+        closedBroker = true;
+        jars.clear();
+      }
+    });
+  }
+
+  // modules/apps/scoped-embed/connector-host.mjs
+  var mac2 = (key, text) => (0, import_node_crypto3.createHmac)("sha256", key).update(text).digest("base64url");
+  var secret = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+  var equal = (a, b) => typeof a === "string" && typeof b === "string" && a.length === b.length && (0, import_node_crypto3.timingSafeEqual)(Buffer.from(a), Buffer.from(b));
+  function createConnectorScopedFactory({ entries = [], clock = Date.now } = {}) {
+    need(Array.isArray(entries) && entries.length <= 64);
+    const approved = /* @__PURE__ */ new Map(), brokers = /* @__PURE__ */ new Map(), ipcNonces = /* @__PURE__ */ new Map();
+    let reader = null, channelIdentity = null;
+    for (const entry of entries) {
+      closed(entry, ["profile", "key"]);
+      const profile = scopedEmbedProfile(entry.profile);
+      need(secret(entry.key), "scoped_embed_key_required");
+      const key = Buffer.from(entry.key, "base64url");
+      need(key.length === 32);
+      const { digest: _derived, ...raw } = profile;
+      const id = profile.appId + ":" + profile.target.revision;
+      need(!approved.has(id));
+      approved.set(id, { profile, raw, key });
+    }
+    function item(target) {
+      const value = approved.get(target.appId + ":" + target.revision);
+      need(value && target.profile === SCOPED_EMBED_PROFILE && target.digest === value.profile.target.digest && target.ownerAccountId === value.profile.resource.tenantId, "scoped_embed_binding_unapproved", 403);
+      return value;
+    }
+    function rootRead(request) {
+      need(reader && channelIdentity && hash(request.connector) === hash(channelIdentity), "scoped_embed_channel_required", 503);
+      return reader(request);
+    }
+    return Object.freeze({
+      profiles: Object.freeze(entries.length ? [SCOPED_EMBED_PROFILE] : []),
+      connect(readAuthority, identity) {
+        need(typeof readAuthority === "function");
+        reader = readAuthority;
+        channelIdentity = capture({ linkId: identity.linkId, hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId });
+      },
+      disconnected() {
+        reader = null;
+        channelIdentity = null;
+        for (const broker of brokers.values()) broker.close();
+        brokers.clear();
+        ipcNonces.clear();
+      },
+      accepts(target) {
+        try {
+          item(target);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      broker(target, assertBinding, generation) {
+        need(generation && typeof generation === "object");
+        const approvedItem = item(target), id = generation;
+        let broker = brokers.get(id);
+        if (!broker) {
+          broker = createLocalScopedEmbedBroker({
+            profile: approvedItem.raw,
+            localPort: target.port,
+            key: approvedItem.key,
+            clock,
+            readAuthority: rootRead,
+            assertBinding
+          });
+          brokers.set(id, broker);
+        }
+        return broker;
+      },
+      async probe(target, signal) {
+        const approvedItem = item(target), broker = createLocalScopedEmbedBroker({
+          profile: approvedItem.raw,
+          localPort: target.port,
+          key: approvedItem.key,
+          clock,
+          readAuthority: rootRead,
+          assertBinding: () => true
+        });
+        try {
+          return await broker.probe(signal);
+        } finally {
+          broker.close();
+        }
+      },
+      forget(reference) {
+        for (const broker of brokers.values()) broker.forget(reference);
+      },
+      async sourceAuthority(request, response) {
+        const path = "/apps/scoped/authority";
+        need(request.url === path && request.method === "POST" && !request.headers.origin && ["127.0.0.1", "localhost", "[::1]"].includes(new URL("http://" + request.headers.host).hostname), "scoped_embed_ipc_denied", 403);
+        let size = 0;
+        const parts = [];
+        for await (const part of request) {
+          size += part.length;
+          need(size <= 16384, "scoped_embed_ipc_limit", 413);
+          parts.push(part);
+        }
+        const text = Buffer.concat(parts).toString("utf8"), value = capture(JSON.parse(text));
+        closed(value, ["schema", "appId", "profileDigest", "reference", "nonce", "expiresAt"]);
+        need(value.schema === "soty.selected-source-authority.v1" && secret(value.nonce) && Number.isSafeInteger(value.expiresAt) && value.expiresAt > clock() && value.expiresAt <= clock() + 1e4, "scoped_embed_ipc_invalid", 403);
+        const approvedItem = [...approved.values()].find((entry) => entry.profile.appId === value.appId && entry.profile.digest === value.profileDigest);
+        need(approvedItem && equal(request.headers["x-soty-source-mac"], mac2(approvedItem.key, "authority\0" + text)), "scoped_embed_ipc_invalid", 403);
+        for (const [id, expires] of ipcNonces) if (expires <= clock()) ipcNonces.delete(id);
+        need(!ipcNonces.has(value.nonce) && ipcNonces.size < 4096, "scoped_embed_ipc_replayed", 403);
+        ipcNonces.set(value.nonce, value.expiresAt);
+        const context = await rootRead({ reference: value.reference, connector: approvedItem.profile.connector });
+        need(context.profileDigest === approvedItem.profile.digest, "scoped_embed_ipc_mismatch", 403);
+        const body = JSON.stringify({ nonce: value.nonce, context });
+        need(Buffer.byteLength(body) <= 16384, "scoped_embed_ipc_limit", 502);
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-soty-source-mac": mac2(approvedItem.key, "authority-result\0" + body) });
+        response.end(body);
+      }
+    });
+  }
+  return __toCommonJS(connector_host_exports);
+})();
+
+return ScopedConnectorHost;
+})(createScopedRequire(import.meta.url));
 // bundled connector module: ./agent-modules/traffic-fabric.mjs
 const { createTrafficFabric, trafficFabricSchema } = (() => {
 const trafficFabricSchema = "soty.traffic-fabric.v1";
@@ -1580,6 +2441,7 @@ const localAppsSchema = 'soty.apps-channel.v1';
 const localAppsChunkBytes = 48 * 1024;
 const localAppsFrameBytes = 72 * 1024;
 const localAppsProfile = 'soty.relay-restricted.v1';
+const localAppsSelectedProfile = 'soty.selected-human-embed.v1';
 const localAppsEncoder = new TextEncoder();
 const localAppsFail = code => Object.assign(new Error(code), { code });
 const localAppsCheck = (condition, code = 'apps_bad_frame') => { if (!condition) throw localAppsFail(code); };
@@ -1595,6 +2457,7 @@ const localAppsPins = target => ({ appId: target.appId, revision: target.revisio
 function createLocalAppsRuntime(deps, options = {}) {
   const state = { running: false, context: null, retry: null, interval: null };
   const now = deps.now || Date.now;
+  const scoped = options.scopedFactory;
   const blocked = [...new Set([49424, ...(options.blockedPorts || [])])];
   const option = name => typeof options[name] === 'function' ? options[name]() : options[name];
   const current = context => state.running && state.context === context && !context.closed;
@@ -1622,6 +2485,7 @@ function createLocalAppsRuntime(deps, options = {}) {
     for (const pending of stream.pending.values()) { clearTimeout(pending.timer); pending.reject(localAppsFail(error)); }
     stream.pending.clear();
     stream.request?.destroy(); stream.response?.destroy(); stream.socket?.destroy();
+    stream.controller?.abort();
     if (notify) send(stream.context, { type: 'cancel', id: stream.id, error });
   }
   function removeBinding(context, id, reason = 'app_access_changed') {
@@ -1647,6 +2511,8 @@ function createLocalAppsRuntime(deps, options = {}) {
     for (const probe of context.probes.values()) probe.cancel();
     for (const entry of context.preparations.values()) dropPreparation(context, entry);
     context.bindings.clear(); context.configs.clear(); context.probeQueue.clear();
+    for(const pending of context.authorityRequests.values()){clearTimeout(pending.timer);pending.reject(localAppsFail('apps_connector_offline'));}
+    context.authorityRequests.clear();if(wasCurrent)scoped?.disconnected();
     if (closeSocket) { try { context.ws.close(); } catch {} }
     if (wasCurrent) scheduleReconnect();
   }
@@ -1670,13 +2536,13 @@ function createLocalAppsRuntime(deps, options = {}) {
     const context = { ws, identity, key: [identity.linkId, identity.hostDeviceId, identity.connectorId].join('|'),
       closed: false, connected: false, version: 0, channelId: null, bindings: new Map(), configs: new Map(), streams: new Map(),
       probes: new Map(), probeQueue: new Map(), probeScheduled: false, preparations: new Map(), preparing: 0, asyncWrites: 0,
-      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null };
+      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null, authorityRequests:new Map() };
     state.context = context;
     context.authTimer = setTimeout(() => disconnect(context), 5000); context.authTimer.unref?.();
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2] } });
+        capabilities: { targetBindingVersions: [1, 2], ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -1735,7 +2601,7 @@ function createLocalAppsRuntime(deps, options = {}) {
     return normalized;
   }
   function policyError(value) {
-    if (value.profile !== localAppsProfile) return 'unsupported_profile';
+    if (value.profile !== localAppsProfile && !(value.profile===localAppsSelectedProfile && scoped?.accepts(value))) return 'unsupported_profile';
     try { localAppsPort(value.port, blocked); } catch { return 'invalid_app_port'; }
     try { localAppsHttpPath(value.entryPath, value.port); } catch { return 'invalid_app_path'; }
     return null;
@@ -1809,7 +2675,7 @@ function createLocalAppsRuntime(deps, options = {}) {
       send(context, entry.reply); return;
     }
     context.preparing++;
-    entry.probe = startLocalAppProbe(deps, { port: value.port, entryPath: value.entryPath, blockedPorts: blocked });
+    entry.probe = probeTarget(value);
     void entry.probe.promise.then(result => {
       if (!connected(context) || entry.cancelled || context.preparations.get(entry.nonce) !== entry) return;
       if (now() < entry.createdAt || now() >= entry.expiresAt) { dropPreparation(context, entry); return; }
@@ -1838,7 +2704,7 @@ function createLocalAppsRuntime(deps, options = {}) {
       const [id, binding] = context.probeQueue.entries().next().value; context.probeQueue.delete(id);
       if (context.bindings.get(id) !== binding || context.probes.has(binding)) continue;
       let probe;
-      try { probe = startLocalAppProbe(deps, { port: binding.port, entryPath: binding.entryPath, blockedPorts: blocked }); }
+      try { probe = probeTarget(binding.target ?? binding); }
       catch { observation(context, binding, { state: 'unreachable', httpStatus: null }); continue; }
       context.probes.set(binding, probe);
       void probe.promise.then(result => observation(context, binding, result)).finally(() => {
@@ -1856,9 +2722,18 @@ function createLocalAppsRuntime(deps, options = {}) {
       } else {
         localAppsCheck((frame.bindingVersion === undefined || frame.bindingVersion === 1) && frame.channelId === undefined, 'apps_bad_negotiation'); context.version = 1;
       }
-      context.connected = true; clearTimeout(context.authTimer); return;
+      context.connected = true; clearTimeout(context.authTimer);
+      if(context.version===2)scoped?.connect(request=>readScopedAuthority(context,request),context.identity);
+      return;
     }
     localAppsCheck(connected(context), 'apps_not_authenticated');
+    if(frame.type==='scoped-authority-result') {
+      channelFrame(context,frame,['nonce','ok','context','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
+      const pending=context.authorityRequests.get(frame.nonce);if(!pending)return;
+      context.authorityRequests.delete(frame.nonce);clearTimeout(pending.timer);
+      if(frame.ok===true)pending.resolve(frame.context);else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
+    }
+    if(frame.type==='scoped-context-closed') {channelFrame(context,frame,['appId','reference']);localAppsCheck(localAppsId(frame.appId),'apps_bad_frame');scoped?.forget(frame.reference);return;}
     if (frame.type === 'claim-ready') {
       const pending = context.claimPending;
       if (pending && frame.claimDigest === pending.digest) {
@@ -1897,9 +2772,49 @@ function createLocalAppsRuntime(deps, options = {}) {
       }).catch(error => closeStream(stream, error.code || 'app_upstream_failed')).finally(() => { context.asyncWrites--; });
     } catch (error) { closeStream(stream, error.code || 'app_upstream_failed'); }
   }
+  function probeTarget(target) {
+    if(target.profile!==localAppsSelectedProfile)return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked});
+    const controller=new AbortController();
+    return {promise:scoped.probe(target,controller.signal).catch(()=>({state:'unreachable',httpStatus:null})),cancel:()=>controller.abort()};
+  }
+  function readScopedAuthority(context,request) {
+    localAppsCheck(connected(context)&&context.version===2&&context.authorityRequests.size<32,'scoped_embed_channel_required');
+    const nonce=deps.randomSecret();
+    return new Promise((resolve,reject)=>{
+      const pending={resolve,reject};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
+      context.authorityRequests.set(nonce,pending);
+      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference})){
+        context.authorityRequests.delete(nonce);clearTimeout(pending.timer);reject(localAppsFail('scoped_embed_channel_required'));
+      }
+    });
+  }
+  function openScopedStream(context,frame,binding) {
+    localAppsCheck(frame.kind==='http'&&frame.context&&scoped,'scoped_embed_route_denied');
+    const stream={id:frame.id,appId:binding.appId,kind:'http',binding,context,received:0,sent:0,recvSeq:0,sendSeq:0,pending:new Map(),receiving:false,closed:false,head:false,
+      controller:new AbortController(),parts:[],ended:false};
+    const broker=scoped.broker(binding.target,()=>connected(context)&&context.bindings.get(binding.appId)===binding,binding);
+    stream.request={
+      write(bytes,callback){if(stream.received>1048576){callback(localAppsFail('app_request_too_large'));return;}stream.parts.push(Buffer.from(bytes));callback();},
+      destroy(){stream.controller.abort();stream.parts=[];},
+      end(){
+        if(stream.ended)return;stream.ended=true;
+        const body=Buffer.concat(stream.parts);stream.parts=[];
+        void (async()=>{
+          try {
+            localAppsCheck(streamCurrent(stream),'app_stream_closed');
+            const result=await broker.dispatch({context:frame.context,method:frame.method,path:frame.path,headers:frame.headers,body},stream.controller.signal);
+            localAppsCheck(streamCurrent(stream),'app_stream_closed');stream.head=true;idle(stream);
+            sendStream(stream,{type:'head',id:stream.id,status:result.status,headers:result.headers,...(result.headers.location?{location:result.headers.location}:{}),...(result.auth?{auth:result.auth}:{})});
+            await sendChunks(stream,result.body);sendStream(stream,{type:'end',id:stream.id});closeStream(stream,'app_stream_complete',false);
+          }catch(error){if(streamCurrent(stream))closeStream(stream,error.code||'app_upstream_failed');}
+        })();
+      },
+    };
+    context.streams.set(stream.id,stream);stream.timer=setTimeout(()=>closeStream(stream,'app_response_timeout'),30000);stream.timer.unref?.();
+  }
   function openStream(context, frame) {
     if (frame.type === 'bound-open') {
-      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers']);
+      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(frame.profile===localAppsSelectedProfile?['context']:[])]);
       localAppsCheck(localAppsNonce(frame.syncId) && localAppsId(frame.appId) && Number.isSafeInteger(frame.revision) && frame.revision >= 1
         && typeof frame.digest === 'string' && /^[a-f0-9]{64}$/u.test(frame.digest) && typeof frame.profile === 'string', 'apps_bad_open');
     } else localAppsCheck(context.version === 1, 'apps_bad_open');
@@ -1913,6 +2828,7 @@ function createLocalAppsRuntime(deps, options = {}) {
     if (context.streams.size >= 32) { send(context, { type: 'cancel', id: frame.id, error: 'app_device_busy' }); return; }
     let stream;
     try {
+      if(binding.target?.profile===localAppsSelectedProfile){openScopedStream(context,frame,binding);return;}
       const path = context.version === 2 ? localAppsHttpPath(frame.path, binding.port) : localAppsPath(frame.path);
       localAppsCheck(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(frame.method), 'apps_bad_method');
       const headers = localAppsHeaders(frame.headers, frame.kind === 'ws' ? 'ws-request' : 'request');
@@ -2145,7 +3061,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.1";
+const connectorVersion = "1.4.2";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -2199,13 +3115,25 @@ let updateState = {
   lastError: ""
 };
 
+const scopedEmbedFile = env('SOTY_SELECTED_EMBED_HOST_FILE');
+const scopedFactory = createConnectorScopedFactory({ entries: loadScopedHostEntries(scopedEmbedFile) });
+function loadScopedHostEntries(file) {
+  if(!file)return [];
+  try {
+    if(!isAbsolute(file))throw new Error('invalid');
+    const bytes=readFileSync(file);if(bytes.length>131072)throw new Error('invalid');
+    const value=JSON.parse(bytes.toString('utf8'));
+    if(value?.schema!=='soty.selected-embed-hosts.v1'||!Array.isArray(value.entries)||Object.keys(value).some(key=>!['schema','entries'].includes(key)))throw new Error('invalid');
+    return value.entries;
+  } catch {throw new Error('scoped_embed_host_configuration_invalid');}
+}
 const localApps = createLocalAppsRuntime({
   randomSecret: () => randomBytes(32).toString('base64url'),
   digest: value => createHash('sha256').update(value).digest('hex'),
   createWebSocket: url => new globalThis.WebSocket(url),
   httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
-  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port] });
+  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,
@@ -2342,6 +3270,11 @@ async function startConnector() {
 }
 
 async function handleHttp(request, response, url) {
+  if(url.pathname==='/apps/scoped/authority') {
+    try{await scopedFactory.sourceAuthority(request,response);}
+    catch(error){if(!response.headersSent)sendJson(response,error.status===403?403:error.status===413?413:503,{'Cache-Control':'no-store'},{ok:false,code:'scoped_embed_authority_unavailable'});else response.end();}
+    return;
+  }
   if (url.pathname === '/apps/claim') {
     const origin = String(request.headers.origin || '');
     const allowed = productionShellOriginAllowed(origin, relayBaseUrl);

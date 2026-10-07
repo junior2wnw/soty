@@ -34,6 +34,26 @@ function fixture(t) {
   return { directory, databasePath, config, open };
 }
 const throws = (fn, code) => assert.throws(fn, error => error.code === code);
+test('subject projection requires its private actor fence and permanently rejects late, repeated or async callbacks', t => {
+  const f = fixture(t), actor = Object.freeze({ accountId: 'synthetic-account', deviceId: 'synthetic-device' });
+  const request = { actor, issuer: f.config.issuer, clientId: 'approved-client' }; let late;
+  const missing = f.open(); throws(() => missing.withSubjectAuthority(request, () => assert.fail()), 'human_identity_subject_authority_required');
+  const deferred = f.open({ withSubjectAuthorityFence: (actual, callback) => { assert.equal(actual, actor); late = callback; } });
+  throws(() => deferred.withSubjectAuthority(request, () => assert.fail()), 'human_identity_authority_fence_invalid');
+  throws(() => late(), 'human_identity_authority_fence_invalid');
+  const repeated = f.open({ withSubjectAuthorityFence: (actual, callback) => {
+    assert.equal(actual, actor); callback(); return callback();
+  } });
+  let calls = 0;
+  throws(() => repeated.withSubjectAuthority(request, () => { calls++; }), 'human_identity_authority_fence_invalid');
+  assert.equal(calls, 1);
+  const valid = f.open({ withSubjectAuthorityFence: (actual, callback) => { assert.equal(actual, actor); return callback(); } });
+  const result = valid.withSubjectAuthority(request, subject => ({ issuer: subject.issuer, subject: subject.subject, generation: subject.clientGeneration }));
+  assert.equal(result.subject, actor.accountId); assert.equal(result.issuer, f.config.issuer); assert.equal(result.generation, 1);
+  throws(() => valid.withSubjectAuthority(request, () => Promise.resolve('not synchronous')), 'human_identity_async_boundary');
+  const revoked = f.open({ actorActive: () => false, withSubjectAuthorityFence: (_actor, callback) => callback() });
+  throws(() => revoked.withSubjectAuthority(request, () => assert.fail()), 'human_identity_actor_revoked');
+});
 test('human issuer stays reserved and disabled without approved configuration, and never creates a store or development signing key', async t => {
   const f = fixture(t); assert.equal(createHumanIdentityHostProfile(undefined), null);
   const disabled = createHumanIdentityHostProfile({ enabled: false, issuer: origin + '/human-identity', registryId: 'REG.soty', environmentId: 'fixture' }, { shellOrigins: [origin] });

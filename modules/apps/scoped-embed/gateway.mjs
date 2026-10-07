@@ -1,0 +1,85 @@
+import { randomBytes } from 'node:crypto';
+import { createScopedEmbedAuthority } from './authority.mjs';
+import { capture, closed, hash, need, SCOPED_EMBED_LIMITS } from './profile.mjs';
+
+const nonce = () => randomBytes(32).toString('base64url');
+const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
+const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+
+export function createScopedGateway({ admissions, withAppAuthority, withHumanSubjectAuthority, clock = Date.now, onClose = () => {} }) {
+  const authority = createScopedEmbedAuthority({ profiles: admissions.profiles(), withAppAuthority, withHumanSubjectAuthority, clock });
+  const records = new Map(), handles = new Map(), closedHandles = new Map(), authStates = new Map(), completions = new Map();
+  function sweep() {
+    for (const record of [...records.values()]) if (record.context.expiresAt <= clock()) stop(record);
+    for (const [key,item] of closedHandles) if(item.expiresAt<=clock())closedHandles.delete(key);
+  }
+  function current(record, connector) {
+    need(record && records.get(record.context.reference.id) === record, 'app_scoped_context_closed', 403);
+    let value;try{value=authority.read({ reference: record.context.reference, connector: connector ?? record.profile.connector });}catch(error){stop(record);throw error;}
+    need(value.target.digest === record.context.target.digest, 'app_scoped_context_changed', 403);
+    return value;
+  }
+  function stop(record) {
+    if (records.get(record.context.reference.id) !== record) return;
+    records.delete(record.context.reference.id); handles.delete(record.handleHash);
+    if(closedHandles.size>=SCOPED_EMBED_LIMITS.continuations)closedHandles.delete(closedHandles.keys().next().value);
+    closedHandles.set(record.handleHash, { appId: record.context.appId, accountId:record.context.rootPrincipal.accountId,
+      deviceId:record.context.rootPrincipal.deviceId, expiresAt: record.context.expiresAt });
+    for(const map of [authStates, completions])for(const [key,item] of map)if(item.record===record)map.delete(key);
+    try { authority.invalidate({reference:record.context.reference,connector:record.profile.connector}); } catch {}
+    onClose(record);
+  }
+  function mapping(map, key, record) {
+    need(digest(key), 'app_scoped_auth_binding_invalid', 403); sweep();
+    need(map.size < SCOPED_EMBED_LIMITS.continuations || map.has(key), 'app_scoped_auth_busy', 429);
+    const prior=map.get(key); need(!prior || prior.record===record, 'app_scoped_auth_binding_conflict', 403);
+    map.set(key, {record, expiresAt:record.context.expiresAt});
+  }
+  return Object.freeze({
+    open({actor,appId,domainId,target}) {
+      sweep(); const profile=admissions.require(target);
+      const context=authority.open({actor,appId,domainId,targetRevision:target.revision}), handle=nonce();
+      const record={context,profile,handleHash:hash(handle),session:null};records.set(context.reference.id,record);handles.set(record.handleHash,record);
+      return { record, closeHandle:handle };
+    },
+    attach(record,session) { current(record); record.session=session; return record; },
+    read(reference,connector) {
+      const captured=capture(reference), record=records.get(captured.id);
+      need(record && hash(captured)===hash(record.context.reference),'app_scoped_context_closed',403);
+      return current(record,connector);
+    },
+    context(record) { return current(record); },
+    captureHead(record, auth) {
+      current(record); if(auth===undefined)return;
+      const value=capture(auth);closed(value,['kind','digest']);
+      need(['start','completion','cancel'].includes(value.kind),'app_scoped_auth_binding_invalid',403);
+      if(value.kind==='cancel') {const prior=authStates.get(value.digest);need(!prior||prior.record===record,'app_scoped_auth_binding_conflict',403);authStates.delete(value.digest);return;}
+      mapping(value.kind==='start'?authStates:completions,value.digest,record);
+    },
+    callback(appId, path) {
+      sweep(); const url=new URL(path,'https://fixed.invalid');
+      let map,key;
+      if(url.pathname==='/api/embed/callback') {
+        need(url.searchParams.getAll('state').length===1,'app_scoped_callback_invalid',403);
+        const state=url.searchParams.get('state');need(opaque(state),'app_scoped_callback_invalid',403);
+        map=authStates;key=hash(state);
+      } else if(url.pathname==='/api/embed/complete-link') {
+        need([...url.searchParams.keys()].length===1 && opaque(url.searchParams.get('intent')),'app_scoped_completion_invalid',403);
+        map=completions;key=hash(url.searchParams.get('intent'));
+      } else need(false,'app_scoped_callback_invalid',403);
+      const item=map.get(key);map.delete(key);
+      need(item && item.record.context.appId===appId && item.expiresAt>clock() && item.record.session,'app_scoped_callback_expired',403);
+      current(item.record);return item.record;
+    },
+    abandon(actor, appId, handle) {
+      need(opaque(handle),'app_scoped_close_invalid',403);sweep();const key=hash(handle),record=handles.get(key),prior=closedHandles.get(key);
+      need(record?record.context.appId===appId:!prior||prior.appId===appId,'app_scoped_close_unavailable',403);
+      const owner=record?.context.rootPrincipal??prior;
+      need(!owner||actor?.accountId===owner.accountId&&actor?.deviceId===owner.deviceId,'app_scoped_close_unavailable',403);
+      if(record)stop(record);return Object.freeze({closed:true});
+    },
+    invalidateApp(appId) {for(const record of [...records.values()])if(record.context.appId===appId)stop(record);},
+    invalidate(record) {stop(record);},
+    close() {for(const record of [...records.values()])stop(record);authority.close();authStates.clear();completions.clear();handles.clear();closedHandles.clear();},
+  });
+}

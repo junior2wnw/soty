@@ -2,8 +2,12 @@ import { createHash } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId } from './protocol.mjs';
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
 import { createLaunchPath } from './launch-path.mjs';
+import { scopedEmbedProfile, canonical } from '../scoped-embed/profile.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
+export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
+export const SCOPED_RUNTIME_PROFILE = 'soty.selected-human-embed.v1';
+export const supportedRuntimeProfile = value => [RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE].includes(value);
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
 const v3Schema = 'soty.apps-registry.v3';
@@ -45,6 +49,9 @@ const discussions = {
   app_discussion_usage: ['id', 'head_count', 'conversation_count', 'message_count', 'body_bytes'],
   app_discussion_rates: ['account_id', 'at', 'credit'],
 };
+const scopedAdmissions = {
+  app_scoped_embed_admissions: ['app_id', 'target_revision', 'target_digest', 'profile_digest', 'approved_pin_json', 'created_at'],
+};
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const domainZoneId = zone => `zone_${digest(zone.origin_template ?? zone.template).slice(0, 32)}`;
 
@@ -73,16 +80,18 @@ export function inspectAppsSchema(db) {
   const state = schema === v1Schema && [0, 1].includes(version) ? 'v1'
     : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
       : schema === v4Schema && version === 4 ? 'v4' : schema === v5Schema && version === 5 ? 'v5'
-        : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6' : '';
+        : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6'
+          : schema === APPS_SCOPED_REGISTRY_SCHEMA && version === 7 ? 'v7' : '';
   assertApps(state, 'apps_schema_unsupported');
-  const modern = ['v3', 'v4', 'v5', 'v6'].includes(state), sourceVersion = ['v4', 'v5', 'v6'].includes(state), savedVersion = ['v5', 'v6'].includes(state);
+  const modern = ['v3', 'v4', 'v5', 'v6', 'v7'].includes(state), sourceVersion = ['v4', 'v5', 'v6', 'v7'].includes(state), savedVersion = ['v5', 'v6', 'v7'].includes(state);
   const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
-    ...(savedVersion ? saved : {}), ...(state === 'v6' ? discussions : {}) };
+    ...(savedVersion ? saved : {}), ...(['v6', 'v7'].includes(state) ? discussions : {}), ...(state === 'v7' ? scopedAdmissions : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
-    ...(modern ? [...definitions(publicationDdl()), ...definitions(targetGuards())] : []),
+    ...(modern ? [...definitions(publicationDdl(state === 'v7')), ...definitions(targetGuards())] : []),
     ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
     ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
-    ...(state === 'v6' ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : [])]);
+    ...(['v6', 'v7'].includes(state) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
+    ...(state === 'v7' ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
@@ -91,6 +100,7 @@ export function inspectAppsSchema(db) {
     const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
       : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts'].includes(name) ? ['account_id', 'request_key']
         : name === 'app_saved_entries' ? ['account_id', 'app_id'] : ['app_saved_heads', 'app_discussion_rates'].includes(name) ? ['account_id']
+          : name === 'app_scoped_embed_admissions' ? ['app_id', 'target_revision']
           : name === 'app_discussion_changes' ? ['conversation_id', 'seq']
         : name === 'app_runtime_targets' ? ['app_id', 'revision']
           : name === 'app_publication_domains' ? ['app_id', 'domain_id']
@@ -99,7 +109,7 @@ export function inspectAppsSchema(db) {
     for (const column of actual) {
       const integer = ['revision', 'created_at', 'updated_at', 'retired_at', 'committed_revision', 'port', 'listed',
         'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version', 'saved_revision', 'saved',
-        'generation', 'message_count', 'body_bytes', 'conversation_count', 'rate_at', 'rate_credit', 'message_seq', 'change_seq', 'seq', 'removed_at', 'head_count', 'at', 'credit'].includes(column.name)
+        'generation', 'message_count', 'body_bytes', 'conversation_count', 'rate_at', 'rate_credit', 'message_seq', 'change_seq', 'seq', 'removed_at', 'head_count', 'at', 'credit', 'target_revision'].includes(column.name)
         && !(name === 'app_domain_zones' && column.name === 'port');
       assertApps(column.type.toUpperCase() === (integer || (name === 'app_discussion_usage' && column.name === 'id') ? 'INTEGER' : 'TEXT')
         && column.pk === primaryKeys.indexOf(column.name) + 1, 'apps_schema_unsupported');
@@ -138,14 +148,14 @@ function domainDdl() {
       committed_revision INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(account_id,request_key));`;
 }
 
-function publicationDdl() {
+function publicationDdl(scoped = false) {
   return `CREATE UNIQUE INDEX local_apps_identity_owner ON local_apps(id,owner_account_id);
     CREATE UNIQUE INDEX app_devices_identity_owner ON app_devices(connector_key,owner_account_id);
     CREATE UNIQUE INDEX app_domains_identity_owner ON app_domains(id,app_id,owner_account_id);
     CREATE TABLE app_runtime_targets (
       app_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
       owner_account_id TEXT NOT NULL,connector_key TEXT NOT NULL,port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535),
-      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(profile='soty.relay-restricted.v1'),digest TEXT NOT NULL,
+      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(${scoped ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1')" : "profile='soty.relay-restricted.v1'"}),digest TEXT NOT NULL,
       created_at INTEGER NOT NULL,PRIMARY KEY(app_id,revision),
       FOREIGN KEY(app_id,owner_account_id) REFERENCES local_apps(id,owner_account_id),
       FOREIGN KEY(connector_key,owner_account_id) REFERENCES app_devices(connector_key,owner_account_id));
@@ -170,6 +180,21 @@ function publicationDdl() {
       committed_epoch INTEGER NOT NULL CHECK(committed_epoch BETWEEN 2 AND 9007199254740991),value_json TEXT NOT NULL,created_at INTEGER NOT NULL,
       PRIMARY KEY(account_id,request_key),FOREIGN KEY(app_id,account_id) REFERENCES local_apps(id,owner_account_id));
     CREATE UNIQUE INDEX app_publication_receipt_epoch ON app_publication_receipts(app_id,committed_epoch);`;
+}
+
+function scopedAdmissionDdl() {
+  return `CREATE TABLE app_scoped_embed_admissions (
+    app_id TEXT NOT NULL,target_revision INTEGER NOT NULL CHECK(target_revision>=1),
+    target_digest TEXT NOT NULL CHECK(length(target_digest)=64),profile_digest TEXT NOT NULL CHECK(length(profile_digest)=64),
+    approved_pin_json TEXT NOT NULL CHECK(length(approved_pin_json) BETWEEN 1 AND 16384),created_at INTEGER NOT NULL,
+    PRIMARY KEY(app_id,target_revision),FOREIGN KEY(app_id,target_revision) REFERENCES app_runtime_targets(app_id,revision));`;
+}
+function scopedAdmissionGuards() {
+  return [
+    "CREATE TRIGGER app_scoped_admission_no_update BEFORE UPDATE ON app_scoped_embed_admissions BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END",
+    "CREATE TRIGGER app_scoped_admission_no_delete BEFORE DELETE ON app_scoped_embed_admissions BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END",
+    "CREATE TRIGGER app_scoped_admission_no_replace BEFORE INSERT ON app_scoped_embed_admissions WHEN EXISTS(SELECT 1 FROM app_scoped_embed_admissions WHERE app_id=NEW.app_id AND target_revision=NEW.target_revision) BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END",
+  ];
 }
 
 function targetGuards() {
@@ -425,6 +450,7 @@ export function ensureInitialPublication(db, app) {
 }
 
 function validateSourceRows(db, { historical = false } = {}) {
+  const scoped = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === APPS_SCOPED_REGISTRY_SCHEMA;
   assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
   for (const app of db.prepare('SELECT * FROM local_apps').iterate()) {
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
@@ -433,9 +459,22 @@ function validateSourceRows(db, { historical = false } = {}) {
     for (const target of db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=?').iterate(app.id)) {
       count++;
       assertApps(target.owner_account_id === app.owner_account_id && Number.isSafeInteger(target.revision) && target.revision >= 1
-        && target.profile === RUNTIME_PROFILE && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
+        && (target.profile === RUNTIME_PROFILE || scoped && target.profile === SCOPED_RUNTIME_PROFILE) && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
           ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
       appPort(target.port); requestPath(target.entry_path);
+      if (target.profile === SCOPED_RUNTIME_PROFILE) {
+        const admission = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(app.id, target.revision);
+        assertApps(admission && admission.target_digest === target.digest, 'apps_scoped_admission_corrupt', 500);
+        let profile;
+        try { profile = scopedEmbedProfile(JSON.parse(admission.approved_pin_json)); } catch { throw new AppsError('apps_scoped_admission_corrupt', 500); }
+        const { digest: derived, ...pin } = profile;
+        assertApps(derived === admission.profile_digest && canonical(pin) === admission.approved_pin_json
+          && profile.appId === app.id && profile.resource.tenantId === app.owner_account_id
+          && profile.target.revision === target.revision && profile.target.digest === target.digest
+          && [profile.connector.linkId,profile.connector.hostDeviceId,profile.connector.connectorId].join('|') === target.connector_key
+          && target.entry_path === '/embed', 'apps_scoped_admission_corrupt', 500);
+        if (target.revision === policy.active_target_revision) assertApps(policy.launch_policy === 'restricted', 'apps_scoped_public_forbidden', 500);
+      }
       if (target.revision === 1) {
         initial = true;
         assertApps(target.connector_key === app.connector_key && target.port === app.port && target.entry_path === app.entry_path, 'apps_initial_target_changed', 409);
@@ -446,6 +485,8 @@ function validateSourceRows(db, { historical = false } = {}) {
     if (historical) assertApps(count === 1 && policy.active_target_revision === 1, 'apps_source_history_unsupported', 409);
     else requiredBindingVersion(db, app.id);
   }
+  if (scoped) assertApps(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n
+    === db.prepare('SELECT count(*) AS n FROM app_runtime_targets WHERE profile=?').get(SCOPED_RUNTIME_PROFILE).n, 'apps_scoped_admission_corrupt', 500);
 }
 
 function initializePublications(db) {
@@ -501,7 +542,7 @@ function validateAndRebuildGrants(db, visit) {
   }
 }
 
-export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = {}) {
+function migrateLegacyAppsSchema(db, { legacyTemplate = '', now = Date.now } = {}) {
   const normalizedTemplate = normalizeLegacyTemplate(legacyTemplate);
   // Inspect before any DDL or persistent PRAGMA. Unknown/future schemas are untouched.
   inspectAppsSchema(db);
@@ -554,4 +595,50 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
     if (db.isTransaction) db.exec('ROLLBACK');
     throw error;
   }
+}
+
+/** Explicit startup capability migration. Old tuples/receipts are copied
+ * byte-for-byte; the expanded CHECK requires a known-DDL table rebuild. No
+ * request handler calls this function or changes a persisted reader epoch. */
+export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now, allowScopedEmbedMigration = false } = {}) {
+  assertApps(typeof allowScopedEmbedMigration === 'boolean', 'apps_scoped_migration_configuration_invalid', 503);
+  const before = inspectAppsSchema(db);
+  if (before === 'v7') {
+    const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
+    assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    return { schema: APPS_SCOPED_REGISTRY_SCHEMA, migrated: false, legacyTemplate: pinned.value };
+  }
+  const legacy = migrateLegacyAppsSchema(db, { legacyTemplate, now });
+  if (!allowScopedEmbedMigration) return legacy;
+  assertApps(!db.isTransaction && inspectAppsSchema(db) === 'v6', 'apps_scoped_migration_required', 503);
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  db.exec('PRAGMA foreign_keys=OFF;');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const state = inspectAppsSchema(db);
+    if (state === 'v7') { db.exec('COMMIT'); return { schema: APPS_SCOPED_REGISTRY_SCHEMA, migrated: false, legacyTemplate: legacy.legacyTemplate }; }
+    assertApps(state === 'v6', 'apps_schema_unsupported');
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    const ddl = publicationDdl(true).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    assertApps(ddl, 'apps_schema_definition_invalid', 500);
+    db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE scoped_runtime_targets_migration'));
+    db.exec('INSERT INTO scoped_runtime_targets_migration SELECT * FROM app_runtime_targets');
+    db.exec('DROP TRIGGER app_runtime_target_no_update;DROP TRIGGER app_runtime_target_no_delete;DROP TRIGGER app_runtime_target_no_replace;');
+    db.exec('DROP TABLE app_runtime_targets;');
+    db.exec(ddl);
+    db.exec('INSERT INTO app_runtime_targets SELECT * FROM scoped_runtime_targets_migration;DROP TABLE scoped_runtime_targets_migration;');
+    for (const statement of targetGuards()) db.exec(statement);
+    for (const statement of sourceGuards().filter(value => value.includes('CREATE TRIGGER app_runtime_target_no_replace'))) db.exec(statement);
+    db.exec(scopedAdmissionDdl()); for (const statement of scopedAdmissionGuards()) db.exec(statement);
+    db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(APPS_SCOPED_REGISTRY_SCHEMA);
+    db.exec('PRAGMA user_version=7;');
+    assertApps(db.prepare('PRAGMA foreign_key_check').all().length === 0 && inspectAppsSchema(db) === 'v7', 'apps_scoped_migration_invalid', 500);
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    db.exec('COMMIT');
+    return { schema: APPS_SCOPED_REGISTRY_SCHEMA, migrated: true, legacyTemplate: legacy.legacyTemplate };
+  } catch (error) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw error;
+  } finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
 }

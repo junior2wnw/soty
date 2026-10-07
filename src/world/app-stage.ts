@@ -15,7 +15,7 @@ import { mountAppReviews, type AppReviewsHandle } from './app-reviews';
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;scopedCleanup?:()=>Promise<void> }>;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
@@ -32,6 +32,7 @@ export function appLaunchFailure(error: unknown): { title: string; detail: strin
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
   if (code === 'ACTIVE_PROFILE_CHANGED') return { title: 'Аккаунт изменился', detail: 'Выберите нужный аккаунт и откройте приложение ещё раз.' };
   if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Попробуйте снова, когда устройство подключится.' };
+  if (['app_scoped_admission_required','app_scoped_human_required','app_scoped_migration_required','app_scoped_key_required'].includes(code)) return {title:'Подключение пока не готово',detail:'Владелец приложения должен завершить подключение выбранного проекта.'};
   if (['apps_access_denied', 'app_access_revoked', 'app_unavailable', 'authentication_required'].includes(code)) return { title: 'Этот вход недоступен', detail: 'Выберите другой аккаунт или попросите владельца проверить доступ.' };
   if (['apps_launch_busy', 'apps_entry_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже.' };
   if (['invalid_app_launch_url', 'invalid_app_entry', 'invalid_app_path'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
@@ -141,6 +142,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
+    abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
   });
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
@@ -201,7 +203,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const url = await launcher.launch();
       if (!url || !current()) return;
       captureEntry();
-      const frame = el('iframe', 'sa-frame'); frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'); frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      const frame = el('iframe', 'sa-frame'); frame.title = app.name;
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(launcher.runtimeProfile()==='soty.selected-human-embed.v1'?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
       runtime.replaceChildren(frame);
     } catch (reason) {
       if (!current()) return;

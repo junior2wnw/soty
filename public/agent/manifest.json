@@ -1,11 +1,11 @@
 {
   "schema": "soty.connector.release.v1",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "architecture": "durable-jobs+opencode+server-gonka-proxy",
   "connectorUrl": "/agent/soty-connector.mjs",
   "agentUrl": "/agent/soty-connector.mjs",
   "compatibilityUrl": "/agent/soty-agent.mjs",
-  "sha256": "8d7b793cacfe59e1516acb91dde95173e5a5e73da5e3d2fbb66df0aba9579e0d",
+  "sha256": "d26ad2669d35bd502cd0b9d7b86edecdc580003bc967702a1202b78f1c2f4278",
   "protocol": {
     "schema": "soty.connector-job.v2",
     "entities": [

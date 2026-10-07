@@ -80,7 +80,7 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
   const baseline = JSON.parse(currentStorageReaders);
   for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
-    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [7] : store === 'capabilities' ? [4] : [3]]) {
+    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [8] : store === 'capabilities' ? [4] : [3]]) {
       const value = clone(baseline); value.readers[store] = readers;
       assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
     }
@@ -165,7 +165,7 @@ test('Apps version is an independent reader requirement and is retained in the s
   requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, 2);
 });
 
-for (const version of [3, 4, 5, 6]) test(`Apps${version} is accepted independently of the Rooms ceiling and blocks an Apps${version - 1}-only actual image`, async () => {
+for (const version of [3, 4, 5, 6, 7]) test(`Apps${version} is accepted independently of the Rooms ceiling and blocks an Apps${version - 1}-only actual image`, async () => {
   const readers = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: Array.from({ length: version - 1 }, (_, i) => i + 1), notes: [1], capabilities: [1] } });
   const old = fixture({ readers, apps: version });
   await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
@@ -174,9 +174,9 @@ for (const version of [3, 4, 5, 6]) test(`Apps${version} is accepted independent
   const current = fixture({ apps: version });
   const receipt = await guardStorageStart(current.context, current.runtime);
   requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, version); assert.equal(receipt.rooms, 2);
-  for (const apps of ['empty', 1, 2, 3, 4, 5, 6]) assertStorageCompatible(image(2), format(2, apps));
+  for (const apps of ['empty', 1, 2, 3, 4, 5, 6, 7]) assertStorageCompatible(image(2), format(2, apps));
   assert.throws(() => checkedStorageFormat(format(3, version)), /storage_probe_invalid/);
-  assert.throws(() => assertStorageCompatible(image(2), format(2, 7)), /storage_probe_invalid/);
+  assert.throws(() => assertStorageCompatible(image(2), format(2, 8)), /storage_probe_invalid/);
 });
 
 test('old or extended probe and start receipts never authorize a restart', () => {
@@ -184,13 +184,13 @@ test('old or extended probe and start receipts never authorize a restart', () =>
   requireStorageStartReceipt(good, id(1));
   for (const value of [{ ok: true, schema: 'soty.storage-format.v1', rooms: 2 },
     { ok: true, schema: 'soty.storage-format.v2', rooms: 2, apps: 6 },
-    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), schema: 'soty.storage-format.v2' }, { ...format(2), apps: 7 }, { ...format(2, 6), rooms: 3 },
+    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), schema: 'soty.storage-format.v2' }, { ...format(2), apps: 8 }, { ...format(2, 6), rooms: 3 },
     { ...format(2), apps: undefined }, { ...format(2), complete: true }]) {
     assert.throws(() => checkedStorageFormat(value), /storage_probe_invalid/);
   }
   for (const value of [{ schema: 'soty.storage-start.v1', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2 },
     { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 6 },
-    { ...good, schema: 'soty.storage-start.v1' }, { ...good, schema: 'soty.storage-start.v2' }, { ...good, apps: 7 }, { ...good, rooms: 3 },
+    { ...good, schema: 'soty.storage-start.v1' }, { ...good, schema: 'soty.storage-start.v2' }, { ...good, apps: 8 }, { ...good, rooms: 3 },
     { ...good, apps: undefined }, { ...good, allowed: true }]) {
     assert.throws(() => requireStorageStartReceipt(value, id(1)), /storage_start_guard_missing/);
   }
@@ -352,7 +352,7 @@ test('failed probe remains explicit and never becomes a successful start receipt
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
   assert.deepEqual(JSON.parse(currentStorageReaders), { version: 5,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2] } });
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);

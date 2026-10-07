@@ -14,6 +14,8 @@ import {
 
 export const SOURCE_PROOF_HEADER = "x-soty-selected-proof";
 export const SOURCE_MAC_HEADER = "x-soty-selected-mac";
+export const SOURCE_PROBE_HEADER = 'x-soty-selected-probe';
+export const SOURCE_READY_HEADER = 'x-soty-selected-ready';
 const token = (value) =>
   need(
     typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value),
@@ -37,6 +39,7 @@ function wireContext(input, profile) {
     "sourceProfile",
     "resource",
     "rootPrincipal",
+    "humanPrincipal",
     "entry",
     "target",
     "policyEpoch",
@@ -44,6 +47,12 @@ function wireContext(input, profile) {
   ]);
   closed(context.rootPrincipal, ["accountId", "deviceId"]);
   Object.values(context.rootPrincipal).forEach(identifier);
+  closed(context.humanPrincipal, ['issuer','subject','clientId','clientProfileDigest','clientGeneration']);
+  need(context.humanPrincipal.issuer === profile.issuer && context.humanPrincipal.clientId === profile.clientId
+    && typeof context.humanPrincipal.subject === 'string' && context.humanPrincipal.subject.length > 0 && context.humanPrincipal.subject.length <= 128
+    && /^[a-f0-9]{64}$/.test(context.humanPrincipal.clientProfileDigest)
+    && Number.isSafeInteger(context.humanPrincipal.clientGeneration) && context.humanPrincipal.clientGeneration > 0,
+    'scoped_embed_human_principal_invalid', 403);
   closed(context.entry, ["domainId", "origin"]);
   identifier(context.entry.domainId);
   need(
@@ -77,6 +86,19 @@ export function createSourceProofSigner({
   const profile = scopedEmbedProfile(raw),
     secret = hostKey(key);
   return Object.freeze({
+    probeHeaders() {
+      const value = Object.freeze({ schema: 'soty.selected-source-probe.v1', profileDigest: profile.digest,
+        nonce: randomBytes(32).toString('base64url'), expiresAt: clock()+SCOPED_EMBED_LIMITS.proofMs });
+      const text = Buffer.from(JSON.stringify(value)).toString('base64url');
+      return { request: value, headers: { [SOURCE_PROBE_HEADER]: text, [SOURCE_MAC_HEADER]: mac(secret, 'probe\0'+text) } };
+    },
+    verifyReady(response, expected) {
+      const text = response.headers.get(SOURCE_READY_HEADER), signature=response.headers.get(SOURCE_MAC_HEADER);
+      token(signature); need(typeof text==='string' && text.length<=2048, 'scoped_embed_probe_invalid',503);
+      need(timingSafeEqual(Buffer.from(signature),Buffer.from(mac(secret,'ready\0'+text))), 'scoped_embed_probe_invalid',503);
+      const value=capture(JSON.parse(Buffer.from(text,'base64url').toString('utf8')));closed(value,['schema','profileDigest','nonce','expiresAt']);
+      need(response.status===204 && hash(value)===hash(expected) && value.expiresAt>clock(), 'scoped_embed_probe_invalid',503);return true;
+    },
     headers({ context, method, path, body = Buffer.alloc(0), cookie = "" }) {
       const trusted = wireContext(context, profile);
       scopedRoute(method, path);
@@ -120,6 +142,18 @@ export function createSourceProofVerifier({
   need(typeof consumeNonce === "function", "scoped_embed_nonce_store_required");
   const seen = new WeakMap();
   return Object.freeze({
+    verifyReady(request) {
+      need(request.method==='HEAD' && request.url==='/api/embed/transport-ready' && request.headers.host===new URL(profile.embedOrigin).host,
+        'scoped_embed_probe_invalid',403);
+      const text=request.headers[SOURCE_PROBE_HEADER], signature=request.headers[SOURCE_MAC_HEADER];token(signature);
+      need(typeof text==='string' && text.length<=2048 && /^[A-Za-z0-9_-]+$/.test(text),'scoped_embed_probe_invalid',403);
+      need(timingSafeEqual(Buffer.from(signature),Buffer.from(mac(secret,'probe\0'+text))), 'scoped_embed_probe_invalid',403);
+      const value=capture(JSON.parse(Buffer.from(text,'base64url').toString('utf8')));closed(value,['schema','profileDigest','nonce','expiresAt']);token(value.nonce);
+      need(value.schema==='soty.selected-source-probe.v1' && value.profileDigest===profile.digest && Number.isSafeInteger(value.expiresAt)
+        && value.expiresAt>clock() && value.expiresAt<=clock()+SCOPED_EMBED_LIMITS.proofMs && consumeNonce(value.nonce,value.expiresAt)===true,
+        'scoped_embed_probe_invalid',403);
+      return Object.freeze({ [SOURCE_READY_HEADER]:text, [SOURCE_MAC_HEADER]:mac(secret,'ready\0'+text) });
+    },
     verify(request, { body = Buffer.alloc(0) } = {}) {
       need(!seen.has(request), "scoped_embed_proof_replayed", 403);
       need(

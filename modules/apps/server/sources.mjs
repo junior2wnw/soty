@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey } from './protocol.mjs';
-import { RUNTIME_PROFILE, runtimeTargetDigest } from './schema.mjs';
+import { RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 
 export const sourceOperations = new Set(['apps.source.prepare', 'apps.source.promote', 'apps.source.history']);
 export const SOURCE_RECEIPTS_PER_APP = 64;
@@ -16,7 +16,7 @@ const safeClock = value => { assertApps(Number.isSafeInteger(value) && value >= 
 /** One registry/database owns durable mutations. Preparation is bounded process
  * memory and is never authority for an active route before the commit. */
 export function createSourceRegistry({ db, now = Date.now, assertActor, publications, prepareTarget, verifyPreparedTarget,
-  onChanged = () => {}, blockedPorts = [], limits: overrides = {} }) {
+  onChanged = () => {}, blockedPorts = [], limits: overrides = {}, scopedAdmission }) {
   assertApps(db && typeof assertActor === 'function' && typeof publications?.sourceStateInTransaction === 'function'
     && typeof publications?.promoteSourceInTransaction === 'function' && typeof prepareTarget === 'function'
     && typeof verifyPreparedTarget === 'function' && typeof onChanged === 'function', 'apps_source_dependencies_required', 500);
@@ -75,9 +75,11 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     const id = appId(args.appId), epoch = positive(args.expectedPolicyEpoch), revision = positive(args.expectedTargetRevision);
     assertApps((args.source !== undefined) !== (args.targetRevision !== undefined), 'invalid_source_selection');
     if (args.targetRevision !== undefined) return { id, epoch, revision, targetRevision: positive(args.targetRevision) };
-    exact(args.source, ['hostDeviceId', 'connectorId', 'port', 'entryPath']);
+    exact(args.source, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile']);
+    const profile = args.source.profile ?? RUNTIME_PROFILE;
+    assertApps(supportedRuntimeProfile(profile), 'app_scoped_admission_required', 503);
     return { id, epoch, revision, source: { hostDeviceId: textId(args.source.hostDeviceId), connectorId: textId(args.source.connectorId),
-      port: appPort(args.source.port, blockedPorts), entryPath: runtimePath(args.source.entryPath) } };
+      port: appPort(args.source.port, blockedPorts), entryPath: runtimePath(args.source.entryPath), profile } };
   }
   function selectTarget(actor, intent) {
     state(actor, intent.id, intent.epoch, intent.revision);
@@ -96,10 +98,14 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       const max = db.prepare('SELECT max(revision) AS revision FROM app_runtime_targets WHERE app_id=?').get(intent.id).revision;
       assertApps(Number.isSafeInteger(max) && max < Number.MAX_SAFE_INTEGER, 'apps_source_revision_exhausted', 409);
       const tuple = { appId: intent.id, revision: max + 1, ownerAccountId: actor.accountId, connectorKey: matches[0].connector_key,
-        port: intent.source.port, entryPath: intent.source.entryPath, profile: RUNTIME_PROFILE };
+        port: intent.source.port, entryPath: intent.source.entryPath, profile: intent.source.profile };
       target = Object.freeze({ ...tuple, digest: runtimeTargetDigest(tuple) });
     }
-    assertApps(target.profile === RUNTIME_PROFILE && target.digest === runtimeTargetDigest(target), 'apps_registry_corrupt', 500);
+    assertApps(supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest(target), 'apps_registry_corrupt', 500);
+    if (target.profile === SCOPED_RUNTIME_PROFILE) {
+      assertApps(scopedAdmission, 'app_scoped_admission_required', 503);
+      scopedAdmission.verifyCandidate(target);
+    }
     deviceFor(target.connectorKey, actor.accountId); occupied(intent.id, target.connectorKey, target.port);
     return target;
   }
@@ -213,6 +219,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         const retained = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(intent.id, target.revision);
         assertApps(retained && retained.digest === target.digest, 'apps_source_target_unavailable', 409);
       }
+      if (target.profile === SCOPED_RUNTIME_PROFILE) scopedAdmission.commit(target);
       const changed = publications.promoteSourceInTransaction({ appId: intent.id, targetRevision: target.revision,
         launchPolicy: intent.launchPolicy, listed: intent.listed, exposureAck: intent.exposureAck });
       const timestamp = safeClock(now()), receipt = { schema: 'soty.app-source-receipt.v1', namespace: 'apps.source.promote.v1',

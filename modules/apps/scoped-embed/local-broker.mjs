@@ -168,6 +168,7 @@ export function createLocalScopedEmbedBroker({
       now.profileDigest === profile.digest &&
         hash(now.reference) === hash(context.reference) &&
         hash(now.rootPrincipal) === hash(context.rootPrincipal) &&
+        hash(now.humanPrincipal) === hash(context.humanPrincipal) &&
         now.expiresAt > clock(),
       "scoped_embed_authority_changed",
       403,
@@ -202,7 +203,10 @@ export function createLocalScopedEmbedBroker({
       );
       const params = url.searchParams;
       need(
-        params.get("client_id") === profile.clientId &&
+        [...params.keys()].sort().join(',') === 'client_id,code_challenge,code_challenge_method,nonce,redirect_uri,response_type,scope,state' &&
+          /^[A-Za-z0-9_-]{43}$/.test(params.get('state') ?? '') && /^[A-Za-z0-9_-]{43}$/.test(params.get('nonce') ?? '') &&
+          /^[A-Za-z0-9_-]{43}$/.test(params.get('code_challenge') ?? '') && params.get('scope') === 'openid profile' &&
+          !url.username && !url.password && !url.hash && params.get("client_id") === profile.clientId &&
           params.get("redirect_uri") ===
             profile.embedOrigin + "/api/embed/callback" &&
           params.get("response_type") === "code" &&
@@ -216,6 +220,14 @@ export function createLocalScopedEmbedBroker({
   }
   return Object.freeze({
     profile: profile.schema,
+    async probe(signal) {
+      const {request,headers}=signer.probeHeaders();
+      const response=await fetcher(`http://127.0.0.1:${localPort}/api/embed/transport-ready`,{
+        method:'HEAD',headers:{...headers,host:new URL(profile.embedOrigin).host,connection:'close'},
+        signal:signal?AbortSignal.any([signal,AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs)]):AbortSignal.timeout(SCOPED_EMBED_LIMITS.callMs),
+      });
+      signer.verifyReady(response,request);return {state:'responding',httpStatus:204};
+    },
     async dispatch(
       { context, method, path, headers = {}, body = Buffer.alloc(0) },
       signal,
@@ -373,6 +385,31 @@ export function createLocalScopedEmbedBroker({
         }
         const location = response.headers.get("location");
         if (location) out.location = redirect(location, kind);
+        let auth;
+        if(kind==='auth-read' && response.status===200) {
+          const bytes=Buffer.concat(parts.map(part=>Buffer.from(part)));need(bytes.length<=128,'scoped_embed_auth_invalid',502);
+          let value;try{value=JSON.parse(bytes.toString('utf8'));}catch{need(false,'scoped_embed_auth_invalid',502);}
+          closed(value,['ready']);need(typeof value.ready==='boolean','scoped_embed_auth_invalid',502);
+        }
+        if(kind==='auth-start' && method==='POST' && response.status===200) {
+          let value;try{value=JSON.parse(Buffer.concat(parts.map(part=>Buffer.from(part))).toString('utf8'));}catch{need(false,'scoped_embed_auth_invalid',502);}
+          if(value?.schema==='planner.embed-login-authorization.v1') {
+            closed(value,['schema','authorizationUrl']);need(typeof value.authorizationUrl==='string','scoped_embed_auth_invalid',502);
+            const url=new URL(redirect(value.authorizationUrl,kind));
+            need(url.origin===new URL(profile.issuer).origin && url.pathname==='/human-identity/authorize','scoped_embed_auth_invalid',502);
+            auth={kind:'start',digest:hash(url.searchParams.get('state'))};
+          } else {
+            closed(value,['schema','cancelled','stateDigest']);need(value.schema==='planner.embed-login-cancelled.v1'&&value.cancelled===true&&/^[a-f0-9]{64}$/.test(value.stateDigest),'scoped_embed_auth_invalid',502);
+            auth={kind:'cancel',digest:value.stateDigest};
+          }
+        }
+        if(kind==='auth-start' && out.location) {
+          const state=new URL(out.location).searchParams.get('state');
+          need(typeof state==='string' && /^[A-Za-z0-9_-]{43}$/.test(state),'scoped_embed_auth_invalid',502);
+          auth={kind:'start',digest:hash(state)};
+        } else if(kind==='auth-callback' && incoming.planner_soty_link?.token) {
+          auth={kind:'completion',digest:hash(incoming.planner_soty_link.token)};
+        }
         need(
           Object.entries(out).reduce(
             (bytes, [name, value]) =>
@@ -385,6 +422,7 @@ export function createLocalScopedEmbedBroker({
         return Object.freeze({
           status: response.status,
           headers: Object.freeze(out),
+          ...(auth?{auth:Object.freeze(auth)}:{}),
           body: Buffer.concat(parts.map((part) => Buffer.from(part))),
         });
       } finally {
@@ -453,7 +491,7 @@ export function createSourceCurrentSubjectPort({
     need(
       human &&
         human.issuer === profile.issuer &&
-        human.subject === authority.rootPrincipal.accountId,
+        human.subject === authority.humanPrincipal.subject && human.issuer === authority.humanPrincipal.issuer,
       "scoped_embed_human_mismatch",
       401,
     );
@@ -463,7 +501,7 @@ export function createSourceCurrentSubjectPort({
     });
     need(
       hash(after.reference) === hash(authority.reference) &&
-        hash(after.rootPrincipal) === hash(authority.rootPrincipal),
+        hash(after.rootPrincipal) === hash(authority.rootPrincipal) && hash(after.humanPrincipal) === hash(authority.humanPrincipal),
       "scoped_embed_profile_changed",
       401,
     );

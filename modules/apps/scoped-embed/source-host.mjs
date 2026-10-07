@@ -1,6 +1,7 @@
 // Portable Source-host entry, bundled without any outside-project runtime path.
 export { createSourceProofVerifier } from "./source-proof.mjs";
 export { createSourceCurrentSubjectPort } from "./local-broker.mjs";
+export { createSourceAuthorityClient } from './source-authority-client.mjs';
 export {
   scopedEmbedProfile,
   sourceConsentDigest,

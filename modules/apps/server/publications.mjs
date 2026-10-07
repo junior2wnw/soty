@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { assertApps, appId, textId } from './protocol.mjs';
-import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE } from './schema.mjs';
+import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE, supportedRuntimeProfile } from './schema.mjs';
 import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
@@ -38,7 +38,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
     assertApps(policy && policy.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
     const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(app.id, policy.active_target_revision);
-    assertApps(target && target.owner_account_id === app.owner_account_id && target.profile === RUNTIME_PROFILE
+    assertApps(target && target.owner_account_id === app.owner_account_id && supportedRuntimeProfile(target.profile)
       && target.digest === runtimeTargetDigest({ appId: target.app_id, revision: target.revision, ownerAccountId: target.owner_account_id,
         connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
     const device = db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(target.connector_key);
@@ -201,6 +201,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       assertApps(!listed || activeIds(id).length > 0, 'app_publication_domain_required');
       const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, targetRevision);
       assertApps(target, 'apps_registry_corrupt', 500);
+      assertApps(target.profile === RUNTIME_PROFILE || launchPolicy === 'restricted', 'app_scoped_private_required', 403);
       if (launchPolicy === 'anyone') {
         exact(exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
         assertApps(exposureAck.scope === 'whole-port' && exposureAck.targetRevision === targetRevision

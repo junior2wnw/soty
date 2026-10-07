@@ -15,13 +15,15 @@ export function validateAppEntry(value: unknown, target: AppLaunchTarget, shellU
 export function createAppLauncher(options: {
   target: AppLaunchTarget; accountId: string; shellUrl: string;
   isCurrent(accountId: string): boolean;
-  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry }>;
+  request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void> }>;
+  abandonScoped?(parameters:{appId:string;handle:string}):Promise<unknown>;
   resolveEntry?(parameters: AppLaunchRequest): Promise<{ entry: AppResolvedEntry }>;
 }): {
   readonly parameters: AppLaunchRequest;
   entry(): AppResolvedEntry | null;
   launch(): Promise<string | null>;
   isCurrent(): boolean;
+  runtimeProfile():string|null;
   openExternal(openPopup: () => AppLaunchPopup | null): Promise<'opened' | 'blocked' | 'stale' | 'busy'>;
   dispose(): void;
 };

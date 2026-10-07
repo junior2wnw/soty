@@ -1,11 +1,11 @@
 import { assertApps, appId, cleanGrants, textId } from './protocol.mjs';
-import { runtimeTargetDigest, RUNTIME_PROFILE } from './schema.mjs';
+import { runtimeTargetDigest, supportedRuntimeProfile, SCOPED_RUNTIME_PROFILE } from './schema.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 
 /** Host-only port: signed Connect owns the outer installation fence. World and
  * Apps remain locked through a synchronous downstream commit. A runtime tuple
  * pin deliberately does not attest executable source-code or a release image. */
-export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry }) {
+export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry, requireScopedTarget }) {
   const run = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 2 * 1024 * 1024,
     busyCode: 'apps_authority_busy', responseCode: 'apps_authority_response_too_large' });
   return function withAppAuthority(request, callback) {
@@ -30,9 +30,14 @@ export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, re
       assertApps(entry, 'apps_access_denied', 403);
       const target = policy && db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, policy.active_target_revision);
       assertApps(policy && target && policy.owner_account_id === app.owner_account_id && target.owner_account_id === app.owner_account_id
-        && target.profile === RUNTIME_PROFILE && target.digest === runtimeTargetDigest({ appId: id, revision: target.revision,
+        && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest({ appId: id, revision: target.revision,
           ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port,
           entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
+      if(target.profile===SCOPED_RUNTIME_PROFILE) {
+        assertApps(typeof requireScopedTarget==='function','app_scoped_admission_required',503);
+        synchronous(requireScopedTarget({appId:id,revision:target.revision,ownerAccountId:target.owner_account_id,
+          connectorKey:target.connector_key,port:target.port,entryPath:target.entry_path,profile:target.profile,digest:target.digest}),'apps_async_authority');
+      }
       const grants = cleanGrants(JSON.parse(app.grants_json));
       Object.freeze(grants.accountIds); Object.freeze(grants.communityIds); Object.freeze(grants);
       const snapshot = Object.freeze({ appId: id, ownerId: app.owner_account_id, accountId: actor.accountId,

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from 'node:module';
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeReleaseManifest } from "./agent-modules/opencode-release.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -110,6 +111,14 @@ process.stdout.write(`connector:${version}:${manifest.sha256}\n`);
 process.stdout.write(`connector-bytes:${Buffer.byteLength(bundled)}\n`);
 
 async function bundleLocalModules(sourceText) {
+  const scopedImport=/^import \{ createConnectorScopedFactory \} from "\.\.\/modules\/apps\/scoped-embed\/connector-host\.mjs";\r?\n?/mu;
+  if(scopedImport.test(sourceText)) {
+    const build=createRequire(import.meta.resolve('vite'))('esbuild').build;
+    const result=await build({entryPoints:[join(root,'modules/apps/scoped-embed/connector-host.mjs')],bundle:true,write:false,platform:'node',format:'iife',globalName:'ScopedConnectorHost',target:'node24'});
+    const code=result.outputFiles[0].text;
+    sourceText=sourceText.replace(scopedImport,
+      `import { createRequire as createScopedRequire } from "node:module";\nconst { createConnectorScopedFactory } = ((require) => {\n${code}\nreturn ScopedConnectorHost;\n})(createScopedRequire(import.meta.url));\n`);
+  }
   const pattern = /^import\s+\{\s*([^}]+?)\s*\}\s+from\s+["'](\.\/agent-modules\/[^"']+\.mjs)["'];\n?/gmu;
   const seen = new Set();
   return await replaceAsync(sourceText, pattern, async (statement, imports, specifier) => {

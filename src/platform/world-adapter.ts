@@ -39,6 +39,7 @@ export async function startWorld(root: HTMLElement): Promise<void> {
   const options: Omit<WorldAppOptions, 'api' | 'requestContact'> = {
     localAccount: async () => { const state = await accountClient.getLocalState(); return { accountId: state.accountId ?? null, label: state.label || 'Я' }; },
     openLegacy, openAccount, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
+    appSlotCleanup:reply=>accountClient.appSlotCleanup(reply),
     openAppBuilder: (host: HTMLElement) => actions.mountAppBuilder(host),
     openAssistant: (host: HTMLElement) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice,
       createApp: () => actions.agentCreate(), resumeApp: target => actions.agentCreate(undefined, target) }),

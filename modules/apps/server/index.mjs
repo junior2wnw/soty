@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { createWebSocketRelay, normalizeWebSocketLivenessTiming } from './websocket-relay.mjs';
-import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion } from './schema.mjs';
+import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, SCOPED_RUNTIME_PROFILE } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
@@ -22,8 +22,11 @@ import { createDiscussionRegistry, discussionOperations } from './discussions.mj
 import { createEngagementTransaction } from './engagement-transaction.mjs';
 import { createAppDirectory, directoryOperations } from './directory.mjs';
 import { createAppAuthorityPort } from './authority-port.mjs';
+import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
+import { createScopedGateway } from '../scoped-embed/gateway.mjs';
+import { scopedRoute, scopedEmbedProfile } from '../scoped-embed/profile.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -32,10 +35,13 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
-  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
+  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
+  allowScopedEmbedMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
+  assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean','app_scoped_configuration_invalid',503);
+  scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);});
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -51,8 +57,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
-    migrateAppsSchema(db, { legacyTemplate: template, now });
+    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
+    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
@@ -60,13 +66,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     db.exec('PRAGMA journal_mode=WAL;');
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
+  const scopedAdmissions = createScopedAdmissionRegistry({ db, profiles: scopedEmbedProfiles, clock: now });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  let inspection, saved, discussions, directory, entryRead, appAuthority;
+  let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
-    appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry });
+    appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry,requireScopedTarget:target=>scopedAdmissions.require(target) });
+    if(scopedEmbedProfiles.length && typeof withHumanSubjectAuthority==='function') scopedGateway=createScopedGateway({
+      admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,clock:now,
+      onClose(record) {
+        for(const stream of [...live.values()])if(stream.scopedRecord===record)closeStream(stream,'app_access_revoked');
+        const channel=channels.get(connectorKey(record.profile.connector));
+        if(channel?.bindingVersion===2)send(channel,{type:'scoped-context-closed',channelId:channel.channelId,appId:record.context.appId,reference:record.context.reference});
+      },
+    });
     const readEntryTransaction = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 32 * 1024,
       busyCode: 'apps_entry_busy', timeoutCode: 'apps_entry_timeout_invalid', responseCode: 'apps_entry_response_too_large' });
     entryRead = (actor, args) => {
@@ -95,11 +110,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
     JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
     WHERE p.app_id=?`).get(id);
+  const targetTuple = target => ({appId:target.app_id,revision:target.revision,ownerAccountId:target.owner_account_id,
+    connectorKey:target.connector_key,port:target.port,entryPath:target.entry_path,profile:target.profile,digest:target.digest});
   const runtimeBindings = createRuntimeBindings({ channels, send, now, blockedPorts,
+    scopedTarget(target, { candidate }) {
+      assertApps(typeof withHumanSubjectAuthority === 'function', 'app_scoped_human_required', 503);
+      if (candidate) scopedAdmissions.verifyCandidate(target); else scopedAdmissions.require(target);
+      return true;
+    },
     onBindingInvalidated(channel, id) {
       for (const stream of channel.streams.values()) if (stream.appId === id) closeStream(stream, 'app_source_changed');
     } });
   const sources = createSourceRegistry({ db, now, assertActor, publications, blockedPorts,
+    scopedAdmission: scopedAdmissions,
     prepareTarget: runtimeBindings.prepareTarget, verifyPreparedTarget: runtimeBindings.verifyPreparedTarget,
     onChanged(event) {
       invalidateAccess({ appId: event.appId });
@@ -280,6 +303,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function checkStream(stream) {
     assertApps(!stream.closed, 'app_stream_closed', 502);
     try {
+      if(stream.scopedRecord)scopedGateway.context(stream.scopedRecord);
       const decision = checkAccess(stream.session, { renewPublic: true });
       assertApps(channels.get(stream.channel.key) === stream.channel && stream.channel.ws.readyState === 1, 'app_offline', 503);
       if (stream.channel.bindingVersion === 2) {
@@ -297,8 +321,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     try { holder.decision = publications.recheckAccess(holder.decision); return true; } catch { return false; }
   }
   function invalidateAccess(filter = {}) {
-    for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) tickets.delete(key);
-    for (const [key, item] of sessions) if (matches(item, filter) && !retainAccess(item)) sessions.delete(key);
+    for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) {tickets.delete(key);if(item.scopedRecord)scopedGateway.invalidate(item.scopedRecord);}
+    for (const [key, item] of sessions) if (matches(item, filter) && !retainAccess(item)) {sessions.delete(key);if(item.scopedRecord)scopedGateway.invalidate(item.scopedRecord);}
     for (const stream of live.values()) if (matches(stream.session, filter)) { try { checkStream(stream); } catch {} }
   }
   function invalidateConnector({ hostDeviceId, connectorId } = {}) {
@@ -423,6 +447,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
     }
     const id = appId(args.appId), app = row(id);
+    if(op==='apps.scoped.close') {
+      exact(args,['appId','handle']);assertApps(scopedGateway,'app_scoped_context_closed',403);
+      return scopedGateway.abandon(actor,id,args.handle);
+    }
     if (op === 'apps.launch') {
       exact(args, ['appId', 'domainId', 'path']);
       assertApps(app?.state === 'enabled', 'apps_access_denied', 403);
@@ -436,8 +464,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
-      tickets.set(digest(ticket), { decision, entryPath });
+      let scoped;
+      if(decision.profile===SCOPED_RUNTIME_PROFILE) {
+        assertApps(scopedGateway && entryPath==='/embed','app_scoped_admission_required',503);
+        scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))});
+      }
+      tickets.set(digest(ticket), { decision, entryPath,...(scoped?{scopedRecord:scoped.record}:{}) });
       return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
+        ...(scoped?{runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt}:{}),
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
     if (op === 'apps.revoke') {
@@ -546,16 +580,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     checkAccess(session);
     return session;
   }
-  function setPolicy(res, origin) {
+  function setPolicy(res, origin, scoped) {
     const frameOrigins = [...origins].join(' ');
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads`);
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
     if (new URL(origin).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   }
   async function routeApp(req, res, app) {
-    assertApps(!app.missing, 'app_not_found', 404); setPolicy(res, app.appHost.origin);
+    assertApps(!app.missing, 'app_not_found', 404);
+    const target=activeTarget(app.id),selected=target?.profile===SCOPED_RUNTIME_PROFILE;
+    const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
+    setPolicy(res, app.appHost.origin, selected);
     const path = requestPath(req.url || '/');
     assertOrigin(req, app.appHost.origin, !['GET', 'HEAD'].includes(req.method));
     const internalUrl = new URL(path, app.appHost.origin);
@@ -601,7 +638,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertRuntimeBinding(decision, { requireReady: true });
       assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
       const value = secret(), sessionKey = digest(value), sessionCheck = secret();
-      sessions.set(sessionKey, { decision, sessionKey, entryPath: ticket.entryPath, checkDigest: digest(sessionCheck), checkExpiresAt: now() + 30_000 });
+      const session={ decision, sessionKey, entryPath: ticket.entryPath, checkDigest: digest(sessionCheck), checkExpiresAt: now() + 30_000,...(ticket.scopedRecord?{scopedRecord:ticket.scopedRecord}:{}) };
+      if(ticket.scopedRecord)scopedGateway.attach(ticket.scopedRecord,session);sessions.set(sessionKey,session);
       // CHIPS keys this session by both application host and embedding site.
       // A preview embedded in Soty does not depend on unrestricted third-party
       // cookies, and cannot reuse the session from an unrelated top-level site.
@@ -628,14 +666,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       json(res, 200, { ok: true }); return;
     }
     runtimePath(path);
-    const session = sessionFor(req, app);
+    const callback=selected&&['/api/embed/callback','/api/embed/complete-link'].includes(internalUrl.pathname);
+    if(callback)assertApps(req.method==='GET','app_scoped_callback_invalid',403);
+    const callbackRecord=callback?scopedGateway.callback(app.id,path):null;
+    const session=callbackRecord?callbackRecord.session:sessionFor(req,app);
+    if(selected){scopedRoute(req.method,path);assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
-      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers: cleanHeaders(req.headers) });
+      const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers });
       let count = 0;
-      for await (const chunk of req) { count += chunk.length; assertApps(count <= LIMITS.requestBytes, 'app_request_too_large', 413); await sendChunks(stream, chunk); }
+      for await (const chunk of req) { count += chunk.length; assertApps(count <= (selected?1048576:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
       sendStream(stream, { type: 'end', id: stream.id });
     } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
   }
@@ -651,13 +694,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
     if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false };
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, scopedRecord:session.scopedRecord, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false };
+    assertApps(!stream.scopedRecord||stream.kind==='http','app_scoped_websocket_denied',403);
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
   }
   function sendStream(stream, frame) {
     checkStream(stream);
     if (frame.type === 'open' && stream.channel.bindingVersion === 2) frame = { ...frame, type: 'bound-open', ...runtimeBindings.openPins(stream.runtimeBinding) };
+    if(frame.type==='bound-open'&&stream.scopedRecord)frame={...frame,context:scopedGateway.context(stream.scopedRecord)};
     assertApps(send(stream.channel, frame), 'app_offline', 503);
   }
   async function sendChunks(stream, bytes) {
@@ -743,6 +788,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
           let bindingVersion = 1;
+          let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
             assertApps(frame.capabilities && typeof frame.capabilities === 'object' && !Array.isArray(frame.capabilities)
@@ -750,6 +796,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
               && versions.every(value => Number.isSafeInteger(value) && value >= 1) && new Set(versions).size === versions.length
               && (versions.includes(1) || versions.includes(2)), 'app_source_protocol_required');
             bindingVersion = versions.includes(2) ? 2 : 1;
+            if (frame.capabilities.runtimeProfiles !== undefined) {
+              const profiles = frame.capabilities.runtimeProfiles;
+              assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
+                && profiles.every(value => ['soty.relay-restricted.v1','soty.selected-human-embed.v1'].includes(value))
+                && new Set(profiles).size === profiles.length, 'app_source_protocol_required');
+              runtimeProfiles = profiles;
+            }
           }
           const key = connectorKey(identity), previous = channels.get(key);
           if (previous) {
@@ -757,7 +810,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
@@ -766,6 +819,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         }
         channel.lastSeenAt = now();
         assertApps(frame.type !== 'auth', 'app_auth_repeated');
+        if(frame.type==='scoped-authority-request') {
+          assertApps(channel.bindingVersion===2 && frame.channelId===channel.channelId && /^[A-Za-z0-9_-]{43}$/.test(frame.nonce||'')
+            && Object.keys(frame).every(key=>['type','channelId','nonce','reference'].includes(key)), 'app_bad_frame');
+          try {
+            assertApps(scopedGateway,'app_scoped_admission_required',503);
+            const context=scopedGateway.read(frame.reference,channel.identity);
+            send(channel,{type:'scoped-authority-result',channelId:channel.channelId,nonce:frame.nonce,ok:true,context});
+          } catch(error) {send(channel,{type:'scoped-authority-result',channelId:channel.channelId,nonce:frame.nonce,ok:false,status:error.status===403||error.status===401?403:503,code:'app_scoped_authority_unavailable'});}
+          return;
+        }
         if (runtimeBindings.handleFrame(channel, frame)) return;
         assertApps(!['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected', 'sync', 'open', 'bound-open', 'binding-set', 'binding-remove', 'target-prepare', 'ready'].includes(frame.type), 'app_bad_frame');
         if (frame.type === 'claim') {
@@ -826,7 +889,24 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           } else {
             clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
-            if (frame.location) stream.res.setHeader('Location', requestPath(frame.location));
+            if(stream.scopedRecord) {
+              const profile=stream.scopedRecord.profile,route=scopedRoute(stream.req.method,stream.req.url);
+              if(frame.auth!==undefined) {
+                assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
+                scopedGateway.captureHead(stream.scopedRecord,frame.auth);
+              }
+              const sourcePolicy=frame.headers?.['content-security-policy'];
+              if(sourcePolicy){assertApps(typeof sourcePolicy==='string'&&sourcePolicy.length<=16384&&!/[\r\n\0]/.test(sourcePolicy),'app_bad_head');
+                stream.res.setHeader('Content-Security-Policy',[stream.res.getHeader('Content-Security-Policy'),sourcePolicy]);}
+              if(frame.location) {
+                const location=new URL(frame.location,profile.embedOrigin);
+                if(location.origin===profile.embedOrigin)scopedRoute('GET',location.pathname+location.search);
+                else assertApps(route==='auth-start'&&location.origin===new URL(profile.issuer).origin&&location.pathname==='/human-identity/authorize'
+                  && location.searchParams.get('client_id')===profile.clientId&&location.searchParams.get('redirect_uri')===profile.embedOrigin+'/api/embed/callback'
+                  && location.searchParams.get('response_type')==='code'&&location.searchParams.get('code_challenge_method')==='S256','app_scoped_redirect_denied',403);
+                stream.res.setHeader('Location',location.href);
+              }
+            } else {assertApps(frame.auth===undefined,'app_bad_head');if (frame.location) stream.res.setHeader('Location', requestPath(frame.location));}
             stream.res.writeHead(frame.status);
           }
           return;
@@ -888,7 +968,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
     },
     configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; closed = true; discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
+    close() { if (closed) return; scopedGateway?.close();closed = true; discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
   };
 }
 function discussionAuthorLabel(actor) {
