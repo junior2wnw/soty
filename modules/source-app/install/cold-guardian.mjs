@@ -23,7 +23,7 @@ export async function runSourceColdGuardian(path){
   const bytes=await readFile(directory+'/manifest.json');check(sha(bytes)===config.coldManifestSha256);
   const manifest=JSON.parse(bytes.toString('utf8'));check(manifest.schema==='soty.source-cold-packet.v1'&&manifest.nonce===config.nonce&&manifest.physicalVolumesRequired===2
     &&manifest.authenticationProved===false&&manifest.productionReady===false&&manifest.models===false);
-  for(const [name,key] of [['fixture.mjs','fixtureSha256'],['extract.mjs','extractSha256'],['runner.mjs','runnerSha256'],['guardian.mjs','guardianSha256'],['entry.mjs','entrySha256'],['supervisor.mjs','supervisorSha256']]){
+  for(const [name,key] of [['fixture.mjs','fixtureSha256'],['extract.mjs','extractSha256'],['runner.mjs','runnerSha256'],['guardian.mjs','guardianSha256'],['entry.mjs','entrySha256'],['supervisor.mjs','supervisorSha256'],['stream-probe.mjs','streamProbeSha256']]){
     const file=directory+'/'+name,s=await lstat(file);check(s.isFile()&&!s.isSymbolicLink()&&s.size<=4194304&&sha(await readFile(file))===manifest[key]);}
   const cli=await lstat(profile.dockerBinary),socket=await lstat(profile.socket);
   check(cli.isFile()&&!cli.isSymbolicLink()&&sha(await readFile(profile.dockerBinary))===config.dockerCliSha256

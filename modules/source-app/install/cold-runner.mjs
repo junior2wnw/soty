@@ -10,6 +10,7 @@ import {assertInstalledSourceImage} from './image-guard.mjs';
 import {LOCAL_LINUX_FEEDBACK_PLACEMENT as placement} from '../server/linux-feedback-local-placement.mjs';
 import {SOURCE_COLD_PROFILE as profile} from './cold-profile.mjs';
 import {sourceColdStoppedOriginal,assertSourceColdOriginalUnchanged,sourceColdFailureCode,sourceColdNativeCheckpoint,SOURCE_COLD_NATIVE_REALM} from './cold-original.mjs';
+import {projectColdExtractDiagnostic} from './cold-ram-transfer.mjs';
 
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex'),check=value=>{if(!value)throw Error('source_cold_guard_refused');};
 const same=isDeepStrictEqual;
@@ -23,14 +24,15 @@ function command(args,input,limit=2097152){
   const done=new Promise((resolve,reject)=>{child.once('error',()=>{failed=true;stop();});child.stdout.on('data',chunk=>{bytes+=chunk.length;
     if(bytes>limit)stop();else pieces.push(chunk);});child.once('close',code=>{closed=true;clearTimeout(timer);clearTimeout(force);
     if(code===0&&!failed){resolve(Buffer.concat(pieces));return;}
-    let safeCode=streamUncertain?'source_cold_stream_unknown':'source_cold_command_failed';
+    let safeCode=streamUncertain?'source_cold_stream_unknown':'source_cold_command_failed',extractDiagnostic;
     // The fixed extraction helper may fail with its closed error receipt.
     // Never attach its raw stdout (which other helpers use for private witness).
     if(code===1&&!failed)try{const failure=JSON.parse(Buffer.concat(pieces).toString('utf8'));
-      if(Object.keys(failure).sort().join(',')==='code,passed,productionReady'&&failure.passed===false&&failure.productionReady===false
+      const diagnostic=projectColdExtractDiagnostic(failure);if(diagnostic?.passed===false){extractDiagnostic=diagnostic;safeCode=diagnostic.code;}
+      else if(Object.keys(failure).sort().join(',')==='code,passed,productionReady'&&failure.passed===false&&failure.productionReady===false
         &&sourceColdFailureCode(failure)===failure.code)safeCode=failure.code;
     }catch{}
-    reject(Object.assign(Error('source_cold_command_failed'),{code:safeCode}));});});done.catch(()=>{});
+    reject(Object.assign(Error('source_cold_command_failed'),{code:safeCode,...(extractDiagnostic?{extractDiagnostic}:{})}));});});done.catch(()=>{});
   timer=setTimeout(stop,40000);child.stdin.on('error',()=>{streamUncertain=true;stop();});try{child.stdin.end(input);}catch{streamUncertain=true;stop();}
   return{done,stop:async()=>{if(!closed)stop();await done.catch(()=>{});}};
 }
@@ -86,7 +88,7 @@ export async function runSourceCold(config){
   // The reviewed guardian creates/custodies empty physical volumes beforehand.
   // This runner verifies them and never adopts an arbitrary existing volume.
   for(const volume of volumes){const v=JSON.parse((await run(['volume','inspect',volume])).toString())[0];check(v.Name===volume&&v.Driver==='local'&&v.Labels?.['io.soty.source.cold']===config.nonce);}
-  let phase='seed',passed=false,cleanupUnknown=false,code='none';const cleanup=[];
+  let phase='seed',passed=false,cleanupUnknown=false,code='none',extractDiagnostic;const cleanup=[];
   try{
     await noWriters(volumes[0]);await noWriters(volumes[1]);
     const seed=await create(config,'seed',volumes[0],'/data',true,['/probe/fixture.mjs','seed']);
@@ -107,7 +109,7 @@ export async function runSourceCold(config){
     phase='dry_inspect';check((await nativeRestore.inspect(input)).inventoryMatched===true);
     phase='restore';const restore=await create(config,'restore',volumes[1],'/target',true,['/probe/extract.mjs']);
     const restored=JSON.parse((await execute(restore,JSON.stringify({privateKeyPem:key.privateKey,expectedSha256,expectedManifestSha256,sourceWitness:witness,limits,targetId:config.nonce}))).toString());key.privateKey='';
-    check(restored.passed===true&&restored.authenticated===true&&restored.inventoryMatched===true);
+    extractDiagnostic=projectColdExtractDiagnostic(restored);check(extractDiagnostic?.passed===true&&extractDiagnostic.sendPassed&&extractDiagnostic.receivePassed);
     phase='compare';await noWriters(volumes[1]);const verify=await create(config,'verify',volumes[1],'/data',true,['/probe/fixture.mjs','witness'],'restore/data');
     const after=JSON.parse((await execute(verify)).toString());await writeFile(join(config.packetDirectory,'after.private.json'),JSON.stringify(after)+'\n',{flag:'wx',mode:0o600});
     check(JSON.stringify(before.data)===JSON.stringify(after.data)&&JSON.stringify(before.files)===JSON.stringify(after.files));
@@ -117,11 +119,12 @@ export async function runSourceCold(config){
     const entryProof=JSON.parse((await execute(entry)).toString());check(entryProof.passed===true&&entryProof.currentReader===true&&entryProof.legacyRefusedBeforeStart===true
       &&entryProof.foreignRealmDenied===true&&entryProof.missingKeyDenied===true&&entryProof.wrongKeyBeforeListenerDenied===true&&entryProof.actualInstallerListening===true&&entryProof.spoofedReadDenied===true);
     passed=true;
-  }catch(error){passed=false;code=sourceColdFailureCode(error);
+  }catch(error){passed=false;code=sourceColdFailureCode(error);extractDiagnostic??=projectColdExtractDiagnostic(error?.extractDiagnostic);
     if(code==='source_cold_stream_unknown')cleanupUnknown=true;}
   finally{for(const item of owned.reverse())try{const c=spec(item,await inspect(item.id??item.name));
     if(c.State.Running)await run(['kill','--signal','SIGKILL',c.Id]);const state=spec(item,await inspect(c.Id));check(!state.State.Running);
     await run(['rm',c.Id]);cleanup.push({role:item.role,stopped:true,removed:true});}catch{cleanupUnknown=true;cleanup.push({role:item.role,stopped:false,removed:false});}}
   return{schema:'soty.source-cold-receipt.v1',passed:passed&&!cleanupUnknown,phase,code,physicalVolumes:2,cleanupUnknown,cleanup,
+    ...(extractDiagnostic?{extractDiagnostic}:{}),
     cipherCompared:passed,rolesCompared:passed,mediaCompared:passed,receiptCompared:passed,entryProved:passed,negativeChecks:passed?5:0,authenticationProved:false,models:false,productionReady:false};
 }
