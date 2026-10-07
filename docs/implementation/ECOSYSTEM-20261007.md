@@ -63,6 +63,8 @@ Checkpoint 07.10.2026, 09:45 UTC: публичный визуальный вып
 
 ## P1: личный агент и единый UX
 
+Checkpoint 07.10.2026, 15:00 UTC: отдельная source-ветка `codex/soty-chat-targets-20261007`, commit1e5e67274eb1cb19f0e20070f55b08b30970e25f, принята независимым browser retake. На320/393px исправлены реальные неверные нажатия перекрывающихся стрелок, в коротком окне — перекрытие счётчика floating-кнопкой и отправка за границей при6000 символах. Шесть размеров Chromium, поиск8→7→8, ответ/отмена/Back/длинный черновик/возврат вниз прошли; source-only, production ещё не обновлён. R6 получает отдельный canonical archive и новые image/cold/browser receipts; старые failed proofs не переиспользуются. Чаты с настоящими людьми, физический Safari и голос этим retake не проверены.
+
 | Подплан | Пункты и обязательная проверка | Текущее состояние |
 |---|---|---|
 | P1.1 GLM | exact zai-org/GLM-5.3-Flash; bounded stream assembly; validated tools; abort/unknown usage; no implicit retry | verified-component; live transport/controller/paid dispatch pending |
