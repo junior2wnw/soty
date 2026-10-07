@@ -51,6 +51,7 @@
 .uf-context.is-selected .uf-contour path { stroke: var(--sw-control-border); stroke-width: 1.5; fill: color-mix(in srgb,var(--sw-surface) 88%,transparent); }
 .uf-context-title { position: absolute; left: 50%; top: 0; transform: translate(-50%,-50%) scale(var(--uf-label-scale)); transform-origin: center; pointer-events: auto; display: flex; align-items: center; gap: 12px; min-height: 60px; width: var(--uf-title-screen-width,max-content); min-width: min(160px,var(--uf-title-screen-width,320px)); max-width: var(--uf-title-screen-width,320px); padding: 10px 22px; border: 1px solid var(--sw-control-border); border-radius: 34px; background: var(--sw-surface); color: var(--sw-ink); text-align: left; box-shadow: var(--sw-shadow-small); cursor: pointer; }
 .uf-context-title>.sw-icon { width: 30px; height: 30px; flex: none; color: var(--sw-honey-ink); }
+.uf-context-copy { flex: 1; min-width: 0; overflow: hidden; }
 .uf-context-title strong { display: block; min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; font-weight: 620; line-height: 30px; letter-spacing: -.025em; }
 .uf-context-name { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; font-weight: 620; line-height: 30px; letter-spacing: -.025em; }
 .uf-context-title small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sw-muted); font-size: 13px; line-height: 18px; }
@@ -118,6 +119,10 @@
 .uf-viewport[data-lod=overview] .uf-device-inner { width: 44px; padding: 8px; }
 .uf-viewport[data-lod=overview] .uf-device-inner .uf-label { display: none; }
 .uf-viewport[data-lod=overview] .uf-app-caption { font-size: 14px; line-height: 18px; gap: 5px; padding: 2px 0; }
+.uf-viewport[data-lod=overview] .uf-node[data-preview=true] :is(.uf-app-caption,.uf-label,.uf-unread) { display: none; }
+.uf-viewport[data-compact-overview=true] .uf-context-title { padding: 8px 10px; gap: 8px; }
+.uf-viewport[data-compact-overview=true] .uf-context-title>.sw-icon { width: 20px; height: 20px; }
+.uf-viewport[data-compact-overview=true] .uf-context-title .uf-context-name { max-width: 100%; font-size: 14px; line-height: 20px; }
 .uf-viewport[data-lod=overview] .uf-app-caption .uf-node-icon { display: none; }
 .uf-viewport[data-lod=overview] .uf-label>.sw-icon { width: 18px; height: 18px; }
 .uf-viewport[data-lod=context] .uf-app-caption { font-size: 16px; line-height: 21px; }
@@ -322,6 +327,10 @@
 @media (max-width:359px) {
   .uf-filters { gap: 4px; padding-inline: 12px; }
   .uf-filters button { min-width: 44px; padding-inline: 6px; font-size: 13px; }
+}
+@media (max-width:480px) {
+  .uf-screen>.uf-filters>button { display: none; }
+  .uf-screen>.uf-filters>.uf-compact-filter { display: block; width: 100%; min-width: 0; min-height: 44px; padding: 9px 12px; border: 1px solid var(--sw-line); border-radius: 14px; background: var(--sw-surface); color: var(--sw-ink); font-size: 14px; }
 }
 @media (min-width:481px) and (max-width:900px) and (max-height:500px) {
   .uf-screen { display: grid; grid-template-columns: minmax(190px,220px) minmax(0,1fr); grid-template-rows: auto auto auto minmax(0,1fr); }

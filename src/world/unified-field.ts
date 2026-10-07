@@ -114,6 +114,51 @@ function hexFrame(radius: number): SVGSVGElement {
   path.setAttribute('transform', `translate(${SQRT3 * radius / 2} ${radius}) rotate(90)`); frame.append(path); return frame;
 }
 
+/** Only labels move in screen space; the user's world positions and camera stay intact. */
+function compactOverviewTitles(contexts: UnifiedFieldLayout['contexts'], nodes: readonly FieldNode[], camera: FieldCamera,
+  view: { width: number; height: number }, contourPadding: number): Map<string, { x: number; y: number; width: number }> {
+  const height = 44, gap = 8;
+  const projectX = (x: number): number => (x - camera.x) * camera.scale + view.width / 2;
+  const projectY = (y: number): number => (y - camera.y) * camera.scale + view.height / 2;
+  const clamp = (value: number, size: number, extent: number): number => extent < size + 16 ? extent / 2
+    : Math.max(size / 2 + 8, Math.min(extent - size / 2 - 8, value));
+  type Rect = { left: number; right: number; top: number; bottom: number };
+  const occupied: Rect[] = nodes.map(node => {
+    const w = Math.max(44, node.kind === 'device' ? 44 : node.width * camera.scale);
+    const h = Math.max(44, node.kind === 'device' ? 44 : node.height * camera.scale);
+    const x = projectX(node.cx), y = projectY(node.y + node.height / 2);
+    return { left: x - w / 2 - gap, right: x + w / 2 + gap, top: y - h / 2 - gap, bottom: y + h / 2 + gap };
+  });
+  const placed: Rect[] = [], result = new Map<string, { x: number; y: number; width: number }>();
+  const bodies = contexts.map(context => ({ contextId: context.contextId, left: projectX(context.body.left), right: projectX(context.body.right), top: projectY(context.body.top), bottom: projectY(context.body.bottom) }));
+  const distance = (point: { x: number; y: number }, box: Rect): number => Math.hypot(Math.max(box.left - point.x, 0, point.x - box.right), Math.max(box.top - point.y, 0, point.y - box.bottom));
+  const overlap = (a: Rect, b: Rect): number => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+    * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  for (const context of contexts) {
+    const width = Math.min(view.width - 16, Math.min(160, Math.max(112, context.title.length * 7.5 + 56)));
+    const x = clamp(projectX(context.header.x + context.header.width / 2), width, view.width);
+    const above = projectY(context.body.top + contourPadding) - height / 2 - 12;
+    const below = projectY(context.body.bottom - contourPadding) + height / 2 + 12;
+    let best = { x, y: clamp(above, height, view.height), width }, bestScore = Infinity;
+    const ownBody = bodies.find(body => body.contextId === context.contextId)!;
+    // Thirty local candidates, never a new grid. A label must prefer its own contour.
+    // Coincident spaces can remain ambiguous; the existing selector is the fallback.
+    for (let step = 0; step < 3; step++) for (const candidate of [above - step * (height + gap), below + step * (height + gap)]) for (const offset of [0, 24, -24, 48, -48]) {
+      const cx = clamp(x + offset, width, view.width), y = clamp(candidate, height, view.height), point = { x: cx, y };
+      const rect = { left: cx - width / 2, right: cx + width / 2, top: y - height / 2, bottom: y + height / 2 };
+      const ownDistance = distance(point, ownBody), otherDistance = Math.min(...bodies.filter(body => body !== ownBody).map(body => distance(point, body)));
+      const association = Math.max(0, ownDistance - otherDistance);
+      const area = occupied.reduce((sum, other) => sum + overlap(rect, other), 0)
+        + placed.reduce((sum, other) => sum + overlap(rect, other) * 2, 0);
+      const score = (association > .01 ? 1e9 + association * 10000 : 0) + area + Math.hypot(cx - x, y - above) * .001;
+      if (score < bestScore) { best = { x: cx, y, width }; bestScore = score; }
+    }
+    placed.push({ left: best.x - width / 2 - gap, right: best.x + width / 2 + gap, top: best.y - height / 2 - gap, bottom: best.y + height / 2 + gap });
+    result.set(context.contextId, best);
+  }
+  return result;
+}
+
 /** One camera over immutable world coordinates. No server or capability mutation belongs here. */
 export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   const accountId = options.accountId, metrics = { ...UNIFIED_FIELD_METRICS, ...options.metrics };
@@ -271,6 +316,14 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const bounds = { left: corners[0]!.x, top: corners[0]!.y, right: corners[1]!.x, bottom: corners[1]!.y };
     const mobileContext = view.width < 720 ? contextFocus[mode] : '';
     const visibleContexts = current.contexts.filter(context => (!mobileContext || context.contextId === mobileContext) && fieldBoundsOverlap(context.bounds, bounds, 120));
+    const visible = (moving || contextPreview ? createFieldSpatialIndex(current.nodes) : index).query(bounds, 100);
+    const retained = new Set(visible.map(node => node.shortcutId));
+    if (selectedId) retained.add(selectedId); if (moving) retained.add(moving.shortcutId);
+    const overviewIds = new Set(current.contexts.flatMap(context => context.children.slice(0, 3)));
+    const nodes = current.nodes.filter(node => (!mobileContext || node.contextId === mobileContext) && retained.has(node.shortcutId) && (level !== 'overview' || overviewIds.has(node.shortcutId) || node.shortcutId === selectedId));
+    const compactOverview = view.width < 720 && level === 'overview';
+    viewport.dataset.compactOverview = String(compactOverview);
+    const titlePlacements = compactOverview ? compactOverviewTitles(visibleContexts, nodes, cam, view, metrics.contourPadding) : null;
     const contextKeep = new Set(visibleContexts.map(context => context.contextId));
     for (const context of visibleContexts) {
       let wrapper = contextElements.get(context.contextId);
@@ -286,9 +339,11 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       svg.querySelector('path')!.setAttribute('d', context.contour);
       const title = wrapper.querySelector<HTMLButtonElement>('.uf-context-title')!;
       const headerHeight = window.innerWidth <= 720 || level === 'overview' ? 44 : metrics.contextTitleHeight;
-      const headerY = context.body.top + metrics.contourPadding - (headerHeight / 2 + 12) / cam.scale;
-      title.style.left = `${context.header.x + context.header.width / 2 - context.body.left}px`; title.style.top = `${headerY - context.body.top}px`; title.style.width = `${context.header.width}px`; title.style.height = `${headerHeight}px`;
-      const centre = { x: context.header.x + context.header.width / 2, y: headerY };
+      const placement = titlePlacements?.get(context.contextId);
+      const headerY = placement ? cam.y + (placement.y - view.height / 2) / cam.scale : context.body.top + metrics.contourPadding - (headerHeight / 2 + 12) / cam.scale;
+      const headerX = placement ? cam.x + (placement.x - view.width / 2) / cam.scale : context.header.x + context.header.width / 2;
+      title.style.left = `${headerX - context.body.left}px`; title.style.top = `${headerY - context.body.top}px`; title.style.width = `${context.header.width}px`; title.style.height = `${headerHeight}px`;
+      const centre = { x: headerX, y: headerY };
       const nearest = visibleContexts.filter(other => {
         const otherHeaderY = other.body.top + metrics.contourPadding - (headerHeight / 2 + 12) / cam.scale;
         return other.contextId !== context.contextId && Math.abs((otherHeaderY - centre.y) * cam.scale) < 72;
@@ -296,32 +351,30 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         .map(other => Math.abs((other.header.x + other.header.width / 2 - centre.x) * cam.scale));
       const screenX = (centre.x - cam.x) * cam.scale + view.width / 2;
       const edgeRoom = cameraFit[mode] === 'overview' ? 2 * Math.max(0, Math.min(screenX - 8, view.width - screenX - 8)) : view.width - 24;
-      const titleWidth = Math.max(44, Math.min(view.width - 24, edgeRoom, metrics.contextTitleWidth, ...nearest.map(distance => distance - 14)));
-      title.style.setProperty('--uf-title-screen-width', `${titleWidth}px`); title.classList.toggle('is-icon-only', titleWidth < 112);
+      const titleWidth = placement?.width ?? Math.max(44, Math.min(view.width - 24, edgeRoom, metrics.contextTitleWidth, ...nearest.map(distance => distance - 14)));
+      title.style.setProperty('--uf-title-screen-width', `${titleWidth}px`); title.classList.toggle('is-icon-only', !compactOverview && titleWidth < 112);
       const titleSignature = JSON.stringify([mode, context.title, context.children.length]);
       if (title.dataset.signature !== titleSignature) { const copy = el('span', 'uf-context-copy'); copy.append(el('strong', 'uf-context-name', context.title)); title.replaceChildren(icon(mode === 'mine' ? 'layers' : context.title === 'Приложения' ? 'grid' : 'people'), copy); title.dataset.signature = titleSignature; }
       title.setAttribute('aria-label', `${context.title}. ${nounCount(context.children.length, 'объект', 'объекта', 'объектов')}`);
       title.tabIndex = level === 'overview' ? 0 : -1;
     }
     for (const [id, element] of contextElements) if (!contextKeep.has(id)) { element.remove(); contextElements.delete(id); }
-    const visible = (moving || contextPreview ? createFieldSpatialIndex(current.nodes) : index).query(bounds, 100);
-    const retained = new Set(visible.map(node => node.shortcutId));
-    if (selectedId) retained.add(selectedId); if (moving) retained.add(moving.shortcutId);
-    const overviewIds = new Set(current.contexts.flatMap(context => context.children.slice(0, 3)));
-    const nodes = current.nodes.filter(node => (!mobileContext || node.contextId === mobileContext) && retained.has(node.shortcutId) && (level !== 'overview' || overviewIds.has(node.shortcutId) || node.shortcutId === selectedId));
     const keep = new Set(nodes.map(node => node.shortcutId)), activeId = selectedId && keep.has(selectedId) ? selectedId : nodes[0]?.shortcutId;
     for (const node of nodes) {
       let target = nodeElements.get(node.shortcutId);
       if (!target) {
         target = el('button', 'uf-node'); target.type = 'button'; target.dataset.shortcutId = node.shortcutId;
         target.addEventListener('focus', () => { selectedId = node.shortcutId; remember(); schedule(); emit(); }, { signal });
-        target.addEventListener('click', () => {
+        target.addEventListener('click', event => {
           const item = available(node.shortcutId); if (!item) return;
+          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { focusContext(item.contextId); return; }
           selectedId = item.shortcutId; remember();
           if (arranging) { if (moving) previewMove({ contextId: item.contextId, slot: [...item.slot], swap: true }); else beginMove(item.shortcutId); }
           else options.onActivate?.(item.entity, item.shortcutId);
         }, { signal }); nodeElements.set(node.shortcutId, target); plane.append(target);
-        target.addEventListener('contextmenu', event => { const current = available(node.shortcutId); if (current && options.onInspect) { event.preventDefault(); selectedId = current.shortcutId; remember(); options.onInspect(current.entity, current.shortcutId); } }, { signal });
+        target.addEventListener('contextmenu', event => { const current = available(node.shortcutId); if (!current) return;
+          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { event.preventDefault(); focusContext(current.contextId); return; }
+          if (options.onInspect) { event.preventDefault(); selectedId = current.shortcutId; remember(); options.onInspect(current.entity, current.shortcutId); } }, { signal });
       }
       const signature = JSON.stringify(node.entity);
       if (target.dataset.signature !== signature) { renderNode(target, node); target.dataset.signature = signature; }
@@ -331,12 +384,14 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         target.style.width = `${node.width / cam.scale}px`; target.style.height = `${node.height / cam.scale}px`;
       } else if (node.kind === 'person') target.style.height = `${Math.max(node.height, 44 / cam.scale)}px`;
       const screenWidth = node.kind === 'device' ? node.width : node.width * cam.scale, screenHeight = node.kind === 'device' ? node.height : node.height * cam.scale;
+      const preview = level === 'overview' && Math.min(screenWidth, screenHeight) < 44;
+      target.dataset.preview = String(preview);
       target.style.setProperty('--uf-node-screen-width', `${screenWidth}px`); target.style.setProperty('--uf-node-screen-height', `${screenHeight}px`);
       const caption = screenWidth < 135 ? 'compact' : 'full'; if (target.dataset.caption !== caption) target.dataset.caption = caption;
       // Search and overview remain navigable. Read-only describes layout changes, never inspection/opening.
       target.disabled = false;
       target.dataset.interactive = String(!target.disabled);
-      if (options.onInspect && mode === 'mine' && !target.disabled) {
+      if (options.onInspect && mode === 'mine' && !target.disabled && !preview) {
         let action = inspectElements.get(node.shortcutId);
         if (!action) { action = el('button', 'uf-inspect'); action.type = 'button'; action.dataset.shortcutId = node.shortcutId; action.append(icon('more'));
           action.addEventListener('click', () => { const current = available(node.shortcutId); if (current) { selectedId = current.shortcutId; remember(); options.onInspect?.(current.entity, current.shortcutId); } }, { signal }); plane.append(action); inspectElements.set(node.shortcutId, action); }
@@ -347,7 +402,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         action.setAttribute('aria-label', `Действия: ${node.entity.title}`); action.tabIndex = node.shortcutId === activeId ? 0 : -1; action.classList.toggle('is-selected', node.shortcutId === selectedId);
       } else { inspectElements.get(node.shortcutId)?.remove(); inspectElements.delete(node.shortcutId); }
       target.classList.toggle('is-selected', node.shortcutId === selectedId); target.classList.toggle('is-moving', node.shortcutId === moving?.shortcutId);
-      target.setAttribute('aria-label', `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
+      target.setAttribute('aria-label', preview ? `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
       target.tabIndex = level === 'overview' && !arranging ? -1 : node.shortcutId === activeId ? 0 : -1;
     }
     for (const [id, target] of nodeElements) if (!keep.has(id)) { target.remove(); nodeElements.delete(id); inspectElements.get(id)?.remove(); inspectElements.delete(id); }
@@ -459,7 +514,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
 
   plane.addEventListener('keydown', event => {
     if ((event.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]')) return;
-    if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault(); options.onInspect(current.entity, current.shortcutId); } return; }
+    if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault();
+      if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusContext(current.contextId); else options.onInspect(current.entity, current.shortcutId); } return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
     if (event.key === 'Escape') { if (moving || contextPreview) { event.preventDefault(); cancel(); announce('Перенос отменён.'); } else if (arranging) setArrange(false); else fitOverview(); return; }
     if (event.key === ' ' && arranging) { event.preventDefault(); if (!moving) beginMove(selectedId); return; }
@@ -542,7 +598,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-shortcut-id]'), header = (event.target as HTMLElement).closest<HTMLElement>('.uf-context-title');
     gesture = { pointerId: event.pointerId, x: point.x, y: point.y, camera: { ...camera() }, type: 'press', shortcutId: target?.dataset.shortcutId ?? '', contextId: header?.dataset.contextId ?? '', moved: false,
       point: fieldScreenToWorld(point, camera(), viewportSize()) };
-    if (mode === 'mine' && gesture.shortcutId && options.commit && !arranging) {
+    if (mode === 'mine' && gesture.shortcutId && options.commit && !arranging && target?.dataset.preview !== 'true') {
       const captured = gesture; captured.timer = setTimeout(() => { if (gesture !== captured || captured.moved || destroyed) return; arranging = true; beginMove(captured.shortcutId); captured.type = 'move'; captured.moved = true; viewport.setPointerCapture(captured.pointerId); suppressClickUntil = performance.now() + 300; emit(); }, 450);
     }
   }, { signal });
