@@ -5,3 +5,5 @@
 /contracts/identity/v1/** text eol=lf
 /deploy/connector/fixtures/** text eol=lf
 /modules/capabilities/test/fixtures/** text eol=lf
+/modules/reviews/fixtures/povedai-json2.patch -text whitespace=-blank-at-eol
+/modules/reviews/fixtures/source-packet.json text eol=lf

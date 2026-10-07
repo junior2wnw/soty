@@ -1,0 +1,108 @@
+{
+  "schema": "soty.povedai-managed-source.packet.v1",
+  "base": "4cb52f521be72d6b9e2ec3eff0ab7fb95ede6646",
+  "sourceRevision": "705b1506bc262671b6d720cc28138c076a72c0ea",
+  "patch": "povedai-json2.patch",
+  "patchSha256": "24464629e1aa97da5d3b38d86d0ad4fae421976227451d149626a054539e4576",
+  "changedFiles": {
+    "docs/managed-reviews-v1.md": {
+      "gitBlobSha256": "d1e5370c0dcbc68d201e15409c32ef46e12ec401f4e1a09a815dc33806fcc34b",
+      "reviewedCheckoutSha256": "d1e5370c0dcbc68d201e15409c32ef46e12ec401f4e1a09a815dc33806fcc34b"
+    },
+    "src/server/app.ts": {
+      "gitBlobSha256": "2087d63e53e8a7f47c967fa8db089c658cade39abb08246d5de923a7519d4ab7",
+      "reviewedCheckoutSha256": "73e032cbd330c531bab2ea4a7557dd024277baae862291cbb6f434690b869d1c"
+    },
+    "src/server/atomic-json-document.ts": {
+      "gitBlobSha256": "006654d8d86326f26d109310109a98badf6d12ce938ba2727e10e54acecc93f4",
+      "reviewedCheckoutSha256": "006654d8d86326f26d109310109a98badf6d12ce938ba2727e10e54acecc93f4"
+    },
+    "src/server/managed-native-verifier.ts": {
+      "gitBlobSha256": "3e0894aa7fcd083314fcdb7f603fd680b8672939908ca09d0bf26edefbac9965",
+      "reviewedCheckoutSha256": "3e0894aa7fcd083314fcdb7f603fd680b8672939908ca09d0bf26edefbac9965"
+    },
+    "src/server/managed-public-fence.ts": {
+      "gitBlobSha256": "26c3393a5b9632b093428b6fccd70172cd9e5085751ef55cff07729c94f48afc",
+      "reviewedCheckoutSha256": "26c3393a5b9632b093428b6fccd70172cd9e5085751ef55cff07729c94f48afc"
+    },
+    "src/server/managed-review-model.ts": {
+      "gitBlobSha256": "2fe0697df647d9d5ed52c325f72c85ff61cb6392bdb72e8fc7047a99c0059522",
+      "reviewedCheckoutSha256": "2fe0697df647d9d5ed52c325f72c85ff61cb6392bdb72e8fc7047a99c0059522"
+    },
+    "src/server/managed-review-routes.ts": {
+      "gitBlobSha256": "768b87172378e66b6e87819c2f1b5ec7a4ae0f08940306735740582a21cc95c1",
+      "reviewedCheckoutSha256": "768b87172378e66b6e87819c2f1b5ec7a4ae0f08940306735740582a21cc95c1"
+    },
+    "src/server/managed-reviews.ts": {
+      "gitBlobSha256": "49e1085f547c35c5801bfd263e6c75575d5fe787d91ab066a48f46e1a2d72b16",
+      "reviewedCheckoutSha256": "49e1085f547c35c5801bfd263e6c75575d5fe787d91ab066a48f46e1a2d72b16"
+    },
+    "src/server/managed-store-probe-cli.ts": {
+      "gitBlobSha256": "82a3fabb75307beef80c2beba4af11994600d2c95a83c997862b0068691036c4",
+      "reviewedCheckoutSha256": "82a3fabb75307beef80c2beba4af11994600d2c95a83c997862b0068691036c4"
+    },
+    "src/server/managed-store-probe.ts": {
+      "gitBlobSha256": "c518128ca68b63ef78fc9eb1232829a5bc18b0ed3439efb539325dcc04f916de",
+      "reviewedCheckoutSha256": "c518128ca68b63ef78fc9eb1232829a5bc18b0ed3439efb539325dcc04f916de"
+    },
+    "src/server/public-resolver.ts": {
+      "gitBlobSha256": "6c8be8a697a38f87a97d468ce96fc482c58111c502dc564cf46531455e8b257e",
+      "reviewedCheckoutSha256": "f02287e958ad12bc1e778acd2b464ffb8af99bf9d9a95995ab59fd82f4e0c314"
+    },
+    "src/server/routes/public-routes.ts": {
+      "gitBlobSha256": "644224240d256ee99735781f8306586c2757de82bb92cd5150475c9b0d25109d",
+      "reviewedCheckoutSha256": "83cab907f0fc42f00b3c91b8c16e2d45aad3374c06170508b62140bc7bd70144"
+    },
+    "src/server/routes/public-widget-routes.ts": {
+      "gitBlobSha256": "5c8bbbb8136f9802d84776471c13cdc1e55753ea651466e85ec0c4dc4ad92ffb",
+      "reviewedCheckoutSha256": "9790a31f29025abea8dac6a1c6cf5cb44e384f7e2befd41ff7b16e898eb4339b"
+    },
+    "src/server/routes/trustlayer-routes.ts": {
+      "gitBlobSha256": "9a46289901d276979bc2447d6d2f74dace515e4403880382b3a36f5a2572796d",
+      "reviewedCheckoutSha256": "3a24a6df9521da6f59e721c746a6c0f1468e3b3ea4b2fc612c0dbfd388d1549f"
+    },
+    "src/server/site-scope.ts": {
+      "gitBlobSha256": "8e7816f8a5922f326d7ea9c4e3c5120c269a0878d189da36db2ff518a851fcd5",
+      "reviewedCheckoutSha256": "fc7d36eeccd2524d17077a0d6355b3f7401c25cf55c732b1372c7fc5e25afcf9"
+    },
+    "src/server/store.ts": {
+      "gitBlobSha256": "d54295947ca7e584361190586d232a3ab9a5ebf91de23a14ac3aa0899acaa494",
+      "reviewedCheckoutSha256": "d54295947ca7e584361190586d232a3ab9a5ebf91de23a14ac3aa0899acaa494"
+    },
+    "tests/atomic-json-document.test.ts": {
+      "gitBlobSha256": "8b199e810d685b33368a270bcc75ed0ecced9a54ce80923a0554d01f93fdad41",
+      "reviewedCheckoutSha256": "8b199e810d685b33368a270bcc75ed0ecced9a54ce80923a0554d01f93fdad41"
+    },
+    "tests/managed-native-reader.test.ts": {
+      "gitBlobSha256": "4ac65e5fcde349ec5ef9146f0a6aed28ce9369587bd9877866e9829d4480cf2d",
+      "reviewedCheckoutSha256": "4ac65e5fcde349ec5ef9146f0a6aed28ce9369587bd9877866e9829d4480cf2d"
+    },
+    "tests/managed-reviews.test.ts": {
+      "gitBlobSha256": "51048f775210145eed2bec2d9d28ca949949eb461d19c99d8c2e2d1b36084f40",
+      "reviewedCheckoutSha256": "51048f775210145eed2bec2d9d28ca949949eb461d19c99d8c2e2d1b36084f40"
+    },
+    "tests/support/managed-document-worker.ts": {
+      "gitBlobSha256": "6a1e605b4afc7cfbfbf0bc94eee3f85e41d9bf08a6829ed414a4adca5476c16f",
+      "reviewedCheckoutSha256": "6a1e605b4afc7cfbfbf0bc94eee3f85e41d9bf08a6829ed414a4adca5476c16f"
+    }
+  },
+  "preserved": {
+    "widgetGitBlobSha256": "194c272914cc30fc85492e371581a0aed8bdfade503460007aba70c4c56dc3c5",
+    "publicApi": "1.1"
+  },
+  "runtime": {
+    "sourceJSONReaders": [
+      1,
+      2
+    ],
+    "managedEnabledByDefault": false,
+    "managedPostgresSupported": false,
+    "linuxImageGate": false,
+    "productionRpLoader": false
+  },
+  "bundle": {
+    "file": "povedai-json2.bundle",
+    "sha256": "aa488eea4bcf8bf93faccb309ed756c6a2ca3447dbdf6253576b96218194a2a2",
+    "byteLength": 40414
+  }
+}

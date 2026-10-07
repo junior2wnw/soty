@@ -1,0 +1,1745 @@
+diff --git a/docs/managed-reviews-v1.md b/docs/managed-reviews-v1.md
+new file mode 100644
+index 0000000..0a4b043
+--- /dev/null
++++ b/docs/managed-reviews-v1.md
+@@ -0,0 +1,61 @@
++# Managed reviews: Source JSON2, default off
++
++This change starts from Povédai `4cb52f521be72d6b9e2ec3eff0ab7fb95ede6646`. It adds an optional Source-owned managed namespace to the existing JSON document. It does not add a Root database, alter Prisma/PostgreSQL, replace native login, or modify `review-widget.js` / public API 1.1.
++
++## Identity and authority
++
++`createManagedReviews(store, { enabled, verifier, nativeVerifier?, timeoutMs? })` accepts reviewed host code. Its `verifier.verify(credential, signal)` must return the exact configured RP identity after maintained issuer/signature/audience/nonce verification and fresh issuer session/userinfo validation. Incoming JSON claims, descriptors, email, phone, display name and Root agent grants cannot instantiate this port. No ID/access/refresh/native session token is stored in JSON2.
++
++The persistent Source principal is an exact, case-sensitive `(issuer, sub)` binding and a private label. It is not an `AdminUser` or a platform/site role. Root's private profile name is not copied to public reviews: the default alias is «Участник»; `authorLabel` is a separate explicit text choice and grants no identity assurance. All managed reviews start `pending`; the native renderer continues to escape content. No passkey/hardware/person-assurance claim is introduced.
++
++`service.operator.grant()` is Source administrative composition only, not an HTTP/MCP operation. It approves one principal, exact `{registryId, tenantId, appId, environmentId}`, 1–3 case-sensitive app/project/person resources, rights and a keyId/generation with at most 24 hours remaining. The Source record, active flag and expiry are checked in the atomic native commit and again before results. Revoking a key permanently deactivates its grants; inactive key IDs and grant IDs cannot be rewritten/reactivated. A new explicitly approved key/grant is required. There is no permission inference from title, domain, metadata or a Root author draft.
++
++The existing native subject/owner placement is provisioned in one commit with its binding and receipt. New managed resources have `sharingMode:private`, `canDisplay:false`, and public collection/reply/moderation flags false. Public metadata, direct object/subject, aliases, counts and recent/read projections are fenced. `publish` requires the explicit Source publish right and binding owner; moderation requires the separate moderate right. No native demo site, admin, password or email is auto-created in a managed tenant.
++
++`collect`/`reply` reuse the native review constructor and event stream, including exact parent/object checks and bounded nested depth. `moderate` reuses the native status/event constructor. The private `list` result gives a moderator its approved resource's rows; a participant with collect/reply rights receives only its native author histories. Identity claims and credentials are excluded. This slice does not silently adopt an old public subject or merge native accounts. Existing public-read mappings remain usable; managed adoption of existing sites/objects and publication-policy UX needs a separate explicit owner workflow.
++
++`attachLegacy` requires both the Root principal and a current Source native proof. `createManagedNativeVerifier` reuses actual `AdminAuthService.session` or the native site-bound author token / ownership hashes, without creating a matching author by email. Links are additive and one-to-one, never rewrite old IDs, password hashes or review history, and grant no additional native role. Native admin attach records an identity link; it does not add a new site membership. A revoked native token/session cannot be used for repeated attachment.
++
++## Storage, replay and failure
++
++`AtomicJsonDocument` is used by every native/managed JSON reader/writer: one exclusive lock, a bounded current snapshot, a synchronous domain callback, exclusive temporary file, file fsync, atomic replace, directory fsync on Unix. Windows supports file fsync/replace here, without the Unix directory durability guarantee. Windows lock-creation EPERM/delete-pending contention is retried only before the callback; callbacks, identity requests, effects and token exchanges are never retried automatically.
++
++The lock has PID+nonce and inode/device witnesses. A crash retains it. There is no timeout-based stale takeover. `recoverDeadOwner` requires an exact witness and ESRCH twice-checked identity with writers/recovery tools quiesced; live/reused PIDs refuse. A death before replace preserves prior bytes. A lost acknowledgement after replace is reconciled by the same reviewed operation key and exact intent; altered intent conflicts. Post-commit Root/Source revocation can deny the acknowledgement while the Source receipt already exists. This is a Source atomic commit, not a distributed Root/issuer/runtime transaction.
++
++Limits: document 128 MiB (a lower trusted limit is allowed), 256 principals, 512 identity links, 256 grants, 384 bindings, 10,000 operation receipts, 4 actual outstanding issuer/native verification promises per service, 15-second actor scope, bounded 3-second default verifier wait. Abort-ignoring verification keeps its slot until it settles. There is no quota eviction, private content cache or silent authority/history rewrite. A full authority/receipt store fails closed. A caller can explicitly reconcile an ambiguous request; the adapter never performs an automatic duplicate Source operation.
++
++## Reader-first migration and fallback
++
++1. With all writers quiesced, preserve an encrypted coherent backup including native/runtime custody separately as applicable. Inspect a coherent read-only snapshot with the independent literal reader (`managed-store-probe-cli --file <approved snapshot>`); output is only public protocol/version and counts. Bind actual reviewed Source image capability to reader versions. A label/file declaration alone is not that runtime check.
++2. Deploy the reviewed reader2/atomic-writer baseline with managed service absent/disabled and constructor `allowManagedMigration:false`. It reads JSON1/JSON2 and preserves the complete managed namespace during native writes. Do not run old JSON writers concurrently.
++3. Only after that baseline is an independently verified fallback, enable the reviewed Source RP/service and explicitly pass `allowManagedMigration:true` in the trusted constructor for the first managed commit. No HTTP argument or default config enables migration. Migration is additive: native IDs/history are retained and JSON2 cannot be downgraded to JSON1.
++4. Feature-off fallback uses reader2 and refuses new managed admission while retaining JSON2 and native operation. Old4cb normalizes away unknown collections; it does **not** self-refuse JSON2. The external pre-START reader gate must reject old4cb/reader1 on a JSON2 volume. Never START it to test this on user data.
++
++Actual Linux images, file/owner permissions, cold reader invocation and coherent backup/restore are still required before deploying this change. Local Windows tests prove process contention, byte preservation and explicit recovery; they do not prove a Linux image or disk-loss durability. Managed PostgreSQL returns `managed_postgres_unavailable` until an additive Source migration, independent reader/fallback and actual PG tests exist. Native PostgreSQL is unchanged.
++
++## Composition seams and current unsupported paths
++
++Source `createApplication({ ..., managedReviews })` optionally registers `POST /api/managed/v1/{provision,context,list,collect,publish,moderate,attach}`. No operator/grant HTTP route exists. Mutation/read POSTs require the configured exact Source origin and the trusted RP verifier; default composition returns managed503 and writes no namespace. This patch does not add a production OIDC client/BFF loader, Source refresh/key custody, browser consent/onboarding UI, a network Root transport, old managed-object adoption, or an agent capability/budget registration. These are concrete next integration gates, not supplied by a descriptor. The existing native publication/consent UX and renderer remain unchanged; managed publication UX must review Source policy before exposing this optional path to visitors.
++
++Root `createManagedReviewsPort` captures actual Apps/Root authority synchronously, calls the verified Source between locks, then checks current authority. The host resolves transient Source credentials from an explicitly approved private RP/account binding. It owns no DB, issues no Source grant, accepts no arbitrary URL/script/key, and makes no whole-SDK/readiness claim. A Source receipt can produce exact scoped subject pins, not executable-code attestation or automatic Registration approval. HTTP/MCP agent dispatch requires its normal separately approved capability and budget plumbing.
++
++## Reproducible synthetic checks
++
++Run from this Source checkout after its own dependencies and Vite client assets are present, with `TEST_DATABASE_URL`, `DATABASE_URL`, `REDIS_URL` absent/empty:
++
++```text
++node node_modules/typescript/bin/tsc --noEmit
++node node_modules/typescript/bin/tsc -p tsconfig.server.json
++node node_modules/vite/bin/vite.js build
++node --import tsx --test --test-concurrency=1 tests/*.test.ts
++```
++
++Run Root pure reviews checks from its checkout: `node --test modules/reviews/test/*.test.mjs`.
++
++The actual Root+Source fixture is outside Root's ordinary `.mjs` glob because Source is separately typed/versioned. Run **from the Source checkout** (its static-assets cwd contract is preserved):
++
++```text
++node --import tsx --test <Root checkout>/modules/reviews/fixtures/managed-source-http.test.mjs
++```
++
++All accounts, grants, keys, runtime/native data and HTTP providers in those gates are synthetic loopback/task-owned fixtures. Production accounts/configuration/queues are never read or changed. PostgreSQL/Docker gates are not substituted by these fixtures.
+diff --git a/src/server/app.ts b/src/server/app.ts
+index 0bb174c..0fbf58c 100644
+--- a/src/server/app.ts
++++ b/src/server/app.ts
+@@ -1,6 +1,11 @@
+ import cors from "cors";
+ import express from "express";
+ import { z } from "zod";
++import { registerManagedPublicFence } from "./managed-public-fence.js";
++import { ManagedReviewError } from "./managed-review-model.js";
++import { AtomicDocumentError } from "./atomic-json-document.js";
++import { registerManagedReviewRoutes } from "./managed-review-routes.js";
++import type { createManagedReviews } from "./managed-reviews.js";
+ import { AdminAuthService } from "./admin-auth.js";
+ import { ReviewAuthService } from "./auth.js";
+ import { createAvatarStore } from "./avatar-store.js";
+@@ -120,12 +125,14 @@ export function createApplication({
+   store,
+   runtime,
+   config,
+-  mail = createMailService(config.mail)
++  mail = createMailService(config.mail),
++  managedReviews
+ }: {
+   store: ReviewStore;
+   runtime: RuntimeStore;
+   config: ApplicationConfig;
+   mail?: MailService;
++  managedReviews?: ReturnType<typeof createManagedReviews>;
+ }) {
+   const app = express();
+   const avatars = createAvatarStore({
+@@ -215,6 +222,8 @@ export function createApplication({
+   }, mail);
+ 
+   const platformLegalDocuments = buildPlatformLegalDocuments(config);
++  registerManagedPublicFence(app, store);
++  registerManagedReviewRoutes(app, managedReviews, config.publicUrl);
+   registerAdminAuthRoutes(app, { auth: adminAuth, publicAuth, runtime, store, legalDocuments: platformLegalDocuments });
+   registerPlatformLegalRoutes(app, { config });
+   registerCommerceRoutes(app, {
+@@ -284,6 +293,9 @@ export function createApplication({
+   registerStaticRoutes(app);
+ 
+   app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
++    if (error instanceof ManagedReviewError || error instanceof AtomicDocumentError) {
++      res.status(error instanceof ManagedReviewError ? error.status : 503).json({ error: error.code }); return;
++    }
+     if (error instanceof z.ZodError) {
+       res.status(400).json({ error: "Validation error", details: error.issues });
+       return;
+diff --git a/src/server/atomic-json-document.ts b/src/server/atomic-json-document.ts
+new file mode 100644
+index 0000000..9106314
+--- /dev/null
++++ b/src/server/atomic-json-document.ts
+@@ -0,0 +1,147 @@
++import crypto from "node:crypto";
++import { constants } from "node:fs";
++import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
++import type { FileHandle } from "node:fs/promises";
++import path from "node:path";
++
++export const ATOMIC_JSON_PROFILE = "povedai.atomic-json-document.v1";
++export interface AtomicJsonOptions { maxBytes?: number; lockTimeoutMs?: number; }
++interface LockRecord { profile: typeof ATOMIC_JSON_PROFILE; pid: number; nonce: string; }
++export class AtomicDocumentError extends Error {
++  constructor(readonly code: string) { super(code); this.name = "AtomicDocumentError"; }
++}
++const need = (ok: unknown, code: string) => { if (!ok) throw new AtomicDocumentError(code); };
++const absent = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
++
++/** One document is the Source commit boundary. Every native and managed writer
++ * must use this port; a second per-instance queue is not a process lock.
++ * A dead writer's lock is retained until the explicit checked recovery method.
++ * Windows reports file-sync/atomic replace, not a Unix directory-sync guarantee. */
++export class AtomicJsonDocument {
++  readonly filePath: string;
++  readonly lockPath: string;
++  private readonly maxBytes: number;
++  private readonly lockTimeoutMs: number;
++  constructor(filePath: string, options: AtomicJsonOptions = {}) {
++    need(typeof filePath === "string" && filePath.length > 0, "document_path_invalid");
++    this.filePath = path.resolve(filePath); this.lockPath = this.filePath + ".writer-lock";
++    this.maxBytes = options.maxBytes ?? 128 * 1024 * 1024;
++    this.lockTimeoutMs = options.lockTimeoutMs ?? 3000;
++    need(Number.isSafeInteger(this.maxBytes) && this.maxBytes >= 65536 && this.maxBytes <= 128 * 1024 * 1024, "document_limits_invalid");
++    need(Number.isSafeInteger(this.lockTimeoutMs) && this.lockTimeoutMs >= 10 && this.lockTimeoutMs <= 10000, "document_limits_invalid");
++  }
++  private async directory() {
++    const directory = path.dirname(this.filePath); await mkdir(directory, { recursive: true, mode: 0o700 });
++    const resolved = path.resolve(await realpath(directory));
++    need(process.platform === "win32" ? resolved.toLowerCase() === directory.toLowerCase() : resolved === directory, "document_path_unsafe");
++    const info = await lstat(directory); need(info.isDirectory() && !info.isSymbolicLink(), "document_path_unsafe");
++    return directory;
++  }
++  private async readFile(file: string, maximum: number): Promise<{ bytes: Buffer; inode: number; device: number }> {
++    const before = await lstat(file);
++    need(before.isFile() && !before.isSymbolicLink() && before.nlink === 1 && before.size <= maximum, "document_file_unsafe");
++    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
++    try {
++      const info = await handle.stat();
++      need(info.isFile() && info.nlink === 1 && info.size <= maximum && info.dev === before.dev && info.ino === before.ino, "document_file_unsafe");
++      const chunks: Buffer[] = []; let total = 0;
++      for (;;) {
++        const buffer = Buffer.alloc(Math.min(65536, maximum + 1 - total));
++        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
++        if (!bytesRead) break; total += bytesRead;
++        need(total <= maximum, "document_capacity"); chunks.push(buffer.subarray(0, bytesRead));
++      }
++      const current = await lstat(file);
++      need(!current.isSymbolicLink() && current.dev === info.dev && current.ino === info.ino, "document_file_changed");
++      return { bytes: Buffer.concat(chunks, total), inode: info.ino, device: info.dev };
++    } finally { await handle.close(); }
++  }
++  private async acquire(): Promise<{ record: LockRecord; inode: number; device: number }> {
++    await this.directory(); const deadline = performance.now() + this.lockTimeoutMs;
++    for (;;) {
++      need(performance.now() < deadline, "document_busy");
++      const record: LockRecord = { profile: ATOMIC_JSON_PROFILE, pid: process.pid, nonce: crypto.randomBytes(16).toString("hex") };
++      try {
++        const handle = await this.openLock();
++        try { await handle.writeFile(JSON.stringify(record)); await handle.sync();
++          const info = await handle.stat(); return { record, inode: info.ino, device: info.dev };
++        } finally { await handle.close(); }
++      } catch (error) {
++        const code = (error as NodeJS.ErrnoException).code;
++        const windowsDeletePending = process.platform === "win32" && code === "EPERM";
++        if (code !== "EEXIST" && !windowsDeletePending) throw error;
++        // Windows can report EPERM instead of EEXIST during delete-pending.
++        // Only lock CREATION is retried, before any domain callback or write.
++        // A persistent permissions problem times out without changing ACLs.
++        let info; try { info = await lstat(this.lockPath); } catch (changed) {
++          if (absent(changed)) { await new Promise(resolve => setTimeout(resolve, 10)); continue; } throw changed;
++        }
++        need(info.isFile() && !info.isSymbolicLink() && info.nlink === 1, "document_lock_unsafe");
++        need(performance.now() < deadline, "document_busy");
++        await new Promise(resolve => setTimeout(resolve, 10));
++      }
++    }
++  }
++  /** Narrow syscall seam for deterministic transport regression. Production
++   * uses exactly this exclusive creation; no data/config selects another port. */
++  protected openLock() { return open(this.lockPath, "wx", 0o600); }
++  private async release(lock: { record: LockRecord; inode: number; device: number }) {
++    const current = await this.readFile(this.lockPath, 1024);
++    need(current.inode === lock.inode && current.device === lock.device && current.bytes.toString("utf8") === JSON.stringify(lock.record), "document_lock_changed");
++    await unlink(this.lockPath);
++  }
++  private async snapshot<T>(): Promise<T | undefined> {
++    try {
++      const { bytes } = await this.readFile(this.filePath, this.maxBytes);
++      let text: string;
++      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new AtomicDocumentError("document_encoding_invalid"); }
++      try { return JSON.parse(text) as T; } catch { throw new AtomicDocumentError("document_json_invalid"); }
++    } catch (error) { if (absent(error)) return undefined; throw error; }
++  }
++  private async replace(value: unknown) {
++    const bytes = Buffer.from(JSON.stringify(value, null, 2), "utf8");
++    need(bytes.length <= this.maxBytes, "document_capacity");
++    const temporary = this.filePath + "." + crypto.randomBytes(16).toString("hex") + ".tmp";
++    let handle: FileHandle | undefined = await open(temporary, "wx", 0o600);
++    try { await handle.writeFile(bytes); await handle.sync(); await handle.close();
++      handle = undefined;
++      // Windows may transiently hold an antivirus handle. Retrying the same
++      // atomic replace does not retry a domain operation or rerun a callback.
++      for (let attempt = 0;; attempt++) {
++        try { await rename(temporary, this.filePath); break; }
++        catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM" || attempt >= 5) throw error;
++          await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt)); }
++      }
++      if (process.platform !== "win32") { const directory = await open(path.dirname(this.filePath), constants.O_RDONLY);
++        try { await directory.sync(); } finally { await directory.close(); } }
++    } finally { if (handle) await handle.close(); await unlink(temporary).catch(error => { if (!absent(error)) throw error; }); }
++  }
++  async read<T>(): Promise<T | undefined> {
++    const lock = await this.acquire(); try { return await this.snapshot<T>(); } finally { await this.release(lock); }
++  }
++  async transact<T, R>(callback: (current: T | undefined) => { document: T; result: R }): Promise<R> {
++    const lock = await this.acquire();
++    try {
++      const outcome = callback(await this.snapshot<T>());
++      need(outcome && typeof outcome === "object" && !(outcome as unknown as { then?: unknown }).then, "document_async_commit_forbidden");
++      await this.replace(outcome.document); return outcome.result;
++    } finally { await this.release(lock); }
++  }
++  /** Exact metadata witness only, never secret document content or a time lease.
++   * Explicit recovery refuses a live PID (including a reused PID), then compares
++   * inode/device/full nonce record again before unlink. Run only with writers
++   * quiesced; concurrent recovery tools are not an automatic failover protocol. */
++  async inspectLock() {
++    const value = await this.readFile(this.lockPath, 1024);
++    const record = JSON.parse(value.bytes.toString("utf8")) as LockRecord;
++    need(record.profile === ATOMIC_JSON_PROFILE && Number.isSafeInteger(record.pid) && record.pid > 0 && /^[a-f0-9]{32}$/.test(record.nonce), "document_lock_unsafe");
++    return Object.freeze({ ...record, inode: value.inode, device: value.device });
++  }
++  async recoverDeadOwner(expected: Awaited<ReturnType<AtomicJsonDocument["inspectLock"]>>) {
++    const current = await this.inspectLock(); need(JSON.stringify(current) === JSON.stringify(expected), "document_lock_changed");
++    let dead = false; try { process.kill(current.pid, 0); } catch (error) { dead = (error as NodeJS.ErrnoException).code === "ESRCH"; }
++    need(dead, "document_owner_not_proven_dead");
++    const again = await this.inspectLock(); need(JSON.stringify(current) === JSON.stringify(again), "document_lock_changed");
++    await unlink(this.lockPath); return Object.freeze({ recovered: true });
++  }
++}
+diff --git a/src/server/managed-native-verifier.ts b/src/server/managed-native-verifier.ts
+new file mode 100644
+index 0000000..8e6cc2c
+--- /dev/null
++++ b/src/server/managed-native-verifier.ts
+@@ -0,0 +1,28 @@
++import type { Request } from "express";
++import type { Review } from "../shared/types.js";
++import type { ReviewStore } from "./store.js";
++import type { AdminAuthService } from "./admin-auth.js";
++import type { ReviewAuthService } from "./auth.js";
++import { reviewOwnedBySession } from "./public-author.js";
++import { managedNeed, managedIdSchema } from "./managed-review-model.js";
++import type { ManagedNativeVerifier } from "./managed-reviews.js";
++
++/** Reuses the ACTUAL native Source session checks. Identity linkage grants no
++ * native site/global role and never calls findOrCreateAuthor's email matcher. */
++export function createManagedNativeVerifier({ store, adminAuth, publicAuth }: { store: ReviewStore; adminAuth: AdminAuthService; publicAuth: ReviewAuthService }): ManagedNativeVerifier {
++  return Object.freeze({ async verify(credential: unknown, signal: AbortSignal) {
++    const req = credential as Request; managedNeed(req && typeof req.header === "function" && !signal.aborted, "managed_native_proof_invalid", 403);
++    const input = req.body as Record<string, unknown>; managedIdSchema.parse(input?.nativeId);
++    if (input.kind === "admin") {
++      const session = await adminAuth.session(req); managedNeed(session && session.user.id === input.nativeId && !signal.aborted, "managed_native_proof_invalid", 403);
++      return { kind: "admin" as const, nativeId: session!.user.id, authVersion: session!.user.authVersion, expiresAt: Math.min(Date.parse(session!.expiresAt), Date.now() + 3000) };
++    }
++    managedNeed(input.kind === "author", "managed_native_proof_invalid", 403); managedIdSchema.parse(input.siteId);
++    const site = await store.getSiteById(input.siteId as string); managedNeed(site, "managed_native_proof_invalid", 403);
++    const token = req.header("x-povedai-author-token"); managedNeed(typeof token === "string" && token.length <= 512, "managed_native_proof_invalid", 403);
++    const session = await publicAuth.verify(token, site!.key); managedNeed(session && !signal.aborted, "managed_native_proof_invalid", 403);
++    const author = await store.getAuthor(input.nativeId as string); managedNeed(author?.siteId === site!.id && !author.bannedAt, "managed_native_proof_invalid", 403);
++    managedNeed(await reviewOwnedBySession(store, { authorId: author!.id } as Review, session), "managed_native_proof_invalid", 403);
++    return { kind: "author" as const, nativeId: author!.id, siteId: site!.id, expiresAt: Math.min(Date.parse(session!.expiresAt), Date.now() + 3000) };
++  } });
++}
+diff --git a/src/server/managed-public-fence.ts b/src/server/managed-public-fence.ts
+new file mode 100644
+index 0000000..0624fbd
+--- /dev/null
++++ b/src/server/managed-public-fence.ts
+@@ -0,0 +1,23 @@
++import type { Express } from "express";
++import type { ReviewStore } from "./store.js";
++import { asyncRoute } from "./http.js";
++
++/** Public aliases must not disclose a private managed sibling even when a
++ * different placement in its site has been published. Native admin routes and
++ * explicit managed-authority routes do not run through this public projection. */
++export function registerManagedPublicFence(app: Express, store: ReviewStore) {
++  if (!store.isPublicSite || !store.isPublicObject) return;
++  app.use(["/api/public/:siteKey", "/v1/public/:siteKey"], asyncRoute(async (req, res, next) => {
++    const key = req.params.siteKey;
++    const site = typeof key === "string" ? await store.getSiteByKey(key) : undefined;
++    if (!site) { next(); return; } // Existing routes retain their exact not-found wire.
++    if (!await store.isPublicSite!(site.id)) { res.status(404).json({ error: "Not found" }); return; }
++    const match = req.path.match(/^\/objects\/([^/]+)(?:\/|$)/u);
++    if (match) {
++      let slug: string; try { slug = decodeURIComponent(match[1]); } catch { res.status(400).json({ error: "Invalid path" }); return; }
++      const object = await store.getObjectBySlug(slug, site.id);
++      if (object && !await store.isPublicObject!(object.id)) { res.status(404).json({ error: "Not found" }); return; }
++    }
++    next();
++  }));
++}
+diff --git a/src/server/managed-review-model.ts b/src/server/managed-review-model.ts
+new file mode 100644
+index 0000000..0bd8a35
+--- /dev/null
++++ b/src/server/managed-review-model.ts
+@@ -0,0 +1,52 @@
++import crypto from "node:crypto";
++import { z } from "zod";
++
++export const MANAGED_REVIEW_PROTOCOL = "povedai.managed-reviews.v1";
++export const MANAGED_REVIEW_DOCUMENT_VERSION = 2;
++export const MANAGED_REVIEW_LIMITS = Object.freeze({ principals: 256, links: 512, grants: 256, bindings: 384, receipts: 10000 });
++export class ManagedReviewError extends Error { constructor(readonly code: string, readonly status = 400) { super(code); this.name = "ManagedReviewError"; } }
++export const managedNeed = (ok: unknown, code = "managed_review_invalid", status = 400) => { if (!ok) throw new ManagedReviewError(code, status); };
++export function exactManagedHash(value: unknown): string { return crypto.createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex"); }
++export function wellFormedText(value: string) { return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value); }
++const text = (maximum: number) => z.string().min(1).max(maximum).refine(value => wellFormedText(value) && !/[\u0000-\u001f\u007f]/u.test(value));
++export const managedIdSchema = text(200);
++export const managedIssuerSchema = text(1024).refine(value => { try { const url = new URL(value); return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && !url.search && !url.hash; } catch { return false; } });
++const sha = z.string().regex(/^[a-f0-9]{64}$/);
++const iso = z.string().regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/).refine(value => Number.isFinite(Date.parse(value)));
++export const managedSubjectSchema = z.strictObject({ kind: z.enum(["app", "project", "person"]), id: managedIdSchema });
++export const managedScopeSchema = z.strictObject({ registryId: managedIdSchema, tenantId: managedIdSchema, appId: managedIdSchema, environmentId: managedIdSchema });
++export const managedRightSchema = z.enum(["provision", "collect", "reply", "moderate", "publish"]);
++const principal = z.strictObject({ id: managedIdSchema, identityHash: sha, issuer: managedIssuerSchema, subject: managedIdSchema, label: text(120), active: z.boolean(), createdAt: iso });
++const link = z.strictObject({ principalId: managedIdSchema, kind: z.enum(["admin", "author"]), nativeId: managedIdSchema, siteId: managedIdSchema.optional(), createdAt: iso }).refine(value => value.kind === "admin" ? !value.siteId : Boolean(value.siteId));
++export const managedGrantSchema = z.strictObject({ id: managedIdSchema, principalId: managedIdSchema, scope: managedScopeSchema, rights: z.array(managedRightSchema).min(1).max(5), subjects: z.array(managedSubjectSchema).min(1).max(3), keyId: managedIdSchema, generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), active: z.boolean(), expiresAt: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) });
++const binding = z.strictObject({ id: managedIdSchema, principalId: managedIdSchema, scope: managedScopeSchema, localSubject: managedSubjectSchema, entityType: z.enum(["product", "project", "profile"]), siteId: managedIdSchema, objectId: managedIdSchema, subjectId: managedIdSchema, placementId: managedIdSchema, published: z.boolean(), generation: z.literal(1), createdAt: iso });
++const receipt = z.strictObject({ key: sha, intentDigest: sha, actorId: managedIdSchema, scopeDigest: sha, operation: z.enum(["provision", "collect", "reply", "moderate", "publish", "attach"]), createdAt: iso, value: z.record(z.string(), z.unknown()).refine(value => Buffer.byteLength(JSON.stringify(value)) <= 8192) });
++const namespace = z.strictObject({ version: z.literal(1), principals: z.array(principal).max(MANAGED_REVIEW_LIMITS.principals), identityLinks: z.array(link).max(MANAGED_REVIEW_LIMITS.links), tenantGrants: z.array(managedGrantSchema).max(MANAGED_REVIEW_LIMITS.grants), subjectBindings: z.array(binding).max(MANAGED_REVIEW_LIMITS.bindings), operationReceipts: z.array(receipt).max(MANAGED_REVIEW_LIMITS.receipts) });
++export type ManagedSubjectKind = z.infer<typeof managedSubjectSchema>["kind"];
++export type ManagedRight = z.infer<typeof managedRightSchema>;
++export type ManagedScope = z.infer<typeof managedScopeSchema>;
++export type ManagedPrincipal = z.infer<typeof principal>;
++export type ManagedIdentityLink = z.infer<typeof link>;
++export type ManagedGrant = z.infer<typeof managedGrantSchema>;
++export type ManagedBinding = z.infer<typeof binding>;
++export type ManagedReceipt = z.infer<typeof receipt>;
++export type ManagedReviewNamespace = z.infer<typeof namespace>;
++export function opaqueManagedId(value: unknown): asserts value is string { managedNeed(managedIdSchema.safeParse(value).success); }
++export function managedScopeKey(scope: ManagedScope): string { return exactManagedHash([scope.registryId, scope.tenantId, scope.appId, scope.environmentId]); }
++export function emptyManagedNamespace(): ManagedReviewNamespace { return { version: 1, principals: [], identityLinks: [], tenantGrants: [], subjectBindings: [], operationReceipts: [] }; }
++export function validateManagedNamespace(input: unknown): asserts input is ManagedReviewNamespace {
++  managedNeed(namespace.safeParse(input).success, "managed_document_corrupt", 503);
++  const value = input as ManagedReviewNamespace;
++  const unique = (values: unknown[]) => new Set(values.map(item => JSON.stringify(item))).size === values.length;
++  const principalIds = new Set(value.principals.map(item => item.id));
++  managedNeed(unique(value.principals.map(item => item.id)) && unique(value.principals.map(item => item.identityHash)), "managed_document_corrupt", 503);
++  for (const item of value.principals) managedNeed(item.identityHash === exactManagedHash([item.issuer, item.subject]), "managed_document_corrupt", 503);
++  for (const item of value.identityLinks) managedNeed(principalIds.has(item.principalId), "managed_document_corrupt", 503);
++  managedNeed(unique(value.identityLinks.map(item => [item.principalId, item.kind, item.siteId ?? null])) && unique(value.identityLinks.map(item => [item.kind, item.nativeId, item.siteId ?? null])), "managed_document_corrupt", 503);
++  for (const item of value.tenantGrants) managedNeed(principalIds.has(item.principalId) && unique(item.rights) && unique(item.subjects.map(subject => [subject.kind, subject.id])) && item.subjects.every(subject => subject.kind !== "app" || subject.id === item.scope.appId), "managed_document_corrupt", 503);
++  managedNeed(unique(value.tenantGrants.map(item => item.id)), "managed_document_corrupt", 503);
++  for (const item of value.subjectBindings) managedNeed(principalIds.has(item.principalId) && item.entityType === ({ app: "product", project: "project", person: "profile" } as const)[item.localSubject.kind] && (item.localSubject.kind !== "app" || item.localSubject.id === item.scope.appId), "managed_document_corrupt", 503);
++  managedNeed(unique(value.subjectBindings.map(item => item.id)) && unique(value.subjectBindings.map(item => [managedScopeKey(item.scope), item.localSubject.kind, item.localSubject.id])) && unique(value.subjectBindings.map(item => item.objectId)) && unique(value.subjectBindings.map(item => item.subjectId)) && unique(value.subjectBindings.map(item => item.placementId)), "managed_document_corrupt", 503);
++  for (const item of value.operationReceipts) managedNeed(principalIds.has(item.actorId), "managed_document_corrupt", 503);
++  managedNeed(unique(value.operationReceipts.map(item => item.key)), "managed_document_corrupt", 503);
++}
+diff --git a/src/server/managed-review-routes.ts b/src/server/managed-review-routes.ts
+new file mode 100644
+index 0000000..25e83fd
+--- /dev/null
++++ b/src/server/managed-review-routes.ts
+@@ -0,0 +1,23 @@
++import type { Express } from "express";
++import { asyncRoute } from "./http.js";
++import type { createManagedReviews } from "./managed-reviews.js";
++
++/** Optional Source RP composition. Native request authentication is supplied by
++ * a trusted verifier; the request body selects data within existing grants. */
++export function registerManagedReviewRoutes(app: Express, service?: ReturnType<typeof createManagedReviews>, publicUrl?: string) {
++  const origin = publicUrl ? new URL(publicUrl).origin : undefined;
++  const methods = { provision: "provision", context: "context", list: "list", collect: "collect", publish: "publish", moderate: "moderate" } as const;
++  for (const [path, method] of Object.entries(methods)) app.post("/api/managed/v1/" + path, asyncRoute(async (req, res) => {
++    res.setHeader("cache-control", "no-store");
++    if (!service) { res.status(503).json({ error: "managed_reviews_disabled" }); return; }
++    if (!origin || req.get("origin") !== origin) { res.status(403).json({ error: "managed_origin_required" }); return; }
++    const result = await service.withActor<unknown>(req, actor => service[method](actor, req.body)); res.json(result);
++  }));
++  app.post("/api/managed/v1/attach", asyncRoute(async (req, res) => {
++    res.setHeader("cache-control", "no-store");
++    if (!service) { res.status(503).json({ error: "managed_reviews_disabled" }); return; }
++    if (!origin || req.get("origin") !== origin) { res.status(403).json({ error: "managed_origin_required" }); return; }
++    res.json(await service.withActor(req, actor => service.attachLegacy(actor, req.body, req)));
++  }));
++  // There is deliberately no HTTP route for issuing/revoking Source tenant grants.
++}
+diff --git a/src/server/managed-reviews.ts b/src/server/managed-reviews.ts
+new file mode 100644
+index 0000000..eb66dc7
+--- /dev/null
++++ b/src/server/managed-reviews.ts
+@@ -0,0 +1,240 @@
++import crypto from "node:crypto";
++import { z } from "zod";
++import { JsonReviewStore, createJsonReview, updateJsonReviewStatus, ensureJsonSubject, type DatabaseFile, type ReviewStore } from "./store.js";
++import { exactManagedHash, managedNeed as need, ManagedReviewError, managedIdSchema, managedIssuerSchema, managedScopeSchema, managedSubjectSchema, managedGrantSchema, managedScopeKey, MANAGED_REVIEW_LIMITS, wellFormedText,
++  type ManagedScope, type ManagedPrincipal, type ManagedBinding, type ManagedRight } from "./managed-review-model.js";
++import { nowIso, uid } from "./utils.js";
++import { publicReview } from "./public-review.js";
++
++const label = z.string().min(1).max(120).refine(value => value.trim().length > 0 && wellFormedText(value) && !/[\u0000-\u001f\u007f]/u.test(value));
++const identitySchema = z.strictObject({ issuer: managedIssuerSchema, subject: managedIdSchema, label, expiresAt: z.number().int().positive() });
++const scopeSubject = { scope: managedScopeSchema, localSubject: managedSubjectSchema };
++const provisionSchema = z.strictObject({ ...scopeSubject, requestId: managedIdSchema, title: label });
++const actionSchema = z.strictObject({ ...scopeSubject, requestId: managedIdSchema });
++const reviewSchema = actionSchema.extend({ body: z.string().min(1).max(10000).refine(value => value.trim().length > 0 && wellFormedText(value)), authorLabel: label.optional(), rating: z.number().int().min(1).max(5).optional(), parentId: managedIdSchema.optional() });
++const publishSchema = actionSchema.extend({ canDisplay: z.boolean() });
++const moderateSchema = actionSchema.extend({ reviewId: managedIdSchema, status: z.enum(["approved", "rejected", "deleted"]) });
++const attachSchema = z.strictObject({ scope: managedScopeSchema, requestId: managedIdSchema, kind: z.enum(["admin", "author"]), nativeId: managedIdSchema, siteId: managedIdSchema.optional() });
++export interface ManagedRootIdentity { issuer: string; subject: string; label: string; expiresAt: number; }
++/** Implemented by the Source RP: maintained signature/issuer/audience/nonce
++ * validation plus fresh issuer userinfo/current session. Claims from a request
++ * or a Root descriptor are not this trusted port. No token is stored here. */
++export interface ManagedIdentityVerifier {
++  verify(credential: unknown, signal: AbortSignal): Promise<ManagedRootIdentity>;
++}
++export interface ManagedNativeProof { kind: "admin" | "author"; nativeId: string; siteId?: string; authVersion?: number; expiresAt: number; }
++export interface ManagedNativeVerifier { verify(credential: unknown, signal: AbortSignal): Promise<ManagedNativeProof>; }
++export interface ManagedActor { readonly protocol: "povedai.managed-actor.v1"; }
++interface ActorState { active: boolean; credential: unknown; identity: ManagedRootIdentity; principalId: string; deadline: number; }
++export interface ManagedReviewsOptions { enabled?: boolean; verifier: ManagedIdentityVerifier; nativeVerifier?: ManagedNativeVerifier; timeoutMs?: number; }
++
++export function createManagedReviews(store: ReviewStore, options: ManagedReviewsOptions) {
++  need(typeof options.enabled === "boolean" || options.enabled === undefined);
++  need(options.verifier && typeof options.verifier.verify === "function");
++  const enabled = options.enabled ?? false, timeoutMs = options.timeoutMs ?? 3000;
++  need(Number.isSafeInteger(timeoutMs) && timeoutMs >= 100 && timeoutMs <= 10000);
++  const json = store instanceof JsonReviewStore ? store : undefined;
++  const verifyIdentity = options.verifier.verify.bind(options.verifier);
++  const verifyNative = options.nativeVerifier?.verify.bind(options.nativeVerifier);
++  const actors = new WeakMap<ManagedActor, ActorState>();
++  const outstanding = new Map<Promise<unknown>, AbortController>(); let closed = false;
++  const available = () => { need(!closed && enabled, "managed_reviews_disabled", 503); need(json, "managed_postgres_unavailable", 503); return json!; };
++  async function bounded<T>(work: (signal: AbortSignal) => Promise<T>) {
++    need(!closed && outstanding.size < 4, "managed_verifier_busy", 503);
++    const controller = new AbortController();
++    const pending = Promise.resolve().then(() => work(controller.signal)); outstanding.set(pending, controller);
++    pending.finally(() => outstanding.delete(pending)).catch(() => {});
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    try { return await Promise.race([pending, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new ManagedReviewError("managed_verifier_timeout", 503)); }, timeoutMs); })]); }
++    finally { if (timer) clearTimeout(timer); }
++  }
++  async function verified(credential: unknown) {
++    let raw: ManagedRootIdentity;
++    try { raw = await bounded(signal => verifyIdentity(credential, signal)); }
++    catch (error) { if (error instanceof ManagedReviewError) throw error; throw new ManagedReviewError("managed_identity_invalid", 401); }
++    const parsed = identitySchema.safeParse(raw); need(parsed.success, "managed_identity_invalid", 401);
++    const identity = parsed.data!; need(identity.expiresAt > Date.now(), "managed_identity_expired", 401); return identity;
++  }
++  function actorState(actor: ManagedActor) {
++    const state = actors.get(actor); need(state?.active && !closed && state.deadline > Date.now() && state.identity.expiresAt > Date.now(), "managed_actor_invalid", 401); return state!;
++  }
++  async function recheck(actor: ManagedActor) {
++    const state = actorState(actor); const current = await verified(state.credential);
++    need(current.issuer === state.identity.issuer && current.subject === state.identity.subject, "managed_actor_changed", 401);
++    actorState(actor); return state;
++  }
++  function principal(db: DatabaseFile, state: ActorState): ManagedPrincipal {
++    need(state.active && !closed && state.deadline > Date.now() && state.identity.expiresAt > Date.now(), "managed_actor_invalid", 401);
++    const found = db.managedReviews!.principals.find(item => item.id === state.principalId);
++    need(found?.active && found.identityHash === exactManagedHash([state.identity.issuer, state.identity.subject]), "managed_principal_revoked", 403); return found!;
++  }
++  function authorize(db: DatabaseFile, state: ActorState, scope: ManagedScope, subject: z.infer<typeof managedSubjectSchema>, right: ManagedRight) {
++    const actor = principal(db, state);
++    need(subject.kind !== "app" || subject.id === scope.appId, "managed_subject_scope_invalid", 403);
++    const grant = db.managedReviews!.tenantGrants.find(item => item.principalId === actor.id && item.active && item.expiresAt > Date.now() && managedScopeKey(item.scope) === managedScopeKey(scope)
++      && item.rights.includes(right) && item.subjects.some(value => value.kind === subject.kind && value.id === subject.id));
++    need(grant, "managed_source_grant_required", 403); return actor;
++  }
++  function findBinding(db: DatabaseFile, scope: ManagedScope, subject: z.infer<typeof managedSubjectSchema>) {
++    const binding = db.managedReviews!.subjectBindings.find(item => managedScopeKey(item.scope) === managedScopeKey(scope) && item.localSubject.kind === subject.kind && item.localSubject.id === subject.id);
++    need(binding, "managed_subject_not_found", 404); return binding!;
++  }
++  async function finalAuthority(actor: ManagedActor, scope: ManagedScope, subject: z.infer<typeof managedSubjectSchema>, right?: ManagedRight) {
++    const state = await recheck(actor), db = await available().managedSnapshot();
++    if (right) authorize(db, state, scope, subject, right);
++    else { principal(db, state); need(db.managedReviews!.tenantGrants.some(item => item.principalId === state.principalId && item.active && item.expiresAt > Date.now() && managedScopeKey(item.scope) === managedScopeKey(scope) && item.subjects.some(value => value.kind === subject.kind && value.id === subject.id)), "managed_source_grant_required", 403); }
++    return { db, state };
++  }
++  function projection(db: DatabaseFile, binding: ManagedBinding) {
++    const object = db.objects.find(item => item.id === binding.objectId), site = db.sites.find(item => item.id === binding.siteId);
++    const subject = db.reviewSubjects.find(item => item.id === binding.subjectId), access = db.subjectAccesses.find(item => item.id === binding.placementId);
++    need(object?.subjectId === binding.subjectId && object.siteId === binding.siteId && subject?.canonicalObjectId === binding.objectId && subject.ownerSiteId === binding.siteId
++      && access?.role === "owner" && access.objectId === binding.objectId && access.siteId === binding.siteId && access.subjectId === binding.subjectId && site, "managed_source_binding_corrupt", 503);
++    return { protocol: "povedai.managed-reviews.v1", localSubject: structuredClone(binding.localSubject), entityType: binding.entityType, bindingId: binding.id, siteId: binding.siteId,
++      siteKey: site!.key, objectId: binding.objectId, objectSlug: object!.slug, subjectId: binding.subjectId, placementId: binding.placementId, generation: binding.generation,
++      canDisplay: binding.published && access!.status === "active" && access!.canDisplay };
++  }
++  function atomicReceipt<T extends Record<string, unknown>>(db: DatabaseFile, actor: ManagedPrincipal, scope: ManagedScope, operation: "provision" | "collect" | "reply" | "publish" | "moderate" | "attach", input: { requestId: string }, fn: () => T): T {
++    const scopeDigest = managedScopeKey(scope), key = exactManagedHash([actor.id, scopeDigest, operation, input.requestId]), intentDigest = exactManagedHash(input);
++    const prior = db.managedReviews!.operationReceipts.find(item => item.key === key);
++    if (prior) { need(prior.intentDigest === intentDigest, "managed_operation_conflict", 409); return structuredClone(prior.value) as T; }
++    need(db.managedReviews!.operationReceipts.length < MANAGED_REVIEW_LIMITS.receipts, "managed_receipts_full", 503);
++    const value = fn(); db.managedReviews!.operationReceipts.push({ key, intentDigest, actorId: actor.id, scopeDigest, operation, createdAt: nowIso(), value: structuredClone(value) }); return value;
++  }
++  async function withActor<T>(credential: unknown, execute: (actor: ManagedActor) => Promise<T>): Promise<T> {
++    const source = available(); need(typeof execute === "function"); const identity = await verified(credential);
++    const principalId = await source.managedAtomic(db => {
++      need(identity.expiresAt > Date.now() && !closed, "managed_identity_expired", 401);
++      const identityHash = exactManagedHash([identity.issuer, identity.subject]);
++      const existing = db.managedReviews!.principals.find(item => item.identityHash === identityHash);
++      if (existing) { need(existing.active, "managed_principal_revoked", 403); return existing.id; }
++      need(db.managedReviews!.principals.length < MANAGED_REVIEW_LIMITS.principals, "managed_principals_full", 503);
++      const item: ManagedPrincipal = { id: uid("managed_person"), identityHash, issuer: identity.issuer, subject: identity.subject, label: identity.label, active: true, createdAt: nowIso() };
++      db.managedReviews!.principals.push(item); return item.id;
++    });
++    const actor = Object.freeze({ protocol: "povedai.managed-actor.v1" as const });
++    const state: ActorState = { active: true, credential, identity, principalId, deadline: Math.min(identity.expiresAt, Date.now() + 15000) }; actors.set(actor, state);
++    try { return await execute(actor); } finally { state.active = false; actors.delete(actor); }
++  }
++  async function provision(actor: ManagedActor, raw: unknown) {
++    const input = provisionSchema.parse(raw), source = available(), state = await recheck(actor);
++    const result = await source.managedAtomic(db => {
++      const owner = authorize(db, state, input.scope, input.localSubject, "provision");
++      const receipt = atomicReceipt(db, owner, input.scope, "provision", input, () => {
++        let binding = db.managedReviews!.subjectBindings.find(item => managedScopeKey(item.scope) === managedScopeKey(input.scope) && item.localSubject.kind === input.localSubject.kind && item.localSubject.id === input.localSubject.id);
++        if (binding) { need(binding.principalId === owner.id, "managed_owner_mismatch", 403); return { bindingId: binding.id }; }
++        need(db.managedReviews!.subjectBindings.length < MANAGED_REVIEW_LIMITS.bindings, "managed_bindings_full", 503);
++        const now = nowIso(), id = crypto.randomBytes(16).toString("hex");
++        const site = { id: uid("site"), key: "managed-" + id, title: input.title, domains: [], tags: [], createdAt: now, updatedAt: now };
++        const entityType = ({ app: "product", project: "project", person: "profile" } as const)[input.localSubject.kind];
++        const object = { id: uid("obj"), siteId: site.id, slug: "subject-" + id, title: input.title, kind: entityType, viewCount: 0, tags: [], factTags: [], createdAt: now, updatedAt: now };
++        db.sites.push(site); db.objects.push(object); const { subject, access } = ensureJsonSubject(db, object);
++        subject.sharingMode = "private"; access.canDisplay = false; access.canCollect = false; access.canReply = false; access.canModerateOrigin = false;
++        binding = { id: uid("managed_binding"), principalId: owner.id, scope: structuredClone(input.scope), localSubject: structuredClone(input.localSubject), entityType, siteId: site.id, objectId: object.id, subjectId: subject.id, placementId: access.id, published: false, generation: 1, createdAt: now };
++        db.managedReviews!.subjectBindings.push(binding); return { bindingId: binding.id };
++      });
++      const binding = db.managedReviews!.subjectBindings.find(item => item.id === receipt.bindingId); need(binding?.principalId === owner.id, "managed_owner_mismatch", 403); return projection(db, binding!);
++    });
++    await finalAuthority(actor, input.scope, input.localSubject, "provision"); return result;
++  }
++  async function context(actor: ManagedActor, raw: unknown) {
++    const input = z.strictObject(scopeSubject).parse(raw), state = await recheck(actor);
++    const db = await available().managedSnapshot(); principal(db, state);
++    const permitted = db.managedReviews!.tenantGrants.some(item => item.principalId === state.principalId && item.active && item.expiresAt > Date.now() && managedScopeKey(item.scope) === managedScopeKey(input.scope) && item.subjects.some(value => value.kind === input.localSubject.kind && value.id === input.localSubject.id));
++    need(permitted, "managed_source_grant_required", 403);
++    const final = await finalAuthority(actor, input.scope, input.localSubject); return projection(final.db, findBinding(final.db, input.scope, input.localSubject));
++  }
++  async function collect(actor: ManagedActor, raw: unknown) {
++    const input = reviewSchema.parse(raw), state = await recheck(actor), source = available(), right = input.parentId ? "reply" : "collect";
++    const result = await source.managedAtomic(db => {
++      const user = authorize(db, state, input.scope, input.localSubject, right); const binding = findBinding(db, input.scope, input.localSubject); projection(db, binding);
++      // Exact issuer/sub identity and explicit additive legacy-author links only.
++      const authorLink = db.managedReviews!.identityLinks.find(item => item.principalId === user.id && item.kind === "author" && item.siteId === binding.siteId);
++      const opaque = exactManagedHash([user.identityHash, binding.siteId]);
++      let author = authorLink ? db.authors.find(item => item.id === authorLink.nativeId && item.siteId === binding.siteId) : db.authors.find(item => item.siteId === binding.siteId && item.externalIdHash === opaque);
++      need(!authorLink || author, "managed_native_author_missing", 403); need(!author?.bannedAt, "managed_native_author_banned", 403);
++      return atomicReceipt(db, user, input.scope, right, input, () => {
++        // Root profile name is a PRIVATE issuer claim. A public Source alias is
++        // a separate explicit data choice, never a name-based identity merge.
++        if (!author) { author = { id: uid("author"), siteId: binding.siteId, displayName: input.authorLabel ?? "Участник", externalIdHash: opaque, isGuest: false, createdAt: nowIso(), updatedAt: nowIso() }; db.authors.push(author); }
++        const review = createJsonReview(db, { objectId: binding.objectId, type: input.rating ? "review" : "comment", parentId: input.parentId, rating: input.rating, source: "soty:managed", body: input.body, authorId: author.id, author: { name: input.authorLabel ?? author.displayName, verified: false }, status: "pending", trustProvenance: "authenticated" });
++        return { reviewId: review.id, authorId: author.id, rootId: review.rootId, parentId: review.parentId ?? null, depth: review.depth, status: review.status };
++      });
++    }); const final = await finalAuthority(actor, input.scope, input.localSubject, right);
++    const author = final.db.authors.find(item => item.id === result.authorId); need(author && !author.bannedAt, "managed_native_author_banned", 403); return result;
++  }
++  async function publish(actor: ManagedActor, raw: unknown) {
++    const input = publishSchema.parse(raw), state = await recheck(actor), source = available();
++    const result = await source.managedAtomic(db => {
++      const owner = authorize(db, state, input.scope, input.localSubject, "publish"), binding = findBinding(db, input.scope, input.localSubject);
++      need(binding.principalId === owner.id, "managed_owner_mismatch", 403); projection(db, binding);
++      const receipt = atomicReceipt(db, owner, input.scope, "publish", input, () => {
++        const access = db.subjectAccesses.find(item => item.id === binding.placementId)!; binding.published = input.canDisplay; access.canDisplay = input.canDisplay;
++        access.updatedAt = nowIso(); const site = db.sites.find(item => item.id === binding.siteId)!; site.updatedAt = nowIso(); db.objects.find(item => item.id === binding.objectId)!.updatedAt = nowIso();
++        return { bindingId: binding.id };
++      }); need(receipt.bindingId === binding.id, "managed_source_binding_corrupt", 503); return projection(db, binding);
++    }); await finalAuthority(actor, input.scope, input.localSubject, "publish"); return result;
++  }
++  async function moderate(actor: ManagedActor, raw: unknown) {
++    const input = moderateSchema.parse(raw), state = await recheck(actor);
++    const result = await available().managedAtomic(db => {
++      const moderator = authorize(db, state, input.scope, input.localSubject, "moderate"), binding = findBinding(db, input.scope, input.localSubject); projection(db, binding);
++      const review = db.reviews.find(item => item.id === input.reviewId && item.objectId === binding.objectId); need(review, "managed_review_not_found", 404);
++      return atomicReceipt(db, moderator, input.scope, "moderate", input, () => {
++        updateJsonReviewStatus(db, review!.id, input.status);
++        db.moderationActions.push({ id: uid("moderation"), siteId: binding.siteId, itemId: review!.id, actorId: moderator.id, action: input.status === "approved" ? "approve" : "hide", createdAt: nowIso() });
++        return { reviewId: review!.id, status: review!.status, version: review!.version };
++      });
++    }); await finalAuthority(actor, input.scope, input.localSubject, "moderate"); return result;
++  }
++  async function list(actor: ManagedActor, raw: unknown) {
++    const input = z.strictObject({ ...scopeSubject, limit: z.number().int().min(1).max(30).default(20), beforeId: managedIdSchema.optional() }).parse(raw);
++    const { db, state } = await finalAuthority(actor, input.scope, input.localSubject), binding = findBinding(db, input.scope, input.localSubject); projection(db, binding);
++    const grants = db.managedReviews!.tenantGrants.filter(item => item.principalId === state.principalId && item.active && item.expiresAt > Date.now() && managedScopeKey(item.scope) === managedScopeKey(input.scope) && item.subjects.some(value => value.kind === input.localSubject.kind && value.id === input.localSubject.id));
++    const moderate = grants.some(item => item.rights.includes("moderate")); need(moderate || grants.some(item => item.rights.includes("collect") || item.rights.includes("reply")), "managed_source_grant_required", 403);
++    const user = principal(db, state), linked = db.managedReviews!.identityLinks.find(item => item.principalId === user.id && item.kind === "author" && item.siteId === binding.siteId);
++    const authorIds = new Set(db.authors.filter(item => item.siteId === binding.siteId && (item.id === linked?.nativeId || item.externalIdHash === exactManagedHash([user.identityHash, binding.siteId])) && !item.bannedAt).map(item => item.id));
++    const items = db.reviews.filter(item => item.objectId === binding.objectId && (moderate || item.authorId && authorIds.has(item.authorId))).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
++    const start = input.beforeId ? items.findIndex(item => item.id === input.beforeId) + 1 : 0; need(!input.beforeId || start > 0, "managed_cursor_invalid", 400);
++    const page = items.slice(start, start + input.limit).map(item => publicReview(item));
++    const result = { items: page, nextCursor: start + input.limit < items.length ? items[start + input.limit - 1].id : null };
++    need(Buffer.byteLength(JSON.stringify(result)) <= 524288, "managed_projection_too_large", 503); return result;
++  }
++  /** Source operator port, never exported by HTTP or granted by an author
++   * descriptor. A distinct administrative approval issues finite tenant rights. */
++  async function grant(raw: unknown) {
++    const input = managedGrantSchema.parse(raw); need(input.active && input.expiresAt > Date.now() && input.expiresAt <= Date.now() + 86400000, "managed_grant_invalid");
++    return available().managedAtomic(db => {
++      need(db.managedReviews!.principals.some(item => item.id === input.principalId && item.active), "managed_principal_required", 403);
++      need(!db.managedReviews!.tenantGrants.some(item => item.id === input.id || item.keyId === input.keyId && !item.active), "managed_grant_immutable", 409);
++      need(db.managedReviews!.tenantGrants.length < MANAGED_REVIEW_LIMITS.grants, "managed_grants_full", 503);
++      db.managedReviews!.tenantGrants.push(structuredClone(input)); return { grantId: input.id, generation: input.generation };
++    });
++  }
++  async function revokeKey(keyId: string) {
++    managedIdSchema.parse(keyId); return available().managedAtomic(db => { let count = 0; for (const item of db.managedReviews!.tenantGrants) if (item.keyId === keyId && item.active) { item.active = false; count++; } return { revoked: count }; });
++  }
++  async function actorProfile(actor: ManagedActor) { const state = await recheck(actor); const db = await available().managedSnapshot(); const item = principal(db, state); return { principalId: item.id }; }
++  async function attachLegacy(actor: ManagedActor, raw: unknown, nativeCredential: unknown) {
++    const input = attachSchema.parse(raw); need(verifyNative, "managed_native_verifier_unavailable", 503); const state = await recheck(actor);
++    let native: ManagedNativeProof;
++    try { native = await bounded(signal => verifyNative!(nativeCredential, signal)); }
++    catch (error) { if (error instanceof ManagedReviewError) throw error; throw new ManagedReviewError("managed_native_proof_invalid", 403); }
++    need(native && native.kind === input.kind && native.nativeId === input.nativeId && native.siteId === input.siteId && native.expiresAt > Date.now(), "managed_native_proof_invalid", 403);
++    const result = await available().managedAtomic(db => {
++      const user = principal(db, state); need(native.expiresAt > Date.now(), "managed_native_proof_invalid", 403);
++      if (input.kind === "admin") { const admin = db.adminUsers.find(item => item.id === input.nativeId); need(admin?.active && admin.authVersion === native.authVersion, "managed_native_proof_invalid", 403);
++        need(db.adminMemberships.some(item => item.userId === input.nativeId && item.role === "site_admin") || admin!.platformRole === "superadmin", "managed_native_acl_required", 403);
++      } else { const author = db.authors.find(item => item.id === input.nativeId && item.siteId === input.siteId); need(author && !author.bannedAt, "managed_native_proof_invalid", 403); }
++      return atomicReceipt(db, user, input.scope, "attach", input, () => {
++        const links = db.managedReviews!.identityLinks; const exists = links.find(item => item.principalId === user.id && item.kind === input.kind && item.siteId === input.siteId);
++        if (exists) { need(exists.nativeId === input.nativeId, "managed_native_link_conflict", 409); return { linked: true, nativeId: input.nativeId }; }
++        need(!links.some(item => item.kind === input.kind && item.nativeId === input.nativeId && item.siteId === input.siteId), "managed_native_link_conflict", 409); need(links.length < MANAGED_REVIEW_LIMITS.links, "managed_links_full", 503);
++        links.push({ principalId: user.id, kind: input.kind, nativeId: input.nativeId, ...(input.siteId ? { siteId: input.siteId } : {}), createdAt: nowIso() }); return { linked: true, nativeId: input.nativeId };
++      });
++    }); await recheck(actor); return result;
++  }
++  return Object.freeze({ withActor, actorProfile, provision, context, list, collect, publish, moderate, attachLegacy,
++    // Keep the administrative port outside any generic request dispatcher.
++    operator: Object.freeze({ grant, revokeKey }), close() { closed = true; for (const controller of outstanding.values()) controller.abort(); } });
++}
+diff --git a/src/server/managed-store-probe-cli.ts b/src/server/managed-store-probe-cli.ts
+new file mode 100644
+index 0000000..7c54387
+--- /dev/null
++++ b/src/server/managed-store-probe-cli.ts
+@@ -0,0 +1,9 @@
++import { inspectManagedStore } from "./managed-store-probe.js";
++const args = process.argv.slice(2);
++try {
++  if (args.length !== 2 || args[0] !== "--file" || !args[1] || args[1].length > 4096) throw new Error("invalid_arguments");
++  console.log(JSON.stringify(await inspectManagedStore(args[1])));
++} catch (error) {
++  const code = typeof (error as { code?: unknown }).code === "string" && /^source_[a-z0-9_]{1,80}$/u.test((error as { code: string }).code) ? (error as { code: string }).code : "source_snapshot_unavailable";
++  console.log(JSON.stringify({ error: code })); process.exitCode = 1;
++}
+diff --git a/src/server/managed-store-probe.ts b/src/server/managed-store-probe.ts
+new file mode 100644
+index 0000000..308ed06
+--- /dev/null
++++ b/src/server/managed-store-probe.ts
+@@ -0,0 +1,80 @@
++import { constants } from "node:fs";
++import { lstat, open, realpath } from "node:fs/promises";
++import path from "node:path";
++import crypto from "node:crypto";
++
++/** Independent literal cold reader. Does not import the runtime normalizer or
++ * namespace validator, and never modifies/locks a read-only snapshot. The host
++ * must quiesce writers or give this port a coherent owned snapshot. */
++export const MANAGED_STORE_READER = Object.freeze({ protocol: "povedai.json-reader.v2", versions: Object.freeze([1, 2]), maximumBytes: 134217728, requiresCoherentSnapshot: true });
++export class ManagedStoreProbeError extends Error { constructor(readonly code: string) { super(code); } }
++const need = (ok: unknown, code = "source_snapshot_invalid") => { if (!ok) throw new ManagedStoreProbeError(code); };
++const exactKeys = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).sort().join("|") === keys.slice().sort().join("|");
++const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
++const scalar = (value: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
++const id = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 200 && scalar(value) && !/[\u0000-\u001f\u007f]/u.test(value);
++const stamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value));
++const issuer = (value: unknown) => { if (typeof value !== "string" || value.length < 1 || value.length > 1024 || !scalar(value) || /[\u0000-\u001f\u007f]/u.test(value)) return false; try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; } };
++const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
++const keys = ["version", "principals", "identityLinks", "tenantGrants", "subjectBindings", "operationReceipts"];
++export function inspectManagedSnapshot(raw: unknown) {
++  need(record(raw) && record(raw.meta)); const db = raw as Record<string, unknown>, meta = db.meta as Record<string, unknown>;
++  need(meta.version === 1 || meta.version === 2, "source_document_version_unsupported");
++  if (meta.version === 1) { need(db.managedReviews === undefined); return Object.freeze({ protocol: MANAGED_STORE_READER.protocol, documentVersion: 1, managed: false, principalCount: 0, grantCount: 0, bindingCount: 0, receiptCount: 0 }); }
++  const ns = db.managedReviews; need(record(ns) && exactKeys(ns, keys) && ns.version === 1);
++  const state = ns as Record<string, unknown>;
++  for (const [name, cap] of Object.entries({ principals: 256, identityLinks: 512, tenantGrants: 256, subjectBindings: 384, operationReceipts: 10000 })) need(Array.isArray(state[name]) && (state[name] as unknown[]).length <= cap && (state[name] as unknown[]).every(record));
++  const principals = state.principals as Record<string, unknown>[], grants = state.tenantGrants as Record<string, unknown>[], bindings = state.subjectBindings as Record<string, unknown>[], receipts = state.operationReceipts as Record<string, unknown>[];
++  const identities = new Set<string>(), principalIds = new Set<string>();
++  for (const p of principals) {
++    need(exactKeys(p, ["id", "identityHash", "issuer", "subject", "label", "active", "createdAt"]) && id(p.id) && id(p.subject) && issuer(p.issuer) && id(p.label) && (p.label as string).length <= 120 && stamp(p.createdAt) && typeof p.active === "boolean" && p.identityHash === hash([p.issuer, p.subject]));
++    need(!principalIds.has(p.id as string) && !identities.has(p.identityHash as string)); principalIds.add(p.id as string); identities.add(p.identityHash as string);
++  }
++  const scopes = (v: unknown) => record(v) && exactKeys(v, ["registryId", "tenantId", "appId", "environmentId"]) && Object.values(v).every(id);
++  const subject = (v: unknown) => record(v) && exactKeys(v, ["kind", "id"]) && ["app", "project", "person"].includes(v.kind as string) && id(v.id);
++  const unique = (rows: Record<string, unknown>[], field: string) => new Set(rows.map(row => row[field])).size === rows.length;
++  need(unique(grants, "id") && unique(bindings, "id") && unique(bindings, "objectId") && unique(bindings, "subjectId") && unique(bindings, "placementId") && unique(receipts, "key"));
++  for (const g of grants) need(exactKeys(g, ["id", "principalId", "scope", "rights", "subjects", "keyId", "generation", "active", "expiresAt"]) && id(g.id) && principalIds.has(g.principalId as string) && scopes(g.scope) && Array.isArray(g.rights) && g.rights.length >= 1 && g.rights.length <= 5 && g.rights.every(right => ["provision", "collect", "reply", "moderate", "publish"].includes(right)) && new Set(g.rights).size === g.rights.length && Array.isArray(g.subjects) && g.subjects.length >= 1 && g.subjects.length <= 3 && g.subjects.every(subject) && typeof g.active === "boolean" && id(g.keyId) && Number.isSafeInteger(g.generation) && Number(g.generation) >= 1 && Number.isSafeInteger(g.expiresAt) && Number(g.expiresAt) > 0);
++  for (const g of grants) {
++    const selected = g.subjects as Record<string, unknown>[], scope = g.scope as Record<string, unknown>;
++    need(new Set(selected.map(item => JSON.stringify([item.kind, item.id]))).size === selected.length && selected.every(item => item.kind !== "app" || item.id === scope.appId));
++  }
++  const native = (key: string) => { need(Array.isArray(db[key]) && (db[key] as unknown[]).every(record)); return db[key] as Record<string, unknown>[]; };
++  const sites = native("sites"), objects = native("objects"), subjects = native("reviewSubjects"), placements = native("subjectAccesses");
++  const tuples = new Set<string>();
++  for (const b of bindings) {
++    need(exactKeys(b, ["id", "principalId", "scope", "localSubject", "entityType", "siteId", "objectId", "subjectId", "placementId", "published", "generation", "createdAt"]) && principalIds.has(b.principalId as string) && scopes(b.scope) && subject(b.localSubject) && typeof b.published === "boolean" && b.generation === 1 && stamp(b.createdAt));
++    [b.id, b.siteId, b.objectId, b.subjectId, b.placementId].forEach(value => need(id(value)));
++    const local = b.localSubject as Record<string, unknown>, scope = b.scope as Record<string, unknown>;
++    need(b.entityType === ({ app: "product", project: "project", person: "profile" } as Record<string, string>)[local.kind as string] && (local.kind !== "app" || local.id === scope.appId));
++    const tuple = JSON.stringify([scope.registryId, scope.tenantId, scope.appId, scope.environmentId, local.kind, local.id]); need(!tuples.has(tuple)); tuples.add(tuple);
++    for (const [rows, value] of [[sites, b.siteId], [objects, b.objectId], [subjects, b.subjectId], [placements, b.placementId]] as const) need(rows.filter(row => row.id === value).length === 1);
++    const object = objects.find(row => row.id === b.objectId), sourceSubject = subjects.find(row => row.id === b.subjectId), placement = placements.find(row => row.id === b.placementId);
++    need(sites.some(row => row.id === b.siteId) && object && sourceSubject && placement && object.siteId === b.siteId && object.subjectId === b.subjectId && sourceSubject.ownerSiteId === b.siteId && sourceSubject.canonicalObjectId === b.objectId && placement.role === "owner" && placement.siteId === b.siteId && placement.objectId === b.objectId && placement.subjectId === b.subjectId);
++  }
++  const links = state.identityLinks as Record<string, unknown>[];
++  need(new Set(links.map(row => JSON.stringify([row.principalId, row.kind, row.siteId ?? null]))).size === links.length && new Set(links.map(row => JSON.stringify([row.kind, row.nativeId, row.siteId ?? null]))).size === links.length);
++  for (const row of links) {
++    need(exactKeys(row, row.kind === "admin" ? ["principalId", "kind", "nativeId", "createdAt"] : ["principalId", "kind", "nativeId", "siteId", "createdAt"]) && principalIds.has(row.principalId as string) && ["admin", "author"].includes(row.kind as string) && id(row.nativeId) && stamp(row.createdAt) && (row.kind === "admin" || id(row.siteId)));
++    const matches = native(row.kind === "admin" ? "adminUsers" : "authors").filter(item => item.id === row.nativeId); need(matches.length === 1 && (row.kind === "admin" || matches[0].siteId === row.siteId));
++  }
++  for (const row of receipts) need(exactKeys(row, ["key", "intentDigest", "actorId", "scopeDigest", "operation", "createdAt", "value"]) && /^[a-f0-9]{64}$/u.test(row.key as string) && /^[a-f0-9]{64}$/u.test(row.intentDigest as string) && /^[a-f0-9]{64}$/u.test(row.scopeDigest as string) && ["provision", "collect", "reply", "moderate", "publish", "attach"].includes(row.operation as string) && stamp(row.createdAt) && principalIds.has(row.actorId as string) && record(row.value) && Buffer.byteLength(JSON.stringify(row.value)) <= 8192);
++  return Object.freeze({ protocol: MANAGED_STORE_READER.protocol, documentVersion: 2, managed: true, principalCount: principals.length, grantCount: grants.length, bindingCount: bindings.length, receiptCount: receipts.length });
++}
++export function requireManagedReader(summary: { documentVersion: number }, actualImageReaderVersions: readonly number[]) {
++  need(Array.isArray(actualImageReaderVersions) && actualImageReaderVersions.length <= 2 && actualImageReaderVersions.every(value => value === 1 || value === 2) && actualImageReaderVersions.includes(summary.documentVersion), "source_reader_incompatible"); return Object.freeze({ compatible: true });
++}
++export async function inspectManagedStore(filePath: string) {
++  const file = path.resolve(filePath), directory = path.dirname(file), resolved = await realpath(directory);
++  need(process.platform === "win32" ? resolved.toLowerCase() === directory.toLowerCase() : resolved === directory, "source_snapshot_path_unsafe");
++  const before = await lstat(file); need(before.isFile() && !before.isSymbolicLink() && before.nlink === 1 && before.size <= MANAGED_STORE_READER.maximumBytes, "source_snapshot_file_unsafe");
++  const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
++  try {
++    const info = await handle.stat(); need(info.dev === before.dev && info.ino === before.ino && info.size === before.size, "source_snapshot_changed");
++    const chunks: Buffer[] = []; let bytes = 0;
++    for (;;) { const chunk = Buffer.alloc(Math.min(65536, MANAGED_STORE_READER.maximumBytes + 1 - bytes)); const read = await handle.read(chunk); if (!read.bytesRead) break; bytes += read.bytesRead; need(bytes <= MANAGED_STORE_READER.maximumBytes, "source_snapshot_capacity"); chunks.push(chunk.subarray(0, read.bytesRead)); }
++    const after = await lstat(file); need(after.dev === before.dev && after.ino === before.ino && after.size === before.size && after.mtimeMs === before.mtimeMs, "source_snapshot_changed");
++    let parsed: unknown; try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytes))); } catch { throw new ManagedStoreProbeError("source_snapshot_encoding_invalid"); }
++    return inspectManagedSnapshot(parsed);
++  } finally { await handle.close(); }
++}
+diff --git a/src/server/public-resolver.ts b/src/server/public-resolver.ts
+index 663451e..e3c8b5c 100644
+--- a/src/server/public-resolver.ts
++++ b/src/server/public-resolver.ts
+@@ -12,7 +12,7 @@ export interface ResolvePublicObjectInput {
+ }
+ 
+ export async function resolvePublicObject(store: ReviewStore, input: ResolvePublicObjectInput) {
+-  const [objects, channels] = await Promise.all([store.listObjects(input.siteId), store.listChannels({ siteId: input.siteId })]);
++  const [objects, channels] = await Promise.all([store.listPublicObjects ? store.listPublicObjects(input.siteId) : store.listObjects(input.siteId), store.listChannels({ siteId: input.siteId })]);
+   return publicObjectResolver(objects, channels)(input);
+ }
+ 
+diff --git a/src/server/routes/public-routes.ts b/src/server/routes/public-routes.ts
+index b5b460f..d80a398 100644
+--- a/src/server/routes/public-routes.ts
++++ b/src/server/routes/public-routes.ts
+@@ -81,7 +81,7 @@ export function registerPublicRoutes(app: Express, { store, auth, runtime, media
+         legacySiteId: z.string().trim().min(1).max(100).optional(),
+         origin: z.string().url().max(500).optional()
+       }).parse(req.query);
+-      const sites = await store.listSites();
++      const sites = await (store.listPublicSites ? store.listPublicSites() : store.listSites());
+       const explicit = input.siteKey ? sites.find((site) => site.key === input.siteKey) : undefined;
+       const legacy = input.legacySiteId ? sites.find((site) => site.tags.includes(`cackle-site:${input.legacySiteId}`)) : undefined;
+       const domain = input.origin ? sites.find((site) => site.domains.some((value) => domainMatchesOrigin(value, input.origin!))) : undefined;
+diff --git a/src/server/routes/public-widget-routes.ts b/src/server/routes/public-widget-routes.ts
+index 92730ac..ca30ff4 100644
+--- a/src/server/routes/public-widget-routes.ts
++++ b/src/server/routes/public-widget-routes.ts
+@@ -34,7 +34,7 @@ export function registerPublicWidgetRoutes(app: Express, deps: {
+     let parsed: unknown;
+     try { parsed = JSON.parse(raw); } catch { throw new PublicInputError("Invalid counter targets"); }
+     const selectors = z.array(selectorSchema.refine((value) => Object.values(value).some(Boolean), "An object, channel or URL is required")).min(1).max(50).parse(parsed);
+-    const [objects, channels, modules] = await Promise.all([store.listObjects(site.id), store.listChannels({ siteId: site.id }), resolveModules(store, { siteId: site.id })]);
++    const [objects, channels, modules] = await Promise.all([store.listPublicObjects ? store.listPublicObjects(site.id) : store.listObjects(site.id), store.listChannels({ siteId: site.id }), resolveModules(store, { siteId: site.id })]);
+     if (!modules[type === "review" ? "reviews" : "comments"]) { res.status(403).json({ error: "Widget module is disabled" }); return; }
+     const resolve = publicObjectResolver(objects, channels);
+     const resolved = selectors.map((selector) => {
+@@ -56,7 +56,7 @@ export function registerPublicWidgetRoutes(app: Express, deps: {
+       type: z.enum(["comment", "review"]).default("comment"),
+       limit: z.coerce.number().int().min(1).max(30).default(5)
+     }).parse(req.query);
+-    const [objects, channels, modules] = await Promise.all([store.listObjects(site.id), store.listChannels({ siteId: site.id }), resolveModules(store, { siteId: site.id })]);
++    const [objects, channels, modules] = await Promise.all([store.listPublicObjects ? store.listPublicObjects(site.id) : store.listObjects(site.id), store.listChannels({ siteId: site.id }), resolveModules(store, { siteId: site.id })]);
+     if (!modules[query.type === "review" ? "reviews" : "comments"]) { res.status(403).json({ error: "Widget module is disabled" }); return; }
+     const scoped = Boolean(query.object || query.channel || query.url || query.sitePageId);
+     const url = safeWidgetPageUrl(query.url, site);
+diff --git a/src/server/routes/trustlayer-routes.ts b/src/server/routes/trustlayer-routes.ts
+index 9a3ebab..ff088cd 100644
+--- a/src/server/routes/trustlayer-routes.ts
++++ b/src/server/routes/trustlayer-routes.ts
+@@ -1294,21 +1294,23 @@ function registerLegacyCackleRoutes(
+ }
+ 
+ async function resolveSiteForLegacy(store: ReviewStore, defaultSiteKey: string, raw: unknown) {
++  const visible = async (site: ReviewSite | undefined) => site && (!store.isPublicSite || await store.isPublicSite(site.id)) ? site : undefined;
+   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+   const siteId = stringQuery(record.reviewSiteId) ?? stringQuery(record.siteId);
+   if (siteId) {
+     const site = await store.getSiteById(siteId);
+-    if (site) return site;
++    if (await visible(site)) return site!;
+     throw new NotFoundError("Site not found");
+   }
+   const explicitSiteKey = stringQuery(record.reviewSiteKey) ?? stringQuery(record.siteKey);
+   if (explicitSiteKey) {
+     const site = await store.getSiteByKey(explicitSiteKey);
+-    if (site) return site;
++    if (await visible(site)) return site!;
+     throw new NotFoundError("Site not found");
+   }
+   const siteKey = defaultSiteKey;
+   const site = await store.getSiteByKey(siteKey);
++  if (site && !await visible(site)) throw new NotFoundError("Site not found");
+   return site ?? store.ensureDefaultSite();
+ }
+ 
+diff --git a/src/server/site-scope.ts b/src/server/site-scope.ts
+index 59edd6a..8d64c15 100644
+--- a/src/server/site-scope.ts
++++ b/src/server/site-scope.ts
+@@ -90,8 +90,11 @@ export async function resolveConnectorSiteId(store: ReviewStore, input: Connecto
+ 
+ export async function resolvePublicSite(store: ReviewStore, siteKey: string, defaultSiteKey: string) {
+   const site = await store.getSiteByKey(siteKey);
+-  if (site) return site;
+-  if (siteKey === defaultSiteKey) return store.ensureDefaultSite();
++  if (site) return !store.isPublicSite || await store.isPublicSite(site.id) ? site : undefined;
++  if (siteKey === defaultSiteKey) {
++    const fallback = await store.ensureDefaultSite();
++    return !store.isPublicSite || await store.isPublicSite(fallback.id) ? fallback : undefined;
++  }
+   return undefined;
+ }
+ 
+diff --git a/src/server/store.ts b/src/server/store.ts
+index 30cb8b4..b54e6e0 100644
+--- a/src/server/store.ts
++++ b/src/server/store.ts
+@@ -1,5 +1,4 @@
+ import crypto from "node:crypto";
+-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+ import path from "node:path";
+ import { PRODUCT_DOMAIN } from "../shared/brand.js";
+ import type {
+@@ -106,9 +105,11 @@ import { matchesPublicCatalogSearch } from "./public-search.js";
+ import { nowIso, slugify, uid } from "./utils.js";
+ import { decodeCursor, encodeCursor } from "./ugc-cursor.js";
+ import { visibleThreadRows } from "./thread-model.js";
++import { AtomicJsonDocument, type AtomicJsonOptions } from "./atomic-json-document.js";
++import { emptyManagedNamespace, validateManagedNamespace, ManagedReviewError, type ManagedReviewNamespace } from "./managed-review-model.js";
+ import { inferReviewTopicTags } from "./review-topic-classifier.js";
+ 
+-interface DatabaseFile {
++export interface DatabaseFile {
+   meta: {
+     version: number;
+     createdAt: string;
+@@ -163,6 +164,8 @@ interface DatabaseFile {
+   webhookDeliveries: WebhookDeliveryRecord[];
+   subscriptions: SubscriptionRecord[];
+   notificationDeliveries: NotificationDeliveryRecord[];
++  /** Source-owned v2 state. Never part of a public review/site DTO. */
++  managedReviews?: ManagedReviewNamespace;
+ }
+ 
+ interface DataFlowRecord extends DataFlow {
+@@ -1070,6 +1073,10 @@ export interface ImportRowsOptions {
+ }
+ 
+ export interface ReviewStore {
++  isPublicSite?(siteId: string): Promise<boolean>;
++  isPublicObject?(objectId: string): Promise<boolean>;
++  listPublicSites?(): Promise<ReviewSite[]>;
++  listPublicObjects?(siteId?: string): Promise<ReviewObject[]>;
+   findAdminUserByEmail(email: string): Promise<AdminUser | undefined>;
+   findAdminExternalIdentity(provider: AdminExternalProvider, externalIdHash: string): Promise<AdminExternalIdentity | undefined>;
+   listAdminExternalIdentities(userId: string): Promise<AdminExternalIdentity[]>;
+@@ -1475,9 +1482,40 @@ class ReviewBranchAlreadyRestored extends Error {
+ }
+ 
+ export class JsonReviewStore implements ReviewStore {
+-  private writeQueue: Promise<unknown> = Promise.resolve();
+-
+-  constructor(private readonly filePath = path.join(process.cwd(), "data", "reviewdock.db.json")) {}
++  private readonly document: AtomicJsonDocument;
++  private readonly allowManagedMigration: boolean;
++  constructor(private readonly filePath = path.join(process.cwd(), "data", "reviewdock.db.json"), options: AtomicJsonOptions & { allowManagedMigration?: boolean } = {}) {
++    if (options.allowManagedMigration !== undefined && typeof options.allowManagedMigration !== "boolean") throw new ManagedReviewError("managed_migration_configuration", 503);
++    this.allowManagedMigration = options.allowManagedMigration === true;
++    this.document = new AtomicJsonDocument(filePath, options);
++  }
++  /** Trusted Source port only; never expose the document or this callback to
++   * HTTP/MCP. Native and managed writes use the SAME process lock/replace. */
++  async managedAtomic<T>(callback: (document: DatabaseFile) => T): Promise<T> {
++    return this.document.transact<unknown, T>(raw => {
++      const db = raw === undefined ? emptyDatabase() : normalizeDatabase(raw);
++      if (db.meta.version === 1) {
++        if (!this.allowManagedMigration) throw new ManagedReviewError("managed_migration_not_admitted", 503);
++        db.meta.version = 2; db.managedReviews = emptyManagedNamespace();
++      }
++      const result = callback(db);
++      if (result && typeof (result as { then?: unknown }).then === "function") throw new ManagedReviewError("managed_async_atomic_callback", 503);
++      validateManagedDatabase(db); db.meta.updatedAt = nowIso();
++      return { document: db, result };
++    });
++  }
++  async managedSnapshot(): Promise<DatabaseFile> {
++    const db = await this.load();
++    if (db.meta.version !== 2) throw new ManagedReviewError("managed_source_unavailable", 503);
++    return db;
++  }
++  async isPublicSite(siteId: string) { return managedSiteIsPublic(await this.load(), siteId); }
++  async isPublicObject(objectId: string) { return managedObjectIsPublic(await this.load(), objectId); }
++  async listPublicSites() { const db = await this.load(); return db.sites.filter(site => managedSiteIsPublic(db, site.id)); }
++  async listPublicObjects(siteId?: string) {
++    const db = await this.load(), visible = managedObjectVisibility(db);
++    return db.objects.filter(object => (!siteId || object.siteId === siteId) && visible(object.id)).sort((a, b) => a.title.localeCompare(b.title, "ru"));
++  }
+ 
+   async findAdminUserByEmail(email: string) {
+     const db = await this.load();
+@@ -1876,7 +1914,15 @@ export class JsonReviewStore implements ReviewStore {
+   }
+ 
+   async ensureDefaultSite() {
+-    return this.mutate((db) => ensureDefaultSiteRecord(db));
++    return this.mutate((db) => {
++      if (db.meta.version === 2) {
++        const managedSites = new Set(db.managedReviews!.subjectBindings.map(item => item.siteId));
++        const site = db.sites.find(item => !managedSites.has(item.id));
++        if (!site) throw new ManagedReviewError("managed_default_site_absent", 404);
++        return site;
++      }
++      return ensureDefaultSiteRecord(db);
++    });
+   }
+ 
+   async ensureReviewSubjectForObject(objectId: string) {
+@@ -1899,7 +1945,7 @@ export class JsonReviewStore implements ReviewStore {
+   async getPublicSubjectContext(subjectId: string) {
+     const db = await this.load();
+     const subject = db.reviewSubjects.find((item) => item.id === subjectId && item.status === "active");
+-    if (!subject) return undefined;
++    if (!subject || !managedSiteIsPublic(db, subject.ownerSiteId) || !managedObjectIsPublic(db, subject.canonicalObjectId)) return undefined;
+     const access = db.subjectAccesses.find((item) => item.subjectId === subject.id
+       && item.siteId === subject.ownerSiteId
+       && item.role === "owner"
+@@ -2688,7 +2734,7 @@ export class JsonReviewStore implements ReviewStore {
+     const object = site
+       ? db.objects.find((item) => item.siteId === site.id && item.slug === slugify(slug))
+       : undefined;
+-    return site && object ? { site, object } : undefined;
++    return site && object && managedSiteIsPublic(db, site.id) && managedObjectIsPublic(db, object.id) ? { site, object } : undefined;
+   }
+ 
+   async createObject(input: CreateObjectInput) {
+@@ -2891,113 +2937,11 @@ export class JsonReviewStore implements ReviewStore {
+   }
+ 
+   async createReview(input: CreateReviewInput) {
+-    return this.mutate((db) => {
+-      const requestedObject = db.objects.find((item) => item.id === input.objectId);
+-      if (!requestedObject) throw new Error("Object not found");
+-      const subject = ensureJsonSubject(db, requestedObject).subject;
+-      const canonicalObject = db.objects.find((item) => item.id === subject.canonicalObjectId);
+-      if (!canonicalObject) throw new Error("Canonical object not found");
+-      const originSiteId = input.originSiteId ?? requestedObject.siteId;
+-      if (input.externalId) {
+-        const existing = db.reviews.find((review) => review.objectId === canonicalObject.id
+-          && review.source === (input.source ?? "manual")
+-          && review.externalId === input.externalId
+-          && (review.originSiteId ?? canonicalObject.siteId) === originSiteId);
+-        if (existing) {
+-          if (sameReviewOperation(existing, input)) return existing;
+-          throw new ReviewOperationConflictError();
+-        }
+-      }
+-      const now = nowIso();
+-      const id = uid("rev");
+-      const parent = input.parentId ? db.reviews.find((item) => item.id === input.parentId && item.objectId === canonicalObject.id) : undefined;
+-      if (input.parentId && !parent) throw new Error("Parent review not found in this object");
+-      if (parent?.status !== undefined && parent.status !== "approved") throw new Error("Cannot reply to a non-approved item");
+-      let depth = 0;
+-      let cursor = parent;
+-      const seen = new Set<string>();
+-      while (cursor) {
+-        if (seen.has(cursor.id)) throw new Error("Parent thread is invalid");
+-        seen.add(cursor.id);
+-        depth += 1;
+-        if (depth > (input.maxReplyDepth ?? 64)) throw new Error("Reply depth limit exceeded");
+-        if (!cursor.parentId) break;
+-        cursor = db.reviews.find((item) => item.id === cursor!.parentId && item.objectId === canonicalObject.id);
+-        if (!cursor) throw new Error("Parent thread is invalid");
+-      }
+-      const review: Review = {
+-        id,
+-        objectId: canonicalObject.id,
+-        subjectId: input.subjectId ?? subject.id,
+-        originSiteId,
+-        originObjectId: input.originObjectId ?? requestedObject.id,
+-        type: parent ? "comment" : input.type ?? (input.rating ? "review" : "comment"),
+-        parentId: input.parentId,
+-        rootId: parent?.rootId ?? parent?.id ?? id,
+-        depth,
+-        version: 1,
+-        channelId: input.channelId,
+-        authorId: input.authorId,
+-        externalId: input.externalId,
+-        externalParentId: input.parentExternalId,
+-        legacyId: input.legacyId,
+-        source: input.source ?? "manual",
+-        status: input.status ?? "approved",
+-        publishedAt: (input.status ?? "approved") === "approved" ? now : undefined,
+-        appearance: input.appearance ?? "standard",
+-        appearanceMeta: input.appearanceMeta ?? {},
+-        rating: input.rating,
+-        title: input.title?.trim() || undefined,
+-        pros: input.pros?.trim() || undefined,
+-        cons: input.cons?.trim() || undefined,
+-        trustOutcome: input.trustOutcome,
+-        trustCause: input.trustCause,
+-        trustProvenance: input.trustProvenance,
+-        body: input.body.trim(),
+-        author: {
+-          ...input.author,
+-          name: input.author.name.trim() || "Гость"
+-        },
+-        mediaUrls: input.mediaUrls ?? [],
+-        tags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.tags) : [],
+-        inferredTags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.inferredTags ?? inferReviewTopicTags(input)) : [],
+-        excludedTags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.excludedTags) : [],
+-        up: input.up ?? 0,
+-        down: input.down ?? 0,
+-        aiAssisted: input.aiAssisted,
+-        consentEvidence: input.consentEvidence ? structuredClone(input.consentEvidence) : undefined,
+-        meta: input.meta ?? {},
+-        createdAt: input.createdAt ?? now,
+-        updatedAt: now
+-      };
+-      db.reviews.push(review);
+-      appendJsonEvent(db, review, "item.created", ["*"]);
+-      return review;
+-    });
++    return this.mutate(db => createJsonReview(db, input));
+   }
+ 
+   async updateReviewStatus(id: string, status: ReviewStatus) {
+-    return this.mutate((db) => {
+-      const review = db.reviews.find((item) => item.id === id);
+-      if (!review) return undefined;
+-      const previous = review.status;
+-      review.status = status;
+-      review.statusOverriddenAt = nowIso();
+-      review.version = (review.version ?? 1) + 1;
+-      if (status === "deleted") {
+-        review.deletedAt = review.deletedAt ?? nowIso();
+-        review.deletionKind = review.deletionKind ?? "moderator";
+-      } else {
+-        review.deletedAt = undefined;
+-        review.deletedBy = undefined;
+-        review.deleteReason = undefined;
+-        review.deletionKind = undefined;
+-        if (status === "approved") review.publishedAt = review.publishedAt ?? nowIso();
+-      }
+-      review.updatedAt = nowIso();
+-      appendJsonEvent(db, review, status === "deleted" ? "item.deleted" : previous === "deleted" ? "item.restored" : "item.updated", ["status", "statusOverriddenAt"]);
+-      return review;
+-    });
++    return this.mutate(db => updateJsonReviewStatus(db, id, status));
+   }
+ 
+   async updateReview(id: string, patch: UpdateReviewPatch) {
+@@ -4962,15 +4906,16 @@ export class JsonReviewStore implements ReviewStore {
+   async publicCatalog(siteKey?: string, search?: string, limit = 100, offset = 0): Promise<PublicCatalogPayload> {
+     const db = await this.load();
+     const site = siteKey ? db.sites.find((item) => item.key === siteKey) : ensureDefaultSiteRecord(db);
+-    if (!site) {
++    if (!site || !managedSiteIsPublic(db, site.id)) {
+       return { stats: { totalObjects: 0, totalReviews: 0, averageRating: 0 }, objects: [] };
+     }
+-    const siteObjects = db.objects.filter((object) => object.siteId === site.id);
++    const visible = managedObjectVisibility(db);
++    const siteObjects = db.objects.filter((object) => object.siteId === site.id && visible(object.id));
+     const rows = siteObjects.map((object) => {
+       const access = db.subjectAccesses.find((item) => item.objectId === object.id);
+       const context = access ? jsonSharedContext(db, access) : undefined;
+       const canonicalObject = context?.canonicalObject ?? object;
+-      const reviews = publicReviewsForJsonObject(db, object, site.id)
++      const reviews = publicReviewsForJsonObject(db, object, site.id, visible)
+         .filter((review) => review.status === "approved")
+         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+       return { object, canonicalObject, reviews };
+@@ -5033,20 +4978,22 @@ export class JsonReviewStore implements ReviewStore {
+     const db = await this.load();
+     const site = siteKey ? db.sites.find((item) => item.key === siteKey) : ensureDefaultSiteRecord(db);
+     const object = site ? db.objects.find((item) => item.siteId === site.id && item.slug === objectSlug) : undefined;
+-    if (!site || !object) return undefined;
++    if (!site || !object || !managedSiteIsPublic(db, site.id) || !managedObjectIsPublic(db, object.id)) return undefined;
+     return publicSummaryForJsonObject(db, object, type);
+   }
+ 
+   async publicSummaryForObject(object: ReviewObject, type?: "comment" | "review") {
+     const db = await this.load();
++    if (!managedObjectIsPublic(db, object.id)) throw new ManagedReviewError("managed_subject_private", 404);
+     return publicSummaryForJsonObject(db, object, type);
+   }
+ 
+   async publicWidgetCounts(siteId: string, objectIds: string[], type: "comment" | "review") {
+     const db = await this.load();
+     const requested = new Set(objectIds);
++    const visible = managedObjectVisibility(db);
+     const subjects = new Map(db.reviewSubjects.filter((subject) => subject.status === "active").map((subject) => [subject.id, subject]));
+-    const placements = db.subjectAccesses.filter((access) => access.siteId === siteId && requested.has(access.objectId) && access.status === "active" && access.canDisplay && subjects.has(access.subjectId));
++    const placements = db.subjectAccesses.filter((access) => access.siteId === siteId && requested.has(access.objectId) && access.status === "active" && access.canDisplay && subjects.has(access.subjectId) && visible(access.objectId));
+     const canonicalIds = new Set(placements.map((access) => subjects.get(access.subjectId)!.canonicalObjectId));
+     const hidden = new Set(db.reviewVisibilityOverrides.filter((item) => item.siteId === siteId && item.visibility === "hidden").map((item) => item.reviewId));
+     const counts = new Map<string, number>();
+@@ -5223,63 +5170,25 @@ export class JsonReviewStore implements ReviewStore {
+   }
+ 
+   private async load() {
+-    try {
+-      const content = await readFile(this.filePath, "utf8");
+-      return normalizeDatabase(JSON.parse(content)) as DatabaseFile;
+-    } catch (error) {
+-      if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+-      const db = emptyDatabase();
+-      await this.save(db);
+-      return db;
+-    }
++    const current = await this.document.read<unknown>();
++    if (current !== undefined) return normalizeDatabase(current);
++    return this.document.transact<unknown, DatabaseFile>(raw => {
++      const db = raw === undefined ? emptyDatabase() : normalizeDatabase(raw); return { document: db, result: db };
++    });
+   }
+ 
+   private async mutate<T>(fn: (db: DatabaseFile) => T) {
+-    const run = async () => {
+-      const db = await this.load();
+-      const result = fn(db);
+-      db.meta.updatedAt = nowIso();
+-      await this.save(db);
+-      return result;
+-    };
+-    const next = this.writeQueue.then(run, run);
+-    this.writeQueue = next.then(
+-      () => undefined,
+-      () => undefined
+-    );
+-    return next;
+-  }
+-
+-  private async save(db: DatabaseFile) {
+-    await mkdir(path.dirname(this.filePath), { recursive: true });
+-    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+-    await writeFile(tempPath, JSON.stringify(db, null, 2), "utf8");
+-    try {
+-      await retryRename(tempPath, this.filePath);
+-    } catch (error) {
+-      await unlink(tempPath).catch(() => undefined);
+-      throw error;
+-    }
+-  }
+-}
+-
+-async function retryRename(from: string, to: string) {
+-  let delayMs = 25;
+-  for (let attempt = 0; attempt < 6; attempt += 1) {
+-    try {
+-      await rename(from, to);
+-      return;
+-    } catch (error) {
+-      if (!(error instanceof Error) || !("code" in error) || (error as NodeJS.ErrnoException).code !== "EPERM" || attempt === 5) {
+-        throw error;
+-      }
+-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+-      delayMs *= 2;
+-    }
++    return this.document.transact<unknown, T>(raw => {
++      const db = raw === undefined ? emptyDatabase() : normalizeDatabase(raw), result = fn(db);
++      if (result && typeof (result as { then?: unknown }).then === "function") throw new ManagedReviewError("managed_async_atomic_callback", 503);
++      db.meta.updatedAt = nowIso(); if (db.meta.version === 2) validateManagedDatabase(db);
++      return { document: db, result };
++    });
+   }
+ }
+ 
+-function publicReviewsForJsonObject(db: DatabaseFile, object: ReviewObject, viewerSiteId = object.siteId) {
++function publicReviewsForJsonObject(db: DatabaseFile, object: ReviewObject, viewerSiteId = object.siteId, visible = managedObjectVisibility(db)) {
++  if (!visible(object.id)) return [];
+   const subject = object.subjectId ? db.reviewSubjects.find((item) => item.id === object.subjectId) : undefined;
+   const access = subject ? db.subjectAccesses.find((item) => item.subjectId === subject.id && item.siteId === viewerSiteId) : undefined;
+   if (subject && (!access || access.status !== "active" || !access.canDisplay)) return [];
+@@ -5362,7 +5271,7 @@ function networkFingerprint(value: unknown) {
+   return typeof fingerprint === "string" ? fingerprint : undefined;
+ }
+ 
+-function ensureJsonSubject(db: DatabaseFile, object: ReviewObject) {
++export function ensureJsonSubject(db: DatabaseFile, object: ReviewObject) {
+   const existingSubject = object.subjectId ? db.reviewSubjects.find((subject) => subject.id === object.subjectId) : undefined;
+   const existingAccess = existingSubject
+     ? db.subjectAccesses.find((access) => access.subjectId === existingSubject.id && access.siteId === object.siteId)
+@@ -5434,8 +5343,50 @@ function sharedSiteIdentity(site: ReviewSite) {
+   return { ...publicSiteIdentity(site), domains: site.domains };
+ }
+ 
++function managedSiteIsPublic(db: DatabaseFile, siteId: string) {
++  const managed = db.managedReviews?.subjectBindings.filter(item => item.siteId === siteId) ?? [];
++  return !managed.length || managed.some(item => item.published);
++}
++
++function managedObjectIsPublic(db: DatabaseFile, objectId: string) {
++  return managedObjectVisibility(db)(objectId);
++}
++
++/** Request-local indexes only: one current snapshot, no query/content cache. */
++function managedObjectVisibility(db: DatabaseFile) {
++  const objects = new Map(db.objects.map(item => [item.id, item]));
++  const bindings = db.managedReviews?.subjectBindings ?? [];
++  const byObject = new Map(bindings.map(item => [item.objectId, item])), bySubject = new Map(bindings.map(item => [item.subjectId, item]));
++  const placements = new Map(db.subjectAccesses.map(item => [item.id, item]));
++  const sites = new Set(bindings.map(item => item.siteId)), publicSites = new Set(bindings.filter(item => item.published).map(item => item.siteId));
++  return (objectId: string) => {
++    const object = objects.get(objectId); if (!object || sites.has(object.siteId) && !publicSites.has(object.siteId)) return false;
++    const binding = byObject.get(objectId) ?? (object.subjectId ? bySubject.get(object.subjectId) : undefined); if (!binding) return true;
++    const access = placements.get(binding.placementId); return binding.published && access?.status === "active" && access.canDisplay;
++  };
++}
++
++function validateManagedDatabase(db: DatabaseFile) {
++  validateManagedNamespace(db.managedReviews);
++  const need = (ok: unknown) => { if (!ok) throw new ManagedReviewError("managed_source_binding_corrupt", 503); };
++  for (const key of ["sites", "objects", "reviewSubjects", "subjectAccesses", "authors", "adminUsers"] as const) need(Array.isArray(db[key]));
++  const exactly = <T extends { id: string }>(rows: T[], id: string) => { const matches = rows.filter(row => row.id === id); need(matches.length === 1); return matches[0]; };
++  for (const binding of db.managedReviews!.subjectBindings) {
++    const site = exactly(db.sites, binding.siteId), object = exactly(db.objects, binding.objectId), subject = exactly(db.reviewSubjects, binding.subjectId), access = exactly(db.subjectAccesses, binding.placementId);
++    need(site && object?.siteId === site.id && object.subjectId === subject?.id && subject?.canonicalObjectId === object.id && subject.ownerSiteId === site.id
++      && access?.role === "owner" && access.objectId === object.id && access.siteId === site.id && access.subjectId === subject.id);
++  }
++  for (const link of db.managedReviews!.identityLinks) {
++    if (link.kind === "admin") exactly(db.adminUsers, link.nativeId);
++    else need(exactly(db.authors, link.nativeId)?.siteId === link.siteId);
++  }
++}
++
+ function normalizeDatabase(value: unknown): DatabaseFile {
+   const db = value && typeof value === "object" ? (value as Partial<DatabaseFile>) : emptyDatabase();
++  if (db.meta && ![1, 2].includes(db.meta.version)) throw new ManagedReviewError("source_document_version_unsupported", 503);
++  if (db.meta?.version === 2) validateManagedDatabase(db as DatabaseFile);
++  else if (db.managedReviews !== undefined) throw new ManagedReviewError("managed_document_corrupt", 503);
+   const objectKindById = new Map((db.objects ?? []).map((object) => [object.id, object.kind]));
+   const statusOverrides = new Map<string, string>();
+   const channelSources = new Map<string, Set<string>>();
+@@ -5452,6 +5403,7 @@ function normalizeDatabase(value: unknown): DatabaseFile {
+   }
+   const normalized: DatabaseFile = {
+     meta: db.meta ?? emptyDatabase().meta,
++    ...(db.meta?.version === 2 ? { managedReviews: db.managedReviews } : {}),
+     sites: (db.sites ?? []).map((site) => ({ ...site, regionProfile: site.regionProfile ?? "RU" })),
+     objects: (db.objects ?? []).map((object) => ({
+       ...object,
+@@ -5546,6 +5498,10 @@ function normalizeDatabase(value: unknown): DatabaseFile {
+     subscriptions: db.subscriptions ?? [],
+     notificationDeliveries: db.notificationDeliveries ?? []
+   };
++  if (normalized.meta.version === 2 && normalized.sites.length === 0) {
++    if (normalized.objects.length || normalized.reviewSubjects.length || normalized.subjectAccesses.length) throw new ManagedReviewError("managed_source_binding_corrupt", 503);
++    return normalized;
++  }
+   const site = ensureDefaultSiteRecord(normalized);
+   normalized.objects = normalized.objects.map((object) => ({ ...object, siteId: object.siteId ?? site.id }));
+   for (const object of normalized.objects) ensureJsonSubject(normalized, object);
+@@ -5732,6 +5688,7 @@ function emptyRatingDistribution(): PublicReviewRatingAggregate["distribution"]
+ }
+ 
+ function filterJsonReviews(db: DatabaseFile, filters: ListReviewFilters) {
++  const visible = filters.publicOnly ? managedObjectVisibility(db) : undefined;
+   const search = filters.search?.trim().toLowerCase();
+   const tag = supportedReviewTagKey(filters.tag);
+   const objectsById = tag ? new Map(db.objects.map((object) => [object.id, object])) : undefined;
+@@ -5752,6 +5709,7 @@ function filterJsonReviews(db: DatabaseFile, filters: ListReviewFilters) {
+     : undefined;
+   const reviews = db.reviews
+     .filter((review) => {
++      if (visible && !visible(review.objectId)) return false;
+       if (displayObjectIds && !displayObjectIds.has(review.objectId)) return false;
+       if (filters.siteId) {
+         const belongsToSite = review.originSiteId
+@@ -6197,3 +6155,110 @@ function nextDataRunAt(status: DataFlowStatus, schedule: DataFlowSchedule) {
+   const intervalMinutes = Math.max(5, Math.round(schedule.intervalMinutes));
+   return new Date(Date.now() + intervalMinutes * 60_000).toISOString();
+ }
++
++/** Native constructor reused inside the managed Source atomic commit. */
++export function createJsonReview(db: DatabaseFile, input: CreateReviewInput): Review {
++  const requestedObject = db.objects.find((item) => item.id === input.objectId);
++  if (!requestedObject) throw new Error("Object not found");
++  const subject = ensureJsonSubject(db, requestedObject).subject;
++  const canonicalObject = db.objects.find((item) => item.id === subject.canonicalObjectId);
++  if (!canonicalObject) throw new Error("Canonical object not found");
++  const originSiteId = input.originSiteId ?? requestedObject.siteId;
++  if (input.externalId) {
++    const existing = db.reviews.find((review) => review.objectId === canonicalObject.id
++      && review.source === (input.source ?? "manual")
++      && review.externalId === input.externalId
++      && (review.originSiteId ?? canonicalObject.siteId) === originSiteId);
++    if (existing) {
++      if (sameReviewOperation(existing, input)) return existing;
++      throw new ReviewOperationConflictError();
++    }
++  }
++  const now = nowIso();
++  const id = uid("rev");
++  const parent = input.parentId ? db.reviews.find((item) => item.id === input.parentId && item.objectId === canonicalObject.id) : undefined;
++  if (input.parentId && !parent) throw new Error("Parent review not found in this object");
++  if (parent?.status !== undefined && parent.status !== "approved") throw new Error("Cannot reply to a non-approved item");
++  let depth = 0;
++  let cursor = parent;
++  const seen = new Set<string>();
++  while (cursor) {
++    if (seen.has(cursor.id)) throw new Error("Parent thread is invalid");
++    seen.add(cursor.id);
++    depth += 1;
++    if (depth > (input.maxReplyDepth ?? 64)) throw new Error("Reply depth limit exceeded");
++    if (!cursor.parentId) break;
++    cursor = db.reviews.find((item) => item.id === cursor!.parentId && item.objectId === canonicalObject.id);
++    if (!cursor) throw new Error("Parent thread is invalid");
++  }
++  const review: Review = {
++    id,
++    objectId: canonicalObject.id,
++    subjectId: input.subjectId ?? subject.id,
++    originSiteId,
++    originObjectId: input.originObjectId ?? requestedObject.id,
++    type: parent ? "comment" : input.type ?? (input.rating ? "review" : "comment"),
++    parentId: input.parentId,
++    rootId: parent?.rootId ?? parent?.id ?? id,
++    depth,
++    version: 1,
++    channelId: input.channelId,
++    authorId: input.authorId,
++    externalId: input.externalId,
++    externalParentId: input.parentExternalId,
++    legacyId: input.legacyId,
++    source: input.source ?? "manual",
++    status: input.status ?? "approved",
++    publishedAt: (input.status ?? "approved") === "approved" ? now : undefined,
++    appearance: input.appearance ?? "standard",
++    appearanceMeta: input.appearanceMeta ?? {},
++    rating: input.rating,
++    title: input.title?.trim() || undefined,
++    pros: input.pros?.trim() || undefined,
++    cons: input.cons?.trim() || undefined,
++    trustOutcome: input.trustOutcome,
++    trustCause: input.trustCause,
++    trustProvenance: input.trustProvenance,
++    body: input.body.trim(),
++    author: {
++      ...input.author,
++      name: input.author.name.trim() || "Гость"
++    },
++    mediaUrls: input.mediaUrls ?? [],
++    tags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.tags) : [],
++    inferredTags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.inferredTags ?? inferReviewTopicTags(input)) : [],
++    excludedTags: reviewTopicsEnabledForObject(canonicalObject.kind) ? normalizeReviewTopicTags(input.excludedTags) : [],
++    up: input.up ?? 0,
++    down: input.down ?? 0,
++    aiAssisted: input.aiAssisted,
++    consentEvidence: input.consentEvidence ? structuredClone(input.consentEvidence) : undefined,
++    meta: input.meta ?? {},
++    createdAt: input.createdAt ?? now,
++    updatedAt: now
++  };
++  db.reviews.push(review);
++  appendJsonEvent(db, review, "item.created", ["*"]);
++  return review;
++}
++
++export function updateJsonReviewStatus(db: DatabaseFile, id: string, status: ReviewStatus) {
++  const review = db.reviews.find((item) => item.id === id);
++  if (!review) return undefined;
++  const previous = review.status;
++  review.status = status;
++  review.statusOverriddenAt = nowIso();
++  review.version = (review.version ?? 1) + 1;
++  if (status === "deleted") {
++    review.deletedAt = review.deletedAt ?? nowIso();
++    review.deletionKind = review.deletionKind ?? "moderator";
++  } else {
++    review.deletedAt = undefined;
++    review.deletedBy = undefined;
++    review.deleteReason = undefined;
++    review.deletionKind = undefined;
++    if (status === "approved") review.publishedAt = review.publishedAt ?? nowIso();
++  }
++  review.updatedAt = nowIso();
++  appendJsonEvent(db, review, status === "deleted" ? "item.deleted" : previous === "deleted" ? "item.restored" : "item.updated", ["status", "statusOverriddenAt"]);
++  return review;
++}
+diff --git a/tests/atomic-json-document.test.ts b/tests/atomic-json-document.test.ts
+new file mode 100644
+index 0000000..e60800c
+--- /dev/null
++++ b/tests/atomic-json-document.test.ts
+@@ -0,0 +1,64 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { mkdtemp, rm, readFile, symlink, writeFile } from "node:fs/promises";
++import path from "node:path";
++import { tmpdir } from "node:os";
++import { spawn } from "node:child_process";
++import { fileURLToPath } from "node:url";
++import { AtomicJsonDocument } from "../src/server/atomic-json-document.js";
++import { JsonReviewStore } from "../src/server/store.js";
++import { createManagedReviews } from "../src/server/managed-reviews.js";
++function child(file: string, mode: string, marker = "") { return new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
++  const worker = fileURLToPath(new URL("./support/managed-document-worker.ts", import.meta.url));
++  const p = spawn(process.execPath, ["--import", "tsx", worker, file, mode, marker], { stdio: ["ignore", "pipe", "pipe"] }); let out = "", err = "";
++  p.stdout.on("data", value => { out += value; }); p.stderr.on("data", value => { err += value; }); p.once("error", reject);
++  p.once("exit", code => { if (code !== 0 && mode !== "crash") reject(new Error("synthetic_child_failed:" + err)); else resolve({ code, stdout: out }); });
++}); }
++async function dir(t: test.TestContext) { const directory = await mkdtemp(path.join(tmpdir(), "povedai-atomic-")); t.after(() => rm(directory, { recursive: true, force: true })); return directory; }
++test("two OS processes native+managed atomic replacement preserves unrelated writes and exact replay", async t => {
++  const directory = await dir(t), file = path.join(directory, "db.json"), store = new JsonReviewStore(file, { allowManagedMigration: true, lockTimeoutMs: 10000 });
++  const service = createManagedReviews(store, { enabled: true, verifier: { async verify() { return { issuer: "https://issuer.example/oidc", subject: "Exact-Sub", label: "Same Name", expiresAt: Date.now() + 60000 }; } } });
++  const actor = await service.withActor(null, actor => service.actorProfile(actor));
++  await service.operator.grant({ id: "two", principalId: actor.principalId, scope: { registryId: "Soty", tenantId: "Tenant-A", appId: "App-A", environmentId: "dev" }, subjects: [{ kind: "app", id: "App-A" }], rights: ["provision"], keyId: "two-key", generation: 1, active: true, expiresAt: Date.now() + 60000 });
++  const children = await Promise.all([child(file, "native", "a-"), child(file, "native", "b-"), child(file, "managed"), child(file, "managed")]);
++  assert.deepEqual(JSON.parse(children[2].stdout), JSON.parse(children[3].stdout));
++  const db = await store.managedSnapshot(); assert.equal(db.sites.filter(item => /^(a-|b-)/u.test(item.key)).length, 16);
++  assert.equal(db.managedReviews!.subjectBindings.length, 1); assert.equal(db.managedReviews!.operationReceipts.length, 1); assert.equal(db.adminUsers.length, 0); service.close();
++});
++test("crash before replace retains lock and old bytes; exact dead-PID/nonce/inode recovery only", async t => {
++  const directory = await dir(t), file = path.join(directory, "db.json"), store = new JsonReviewStore(file), document = new AtomicJsonDocument(file, { lockTimeoutMs: 40 });
++  await store.createSite({ key: "preserved", title: "Preserved" }); const before = await readFile(file);
++  const crashed = await child(file, "crash"); assert.equal(crashed.code, 73); assert.deepEqual(await readFile(file), before);
++  await assert.rejects(document.read(), (error: unknown) => (error as { code: string }).code === "document_busy");
++  const lock = await document.inspectLock(); await assert.rejects(document.recoverDeadOwner({ ...lock, nonce: "0".repeat(32) }), /document_lock_changed/u);
++  assert.deepEqual(await document.recoverDeadOwner(lock), { recovered: true }); assert.equal((await store.listSites()).some(item => item.key === "preserved"), true);
++  await assert.rejects(document.recoverDeadOwner(lock), /ENOENT/u);
++});
++test("bounds, async transaction, corrupt JSON and symlink refuse without overwriting original", async t => {
++  const directory = await dir(t), file = path.join(directory, "db.json"), document = new AtomicJsonDocument(file, { maxBytes: 65536 });
++  await document.transact(() => ({ document: { marker: "old" }, result: true })); const before = await readFile(file);
++  await assert.rejects(document.transact(() => ({ document: { content: "a".repeat(65537) }, result: true })), /document_capacity/u); assert.deepEqual(await readFile(file), before);
++  await assert.rejects(document.transact((async () => ({ document: {}, result: true })) as never), /document_async_commit_forbidden/u); assert.deepEqual(await readFile(file), before);
++  await writeFile(file, "{"); await assert.rejects(document.read(), /document_json_invalid/u);
++  if (process.platform === "win32") {
++    // Windows junctions exercise the directory path check without requiring
++    // system-wide symbolic-link privileges or skipping the gate.
++    const link = path.join(directory, "junction"); await symlink(directory, link, "junction");
++    await assert.rejects(new AtomicJsonDocument(path.join(link, "db.json")).read(), /document_path_unsafe/u);
++  } else {
++    const link = path.join(directory, "link.json"); await symlink(file, link);
++    await assert.rejects(new AtomicJsonDocument(link).read(), /document_file_unsafe/u);
++  }
++});
++test("lock-CREATION transient retry precedes domain commit; permission/operation failures never retry domain work", async t => {
++  const directory = await dir(t), file = path.join(directory, "transport.json");
++  class CreationFlake extends AtomicJsonDocument {
++    attempts = 0;
++    protected openLock() { if (++this.attempts === 1) return Promise.reject(Object.assign(new Error("fixture lock creation transient"), { code: process.platform === "win32" ? "EPERM" : "EEXIST" })); return super.openLock(); }
++  }
++  const doc = new CreationFlake(file); let commits = 0;
++  await doc.transact(() => { commits++; return { document: { value: 1 }, result: true }; }); assert.equal(doc.attempts, 2); assert.equal(commits, 1);
++  const prior = await readFile(file); await assert.rejects(doc.transact(() => { commits++; throw new Error("fixture domain failed"); }), /fixture domain failed/u); assert.equal(commits, 2); assert.deepEqual(await readFile(file), prior);
++  class PermissionsDenied extends AtomicJsonDocument { protected openLock() { return Promise.reject(Object.assign(new Error("fixture permission denied"), { code: "EACCES" })); } }
++  await assert.rejects(new PermissionsDenied(file).transact(() => { commits++; return { document: {}, result: true }; }), /fixture permission denied/u); assert.equal(commits, 2); assert.deepEqual(await readFile(file), prior);
++});
+diff --git a/tests/managed-native-reader.test.ts b/tests/managed-native-reader.test.ts
+new file mode 100644
+index 0000000..3631fb6
+--- /dev/null
++++ b/tests/managed-native-reader.test.ts
+@@ -0,0 +1,62 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import type { Request, Response } from "express";
++import { JsonReviewStore } from "../src/server/store.js";
++import { createManagedReviews } from "../src/server/managed-reviews.js";
++import { createManagedNativeVerifier } from "../src/server/managed-native-verifier.js";
++import { AdminAuthService, hashPassword } from "../src/server/admin-auth.js";
++import { ReviewAuthService } from "../src/server/auth.js";
++import { createRuntimeStore } from "../src/server/runtime-store.js";
++import { resolvePublicAuthor } from "../src/server/public-author.js";
++import { inspectManagedStore, inspectManagedSnapshot, requireManagedReader } from "../src/server/managed-store-probe.js";
++
++const scope = { registryId: "soty", tenantId: "owner", appId: "app", environmentId: "test" };
++async function fixture(t: test.TestContext) {
++  const directory = await mkdtemp(path.join(tmpdir(), "povedai-managed-native-")), file = path.join(directory, "db.json"), runtime = createRuntimeStore(undefined, false); await runtime.connect();
++  t.after(async () => { await runtime.close(); await rm(directory, { recursive: true, force: true }); });
++  const store = new JsonReviewStore(file, { allowManagedMigration: true });
++  const admin = new AdminAuthService(store, runtime, { sessionTtlSeconds: 300, secureCookies: false, bootstrapName: "Test", signupEnabled: false, termsVersion: "test", identityHashSecret: "synthetic-identity-fixture-only" });
++  const auth = new ReviewAuthService(runtime, { demoEnabled: true });
++  const service = createManagedReviews(store, { enabled: true, verifier: { async verify(credential: unknown) { return { issuer: "https://root.example/oidc", subject: typeof credential === "string" ? credential : "Root-Person", label: "Legacy same name", expiresAt: Date.now() + 60000 }; } }, nativeVerifier: createManagedNativeVerifier({ store, adminAuth: admin, publicAuth: auth }) });
++  return { directory, file, runtime, store, admin, auth, service };
++}
++function request(body: unknown, headers: Record<string, string>) { return { body, header(name: string) { return headers[name.toLowerCase()]; } } as Request; }
++test("real native password/session+guest token two-sided additive links preserve IDs and grant no admin power", async t => {
++  const f = await fixture(t), site = await f.store.createSite({ title: "Legacy same name", key: "legacy" }), object = await f.store.createObject({ siteId: site.id, title: "Old object" });
++  const admin = await f.store.createAdminUser({ email: "native@example.test", displayName: "Legacy same name", passwordHash: await hashPassword("Fixture-Password-123456"), platformRole: "member" });
++  await f.store.upsertAdminMembership({ siteId: site.id, userId: admin.id, role: "site_admin" });
++  let cookie = ""; const response = { setHeader(key: string, value: string) { if (key === "set-cookie") cookie = value.split(";")[0]; } } as Response;
++  assert.ok(await f.admin.login("native@example.test", "Fixture-Password-123456", response));
++  const adminInput = { scope, requestId: "admin-attach", kind: "admin", nativeId: admin.id };
++  await assert.rejects(f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, adminInput, request(adminInput, {}))), /managed_native_proof_invalid/u);
++  const linked = await f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, adminInput, request(adminInput, { cookie }))); assert.equal(linked.nativeId, admin.id);
++  const guestSession = await f.auth.createGuestSession(site.key, { name: "Legacy same name" });
++  const author = await resolvePublicAuthor(f.store, { siteId: site.id, displayName: guestSession.name, session: guestSession });
++  const history = await f.store.createReview({ objectId: object.id, authorId: author.id, author: { name: author.displayName }, body: "Preserved original history", status: "approved" });
++  const authorInput = { scope, requestId: "author-attach", kind: "author", nativeId: author.id, siteId: site.id };
++  await assert.rejects(f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, authorInput, request(authorInput, {}))), /managed_native_proof_invalid/u);
++  await f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, authorInput, request(authorInput, { "x-povedai-author-token": guestSession.token })));
++  await assert.rejects(f.service.withActor("Other-Root-Person", actor => f.service.attachLegacy(actor, authorInput, request(authorInput, { "x-povedai-author-token": guestSession.token }))), /managed_native_link_conflict/u);
++  await assert.rejects(f.service.withActor("Root-Person", actor => f.service.provision(actor, { scope, localSubject: { kind: "app", id: "app" }, requestId: "still-no-role", title: "X" })), /managed_source_grant_required/u);
++  const db = await f.store.managedSnapshot(); assert.equal(db.adminUsers.length, 1); assert.equal(db.adminMemberships.length, 1); assert.equal(db.managedReviews!.identityLinks.length, 2);
++  assert.equal((await f.store.getReview(history.id))?.authorId, author.id); assert.equal((await f.store.getAdminUserById(admin.id))?.passwordHash, admin.passwordHash);
++  await f.auth.revoke(guestSession.token, site.key); await assert.rejects(f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, authorInput, request(authorInput, { "x-povedai-author-token": guestSession.token }))), /managed_native_proof_invalid/u);
++  await f.admin.logout(request(adminInput, { cookie }), response); await assert.rejects(f.service.withActor("Root-Person", actor => f.service.attachLegacy(actor, adminInput, request(adminInput, { cookie }))), /managed_native_proof_invalid/u);
++});
++test("independent literal reader2 gate and cold feature-off native write preserve v2; old reader denied externally", async t => {
++  const f = await fixture(t); await f.store.ensureDefaultSite(); const old = await inspectManagedStore(f.file); assert.equal(old.documentVersion, 1); assert.deepEqual(requireManagedReader(old, [1]), { compatible: true });
++  const profile = await f.service.withActor("Root-Person", actor => f.service.actorProfile(actor));
++  await f.service.operator.grant({ id: "grant", principalId: profile.principalId, scope, subjects: [{ kind: "app", id: "app" }], rights: ["provision"], keyId: "key", generation: 1, active: true, expiresAt: Date.now() + 60000 });
++  await f.service.withActor("Root-Person", actor => f.service.provision(actor, { scope, localSubject: { kind: "app", id: "app" }, requestId: "create", title: "Private" }));
++  const summary = await inspectManagedStore(f.file); assert.equal(summary.documentVersion, 2); assert.equal(summary.bindingCount, 1); assert.throws(() => requireManagedReader(summary, [1]), /source_reader_incompatible/u); assert.deepEqual(requireManagedReader(summary, [1, 2]), { compatible: true });
++  const before = (await f.store.managedSnapshot()).managedReviews; f.service.close(); await new JsonReviewStore(f.file).createSite({ title: "Reader2 fallback writer", key: "fallback" });
++  assert.deepEqual((await new JsonReviewStore(f.file).managedSnapshot()).managedReviews, before);
++  const raw = JSON.parse(await readFile(f.file, "utf8")); raw.managedReviews.subjectBindings[0].localSubject.id = "APP"; assert.throws(() => inspectManagedSnapshot(raw), /source_snapshot_invalid/u);
++  raw.managedReviews.subjectBindings[0].localSubject.id = "app"; raw.objects.push(structuredClone(raw.objects[0])); assert.throws(() => inspectManagedSnapshot(raw), /source_snapshot_invalid/u); raw.objects.pop();
++  raw.managedReviews.tenantGrants[0].subjects[0].id = "foreign-app"; assert.throws(() => inspectManagedSnapshot(raw), /source_snapshot_invalid/u); raw.managedReviews.tenantGrants[0].subjects[0].id = "app";
++  raw.managedReviews.subjectBindings[0].localSubject.id = "app"; raw.subjectAccesses = []; await writeFile(f.file, JSON.stringify(raw));
++  await assert.rejects(inspectManagedStore(f.file), /source_snapshot_invalid/u); await assert.rejects(new JsonReviewStore(f.file).listSites(), /managed_source_binding_corrupt/u);
++});
+diff --git a/tests/managed-reviews.test.ts b/tests/managed-reviews.test.ts
+new file mode 100644
+index 0000000..1a41e0b
+--- /dev/null
++++ b/tests/managed-reviews.test.ts
+@@ -0,0 +1,151 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { createServer } from "node:http";
++import { JsonReviewStore } from "../src/server/store.js";
++import { createManagedReviews, type ManagedRootIdentity } from "../src/server/managed-reviews.js";
++import { createApplication, type ApplicationConfig } from "../src/server/app.js";
++import { createRuntimeStore } from "../src/server/runtime-store.js";
++import { AtomicJsonDocument } from "../src/server/atomic-json-document.js";
++import { resolvePublicObject } from "../src/server/public-resolver.js";
++
++const scope = { registryId: "Soty", tenantId: "Tenant-A", appId: "App-A", environmentId: "dev" };
++const appSubject = { kind: "app" as const, id: scope.appId };
++const identity: ManagedRootIdentity = { issuer: "https://issuer.example/oidc", subject: "Exact-Sub", label: "Same Name", expiresAt: Date.now() + 86400000 };
++async function fixture(t: test.TestContext, options: { nativeVerifier?: Parameters<typeof createManagedReviews>[1]["nativeVerifier"] } = {}) {
++  const directory = await mkdtemp(path.join(tmpdir(), "povedai-managed-")); const closers: Array<() => unknown> = [];
++  t.after(async () => { for (const close of closers.reverse()) await close(); await rm(directory, { recursive: true, force: true }); });
++  const file = path.join(directory, "document.json"), store = new JsonReviewStore(file, { allowManagedMigration: true }); let active = true;
++  const verifier = { async verify(credential: unknown) { assert.ok(active, "fixture root revoked"); return { ...identity, subject: typeof credential === "string" ? credential : identity.subject }; } };
++  const service = createManagedReviews(store, { enabled: true, verifier, ...options }); t.after(() => service.close());
++  const profile = await service.withActor(identity.subject, actor => service.actorProfile(actor));
++  async function grant(subjects = [appSubject] as Array<{ kind: "app" | "project" | "person"; id: string }>, principalId = profile.principalId, id = "grant-1", keyId = "key-1") {
++    return service.operator.grant({ id, principalId, scope, subjects, rights: ["provision", "collect", "reply", "publish", "moderate"], keyId, generation: 1, active: true, expiresAt: Date.now() + 3600000 });
++  }
++  return { directory, file, store, service, profile, grant, onClose(close: () => unknown) { closers.push(close); }, revokeRoot() { active = false; } };
++}
++const args = (requestId: string, localSubject: { kind: "app" | "project" | "person"; id: string } = appSubject) => ({ scope, localSubject, requestId });
++const rejects = (code: string) => (error: unknown) => (error as { code?: string }).code === code;
++
++test("Source grant is separate from Root identity; replay/restart creates no fake native admin", async t => {
++  const f = await fixture(t);
++  await assert.rejects(f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("first"), title: "Private App" })), rejects("managed_source_grant_required"));
++  await f.grant(); const input = { ...args("first"), title: "Private App" };
++  const first = await f.service.withActor(identity.subject, actor => f.service.provision(actor, input));
++  assert.equal(first.canDisplay, false); assert.equal((await f.store.getSharedObjectContext(first.objectId))?.access.role, "owner");
++  assert.equal((await f.store.getSharedObjectContext(first.objectId))?.access.canDisplay, false);
++  const saved = JSON.parse(await readFile(f.file, "utf8")); assert.equal(saved.adminUsers.length, 0); assert.equal(saved.meta.version, 2);
++  assert.equal(saved.sites.length, 1, "no native demo site is provisioned in a managed tenant");
++  assert.equal(saved.objects.length, 1);
++  assert.equal(saved.managedReviews.operationReceipts.length, 1);
++  const restart = createManagedReviews(new JsonReviewStore(f.file), { enabled: true, verifier: { async verify() { return { ...identity }; } } }); t.after(() => restart.close());
++  assert.deepEqual(await restart.withActor(null, actor => restart.provision(actor, input)), first);
++  await assert.rejects(restart.withActor(null, actor => restart.provision(actor, { ...input, title: "Changed" })), rejects("managed_operation_conflict"));
++  const readerOnly = new JsonReviewStore(f.file); await readerOnly.createSite({ key: "native-after-migration", title: "Native" });
++  assert.equal((JSON.parse(await readFile(f.file, "utf8"))).managedReviews.operationReceipts.length, 1, "feature-off native writer preserves v2 state");
++});
++
++test("exact case-sensitive app/project/person and tenant scope; foreign actor has no private context", async t => {
++  const f = await fixture(t), subjects = [appSubject, { kind: "project" as const, id: "Project-A" }, { kind: "person" as const, id: "Person-A" }]; await f.grant(subjects);
++  const bindings = []; for (const subject of subjects) bindings.push(await f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("provision-" + subject.kind, subject), title: subject.kind })));
++  assert.equal(new Set(bindings.map(item => item.subjectId)).size, 3); assert.deepEqual(bindings.map(item => item.entityType), ["product", "project", "profile"]);
++  for (const [field, value] of Object.entries({ tenantId: "Tenant-B", appId: "App-B", registryId: "Other", environmentId: "prod" })) await assert.rejects(f.service.withActor(identity.subject, actor => f.service.context(actor, { scope: { ...scope, [field]: value }, localSubject: appSubject })), rejects("managed_source_grant_required"));
++  await assert.rejects(f.service.withActor("exact-sub", actor => f.service.context(actor, { scope, localSubject: appSubject })), rejects("managed_source_grant_required"));
++  await assert.rejects(f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("bad"), title: "x", role: "owner" })), /unrecognized_keys/u);
++  await assert.rejects(f.service.withActor(identity.subject, actor => f.service.context(actor, { scope, localSubject: { kind: "person", id: "person-a" } })), rejects("managed_source_grant_required"));
++});
++
++test("native author IDs/history preserved, no email/name merge, nested replies and source-key revoke", async t => {
++  const f = await fixture(t); await f.grant();
++  const binding = await f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("first"), title: "Private App" }));
++  const old = await f.store.findOrCreateAuthor({ siteId: binding.siteId, displayName: identity.label, emailHash: "same-email", externalIdHash: "legacy-id", isGuest: false });
++  const oldReview = await f.store.createReview({ objectId: binding.objectId, authorId: old.id, author: { name: old.displayName }, body: "Existing private history", status: "approved" });
++  const review = await f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("write"), body: "New comment" }));
++  assert.equal((await f.store.getReview(review.reviewId))?.author.name, "Участник", "private issuer name is not a public author alias");
++  assert.notEqual(review.authorId, old.id, "same display name must not merge native account");
++  assert.equal((await f.store.getReview(oldReview.id))?.authorId, old.id);
++  await f.service.withActor(identity.subject, actor => f.service.moderate(actor, { ...args("approve"), reviewId: review.reviewId, status: "approved" }));
++  const reply = await f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("reply"), body: "Reply", parentId: review.reviewId }));
++  assert.equal(reply.depth, 1); assert.equal(reply.rootId, review.reviewId);
++  await f.service.withActor(identity.subject, actor => f.service.moderate(actor, { ...args("approve-reply"), reviewId: reply.reviewId, status: "approved" }));
++  const nested = await f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("nested"), body: "Nested", parentId: reply.reviewId }));
++  assert.equal(nested.depth, 2); assert.equal(nested.rootId, review.reviewId);
++  const foreignSite = await f.store.createSite({ title: "Other", key: "other" }), object = await f.store.createObject({ siteId: foreignSite.id, title: "Other" });
++  const foreignReview = await f.store.createReview({ objectId: object.id, author: { name: "Other" }, body: "Other" });
++  await assert.rejects(f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("foreign-parent"), body: "X", parentId: foreignReview.id })), /Parent review not found/u);
++  await f.service.operator.revokeKey("key-1");
++  await assert.rejects(f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("write"), body: "New comment" })), rejects("managed_source_grant_required"));
++  await assert.rejects(f.grant([appSubject], f.profile.principalId, "new-grant", "key-1"), rejects("managed_grant_immutable"));
++});
++
++test("all actual public aliases hide managed site and object until explicit Source publish", async t => {
++  const f = await fixture(t); await f.grant(); const b = await f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("first"), title: "PRIVATE-TITLE" }));
++  const row = await f.service.withActor(identity.subject, actor => f.service.collect(actor, { ...args("review"), body: "PRIVATE-BODY", rating: 5 }));
++  await f.service.withActor(identity.subject, actor => f.service.moderate(actor, { ...args("approve"), reviewId: row.reviewId, status: "approved" }));
++  const runtime = createRuntimeStore(undefined, false); await runtime.connect(); f.onClose(() => runtime.close());
++  let handler: ReturnType<typeof createApplication>["app"]; const server = createServer((req, res) => handler(req, res)); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
++  const origin = "http://127.0.0.1:" + (server.address() as { port: number }).port;
++  handler = createApplication({ store: f.store, runtime, config: config(b.siteKey, origin), managedReviews: f.service }).app;
++  f.onClose(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
++  const paths = ["/api/public/site-resolution?siteKey=" + b.siteKey, `/api/public/${b.siteKey}/objects`, `/api/public/${b.siteKey}/legal`, `/api/public/${b.siteKey}/features`, `/api/public/${b.siteKey}/objects/${b.objectSlug}/summary`, `/api/public/${b.siteKey}/objects/${b.objectSlug}/reviews`, `/api/public/${b.siteKey}/reviews/${row.reviewId}`, `/api/public/${b.siteKey}/recent`, `/v1/public/${b.siteKey}/objects/${b.objectSlug}/threads`, `/v1/public/${b.siteKey}/objects/${b.objectSlug}/seo`, `/api/public/v1/subjects/${b.subjectId}`, `/api/3.0/review/list.json?siteKey=${b.siteKey}`];
++  for (const path of paths) { const r = await fetch(origin + path); const text = await r.text(); assert.equal(r.status, 404, path); assert.doesNotMatch(text, /PRIVATE-TITLE|PRIVATE-BODY|Exact-Sub|issuer\.example/u); }
++  assert.equal(await f.store.getPublicObject(b.siteKey, b.objectSlug), undefined); assert.equal(await f.store.getPublicSubjectContext(b.subjectId), undefined);
++  const deniedOrigin = await fetch(origin + "/api/managed/v1/context", { method: "POST", headers: { "content-type": "application/json", origin: "https://foreign.example" }, body: JSON.stringify({ scope, localSubject: appSubject }) }); assert.equal(deniedOrigin.status, 403);
++  await f.service.withActor(identity.subject, actor => f.service.publish(actor, { ...args("publish"), canDisplay: true }));
++  assert.equal((await fetch(origin + `/api/public/v1/subjects/${b.subjectId}`)).status, 200);
++  const published = await fetch(origin + `/api/public/v1/subjects/${b.subjectId}/reviews`); assert.equal(published.status, 200); const text = await published.text(); assert.match(text, /PRIVATE-BODY/u); assert.doesNotMatch(text, /Exact-Sub|issuer\.example|same-email|identityHash|principalId/u);
++  await f.service.withActor(identity.subject, actor => f.service.publish(actor, { ...args("unpublish"), canDisplay: false }));
++  assert.equal((await fetch(origin + `/api/public/v1/subjects/${b.subjectId}`)).status, 404);
++});
++
++test("first legacy write retains exact missing-file wire; managed profile alone never materializes native demo objects", async t => {
++  const f = await fixture(t); const native = new JsonReviewStore(path.join(f.directory, "native-first.json"));
++  const first = await native.createSite({ key: "first-native", title: "First native" }); const sites = await native.listSites(); assert.equal(sites.length, 1); assert.equal(sites[0].id, first.id);
++  assert.equal((JSON.parse(await readFile(path.join(f.directory, "native-first.json"), "utf8"))).meta.version, 1);
++  const db = await f.store.managedSnapshot(); assert.equal(db.sites.length, 0); assert.equal(db.objects.length, 0);
++  await assert.rejects(f.store.ensureDefaultSite(), /managed_default_site_absent/u); assert.equal((await f.store.managedSnapshot()).sites.length, 0);
++});
++
++test("public site/object discovery uses one current document snapshot per batch and immediately reflects private publication", async t => {
++  const f = await fixture(t); await f.grant(); const privateObject = await f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("batch"), title: "Private" }));
++  const site = await f.store.createSite({ key: "native-batch", title: "Native" });
++  for (let i = 0; i < 24; i++) await f.store.createObject({ siteId: site.id, title: "Native " + i, slug: "native-" + i });
++  let reads = 0; const original = AtomicJsonDocument.prototype.read;
++  AtomicJsonDocument.prototype.read = async function<T>() { reads++; return original.call(this) as Promise<T | undefined>; };
++  try {
++    assert.equal((await f.store.listPublicObjects(site.id)).length, 24); assert.equal(reads, 1); reads = 0;
++    assert.equal((await resolvePublicObject(f.store, { siteId: site.id, object: "native-23" }))?.object.slug, "native-23"); assert.equal(reads, 2, "one objects snapshot and one channels snapshot, independent of object count"); reads = 0;
++    assert.equal((await f.store.listPublicSites()).some(item => item.id === privateObject.siteId), false); assert.equal(reads, 1);
++  } finally { AtomicJsonDocument.prototype.read = original; }
++  assert.equal((await f.store.listPublicObjects(privateObject.siteId)).length, 0);
++  await f.service.withActor(identity.subject, actor => f.service.publish(actor, { ...args("batch-publish"), canDisplay: true })); assert.equal((await f.store.listPublicObjects(privateObject.siteId)).length, 1);
++  await f.service.withActor(identity.subject, actor => f.service.publish(actor, { ...args("batch-hide"), canDisplay: false })); assert.equal((await f.store.listPublicObjects(privateObject.siteId)).length, 0);
++});
++
++test("explicit migration only, unknown/corrupt reader refuses and actor closes after callback", async t => {
++  const f = await fixture(t); let retained: Parameters<typeof f.service.context>[0] | undefined; await f.service.withActor(identity.subject, async actor => { retained = actor; });
++  await assert.rejects(f.service.context(retained!, { scope, localSubject: appSubject }), rejects("managed_actor_invalid"));
++  await assert.rejects(f.service.context({ protocol: "povedai.managed-actor.v1" }, { scope, localSubject: appSubject }), rejects("managed_actor_invalid"));
++  const freshFile = path.join(f.directory, "old.json"), old = new JsonReviewStore(freshFile), service = createManagedReviews(old, { enabled: true, verifier: { async verify() { return { ...identity }; } } });
++  await old.ensureDefaultSite(); const prior = await readFile(freshFile);
++  await assert.rejects(service.withActor(null, actor => service.actorProfile(actor)), rejects("managed_migration_not_admitted")); assert.deepEqual(await readFile(freshFile), prior);
++  const value = JSON.parse(await readFile(f.file, "utf8")); value.meta.version = 3; await writeFile(f.file, JSON.stringify(value)); await assert.rejects(f.store.listSites(), rejects("source_document_version_unsupported"));
++  value.meta.version = 2; value.managedReviews.principals[0].identityHash = "0".repeat(64); await writeFile(f.file, JSON.stringify(value)); await assert.rejects(f.store.listSites(), rejects("managed_document_corrupt"));
++});
++
++test("Source key revoked during issuer await suppresses private context; verifier slots remain bounded after ignored abort", async t => {
++  const f = await fixture(t); await f.grant(); await f.service.withActor(identity.subject, actor => f.service.provision(actor, { ...args("first"), title: "Private" }));
++  let calls = 0, paused: (() => void) | undefined, resume: (() => void) | undefined;
++  const entered = new Promise<void>(resolve => { paused = resolve; });
++  const reader = createManagedReviews(f.store, { enabled: true, verifier: { async verify() { calls++; if (calls === 3) { paused!(); await new Promise<void>(resolve => { resume = resolve; }); } return { ...identity }; } } });
++  const query = reader.withActor(null, actor => reader.context(actor, { scope, localSubject: appSubject })); await entered; await f.service.operator.revokeKey("key-1"); resume!();
++  await assert.rejects(query, /managed_source_grant_required/u); reader.close();
++  let attempts = 0; const aborts: AbortSignal[] = [];
++  const stalled = createManagedReviews(f.store, { enabled: true, timeoutMs: 100, verifier: { verify(_credential, signal) { attempts++; aborts.push(signal); return new Promise(() => {}); } } });
++  for (let i = 0; i < 4; i++) await assert.rejects(stalled.withActor(null, actor => stalled.actorProfile(actor)), /managed_verifier_timeout/u);
++  await assert.rejects(stalled.withActor(null, actor => stalled.actorProfile(actor)), /managed_verifier_busy/u); assert.equal(attempts, 4); assert.ok(aborts.every(signal => signal.aborted)); stalled.close();
++});
++
++export function config(publicSiteKey: string, publicUrl: string): ApplicationConfig { return { nodeEnv: "test", port: 0, apiKey: "synthetic-api-only", publicSiteKey, storage: "json", corsOrigins: [], publicUrl, authDemo: true, trustProxy: false, adminName: "Test", sessionTtlSeconds: 3600, signupEnabled: false, legalVersion: "2026-08-15", operator: { name: "Test", inn: "1234567890", registrationId: "1234567890123", email: "test@example.test" }, version: "managed-test", ipHashSecret: "synthetic-at-least-32-characters-fixture", aiProvider: "mock", gonkaBaseUrl: "https://example.invalid/v1", gonkaModel: "mock", gonkaMaxTokens: 300, gonkaMaxAttempts: 1, gonkaTimeoutMs: 1000 }; }
+diff --git a/tests/support/managed-document-worker.ts b/tests/support/managed-document-worker.ts
+new file mode 100644
+index 0000000..46c9320
+--- /dev/null
++++ b/tests/support/managed-document-worker.ts
+@@ -0,0 +1,14 @@
++import { JsonReviewStore } from "../../src/server/store.js";
++import { AtomicJsonDocument } from "../../src/server/atomic-json-document.js";
++import { createManagedReviews } from "../../src/server/managed-reviews.js";
++const [file, mode, marker] = process.argv.slice(2);
++const store = new JsonReviewStore(file, { lockTimeoutMs: 10000 });
++if (mode === "native") {
++  for (let i = 0; i < 8; i++) await store.createSite({ title: marker + i, key: marker + i });
++} else if (mode === "managed") {
++  const service = createManagedReviews(store, { enabled: true, verifier: { async verify() { return { issuer: "https://issuer.example/oidc", subject: "Exact-Sub", label: "Same Name", expiresAt: Date.now() + 60000 }; } } });
++  const value = await service.withActor(null, actor => service.provision(actor, { scope: { registryId: "Soty", tenantId: "Tenant-A", appId: "App-A", environmentId: "dev" }, localSubject: { kind: "app", id: "App-A" }, requestId: "two-process", title: "Two process" }));
++  console.log(JSON.stringify({ subjectId: value.subjectId, placementId: value.placementId })); service.close();
++} else if (mode === "crash") {
++  await new AtomicJsonDocument(file).transact(() => { process.exit(73); });
++} else throw Error("worker_mode_invalid");
