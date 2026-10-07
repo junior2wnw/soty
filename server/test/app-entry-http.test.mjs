@@ -117,6 +117,29 @@ async function environment(t) {
   };
 }
 
+test('ordinary app HTTP excludes data media; an unknown host cannot opt into selected-app policy', { timeout: 20000 }, async t => {
+  const f = await environment(t), app = await f.create();
+  const launched = await f.owner.extension('apps.launch', { appId: app.id });
+  const url = new URL(launched.entry.origin);
+  const inspectPolicy = (host, { path = '/initial', body, cookie } = {}) => new Promise((resolveResponse, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: Number(url.port), path, method: body ? 'POST' : 'GET', headers: { host,
+      ...(cookie ? { cookie } : {}), ...(body ? { origin: url.origin, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}) } }, res => {
+      res.resume(); res.on('end', () => resolveResponse({ status: res.statusCode, policy: res.headers['content-security-policy'],
+        cookie: res.headers['set-cookie']?.map(value => value.split(';')[0]).join('; ') }));
+    });
+    req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('fixture_http_timeout'))); req.end(body);
+  });
+  const session = await inspectPolicy(url.host, { path: '/_soty/session', body: JSON.stringify({ ticket: new URL(launched.launchUrl).hash.slice(1) }) });
+  assert.equal(session.status, 200);
+  const ordinary = await inspectPolicy(url.host, { cookie: session.cookie });
+  assert.equal(ordinary.status, 200);
+  assert.match(ordinary.policy, /(?:^|;\s*)media-src 'self' blob:(?:;|$)/u);
+  assert.doesNotMatch(ordinary.policy, /media-src[^;]*data:/u);
+  const unknown = await inspectPolicy('app-' + 'f'.repeat(32) + '.legacy.localhost:' + url.port);
+  assert.equal(unknown.status, 404);
+  assert.doesNotMatch(unknown.policy ?? '', /media-src[^;]*data:/u);
+});
+
 test('D3 signed launch and entry resolver agree on the exact admitted Unicode/query/hash entry', { timeout: 20000 }, async t => {
   const f = await environment(t), path = '/проект?tag=a%2Bb#сцена', app = await f.create(path);
   const launched = await f.owner.extension('apps.launch', { appId: app.id, expectedAccountId: f.ownerAccount.accountId });
