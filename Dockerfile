@@ -10,7 +10,12 @@ RUN corepack enable \
   && PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm run build
-RUN pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test && pnpm run platform:test && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
+# Only disposable platform-test files use this bounded build mount. Runtime
+# storage and the separate disk-backed encrypted cold-restore gate are unchanged.
+RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
+  pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test \
+  && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform pnpm run platform:test \
+  && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
 RUN pnpm prune --prod
