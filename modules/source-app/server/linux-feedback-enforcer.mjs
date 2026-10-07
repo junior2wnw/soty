@@ -19,6 +19,10 @@ const sleep=ms=>new Promise(done=>setTimeout(done,ms));
 export const DIAGNOSTIC_LINUX_FEEDBACK_PLACEMENT=deepFreeze({...LOCAL_LINUX_FEEDBACK_PLACEMENT,
   id:'soty.feedback.local-linux-wsl-diagnostics',version:1,
   directory:LOCAL_LINUX_FEEDBACK_PLACEMENT.lab+'/source-feedback-jobs-diag-c962047a89ef40c1b33a105d7e61a924'});
+export const CLEANUP_LINUX_FEEDBACK_PLACEMENT=deepFreeze({...LOCAL_LINUX_FEEDBACK_PLACEMENT,
+  id:'soty.feedback.local-linux-wsl-cleanup',version:1,
+  directory:LOCAL_LINUX_FEEDBACK_PLACEMENT.lab+'/source-feedback-jobs-cleanup-ab38576374cf4eadbb9192cce6eaf721',
+  lifecycleCommit:'d2a621b525923d83250933505ae988b4cf3a32b6'});
 
 /** Narrow LAB host port. Docker custody belongs to the trusted supervisor,
  * NEVER to the processor/author JSON. No real model/user media is enabled.
@@ -33,6 +37,9 @@ export function createSyntheticLocalLinuxFeedbackProcessor(options){
 }
 export function createSyntheticDiagnosticLinuxFeedbackProcessor(options){
   return processor(options,DIAGNOSTIC_LINUX_FEEDBACK_PLACEMENT,4);
+}
+export function createSyntheticCleanupLinuxFeedbackProcessor(options){
+  return processor(options,CLEANUP_LINUX_FEEDBACK_PLACEMENT,5);
 }
 function processor(options,placement,engineVersion=placement?3:2){
   const value=fields(options,['directory'],['dockerBinary','scenario','onEvidence']);
