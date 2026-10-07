@@ -159,9 +159,16 @@
   "skipped": 0,
   "cancelled": 0,
   "durationMs": 45700.5508,
-  "linuxPortQualified": false,
+  "linuxPortQualified": true,
   "physicalReceiverQualified": false,
   "productionActivated": false,
   "testsPending": false,
-  "peerFindingsAddressed": 3
+  "peerFindingsAddressed": 3,
+  "runtimeRevision": "deb51b422a63a5ecc59b5db7d71234af5b318c6f",
+  "linuxTests": 206,
+  "linuxPass": 205,
+  "linuxFail": 0,
+  "linuxSkip": 1,
+  "linuxExpectedConditionalSkip": 1,
+  "peerRetakePassed": true
 }
