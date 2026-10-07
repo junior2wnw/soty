@@ -36,3 +36,10 @@ test('attempt history is bounded without eviction or privilege; explicit disposa
   assert.throws(()=>f.open(),{code:'app_scoped_attempt_busy'});assert.equal(f.gateway.ownedAttempt(f.actor,f.appId,handles[0]).sourceOnly,true);
   f.gateway.abandon(f.actor,f.appId,handles[0]);assert.ok(f.open().closeHandle);f.gateway.close();
 });
+test('explicit invalidation retires an already expired attempt and cannot leave a renewal witness behind',()=>{
+  const f=fixture(),opened=f.open();f.advance(300001);
+  assert.equal(f.gateway.ownedAttempt(f.actor,f.appId,opened.closeHandle).sourceOnly,true);
+  f.gateway.invalidate(opened.record);
+  assert.throws(()=>f.gateway.ownedAttempt(f.actor,f.appId,opened.closeHandle),{code:'app_scoped_context_closed'});
+  f.gateway.invalidate(opened.record);f.gateway.close();
+});

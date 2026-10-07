@@ -22,8 +22,8 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
     return value;
   }
   function stop(record,expired=false) {
-    if (records.get(record.context.reference.id) !== record) return;
     if(!expired)attempts.delete(record.handleHash);
+    if (records.get(record.context.reference.id) !== record) return;
     records.delete(record.context.reference.id); handles.delete(record.handleHash);
     if(closedHandles.size>=SCOPED_EMBED_LIMITS.continuations)closedHandles.delete(closedHandles.keys().next().value);
     closedHandles.set(record.handleHash, { appId: record.context.appId, accountId:record.context.rootPrincipal.accountId,
