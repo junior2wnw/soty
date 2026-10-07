@@ -1,5 +1,22 @@
 /** RAM-only renewal. A ready event is only a wake-up; a new slot requires the
  * private installed-channel Source ACK in fresh signed server context. */
+import { isScopedRuntimeProfile } from './app-launch.mjs';
+
+/** Stage lifecycle only. The profile comes from the validated launcher, never
+ * author metadata; tick/probe still require fresh private server/Source ACK. */
+export function attachScopedRenewalLoads({runtime,view,signal,current,profile,renewal,onTickFailure=()=>{}}) {
+  let timer=null,disposed=false;
+  const eligible=()=>!disposed&&current()&&isScopedRuntimeProfile(profile());
+  runtime.addEventListener('load',()=>{
+    if(!eligible())return;
+    if(timer===null)timer=view.setInterval(()=>{
+      if(eligible()&&runtime.ownerDocument.visibilityState==='visible')void renewal.tick().catch(()=>{if(eligible())onTickFailure();});
+    },30000);
+    void renewal.probe().catch(()=>{});
+  },{capture:true,signal});
+  return()=>{disposed=true;if(timer!==null){view.clearInterval(timer);timer=null;}};
+}
+
 export function createScopedSlotRenewal({ readBinding, readContext, request, bootstrap, commit, isCurrent,
   onState = () => {}, clock = Date.now } = {}) {
   let disposed = false, pending = null, flight = null, witness = null, captureLeases = 0;

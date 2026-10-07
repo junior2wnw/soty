@@ -1,6 +1,6 @@
 import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
-import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,
+import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
   type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
@@ -15,7 +15,7 @@ import './project-feedback-picker.css';
 import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
 import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
 import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
-import {createScopedSlotRenewal,type ScopedRenewReply} from './app-scoped-renewal.mjs';
+import {createScopedSlotRenewal,attachScopedRenewalLoads,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
@@ -179,11 +179,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       else if(state==='login_required')showMessage('Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
       else if(state==='ready')showMessage('');},
   });
-  let renewalTimer:number|null=null;
-  runtime.addEventListener('load',()=>{if(current()&&options.renew&&launcher.runtimeProfile()==='soty.selected-human-embed.v1'){
-    if(renewalTimer===null)renewalTimer=view.setInterval(()=>{if(current()&&host.ownerDocument.visibilityState==='visible')void renewal.tick().catch(()=>{frameGeneration++;});},30000);
-    void renewal.probe().catch(()=>{});
-  }},{capture:true,signal:controller.signal});
+  const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
+    current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,onTickFailure:()=>{frameGeneration++;}});
   let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
     onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
@@ -256,7 +253,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!url || !current()) return;
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
-      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(launcher.runtimeProfile()??'')?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
       frameGeneration++;
       runtime.replaceChildren(frame);
     } catch (reason) {
@@ -347,6 +344,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();renewal.dispose();if(renewalTimer!==null)view.clearInterval(renewalTimer);renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }
