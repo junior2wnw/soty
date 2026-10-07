@@ -1,0 +1,30 @@
+{
+  "schema": "soty.private-attach.current-core-pins.v1",
+  "currentCoreRevision": "90335314a663441d34148e8c312e3e4d42350eb7",
+  "productionProfile": {
+    "wallMs": 120000,
+    "idleMs": 15000
+  },
+  "files": [
+    {
+      "path": "../restore-backup.mjs",
+      "sha256": "aea0951ddf0b400734a85bdfc0be6f36de889679562b8c46cf000b55176f5eed"
+    },
+    {
+      "path": "../backup-format.mjs",
+      "sha256": "083859bfb497031c7e70473f35ea208c2ff6ad707323f822184c68867f5d0b79"
+    },
+    {
+      "path": "../restore-sink.mjs",
+      "sha256": "5bc3246b7ce7869085c604f6b6686668d20be69d46b90bb4ea24fb1ba1c2ddb3"
+    },
+    {
+      "path": "../backup.mjs",
+      "sha256": "1da6efdfb5b63630b82fbb5d42dba36dc55090fa9fc25098bb6e50a62a3c21ee"
+    },
+    {
+      "path": "../verify-backup.mjs",
+      "sha256": "a47766031b8c74cb41a485887d982df76881b72ef187c495418560fb0ef42cd3"
+    }
+  ]
+}
