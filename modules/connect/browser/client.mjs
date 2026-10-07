@@ -202,7 +202,7 @@ export function createClientWithStorage(options, storage) {
     try {await action;}catch(error){state.pending=null;throw error;}
   }
   function captureAppCleanup(result, capture, args) {
-    if(!capture || result.runtimeProfile!=='soty.selected-human-embed.v1')return null;
+    if(!capture || !['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(result.runtimeProfile))return null;
     const appId=result.entry?.appId,handle=result.scopedCloseHandle,expiresAt=result.scopedSlotExpiresAt;
     if(appId!==args.appId || typeof appId!=='string' || !/^app-[a-f0-9]{32}$/.test(appId)
       ||typeof handle!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(handle)||!Number.isSafeInteger(expiresAt)

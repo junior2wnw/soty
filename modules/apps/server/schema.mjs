@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId } from './protocol.mjs';
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
 import { createLaunchPath } from './launch-path.mjs';
-import { scopedEmbedProfile, canonical } from '../scoped-embed/profile.mjs';
+import { canonical } from '../scoped-embed/profile.mjs';
+import { approvedEmbedProfile } from '../scoped-embed/profile-dispatch.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
 export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
+export const APPS_RESOURCE_REGISTRY_SCHEMA = 'soty.apps-registry.v8';
 export const SCOPED_RUNTIME_PROFILE = 'soty.selected-human-embed.v1';
-export const supportedRuntimeProfile = value => [RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE].includes(value);
+export const RESOURCE_RUNTIME_PROFILE = 'soty.selected-human-embed.v2';
+export const selectedRuntimeProfile = value => [SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(value);
+export const supportedRuntimeProfile = value => [RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(value);
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
 const v3Schema = 'soty.apps-registry.v3';
@@ -81,17 +85,18 @@ export function inspectAppsSchema(db) {
     : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
       : schema === v4Schema && version === 4 ? 'v4' : schema === v5Schema && version === 5 ? 'v5'
         : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6'
-          : schema === APPS_SCOPED_REGISTRY_SCHEMA && version === 7 ? 'v7' : '';
+          : schema === APPS_SCOPED_REGISTRY_SCHEMA && version === 7 ? 'v7'
+            : schema === APPS_RESOURCE_REGISTRY_SCHEMA && version === 8 ? 'v8' : '';
   assertApps(state, 'apps_schema_unsupported');
-  const modern = ['v3', 'v4', 'v5', 'v6', 'v7'].includes(state), sourceVersion = ['v4', 'v5', 'v6', 'v7'].includes(state), savedVersion = ['v5', 'v6', 'v7'].includes(state);
+  const modern = ['v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(state), sourceVersion = ['v4', 'v5', 'v6', 'v7', 'v8'].includes(state), savedVersion = ['v5', 'v6', 'v7', 'v8'].includes(state);
   const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
-    ...(savedVersion ? saved : {}), ...(['v6', 'v7'].includes(state) ? discussions : {}), ...(state === 'v7' ? scopedAdmissions : {}) };
+    ...(savedVersion ? saved : {}), ...(['v6', 'v7', 'v8'].includes(state) ? discussions : {}), ...(['v7', 'v8'].includes(state) ? scopedAdmissions : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
-    ...(modern ? [...definitions(publicationDdl(state === 'v7')), ...definitions(targetGuards())] : []),
+    ...(modern ? [...definitions(publicationDdl(['v7', 'v8'].includes(state), state === 'v8')), ...definitions(targetGuards())] : []),
     ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
     ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
-    ...(['v6', 'v7'].includes(state) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
-    ...(state === 'v7' ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : [])]);
+    ...(['v6', 'v7', 'v8'].includes(state) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
+    ...(['v7', 'v8'].includes(state) ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
@@ -148,14 +153,14 @@ function domainDdl() {
       committed_revision INTEGER NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(account_id,request_key));`;
 }
 
-function publicationDdl(scoped = false) {
+function publicationDdl(scoped = false, resources = false) {
   return `CREATE UNIQUE INDEX local_apps_identity_owner ON local_apps(id,owner_account_id);
     CREATE UNIQUE INDEX app_devices_identity_owner ON app_devices(connector_key,owner_account_id);
     CREATE UNIQUE INDEX app_domains_identity_owner ON app_domains(id,app_id,owner_account_id);
     CREATE TABLE app_runtime_targets (
       app_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
       owner_account_id TEXT NOT NULL,connector_key TEXT NOT NULL,port INTEGER NOT NULL CHECK(port BETWEEN 1024 AND 65535),
-      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(${scoped ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1')" : "profile='soty.relay-restricted.v1'"}),digest TEXT NOT NULL,
+      entry_path TEXT NOT NULL,profile TEXT NOT NULL CHECK(${resources ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1','soty.selected-human-embed.v2')" : scoped ? "profile IN ('soty.relay-restricted.v1','soty.selected-human-embed.v1')" : "profile='soty.relay-restricted.v1'"}),digest TEXT NOT NULL,
       created_at INTEGER NOT NULL,PRIMARY KEY(app_id,revision),
       FOREIGN KEY(app_id,owner_account_id) REFERENCES local_apps(id,owner_account_id),
       FOREIGN KEY(connector_key,owner_account_id) REFERENCES app_devices(connector_key,owner_account_id));
@@ -450,7 +455,9 @@ export function ensureInitialPublication(db, app) {
 }
 
 function validateSourceRows(db, { historical = false } = {}) {
-  const scoped = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === APPS_SCOPED_REGISTRY_SCHEMA;
+  const marker = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
+  const resources = marker === APPS_RESOURCE_REGISTRY_SCHEMA;
+  const scoped = resources || marker === APPS_SCOPED_REGISTRY_SCHEMA;
   assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
   for (const app of db.prepare('SELECT * FROM local_apps').iterate()) {
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
@@ -459,16 +466,16 @@ function validateSourceRows(db, { historical = false } = {}) {
     for (const target of db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=?').iterate(app.id)) {
       count++;
       assertApps(target.owner_account_id === app.owner_account_id && Number.isSafeInteger(target.revision) && target.revision >= 1
-        && (target.profile === RUNTIME_PROFILE || scoped && target.profile === SCOPED_RUNTIME_PROFILE) && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
+        && (target.profile === RUNTIME_PROFILE || scoped && target.profile === SCOPED_RUNTIME_PROFILE || resources && target.profile === RESOURCE_RUNTIME_PROFILE) && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
           ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
       appPort(target.port); requestPath(target.entry_path);
-      if (target.profile === SCOPED_RUNTIME_PROFILE) {
+      if ([SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE].includes(target.profile)) {
         const admission = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(app.id, target.revision);
         assertApps(admission && admission.target_digest === target.digest, 'apps_scoped_admission_corrupt', 500);
         let profile;
-        try { profile = scopedEmbedProfile(JSON.parse(admission.approved_pin_json)); } catch { throw new AppsError('apps_scoped_admission_corrupt', 500); }
+        try { profile = approvedEmbedProfile(JSON.parse(admission.approved_pin_json)); } catch { throw new AppsError('apps_scoped_admission_corrupt', 500); }
         const { digest: derived, ...pin } = profile;
-        assertApps(derived === admission.profile_digest && canonical(pin) === admission.approved_pin_json
+        assertApps(profile.schema === target.profile && derived === admission.profile_digest && canonical(pin) === admission.approved_pin_json
           && profile.appId === app.id && profile.resource.tenantId === app.owner_account_id
           && profile.target.revision === target.revision && profile.target.digest === target.digest
           && [profile.connector.linkId,profile.connector.hostDeviceId,profile.connector.connectorId].join('|') === target.connector_key
@@ -486,7 +493,7 @@ function validateSourceRows(db, { historical = false } = {}) {
     else requiredBindingVersion(db, app.id);
   }
   if (scoped) assertApps(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n
-    === db.prepare('SELECT count(*) AS n FROM app_runtime_targets WHERE profile=?').get(SCOPED_RUNTIME_PROFILE).n, 'apps_scoped_admission_corrupt', 500);
+    === db.prepare('SELECT count(*) AS n FROM app_runtime_targets WHERE profile IN (?,?)').get(SCOPED_RUNTIME_PROFILE, RESOURCE_RUNTIME_PROFILE).n, 'apps_scoped_admission_corrupt', 500);
 }
 
 function initializePublications(db) {
@@ -600,7 +607,7 @@ function migrateLegacyAppsSchema(db, { legacyTemplate = '', now = Date.now } = {
 /** Explicit startup capability migration. Old tuples/receipts are copied
  * byte-for-byte; the expanded CHECK requires a known-DDL table rebuild. No
  * request handler calls this function or changes a persisted reader epoch. */
-export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now, allowScopedEmbedMigration = false } = {}) {
+function migrateLegacyAndScopedAppsSchema(db, { legacyTemplate = '', now = Date.now, allowScopedEmbedMigration = false } = {}) {
   assertApps(typeof allowScopedEmbedMigration === 'boolean', 'apps_scoped_migration_configuration_invalid', 503);
   const before = inspectAppsSchema(db);
   if (before === 'v7') {
@@ -641,4 +648,47 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now, all
     if (db.isTransaction) db.exec('ROLLBACK');
     throw error;
   } finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
+}
+
+/** Explicit startup-only Apps8 upgrade. The generic resource shape does not
+ * add a format epoch for each subsequent reviewed Source route adapter. */
+export function migrateAppsSchema(db, options = {}) {
+  const { legacyTemplate = '', now = Date.now, allowScopedEmbedMigration = false, allowSelectedResourceMigration = false } = options;
+  assertApps(typeof allowScopedEmbedMigration === 'boolean' && typeof allowSelectedResourceMigration === 'boolean',
+    'apps_scoped_migration_configuration_invalid', 503);
+  const initial = inspectAppsSchema(db);
+  if (initial === 'v8') {
+    const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
+    assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    return { schema: APPS_RESOURCE_REGISTRY_SCHEMA, migrated: false, legacyTemplate: pinned.value };
+  }
+  const previous = migrateLegacyAndScopedAppsSchema(db, { legacyTemplate, now,
+    allowScopedEmbedMigration: allowScopedEmbedMigration || allowSelectedResourceMigration });
+  if (!allowSelectedResourceMigration) return previous;
+  assertApps(!db.isTransaction && inspectAppsSchema(db) === 'v7', 'apps_resource_migration_required', 503);
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  db.exec('PRAGMA foreign_keys=OFF;');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const state = inspectAppsSchema(db);
+    if (state === 'v8') { db.exec('COMMIT'); return { schema: APPS_RESOURCE_REGISTRY_SCHEMA, migrated: false, legacyTemplate: previous.legacyTemplate }; }
+    assertApps(state === 'v7', 'apps_schema_unsupported');
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    const ddl = publicationDdl(true, true).split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    assertApps(ddl, 'apps_schema_definition_invalid', 500);
+    db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE resource_runtime_targets_migration'));
+    db.exec('INSERT INTO resource_runtime_targets_migration SELECT * FROM app_runtime_targets');
+    db.exec('DROP TRIGGER app_runtime_target_no_update;DROP TRIGGER app_runtime_target_no_delete;DROP TRIGGER app_runtime_target_no_replace;DROP TABLE app_runtime_targets;');
+    db.exec(ddl);
+    db.exec('INSERT INTO app_runtime_targets SELECT * FROM resource_runtime_targets_migration;DROP TABLE resource_runtime_targets_migration;');
+    for (const statement of targetGuards()) db.exec(statement);
+    for (const statement of sourceGuards().filter(value => value.includes('CREATE TRIGGER app_runtime_target_no_replace'))) db.exec(statement);
+    db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(APPS_RESOURCE_REGISTRY_SCHEMA);
+    db.exec('PRAGMA user_version=8;');
+    assertApps(db.prepare('PRAGMA foreign_key_check').all().length === 0 && inspectAppsSchema(db) === 'v8', 'apps_resource_migration_invalid', 500);
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db); db.exec('COMMIT');
+    return { schema: APPS_RESOURCE_REGISTRY_SCHEMA, migrated: true, legacyTemplate: previous.legacyTemplate };
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+  finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
 }

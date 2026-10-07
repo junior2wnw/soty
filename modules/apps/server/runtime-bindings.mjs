@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey, FRAME_BYTES } from './protocol.mjs';
-import { RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
+import { RUNTIME_PROFILE, selectedRuntimeProfile, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 
 export const RUNTIME_BINDING_LIMITS = Object.freeze({ apps: 100, pending: 4, ackMs: 5_000, preparationMs: 30_000, sendBytes: 4 * 1024 * 1024 });
 const controlTypes = new Set(['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected']);
@@ -61,7 +61,7 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
     let error = null;
     if (target.profile !== RUNTIME_PROFILE) {
       try {
-        if (target.profile !== SCOPED_RUNTIME_PROFILE || !state.channel.runtimeProfiles?.includes(target.profile)
+        if (!selectedRuntimeProfile(target.profile) || !state.channel.runtimeProfiles?.includes(target.profile)
           || typeof scopedTarget !== 'function' || scopedTarget(target, { candidate }) !== true) error = 'unsupported_profile';
       } catch { error = 'unsupported_profile'; }
     }

@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
-import { capture, hash, need, scopedEmbedProfile } from './profile.mjs';
+import { capture, hash, need } from './profile.mjs';
+import { requireEmbedAdapter } from './profile-dispatch.mjs';
 
 /** Source server to its installed connector: one authenticated read-only IPC
  * route. The caller cannot choose a URL, subject, destination or command. */
 export function createSourceAuthorityClient({profile:raw,key,connectorPort=49424,clock=Date.now}={}) {
-  const profile=scopedEmbedProfile(raw);need(Buffer.isBuffer(key)&&key.length===32&&Number.isSafeInteger(connectorPort)&&connectorPort>=1024&&connectorPort<=65535);
+  const profile=requireEmbedAdapter(raw);need(Buffer.isBuffer(key)&&key.length===32&&Number.isSafeInteger(connectorPort)&&connectorPort>=1024&&connectorPort<=65535);
   const privateKey=Buffer.from(key),mac=text=>createHmac('sha256',privateKey).update(text).digest('base64url');
   return async function readAuthority({reference,connector}) {
     need(hash(connector)===hash(profile.connector),'scoped_embed_connector_mismatch',403);

@@ -1,4 +1,8 @@
 import { createSourceProofSigner } from "./source-proof.mjs";
+import { createResourceSourceProofSigner } from './resource-proof.mjs';
+import { approvedEmbedProfile, embedRoute } from './profile-dispatch.mjs';
+import { SELECTED_RESOURCE_PROFILE } from './resource-profile.mjs';
+import { selectedNativeHandoff } from './resource-route-adapters.mjs';
 import { request as nodeHttpRequest } from "node:http";
 import { Readable } from "node:stream";
 import {sourceContinuationAck} from './source-continuation.mjs';
@@ -8,7 +12,6 @@ import {
   continuation,
   hash,
   need,
-  scopedEmbedProfile,
   scopedRoute,
   SCOPED_EMBED_LIMITS,
 } from "./profile.mjs";
@@ -77,10 +80,10 @@ function fixedLocalHttp(url, options) {
     req.end(options.body);
   });
 }
-function cookies(values, now) {
+function cookies(values, now, names = cookieNames, maxAge = 300) {
   const result = {};
   need(
-    Array.isArray(values) && values.length <= cookieNames.size,
+    Array.isArray(values) && values.length <= names.size,
     "scoped_embed_cookie_invalid",
     502,
   );
@@ -95,7 +98,7 @@ function cookies(values, now) {
       name = pair.slice(0, split),
       token = pair.slice(split + 1);
     need(
-      cookieNames.has(name) && (!token || /^[A-Za-z0-9_-]{43}$/u.test(token)),
+      names.has(name) && (!token || /^[A-Za-z0-9_-]{43}$/u.test(token)),
       "scoped_embed_cookie_invalid",
       502,
     );
@@ -116,7 +119,7 @@ function cookies(values, now) {
           ["httponly", "path", "samesite", "secure", "max-age"].includes(k),
         ) &&
         /^\d+$/u.test(attrs["max-age"] ?? "") &&
-        Number(attrs["max-age"]) <= 300,
+        Number(attrs["max-age"]) <= maxAge,
       "scoped_embed_cookie_invalid",
       502,
     );
@@ -138,7 +141,8 @@ export function createLocalScopedEmbedBroker({
   fetch: fetcher = fixedLocalHttp,
   clock = Date.now,
 } = {}) {
-  const profile = scopedEmbedProfile(raw);
+  const profile = approvedEmbedProfile(raw), resources = profile.schema === SELECTED_RESOURCE_PROFILE;
+  const approvedCookies = resources ? new Set(['soty_rp_session', 'soty_rp_intent', 'soty_rp_link']) : cookieNames;
   need(
     Number.isSafeInteger(localPort) &&
       localPort >= 1024 &&
@@ -150,7 +154,7 @@ export function createLocalScopedEmbedBroker({
       (value) => typeof value === "function",
     ),
   );
-  const signer = createSourceProofSigner({ profile: raw, key, clock });
+  const signer = resources ? createResourceSourceProofSigner({ profile, key, clock }) : createSourceProofSigner({ profile: raw, key, clock });
   const jars = new Map();
   let active = 0,
     closedBroker = false;
@@ -192,10 +196,11 @@ export function createLocalScopedEmbedBroker({
   function redirect(value, kind) {
     const url = new URL(value, profile.embedOrigin);
     if (url.origin === profile.embedOrigin) {
-      scopedRoute("GET", url.pathname + url.search);
+      embedRoute(profile, 'GET', url.pathname + url.search);
       return url.href;
     }
     if (kind === "auth-start") {
+      if (resources && url.origin === profile.nativeOrigin) return selectedNativeHandoff(profile, url.href);
       need(
         url.origin === new URL(profile.issuer).origin &&
           url.pathname === "/human-identity/authorize",
@@ -236,10 +241,10 @@ export function createLocalScopedEmbedBroker({
       const captured = capture(context),
         capturedHeaders = capture(headers),
         requestBody = Buffer.from(body),
-        kind = scopedRoute(method, path);
+        route = embedRoute(profile, method, path), kind = route.kind;
       closed(capturedHeaders, [], [...requestHeaders, "origin"]);
       need(
-        requestBody.length <= SCOPED_EMBED_LIMITS.requestBytes,
+        requestBody.length <= route.requestBytes,
         "scoped_embed_request_limit",
         413,
       );
@@ -341,7 +346,7 @@ export function createLocalScopedEmbedBroker({
               const { done, value } = await reader.read();
               if (done) break;
               bytes += value.byteLength;
-              if (bytes > SCOPED_EMBED_LIMITS.responseBytes) {
+              if (bytes > route.responseBytes) {
                 await reader.cancel();
                 need(false, "scoped_embed_response_limit", 502);
               }
@@ -358,6 +363,8 @@ export function createLocalScopedEmbedBroker({
         const incoming = cookies(
           response.headers.getSetCookie?.() ?? [],
           clock(),
+          approvedCookies,
+          resources ? 86400 : 300,
         );
         pruneJars();
         need(
@@ -397,22 +404,26 @@ export function createLocalScopedEmbedBroker({
         }
         if(kind==='auth-start' && method==='POST' && response.status===200) {
           let value;try{value=JSON.parse(Buffer.concat(parts.map(part=>Buffer.from(part))).toString('utf8'));}catch{need(false,'scoped_embed_auth_invalid',502);}
-          if(value?.schema==='planner.embed-login-authorization.v1') {
+          if(resources && value?.schema==='soty.source-embed-auth.v1') {
+            closed(value,['schema','nativeUrl']);
+            const url=new URL(selectedNativeHandoff(profile,value.nativeUrl));
+            auth={kind:'start',digest:hash(url.searchParams.get('intent'))};
+          } else if(value?.schema==='planner.embed-login-authorization.v1' && !resources) {
             closed(value,['schema','authorizationUrl']);need(typeof value.authorizationUrl==='string','scoped_embed_auth_invalid',502);
             const url=new URL(redirect(value.authorizationUrl,kind));
             need(url.origin===new URL(profile.issuer).origin && url.pathname==='/human-identity/authorize','scoped_embed_auth_invalid',502);
             auth={kind:'start',digest:hash(url.searchParams.get('state'))};
           } else {
-            closed(value,['schema','cancelled','stateDigest']);need(value.schema==='planner.embed-login-cancelled.v1'&&value.cancelled===true&&/^[a-f0-9]{64}$/.test(value.stateDigest),'scoped_embed_auth_invalid',502);
+            closed(value,['schema','cancelled','stateDigest']);need(value.schema===(resources ? 'soty.source-embed-cancelled.v1' : 'planner.embed-login-cancelled.v1')&&value.cancelled===true&&/^[a-f0-9]{64}$/.test(value.stateDigest),'scoped_embed_auth_invalid',502);
             auth={kind:'cancel',digest:value.stateDigest};
           }
         }
         if(kind==='auth-start' && out.location) {
-          const state=new URL(out.location).searchParams.get('state');
+          const url=new URL(out.location),state=url.searchParams.get(resources&&url.origin===profile.nativeOrigin?'intent':'state');
           need(typeof state==='string' && /^[A-Za-z0-9_-]{43}$/.test(state),'scoped_embed_auth_invalid',502);
           auth={kind:'start',digest:hash(state)};
-        } else if(kind==='auth-callback' && incoming.planner_soty_link?.token) {
-          auth={kind:'completion',digest:hash(incoming.planner_soty_link.token)};
+        } else if(kind==='auth-callback' && incoming[resources ? 'soty_rp_link' : 'planner_soty_link']?.token) {
+          auth={kind:'completion',digest:hash(incoming[resources ? 'soty_rp_link' : 'planner_soty_link'].token)};
         }
         need(
           Object.entries(out).reduce(
@@ -452,7 +463,7 @@ export function createSourceCurrentSubjectPort({
   readAuthority,
   verifyHuman,
 } = {}) {
-  const profile = scopedEmbedProfile(raw);
+  const profile = approvedEmbedProfile(raw);
   need(
     verifier &&
       typeof verifier.context === "function" &&

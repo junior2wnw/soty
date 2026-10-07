@@ -1,5 +1,5 @@
 import { assertApps, appId, cleanGrants, textId } from './protocol.mjs';
-import { runtimeTargetDigest, supportedRuntimeProfile, SCOPED_RUNTIME_PROFILE } from './schema.mjs';
+import { runtimeTargetDigest, supportedRuntimeProfile, selectedRuntimeProfile } from './schema.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 
 /** Host-only port: signed Connect owns the outer installation fence. World and
@@ -33,7 +33,7 @@ export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, re
         && supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest({ appId: id, revision: target.revision,
           ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port,
           entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
-      if(target.profile===SCOPED_RUNTIME_PROFILE) {
+      if(selectedRuntimeProfile(target.profile)) {
         assertApps(typeof requireScopedTarget==='function','app_scoped_admission_required',503);
         synchronous(requireScopedTarget({appId:id,revision:target.revision,ownerAccountId:target.owner_account_id,
           connectorKey:target.connector_key,port:target.port,entryPath:target.entry_path,profile:target.profile,digest:target.digest}),'apps_async_authority');

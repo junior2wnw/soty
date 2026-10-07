@@ -3,6 +3,7 @@ const localAppsChunkBytes = 48 * 1024;
 const localAppsFrameBytes = 72 * 1024;
 const localAppsProfile = 'soty.relay-restricted.v1';
 const localAppsSelectedProfile = 'soty.selected-human-embed.v1';
+const localAppsSelected = value => [localAppsSelectedProfile,'soty.selected-human-embed.v2'].includes(value);
 const localAppsEncoder = new TextEncoder();
 const localAppsFail = code => Object.assign(new Error(code), { code });
 const localAppsCheck = (condition, code = 'apps_bad_frame') => { if (!condition) throw localAppsFail(code); };
@@ -162,7 +163,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     return normalized;
   }
   function policyError(value) {
-    if (value.profile !== localAppsProfile && !(value.profile===localAppsSelectedProfile && scoped?.accepts(value))) return 'unsupported_profile';
+    if (value.profile !== localAppsProfile && !(localAppsSelected(value.profile) && scoped?.accepts(value))) return 'unsupported_profile';
     try { localAppsPort(value.port, blocked); } catch { return 'invalid_app_port'; }
     try { localAppsHttpPath(value.entryPath, value.port); } catch { return 'invalid_app_path'; }
     return null;
@@ -334,7 +335,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     } catch (error) { closeStream(stream, error.code || 'app_upstream_failed'); }
   }
   function probeTarget(target) {
-    if(target.profile!==localAppsSelectedProfile)return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked});
+    if(!localAppsSelected(target.profile))return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked});
     const controller=new AbortController();
     return {promise:scoped.probe(target,controller.signal).catch(()=>({state:'unreachable',httpStatus:null})),cancel:()=>controller.abort()};
   }
@@ -355,7 +356,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
       controller:new AbortController(),parts:[],ended:false};
     const broker=scoped.broker(binding.target,()=>connected(context)&&context.bindings.get(binding.appId)===binding,binding);
     stream.request={
-      write(bytes,callback){if(stream.received>1048576){callback(localAppsFail('app_request_too_large'));return;}stream.parts.push(Buffer.from(bytes));callback();},
+      write(bytes,callback){if(stream.received>(binding.target.profile==='soty.selected-human-embed.v2'?1500000:1048576)){callback(localAppsFail('app_request_too_large'));return;}stream.parts.push(Buffer.from(bytes));callback();},
       destroy(){stream.controller.abort();stream.parts=[];},
       end(){
         if(stream.ended)return;stream.ended=true;
@@ -375,7 +376,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
   }
   function openStream(context, frame) {
     if (frame.type === 'bound-open') {
-      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(frame.profile===localAppsSelectedProfile?['context']:[])]);
+      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(localAppsSelected(frame.profile)?['context']:[])]);
       localAppsCheck(localAppsNonce(frame.syncId) && localAppsId(frame.appId) && Number.isSafeInteger(frame.revision) && frame.revision >= 1
         && typeof frame.digest === 'string' && /^[a-f0-9]{64}$/u.test(frame.digest) && typeof frame.profile === 'string', 'apps_bad_open');
     } else localAppsCheck(context.version === 1, 'apps_bad_open');
@@ -389,7 +390,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     if (context.streams.size >= 32) { send(context, { type: 'cancel', id: frame.id, error: 'app_device_busy' }); return; }
     let stream;
     try {
-      if(binding.target?.profile===localAppsSelectedProfile){openScopedStream(context,frame,binding);return;}
+      if(localAppsSelected(binding.target?.profile)){openScopedStream(context,frame,binding);return;}
       const path = context.version === 2 ? localAppsHttpPath(frame.path, binding.port) : localAppsPath(frame.path);
       localAppsCheck(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(frame.method), 'apps_bad_method');
       const headers = localAppsHeaders(frame.headers, frame.kind === 'ws' ? 'ws-request' : 'request');

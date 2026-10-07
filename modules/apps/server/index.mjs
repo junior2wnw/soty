@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { createWebSocketRelay, normalizeWebSocketLivenessTiming } from './websocket-relay.mjs';
-import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, SCOPED_RUNTIME_PROFILE } from './schema.mjs';
+import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, selectedRuntimeProfile } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
@@ -24,7 +24,8 @@ import { createAppDirectory, directoryOperations } from './directory.mjs';
 import { createAppAuthorityPort } from './authority-port.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
-import { scopedRoute, scopedEmbedProfile } from '../scoped-embed/profile.mjs';
+import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
+import { selectedNativeHandoff } from '../scoped-embed/resource-route-adapters.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
@@ -36,12 +37,12 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
-  assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean','app_scoped_configuration_invalid',503);
-  scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);});
+  assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
+  scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -57,8 +58,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
-    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration });
+    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
+    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
@@ -516,13 +517,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
       let scoped;
-      if(decision.profile===SCOPED_RUNTIME_PROFILE) {
+      if(selectedRuntimeProfile(decision.profile)) {
         assertApps(scopedGateway && entryPath==='/embed','app_scoped_admission_required',503);
         scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))});
       }
       tickets.set(digest(ticket), { decision, entryPath,...(scoped?{scopedRecord:scoped.record}:{}) });
       return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
-        ...(scoped?{runtimeProfile:SCOPED_RUNTIME_PROFILE,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt,
+        ...(scoped?{runtimeProfile:decision.profile,scopedCloseHandle:scoped.closeHandle,scopedSlotExpiresAt:scoped.record.context.expiresAt,
           scopedSource:{...scoped.record.context.sourceProfile}}:{}),
         entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
@@ -642,7 +643,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   async function routeApp(req, res, app) {
     assertApps(!app.missing, 'app_not_found', 404);
-    const target=activeTarget(app.id),selected=target?.profile===SCOPED_RUNTIME_PROFILE;
+    const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
     const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
     setPolicy(res, app.appHost.origin, selected);
     const path = requestPath(req.url || '/');
@@ -725,7 +726,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if(callback)assertApps(req.method==='GET','app_scoped_callback_invalid',403);
     const callbackRecord=callback?scopedGateway.callback(app.id,path):null;
     const session=callbackRecord?callbackRecord.session:sessionFor(req,app);
-    if(selected){scopedRoute(req.method,path);assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
+    const route=selected?embedRoute(scopedProfile,req.method,path):null;
+    if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
     res.once('close', () => closeStream(stream, 'app_client_closed'));
@@ -733,7 +735,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
       sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers });
       let count = 0;
-      for await (const chunk of req) { count += chunk.length; assertApps(count <= (selected?1048576:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
+      for await (const chunk of req) { count += chunk.length; assertApps(count <= (route?route.requestBytes:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
       sendStream(stream, { type: 'end', id: stream.id });
     } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
   }
@@ -854,7 +856,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
               assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
-                && profiles.every(value => ['soty.relay-restricted.v1','soty.selected-human-embed.v1'].includes(value))
+                && profiles.every(value => ['soty.relay-restricted.v1','soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(value))
                 && new Set(profiles).size === profiles.length, 'app_source_protocol_required');
               runtimeProfiles = profiles;
             }
@@ -945,7 +947,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
             if(stream.scopedRecord) {
-              const profile=stream.scopedRecord.profile,route=scopedRoute(stream.req.method,stream.req.url);
+              const profile=stream.scopedRecord.profile,route=embedRoute(profile,stream.req.method,stream.req.url).kind;
               if(frame.auth!==undefined) {
                 assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='continued'?route==='auth-continue'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
                 scopedGateway.captureHead(stream.scopedRecord,frame.auth);
@@ -955,7 +957,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
                 stream.res.setHeader('Content-Security-Policy',[stream.res.getHeader('Content-Security-Policy'),sourcePolicy]);}
               if(frame.location) {
                 const location=new URL(frame.location,profile.embedOrigin);
-                if(location.origin===profile.embedOrigin)scopedRoute('GET',location.pathname+location.search);
+                if(location.origin===profile.embedOrigin)embedRoute(profile,'GET',location.pathname+location.search);
+                else if(profile.schema==='soty.selected-human-embed.v2'&&route==='auth-start'&&location.origin===profile.nativeOrigin)
+                  selectedNativeHandoff(profile,location.href);
                 else assertApps(route==='auth-start'&&location.origin===new URL(profile.issuer).origin&&location.pathname==='/human-identity/authorize'
                   && location.searchParams.get('client_id')===profile.clientId&&location.searchParams.get('redirect_uri')===profile.embedOrigin+'/api/embed/callback'
                   && location.searchParams.get('response_type')==='code'&&location.searchParams.get('code_challenge_method')==='S256','app_scoped_redirect_denied',403);
@@ -970,7 +974,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           assertApps(stream.head && !stream.receiving && frame.seq === stream.recvSeq + 1 && typeof frame.data === 'string' && frame.data.length <= CHUNK_BYTES * 4 / 3 + 4 && /^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data), 'app_bad_data');
           const chunk = Buffer.from(frame.data, 'base64'); assertApps(chunk.length <= CHUNK_BYTES, 'app_bad_data');
           stream.received += chunk.length;
-          if (stream.kind !== 'ws' && stream.received > LIMITS.responseBytes) { closeStream(stream, 'app_response_too_large'); return; }
+          const responseLimit=stream.scopedRecord?embedRoute(stream.scopedRecord.profile,stream.req.method,stream.req.url).responseBytes:LIMITS.responseBytes;
+          if (stream.kind !== 'ws' && stream.received > responseLimit) { closeStream(stream, 'app_response_too_large'); return; }
           stream.receiving = true; stream.recvSeq = frame.seq;
           if (stream.kind === 'ws') {
             await stream.upgradeReady;

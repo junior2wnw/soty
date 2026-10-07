@@ -175,13 +175,13 @@ for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} t
   assert.deepEqual(await readStorageFormat(root), format(6));
 });
 
-test('future Apps v8 in WAL refuses even while the main file is accepted v6', async t => {
+test('future Apps v9 in WAL refuses even while the main file is accepted v6', async t => {
   const root = await directory(t); await v6(root);
   const db = new DatabaseSync(filename(root));
   try {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
     const before = await readFile(filename(root)); assert.equal(before.readUInt32BE(60), 6);
-    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v8' WHERE key='schema'; PRAGMA user_version=8; COMMIT");
+    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v9' WHERE key='schema'; PRAGMA user_version=9; COMMIT");
     await assert.rejects(readStorageFormat(root), /storage_format_unknown/);
     assert.deepEqual(await readFile(filename(root)), before);
   } finally { db.close(); }
@@ -210,7 +210,8 @@ test('both Apps marker and user_version must agree, including rejection of a dec
     ['soty.apps-registry.v4', 5], ['soty.apps-registry.v5', 0], ['soty.apps-registry.v5', 1], ['soty.apps-registry.v5', 2],
     ['soty.apps-registry.v5', 3], ['soty.apps-registry.v5', 4], ['soty.apps-registry.v5', 6],
     ...[0, 1, 2, 3, 4, 5, 7].map(version => ['soty.apps-registry.v6', version]),
-    ...[0, 1, 2, 3, 4, 5, 6, 8].map(version => ['soty.apps-registry.v7', version]), ['soty.apps-registry.v8', 8], ['unknown', 1]]) {
+    ...[0, 1, 2, 3, 4, 5, 6, 8].map(version => ['soty.apps-registry.v7', version]),
+    ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(version => ['soty.apps-registry.v8', version]), ['soty.apps-registry.v9', 9], ['unknown', 1]]) {
     const root = await directory(t); await v1(root);
     const db = new DatabaseSync(filename(root));
     try { db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(schema); db.exec('PRAGMA user_version=' + version); } finally { db.close(); }

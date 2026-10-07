@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey } from './protocol.mjs';
-import { RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
+import { RUNTIME_PROFILE, selectedRuntimeProfile, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 
 export const sourceOperations = new Set(['apps.source.prepare', 'apps.source.promote', 'apps.source.history']);
 export const SOURCE_RECEIPTS_PER_APP = 64;
@@ -102,7 +102,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       target = Object.freeze({ ...tuple, digest: runtimeTargetDigest(tuple) });
     }
     assertApps(supportedRuntimeProfile(target.profile) && target.digest === runtimeTargetDigest(target), 'apps_registry_corrupt', 500);
-    if (target.profile === SCOPED_RUNTIME_PROFILE) {
+    if (selectedRuntimeProfile(target.profile)) {
       assertApps(scopedAdmission, 'app_scoped_admission_required', 503);
       scopedAdmission.verifyCandidate(target);
     }
@@ -219,7 +219,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         const retained = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(intent.id, target.revision);
         assertApps(retained && retained.digest === target.digest, 'apps_source_target_unavailable', 409);
       }
-      if (target.profile === SCOPED_RUNTIME_PROFILE) scopedAdmission.commit(target);
+      if (selectedRuntimeProfile(target.profile)) scopedAdmission.commit(target);
       const changed = publications.promoteSourceInTransaction({ appId: intent.id, targetRevision: target.revision,
         launchPolicy: intent.launchPolicy, listed: intent.listed, exposureAck: intent.exposureAck });
       const timestamp = safeClock(now()), receipt = { schema: 'soty.app-source-receipt.v1', namespace: 'apps.source.promote.v1',

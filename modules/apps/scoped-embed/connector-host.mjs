@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { createLocalScopedEmbedBroker } from './local-broker.mjs';
-import { capture, closed, hash, need, scopedEmbedProfile, SCOPED_EMBED_PROFILE, SCOPED_EMBED_LIMITS } from './profile.mjs';
+import { capture, closed, hash, need, SCOPED_EMBED_LIMITS } from './profile.mjs';
+import { requireEmbedAdapter } from './profile-dispatch.mjs';
 
 const mac=(key,text)=>createHmac('sha256',key).update(text).digest('base64url');
 const secret=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{43}$/.test(value);
@@ -12,14 +13,14 @@ export function createConnectorScopedFactory({ entries = [], clock = Date.now } 
   need(Array.isArray(entries)&&entries.length<=64);
   const approved=new Map(),brokers=new Map(),ipcNonces=new Map();let reader=null,channelIdentity=null;
   for(const entry of entries) {
-    closed(entry,['profile','key']);const profile=scopedEmbedProfile(entry.profile);
+    closed(entry,['profile','key']);const profile=requireEmbedAdapter(entry.profile);
     need(secret(entry.key),'scoped_embed_key_required');const key=Buffer.from(entry.key,'base64url');need(key.length===32);
     const {digest:_derived,...raw}=profile;const id=profile.appId+':'+profile.target.revision;
     need(!approved.has(id));approved.set(id,{profile,raw,key});
   }
   function item(target) {
     const value=approved.get(target.appId+':'+target.revision);
-    need(value&&target.profile===SCOPED_EMBED_PROFILE&&target.digest===value.profile.target.digest
+    need(value&&target.profile===value.profile.schema&&target.digest===value.profile.target.digest
       && target.ownerAccountId===value.profile.resource.tenantId,'scoped_embed_binding_unapproved',403);
     return value;
   }
@@ -28,7 +29,7 @@ export function createConnectorScopedFactory({ entries = [], clock = Date.now } 
     return reader(request);
   }
   return Object.freeze({
-    profiles: Object.freeze(entries.length?[SCOPED_EMBED_PROFILE]:[]),
+    profiles: Object.freeze([...new Set([...approved.values()].map(entry=>entry.profile.schema))]),
     connect(readAuthority,identity) {need(typeof readAuthority==='function');reader=readAuthority;channelIdentity=capture({linkId:identity.linkId,hostDeviceId:identity.hostDeviceId,connectorId:identity.connectorId});},
     disconnected() {reader=null;channelIdentity=null;for(const broker of brokers.values())broker.close();brokers.clear();ipcNonces.clear();},
     accepts(target) {try{item(target);return true;}catch{return false;}},

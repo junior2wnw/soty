@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonicalJson, freezeDeep } from '../capabilities/server/validation.mjs';
 import { HUMAN_IDENTITY_PROFILE, HUMAN_RENEWAL_PROFILE, HUMAN_RENEWAL_LIMITS } from '../human-identity/profile.mjs';
 import { createReviewsService } from '../reviews/server/index.mjs';
-import { scopedEmbedProfile } from '../apps/scoped-embed/profile.mjs';
+import { approvedEmbedProfile } from '../apps/scoped-embed/profile-dispatch.mjs';
 
 export const UNIVERSAL_RUNTIME_SCHEMA = 'soty.universal-preparedness.v1';
 export const UNIVERSAL_RUNTIME_MAX_BYTES = 65536;
@@ -48,21 +48,24 @@ function reviewsWire(value) {
   return { configurationDigest: value.configurationDigest, providerCount: value.providerCount, bindingCount: value.bindingCount };
 }
 function selectedWire(value) {
-  record(value, ['configured', 'migrationConfigured', 'profileCount', 'registryDigest']);
+  record(value, ['configured', 'migrationConfigured', 'profileCount', 'registryDigest'],['resourceMigrationConfigured']);
   check(typeof value.configured === 'boolean' && typeof value.migrationConfigured === 'boolean'
-    && number(value.profileCount, 64) && value.configured === (value.profileCount > 0) && hex(value.registryDigest));
+    && number(value.profileCount, 64) && value.configured === (value.profileCount > 0) && hex(value.registryDigest)
+    && (value.resourceMigrationConfigured===undefined||typeof value.resourceMigrationConfigured==='boolean'));
   return { configured: value.configured, migrationConfigured: value.migrationConfigured,
-    profileCount: value.profileCount, registryDigest: value.registryDigest };
+    profileCount: value.profileCount, registryDigest: value.registryDigest,
+    ...(value.resourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:value.resourceMigrationConfigured}) };
 }
 /** Static reviewed Source pins only; neither liveness nor a native project grant. */
-export function captureSelectedPreparedness({ profiles = [], migrationConfigured = false } = {}) {
+export function captureSelectedPreparedness({ profiles = [], migrationConfigured = false,resourceMigrationConfigured } = {}) {
   check(Array.isArray(profiles) && profiles.length <= 64 && typeof migrationConfigured === 'boolean');
-  const pins = profiles.map(profile => scopedEmbedProfile(profile));
+  check(resourceMigrationConfigured===undefined||typeof resourceMigrationConfigured==='boolean');
+  const pins = profiles.map(profile => approvedEmbedProfile(profile));
   const keys = pins.map(profile => `${profile.appId}:${profile.target.revision}`);
   check(new Set(keys).size === keys.length);
   pins.sort((a, b) => (a.appId < b.appId ? -1 : a.appId > b.appId ? 1 : 0) || a.target.revision - b.target.revision);
   return freezeDeep(selectedWire({ configured: pins.length > 0, migrationConfigured,
-    profileCount: pins.length, registryDigest: hash(pins) }));
+    profileCount: pins.length, registryDigest: hash(pins),...(resourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured}) }));
 }
 /** Sanitize an exact bounded measurement, never turn its metadata into authority. */
 export function validateUniversalPreparedness(value) {
@@ -108,7 +111,7 @@ export function captureHumanPreparedness(profile) {
 /** Pure host measurement after service/HTTP construction. No IO, DB, network or deployment imports. */
 export function captureUniversalPreparedness({ compiledLegacyMode, universalConfigured, reviewsConfigured,
   humanProfile, humanHttpEnabled, reviewsPreparedness, reviewsConfiguration = { providers: [], bindings: [] },
-  selectedProfiles = [], selectedMigrationConfigured = false, selectedRegistryConfigured = false }) {
+  selectedProfiles = [], selectedMigrationConfigured = false, selectedResourceMigrationConfigured,selectedRegistryConfigured = false }) {
   let service;
   try {
     let reviews;
@@ -123,8 +126,9 @@ export function captureUniversalPreparedness({ compiledLegacyMode, universalConf
     check(typeof selectedRegistryConfigured === 'boolean' && typeof selectedMigrationConfigured === 'boolean' && Array.isArray(selectedProfiles));
     return validateUniversalPreparedness({ schema: UNIVERSAL_RUNTIME_SCHEMA, compiledLegacyMode, universalConfigured, reviewsConfigured,
       humanHttpEnabled, human: captureHumanPreparedness(humanProfile), reviews,
-      ...(selectedProfiles.length || selectedMigrationConfigured || selectedRegistryConfigured ? {
-        selected: captureSelectedPreparedness({ profiles: selectedProfiles, migrationConfigured: selectedMigrationConfigured }),
+      ...(selectedProfiles.length || selectedMigrationConfigured || selectedRegistryConfigured || selectedResourceMigrationConfigured!==undefined ? {
+        selected: captureSelectedPreparedness({ profiles: selectedProfiles, migrationConfigured: selectedMigrationConfigured,
+          ...(selectedResourceMigrationConfigured===undefined?{}:{resourceMigrationConfigured:selectedResourceMigrationConfigured}) }),
       } : {}) });
   } catch { throw new UniversalPreparednessError(); } finally { service?.close(); }
 }

@@ -27,7 +27,7 @@ import { forcedLegacyMode } from './universal-mode.js';
 import { createReviewsService } from '../modules/reviews/server/index.mjs';
 import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
 import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
-import { scopedEmbedProfile } from '../modules/apps/scoped-embed/profile.mjs';
+import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispatch.mjs';
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
@@ -44,14 +44,15 @@ export async function waitForRejectedHttpStart(error) {
 }
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
-  if(typeof allowScopedEmbedMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
+  if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
   allowScopedEmbedMigration = universalEnabled && allowScopedEmbedMigration;
+  allowSelectedResourceMigration = universalEnabled && allowSelectedResourceMigration;
   scopedEmbedRegistryConfigured = universalEnabled && scopedEmbedRegistryConfigured;
-  scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);}) : [];
+  scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, human,
@@ -173,7 +174,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     });
   } catch (error) { failedStart(error); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
-    allowScopedEmbedMigration,scopedEmbedProfiles,
+    allowScopedEmbedMigration,allowSelectedResourceMigration,scopedEmbedProfiles,
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return human.withSubjectAuthority(request,callback);}:undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
@@ -251,6 +252,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
     selectedProfiles: scopedEmbedProfiles, selectedMigrationConfigured: allowScopedEmbedMigration,
+      ...(allowSelectedResourceMigration||scopedEmbedProfiles.some(profile=>profile.schema==='soty.selected-human-embed.v2')?{selectedResourceMigrationConfigured:allowSelectedResourceMigration}:{}),
     selectedRegistryConfigured: scopedEmbedRegistryConfigured,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });

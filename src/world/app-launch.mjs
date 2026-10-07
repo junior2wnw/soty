@@ -151,7 +151,7 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     try {
       const result = await request(args); received = true;
       if(result.runtimeProfile!==undefined||result.scopedCloseHandle!==undefined) {
-        requireValue(result.runtimeProfile==='soty.selected-human-embed.v1'&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
+        requireValue(['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(result.runtimeProfile)&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
         requireValue(result.scopedCleanup===undefined||typeof result.scopedCleanup==='function','invalid_app_scoped_launch');
         const source=captureSourcePin(result.scopedSource);
         binding=Object.freeze({profile:result.runtimeProfile,handle:result.scopedCloseHandle,cleanup:result.scopedCleanup,

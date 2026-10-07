@@ -256,7 +256,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!url || !current()) return;
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
-      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(launcher.runtimeProfile()==='soty.selected-human-embed.v1'?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(['soty.selected-human-embed.v1','soty.selected-human-embed.v2'].includes(launcher.runtimeProfile()??'')?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
       frameGeneration++;
       runtime.replaceChildren(frame);
     } catch (reason) {

@@ -7,9 +7,9 @@ import {
   hash,
   identifier,
   need,
-  scopedEmbedProfile,
   SCOPED_EMBED_LIMITS,
 } from "./profile.mjs";
+import { requireEmbedAdapter, embedContextSchema } from './profile-dispatch.mjs';
 
 /** Private Root constructor port. Original actors/authority callbacks never
  * leave this host. A JSON accountId or an HTTP header cannot create authority. */
@@ -28,7 +28,7 @@ export function createScopedEmbedAuthority({
   );
   const approved = new Map();
   for (const raw of profiles) {
-    const profile = scopedEmbedProfile(raw);
+    const profile = requireEmbedAdapter(raw);
     const key = profile.appId + ':' + profile.target.revision;
     need(!approved.has(key)); approved.set(key, profile);
   }
@@ -103,7 +103,7 @@ export function createScopedEmbedAuthority({
   }
   function view(slot) {
     return Object.freeze({
-      schema: "soty.verified-launch-continuation.v1",
+      schema: embedContextSchema(slot.profile),
       reference: slot.reference,
       profileDigest: slot.profile.digest,
       appId: slot.profile.appId,
