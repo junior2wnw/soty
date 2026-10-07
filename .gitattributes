@@ -14,3 +14,4 @@
 /deploy/connect/backup.mjs text eol=lf
 /deploy/connect/verify-backup.mjs text eol=lf
 /docs/implementation/private-attach-current-root-source-freeze-20261008.json text eol=lf
+/test-fixtures/planner-source-ci/** text eol=lf

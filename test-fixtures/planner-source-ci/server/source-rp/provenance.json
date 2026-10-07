@@ -1,0 +1,26 @@
+{
+  "dependency": {
+    "version": "6.8.4",
+    "name": "openid-client"
+  },
+  "files": [
+    {
+      "path": "index.mjs",
+      "sha256": "0bb6f67d8eb58298f291b9d844d7057a40e5a68e580b526e4d5e423fe7fd1567"
+    },
+    {
+      "path": "index.d.mts",
+      "sha256": "891113676da585d25ed733a39ecbd69528a1dc3102cd1f599dea417bd4ba6b00"
+    },
+    {
+      "path": "protocol.mjs",
+      "sha256": "9f8f9e2813866eeebb0c77929e45a1b8e68d080916c4be1469f6a33e360c82fe"
+    },
+    {
+      "path": "session-service.mjs",
+      "sha256": "247ab47566e5a73143a91802856033357964ca4d4b07d10269a3f5fa4c375392"
+    }
+  ],
+  "sourceCommit": "725f618a5617b7bb6b17042ab2fe417a3c5f23a0",
+  "schema": "soty.source-rp-vendor.v1"
+}

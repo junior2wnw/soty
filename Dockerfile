@@ -1,3 +1,10 @@
+FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef4d4c3f114672537d AS planner-ci
+WORKDIR /planner-ci
+COPY test-fixtures/planner-source-ci/package.json test-fixtures/planner-source-ci/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY test-fixtures/planner-source-ci/ ./
+RUN npm run build
+
 FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef4d4c3f114672537d AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -9,13 +16,15 @@ RUN corepack enable \
   && corepack prepare pnpm@10.30.0 --activate \
   && PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm run build
+COPY --from=planner-ci /planner-ci /app/test-fixtures/planner-source-ci
+RUN node scripts/verify-maintained-source-ci.mjs && pnpm run build
 # Only disposable platform-test files use this bounded build mount. Runtime
 # storage and the separate disk-backed encrypted cold-restore gate are unchanged.
 RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test \
-  && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform pnpm run platform:test \
-  && pnpm run world:test && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
+  && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run platform:test \
+  && SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
+  && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
   && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
