@@ -7,3 +7,10 @@
 /modules/capabilities/test/fixtures/** text eol=lf
 /modules/reviews/fixtures/povedai-json2.patch -text whitespace=-blank-at-eol
 /modules/reviews/fixtures/source-packet.json text eol=lf
+/deploy/connect/private-attach/** text eol=lf
+/deploy/connect/restore-backup.mjs text eol=lf
+/deploy/connect/backup-format.mjs text eol=lf
+/deploy/connect/restore-sink.mjs text eol=lf
+/deploy/connect/backup.mjs text eol=lf
+/deploy/connect/verify-backup.mjs text eol=lf
+/docs/implementation/private-attach-current-root-source-freeze-20261008.json text eol=lf
