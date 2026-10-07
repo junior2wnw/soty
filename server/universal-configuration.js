@@ -40,10 +40,17 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
     const issuer = field(env, 'SOTY_HUMAN_IDENTITY_ISSUER'), filename = field(env, 'SOTY_HUMAN_IDENTITY_KEYS_FILE');
     check(issuer.length <= 1024 && (flag !== '1' || issuer && filename) && (issuer || !filename));
     const reviews = field(env, 'SOTY_REVIEWS_BINDINGS_FILE');
+    const selectedFile=field(env,'SOTY_SELECTED_EMBED_REGISTRY_FILE'),selectedMigration=field(env,'SOTY_SELECTED_EMBED_MIGRATION');
+    check(['','0','1'].includes(selectedMigration));
+    let selected;
+    if(selectedFile){selected=fileValue(selectedFile,131072);check(selected.schema==='soty.selected-embed-registry.v1'&&Array.isArray(selected.profiles)
+      &&Object.keys(selected).every(key=>['schema','profiles'].includes(key)));}
     return {
       ...(issuer ? { humanIdentity: { enabled: flag === '1', issuer, registryId: 'soty', environmentId: 'production',
         ...(flag === '1' ? humanSecrets(filename) : {}) } } : {}),
       ...(reviews ? { reviewsConfiguration: fileValue(reviews, 65536) } : {}),
+      ...(selected?{scopedEmbedProfiles:selected.profiles}:{}),
+      ...(selectedMigration==='1'?{allowScopedEmbedMigration:true}:{}),
     };
   } catch { invalid(); }
 }

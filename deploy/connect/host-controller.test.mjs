@@ -433,7 +433,7 @@ test('recovered v3 START receipt rechecks current Apps format and never repeats 
   const state = await f.readState(), operation = state.transaction.operation;
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v3'); assert.equal(operation.storageGuard.apps, 'empty');
   f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', notes: 'empty', capabilities: 'empty', rooms: 1, apps: 7 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', notes: 'empty', capabilities: 'empty', rooms: 1, apps: 8 });
   const controller = f.create(); controller.state = state;
   const starts = f.engine.events.filter(event => event.startsWith('start:')).length;
   await assert.rejects(controller.reconcileOperation(), /storage_probe_invalid/);

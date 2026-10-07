@@ -239,7 +239,8 @@ export function scopedRoute(method, input) {
       /^\/assets\/[A-Za-z0-9_.-]+\.(?:js|css|woff2|svg|png)$/u.test(path))
   )
     return "public-ui";
-  if (method === "GET" && path === "/api/embed/login") return "auth-start";
+  if (["GET", "POST"].includes(method) && path === "/api/embed/login") return "auth-start";
+  if (method === 'GET' && path === '/api/embed/session-status' && !url.search) return 'auth-read';
   if (method === "GET" && path === "/api/embed/callback")
     return "auth-callback";
   if (method === "GET" && path === "/api/embed/complete-link")

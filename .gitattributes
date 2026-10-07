@@ -1,5 +1,6 @@
 /scripts/soty-agent.mjs text eol=lf
 /public/agent/soty-agent.mjs text eol=lf
+/public/agent/soty-connector.mjs text eol=lf
 /public/agent/manifest.json text eol=lf
 /contracts/identity/v1/** text eol=lf
 /deploy/connector/fixtures/** text eol=lf

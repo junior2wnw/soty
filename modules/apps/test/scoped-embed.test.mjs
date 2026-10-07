@@ -55,6 +55,12 @@ function fixture() {
     seenActor = null;
   const authority = createScopedEmbedAuthority({
     profiles: [profile],
+    withHumanSubjectAuthority(request, callback) {
+      assert.ok(request.actor === actor || request.actor === foreign);
+      if (!allowed) throw new Error('synthetic revoked');
+      return callback(Object.freeze({ issuer: profile.issuer, subject: request.actor.accountId,
+        clientId: profile.clientId, clientProfileDigest: 'c'.repeat(64), clientGeneration: 1 }));
+    },
     withAppAuthority(request, callback) {
       assert.ok(request.actor === actor || request.actor === foreign);
       if (!allowed) throw new Error("synthetic revoked");
@@ -344,7 +350,7 @@ test("fixed-port real HTTP broker signs actual source request, keeps approved co
             f.profile.issuer +
             "/authorize?client_id=planner-fixture&redirect_uri=" +
             encodeURIComponent(f.profile.embedOrigin + "/api/embed/callback") +
-            "&response_type=code&code_challenge_method=S256",
+            "&response_type=code&code_challenge_method=S256&state=" + "s".repeat(43) + "&nonce=" + "n".repeat(43) + "&code_challenge=" + "c".repeat(43) + "&scope=openid+profile",
         });
         res.end();
         return;

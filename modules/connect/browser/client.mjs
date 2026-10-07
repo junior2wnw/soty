@@ -37,6 +37,7 @@ function normalizeOptions(options) {
   }
   const fetcher = options.fetch || globalThis.fetch?.bind(globalThis);
   if (typeof fetcher !== 'function') throw new ConnectError('FETCH_UNAVAILABLE', 'A fetch implementation is required.');
+  if(options.scopedAppCleanup!==undefined && typeof options.scopedAppCleanup!=='boolean')throw new ConnectError('INVALID_ARGUMENT','Invalid private cleanup profile.');
   return { ...options, projectId, endpoint: endpoint.href, fetcher };
 }
 
@@ -69,6 +70,7 @@ export function createClientWithStorage(options, storage) {
   const scope = { projectId, endpoint };
   let queue = Promise.resolve();
   const enrollmentPreviews = new Map();
+  const appCleanupReplies = new WeakMap(), appCleanups = new Set();
   let disposed = false, notificationError = null, lastNotifiedRevision = -1;
   const view = state => ({ ...publicLocalState(state), notificationError: notificationError ? { code: notificationError.code, message: notificationError.message } : null });
   const serialize = task => {
@@ -179,10 +181,52 @@ export function createClientWithStorage(options, storage) {
       throw new ConnectError(error.name === 'AbortError' ? 'NETWORK_TIMEOUT' : 'NETWORK_ERROR', 'The request could not be confirmed. Existing local data was kept; retry the same action.', { cause: error });
     } finally { clearTimeout(timer); }
   }
+  const cleanupCredential = actor => canonicalJson({accountId:actor.accountId,deviceId:actor.deviceId,createdAt:actor.createdAt,
+    signingPublicJwk:actor.signingPublicJwk,encryptionPublicJwk:actor.encryptionPublicJwk});
+  function releaseCleanup(state) {
+    clearTimeout(state.timer);state.timer=null;state.actor=null;state.finished=true;appCleanups.delete(state);
+  }
+  async function performCleanup(state) {
+    if(state.finished)return;
+    if(disposed || Date.now()>=state.expiresAt){releaseCleanup(state);return;}
+    if(state.pending)return state.pending;
+    const action=(async()=>{
+      const actor=state.actor, current=await installation(actor.deviceId);
+      if(cleanupCredential(current)!==state.credential)throw new ConnectError('CLEANUP_CREDENTIAL_CHANGED','The original installation changed.');
+      // Only this fixed close is permitted with a retained signer. It grants no
+      // access, renewal, application mutation, arbitrary operation or target.
+      await rpc('apps.scoped.close',state.args,actor,false);
+      releaseCleanup(state);
+    })();
+    state.pending=action;
+    try {await action;}catch(error){state.pending=null;throw error;}
+  }
+  function captureAppCleanup(result, capture, args) {
+    if(!capture || result.runtimeProfile!=='soty.selected-human-embed.v1')return null;
+    const appId=result.entry?.appId,handle=result.scopedCloseHandle,expiresAt=result.scopedSlotExpiresAt;
+    if(appId!==args.appId || typeof appId!=='string' || !/^app-[a-f0-9]{32}$/.test(appId)
+      ||typeof handle!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(handle)||!Number.isSafeInteger(expiresAt)
+      ||expiresAt<=Date.now()||expiresAt>Date.now()+310000)
+      throw new ConnectError('INVALID_SERVER_RESPONSE','Invalid closed application cleanup reply.');
+    for(const value of appCleanups)if(value.expiresAt<=Date.now())releaseCleanup(value);
+    if(appCleanups.size>=256)throw new ConnectError('CLEANUP_CAPACITY','Too many active application admissions.');
+    const deadline=Math.min(expiresAt,capture.startedAt+300000);
+    const state={actor:capture.actor,credential:capture.credential,args:Object.freeze({appId,handle}),expiresAt:deadline,finished:false,pending:null,timer:null};
+    const callback=(...parameters)=>{
+      if(parameters.length)return Promise.reject(new ConnectError('INVALID_ARGUMENT','Cleanup takes no arguments.'));
+      return serialize(()=>performCleanup(state));
+    };
+    state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
+    appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
+  }
   async function rpc(op, args, identity, requireCurrent = !identity) {
     if (op === 'card.resolve') return post({ op, args });
     const actor = identity || await installation();
     if (requireCurrent) await assertCurrent(actor);
+    // Capture the real authenticated local signer before any challenge/network
+    // await. The caller receives no signer object or generic retained RPC port.
+    const cleanupCapture=normalized.scopedAppCleanup===true && op==='apps.launch'
+      ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now()}):null;
     const digest = await sha256(canonicalJson(args));
     const challenge = await post({ op: 'challenge', args: { operation: op, digest } });
     responseId(challenge.challengeId, 'challenge ID');
@@ -202,7 +246,13 @@ export function createClientWithStorage(options, storage) {
     if (requireCurrent) await assertCurrent(actor);
     const proof = { challengeId: challenge.challengeId, publicJwk: actor.signingPublicJwk, signature: await signMessage(actor, challenge.message) };
     const result = await post({ op, args, proof });
-    if (requireCurrent && op !== 'bootstrap') await assertCurrent(actor);
+    const cleanup=captureAppCleanup(result,cleanupCapture,args);
+    if (requireCurrent && op !== 'bootstrap') {
+      try {await assertCurrent(actor);} catch(error) {
+        if(cleanup){try{await performCleanup(cleanup);}catch{/* Original failure wins; no rights or automatic effect retry. */}}
+        throw error;
+      }
+    }
     return result;
   }
   function checkAccountResult(result, actor, expectedAccountId = actor.accountId) {
@@ -246,6 +296,8 @@ export function createClientWithStorage(options, storage) {
   }
 
   const client = {
+    /** Private host effect cleanup. JSON clones cannot obtain a capability. */
+    appSlotCleanup: reply => !disposed && reply && typeof reply==='object' ? appCleanupReplies.get(reply)?.callback ?? null : null,
     getLocalState: () => serialize(async () => view(await read())),
     extension: (operation, args = {}, context) => {
       if (typeof operation !== 'string' || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
@@ -272,7 +324,7 @@ export function createClientWithStorage(options, storage) {
         return rpc(operation, payload, actor, true);
       });
     },
-    dispose: () => { disposed = true; channel?.close(); channel = null; },
+    dispose: () => { disposed = true; channel?.close(); channel = null;for(const state of appCleanups)releaseCleanup(state); },
     bootstrap: label => serialize(async () => {
       label = deviceLabel(label);
       let state = await read();

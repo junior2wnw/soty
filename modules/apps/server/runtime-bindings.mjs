@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey, FRAME_BYTES } from './protocol.mjs';
-import { RUNTIME_PROFILE, runtimeTargetDigest } from './schema.mjs';
+import { RUNTIME_PROFILE, SCOPED_RUNTIME_PROFILE, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 
 export const RUNTIME_BINDING_LIMITS = Object.freeze({ apps: 100, pending: 4, ackMs: 5_000, preparationMs: 30_000, sendBytes: 4 * 1024 * 1024 });
 const controlTypes = new Set(['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected']);
@@ -19,7 +19,7 @@ const fingerprint = target => JSON.stringify([target.appId, target.revision, tar
 
 /** Socket-owned configuration admission. Database authority remains with the
  * caller; an ACK is configuration evidence, never HTTP health or permission. */
-export function createRuntimeBindings({ channels, send, now = Date.now, blockedPorts = [], onBindingInvalidated = () => {},
+export function createRuntimeBindings({ channels, send, now = Date.now, blockedPorts = [], onBindingInvalidated = () => {}, scopedTarget,
   timers = { setTimeout, clearTimeout } }) {
   assertApps(channels instanceof Map && typeof send === 'function' && typeof now === 'function'
     && typeof onBindingInvalidated === 'function' && typeof timers?.setTimeout === 'function'
@@ -49,7 +49,7 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
     }
     assertApps(current(state), 'app_offline', 503); return state;
   }
-  function normalizeTarget(state, value) {
+  function normalizeTarget(state, value, { candidate = false } = {}) {
     assertApps(value && typeof value === 'object', 'app_invalid_binding_target', 500);
     const id = appId(value.appId), ownerAccountId = textId(value.ownerAccountId);
     assertApps(positive(value.revision) && digest(value.digest) && value.connectorKey === state.key
@@ -59,8 +59,13 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
       port: value.port, entryPath: value.entryPath, profile: value.profile, digest: value.digest });
     assertApps(target.digest === runtimeTargetDigest(target), 'app_invalid_binding_digest', 500);
     let error = null;
-    if (target.profile !== RUNTIME_PROFILE) error = 'unsupported_profile';
-    else {
+    if (target.profile !== RUNTIME_PROFILE) {
+      try {
+        if (target.profile !== SCOPED_RUNTIME_PROFILE || !state.channel.runtimeProfiles?.includes(target.profile)
+          || typeof scopedTarget !== 'function' || scopedTarget(target, { candidate }) !== true) error = 'unsupported_profile';
+      } catch { error = 'unsupported_profile'; }
+    }
+    if (!error) {
       try { appPort(target.port, blockedPorts); } catch { error = 'invalid_app_port'; }
       if (!error) try { runtimePath(target.entryPath); } catch { error = 'invalid_app_path'; }
     }
@@ -152,7 +157,7 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
   }
   function validPins(frame) {
     assertApps(typeof frame.appId === 'string' && /^app-[a-f0-9]{32}$/u.test(frame.appId) && positive(frame.revision)
-      && digest(frame.digest) && frame.profile === RUNTIME_PROFILE, 'app_bad_binding_frame');
+      && digest(frame.digest) && supportedRuntimeProfile(frame.profile), 'app_bad_binding_frame');
   }
   function validObservation(frame) {
     assertApps((frame.state === 'responding' && Number.isSafeInteger(frame.httpStatus) && frame.httpStatus >= 200 && frame.httpStatus <= 499)
@@ -240,7 +245,7 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
   function prepareTarget({ preparationId, actor, target, requiredBindingVersion, signal }) {
     assertApps(requiredBindingVersion === 2 && opaque(preparationId), 'apps_source_preparation_mismatch', 409);
     const capturedActor = Object.freeze({ accountId: textId(actor?.accountId), deviceId: textId(actor?.deviceId) });
-    const state = context(channels.get(target?.connectorKey)), normalized = normalizeTarget(state, target);
+    const state = context(channels.get(target?.connectorKey)), normalized = normalizeTarget(state, target, { candidate: true });
     assertApps(capturedActor.accountId === normalized.target.ownerAccountId, 'apps_source_preparation_mismatch', 409);
     assertApps(!normalized.error, normalized.error || 'app_invalid_binding_target');
     assertApps(!signal?.aborted, 'apps_source_preparation_stale', 409);

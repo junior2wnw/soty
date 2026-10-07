@@ -96,6 +96,8 @@ export interface WorldAppOptions {
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;
   addApp?: (communityId?: string) => void | Promise<void>;
   openApp?: (app: WorldAppRecord, launch?: AppLaunchRequest) => Promise<{ url: string; entry: AppResolvedEntry; status?: string }>;
+  /** Trusted RAM cleanup of an original signed launch reply, no RPC selector. */
+  appSlotCleanup?: (reply: unknown) => (() => Promise<void>) | null;
 }
 export type WorldEntity = { type: 'community'; value: WorldCommunity } | { type: 'person'; value: WorldProfile };
 

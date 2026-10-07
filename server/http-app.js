@@ -27,6 +27,7 @@ import { forcedLegacyMode } from './universal-mode.js';
 import { createReviewsService } from '../modules/reviews/server/index.mjs';
 import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
 import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
+import { scopedEmbedProfile } from '../modules/apps/scoped-embed/profile.mjs';
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
@@ -42,9 +43,12 @@ export async function waitForRejectedHttpStart(error) {
   if (cleanup) { await cleanup; rejectedStarts.delete(error); }
 }
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
+  allowScopedEmbedMigration = false, scopedEmbedProfiles = [] } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
+  if(typeof allowScopedEmbedMigration!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
+  scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=scopedEmbedProfile(value);return Object.freeze(pin);});
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
@@ -165,6 +169,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     });
   } catch (error) { failedStart(error); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
+    allowScopedEmbedMigration,scopedEmbedProfiles,
+    withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return human.withSubjectAuthority(request,callback);}:undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,
@@ -188,7 +194,9 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
     if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
-      withAuthorityFence: action => connect.withAuthorityFence(action), readProfile: () => ({}), allowRenewalMigration: humanIdentityRenewalMigration });
+      withAuthorityFence: action => connect.withAuthorityFence(action),
+      withSubjectAuthorityFence: (actor, action) => connect.withActorAuthorityFence(actor, action),
+      readProfile: () => ({}), allowRenewalMigration: humanIdentityRenewalMigration });
   }
   catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;

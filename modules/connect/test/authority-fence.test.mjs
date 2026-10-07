@@ -159,3 +159,50 @@ test('closed services reject the host fence without invoking supplied work', t =
   assert.throws(() => f.service.withAuthorityFence(() => { called = true; }), code('service_closed'));
   assert.equal(called, false); f.service.close();
 });
+
+test('private actor fence joins only the exact active signed dispatcher actor; old host fence remains non-nestable', async t => {
+  let service; const retained = new Map(); let calls = 0;
+  const extension = { operations: new Set(['test.subject']), execute({ actor, args }) {
+    if (args.mode === 'different') {
+      assert.throws(() => service.withActorAuthorityFence(retained.get(args.deviceId), () => assert.fail()), code('connect_authority_actor_mismatch'));
+      return { denied: true };
+    }
+    retained.set(actor.deviceId, actor);
+    assert.throws(() => service.withActorAuthorityFence({ ...actor }, () => assert.fail()), code('connect_authority_actor_invalid'));
+    assert.throws(() => service.withAuthorityFence(() => assert.fail()), code('connect_transaction_nested'));
+    return { observed: service.withActorAuthorityFence(actor, () => { calls++; return actor.accountId; }) };
+  } };
+  const f = fixture(t, [extension]); service = f.service;
+  const owner = identity(), phone = identity(), foreign = identity();
+  const a = await bootstrap(service, owner), b = await bootstrap(service, foreign);
+  const enrolled = await enroll(service, owner, phone);
+  assert.equal((await call(service, owner, 'test.subject')).observed, a.accountId);
+  assert.equal((await call(service, phone, 'test.subject')).observed, a.accountId);
+  assert.equal(calls, 2);
+  assert.equal((await call(service, foreign, 'test.subject', { mode: 'different', deviceId: a.deviceId })).denied, true);
+  assert.equal((await call(service, phone, 'test.subject', { mode: 'different', deviceId: a.deviceId })).denied, true,
+    'even another signed installation of the same account cannot join with the old actor reference');
+  const actor = retained.get(a.deviceId), mobileActor = retained.get(enrolled.deviceId);
+  assert.equal(service.withActorAuthorityFence(actor, () => 'fresh'), 'fresh');
+  for (const value of [{ ...actor }, JSON.parse(JSON.stringify(actor)), { accountId: b.accountId, deviceId: a.deviceId }]) {
+    assert.throws(() => service.withActorAuthorityFence(value, () => assert.fail()), code('connect_authority_actor_invalid'));
+  }
+  service.withAuthorityFence(() => {
+    assert.throws(() => service.withActorAuthorityFence(actor, () => assert.fail()), code('connect_transaction_nested'));
+  });
+  service.withActorAuthorityFence(actor, () => {
+    assert.throws(() => service.withActorAuthorityFence(actor, () => assert.fail()), code('connect_authority_reentrant'));
+    assert.throws(() => service.withActorAuthorityFence(mobileActor, () => assert.fail()), code('connect_authority_reentrant'));
+  });
+  let asyncCalls = 0;
+  assert.throws(() => service.withActorAuthorityFence(actor, async () => { asyncCalls++; }), code('connect_authority_callback_invalid'));
+  assert.equal(asyncCalls, 0);
+  assert.throws(() => service.withActorAuthorityFence(actor, () => Promise.reject(new Error('synthetic only'))), code('connect_authority_callback_async'));
+  await call(service, owner, 'device.revoke', { deviceId: enrolled.deviceId });
+  assert.throws(() => service.withActorAuthorityFence(mobileActor, () => assert.fail()), code('device_revoked'));
+  // Independent committed ownership change cannot turn an old branded object
+  // into authority for the new account, even though isActorActive is field-based.
+  const db = new DatabaseSync(f.databasePath);
+  try { db.prepare('UPDATE installations SET account_id=? WHERE id=?').run(b.accountId, a.deviceId); } finally { db.close(); }
+  assert.throws(() => service.withActorAuthorityFence(actor, () => assert.fail()), code('connect_authority_actor_mismatch'));
+});

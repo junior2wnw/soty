@@ -190,7 +190,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   }
   const db = new DatabaseSync(file);
   try { migrateDatabase(db, projectId); } catch (error) { db.close(); throw error; }
-  let closed = false, transactionActive = false;
+  let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false;
+  // Only actor objects emitted by this signed dispatcher can enter the private
+  // subject projection fence. Matching JSON fields do not carry this authority.
+  const issuedActors = new WeakSet();
   const now = () => {
     const value = clock();
     assert(Number.isSafeInteger(value) && value >= 0, 'invalid_clock');
@@ -246,6 +249,35 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       try { db.exec(`PRAGMA busy_timeout=${priorTimeout}`); }
       catch (error) { if (!hasPrimaryFailure) throw error; }
     }
+  }
+  /** Private host projection for the original actor of a signed extension.
+   * A synchronous extension may join only its own current Connect transaction.
+   * Retained actors re-enter through a fresh fence and a current installation
+   * check. This grants no application permission and is never an incoming RPC. */
+  function withActorAuthorityFence(actor, action) {
+    assert(!closed, 'service_closed');
+    assert(actor && issuedActors.has(actor), 'connect_authority_actor_invalid');
+    assert(typeof action === 'function' && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(action.constructor?.name),
+      'connect_authority_callback_invalid');
+    assert(!actorFenceActive, 'connect_authority_reentrant');
+    if (activeActorRef !== null) {
+      assert(activeActorRef === actor && transactionActive && db.isTransaction, 'connect_authority_actor_mismatch');
+    }
+    let active = true, entered = false;
+    const observe = () => {
+      assert(active && !entered, 'connect_authority_callback_invalid'); entered = true;
+      const current = authenticated(actor.deviceId);
+      assert(current.account.id === actor.accountId, 'connect_authority_actor_mismatch');
+      const result = action();
+      if (result && typeof result.then === 'function') {
+        void Promise.resolve(result).catch(() => {}); fail('connect_authority_callback_async');
+      }
+      assert(authenticated(actor.deviceId).account.id === actor.accountId, 'connect_authority_actor_mismatch');
+      return result;
+    };
+    actorFenceActive = true;
+    try { return activeActorRef === actor ? observe() : withAuthorityFence(observe); }
+    finally { active = false; actorFenceActive = false; }
   }
   function hitLimit(key, max, interval, timestamp) {
     const bucket = Math.floor(timestamp / interval);
@@ -412,6 +444,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     if (extensionOperations.has(op)) {
       // The verified active installation, never request arguments, determines the caller.
       const actor = Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label });
+      issuedActors.add(actor); activeActorRef = actor;
       try {
         const result = extensionOperations.get(op).execute({ op, args, actor });
         if (result && typeof result.then === 'function') {
@@ -421,7 +454,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         return extensionResult(result);
       } catch (error) {
         throw extensionError(error);
-      }
+      } finally { activeActorRef = null; }
     }
     if (op === 'contacts.requestAccount') {
       exactArgs(args, ['accountId']);
@@ -646,6 +679,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     readerEpoch: READER_EPOCH,
     close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); } },
     withAuthorityFence,
+    withActorAuthorityFence,
     /** Host-only check for sessions created by a signed extension operation. */
     isActorActive(actor) {
       if (closed || !actor || typeof actor.accountId !== 'string' || typeof actor.deviceId !== 'string') return false;
@@ -726,6 +760,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             if (extensionOperations.get(op)?.executeAsync) {
               const { account, device } = authenticated(deviceId);
               deferred = { actor: Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label }), args: JSON.parse(argsJson) };
+              issuedActors.add(deferred.actor);
               db.exec('RELEASE connect_action');
               return { ok: true };
             }

@@ -44,6 +44,19 @@ const appDiscussions = {
   app_discussion_usage: 'id,head_count,conversation_count,message_count,body_bytes',
   app_discussion_rates: 'account_id,at,credit',
 };
+// Literal Apps7 profile/admission format. Deliberately independent of the
+// candidate application's schema and profile parser; this file runs alone.
+const appScoped = { app_scoped_embed_admissions: 'app_id,target_revision,target_digest,profile_digest,approved_pin_json,created_at' };
+const appScopedDdl = `CREATE TABLE app_scoped_embed_admissions (
+    app_id TEXT NOT NULL,target_revision INTEGER NOT NULL CHECK(target_revision>=1),
+    target_digest TEXT NOT NULL CHECK(length(target_digest)=64),profile_digest TEXT NOT NULL CHECK(length(profile_digest)=64),
+    approved_pin_json TEXT NOT NULL CHECK(length(approved_pin_json) BETWEEN 1 AND 16384),created_at INTEGER NOT NULL,
+    PRIMARY KEY(app_id,target_revision),FOREIGN KEY(app_id,target_revision) REFERENCES app_runtime_targets(app_id,revision))`;
+const appScopedGuards = {
+  app_scoped_admission_no_update: { table: 'app_scoped_embed_admissions', sql: "CREATE TRIGGER app_scoped_admission_no_update BEFORE UPDATE ON app_scoped_embed_admissions BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END" },
+  app_scoped_admission_no_delete: { table: 'app_scoped_embed_admissions', sql: "CREATE TRIGGER app_scoped_admission_no_delete BEFORE DELETE ON app_scoped_embed_admissions BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END" },
+  app_scoped_admission_no_replace: { table: 'app_scoped_embed_admissions', sql: "CREATE TRIGGER app_scoped_admission_no_replace BEFORE INSERT ON app_scoped_embed_admissions WHEN EXISTS(SELECT 1 FROM app_scoped_embed_admissions WHERE app_id=NEW.app_id AND target_revision=NEW.target_revision) BEGIN SELECT RAISE(ABORT,'app_scoped_admission_immutable'); END" },
+};
 // Frozen host-side recognition of the two v3 immutable-target guards. Matching
 // names alone would also admit a replaced trigger with different behavior.
 const appTargetGuards = {
@@ -416,12 +429,13 @@ async function readAppsFormat(dataDir) {
         : markers[0].value === 'soty.apps-registry.v3' && version === 3 ? 3
           : markers[0].value === 'soty.apps-registry.v4' && version === 4 ? 4
             : markers[0].value === 'soty.apps-registry.v5' && version === 5 ? 5
-              : markers[0].value === 'soty.apps-registry.v6' && version === 6 ? 6 : null;
+              : markers[0].value === 'soty.apps-registry.v6' && version === 6 ? 6
+                : markers[0].value === 'soty.apps-registry.v7' && version === 7 ? 7 : null;
     if (!format) fail('storage_format_unknown');
     const projections = { ...appCore, ...(format >= 2 ? appDomains : {}), ...(format >= 3 ? appPublications : {}),
-      ...(format >= 4 ? appSources : {}), ...(format >= 5 ? appSaved : {}), ...(format === 6 ? appDiscussions : {}) };
+      ...(format >= 4 ? appSources : {}), ...(format >= 5 ? appSaved : {}), ...(format >= 6 ? appDiscussions : {}), ...(format === 7 ? appScoped : {}) };
     const guards = { ...(format >= 3 ? appTargetGuards : {}), ...(format >= 4 ? appSourceGuards : {}),
-      ...(format >= 5 ? appSavedGuards : {}), ...(format === 6 ? appDiscussionGuards : {}) };
+      ...(format >= 5 ? appSavedGuards : {}), ...(format >= 6 ? appDiscussionGuards : {}), ...(format === 7 ? appScopedGuards : {}) };
     if (objects.length !== Object.keys(projections).length + Object.keys(guards).length || objects.some(row =>
       row.type === 'table' ? !Object.hasOwn(projections, row.name)
         : row.type !== 'trigger' || !Object.hasOwn(guards, row.name) || row.tbl_name !== guards[row.name].table
@@ -429,6 +443,28 @@ async function readAppsFormat(dataDir) {
     // Independent format recognition, not row/constraint integrity attestation.
     // Every identifier below is a trusted constant, never database contents.
     for (const [table, columns] of Object.entries(projections)) db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();
+    if(format===7) {
+      if(normalizedSql(objects.find(row=>row.name==='app_scoped_embed_admissions')?.sql)!==normalizedSql(appScopedDdl)
+        || db.prepare('PRAGMA foreign_key_check').all().length) fail('storage_format_unreadable');
+      const columns=db.prepare('PRAGMA table_info(app_scoped_embed_admissions)').all();
+      if(columns[0]?.pk!==1||columns[1]?.pk!==2||columns.slice(2).some(row=>row.pk!==0)) fail('storage_format_unreadable');
+      const canonical=value=>Array.isArray(value)?'['+value.map(canonical).join(',')+']':value&&typeof value==='object'
+        ?'{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical(value[key])).join(',')+'}':JSON.stringify(value);
+      const digest=value=>createHash('sha256').update(value).digest('hex');let selected=0;
+      for(const target of db.prepare('SELECT * FROM app_runtime_targets').iterate()) {
+        if(!['soty.relay-restricted.v1','soty.selected-human-embed.v1'].includes(target.profile)
+          ||target.digest!==digest(JSON.stringify(['soty.runtime-target.v1',target.app_id,target.revision,target.owner_account_id,target.connector_key,target.port,target.entry_path,target.profile]))) fail('storage_format_unreadable');
+        if(target.profile==='soty.relay-restricted.v1')continue;selected++;
+        const row=db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.app_id,target.revision);
+        if(!row||row.target_digest!==target.digest||typeof row.approved_pin_json!=='string')fail('storage_format_unreadable');
+        let pin;try{pin=JSON.parse(row.approved_pin_json);}catch{fail('storage_format_unreadable');}
+        if(pin?.schema!=='soty.selected-human-embed.v1'||pin.appId!==target.app_id||pin.target?.revision!==target.revision||pin.target?.digest!==target.digest
+          ||pin.resource?.appId!==target.app_id||pin.resource?.tenantId!==target.owner_account_id
+          ||[pin.connector?.linkId,pin.connector?.hostDeviceId,pin.connector?.connectorId].join('|')!==target.connector_key||target.entry_path!=='/embed'
+          ||row.approved_pin_json!==canonical(pin)||row.profile_digest!==digest(canonical(pin)))fail('storage_format_unreadable');
+      }
+      if(Number(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n)!==selected)fail('storage_format_unreadable');
+    }
     if (format >= 2) {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template' LIMIT 2").all();
       if (pinned.length !== 1 || typeof pinned[0].value !== 'string') fail('storage_format_unreadable');

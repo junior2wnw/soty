@@ -9,5 +9,6 @@ export function observeAccount(listener: (state: LocalState) => void): () => voi
 // One queue and one durable browser identity across the new world and existing rooms.
 export const accountClient = createConnectClient({
   projectId: 'soty', endpoint: '/api/connect/rpc', dbName: 'soty-connect-v1',
+  scopedAppCleanup: true,
   onState: state => { for (const listener of listeners) listener(state); },
 });

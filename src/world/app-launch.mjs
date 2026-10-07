@@ -128,10 +128,12 @@ export function validateAppLaunchUrl(value, shellUrl) {
 }
 
 /** One screen owns its pending popup. Completed external tabs belong to the user. */
-export function createAppLauncher({ target, accountId, shellUrl, isCurrent, request, resolveEntry }) {
+export function createAppLauncher({ target, accountId, shellUrl, isCurrent, request, resolveEntry, abandonScoped }) {
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
+  let scoped=null;
+  function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
   const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
@@ -140,17 +142,24 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin && selected.path === entry.path), 'invalid_app_entry');
     selected = entry;
   }
-  async function issue(initial) {
+  async function issue(initial, external = false) {
     const args = parameters(), intended = { appId: args.appId,
       ...(args.domainId === undefined ? {} : { domainId: args.domainId }), ...(args.path === undefined ? {} : { path: args.path }) };
-    let received = false;
+    let received = false,binding=null;
     try {
       const result = await request(args); received = true;
-      if (!current()) return null;
+      if(result.runtimeProfile!==undefined||result.scopedCloseHandle!==undefined) {
+        requireValue(result.runtimeProfile==='soty.selected-human-embed.v1'&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
+        requireValue(result.scopedCleanup===undefined||typeof result.scopedCleanup==='function','invalid_app_scoped_launch');
+        binding=Object.freeze({profile:result.runtimeProfile,handle:result.scopedCloseHandle,cleanup:result.scopedCleanup});
+      }
+      if (!current()) {abandon(binding);return null;}
       const url = validateAppLaunchUrl(result?.url, shellUrl);
       capture(result?.entry, intended, url);
+      if(!external){const previous=scoped;scoped=binding;abandon(previous);}
       return url;
     } catch (error) {
+      abandon(binding);
       if (!current()) return null;
       // Only a failed admission may resolve an offline location. A successful
       // response with a missing/mismatched DTO must never be guessed later.
@@ -164,19 +173,19 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
       throw error;
     }
   }
-  async function launch() {
+  async function launch(external = false) {
     if (!current()) return null;
     if (initializing) {
       const outcome = await initializing;
       if (!current()) return null;
       if (!selected) throw outcome.error;
-      return issue(false);
+      return issue(false,external);
     }
-    if (selected) return issue(false);
+    if (selected) return issue(false,external);
     let finish;
     initializing = new Promise(resolve => { finish = resolve; });
     let failure;
-    try { return await issue(true); }
+    try { return await issue(true,external); }
     catch (error) { failure = error; throw error; }
     finally { finish({ error: failure }); initializing = null; }
   }
@@ -185,6 +194,7 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
     entry: () => current() ? selected : null,
     launch,
     isCurrent: current,
+    runtimeProfile:()=>scoped?.profile??null,
     async openExternal(openPopup) {
       if (!current()) return 'stale';
       if (externalPending) return 'busy';
@@ -194,7 +204,7 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
         destination = openPopup();
         if (!destination) return 'blocked';
         popup = destination; destination.opener = null;
-        const url = await launch();
+        const url = await launch(true);
         if (!url || !current() || destination.closed) { close(destination); return 'stale'; }
         destination.location.replace(url);
         popup = null;
@@ -205,6 +215,6 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
         throw error;
       } finally { popup = null; externalPending = false; }
     },
-    dispose() { disposed = true; selected = null; close(popup); popup = null; },
+    dispose() { disposed = true; selected = null; close(popup); popup = null;const previous=scoped;scoped=null;abandon(previous); },
   };
 }

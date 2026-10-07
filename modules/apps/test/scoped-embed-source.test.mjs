@@ -58,6 +58,7 @@ test(
         currentContext;
       const authority = createScopedEmbedAuthority({
         profiles: [profile],
+        withHumanSubjectAuthority: (request, callback) => env.identity.withSubjectAuthority(request, callback),
         withAppAuthority(request, callback) {
           assert.ok(request.actor === actor || request.actor === other);
           assert.equal(env.connect.isActorActive(request.actor), true);

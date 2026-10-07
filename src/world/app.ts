@@ -1588,7 +1588,10 @@ class WorldApplication {
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current,
       request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
-        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry }>('apps.launch', { ...parameters }).then(result => ({ url: result.launchUrl, entry: result.entry })),
+        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; runtimeProfile?:string; scopedCloseHandle?:string }>('apps.launch', { ...parameters }).then(result => {
+          const cleanup=this.options.appSlotCleanup?.(result);return{url:result.launchUrl,entry:result.entry,
+            ...(result.runtimeProfile?{runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle}:{}),
+            ...(cleanup?{scopedCleanup:cleanup}:{})};}),
       onNavigate: (next, navigation) => {
         if (!current()) return;
         if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; }

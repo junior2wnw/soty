@@ -2,6 +2,7 @@ export const localAppsSchema = 'soty.apps-channel.v1';
 const localAppsChunkBytes = 48 * 1024;
 const localAppsFrameBytes = 72 * 1024;
 const localAppsProfile = 'soty.relay-restricted.v1';
+const localAppsSelectedProfile = 'soty.selected-human-embed.v1';
 const localAppsEncoder = new TextEncoder();
 const localAppsFail = code => Object.assign(new Error(code), { code });
 const localAppsCheck = (condition, code = 'apps_bad_frame') => { if (!condition) throw localAppsFail(code); };
@@ -17,6 +18,7 @@ const localAppsPins = target => ({ appId: target.appId, revision: target.revisio
 export function createLocalAppsRuntime(deps, options = {}) {
   const state = { running: false, context: null, retry: null, interval: null };
   const now = deps.now || Date.now;
+  const scoped = options.scopedFactory;
   const blocked = [...new Set([49424, ...(options.blockedPorts || [])])];
   const option = name => typeof options[name] === 'function' ? options[name]() : options[name];
   const current = context => state.running && state.context === context && !context.closed;
@@ -44,6 +46,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     for (const pending of stream.pending.values()) { clearTimeout(pending.timer); pending.reject(localAppsFail(error)); }
     stream.pending.clear();
     stream.request?.destroy(); stream.response?.destroy(); stream.socket?.destroy();
+    stream.controller?.abort();
     if (notify) send(stream.context, { type: 'cancel', id: stream.id, error });
   }
   function removeBinding(context, id, reason = 'app_access_changed') {
@@ -69,6 +72,8 @@ export function createLocalAppsRuntime(deps, options = {}) {
     for (const probe of context.probes.values()) probe.cancel();
     for (const entry of context.preparations.values()) dropPreparation(context, entry);
     context.bindings.clear(); context.configs.clear(); context.probeQueue.clear();
+    for(const pending of context.authorityRequests.values()){clearTimeout(pending.timer);pending.reject(localAppsFail('apps_connector_offline'));}
+    context.authorityRequests.clear();if(wasCurrent)scoped?.disconnected();
     if (closeSocket) { try { context.ws.close(); } catch {} }
     if (wasCurrent) scheduleReconnect();
   }
@@ -92,13 +97,13 @@ export function createLocalAppsRuntime(deps, options = {}) {
     const context = { ws, identity, key: [identity.linkId, identity.hostDeviceId, identity.connectorId].join('|'),
       closed: false, connected: false, version: 0, channelId: null, bindings: new Map(), configs: new Map(), streams: new Map(),
       probes: new Map(), probeQueue: new Map(), probeScheduled: false, preparations: new Map(), preparing: 0, asyncWrites: 0,
-      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null };
+      claimCode: '', claimExpiresAt: 0, claimAcknowledged: false, claimPending: null, authorityRequests:new Map() };
     state.context = context;
     context.authTimer = setTimeout(() => disconnect(context), 5000); context.authTimer.unref?.();
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2] } });
+        capabilities: { targetBindingVersions: [1, 2], ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -157,7 +162,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     return normalized;
   }
   function policyError(value) {
-    if (value.profile !== localAppsProfile) return 'unsupported_profile';
+    if (value.profile !== localAppsProfile && !(value.profile===localAppsSelectedProfile && scoped?.accepts(value))) return 'unsupported_profile';
     try { localAppsPort(value.port, blocked); } catch { return 'invalid_app_port'; }
     try { localAppsHttpPath(value.entryPath, value.port); } catch { return 'invalid_app_path'; }
     return null;
@@ -231,7 +236,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
       send(context, entry.reply); return;
     }
     context.preparing++;
-    entry.probe = startLocalAppProbe(deps, { port: value.port, entryPath: value.entryPath, blockedPorts: blocked });
+    entry.probe = probeTarget(value);
     void entry.probe.promise.then(result => {
       if (!connected(context) || entry.cancelled || context.preparations.get(entry.nonce) !== entry) return;
       if (now() < entry.createdAt || now() >= entry.expiresAt) { dropPreparation(context, entry); return; }
@@ -260,7 +265,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
       const [id, binding] = context.probeQueue.entries().next().value; context.probeQueue.delete(id);
       if (context.bindings.get(id) !== binding || context.probes.has(binding)) continue;
       let probe;
-      try { probe = startLocalAppProbe(deps, { port: binding.port, entryPath: binding.entryPath, blockedPorts: blocked }); }
+      try { probe = probeTarget(binding.target ?? binding); }
       catch { observation(context, binding, { state: 'unreachable', httpStatus: null }); continue; }
       context.probes.set(binding, probe);
       void probe.promise.then(result => observation(context, binding, result)).finally(() => {
@@ -278,9 +283,18 @@ export function createLocalAppsRuntime(deps, options = {}) {
       } else {
         localAppsCheck((frame.bindingVersion === undefined || frame.bindingVersion === 1) && frame.channelId === undefined, 'apps_bad_negotiation'); context.version = 1;
       }
-      context.connected = true; clearTimeout(context.authTimer); return;
+      context.connected = true; clearTimeout(context.authTimer);
+      if(context.version===2)scoped?.connect(request=>readScopedAuthority(context,request),context.identity);
+      return;
     }
     localAppsCheck(connected(context), 'apps_not_authenticated');
+    if(frame.type==='scoped-authority-result') {
+      channelFrame(context,frame,['nonce','ok','context','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
+      const pending=context.authorityRequests.get(frame.nonce);if(!pending)return;
+      context.authorityRequests.delete(frame.nonce);clearTimeout(pending.timer);
+      if(frame.ok===true)pending.resolve(frame.context);else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
+    }
+    if(frame.type==='scoped-context-closed') {channelFrame(context,frame,['appId','reference']);localAppsCheck(localAppsId(frame.appId),'apps_bad_frame');scoped?.forget(frame.reference);return;}
     if (frame.type === 'claim-ready') {
       const pending = context.claimPending;
       if (pending && frame.claimDigest === pending.digest) {
@@ -319,9 +333,49 @@ export function createLocalAppsRuntime(deps, options = {}) {
       }).catch(error => closeStream(stream, error.code || 'app_upstream_failed')).finally(() => { context.asyncWrites--; });
     } catch (error) { closeStream(stream, error.code || 'app_upstream_failed'); }
   }
+  function probeTarget(target) {
+    if(target.profile!==localAppsSelectedProfile)return startLocalAppProbe(deps,{port:target.port,entryPath:target.entryPath,blockedPorts:blocked});
+    const controller=new AbortController();
+    return {promise:scoped.probe(target,controller.signal).catch(()=>({state:'unreachable',httpStatus:null})),cancel:()=>controller.abort()};
+  }
+  function readScopedAuthority(context,request) {
+    localAppsCheck(connected(context)&&context.version===2&&context.authorityRequests.size<32,'scoped_embed_channel_required');
+    const nonce=deps.randomSecret();
+    return new Promise((resolve,reject)=>{
+      const pending={resolve,reject};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
+      context.authorityRequests.set(nonce,pending);
+      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference})){
+        context.authorityRequests.delete(nonce);clearTimeout(pending.timer);reject(localAppsFail('scoped_embed_channel_required'));
+      }
+    });
+  }
+  function openScopedStream(context,frame,binding) {
+    localAppsCheck(frame.kind==='http'&&frame.context&&scoped,'scoped_embed_route_denied');
+    const stream={id:frame.id,appId:binding.appId,kind:'http',binding,context,received:0,sent:0,recvSeq:0,sendSeq:0,pending:new Map(),receiving:false,closed:false,head:false,
+      controller:new AbortController(),parts:[],ended:false};
+    const broker=scoped.broker(binding.target,()=>connected(context)&&context.bindings.get(binding.appId)===binding,binding);
+    stream.request={
+      write(bytes,callback){if(stream.received>1048576){callback(localAppsFail('app_request_too_large'));return;}stream.parts.push(Buffer.from(bytes));callback();},
+      destroy(){stream.controller.abort();stream.parts=[];},
+      end(){
+        if(stream.ended)return;stream.ended=true;
+        const body=Buffer.concat(stream.parts);stream.parts=[];
+        void (async()=>{
+          try {
+            localAppsCheck(streamCurrent(stream),'app_stream_closed');
+            const result=await broker.dispatch({context:frame.context,method:frame.method,path:frame.path,headers:frame.headers,body},stream.controller.signal);
+            localAppsCheck(streamCurrent(stream),'app_stream_closed');stream.head=true;idle(stream);
+            sendStream(stream,{type:'head',id:stream.id,status:result.status,headers:result.headers,...(result.headers.location?{location:result.headers.location}:{}),...(result.auth?{auth:result.auth}:{})});
+            await sendChunks(stream,result.body);sendStream(stream,{type:'end',id:stream.id});closeStream(stream,'app_stream_complete',false);
+          }catch(error){if(streamCurrent(stream))closeStream(stream,error.code||'app_upstream_failed');}
+        })();
+      },
+    };
+    context.streams.set(stream.id,stream);stream.timer=setTimeout(()=>closeStream(stream,'app_response_timeout'),30000);stream.timer.unref?.();
+  }
   function openStream(context, frame) {
     if (frame.type === 'bound-open') {
-      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers']);
+      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(frame.profile===localAppsSelectedProfile?['context']:[])]);
       localAppsCheck(localAppsNonce(frame.syncId) && localAppsId(frame.appId) && Number.isSafeInteger(frame.revision) && frame.revision >= 1
         && typeof frame.digest === 'string' && /^[a-f0-9]{64}$/u.test(frame.digest) && typeof frame.profile === 'string', 'apps_bad_open');
     } else localAppsCheck(context.version === 1, 'apps_bad_open');
@@ -335,6 +389,7 @@ export function createLocalAppsRuntime(deps, options = {}) {
     if (context.streams.size >= 32) { send(context, { type: 'cancel', id: frame.id, error: 'app_device_busy' }); return; }
     let stream;
     try {
+      if(binding.target?.profile===localAppsSelectedProfile){openScopedStream(context,frame,binding);return;}
       const path = context.version === 2 ? localAppsHttpPath(frame.path, binding.port) : localAppsPath(frame.path);
       localAppsCheck(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(frame.method), 'apps_bad_method');
       const headers = localAppsHeaders(frame.headers, frame.kind === 'ws' ? 'ws-request' : 'request');

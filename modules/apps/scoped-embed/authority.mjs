@@ -16,6 +16,7 @@ import {
 export function createScopedEmbedAuthority({
   profiles,
   withAppAuthority,
+  withHumanSubjectAuthority,
   clock = Date.now,
   random = () => randomBytes(32).toString("base64url"),
 } = {}) {
@@ -23,18 +24,33 @@ export function createScopedEmbedAuthority({
     Array.isArray(profiles) &&
       profiles.length > 0 &&
       profiles.length <= 64 &&
-      typeof withAppAuthority === "function",
+      typeof withAppAuthority === "function" && typeof withHumanSubjectAuthority === 'function',
   );
   const approved = new Map();
   for (const raw of profiles) {
     const profile = scopedEmbedProfile(raw);
-    need(!approved.has(profile.appId));
-    approved.set(profile.appId, profile);
+    const key = profile.appId + ':' + profile.target.revision;
+    need(!approved.has(key)); approved.set(key, profile);
   }
   const slots = new Map();
   let stopped = false;
+  function human(actor, profile) {
+    let entered = false, subject;
+    const returned = withHumanSubjectAuthority({ actor, issuer: profile.issuer, clientId: profile.clientId }, value => {
+      need(!entered, 'scoped_embed_subject_authority_invalid', 500); entered = true;
+      subject = capture(value); closed(subject, ['issuer','subject','clientId','clientProfileDigest','clientGeneration']);
+      need(subject.issuer === profile.issuer && subject.clientId === profile.clientId
+        && typeof subject.subject === 'string' && subject.subject.length > 0 && subject.subject.length <= 128
+        && /^[a-f0-9]{64}$/.test(subject.clientProfileDigest) && Number.isSafeInteger(subject.clientGeneration) && subject.clientGeneration > 0,
+        'scoped_embed_subject_authority_invalid', 500);
+      return subject;
+    });
+    need(entered && returned === subject && !returned?.then, 'scoped_embed_subject_authority_invalid', 500);
+    return subject;
+  }
   function fresh(slot, callback) {
     need(!stopped && slot.expiresAt > clock(), "scoped_embed_expired", 401);
+    need(hash(human(slot.actor, slot.profile)) === hash(slot.humanPrincipal), 'scoped_embed_human_changed', 403);
     let entered = false,
       outcome;
     const returned = withAppAuthority(
@@ -97,6 +113,7 @@ export function createScopedEmbedAuthority({
         accountId: slot.accountId,
         deviceId: slot.deviceId,
       }),
+      humanPrincipal: slot.humanPrincipal,
       entry: Object.freeze({
         domainId: slot.domainId,
         origin: slot.profile.embedOrigin,
@@ -107,10 +124,12 @@ export function createScopedEmbedAuthority({
     });
   }
   return Object.freeze({
-    open({ actor, appId, domainId }) {
+    open({ actor, appId, domainId, targetRevision }) {
       need(!stopped);
-      const profile = approved.get(appId);
+      const candidates = [...approved.values()].filter(value => value.appId === appId && (targetRevision === undefined || value.target.revision === targetRevision));
+      const profile = candidates.length === 1 ? candidates[0] : null;
       need(profile, "scoped_embed_not_approved", 403);
+      const humanPrincipal = human(actor, profile);
       for (const [id, slot] of slots)
         if (slot.expiresAt <= clock()) slots.delete(id);
       need(
@@ -143,6 +162,7 @@ export function createScopedEmbedAuthority({
               deviceId: actor.deviceId,
               domainId: snapshot.entry.domainId,
               policyEpoch: snapshot.policyEpoch,
+              humanPrincipal,
               nonce: id,
             }),
           });
@@ -154,6 +174,7 @@ export function createScopedEmbedAuthority({
             deviceId: actor.deviceId,
             domainId: snapshot.entry.domainId,
             policyEpoch: snapshot.policyEpoch,
+            humanPrincipal,
             expiresAt: clock() + SCOPED_EMBED_LIMITS.continuationMs,
           };
           slots.set(id, slot);

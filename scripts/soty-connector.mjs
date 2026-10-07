@@ -7,6 +7,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/connector-host.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
@@ -15,7 +16,7 @@ import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal 
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.1";
+const connectorVersion = "1.4.2";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -69,13 +70,25 @@ let updateState = {
   lastError: ""
 };
 
+const scopedEmbedFile = env('SOTY_SELECTED_EMBED_HOST_FILE');
+const scopedFactory = createConnectorScopedFactory({ entries: loadScopedHostEntries(scopedEmbedFile) });
+function loadScopedHostEntries(file) {
+  if(!file)return [];
+  try {
+    if(!isAbsolute(file))throw new Error('invalid');
+    const bytes=readFileSync(file);if(bytes.length>131072)throw new Error('invalid');
+    const value=JSON.parse(bytes.toString('utf8'));
+    if(value?.schema!=='soty.selected-embed-hosts.v1'||!Array.isArray(value.entries)||Object.keys(value).some(key=>!['schema','entries'].includes(key)))throw new Error('invalid');
+    return value.entries;
+  } catch {throw new Error('scoped_embed_host_configuration_invalid');}
+}
 const localApps = createLocalAppsRuntime({
   randomSecret: () => randomBytes(32).toString('base64url'),
   digest: value => createHash('sha256').update(value).digest('hex'),
   createWebSocket: url => new globalThis.WebSocket(url),
   httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
-  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port] });
+  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,
@@ -212,6 +225,11 @@ async function startConnector() {
 }
 
 async function handleHttp(request, response, url) {
+  if(url.pathname==='/apps/scoped/authority') {
+    try{await scopedFactory.sourceAuthority(request,response);}
+    catch(error){if(!response.headersSent)sendJson(response,error.status===403?403:error.status===413?413:503,{'Cache-Control':'no-store'},{ok:false,code:'scoped_embed_authority_unavailable'});else response.end();}
+    return;
+  }
   if (url.pathname === '/apps/claim') {
     const origin = String(request.headers.origin || '');
     const allowed = productionShellOriginAllowed(origin, relayBaseUrl);

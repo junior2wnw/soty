@@ -15,7 +15,7 @@ import { attachHumanIdentity } from '../../../../server/human-identity.js';
 
 const sourceRoot = resolve(
   process.env.SOTY_PLANNER_PROOF_SOURCE_ROOT ||
-    'D:/соты/output/planner-universal-integration/worktree',
+    'C:/Users/Junio/.codex/worktrees/planner-scoped-source',
 );
 let source,
   available = true;
@@ -211,6 +211,7 @@ export async function fixture(t, configure = () => null) {
     profile,
     actorActive: (actor) => connect?.isActorActive(actor) === true,
     withAuthorityFence: (callback) => connect.withAuthorityFence(callback),
+    withSubjectAuthorityFence: (actor, callback) => connect.withActorAuthorityFence(actor, callback),
     readProfile: () => ({ name: 'Synthetic same display name' }),
   });
   const actorRefs = new Map();
@@ -277,6 +278,7 @@ export async function fixture(t, configure = () => null) {
     other,
     actorRefs,
     connect,
+    identity,
     workspaceId,
     rootOrigin,
     embedded,
