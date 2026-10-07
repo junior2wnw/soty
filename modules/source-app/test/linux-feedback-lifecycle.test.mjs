@@ -82,6 +82,7 @@ test('unknown CREATE recovers exact existing name only for cleanup, never retrie
   assert.equal(f.state.evidence.at(-1).cleanupUnknown,false);
   const absent=fixture({createUnknown:true,createAbsent:true});await assert.rejects(absent.run(),error=>error.code==='source_feedback_processor_cleanup_unknown');
   assert.equal(absent.state.creates,1);assert.equal(absent.state.starts,0);assert.equal(absent.state.removes,0);
+  assert.equal(absent.state.packetRemoves,0,'unknown daemon delivery retains exact owned packet');
   assert.equal(absent.state.evidence.at(-1).cleanupUnknown,true);
 });
 
@@ -109,6 +110,14 @@ test('rm/inspect/packet cleanup failures block successful output and expose clea
   for(const option of [{containerRmFault:true},{cleanupInspectFault:true},{packetRmFault:true},{pathChanged:true}]){
     const f=fixture(option);await assert.rejects(f.run(),error=>error.code==='source_feedback_processor_cleanup_unknown');
     assert.equal(f.state.attachClosed,true);assert.equal(f.state.evidence.at(-1).cleanupUnknown,true);
+  }
+});
+
+test('uncertain container removal/inspection retains owned reachable packet and cannot return Native output',async()=>{
+  for(const option of [{containerRmFault:true},{cleanupInspectFault:true}]){
+    const f=fixture(option);await assert.rejects(f.run(),error=>error.code==='source_feedback_processor_cleanup_unknown');
+    assert.equal(f.state.packetRemoves,0);assert.equal(f.state.evidence.at(-1).packetRemoved,false);
+    assert.equal(f.state.evidence.at(-1).cleanupUnknown,true);
   }
 });
 

@@ -140,7 +140,10 @@ export async function runFixedLinuxPacket(plan,{fs,commands,sleep}, {signal,befo
         check(remaining==='','source_feedback_processor_unknown',503);containerRemoved=true;
       }catch{cleanupUnknown=true;}
     }else try{await attach?.stopAndWait();}catch{cleanupUnknown=true;}
-    if(packetOwned){
+    // Unknown container delivery/stop/removal retains this exact owned packet
+    // for bounded operator cleanup. Do not erase data still reachable by an
+    // uncertain processor, even though no Native result will be returned.
+    if(packetOwned&&!cleanupUnknown){
       try{
         const state=await fs.lstat(plan.packetDirectory);
         check(state.isDirectory()&&!state.isSymbolicLink()&&state.uid===1000&&(state.mode&0o777)===0o700
