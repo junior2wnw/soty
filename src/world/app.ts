@@ -33,7 +33,7 @@ import { createDialog, errorText, isDialogFocusTarget, pinDialogSubmit, switchCo
 import { communityEmblem, createHexField, createHexFieldState, type HexField } from './hex-field';
 import { communityIcons, icon } from './icons';
 import { loadPreferences, savePreferences, type WorldPreferences, type WorldView } from './preferences';
-import { entityId, entityName, worldColor, worldColors, type WorldApi, type WorldAppOptions, type WorldAppRecord, type WorldAssistantHandle, type WorldCommunity, type WorldDevice, type WorldEntity, type WorldMember, type WorldMessage, type WorldProfile, type WorldSearch } from './types';
+import { entityId, entityName, worldColor, worldColors, type WorldApi, type WorldAppOptions, type WorldAppRecord, type WorldAssistantHandle, type WorldCommunity, type WorldDevice, type WorldEntity, type WorldHumanCallState, type WorldMember, type WorldMessage, type WorldProfile, type WorldSearch } from './types';
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
@@ -61,6 +61,18 @@ class WorldApplication {
   private readonly sidebar = el('aside', 'sx-sidebar');
   private readonly mobileNav = el('nav', 'sw-mobile-nav');
   private readonly live = el('div', 'sw-sr-only');
+  private readonly humanCallStrip = el('section', 'sw-human-call-strip');
+  private readonly humanCallStatus = el('strong', 'sw-human-call-status');
+  private readonly humanCallMicStatus = el('span', 'sw-human-call-mic-status');
+  private readonly humanCallActions = el('div', 'sw-human-call-actions');
+  private readonly humanCallMicButton = button('Включить', undefined, 'sw-button-quiet', () => { void this.toggleHumanMicrophone(); });
+  private readonly humanCallLeaveButton = button('Выйти', 'exit', 'sw-button-quiet', () => this.endHumanCall());
+  private readonly humanCallResumeButton = button('Слушать', 'chat', 'sw-button-quiet', () => { void this.resumeHumanCall(); });
+  private humanCallState: WorldHumanCallState | null = null;
+  private unsubscribeHumanCall: (() => void) | null = null;
+  private humanCallJoinPending = false;
+  private humanCallMicPending = false;
+  private humanCallResumePending = false;
   private readonly controller = new AbortController();
   private readonly avatars: AvatarHydrator;
   private readonly dialogs = new Set<WorldDialog>();
@@ -141,10 +153,25 @@ class WorldApplication {
     root.classList.add('sw-app'); root.dataset.motion = this.preferences.motion ? 'on' : 'off'; root.dataset.compact = String(this.preferences.compact);
     this.live.setAttribute('role', 'status'); this.live.setAttribute('aria-live', 'polite'); this.mobileNav.setAttribute('aria-label', 'Главная навигация');
     this.main.id = 'soty-main'; this.main.tabIndex = -1;
+    this.humanCallStrip.setAttribute('role', 'region'); this.humanCallStrip.setAttribute('aria-label', 'Текущий звонок');
+    this.humanCallStrip.hidden = true;
+    this.humanCallStatus.setAttribute('role', 'status'); this.humanCallStatus.setAttribute('aria-live', 'polite'); this.humanCallStatus.setAttribute('aria-atomic', 'true');
+    this.humanCallMicButton.setAttribute('aria-label', 'Включить микрофон'); this.humanCallLeaveButton.setAttribute('aria-label', 'Выйти из звонка');
+    this.humanCallResumeButton.setAttribute('aria-label', 'Разрешить воспроизведение звука звонка'); this.humanCallResumeButton.title = 'Нажмите, чтобы услышать звонок';
+    this.humanCallResumeButton.hidden = true;
+    const humanCallCopy = el('div', 'sw-human-call-copy'); humanCallCopy.append(this.humanCallStatus, this.humanCallMicStatus);
+    this.humanCallActions.append(this.humanCallResumeButton, this.humanCallMicButton, this.humanCallLeaveButton);
+    this.humanCallStrip.append(humanCallCopy, this.humanCallActions);
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
-    root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.main, this.mobileNav, this.live);
+    root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
     this.pwaBanner.setAttribute('aria-live', 'polite'); this.pwaBanner.setAttribute('aria-label', 'Состояние приложения');
+    if (options.humanCalls) {
+      this.humanCallState = options.humanCalls.snapshot();
+      this.unsubscribeHumanCall = options.humanCalls.subscribe(state => this.receiveHumanCallState(state));
+      this.humanCallState = options.humanCalls.snapshot();
+      this.renderHumanCallStrip();
+    }
     this.unsubscribePwa = this.pwa.subscribe(state => {
       const recovered = state.connection === 'online' && this.connection !== 'online';
       this.connection = state.connection;
@@ -183,13 +210,154 @@ class WorldApplication {
     }, { signal: this.controller.signal });
   }
 
+  private humanCallActive(state = this.humanCallState): boolean {
+    return !!state && (state.state === 'joining' || state.state === 'listening');
+  }
+
+  private receiveHumanCallState(state: WorldHumanCallState): void {
+    if (this.destroyed) return;
+    const previous = this.humanCallState;
+    this.humanCallState = state;
+    if (previous && this.humanCallActive(previous) && state.state === 'ended') this.toast('Звонок завершён');
+    if (state.microphone !== 'permission' && state.microphone !== 'publishing') this.humanCallMicPending = false;
+    if (!state.playbackBlocked) this.humanCallResumePending = false;
+    this.renderHumanCallStrip();
+  }
+
+  private renderHumanCallStrip(): void {
+    const state = this.humanCallState, active = this.humanCallActive(state);
+    this.humanCallStrip.hidden = !active;
+    if (active) this.root.dataset.humanCallActive = 'true';
+    else delete this.root.dataset.humanCallActive;
+    if (!state || !active) { this.updateGroupCallButtons(); return; }
+
+    let status = 'Подключаемся';
+    if (state.state === 'listening') {
+      if (state.connection === 'admitted' && state.peers === 0) status = 'Ожидаем участника';
+      else if (state.connection === 'connected') status = 'В звонке';
+      else if (state.connection === 'reconnecting') status = 'Связь восстанавливается';
+      else if (state.connection === 'closed') status = 'Связь прервана';
+      else if (state.connection === 'error') status = 'Не удалось подключиться';
+      else if (state.connection === 'admitted') status = 'Связь устанавливается';
+    }
+    this.humanCallStatus.textContent = status;
+    this.humanCallStrip.title = state.turnConfigured ? '' : 'В некоторых сетях звонок может не подключиться.';
+
+    const connected = state.state === 'listening' && state.connection === 'connected';
+    const confirmedMicOn = state.microphone === 'on' && connected;
+    this.humanCallMicStatus.textContent = state.microphone === 'permission' ? 'Разрешите доступ к микрофону'
+      : state.microphone === 'publishing' ? 'Включаем микрофон…'
+        : confirmedMicOn ? 'Микрофон включён'
+          : state.microphone === 'on' ? 'Микрофон не подтверждён'
+            : 'Микрофон выключен';
+    const mayDisable = state.microphone === 'on';
+    const micPending = !mayDisable && (this.humanCallMicPending || state.microphone === 'permission' || state.microphone === 'publishing');
+    this.humanCallMicButton.querySelector('span')!.textContent = micPending ? 'Отмена' : confirmedMicOn || mayDisable ? 'Выключить' : 'Включить';
+    this.humanCallMicButton.disabled = !micPending && !mayDisable && !connected;
+    const micLabel = micPending ? 'Отменить включение микрофона' : mayDisable ? 'Выключить микрофон' : 'Включить микрофон';
+    this.humanCallMicButton.setAttribute('aria-label', micLabel);
+    this.humanCallMicButton.title = this.humanCallMicButton.disabled ? 'Дождитесь подключения, чтобы включить микрофон.' : micLabel;
+
+    this.humanCallResumeButton.hidden = !state.playbackBlocked;
+    this.humanCallResumeButton.disabled = this.humanCallResumePending;
+    this.humanCallResumeButton.querySelector('span')!.textContent = this.humanCallResumePending ? 'Включаем звук…' : 'Слушать';
+    this.humanCallResumeButton.setAttribute('aria-label', this.humanCallResumePending ? 'Включаем звук звонка' : 'Разрешить воспроизведение звука звонка');
+    this.updateGroupCallButtons();
+  }
+
+  private updateGroupCallButtons(): void {
+    const active = this.humanCallActive();
+    for (const control of this.main.querySelectorAll<HTMLButtonElement>('.sw-human-call-join')) {
+      const sameRoom = active && this.humanCallState?.roomId === control.dataset.roomId && this.humanCallState?.mode === 'group';
+      control.disabled = this.humanCallJoinPending || active;
+      control.title = active ? sameRoom ? 'Вы уже подключены к звонку этой группы.' : 'Сначала завершите текущий звонок.'
+        : 'Подключиться только для прослушивания; микрофон выключен. В некоторых сетях звонок может не подключиться.';
+      control.setAttribute('aria-label', active ? sameRoom ? 'Вы уже слушаете звонок этой группы' : 'Сначала завершите текущий звонок'
+        : 'Подключиться к звонку группы и слушать; микрофон выключен');
+    }
+  }
+
+  private groupHumanCallButton(group: WorldCommunity): HTMLButtonElement {
+    const control = button('Слушать', 'activity', 'sw-button-quiet sw-human-call-join', () => { void this.joinHumanGroupCall(group); });
+    control.dataset.roomId = group.communityId;
+    control.title = 'Подключиться только для прослушивания; микрофон выключен. В некоторых сетях звонок может не подключиться.';
+    control.setAttribute('aria-label', `Подключиться к звонку группы ${group.name} и слушать; микрофон выключен`);
+    control.disabled = this.humanCallActive() || this.humanCallJoinPending;
+    if (this.humanCallActive()) {
+      control.title = this.humanCallState?.roomId === group.communityId ? 'Вы уже подключены к звонку этой группы.' : 'Сначала завершите текущий звонок.';
+      control.setAttribute('aria-label', this.humanCallState?.roomId === group.communityId ? 'Вы уже слушаете звонок этой группы' : 'Сначала завершите текущий звонок');
+    }
+    this.updateGroupCallButtons();
+    return control;
+  }
+
+  private async joinHumanGroupCall(group: WorldCommunity): Promise<void> {
+    const port = this.options.humanCalls;
+    if (!port || group.membership?.state !== 'active' || this.humanCallActive() || this.humanCallJoinPending) return;
+    this.humanCallJoinPending = true; this.updateGroupCallButtons();
+    try {
+      const result = await port.join({ roomId: group.communityId, mode: 'group' });
+      if (this.destroyed) return;
+      this.receiveHumanCallState(port.snapshot());
+      if (!result.ok) this.toast('Не удалось подключиться. Микрофон выключен.', true);
+    } catch {
+      if (!this.destroyed) this.toast('Не удалось подключиться. Микрофон выключен.', true);
+    } finally {
+      this.humanCallJoinPending = false;
+      if (!this.destroyed) this.updateGroupCallButtons();
+    }
+  }
+
+  private async toggleHumanMicrophone(): Promise<void> {
+    const port = this.options.humanCalls, state = this.humanCallState;
+    if (!port || !state || !this.humanCallActive()) return;
+    if (state.microphone === 'on') {
+      try { port.disableMicrophone(); this.receiveHumanCallState(port.snapshot()); }
+      catch { this.toast('Не удалось выключить микрофон. Выйдите из звонка, чтобы прекратить участие.', true); }
+      return;
+    }
+    if (this.humanCallMicPending || state.microphone === 'permission' || state.microphone === 'publishing') {
+      try { port.disableMicrophone(); this.receiveHumanCallState(port.snapshot()); }
+      catch { this.toast('Не удалось отменить включение. Выйдите из звонка, чтобы прекратить участие.', true); }
+      return;
+    }
+    if (state.microphone !== 'off' || state.state !== 'listening' || state.connection !== 'connected') return;
+    this.humanCallMicPending = true; this.renderHumanCallStrip();
+    try {
+      const result = await port.enableMicrophone();
+      if (this.destroyed) return;
+      this.receiveHumanCallState(port.snapshot());
+      if (!result.ok) this.toast('Микрофон остался выключен.', true);
+    } catch {
+      if (!this.destroyed) this.toast('Микрофон остался выключен.', true);
+    } finally {
+      this.humanCallMicPending = false;
+      if (!this.destroyed) this.renderHumanCallStrip();
+    }
+  }
+
+  private endHumanCall(): void {
+    try { this.options.humanCalls?.end(); }
+    catch { this.toast('Не удалось завершить звонок. Попробуйте ещё раз.', true); }
+  }
+
+  private async resumeHumanCall(): Promise<void> {
+    const port = this.options.humanCalls, state = this.humanCallState;
+    if (!port || !state?.playbackBlocked || this.humanCallResumePending) return;
+    this.humanCallResumePending = true; this.renderHumanCallStrip();
+    try { await port.resumeListening(); if (!this.destroyed) this.receiveHumanCallState(port.snapshot()); }
+    catch { if (!this.destroyed) this.toast('Не удалось включить звук. Нажмите «Слушать» ещё раз.', true); }
+    finally { this.humanCallResumePending = false; if (!this.destroyed) this.renderHumanCallStrip(); }
+  }
+
   destroy(): void {
     this.destroyed = true; this.requestSequence++; this.screenSequence++;
+    this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
     this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
-    this.dialogs.clear(); this.root.replaceChildren(); this.root.classList.remove('sw-app');
+    this.dialogs.clear(); delete this.root.dataset.humanCallActive; this.root.replaceChildren(); this.root.classList.remove('sw-app');
   }
 
   async refresh(preserveNote = false): Promise<void> {
@@ -867,6 +1035,7 @@ class WorldApplication {
     const actions = el('div', 'sw-community-actions');
     if (group.membership?.state === 'active') {
       actions.append(badge('Вы участник', 'check', 'sage'));
+      if (this.options.humanCalls) actions.append(this.groupHumanCallButton(group));
       const pin = iconButton(group.membership.pinned ? 'Открепить сообщество' : 'Закрепить в моих сотах', 'pin', () => { void this.mutateMembership('world.membership.preferences', { pinned: !group.membership?.pinned }); }); pin.classList.toggle('is-selected', group.membership.pinned); actions.append(pin);
       actions.append(iconButton(group.pendingCount ? `Участники и управление, ${nounCount(group.pendingCount, 'новая заявка', 'новые заявки', 'новых заявок')}` : 'Участники и управление', 'people', () => this.openGroupManagement(group)));
       if (group.pendingCount) actions.append(button(`${group.pendingCount} ${group.pendingCount === 1 ? 'заявка' : 'заявки'}`, 'people', 'sw-button-small', () => this.openGroupManagement(group, 'requested')));
@@ -1006,7 +1175,9 @@ class WorldApplication {
         { label: group.membership?.muted ? 'Включить уведомления' : 'Отключить уведомления', symbol: 'bell', run: () => changePreference('muted') },
         { label: group.membership?.pinned ? 'Открепить чат' : 'Закрепить чат', symbol: 'pin', run: () => changePreference('pinned') },
       ]));
-      header.append(back, identity, searchOpen, more); chat.append(header);
+      header.append(back, identity);
+      if (this.options.humanCalls && group.membership?.state === 'active') header.append(this.groupHumanCallButton(group));
+      header.append(searchOpen, more); chat.append(header);
     }
     const messages = el('div', 'sw-chat-messages'); messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Сообщения'); messages.setAttribute('aria-live', 'polite'); messages.setAttribute('aria-relevant', 'additions'); messages.setAttribute('tabindex', '0'); messages.append(this.loading('Загружаем разговор'));
     const previous = button('Ранее', 'back', 'sw-chat-history', () => { void loadHistory(); }); previous.hidden = true;

@@ -34,6 +34,7 @@ import { attachExternalCapabilities } from './external-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 import { createPersonalAgentComposition } from './personal-agent-composition.js';
+import { createHumanCallModule } from './human-call-module.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -57,7 +58,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human, personal,
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human, humanCalls, personal,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
@@ -140,7 +141,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [personal, human, universal, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [personal, humanCalls, human, universal, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -150,6 +151,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   try {
     personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities }), configuration: personalAgent });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
+    humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
       verifyNativeContext: (token, mode) => {
         if (!capabilities?.nativeNotes) throw new AccessError('native_unavailable');
@@ -223,6 +225,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     res.status(apps.allowsTlsDomain(req.query.domain) ? 204 : 403).end();
   });
   app.locals.worldService = world;
+  app.locals.humanCalls = humanCalls;
   app.locals.notesService = notes;
   app.locals.capabilitiesService = capabilities;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
@@ -232,7 +235,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
-    app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities,
+    app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
       ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(human ? [human] : []), personal],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
@@ -264,6 +267,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   app.locals.closeServices = async () => {
     personal.close();
+    humanCalls.close();
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();
     human?.close(); universal?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
@@ -272,6 +276,12 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status() });
+  });
+  app.get('/api/calls/capabilities', (_req, res) => {
+    const state = humanCalls.status();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ configured: state.signalingMounted, participantLimit: state.participantLimit,
+      turnConfigured: state.turnConfigured, remoteMediaQualified: state.remoteMediaQualified });
   });
   attachCanonicalIdentityApi(app, { dataDir });
   attachSotyIdentityAdapterApi(app, { dataDir });

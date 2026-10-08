@@ -190,7 +190,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   }
   const db = new DatabaseSync(file);
   try { migrateDatabase(db, projectId); } catch (error) { db.close(); throw error; }
-  let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false;
+  let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false, actorFenceActor = null;
   // Only actor objects emitted by this signed dispatcher can enter the private
   // subject projection fence. Matching JSON fields do not carry this authority.
   const issuedActors = new WeakSet();
@@ -275,9 +275,9 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       assert(authenticated(actor.deviceId).account.id === actor.accountId, 'connect_authority_actor_mismatch');
       return result;
     };
-    actorFenceActive = true;
+    actorFenceActive = true; actorFenceActor = actor;
     try { return activeActorRef === actor ? observe() : withAuthorityFence(observe); }
-    finally { active = false; actorFenceActive = false; }
+    finally { active = false; actorFenceActive = false; actorFenceActor = null; }
   }
   function hitLimit(key, max, interval, timestamp) {
     const bucket = Math.floor(timestamp / interval);
@@ -680,6 +680,13 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); } },
     withAuthorityFence,
     withActorAuthorityFence,
+    /** Host-only current reciprocal contact predicate inside this actor's fence.
+     * Discovery/contact-request policy and copied actor fields grant no calls. */
+    hasCurrentContact(actor, peerAccountId) {
+      assert(!closed && actorFenceActive && actorFenceActor === actor && issuedActors.has(actor), 'connect_authority_actor_invalid');
+      const peerId = textId(peerAccountId);
+      return Boolean(currentRelationship(actor.accountId, peerId) && !blocked(actor.accountId, peerId));
+    },
     /** Host-only check for sessions created by a signed extension operation. */
     isActorActive(actor) {
       if (closed || !actor || typeof actor.accountId !== 'string' || typeof actor.deviceId !== 'string') return false;

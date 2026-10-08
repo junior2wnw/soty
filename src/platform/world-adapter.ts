@@ -1,19 +1,41 @@
 import { accountClient, observeAccount } from '../core/connect-client';
 import { mountWorldApp, type WorldAppHandle } from '../world/app';
-import type { WorldAppOptions, WorldProfile } from '../world/types';
+import type { WorldAppOptions, WorldProfile, WorldHumanCallPort, WorldHumanCallState } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
 import { bindCallIdentity, type CallIdentityLifecycle } from './call-identity';
+import { createHumanCallPorts } from '../sync';
+// The existing browser-neutral JS owner is tested directly; its runtime is unchanged.
+// @ts-expect-error The reviewed JS component has no TypeScript declaration.
+import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';
+
+interface HumanLifecycle extends CallIdentityLifecycle {
+  snapshot(): { state: string; microphone: WorldHumanCallState['microphone'];
+    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group' } | null; code: string | null };
+  join(target: { roomId: string; mode: 'one-to-one' | 'group' }): Promise<{ ok: boolean; code?: string }>;
+  enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
+  mute(): unknown;
+}
 
 export async function startWorld(root: HTMLElement, dependencies: { callLifecycle?: CallIdentityLifecycle } = {}): Promise<void> {
-  const detachCall = dependencies.callLifecycle ? bindCallIdentity({ lifecycle: dependencies.callLifecycle,
-    client: accountClient, observeAccount, pageEvents: window }) : undefined;
+  const callObservers = new Set<() => void>();
+  const notifyCall = () => { for (const listener of [...callObservers]) { try { void Promise.resolve(listener()).catch(() => {}); } catch {} } };
+  let ownedLifecycle: HumanLifecycle | undefined;
+  const callPorts = dependencies.callLifecycle ? undefined : createHumanCallPorts({ client: accountClient,
+    onInterrupted: reason => { if (reason === 'signaling') ownedLifecycle?.end(); else ownedLifecycle?.mute(); } });
+  if (callPorts) ownedLifecycle = createCallLifecycle({ ...callPorts, onState: notifyCall }) as HumanLifecycle;
+  const lifecycle = dependencies.callLifecycle ?? ownedLifecycle!;
+  const unobserveCall = callPorts?.subscribe(notifyCall);
+  let detachIdentity: (() => void) | undefined;
+  const detachCall = () => { detachIdentity?.(); unobserveCall?.(); callObservers.clear(); };
   try {
+  detachIdentity = bindCallIdentity({ lifecycle, client: accountClient, observeAccount, pageEvents: window });
   // An existing durable identity can open local drafts before the network returns.
   // Every server operation still verifies the active installation through Connect.
   if (!(await accountClient.getLocalState()).accountId) await accountClient.bootstrap('Мои соты');
   let activeAccount = (await accountClient.getLocalState()).accountId;
   let world: WorldAppHandle;
+  let mountGeneration = 0, currentCallView: WorldHumanCallPort | undefined;
   const refresh = async () => { await world?.refresh(); };
   const actions = createAppActions(accountClient, refresh, () => openAccount('devices'));
   const openLegacy = (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => {
@@ -22,6 +44,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     window.location.assign(url.href);
   };
   const openAccount = async (initialTab: 'profile' | 'people' | 'devices' | 'recovery' = 'profile') => {
+    const callView = currentCallView;
     const [{ openConnectPanel, parseConnectLink }, { default: QRCode }] = await Promise.all([
       import('../../modules/connect/ui/index.mjs'), import('qrcode'), import('../../modules/connect/ui/style.css'),
     ]);
@@ -29,6 +52,10 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const panel = openConnectPanel({ client: accountClient, label: state.label || 'Мой профиль', productName: 'Соты',
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       initialIntent: parseConnectLink(window.location.href), initialTab,
+      ...(callView ? { onContactCall: async ({ peerAccountId }: { peerAccountId: string; label: string }) => {
+        const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one' });
+        if (!result.ok) throw Object.assign(new Error('Call did not start.'), { code: result.code });
+      } } : {}),
       snapshotDescription: 'Профиль и сообщества сохранены в Сотах. Сохранение прежних комнат доступно в разделе «Комнаты и инструменты».',
       onRename: async displayName => {
         const result = await accountClient.extension<{ profile: WorldProfile }>('world.profile.get');
@@ -55,13 +82,38 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     },
   };
   const mount = (accountId: string | null): WorldAppHandle => {
+    const generation = ++mountGeneration;
+    const current = () => Boolean(accountId && accountId === activeAccount && generation === mountGeneration);
+    const stale = () => ({ ok: false, code: 'ACTIVE_PROFILE_CHANGED' });
+    let humanCalls: WorldHumanCallPort | undefined;
+    if (ownedLifecycle && callPorts) {
+      const owner = ownedLifecycle, ports = callPorts;
+      const belongs = () => current() && owner.snapshot().scope?.accountId === accountId;
+      const snapshot = (): WorldHumanCallState => {
+        const local = owner.snapshot(), connection = ports.snapshot();
+        if (!current()) return { state: 'ended', microphone: 'off', connection: 'closed', peers: 0,
+          playbackBlocked: false, roomId: null, mode: null, code: 'ACTIVE_PROFILE_CHANGED', turnConfigured: false };
+        return { state: local.state, microphone: local.microphone, ...connection,
+          roomId: local.scope?.roomId ?? null, mode: local.scope?.mode ?? null, code: local.code };
+      };
+      humanCalls = {
+        snapshot,
+        subscribe(listener) { const notify = () => listener(snapshot()); callObservers.add(notify); return () => callObservers.delete(notify); },
+        join(target) { return current() ? owner.join(target) : Promise.resolve(stale()); },
+        enableMicrophone() { return belongs() ? owner.enableMicrophone() : Promise.resolve(stale()); },
+        disableMicrophone() { if (belongs()) owner.mute(); },
+        end() { if (belongs()) owner.end(); },
+        async resumeListening() { if (belongs()) await ports.resumeListening(); },
+      };
+    }
+    currentCallView = humanCalls;
     // Each controller keeps its original admission context. An old callback
     // cannot adopt a new account merely because the shared selection changed.
     const api = { request: <T>(method: string, args?: Record<string, unknown>): Promise<T> => {
       if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
       return accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
     } };
-    return mountWorldApp(root, { ...options, api,
+    return mountWorldApp(root, { ...options, api, ...(humanCalls ? { humanCalls } : {}),
       requestContact: async (profile: WorldProfile) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
     });
   };
@@ -75,7 +127,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   // Destroying that DOM on pagehide would restore an empty screen on Back.
   window.addEventListener('pagehide', event => {
     if (event.persisted) return;
-    unobserve(); actions.destroy(); world.destroy();
+    mountGeneration++; unobserve(); actions.destroy(); world.destroy(); detachCall();
   });
   if (new URL(window.location.href).searchParams.has('connect')) await openAccount();
   const actionUrl = new URL(window.location.href);
@@ -83,5 +135,5 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     actionUrl.searchParams.delete('action'); history.replaceState({}, '', actionUrl);
     await actions.connectDevice();
   }
-  } catch (error) { detachCall?.(); throw error; }
+  } catch (error) { try { detachCall(); } catch {} try { lifecycle.dispose(); } catch {} throw error; }
 }

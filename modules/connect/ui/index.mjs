@@ -37,7 +37,7 @@ export function parseConnectLink(value, origin = globalThis.location?.origin) {
     return { kind, id };
   } catch { return null; }
 }
-export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename,
+export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename, onContactCall,
   snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null, initialTab = 'profile', bootstrapOnOpen = true }) {
   if (typeof bootstrapOnOpen !== 'boolean') throw new TypeError('invalid_bootstrap_policy');
   const previousFocus = document.activeElement;
@@ -140,6 +140,10 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
       for (const r of incoming) row('[data-incoming]', r.label || 'Новый контакт', [['Принять', async () => { await client.acceptContact(r.requestId); note('Вы добавили друг друга.'); await render(); }], ['Отклонить', async () => { await client.declineContact(r.requestId); await render(); }], ['Заблокировать', async () => { await client.blockContact(r.peerAccountId); await render(); }]]);
       for (const r of contacts) {
         const actions = [];
+        if (typeof onContactCall === 'function') actions.push(['Слушать звонок', async () => {
+          await onContactCall({ peerAccountId: r.peerAccountId, label: r.label || r.peerLabel || 'Контакт' });
+          if (!stopped) dialog.close();
+        }]);
         if (invitation) actions.push(['Пригласить в текущую комнату', async () => { const data = await invitation(); await client.sendContactInvite(r.relationshipId, data.url, data.label); note('Приглашение отправлено. Друг решит, присоединяться ли к комнате.'); }]);
         actions.push(['Удалить', async () => { if (!confirm('Удалить из контактов? Отдельные доступы к общим комнатам сохранятся.')) return; await client.removeContact(r.relationshipId); await render(); }], ['Заблокировать', async () => { await client.blockContact(r.peerAccountId); note('Обращения остановлены. Доступы к общим комнатам управляются отдельно.'); await render(); }]);
         row('[data-contacts]', r.label || r.peerLabel || 'Контакт', actions);

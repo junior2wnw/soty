@@ -80,8 +80,29 @@ export interface WorldAssistantHandle {
   flush?(): Promise<void>;
   hasUnsavedChanges?(): boolean;
 }
+export interface WorldHumanCallState {
+  state: string;
+  microphone: 'off' | 'permission' | 'publishing' | 'on';
+  connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
+  peers: number;
+  playbackBlocked: boolean;
+  roomId: string | null;
+  mode: 'one-to-one' | 'group' | null;
+  code: string | null;
+  turnConfigured: false;
+}
+export interface WorldHumanCallPort {
+  snapshot(): WorldHumanCallState;
+  subscribe(listener: (state: WorldHumanCallState) => void): () => void;
+  join(target: { roomId: string; mode: 'one-to-one' | 'group' }): Promise<{ ok: boolean; code?: string }>;
+  enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
+  disableMicrophone(): void;
+  end(): void;
+  resumeListening(): Promise<void>;
+}
 export interface WorldAppOptions {
   api: WorldApi;
+  humanCalls?: WorldHumanCallPort;
   fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;
   localAccount?: () => Promise<{ accountId: string | null; label: string }>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;

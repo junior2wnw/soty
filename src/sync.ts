@@ -439,6 +439,295 @@ const p2pIceServers: RTCIceServer[] = [
   { urls: "stun:stun.cloudflare.com:3478" }
 ];
 
+/** Shared native RTC construction; legacy room identity is never call authority. */
+export function createP2pPeer(id: string, events: {
+  candidate(link: P2pPeer, candidate: RTCIceCandidate): void;
+  channel(link: P2pPeer, channel: RTCDataChannel): void;
+  state(link: P2pPeer): void;
+  iceFailed(link: P2pPeer): void;
+}, factory: () => RTCPeerConnection = () => new RTCPeerConnection({ iceServers: p2pIceServers })): P2pPeer {
+  const pc = factory(), link: P2pPeer = { id, pc, channel: null, pendingCandidates: [], retryTimer: 0 };
+  pc.onicecandidate = event => { if (event.candidate) events.candidate(link, event.candidate); };
+  pc.ondatachannel = event => events.channel(link, event.channel);
+  pc.onconnectionstatechange = () => events.state(link);
+  pc.oniceconnectionstatechange = () => { if (pc.iceConnectionState === 'failed') events.iceFailed(link); };
+  return link;
+}
+
+export interface HumanCallConnectionState {
+  connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
+  peers: number; playbackBlocked: boolean; turnConfigured: false;
+}
+interface HumanCallScope { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number }
+interface HumanCallAdmission { schema: string; purpose: string; callId: string; epoch: number; accountId: string; deviceId: string; grantRef: string; expiresAt: number }
+interface HumanCallClient { extension<T>(operation: string, args: Record<string, unknown>, context: { expectedAccountId: string }): Promise<T> }
+type HumanPeer = P2pPeer & { microphone: boolean; makingOffer: boolean; ignoreOffer: boolean; queuedOffer: boolean };
+
+/** Concrete Root signed-call -> existing RTC -> existing local lifecycle ports.
+ * Test hooks replace native IO only; production defaults perform no capture before authorize+click. */
+export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquire, playRemote, onInterrupted = () => {} }: {
+  client: HumanCallClient; rtcFactory?: () => RTCPeerConnection; socketFactory?: (url: string) => WebSocket;
+  acquire?: () => Promise<MediaStream>; playRemote?: (track: MediaStreamTrack) => { play(): Promise<void>; close(): void };
+  onInterrupted?: (reason: 'rtc' | 'signaling') => void;
+}) {
+  const admitted = new WeakMap<object, { reply: HumanCallAdmission; scope: HumanCallScope; signal: AbortSignal; token: number }>();
+  const observers = new Set<(state: HumanCallConnectionState) => void>();
+  // Keep failed teardown resources reachable across later calls, up to the
+  // existing lifecycle's 16 retained groups. Only observed clean close releases.
+  const ownedSessions = new Set<ReturnType<typeof makeSession>>();
+  let active: ReturnType<typeof makeSession> | null = null;
+  let state: HumanCallConnectionState = { connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false };
+  const emit = (patch: Partial<HumanCallConnectionState>) => {
+    state = { ...state, ...patch }; for (const observer of [...observers]) { try { void Promise.resolve(observer({ ...state })).catch(() => {}); } catch {} }
+  };
+  function fail(code = 'human_call_stale'): never { throw Object.assign(new Error(code), { code }); }
+  const nonce = () => crypto.randomUUID();
+  async function authorize(scope: HumanCallScope, purpose: string, { signal }: { signal: AbortSignal }) {
+    if (signal.aborted) fail();
+    const join = purpose === 'join', session = active;
+    if (!join && (purpose !== 'microphone' || !session || !session.matches(scope))) fail();
+    const token = join ? 0 : session!.reserveMicrophone();
+    const reply = await client.extension<HumanCallAdmission>(join ? 'call.join' : 'call.microphone', join
+      ? { requestId: nonce(), mode: scope.mode, targetId: scope.roomId }
+      : { requestId: nonce(), callId: session!.reply.callId, epoch: session!.reply.epoch }, { expectedAccountId: scope.accountId });
+    if (reply.schema !== 'soty.human-call-admission.v1' || reply.purpose !== purpose || reply.accountId !== scope.accountId
+      || reply.deviceId !== scope.deviceId || typeof reply.grantRef !== 'string' || !/^[a-zA-Z0-9-]{1,160}$/.test(reply.callId)
+      || !Number.isSafeInteger(reply.epoch) || reply.epoch < 1) fail('human_call_admission_invalid');
+    if (signal.aborted) {
+      if (!join && session?.matches(scope)) session.unpublish(token);
+      if (join) void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch }, { expectedAccountId: scope.accountId }).catch(() => {});
+      fail();
+    }
+    if (!join && !session!.consentCurrent(token)) fail();
+    const value = Object.freeze({}); admitted.set(value, { reply, scope, signal, token }); return value;
+  }
+  function makeSession(reply: HumanCallAdmission, scope: HumanCallScope, signal: AbortSignal) {
+    const locationUrl = typeof location === 'undefined' ? 'https://human-call.test/' : location.href;
+    const url = new URL(`/ws/human-call/${encodeURIComponent(reply.callId)}`, locationUrl); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = socketFactory ? socketFactory(url.href) : new WebSocket(url);
+    const links = new Map<string, HumanPeer>(), receivers = new Map<MediaStreamTrack, HumanPeer>();
+    const playback = new Map<MediaStreamTrack, { play(): Promise<void>; close(): void }>();
+    let closed = false, publication: ReturnType<typeof preparePublication> | null = null, ready = false;
+    let micVersion = 0, cleanupUnknown = false, closePromise: Promise<void> | null = null, closeResolve: (() => void) | null = null;
+    let closeReject: ((reason: Error) => void) | null = null, closeTimer: ReturnType<typeof setTimeout> | undefined;
+    let resolveJoin: (value: unknown) => void, rejectJoin: (reason: Error) => void;
+    const joined = new Promise<any>((resolve, reject) => { resolveJoin = resolve; rejectJoin = reject; });
+    void joined.catch(() => {}); // A reentrant close can reject before join returns this promise.
+    let publishWait: { grantRef: string; resolve(): void; reject(reason: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const live = () => !closed && !signal.aborted;
+    const same = (candidate: HumanCallScope) => live() && candidate.generation === scope.generation
+      && candidate.accountId === scope.accountId && candidate.deviceId === scope.deviceId && candidate.roomId === scope.roomId && candidate.mode === scope.mode;
+    const send = (type: string, values: Record<string, unknown> = {}) => {
+      if (!live() || ws.readyState !== 1) fail(); ws.send(JSON.stringify({ type, callId: reply.callId, epoch: reply.epoch, ...values }));
+    };
+    const pausePlayback = (track: MediaStreamTrack) => {
+      try { track.enabled = false; } catch { cleanupUnknown = true; }
+      const output = playback.get(track);
+      try { output?.close(); playback.delete(track); } catch { cleanupUnknown = true; }
+    };
+    const stopPlayback = (track: MediaStreamTrack) => {
+      pausePlayback(track); try { track.stop(); receivers.delete(track); } catch { cleanupUnknown = true; }
+    };
+    function playTrack(track: MediaStreamTrack) {
+      if (!live() || !receivers.get(track)?.microphone || playback.has(track)) return;
+      try {
+        track.enabled = true;
+        const output = playRemote ? playRemote(track) : (() => {
+          const element = document.createElement('audio'); element.autoplay = true; element.srcObject = new MediaStream([track]);
+          return { play: () => element.play(), close: () => { element.pause(); element.srcObject = null; } };
+        })();
+        playback.set(track, output);
+        void output.play().catch(() => { if (live()) emit({ playbackBlocked: true }); });
+        if (!live()) stopPlayback(track);
+      } catch { if (live()) emit({ playbackBlocked: true }); }
+    }
+    const signalOut = (type: string, targetDeviceId: string, values: Record<string, unknown>) => send(type, { signal: { id: nonce(), targetDeviceId, ...values } });
+    const interrupt = (reason: 'rtc' | 'signaling' = 'rtc') => {
+      emit({ connection: 'reconnecting' }); try { void Promise.resolve(onInterrupted(reason)).catch(() => {}); } catch {}
+    };
+    const connectionState = () => {
+      if (!live()) return;
+      const connected = [...links.values()].filter(link => link.pc.connectionState === 'connected').length;
+      emit({ peers: connected, connection: connected ? 'connected' : ready ? 'admitted' : 'connecting' });
+    };
+    async function offer(link: HumanPeer) {
+      if (!live() || links.get(link.id) !== link) return;
+      if (link.makingOffer) { link.queuedOffer = true; return; }
+      if (link.pc.signalingState !== 'stable') { link.queuedOffer = true; return; }
+      link.makingOffer = true;
+      try {
+        const description = await link.pc.createOffer(); if (!live() || links.get(link.id) !== link) return;
+        await link.pc.setLocalDescription(description); if (!live() || links.get(link.id) !== link) return;
+        signalOut('p2p.offer', link.id, { kind: 'offer', sdp: description.sdp || '' });
+      } catch { if (live() && links.get(link.id) === link) interrupt(); }
+      finally { link.makingOffer = false; }
+    }
+    function ensurePeer(deviceId: string, microphone: boolean) {
+      const previous = links.get(deviceId); if (previous) {
+        previous.microphone = microphone;
+        for (const [track, owner] of receivers) if (owner === previous) { if (microphone) playTrack(track); else pausePlayback(track); }
+        return previous;
+      }
+      if (links.size >= 3) fail('human_call_full');
+      const link = createP2pPeer(deviceId, {
+        candidate(candidateLink, candidate) { if (live() && links.get(deviceId) === candidateLink) signalOut('p2p.candidate', deviceId, candidate.toJSON() as unknown as Record<string, unknown>); },
+        channel(candidateLink, channel) { if (live() && links.get(deviceId) === candidateLink) candidateLink.channel = channel; else channel.close(); },
+        state(candidateLink) { if (live() && links.get(deviceId) === candidateLink) { if (['failed', 'disconnected'].includes(candidateLink.pc.connectionState)) interrupt(); else connectionState(); } },
+        iceFailed(candidateLink) { if (live() && links.get(deviceId) === candidateLink) interrupt(); },
+      }, rtcFactory) as HumanPeer;
+      Object.assign(link, { microphone, makingOffer: false, ignoreOffer: false, queuedOffer: false }); links.set(deviceId, link);
+      link.pc.onnegotiationneeded = () => { void offer(link); };
+      link.pc.ontrack = event => {
+        const track = event.track;
+        if (!live() || links.get(deviceId) !== link || track.kind !== 'audio' || receivers.size >= 24) { try { track.stop(); } catch {} return; }
+        receivers.set(track, link); track.enabled = false;
+        if (link.microphone) playTrack(track);
+        if (!live()) stopPlayback(track);
+      };
+      link.pc.addTransceiver('audio', { direction: 'recvonly' });
+      if (reply.deviceId < deviceId) link.channel = link.pc.createDataChannel('soty', { ordered: true });
+      if (publication) publication.addPeer(link);
+      if (reply.deviceId < deviceId) void offer(link);
+      return link;
+    }
+    function removePeer(id: string) {
+      const link = links.get(id); if (!link) return;
+      try { publication?.removePeer(link); } catch { cleanupUnknown = true; }
+      for (const [track, owner] of [...receivers]) if (owner === link) stopPlayback(track);
+      link.pc.ontrack = null; link.pc.onnegotiationneeded = null;
+      try { link.channel?.close(); } catch { cleanupUnknown = true; }
+      try { link.pc.close(); links.delete(id); } catch { cleanupUnknown = true; }
+    }
+    async function description(message: any) {
+      const data = message.signal, link = links.get(data?.deviceId); if (!link || data.targetDeviceId !== reply.deviceId || !live()) return;
+      try {
+        if (message.type === 'p2p.candidate') {
+          if (link.ignoreOffer) return;
+          if (!link.pc.remoteDescription) { if (link.pendingCandidates.length >= 64) fail('human_call_candidate_capacity'); link.pendingCandidates.push(data); return; }
+          await link.pc.addIceCandidate(data); return;
+        }
+        const collision = data.kind === 'offer' && (link.makingOffer || link.pc.signalingState !== 'stable');
+        link.ignoreOffer = reply.deviceId < link.id && collision; if (link.ignoreOffer) return;
+        if (collision) await link.pc.setLocalDescription({ type: 'rollback' });
+        if (!live() || links.get(link.id) !== link) return;
+        await link.pc.setRemoteDescription({ type: data.kind, sdp: data.sdp });
+        if (!live() || links.get(link.id) !== link) return;
+        for (const candidate of link.pendingCandidates.splice(0)) { if (!live() || links.get(link.id) !== link) return; await link.pc.addIceCandidate(candidate); }
+        if (data.kind === 'offer') {
+          const answer = await link.pc.createAnswer(); if (!live() || links.get(link.id) !== link) return;
+          await link.pc.setLocalDescription(answer); if (!live() || links.get(link.id) !== link) return;
+          signalOut('p2p.answer', link.id, { kind: 'answer', sdp: answer.sdp || '' });
+        }
+        if (link.queuedOffer && link.pc.signalingState === 'stable') { link.queuedOffer = false; void offer(link); }
+      } catch { if (live() && links.get(link.id) === link) interrupt(); }
+    }
+    function unpublish(token = micVersion) {
+      if (token !== micVersion) return;
+      micVersion++;
+      if (live() && ready && ws.readyState === 1) { try { send('call.unpublish'); } catch {} }
+    }
+    const reserveMicrophone = () => { unpublish(); return micVersion; };
+    const consentCurrent = (token: number) => live() && token === micVersion;
+    function preparePublication({ tracks, admission, signal: micSignal }: { tracks: readonly MediaStreamTrack[]; admission: object; signal: AbortSignal }) {
+      const proof = admitted.get(admission); if (!proof || proof.reply.purpose !== 'microphone' || proof.reply.callId !== reply.callId || proof.reply.epoch !== reply.epoch || !same(proof.scope)) fail();
+      admitted.delete(admission);
+      let retired = false, committed = false, cleanupFailed = false; const owned: { link: HumanPeer; sender: RTCRtpSender }[] = [];
+      const current = () => consentCurrent(proof.token) && !retired && !micSignal.aborted;
+      function removePeer(link: HumanPeer) {
+        for (let n = owned.length - 1; n >= 0; n--) if (owned[n]!.link === link) {
+          try { link.pc.removeTrack(owned[n]!.sender); owned.splice(n, 1); } catch { cleanupFailed = true; }
+        }
+        if (cleanupFailed) throw new Error('human_call_cleanup_unknown');
+      }
+      function addPeer(link: HumanPeer) { if (committed && current()) for (const track of tracks) { if (!current()) return; owned.push({ link, sender: link.pc.addTrack(track) }); } }
+      function dispose() {
+        retired = true; if (publication === stage) publication = null;
+        micSignal.removeEventListener('abort', aborted);
+        if (publishWait?.grantRef === proof!.reply.grantRef) { clearTimeout(publishWait.timer); publishWait.reject(new Error('human_call_cancelled')); publishWait = null; }
+        for (const track of tracks) { try { track.enabled = false; } catch { cleanupFailed = true; } }
+        for (const link of new Set(owned.map(value => value.link))) { try { removePeer(link); } catch { cleanupFailed = true; } }
+        unpublish(proof!.token);
+        if (cleanupFailed) throw new Error('human_call_cleanup_unknown');
+      }
+      const stage = { addPeer, removePeer, dispose, async commit() {
+        if (!current() || publication || publishWait) fail(); publication = stage;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { if (publishWait?.grantRef === proof!.reply.grantRef) publishWait = null; reject(new Error('human_call_publish_unknown')); }, 10_000);
+          publishWait = { grantRef: proof!.reply.grantRef, resolve, reject, timer }; send('call.publish', { grantRef: proof!.reply.grantRef });
+        });
+        if (!current()) fail(); committed = true; for (const link of links.values()) addPeer(link);
+        const started = performance.now();
+        while ([...links.values()].some(link => link.pc.connectionState !== 'connected')) {
+          if (!current() || performance.now() - started >= 10_000) fail('human_call_network_unavailable');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        if (!current() || !owned.length) fail('human_call_network_unavailable');
+      } };
+      const aborted = () => { try { dispose(); } catch { /* Sticky failure is returned by the explicit lifecycle disposer. */ } };
+      micSignal.addEventListener('abort', aborted, { once: true }); return stage;
+    }
+    function close() {
+      if (closePromise) return closePromise; closed = true; clearTimeout(joinTimer); clearInterval(heartbeat);
+      closePromise = new Promise<void>((resolve, reject) => { closeResolve = resolve; closeReject = reject; });
+      closeTimer = setTimeout(() => closeReject?.(new Error('human_call_close_unknown')), 5000);
+      try { publication?.dispose(); } catch { cleanupUnknown = true; } publication = null;
+      if (publishWait) { clearTimeout(publishWait.timer); publishWait.reject(new Error('human_call_closed')); publishWait = null; }
+      for (const id of [...links.keys()]) { try { removePeer(id); } catch { cleanupUnknown = true; } }
+      for (const track of [...receivers.keys()]) stopPlayback(track);
+      if (active === session) active = null; emit({ connection: 'closed', peers: 0 });
+      rejectJoin(new Error('human_call_closed'));
+      try { if (ws.readyState === 3) observedClose(); else ws.close(); } catch { clearTimeout(closeTimer); closeReject?.(new Error('human_call_close_unknown')); }
+      void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch }, { expectedAccountId: scope.accountId }).catch(() => {});
+      return closePromise;
+    }
+    function observedClose() { clearTimeout(closeTimer); if (cleanupUnknown) closeReject?.(new Error('human_call_cleanup_unknown')); else { ownedSessions.delete(session); closeResolve?.(); } }
+    const session = { reply, matches: same, close, unpublish, reserveMicrophone, consentCurrent, preparePublication, joined,
+      async resumeListening() {
+        let blocked = false; for (const [track, output] of playback) if (live() && receivers.get(track)?.microphone) { try { await output.play(); } catch { blocked = true; } }
+        if (live()) emit({ playbackBlocked: blocked });
+      } };
+    const joinTimer = setTimeout(() => { if (!ready) { rejectJoin(new Error('human_call_join_unknown')); void close().catch(() => {}); } }, 10_000);
+    signal.addEventListener('abort', () => { void close().catch(() => {}); }, { once: true });
+    ws.onopen = () => { if (live()) send('call.bind', { grantRef: reply.grantRef }); else ws.close(); };
+    ws.onerror = () => { if (live()) { emit({ connection: 'error' }); interrupt('signaling'); void close().catch(() => {}); } };
+    ws.onclose = () => { observedClose(); if (live()) { interrupt('signaling'); void close().catch(() => {}); } };
+    ws.onmessage = event => {
+      if (!live() || typeof event.data !== 'string' || event.data.length > 64_000) return;
+      try {
+        const message = JSON.parse(event.data); if (message.callId !== reply.callId || message.epoch !== reply.epoch) return;
+        if (message.type === 'call.ready' || message.type === 'call.peers') {
+          if (!Array.isArray(message.peers) || message.peers.length > 4) fail();
+          if (message.type === 'call.ready') {
+            if (message.self?.accountId !== scope.accountId || message.self?.deviceId !== scope.deviceId) fail();
+            ready = true; clearTimeout(joinTimer); emit({ connection: 'admitted' }); resolveJoin(session);
+            heartbeat = setInterval(() => { try { send('call.ping'); } catch { void close().catch(() => {}); } }, 8000);
+          }
+          const ids = new Set<string>();
+          for (const peer of message.peers) if (peer.deviceId !== reply.deviceId) { if (typeof peer.deviceId !== 'string' || ids.has(peer.deviceId) || typeof peer.microphone !== 'boolean') fail(); ids.add(peer.deviceId); ensurePeer(peer.deviceId, peer.microphone); }
+          for (const id of [...links.keys()]) if (!ids.has(id)) removePeer(id); connectionState();
+        } else if (message.type === 'call.published' && publishWait && publishWait.grantRef === message.grantRef) {
+          clearTimeout(publishWait.timer); const waiter = publishWait; publishWait = null; waiter.resolve();
+        } else if (['p2p.offer', 'p2p.answer', 'p2p.candidate'].includes(message.type)) void description(message);
+      } catch { void close().catch(() => {}); }
+    };
+    emit({ connection: 'connecting', peers: 0, playbackBlocked: false }); return session;
+  }
+  return {
+    host: { authorize }, media: { acquire: () => acquire ? acquire() : navigator.mediaDevices.getUserMedia({ audio: true, video: false }) },
+    transport: { async join({ scope, admission, signal }: { scope: HumanCallScope; admission: object; signal: AbortSignal }) {
+      const proof = admitted.get(admission); if (!proof || proof.reply.purpose !== 'join' || proof.scope !== scope || signal.aborted || active) fail();
+      if (ownedSessions.size >= 16) fail('human_call_capacity');
+      admitted.delete(admission); const session = makeSession(proof.reply, scope, signal);
+      ownedSessions.add(session);
+      if (!session.matches(scope)) { void session.close().then(() => ownedSessions.delete(session), () => {}); fail(); } active = session; return session.joined;
+    } },
+    snapshot: () => ({ ...state }), subscribe(observer: (state: HumanCallConnectionState) => void) { observers.add(observer); return () => observers.delete(observer); },
+    async resumeListening() { await active?.resumeListening(); },
+    close() { return active?.close(); },
+  };
+}
+
 function safeRemoteTimeoutMs(value: unknown): number {
   const timeoutMs = typeof value === "number" ? value : 0;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -1881,32 +2170,13 @@ export class TunnelSync {
     if (existing) {
       return existing;
     }
-    const pc = new RTCPeerConnection({ iceServers: p2pIceServers });
-    const link: P2pPeer = {
-      id: peerId,
-      pc,
-      channel: null,
-      pendingCandidates: [],
-      retryTimer: 0
-    };
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.sendP2pCandidate(peerId, event.candidate.toJSON());
-      }
-    };
-    pc.ondatachannel = (event) => {
-      this.attachP2pChannel(link, event.channel);
-    };
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-        this.restartP2pLater(peerId);
-      }
-    };
-    pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === "failed") {
-        this.restartP2pLater(peerId);
-      }
-    };
+    const link = createP2pPeer(peerId, {
+      candidate: (_link, candidate) => this.sendP2pCandidate(peerId, candidate.toJSON()),
+      channel: (_link, channel) => this.attachP2pChannel(link, channel),
+      state: ({ pc }) => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.restartP2pLater(peerId); },
+      iceFailed: () => this.restartP2pLater(peerId),
+    });
+    const pc = link.pc;
     if (this.device.id < peerId) {
       this.attachP2pChannel(link, pc.createDataChannel("soty", { ordered: true }));
     }

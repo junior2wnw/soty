@@ -87,6 +87,7 @@ test('fanout uses one listener snapshot, reentrant listener replacement cannot c
 async function worldFixture({ failRead = false, failMount = false, failBootstrap = false } = {}) {
   const subscribers = new Set(), pageListeners = new Map(), mounts = [], order = [];
   let current = failBootstrap ? view(null, null) : view(), resets = 0;
+  let authorizations = 0, captures = 0, connections = 0, sessionCloses = 0, createdOwner;
   const startupError = new Error('synthetic startup failure');
   const client = { getLocalState() { order.push('read'); return failRead ? Promise.reject(startupError) : Promise.resolve(current); },
     async bootstrap() { if (failBootstrap) throw startupError; throw new Error('unexpected bootstrap'); }, async extension() { return {}; } };
@@ -97,11 +98,16 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
   const binding = await compiled('./call-identity.ts');
   const adapter = await compiled('./world-adapter.ts', {
     '../core/connect-client': { accountClient: client, observeAccount }, './call-identity': binding,
-    '../world/app': { mountWorldApp() { if (failMount) throw startupError; const world = { destroy() { world.destroyed = true; }, async refresh() {} }; mounts.push(world); return world; } },
+    '../world/app': { mountWorldApp(_root, options) { if (failMount) throw startupError; const world = { options, destroy() { world.destroyed = true; }, async refresh() {} }; mounts.push(world); return world; } },
     './local-apps': { createAppActions: () => ({ resetAccount() { resets++; }, destroy() {}, connectDevice() {} }) },
     './assistant': { mountAssistant() {} },
+    '../sync': { createHumanCallPorts: () => ({ host: { authorize() { authorizations++; return {}; } },
+      media: { acquire() { captures++; throw new Error('unexpected capture'); } },
+      transport: { join() { connections++; return { close() { sessionCloses++; }, preparePublication() {} }; } },
+      snapshot: () => ({ connection: connections ? 'admitted' : 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }),
+      subscribe: () => () => {}, async resumeListening() {} }) },
+    '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle(ports) { createdOwner = createCallLifecycle(ports); return createdOwner; } },
   }, { URL, window });
-  let authorizations = 0, captures = 0;
   const lifecycle = createCallLifecycle({ host: { authorize() { authorizations++; return {}; } },
     media: { acquire() { captures++; throw new Error('unexpected capture'); } },
     transport: { join: () => ({ close() {}, preparePublication() {} }) } });
@@ -109,15 +115,18 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     subscribers: () => subscribers.size, pageCount: () => [...pageListeners.values()].reduce((sum, set) => sum + set.size, 0),
     emit(value) { current = value; for (const callback of [...subscribers]) callback(value); },
     dispatch(type, persisted) { for (const callback of [...(pageListeners.get(type) ?? [])]) callback({ persisted }); },
-    authorizations: () => authorizations, captures: () => captures, resets: () => resets };
+    authorizations: () => authorizations, captures: () => captures, resets: () => resets,
+    connections: () => connections, sessionCloses: () => sessionCloses, createdOwner: () => createdOwner };
 }
 
-test('actual world default branch creates no call owner/binding/media/control', async () => {
+test('actual world default owns one lazy call lifecycle with no automatic admission capture or connection', async () => {
   const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
-  assert.equal(f.subscribers(), 1); assert.equal(f.pageCount(), 1);
+  assert.equal(f.subscribers(), 2); assert.equal(f.pageCount(), 3);
   assert.equal(f.authorizations(), 0); assert.equal(f.captures(), 0);
+  assert.equal(f.connections(), 0); assert.equal(f.createdOwner().snapshot().state, 'idle');
+  assert.equal(typeof f.mounts[0].options.humanCalls.join, 'function');
   assert.equal((await f.lifecycle.join({ roomId: 'R', mode: 'group' })).code, 'identity_required');
-  f.dispatch('pagehide', false);
+  f.dispatch('pagehide', false); assert.equal(f.createdOwner().snapshot().state, 'disposed');
 });
 
 test('actual optional world binds before first await and retains owner across world remounts/BFCache', async () => {
@@ -142,4 +151,28 @@ test('actual optional world startup read/bootstrap/mount failure removes binding
   await assert.rejects(defaultFailure.adapter.startWorld({}), error => error === defaultFailure.startupError);
   assert.equal(defaultFailure.subscribers(), 0); assert.equal(defaultFailure.pageCount(), 0);
   assert.equal(defaultFailure.lifecycle.snapshot().state, 'idle');
+});
+
+test('default World call control from an old A mount cannot adopt a later A after A-B-A', async () => {
+  const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
+  const first = f.mounts[0].options.humanCalls;
+  assert.equal((await first.join({ roomId: 'R', mode: 'group' })).ok, true);
+  f.emit(view('B', 'DB')); f.emit(view('A', 'D')); await tick();
+  const current = f.mounts[2].options.humanCalls;
+  assert.equal((await current.join({ roomId: 'R', mode: 'group' })).ok, true);
+  assert.equal((await first.join({ roomId: 'R', mode: 'group' })).code, 'ACTIVE_PROFILE_CHANGED');
+  assert.equal((await first.enableMicrophone()).code, 'ACTIVE_PROFILE_CHANGED');
+  first.disableMicrophone(); first.end();
+  assert.equal(f.createdOwner().snapshot().state, 'listening'); assert.equal(f.authorizations(), 2);
+  assert.equal(f.sessionCloses(), 1); f.dispatch('pagehide', false);
+});
+
+test('default World BFCache ends voice while keeping DOM and revalidates identity without capture or rejoin', async () => {
+  const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
+  await f.mounts[0].options.humanCalls.join({ roomId: 'R', mode: 'group' });
+  f.dispatch('pagehide', true); assert.equal(f.createdOwner().snapshot().state, 'ended');
+  assert.equal(f.mounts[0].destroyed, undefined); assert.equal(f.sessionCloses(), 1);
+  f.dispatch('pageshow', true); await tick();
+  assert.equal(f.authorizations(), 1); assert.equal(f.connections(), 1); assert.equal(f.captures(), 0);
+  f.dispatch('pagehide', false); assert.equal(f.subscribers(), 0); assert.equal(f.createdOwner().snapshot().state, 'disposed');
 });

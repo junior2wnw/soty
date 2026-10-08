@@ -11,6 +11,7 @@ import { hasSingleHostHeader } from './app-domain-policy.mjs';
 import { loadCapabilityConfiguration } from './capabilities-configuration.js';
 import { loadUniversalConfiguration } from './universal-configuration.js';
 import { startUniversalOperator } from './universal-operator.js';
+import { connectAllowedOrigins } from './connect-module.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -39,6 +40,8 @@ const server = createServer(app);
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 34_000_000 });
+const humanWss = new WebSocketServer({ noServer: true, maxPayload: 64_000 });
+const humanOrigins = new Set(connectAllowedOrigins());
 const store = createRoomStore(dataDir);
 let operator = { async close() {} };
 if (operatorFlag === '1') {
@@ -47,6 +50,7 @@ if (operatorFlag === '1') {
 }
 
 attachRealtime(wss, store);
+app.locals.humanCalls.attachSignaling(humanWss);
 
 server.on("upgrade", (request, socket, head) => {
   if (fenceClosingUpgrade(request, socket)) return;
@@ -62,6 +66,12 @@ server.on("upgrade", (request, socket, head) => {
   }
   if (app.locals.appsService.handleUpgrade(request, socket, head)) return;
   if (trafficTunnel.handleUpgrade(request, socket, head)) {
+    return;
+  }
+  if (url.pathname === '/ws/human-call' || url.pathname.startsWith('/ws/human-call/')) {
+    const call = url.pathname.match(/^\/ws\/human-call\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/u);
+    if (!call || url.search || !humanOrigins.has(request.headers.origin)) { socket.destroy(); return; }
+    humanWss.handleUpgrade(request, socket, head, ws => humanWss.emit('connection', ws, request, call[1]));
     return;
   }
   const match = url.pathname.match(/^\/ws\/([A-Za-z0-9_-]{16,96})$/u);
@@ -88,12 +98,14 @@ function shutdown() {
   // signal shutdown too, otherwise a supervised child outlives its services.
   if (process.connected) process.disconnect();
   for (const client of wss.clients) client.close(1001, 'server_shutdown');
+  for (const client of humanWss.clients) client.close(1001, 'server_shutdown');
   server.close(); server.closeAllConnections();
   const closeRooms = new Promise((resolveClose, rejectClose) => wss.close(() => {
     try { store.close(); resolveClose(); } catch (error) { rejectClose(error); }
   }));
   const closeServices = async () => { await operator.close(); await app.locals.closeServices(); };
-  void Promise.all([closeRooms, closeServices()]).catch(() => { process.exitCode = 1; });
+  const closeHumanCalls = new Promise(resolveClose => humanWss.close(resolveClose));
+  void Promise.all([closeRooms, closeHumanCalls, closeServices()]).catch(() => { process.exitCode = 1; });
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);
