@@ -4513,7 +4513,9 @@ function renderChessCoachDialog(): void {
 }
 
 function openChessCoachDialog(): void {
-  if (!activeChessTunnelId()) return;
+  const openingTunnelId = activeChessTunnelId();
+  if (!openingTunnelId) return;
+  const openingGameId = chessGames.get(openingTunnelId)?.gameId;
   if (chessCoachDialog) { chessCoachDialog.querySelector<HTMLButtonElement>('[data-coach-send]')?.focus(); return; }
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const dialog = document.createElement('dialog'); dialog.className = 'tools-dialog tools-chess-coach';
@@ -4532,7 +4534,15 @@ function openChessCoachDialog(): void {
   const answer = document.createElement('div'); answer.dataset.coachAnswer = ''; answer.className = 'tools-chess-coach-answer'; answer.hidden = true;
   const recovery = document.createElement('a'); recovery.href = '/#assistant'; recovery.textContent = 'Открыть помощника';
   dialog.append(header, copy, availability, actions, status, answer, recovery); document.body.append(dialog); chessCoachDialog = dialog;
-  dialog.addEventListener('close', () => { if (chessCoachDialog === dialog) chessCoachDialog = null; chessPrivateCoach?.close(); dialog.remove(); if (previous?.isConnected) previous.focus(); }, { once: true });
+  dialog.addEventListener('close', () => {
+    if (chessCoachDialog === dialog) chessCoachDialog = null;
+    chessPrivateCoach?.close(); dialog.remove();
+    if (chessCoachDialog || activeChessTunnelId() !== openingTunnelId
+      || chessGames.get(openingTunnelId)?.gameId !== openingGameId) return;
+    const trigger = previous?.isConnected && previous.matches('.chess-ask-agent') ? previous
+      : app.querySelector<HTMLButtonElement>('.chess-panel .chess-ask-agent');
+    trigger?.focus();
+  }, { once: true });
   chessPrivateCoach?.open(); renderChessCoachDialog(); dialog.showModal(); (send.disabled ? recovery : send).focus();
 }
 
