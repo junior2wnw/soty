@@ -28,6 +28,9 @@ function friendly(cause: unknown): string {
     agent_actor_denied: 'Доступ профиля изменился. Откройте помощника заново.', agent_source_denied: 'Доступ к источнику изменился. Результат не подтверждён.',
     agent_accounting_unknown: 'Подтверждение выполнения и оплаты ещё не получено. Повторно не отправляю.',
     agent_model_unknown: 'Подтверждение модели не получено. Повторно не отправляю.', agent_cancelled: 'Остановка запрошена. Удалённое выполнение и изменения не считаются отменёнными.',
+    agent_memory_conflict: 'Сохранённый диалог изменился. Прежняя история сохранена; результат этой отправки не подтверждён.',
+    agent_memory_unavailable: 'Сохранённый диалог сейчас недоступен. Черновик сохранён; начните новый разговор или проверьте записки.',
+    agent_memory_capacity: 'Сохранённый диалог заполнен. Начните новый разговор; прежний останется в ваших записках.',
     invalid_workspace: 'Укажите полный путь к папке на выбранном компьютере.', job_request_conflict: 'Параметры этой отправки не совпадают с принятой задачей. Проверьте историю.' } as Record<string, string>)[code]
     || 'Не удалось выполнить действие. Проверьте соединение и повторите.';
 }
@@ -132,7 +135,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
       send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
       newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
       saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
-      privilege.textContent = 'Читает ваши записки и явно разрешённые источники с текущими правами. Действия на компьютере — отдельный режим.';
+      privilege.textContent = 'Работает с вашими записками и разрешёнными источниками. Подтверждённые диалоги сохраняются. При явной настройке может поставить задачу на вашем устройстве в очередь; это ещё не означает её выполнение.';
       if (state.phase === 'running') status.textContent = 'Помощник работает…';
       else if (state.phase === 'cancel_requested') status.textContent = 'Остановка запрошена · удалённое завершение не подтверждено';
       else if (state.phase === 'unknown') status.textContent = 'Подтверждение не получено · отправка не повторяется';

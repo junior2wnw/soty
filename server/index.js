@@ -12,6 +12,7 @@ import { loadCapabilityConfiguration } from './capabilities-configuration.js';
 import { loadUniversalConfiguration } from './universal-configuration.js';
 import { startUniversalOperator } from './universal-operator.js';
 import { connectAllowedOrigins } from './connect-module.js';
+import { loadPersonalAgentConfiguration } from './personal-agent-configuration.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -21,6 +22,7 @@ const port = Number.parseInt(process.env.PORT || "8080", 10);
 const host = process.env.HOST || "0.0.0.0";
 const capabilityConfiguration = loadCapabilityConfiguration();
 const universalConfiguration = loadUniversalConfiguration();
+const personalAgentConfiguration = loadPersonalAgentConfiguration();
 const operatorFlag = process.env.SOTY_UNIVERSAL_OPERATOR_ENABLED ?? '';
 if (!['', '0', '1'].includes(operatorFlag)) throw Object.assign(new Error('universal_operator_configuration_invalid'), { code: 'universal_operator_configuration_invalid' });
 
@@ -32,7 +34,7 @@ const trafficTunnel = combineTunnelProxies([
   })
 ]);
 let app;
-try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration }); }
+try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration }); }
 catch (error) { await waitForRejectedHttpStart(error); throw error; }
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first

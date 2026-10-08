@@ -149,7 +149,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
-    personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities }), configuration: personalAgent });
+    personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities, apps, connectors }), configuration: personalAgent });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
@@ -227,6 +227,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.worldService = world;
   app.locals.humanCalls = humanCalls;
   app.locals.notesService = notes;
+  // Host-only service handle, like notesService/appsService; never part of an agent tool or HTTP DTO.
+  app.locals.connectorService = connectors;
   app.locals.capabilitiesService = capabilities;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;

@@ -81,11 +81,14 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       if (bundle) requireValue(syncResult(bundle.assertCurrent()) === true, 'agent_source_denied');
     };
     try {
-      bundle = await toolsForActor({ actor, scope: frameScope }); currentActor(actor);
+      bundle = await toolsForActor({ actor, scope: frameScope, turnId }); currentActor(actor);
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
       assertCurrent();
       const bound = transport.bind({ actor, scope: frameScope, turnId, assertCurrent }); bound.guard();
-      contextEntry = contextFor(actor); const rawContext = contextEntry.store;
+      if (bundle.contextStore === undefined) contextEntry = contextFor(actor);
+      const rawContext = bundle.contextStore ?? contextEntry.store;
+      fields(rawContext, ['resolve', 'snapshot', 'append'], bundle.contextStore === undefined ? ['switchRole', 'replaceHistory', 'setState', 'clear', 'size'] : []);
+      requireValue(['resolve', 'snapshot', 'append'].every(name => typeof rawContext[name] === 'function'), 'agent_source_unavailable');
       const contextStore = Object.freeze(Object.fromEntries(['resolve', 'snapshot', 'append'].map(name => [name, (...values) => {
         assertCurrent(); return getConnect().withActorAuthorityFence(actor, () => rawContext[name](...values));
       }])));

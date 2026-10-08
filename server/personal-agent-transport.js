@@ -7,7 +7,8 @@ const errors = new WeakMap(), transports = new WeakSet();
 const SAFE_CODES = new Set(['agent_unavailable', 'agent_invalid_input', 'agent_gateway_configuration_invalid', 'agent_transport_unavailable',
   'agent_model_access_denied', 'agent_cancelled', 'agent_reconcile_required', 'agent_intent_conflict', 'agent_round_limit', 'agent_key_binding_invalid',
   'agent_accounting_unknown', 'agent_current_port_async', 'agent_closed', 'agent_actor_denied', 'agent_capacity', 'agent_source_denied',
-  'agent_source_unavailable', 'agent_tool_binding_invalid', 'agent_output_profile_invalid', 'agent_model_unknown', 'agent_output_invalid', 'agent_turn_unavailable']);
+  'agent_source_unavailable', 'agent_tool_binding_invalid', 'agent_output_profile_invalid', 'agent_model_unknown', 'agent_output_invalid', 'agent_turn_unavailable',
+  'agent_memory_unavailable', 'agent_memory_conflict', 'agent_memory_capacity']);
 export function agentError(value) { const code = SAFE_CODES.has(value) ? value : 'agent_unavailable';
   const error = new Error(code); errors.set(error, code); error.code = code; return error; }
 export function agentErrorCode(error) { return errors.get(error) ?? 'agent_unavailable'; }
