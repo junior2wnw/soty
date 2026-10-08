@@ -25,6 +25,7 @@ import { attachCapabilitiesMcp } from './capabilities-mcp.js';
 import { createUniversalApps } from './universal-apps.js';
 import { forcedLegacyMode } from './universal-mode.js';
 import { createReviewsService } from '../modules/reviews/server/index.mjs';
+import { createManagedRootReviews } from '../modules/reviews/server/managed-root.mjs';
 import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
 import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
 import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispatch.mjs';
@@ -47,7 +48,7 @@ export async function waitForRejectedHttpStart(error) {
 }
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
@@ -58,7 +59,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human, humanCalls, personal,
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
@@ -74,6 +75,9 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   // captured closures are called only after the actual Connect/Apps wiring.
   if (universalEnabled) reviews = createReviewsService({ configuration: reviewsConfiguration, allowFixtureOrigins: allowReviewsFixtureOrigins,
     actorActive: actor => connect?.isActorActive(actor) === true,
+    withAppAuthority: (request, callback) => apps.withAppAuthority(request, callback) });
+  if (universalEnabled) managedReviews = createManagedRootReviews({ configuration: reviewsConfiguration, managedSource: managedReviewsSource, allowFixtureOrigins: allowReviewsFixtureOrigins,
+    withRootActorAuthority: (actor, callback) => connect.withActorAuthorityFence(actor, () => callback({ accountId: actor.accountId, deviceId: actor.deviceId })),
     withAppAuthority: (request, callback) => apps.withAppAuthority(request, callback) });
   const reviewOrigins = reviews?.origins() ?? [];
   const legacyFrameSource = legacyAppFrameSource(appOriginTemplate);
@@ -141,7 +145,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [personal, humanCalls, human, universal, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [personal, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -238,7 +242,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
-      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(human ? [human] : []), personal],
+      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), personal],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
@@ -272,7 +276,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     humanCalls.close();
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();
-    human?.close(); universal?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
+    human?.close(); universal?.close(); managedReviews?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
     await connectors.store.close();
   };
   app.get('/api/apps/capabilities', (_req, res) => {

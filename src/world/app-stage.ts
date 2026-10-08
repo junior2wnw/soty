@@ -369,7 +369,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
-    flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges(),
+    flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
     dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }
