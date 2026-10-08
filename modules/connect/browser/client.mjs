@@ -315,6 +315,21 @@ export function createClientWithStorage(options, storage) {
           expectedAccountId = requiredString(context.expectedAccountId, 'Expected account ID');
         } catch (error) { return Promise.reject(error); }
       }
+      if (operation === 'agent.turn' || operation === 'agent.cancel') {
+        // Capture the displayed account and actual private installation in the normal state queue.
+        // Await only these long turn/control RPCs outside it: getLocalState/cancel must remain usable.
+        // No signer escapes this closure; rpc still checks current state before challenge/sign and after response.
+        return serialize(async () => {
+          if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+          const actor = await installation(); assertExpectedAccount(actor, expectedAccountId);
+          return { actor };
+        }).then(async ({ actor }) => {
+          if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+          const result = await rpc(operation, payload, actor, true);
+          if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+          return result;
+        });
+      }
       return serialize(async () => {
         if (expectedAccountId === undefined) return rpc(operation, payload);
         // Admission is tied to the displayed account, not whichever profile an

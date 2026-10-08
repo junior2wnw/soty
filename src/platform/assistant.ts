@@ -1,9 +1,10 @@
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
 import type { WorldAssistantHandle } from '../world/types';
-import { button, el, iconButton, labeledField, textInput } from '../world/dom';
+import { button, el, heading, iconButton, labeledField, textInput } from '../world/dom';
 import { icon } from '../world/icons';
 import { createAssistantState, type AssistantTarget } from './assistant-state.mjs';
 import { deviceKey as keyOf, resolveDeviceKey } from './device-key.mjs';
+import { createPersonalAgentConversation } from './personal-agent-client';
 import './assistant.css';
 
 interface Host { hostDeviceId: string; connectorId: string; name: string; online: boolean }
@@ -22,6 +23,11 @@ function friendly(cause: unknown): string {
     assistant_pending_unconfirmed: 'Проверьте предыдущую отправку — её подтверждение ещё не получено.',
     assistant_storage_unavailable: 'Браузер не смог сохранить отправку. Освободите место и повторите. Текст остаётся здесь.',
     authentication_required: 'Аккаунт изменился. Откройте помощника заново.', job_not_found: 'Эта задача больше недоступна.',
+    agent_transport_unavailable: 'Личный помощник пока не подключён. Текст сохранён; задачи на компьютере доступны отдельно.',
+    agent_reconcile_required: 'Подтверждение отправки не получено. Автоматического повтора нет.',
+    agent_actor_denied: 'Доступ профиля изменился. Откройте помощника заново.', agent_source_denied: 'Доступ к источнику изменился. Результат не подтверждён.',
+    agent_accounting_unknown: 'Подтверждение выполнения и оплаты ещё не получено. Повторно не отправляю.',
+    agent_model_unknown: 'Подтверждение модели не получено. Повторно не отправляю.', agent_cancelled: 'Остановка запрошена. Удалённое выполнение и изменения не считаются отменёнными.',
     invalid_workspace: 'Укажите полный путь к папке на выбранном компьютере.', job_request_conflict: 'Параметры этой отправки не совпадают с принятой задачей. Проверьте историю.' } as Record<string, string>)[code]
     || 'Не удалось выполнить действие. Проверьте соединение и повторите.';
 }
@@ -40,12 +46,16 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   catch { storage = tabStorage = { getItem: () => { throw new Error('storage_unavailable'); }, setItem: () => { throw new Error('storage_unavailable'); } }; }
   const drafts = createAssistantState({ accountId, storage, tabStorage });
   let draft = drafts.read(), disposed = false, sending = false, devices: Host[] = [], modelReady = false;
+  let mode: 'personal' | 'device' = 'device', modeChosen = false, personalReady = false;
+  let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
+  const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
+    onChange: () => { if (!disposed && mode === 'personal') updateControls(); } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
   let timer: ReturnType<typeof setTimeout> | undefined, cursor: string | null = null;
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
   const abort = new AbortController(), tasks = new Map<string, Task>();
   const lock = () => {
-    if (disposed) return; disposed = true; generation++; abort.abort(); if (timer) clearTimeout(timer);
+    if (disposed) return; disposed = true; personal?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer);
     const message = el('div', 'sw-assistant'); message.append(el('h2', '', 'Аккаунт изменился'), el('p', 'sw-muted', 'Содержимое закрыто. Откройте помощника в текущем профиле.'), button('Открыть заново', 'refresh', '', () => location.reload())); host.replaceChildren(message);
   };
   const current = async () => {
@@ -70,10 +80,13 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   const header = el('header', 'sw-assistant-heading'), title = el('div');
   title.append(el('h1', '', 'Помощник'), el('p', 'sw-muted', 'Ваши задачи, проекты и устройства'));
   const headActions = el('div', 'sw-row');
+  const personalMode = button('В Сотах', 'sparkle', 'sw-button-quiet', () => chooseMode('personal'));
+  const deviceMode = button('На компьютере', 'laptop', 'sw-button-quiet', () => chooseMode('device'));
+  personalMode.setAttribute('aria-pressed', 'false'); deviceMode.setAttribute('aria-pressed', 'true');
   const newChat = button('Новый разговор', 'plus', 'sw-button-quiet sw-assistant-new', () => { void reset(); });
   newChat.setAttribute('aria-label', 'Новый разговор');
   newChat.title = 'Новый разговор';
-  headActions.append(newChat, button('Создать приложение', 'app', '', () => { void options.createApp(); })); header.append(title, headActions);
+  headActions.append(personalMode, deviceMode, newChat, button('Создать приложение', 'app', '', () => { void options.createApp(); })); header.append(title, headActions);
   const layout = el('div', 'sw-assistant-layout'), history = el('aside', 'sw-assistant-history'); history.setAttribute('aria-label', 'История задач');
   const historyHeading = el('div', 'sw-assistant-history-heading'); historyHeading.append(el('h2', '', 'Недавние'), iconButton('Обновить историю', 'refresh', () => { void loadHistory(); }));
   const taskList = el('div', 'sw-assistant-task-list'), historyStatus = el('p', 'sw-muted'); historyStatus.setAttribute('role', 'status');
@@ -100,7 +113,36 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   function positionThread(): void { pane.insertBefore(thread, narrowLayout.matches && pane.dataset.mode === 'welcome' ? privilege : status); }
   narrowLayout.addEventListener('change', positionThread, { signal: abort.signal });
 
+  function chooseMode(next: 'personal' | 'device'): void {
+    if (disposed || sending || mode === 'device' && drafts.read().pending) return;
+    try {
+      const text = next === 'personal' ? conversation().view().draft : drafts.read().text;
+      saveDraft(); modeChosen = true; mode = next; generation++; if (timer) clearTimeout(timer);
+      prompt.value = text; error.textContent = ''; welcome(); updateControls();
+      if (next === 'device' && selected) follow(selected);
+    } catch (cause) { error.textContent = friendly(cause); }
+  }
+
   function updateControls(): void {
+    target.hidden = mode === 'personal'; history.hidden = mode === 'personal';
+    personalMode.setAttribute('aria-pressed', String(mode === 'personal')); deviceMode.setAttribute('aria-pressed', String(mode === 'device'));
+    personalMode.disabled = deviceMode.disabled = sending || Boolean(mode === 'device' && drafts.read().pending);
+    if (mode === 'personal') {
+      const state = conversation().view(); prompt.maxLength = 8000; prompt.readOnly = Boolean(state.requestId);
+      send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
+      newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
+      saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
+      privilege.textContent = 'Читает ваши записки и явно разрешённые источники с текущими правами. Действия на компьютере — отдельный режим.';
+      if (state.phase === 'running') status.textContent = 'Помощник работает…';
+      else if (state.phase === 'cancel_requested') status.textContent = 'Остановка запрошена · удалённое завершение не подтверждено';
+      else if (state.phase === 'unknown') status.textContent = 'Подтверждение не получено · отправка не повторяется';
+      else if (state.phase === 'complete') status.textContent = 'Ответ подтверждён';
+      notice.hidden = personalReady;
+      if (!personalReady) notice.replaceChildren(el('span', '', 'Личный помощник пока не подключён. Можно работать на подключённом компьютере.'),
+        button('На компьютере', 'laptop', 'sw-button-quiet', () => chooseMode('device')));
+      return;
+    }
+    prompt.maxLength = 16000; privilege.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
     draft = drafts.read();
     const bound = draft.pending?.payload ?? selected;
     if (bound) {
@@ -127,6 +169,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     if (suggestions) suggestions.hidden = Boolean(prompt.value.trim()) || waiting || sending;
   }
   function saveDraft(): void {
+    if (mode === 'personal') { try { conversation().saveDraft(prompt.value); } catch (cause) { error.textContent = friendly(cause); } updateControls(); return; }
     draft = drafts.saveDraft({ text: prompt.value, cwd: cwd.value, deviceKey: hosts.value }); updateControls();
   }
   prompt.addEventListener('input', saveDraft); cwd.addEventListener('input', saveDraft);
@@ -145,6 +188,12 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     pane.dataset.mode = 'welcome';
     positionThread();
     thread.replaceChildren(); resultArea.replaceChildren(); events.replaceChildren(); status.textContent = '';
+    if (mode === 'personal') {
+      const state = conversation().view();
+      if (state.answer) { const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer)); thread.append(response); }
+      else thread.append(heading('Чем помочь?', 'Спросите о своих записках или доступном источнике.'));
+      return;
+    }
     const intro = el('div', 'sw-assistant-welcome'); intro.append(icon('sparkle'), el('h2', '', 'От идеи — к работающему проекту'), el('p', 'sw-muted', 'Выберите устройство и поставьте задачу. Ход работы и результат останутся здесь.'));
     const starters = el('div', 'sw-assistant-starters');
     for (const [label, value, symbol] of [['Разобраться в проекте', 'Изучи проект и кратко объясни, как он устроен. Пока ничего не меняй.', 'folder'], ['Найти ошибку', 'Помоги найти и исправить ошибку в проекте: ', 'search'], ['Улучшить интерфейс', 'Изучи интерфейс проекта и предложи три конкретных улучшения удобства. Пока ничего не меняй.', 'app']]) {
@@ -153,6 +202,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     intro.append(starters); thread.append(intro);
   }
   async function reset(): Promise<void> {
+    if (mode === 'personal') { if (sending || !await current()) return; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
     if (!await current() || sending || drafts.read().pending) return;
     try { draft = drafts.select({ conversationId: crypto.randomUUID(), cwd: cwd.value, deviceKey: hosts.value }); }
     catch (cause) { error.textContent = friendly(cause); return; }
@@ -217,9 +267,14 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
         const result = await request<{ devices: Host[] }>('apps.devices');
         const response = await fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(8000)]) });
         if (!response.ok) throw new Error('unavailable');
-        const capabilities = await response.json() as { agentConfigured: boolean };
+        const capabilities = await response.json() as { agentConfigured: boolean; personalAgent?: { configured?: boolean } };
         if (!await current() || revision !== deviceRefreshGeneration) return;
         devices = result.devices; modelReady = capabilities.agentConfigured === true;
+        personalReady = capabilities.personalAgent?.configured === true;
+        if (!modeChosen && personalReady && !drafts.read().pending && !selected) {
+          try { const state = conversation().view(); modeChosen = true; mode = 'personal'; prompt.value = state.draft; welcome(); }
+          catch (cause) { modeChosen = true; error.textContent = friendly(cause); }
+        }
         const savedState = drafts.read();
         const storedKey = hosts.value || savedState.deviceKey;
         const value = savedState.pending ? keyOf(savedState.pending.payload) : selected ? keyOf(selected) : resolveDeviceKey(storedKey, devices);
@@ -237,6 +292,15 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     })()]);
   }
   async function submit(): Promise<void> {
+    if (mode === 'personal') {
+      if (sending || !personalReady || !await current()) return;
+      sending = true; error.textContent = ''; updateControls();
+      try { const state = await conversation().turn(prompt.value); if (!await current()) return;
+        prompt.value = state.draft; welcome(); }
+      catch (cause) { if (!disposed) error.textContent = friendly(cause); }
+      finally { sending = false; if (!disposed) updateControls(); }
+      return;
+    }
     if (sending || !await current()) return;
     sending = true; error.textContent = ''; updateControls();
     const execute = async () => {
@@ -263,6 +327,9 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     } finally { sending = false; if (!disposed) updateControls(); }
   }
   async function cancel(): Promise<void> {
+    if (mode === 'personal') { if (stop.disabled || !await current()) return; stop.disabled = true;
+      try { await conversation().cancel(); } catch (cause) { if (!disposed) error.textContent = friendly(cause); }
+      finally { if (!disposed) updateControls(); } return; }
     if (!selected || stop.disabled) return;
     const expected = selected.jobId; stop.disabled = true;
     try { const result = await request<ReadResult>('apps.agent.cancel', { ...selected }); if (selected?.jobId !== expected) return; activeJob = result.job; status.textContent = jobLabel(result.job); updateControls(); }
@@ -330,6 +397,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     } catch (cause) { if (!disposed) error.textContent = friendly(cause); }
   }
   window.addEventListener('storage', event => {
+    if (mode === 'personal') return;
     if (event.key !== drafts.key || disposed) return;
     const wasPending = draft.pending?.requestId; draft = drafts.read();
     if (document.activeElement !== prompt) prompt.value = draft.text;
@@ -338,6 +406,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   }, { signal: abort.signal });
   welcome(); updateControls(); void refresh();
   if (draft.lastJob && !draft.pending) follow(draft.lastJob);
-  return { dispose() { disposed = true; generation++; abort.abort(); if (timer) clearTimeout(timer); host.replaceChildren(); }, refresh,
-    async flush() { drafts.flush(); }, hasUnsavedChanges: () => sending || drafts.hasUnsavedChanges() };
+  return { dispose() { disposed = true; personal?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); host.replaceChildren(); }, refresh,
+    async flush() { drafts.flush(); if (mode === 'personal' && !conversation().view().requestId) conversation().saveDraft(prompt.value); },
+    hasUnsavedChanges: () => sending || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
 }

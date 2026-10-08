@@ -33,6 +33,7 @@ import { captureExternalApplications, composeExternalApplications } from './exte
 import { attachExternalCapabilities } from './external-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
+import { createPersonalAgentComposition } from './personal-agent-composition.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -45,7 +46,7 @@ export async function waitForRejectedHttpStart(error) {
 }
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent } = {}) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
@@ -56,7 +57,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human,
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, human, personal,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
@@ -139,7 +140,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [human, universal, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [personal, human, universal, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -147,6 +148,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
+    personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities }), configuration: personalAgent });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
       verifyNativeContext: (token, mode) => {
@@ -231,7 +233,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities,
-      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(human ? [human] : [])],
+      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(human ? [human] : []), personal],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
@@ -251,6 +253,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
+  app.locals.personalAgent = personal;
   app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
@@ -260,6 +263,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });
   app.locals.closeServices = async () => {
+    personal.close();
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();
     human?.close(); universal?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
@@ -267,7 +271,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human) });
+    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status() });
   });
   attachCanonicalIdentityApi(app, { dataDir });
   attachSotyIdentityAdapterApi(app, { dataDir });

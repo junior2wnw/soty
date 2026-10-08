@@ -1,0 +1,13 @@
+{
+  "schema": "soty.existing-runtime-source.v1",
+  "upstreamRepository": "agent-platform",
+  "upstreamRevision": "23717ad30878c9ad7a8d9d614bbd8384004763c9",
+  "upstreamPath": "packages/runtime/src/agent-runtime-core.ts",
+  "upstreamBlob": "37fb205d91050f2906b4ffd426f7e90b04b9f618",
+  "sha256": "502a90932e44fd6ff7b355e67e048044600321af9e007975936b29bcc234c5f9",
+  "bytes": 22734,
+  "sourceUnmodified": true,
+  "runtime": "Node >=24.15 with native TypeScript stripping",
+  "licenseFile": null,
+  "licenseNote": "Existing private workspace package; no repository LICENSE leaf exists in the qualified revision. No external publishing is performed."
+}
