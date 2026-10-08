@@ -14,6 +14,8 @@ interface Job { id: string; threadId: string; status: string; cancelRequested: b
 interface ReadResult { job: Job; task?: { text: string; cwd: string; appCreation: boolean; canContinue: boolean }; events?: { seq: number; text: string; type: string }[]; cursor?: number; done?: boolean; more?: boolean }
 interface Options { client: ConnectClient; connectDevice(): void | Promise<void>; createApp(): void | Promise<void>; resumeApp(target: AssistantTarget): void | Promise<void> }
 const finished = (status: string) => ['succeeded', 'failed', 'cancelled'].includes(status);
+const sourceStatusLabel = (status: string) => status === 'current' ? 'Данные на момент ответа'
+  : status === 'stale' ? 'Данные устарели' : status === 'unavailable' ? 'Источник недоступен' : 'Актуальность неизвестна';
 function friendly(cause: unknown): string {
   const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : cause instanceof Error ? cause.message : '';
   return ({ app_model_unavailable: 'Подключение к модели пока недоступно. Черновик сохранён.', apps_device_not_owned: 'Доступ к этому устройству изменился. Выберите другое устройство.',
@@ -52,7 +54,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   let mode: 'personal' | 'device' = 'device', modeChosen = false, personalReady = false;
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
-    onChange: () => { if (!disposed && mode === 'personal') updateControls(); } });
+    onChange: () => { if (!disposed && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
   let timer: ReturnType<typeof setTimeout> | undefined, cursor: string | null = null;
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
@@ -193,7 +195,22 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     thread.replaceChildren(); resultArea.replaceChildren(); events.replaceChildren(); status.textContent = '';
     if (mode === 'personal') {
       const state = conversation().view();
-      if (state.answer) { const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer)); thread.append(response); }
+      if (state.answer) {
+        const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer));
+        if (state.sources.length) {
+          const disclosure = el('details', 'sw-assistant-sources');
+          disclosure.append(el('summary', '', `Источники (${state.sources.length})`));
+          const list = el('ul', 'sw-assistant-source-list');
+          for (const source of state.sources) {
+            const item = el('li', 'sw-assistant-source');
+            const observed = source.observedAt ? new Date(source.observedAt).toLocaleString('ru-RU') : 'время не указано';
+            item.append(el('strong', '', source.title), el('small', 'sw-muted', `${sourceStatusLabel(source.sourceStatus)} · ${observed}`));
+            list.append(item);
+          }
+          disclosure.append(list); response.append(disclosure);
+        }
+        thread.append(response);
+      }
       else thread.append(heading('Чем помочь?', 'Спросите о своих записках или доступном источнике.'));
       return;
     }

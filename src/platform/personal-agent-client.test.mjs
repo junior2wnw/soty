@@ -4,23 +4,24 @@ import { createPersonalAgentConversation } from './personal-agent-client.ts';
 const defer = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const contextId = 'ctx_abcdefghijklmnop12345678';
 function fixture() {
-  const data = new Map(), calls = [], gate = defer(); let accountId = 'account_one', outcome = 'complete', sequence = 0;
+  const data = new Map(), calls = [], gate = defer(); let accountId = 'account_one', outcome = 'complete', sequence = 0, evidence;
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   const client = { getLocalState: async () => ({ accountId }), extension: async (op, args, options) => {
     calls.push({ op, args, options });
     if (op === 'agent.cancel') return { schema: 'soty.personal-agent-cancel.v1', requestId: args.requestId, cancelRequested: true, remoteTerminationVerified: false };
     if (outcome === 'held') await gate.promise;
     if (outcome === 'unknown') throw new Error('unknown');
-    return { schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId: args.requestId, answer: 'Verified answer', contextId };
+    return { schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId: args.requestId, answer: 'Verified answer', contextId,
+      ...(evidence === undefined ? {} : { evidence }) };
   } };
   const make = (options = {}) => createPersonalAgentConversation({ accountId: 'account_one', client, storage, idFactory: () => `browser_turn_${++sequence}`, ...options });
-  return { data, calls, storage, client, gate, make, outcome: value => { outcome = value; }, account: value => { accountId = value; } };
+  return { data, calls, storage, client, gate, make, outcome: value => { outcome = value; }, evidence: value => { evidence = value; }, account: value => { accountId = value; } };
 }
 const settled = async f => { for (let i = 0; i < 20 && !f.calls.length; i++) await new Promise(done => setImmediate(done)); assert.equal(f.calls.length, 1); };
 
 test('UI dispatch uses signed own account, actual ACK/context and no payload authority', async () => {
   const f = fixture(), ui = f.make(); const response = await ui.turn('Question');
-  assert.equal(response.phase, 'complete'); assert.equal(response.answer, 'Verified answer'); assert.equal(response.unconfirmed, 0);
+  assert.equal(response.phase, 'complete'); assert.equal(response.answer, 'Verified answer'); assert.equal(response.unconfirmed, 0); assert.deepEqual(response.sources, []);
   assert.deepEqual(f.calls[0], { op: 'agent.turn', args: { requestId: 'browser_turn_1', prompt: 'Question' }, options: { expectedAccountId: 'account_one' } });
   await ui.turn('Second question'); assert.equal(f.calls[1].args.contextId, contextId);
 });
@@ -61,6 +62,37 @@ test('a false Connect envelope never releases a sent intent', async () => {
   const f = fixture(), ui = f.make({ client: { ...f.client, extension: async (_op, args) => ({ ok: false, schema: 'soty.personal-agent-turn.v1',
     requestId: args.requestId, status: 'complete', answer: 'Unconfirmed', contextId }) } });
   await assert.rejects(ui.turn('Exact original'), { code: 'agent_output_invalid' }); assert.equal(ui.view().unconfirmed, 1); assert.equal(ui.view().answer, undefined);
+});
+test('confirmed evidence is projected to bounded display fields, copied, and cleared for a new turn', async () => {
+  const f = fixture(); f.evidence([{ id: 'private-evidence-id', title: '  Памятка  ', observedAt: '2026-10-09T10:11:12.000Z', sourceStatus: 'current', data: { private: 'payload' } }]);
+  const ui = f.make(), result = await ui.turn('Question');
+  assert.deepEqual(result.sources, [{ title: 'Памятка', observedAt: '2026-10-09T10:11:12.000Z', sourceStatus: 'current' }]);
+  assert.deepEqual(Object.keys(result.sources[0]).sort(), ['observedAt', 'sourceStatus', 'title']);
+  assert.equal(JSON.stringify([...f.data.values()]).includes('Источники'), false);
+  assert.equal(JSON.stringify([...f.data.values()]).includes('private-evidence-id'), false);
+  assert.equal(JSON.stringify([...f.data.values()]).includes('payload'), false);
+  result.sources[0].title = 'changed'; assert.equal(ui.view().sources[0].title, 'Памятка');
+  ui.startNew(); assert.equal(ui.view().answer, undefined); assert.deepEqual(ui.view().sources, []);
+  f.evidence([{ id: 'private-evidence-id', title: 'Памятка', observedAt: null, sourceStatus: 'current' }]);
+  await ui.turn('Again'); ui.dispose(); assert.equal(ui.view().answer, undefined); assert.deepEqual(ui.view().sources, []);
+});
+test('unknown next turn cannot present the previous answer or its sources as new', async () => {
+  const f = fixture(), ui = f.make(); f.evidence([{ id: 'source-1', title: 'Earlier', observedAt: null, sourceStatus: 'current' }]);
+  await ui.turn('First'); f.outcome('unknown'); await assert.rejects(ui.turn('Second'));
+  assert.equal(ui.view().answer, undefined); assert.deepEqual(ui.view().sources, []); assert.equal(ui.view().unconfirmed, 1);
+});
+test('malformed evidence metadata cannot be attached to a confirmed answer', async () => {
+  const invalid = [
+    Array.from({ length: 33 }, (_, index) => ({ id: `source-${index}`, title: 'Source', observedAt: null, sourceStatus: 'current' })),
+    [{ id: 'source-1', title: 'x'.repeat(161), observedAt: null, sourceStatus: 'current' }],
+    [{ id: 'source-1', title: 'Source', observedAt: '2026-02-31T10:11:12.000Z', sourceStatus: 'current' }],
+    [{ id: 'source-1', title: 'Source', observedAt: null, sourceStatus: 'current', href: 'https://example.invalid' }],
+  ];
+  for (const evidence of invalid) {
+    const f = fixture(); f.evidence(evidence); const ui = f.make();
+    await assert.rejects(ui.turn('Question'), { code: 'agent_output_invalid' });
+    assert.equal(ui.view().answer, undefined); assert.deepEqual(ui.view().sources, []); assert.equal(ui.view().unconfirmed, 1);
+  }
 });
 test('unknown intent capacity refuses a ninth send without evicting any original intent', async () => {
   const f = fixture(); f.outcome('unknown'); const ui = f.make();
