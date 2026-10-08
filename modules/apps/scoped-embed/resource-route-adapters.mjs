@@ -102,6 +102,14 @@ export function selectedRoute(input, method, path) {
       if(match&&asset.extensions.includes(match[1]))return Object.freeze({kind:'public-ui',requestBytes:0,responseBytes:adapter.contract.assets.responseBytes,credentialFree:true,redirects:false});
     }
   }
+  // Reuse only the already compiled standard2/3 asset declaration. The old
+  // standard1 admission behaviour remains frozen; no author-selected routes.
+  if(adapter.pin.id===STANDARD_SELECTED_SOURCE_V2.id&&[2,3].includes(adapter.pin.version)
+    &&['GET','HEAD'].includes(method)&&!url.search&&url.pathname.startsWith(adapter.contract.assets.path)){
+    const leaf=url.pathname.slice(adapter.contract.assets.path.length),match=/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}\.([a-z0-9]+)$/u.exec(leaf);
+    if(match&&adapter.contract.assets.extensions.includes(match[1]))return Object.freeze({kind:'public-ui',requestBytes:0,
+      responseBytes:adapter.contract.assets.responseBytes,credentialFree:true,redirects:false});
+  }
   const route = adapter.contract.rules.find(value => value.path === url.pathname && value.methods.includes(method));
   need(route, 'scoped_embed_route_denied', 403);
   const entries = [...url.searchParams.entries()];
