@@ -9,6 +9,10 @@ function closed(value,required,optional=[]){need(value&&typeof value==='object'&
 async function deviceKey(raw){const value=closed(raw,['deviceId','publicJwk','signature']),jwk=closed(value.publicJwk,['crv','kty','x','y']);need(jwk.crv==='P-256'&&jwk.kty==='EC'&&/^[A-Za-z0-9_-]{43}$/.test(jwk.x)&&/^[A-Za-z0-9_-]{43}$/.test(jwk.y)&&/^[A-Za-z0-9_-]{86}$/.test(value.signature));const bytes=await webcrypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({crv:jwk.crv,kty:jwk.kty,x:jwk.x,y:jwk.y})));need(value.deviceId==='dev_'+Buffer.from(bytes).toString('base64url').slice(0,32));return {value,key:await webcrypto.subtle.importKey('jwk',jwk,{name:'ECDSA',namedCurve:'P-256'},false,['verify'])};}
 async function verified(packet,prefix,expectedDeviceId){const p=closed(packet,['payload','device']),device=await deviceKey(p.device);if(expectedDeviceId!==undefined)need(device.value.deviceId===expectedDeviceId);need(Buffer.byteLength(canonical(p.payload))<=8192&&await webcrypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},device.key,Buffer.from(device.value.signature,'base64url'),new TextEncoder().encode(prefix+canonical(p.payload))));return p;}
 
+// A transport challenge proves only the current installed Native device. It
+// cannot approve a project grant or replace the Root/Native read predicates.
+export async function verifyTavyshNativeBrokerDevice(packet,deviceId){return verified(captureQueryData(packet),'TAVYSH/SOURCE/DEVICE-READ/V1\0',deviceId);}
+
 /** Native-side signer/consent are supplied by the existing owned device broker.
  * This is a readonly capability adapter, NOT the unsupported Source BFF carrier.
  * Root metadata never grants a local project; approved Native consent + fresh
