@@ -35,19 +35,15 @@ function memory() {
     async compareAndSwap(revision, next) { assert.equal(value.localRevision, revision); value = structuredClone(next); return structuredClone(value); } };
 }
 async function boot(t, f, entryEnv = {}) {
-  // The exact current index source is held; only dependency import URLs and the
-  // proposed three-line loader callsite are adapted in this OWN temporary copy.
-  // No tracked/shared index, private config or production process is changed.
+  // The actual current index source is held; only dependency import URLs are
+  // adapted in this OWN temporary copy. Its maintained installed-entry callsite
+  // is executed directly; no proposed hookup or tracked/private state is changed.
   const index = await readFile(new URL('../index.js', import.meta.url), 'utf8');
   let source = index.replace(/from (["'])([^"']+)\1/gu, (original, _quote, specifier) => {
     if (specifier.startsWith('node:')) return original;
     const url = specifier.startsWith('.') ? new URL(specifier, new URL('../index.js', import.meta.url)).href : import.meta.resolve(specifier);
     return 'from ' + JSON.stringify(url);
   });
-  source = 'import {loadInstalledApplicationsEntry} from ' + JSON.stringify(new URL('../installed-applications-entry.js', import.meta.url).href) + ';\n' + source;
-  const line = 'try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration }); }';
-  assert.equal(source.split(line).length, 2);
-  source = source.replace(line, 'const installedApplications = await loadInstalledApplicationsEntry();\n' + line.replace('...personalAgentConfiguration', '...personalAgentConfiguration, ...installedApplications.httpOptions'));
   const entry = join(f.folder, 'entry.mjs'), dist = join(f.folder, 'dist');
   await writeFile(entry, source); await mkdir(dist); await writeFile(join(dist, 'index.html'), '<title>Synthetic installed startup</title>');
   const env = {};

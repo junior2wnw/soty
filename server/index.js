@@ -13,6 +13,7 @@ import { loadUniversalConfiguration } from './universal-configuration.js';
 import { startUniversalOperator } from './universal-operator.js';
 import { connectAllowedOrigins } from './connect-module.js';
 import { loadPersonalAgentConfiguration } from './personal-agent-configuration.js';
+import { loadInstalledApplicationsEntry } from './installed-applications-entry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -34,7 +35,8 @@ const trafficTunnel = combineTunnelProxies([
   })
 ]);
 let app;
-try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration }); }
+const installedApplications = await loadInstalledApplicationsEntry();
+try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration, ...installedApplications.httpOptions }); }
 catch (error) { await waitForRejectedHttpStart(error); throw error; }
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first
