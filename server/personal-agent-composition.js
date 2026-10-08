@@ -95,6 +95,33 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         validate: input => validate(input, ['noteId']) && typeof input.noteId === 'string' && /^[A-Za-z0-9_-]{3,160}$/u.test(input.noteId),
         execute(input, signal) { need(!signal.aborted, 'agent_cancelled'); const result = notes('notes.get', { noteId: input.noteId });
           assertCurrent(); return evidence('Моя записка', result); } },
+      list_my_apps: { capability: 'root_apps_read',
+        description: 'List this current user\'s permitted Root application metadata, including their own revoked registrations. Status is a retained observation, not Native SSO or execution readiness.',
+        inputSchema: schema({ query: { type: 'string', maxLength: 120 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }),
+        validate: input => validate(input, [], ['query', 'limit'])
+          && (input.query === undefined || typeof input.query === 'string' && input.query.isWellFormed() && input.query.length <= 120)
+          && (input.limit === undefined || Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 20),
+        execute(input, signal) {
+          need(!signal.aborted, 'agent_cancelled');
+          const result = current(actor, services => {
+            need(typeof services.apps?.execute === 'function', 'agent_source_unavailable');
+            return services.apps.execute({ op: 'apps.list', actor, args: { expectedAccountId: actor.accountId } });
+          });
+          assertCurrent(); need(!signal.aborted, 'agent_cancelled');
+          need(Array.isArray(result?.apps), 'agent_source_unavailable');
+          const query = (input.query ?? '').trim().toLowerCase(), limit = input.limit ?? 20;
+          const statuses = ['ready', 'offline', 'starting', 'stopped', 'revoked'];
+          const matching = result.apps.filter(row => {
+            need(row && typeof row.id === 'string' && /^app-[a-f0-9]{32}$/u.test(row.id)
+              && typeof row.name === 'string' && row.name.isWellFormed() && row.name.length <= 64
+              && statuses.includes(row.state), 'agent_source_unavailable');
+            return row.name.toLowerCase().includes(query);
+          });
+          // Apps owns ACL and observation. Its private owner/device/entry fields
+          // never enter the model's evidence, and this tool performs no launch.
+          return evidence('Мои приложения', { apps: matching.slice(0, limit).map(row => ({ appId: row.id, name: row.name, status: row.state })),
+            hasMore: matching.length > limit, truncated: matching.length > limit });
+        } },
     };
     const target = localTargetFor ? current(actor, () => localTargetFor({ actor })) : null;
     if (target) {
