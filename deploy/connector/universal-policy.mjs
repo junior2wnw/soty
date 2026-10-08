@@ -22,7 +22,7 @@ export const selectedTarget = '/run/config/soty-selected-embed.json';
 const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human: 'SOTY_HUMAN_IDENTITY_ENABLED',
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
   operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
-  selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION' });
+  selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION', selectedResourceMigration: 'SOTY_SELECTED_RESOURCE_MIGRATION' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
 const fail = (code = 'universal_policy_invalid') => { throw new SafeError(code); };
 const check = (value, code) => { if (!value) fail(code); };
@@ -249,7 +249,9 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       const file = await readBounded(plan.selected.source, 'private', context, 131072); file.target = selectedTarget; files.push(file);
       const registry = parse(file.bytes, 131072); closed(registry, ['schema', 'profiles']);
       check(registry.schema === 'soty.selected-embed-registry.v1');
-      selected = captureSelectedPreparedness({ profiles: registry.profiles, migrationConfigured: plan.selected.migrationConfigured });
+      const resourceProfiles = registry.profiles.some(profile => profile.schema === 'soty.selected-human-embed.v2');
+      selected = captureSelectedPreparedness({ profiles: registry.profiles, migrationConfigured: plan.selected.migrationConfigured,
+        ...(resourceProfiles ? { resourceMigrationConfigured: plan.selected.migrationConfigured } : {}) });
       if (selected.configured) {
         check(human.configured, 'universal_policy_selected_human_required');
         const clients = parse(files.find(value => value.target === humanPrivateTarget).bytes).clients;
@@ -270,7 +272,9 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
       ...(plan.reviews ? [{ name: settings.reviews, value: reviewsTarget }] : []),
       ...(selected ? [{ name: settings.selected, value: selectedTarget },
-        { name: settings.selectedMigration, value: selected.migrationConfigured ? '1' : '0' }] : []),
+        { name: settings.selectedMigration, value: selected.migrationConfigured ? '1' : '0' },
+        ...(Object.hasOwn(selected, 'resourceMigrationConfigured') ? [{ name: settings.selectedResourceMigration,
+          value: selected.resourceMigrationConfigured ? '1' : '0' }] : [])] : []),
     ])];
     const mounts = files.map(file => ({ source: file.source, target: file.target, readOnly: true, visibility: file.visibility }));
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
@@ -420,7 +424,10 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === '1', 'universal_policy_reader_baseline_required');
     if (receipt.phase === 'features' && receipt.human.renewal) check(original.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
-    if (receipt.selected) check(candidate.apps.includes(7) && (receipt.phase !== 'features' || original.apps.includes(7)), 'universal_policy_reader_baseline_required');
+    if (receipt.selected) {
+      const version = Object.hasOwn(receipt.selected, 'resourceMigrationConfigured') ? 8 : 7;
+      check(candidate.apps.includes(version) && (receipt.phase !== 'features' || original.apps.includes(version)), 'universal_policy_reader_baseline_required');
+    }
     return freeze({ schema: 'soty.universal-image-prerequisites.v1', phase: receipt.phase,
       candidateImage: candidateImage.Id, originalImage: originalImage.Id, fixtureOnly: receipt.fixtureOnly });
   } catch (error) { if (error instanceof SafeError) throw error; fail('universal_policy_image_invalid'); }

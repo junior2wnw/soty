@@ -478,3 +478,68 @@ test('empty migration-only registry measures actual factory schema7 and feature-
   assert.equal(noMigration.locals.captureUniversalPreparedness().selected.migrationConfigured, false);
   assert.equal(assertUniversalPreparedness(disabled, noMigration.locals.captureUniversalPreparedness(), { allowFixture: true }).ok, true);
 });
+
+test('resource policy proposal: v1 keeps exact selected DTO and environment byte behavior', async t => {
+  const f = await fixture(t), registry = selectedConfiguration(f), source = path.join(f.root, 'v1-resource-control.json');
+  f.human.clients[0].redirectUri = registry.profiles[0].embedOrigin + '/api/embed/callback';
+  await writeFile(f.humanSource, JSON.stringify(f.human));
+  await writeFile(source, JSON.stringify(registry), { mode: 0o600 });
+  const handle = await prepared(t, f, { ...f.plan, selected: { source, migrationConfigured: true } });
+  const receipt = publicUniversalPolicy(handle), selected = receipt.selected;
+  assert.deepEqual(Object.keys(selected).sort(), ['configured', 'migrationConfigured', 'profileCount', 'registryDigest']);
+  const env = applyUniversalPolicy(createConfig(original(), image('0').Id, 'd'.repeat(40)), handle).Env;
+  assert.equal(env.some(value => value.startsWith('SOTY_SELECTED_RESOURCE_MIGRATION=')), false);
+  assert.equal(env.filter(value => value.startsWith('SOTY_SELECTED_EMBED_MIGRATION='))[0], 'SOTY_SELECTED_EMBED_MIGRATION=1');
+  const reader7 = JSON.parse(currentStorageReaders); reader7.readers.apps = reader7.readers.apps.filter(v => v !== 8);
+  assert.equal(assertUniversalImagePrerequisites(handle, { candidateImage: image('0', JSON.stringify(reader7)),
+    originalImage: image('1', JSON.stringify(reader7), 'b') }).phase, 'features');
+});
+
+test('resource policy proposal: v2 derives explicit resource flag and requires actual reader8 on both images', async t => {
+  for (const migrationConfigured of [false, true]) {
+    const f = await fixture(t), base = selectedConfiguration(f).profiles[0], source = path.join(f.root, 'v2-resource-control.json');
+    const profile = { ...base, schema: 'soty.selected-human-embed.v2', sourceProfile: HIVE_SELECTED_SOURCE,
+      resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId: base.appId,
+        resourceId: 'hive:selected', selection: { kind: 'hive.project.v1', nativeId: ' Project / Exact ', incarnationId: 'native-incarnation' } },
+      nativeOrigin: 'https://hive.fixture.invalid' };
+    f.human.clients[0].redirectUri = profile.nativeOrigin + '/account/soty/callback';
+    await writeFile(f.humanSource, JSON.stringify(f.human));
+    await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [profile] }), { mode: 0o600 });
+    const plan = { ...f.plan, selected: { source, migrationConfigured } }, handle = await prepared(t, f, plan);
+    assert.equal(publicUniversalPolicy(handle).selected.resourceMigrationConfigured, migrationConfigured);
+    const config = applyUniversalPolicy(createConfig(original(), image('0').Id, 'e'.repeat(40)), handle);
+    assert.deepEqual(config.Env.filter(value => value.startsWith('SOTY_SELECTED_RESOURCE_MIGRATION=')),
+      ['SOTY_SELECTED_RESOURCE_MIGRATION=' + (migrationConfigured ? '1' : '0')]);
+    const loaded = loadUniversalConfiguration({ SOTY_HUMAN_IDENTITY_ENABLED: '1', SOTY_HUMAN_IDENTITY_ISSUER: issuer,
+      SOTY_HUMAN_IDENTITY_KEYS_FILE: f.humanSource, SOTY_SELECTED_EMBED_REGISTRY_FILE: source,
+      SOTY_SELECTED_EMBED_MIGRATION: migrationConfigured ? '1' : '0', SOTY_SELECTED_RESOURCE_MIGRATION: migrationConfigured ? '1' : '0' });
+    assert.equal(loaded.allowSelectedResourceMigration === true, migrationConfigured);
+    const human = createHumanIdentityHostProfile(loaded.humanIdentity, { shellOrigins: [origin] });
+    const dto = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+      humanProfile: human, humanHttpEnabled: true, reviewsConfiguration: f.reviews, selectedProfiles: loaded.scopedEmbedProfiles,
+      selectedMigrationConfigured: loaded.allowScopedEmbedMigration === true, selectedResourceMigrationConfigured: loaded.allowSelectedResourceMigration === true });
+    assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
+    for (const resourceMigrationConfigured of [!migrationConfigured, undefined]) {
+      const selected = { ...dto.selected }; if (resourceMigrationConfigured === undefined) delete selected.resourceMigrationConfigured;
+      else selected.resourceMigrationConfigured = resourceMigrationConfigured;
+      assert.throws(() => assertUniversalPreparedness(handle, { ...dto, selected }, { allowFixture: true }), failCode('universal_policy_runtime_mismatch'));
+    }
+    const reader7 = JSON.parse(currentStorageReaders); reader7.readers.apps = reader7.readers.apps.filter(v => v !== 8);
+    for (const side of ['candidate', 'original']) assert.throws(() => assertUniversalImagePrerequisites(handle, {
+      candidateImage: image('0', side === 'candidate' ? JSON.stringify(reader7) : currentStorageReaders),
+      originalImage: image('1', side === 'original' ? JSON.stringify(reader7) : currentStorageReaders, 'b'),
+    }), failCode('universal_policy_reader_baseline_required'));
+    assert.equal(assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('1', currentStorageReaders, 'b') }).phase, 'features');
+    for (const value of [migrationConfigured ? '0' : '1', 'true']) {
+      const foreign = createConfig(original(), image('0').Id, 'f'.repeat(40)); foreign.Env.push('SOTY_SELECTED_RESOURCE_MIGRATION=' + value);
+      assert.throws(() => applyUniversalPolicy(foreign, handle), failCode('universal_policy_preexisting_configuration'));
+    }
+    const duplicate = createConfig(original(), image('0').Id, 'f'.repeat(40));
+    duplicate.Env.push('SOTY_SELECTED_RESOURCE_MIGRATION=' + (migrationConfigured ? '1' : '0'), 'SOTY_SELECTED_RESOURCE_MIGRATION=' + (migrationConfigured ? '1' : '0'));
+    assert.throws(() => applyUniversalPolicy(duplicate, handle), failCode('universal_policy_preexisting_configuration'));
+    await assert.rejects(prepareUniversalPolicy({ ...plan, selected: { ...plan.selected, resourceMigrationConfigured: true } }, f.options), failCode('universal_policy_invalid'));
+    const rebound = { ...profile, schema: 'soty.selected-human-embed.v1' };
+    await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [rebound] }));
+    await assert.rejects(assertUniversalPolicyCurrent(handle), failCode('universal_policy_file_changed'));
+  }
+});
