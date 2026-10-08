@@ -1,7 +1,7 @@
 import { capture, hash, need } from './profile.mjs';
 import { selectedResourceProfile } from './resource-profile.mjs';
-import { STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT_2, STANDARD_SELECTED_SOURCE_V2 } from '../../source-app/server/standard-profile.mjs';
-export { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 };
+import { STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT_2, STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_3, STANDARD_SELECTED_SOURCE_V3 } from '../../source-app/server/standard-profile.mjs';
+export { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3 };
 
 // This is host code, not author-supplied routes. Future reviewed Source adapters
 // add a handler here without another Apps database format or broader v1 routes.
@@ -50,6 +50,8 @@ adapters.set(STANDARD_SELECTED_SOURCE.id + ':1:' + STANDARD_SELECTED_SOURCE.dige
   Object.freeze({ pin: STANDARD_SELECTED_SOURCE, kind: STANDARD_SOURCE_CONTRACT.kind, contract: STANDARD_SOURCE_CONTRACT }));
 adapters.set(STANDARD_SELECTED_SOURCE_V2.id + ':2:' + STANDARD_SELECTED_SOURCE_V2.digest,
   Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V2, kind: STANDARD_SOURCE_CONTRACT_2.kind, contract: STANDARD_SOURCE_CONTRACT_2 }));
+adapters.set(STANDARD_SELECTED_SOURCE_V3.id + ':3:' + STANDARD_SELECTED_SOURCE_V3.digest,
+  Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V3, kind: STANDARD_SOURCE_CONTRACT_3.kind, contract: STANDARD_SOURCE_CONTRACT_3 }));
 export function selectedRouteAdapter(input) {
   const profile = selectedResourceProfile(input);
   const pin = profile.sourceProfile, adapter = adapters.get(pin.id + ':' + pin.version + ':' + pin.digest);

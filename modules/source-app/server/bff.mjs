@@ -3,7 +3,7 @@ import { selectedResourceProfile, resourceConsentDigest } from '../../apps/scope
 import { createResourceSourceProofVerifier } from '../../apps/scoped-embed/resource-proof.mjs';
 import { createSourceAuthorityClient } from '../../apps/scoped-embed/source-authority-client.mjs';
 import { createNativeAuthorityRuntime } from './native-authority.mjs';
-import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from './standard-profile.mjs';
+import { standardSourceContract } from './standard-profile.mjs';
 import { validateSourceFeedbackInput } from './feedback-wire.mjs';
 import { feedbackOutput } from '../shared/feedback-wire.mjs';
 import { parseSourceJson } from '../shared/strict-json.mjs';
@@ -32,8 +32,9 @@ export function createSourceAppBff(options) {
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
   const INTENT = 'soty_native_intent_' + profile.appId.slice(4), CSRF = 'soty_native_csrf_' + profile.appId.slice(4);
-  const embedOidc = digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE_V2);
-  check((embedOidc || digest(profile.sourceProfile) === digest(STANDARD_SELECTED_SOURCE)) && profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
+  const contract = standardSourceContract(profile.sourceProfile);
+  const embedOidc = contract.auth.callbackOrigin === 'approved-embed-https';
+  check(profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
   check(value.processingProofEnabled===undefined||typeof value.processingProofEnabled==='boolean');
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
@@ -43,7 +44,7 @@ export function createSourceAppBff(options) {
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
     'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
-  const native = createNativeAuthorityRuntime(value.native);
+  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile });
   const protocol = createSourceRpProtocol(value.rp, { clock });
   check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
     && value.rp.redirectUri === (embedOidc ? profile.embedOrigin + '/api/embed/callback' : profile.nativeOrigin + '/soty/callback'), 'source_app_profile_invalid', 503);
@@ -239,7 +240,7 @@ export function createSourceAppBff(options) {
     throw new SourceAppError('source_app_route_unavailable', 404);
   }
   async function embedRoute(req, res, url) {
-    const route = sourceEmbedRoute(req, url); sourceBodyHeaders(req, route.requestBytes); responseLimits.set(res, route);
+    const route = sourceEmbedRoute(req, url, profile.sourceProfile); sourceBodyHeaders(req, route.requestBytes); responseLimits.set(res, route);
     if (url.pathname === '/api/embed/transport-ready') {
       const headers = await verifier.verifyReady(req); res.writeHead(204, { ...headers, 'cache-control': 'no-store' }); res.end(); return;
     }

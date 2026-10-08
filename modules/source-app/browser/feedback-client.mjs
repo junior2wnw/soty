@@ -3,9 +3,13 @@ import { parseSourceJson } from '../shared/strict-json.mjs';
 export { SourceFeedbackClientError };
 /** Cookie/Source authority stays on this exact current origin. No actor, token,
  * resource, recipient or arbitrary URL is accepted from the feedback form. */
-export function createSourceFeedbackClient({ fetch: fetcher = globalThis.fetch } = {}) {
+export function createSourceFeedbackClient(options = {}) {
+  const selected = feedbackFields(options, [], ['fetch', 'profileVersion']);
+  const fetcher = selected.fetch ?? globalThis.fetch, profileVersion = selected.profileVersion === undefined ? 1 : selected.profileVersion;
+  if (typeof fetcher !== 'function' || ![1, 2, 3].includes(profileVersion)) throw new SourceFeedbackClientError('source_feedback_input_invalid', 400);
   const root = '/api/embed/feedback';
   async function request(path, args, method = 'POST', signal, operation) {
+    const responseBytes = operation === 'get' && profileVersion === 3 ? 2097152 : 1500000;
     const response = await fetcher(root + path, { method, credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', signal,
       headers: { accept: 'application/json', ...(args === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(args === undefined ? {} : { body: JSON.stringify(args) }) });
@@ -14,10 +18,10 @@ export function createSourceFeedbackClient({ fetch: fetcher = globalThis.fetch }
     try {
       const reader = response.body.getReader(), chunks = []; let size = 0;
       try { while (true) { const { done, value: chunk } = await reader.read(); if (done) break;
-        size += chunk.byteLength; if (size > 1500000) throw new Error('limit'); chunks.push(chunk); } }
+        size += chunk.byteLength; if (size > responseBytes) throw new Error('limit'); chunks.push(chunk); } }
       finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-      value = parseSourceJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      value = parseSourceJson(new TextDecoder('utf-8', { fatal: true }).decode(bytes), { bytes: responseBytes });
     } catch { throw new SourceFeedbackClientError('source_feedback_response_invalid'); }
     if (!response.ok) throw new SourceFeedbackClientError(typeof value?.error?.code === 'string' && /^[a-z0-9_]{1,128}$/u.test(value.error.code)
       ? value.error.code : 'source_feedback_unknown', response.status);

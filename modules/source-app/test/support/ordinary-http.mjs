@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { environment } from '../../../human-identity/test/support/renewal-fixture.mjs';
 import { createSourceAppBff } from '../../server/bff.mjs';
-import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from '../../server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3 } from '../../server/standard-profile.mjs';
 import { selectedResourceProfile } from '../../../apps/scoped-embed/resource-profile.mjs';
 import { createResourceSourceProofSigner } from '../../../apps/scoped-embed/resource-proof.mjs';
 import { createOrdinaryAppStore } from '../../examples/ordinary-app/store.mjs';
@@ -18,7 +18,8 @@ const opaque = () => randomBytes(32).toString('base64url');
 /** Native browser cookies are shared by hostname, NEVER by port. Embed jars
  * here model a private per-Source broker, not browser isolation on 127.0.0.1.
  * Root authority IPC is controlled; installed HTTP/WS remains a separate gate. */
-export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNativeAuthority = false, stageSink = () => {} } = {}) {
+export async function createOrdinaryHttpFixture(t, { embedOidc = false, standardVersion3 = false, asyncNativeAuthority = false, stageSink = () => {} } = {}) {
+  assert.equal(typeof standardVersion3, 'boolean'); assert.ok(!standardVersion3 || embedOidc);
   // Diagnostics are fixed phase names only. Never URLs/state/cookies/claims.
   stageSink('root.begin');
   const root = await environment(t, { renewal: false }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
@@ -53,7 +54,7 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, asyncNat
     const client = configured[realm.index], appId = 'app-' + (realm.index === 0 ? 'a' : 'b').repeat(32);
     realm.client = client; realm.profile = selectedResourceProfile({ schema: 'soty.selected-human-embed.v2', appId,
       connector: { linkId: 'controlled_' + realm.realmId, hostDeviceId: 'synthetic_host', connectorId: 'synthetic_connector' }, target: { revision: 1, digest: (realm.index === 0 ? 'a' : 'b').repeat(64) },
-      sourceProfile: embedOidc ? STANDARD_SELECTED_SOURCE_V2 : STANDARD_SELECTED_SOURCE, resource: { registryId: 'soty', environmentId: 'fixture', tenantId: root.actor.account.accountId, appId,
+      sourceProfile: standardVersion3 ? STANDARD_SELECTED_SOURCE_V3 : embedOidc ? STANDARD_SELECTED_SOURCE_V2 : STANDARD_SELECTED_SOURCE, resource: { registryId: 'soty', environmentId: 'fixture', tenantId: root.actor.account.accountId, appId,
         resourceId: 'synthetic:' + realm.realmId, selection: { kind: 'soty.resource.v1', nativeId: 'selected', incarnationId: 'one' } },
       issuer: root.issuer, clientId: client.id, embedOrigin: realm.embedOrigin, nativeOrigin: realm.nativeOrigin, parentOrigin: root.origin });
     realm.context = { schema: 'soty.verified-launch-continuation.v2', reference: { id: opaque(), version: 1, digest: 'd'.repeat(64) },

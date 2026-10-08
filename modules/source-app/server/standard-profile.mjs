@@ -1,4 +1,4 @@
-import { deepFreeze, digest } from './wire.mjs';
+import { deepFreeze, digest, fields, check } from './wire.mjs';
 
 const rule = (kind, methods, path, requestBytes, responseBytes, queries = []) => ({ kind, methods, path, requestBytes, responseBytes, queries });
 /** ONE compiled adapter for apps implementing this fixed protocol. It grants no
@@ -39,3 +39,21 @@ export const STANDARD_SOURCE_CONTRACT_2 = deepFreeze({ ...STANDARD_SOURCE_CONTRA
     completionRecovery: 'current-original-slot-readonly-receipt.v1' },
 });
 export const STANDARD_SELECTED_SOURCE_V2 = deepFreeze({ id: 'soty.standard-resource', version: 2, digest: digest(STANDARD_SOURCE_CONTRACT_2) });
+
+/** Additive wire budget only. A lawful 1MiB attachment plus the permitted
+ * conversation fits this detail response; uploads and Native rights stay fixed. */
+export const STANDARD_SOURCE_CONTRACT_3 = deepFreeze({ ...STANDARD_SOURCE_CONTRACT_2,
+  rules: STANDARD_SOURCE_CONTRACT_2.rules.map(row => row.path === '/api/embed/feedback/ticket'
+    ? { ...row, responseBytes: 2097152 } : row),
+});
+export const STANDARD_SELECTED_SOURCE_V3 = deepFreeze({ id: 'soty.standard-resource', version: 3, digest: digest(STANDARD_SOURCE_CONTRACT_3) });
+
+/** A constructor selects one compiled contract, never an author byte limit. */
+export function standardSourceContract(input = STANDARD_SELECTED_SOURCE) {
+  const pin = fields(input, ['id', 'version', 'digest']);
+  for (const [approved, contract] of [[STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT],
+    [STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2], [STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3]]) {
+    if (pin.id === approved.id && pin.version === approved.version && pin.digest === approved.digest) return contract;
+  }
+  check(false, 'source_app_profile_invalid', 503);
+}

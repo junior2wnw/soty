@@ -1,16 +1,17 @@
-import { STANDARD_SOURCE_CONTRACT } from './standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE, standardSourceContract } from './standard-profile.mjs';
 import { check } from './wire.mjs';
 
 /** Source closes its own wire before proof/operation dispatch. Root's compiled
  * adapter remains a second boundary, not a substitute for this router. */
-export function sourceEmbedRoute(req, url) {
+export function sourceEmbedRoute(req, url, sourceProfile = STANDARD_SELECTED_SOURCE) {
+  const contract = standardSourceContract(sourceProfile);
   check(typeof req.url === 'string' && req.url.startsWith('/') && !req.url.startsWith('//')
     && req.url === url.pathname + url.search && !url.hash && !url.pathname.includes('%') && !url.pathname.includes('..'), 'source_app_route_unavailable', 404);
   if (url.pathname === '/api/embed/transport-ready') {
     check(req.method === 'HEAD' && !url.search, 'source_app_route_unavailable', 404);
     return Object.freeze({ requestBytes: 0, responseBytes: 128 });
   }
-  const route = STANDARD_SOURCE_CONTRACT.rules.find(row => row.path === url.pathname && row.methods.includes(req.method));
+  const route = contract.rules.find(row => row.path === url.pathname && row.methods.includes(req.method));
   check(route, 'source_app_route_unavailable', 404);
   check([...url.searchParams].every(([key, value]) => route.queries.includes(key) && url.searchParams.getAll(key).length === 1
     && value.length <= 4096 && value.isWellFormed() && !/[\u0000-\u001f\u007f-\u009f]/u.test(value)), 'source_app_input_invalid', 400);

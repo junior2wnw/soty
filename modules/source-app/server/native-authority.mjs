@@ -1,4 +1,5 @@
 import { check, fields, syncResult, deepFreeze, jsonCopy, SourceAppError } from './wire.mjs';
+import { standardSourceContract } from './standard-profile.mjs';
 
 const approved = new WeakSet();
 const approvedCommits = new WeakSet();
@@ -23,8 +24,11 @@ export function isSourceNativeCommitPort(value) { return !!value && approvedComm
 
 /** Private proof wrappers are instance-local, not serializable authority.
  * Exactly one synchronous final Native fence also runs inside Source commits. */
-export function createNativeAuthorityRuntime(port) {
+export function createNativeAuthorityRuntime(port, options = {}) {
   check(isSourceNativeAuthorityPort(port), 'source_app_native_authority_required', 503);
+  const selected = fields(options, [], ['sourceProfile']);
+  const contract = standardSourceContract(selected.sourceProfile);
+  const feedbackGetBytes = contract.rules.find(row => row.path === '/api/embed/feedback/ticket').responseBytes;
   const proofs = new WeakMap(); let closed = false, fencing = false;
   function withCurrent(proof, action) {
     const captured = proofs.get(proof);
@@ -66,14 +70,14 @@ export function createNativeAuthorityRuntime(port) {
       check(used && entered && !poisoned, 'source_app_commit_required', 503);
     }, mayHaveCommitted() { return entered; } };
   }
-  async function invoke(proof, method, input, { mutation = false, bytes = 65536 } = {}) {
+  async function invoke(proof, method, input, { mutation = false, bytes = 65536, responseBytes = bytes } = {}) {
     const captured = proofs.get(proof); await assertCurrent(proof);
     const payload = deepFreeze(jsonCopy(input, { bytes })), final = mutation ? operationCommit(proof) : null;
     try {
       const result = await method(captured.native, captured.binding, payload, final?.capability);
       final?.seal(); final?.assertUsed();
       await assertCurrent(proof);
-      return deepFreeze(jsonCopy(result, { bytes }));
+      return deepFreeze(jsonCopy(result, { bytes: responseBytes }));
     } catch (error) {
       // Once a Native action has run, a later denial, invalid response or lost
       // ACK does not prove rollback. Recovery must read the Source receipt;
@@ -126,7 +130,8 @@ export function createNativeAuthorityRuntime(port) {
     async feedback(proof, operation, input = {}) {
       check(['context', 'list', 'get', 'submit', 'reply', 'status', 'accept'].includes(operation)
         && typeof port.feedback?.[operation] === 'function', 'source_app_feedback_unavailable', 503);
-      return invoke(proof, port.feedback[operation], input, { mutation: ['submit', 'reply', 'status', 'accept'].includes(operation), bytes: 1500000 });
+      return invoke(proof, port.feedback[operation], input, { mutation: ['submit', 'reply', 'status', 'accept'].includes(operation),
+        bytes: 1500000, responseBytes: operation === 'get' ? feedbackGetBytes : 1500000 });
     },
     close() { closed = true; },
   });
