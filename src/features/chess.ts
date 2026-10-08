@@ -142,6 +142,34 @@ export function chessFromSnapshot(snapshot: ChessSnapshot): Chess {
   }
 }
 
+export interface ChessCoachPosition {
+  readonly fen: string;
+  readonly side: Color;
+  readonly lastSan: readonly string[];
+  readonly sanTruncated: boolean;
+  readonly legalUci: readonly string[];
+  readonly legalMovesTruncated: boolean;
+}
+
+/** Position data only. Never replace an invalid board with a starting position. */
+export function buildChessCoachPosition(snapshot: ChessSnapshot): ChessCoachPosition {
+  const invalid = () => Object.assign(new Error('chess_position_invalid'), { code: 'chess_position_invalid' });
+  if (typeof snapshot.fen !== 'string' || snapshot.fen.length > 200 || snapshot.fen.trim() !== snapshot.fen
+    || !Array.isArray(snapshot.history) || snapshot.history.length > 400) throw invalid();
+  const fields = snapshot.fen.split(' ');
+  if (fields.length !== 6 || fields.some(field => !field)
+    || !/^\d+$/u.test(fields[4]!) || !/^\d+$/u.test(fields[5]!)
+    || !Number.isSafeInteger(Number(fields[4])) || !Number.isSafeInteger(Number(fields[5]))) throw invalid();
+  let board: Chess;
+  try { board = new Chess(snapshot.fen); } catch { throw invalid(); }
+  const lastSan = snapshot.history.slice(-12);
+  if (lastSan.some(san => typeof san !== 'string' || san.length > 16
+    || !/^(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?$/u.test(san))) throw invalid();
+  const moves = board.moves({ verbose: true }).map(move => `${move.from}${move.to}${move.promotion ?? ''}`);
+  return Object.freeze({ fen: board.fen(), side: board.turn(), lastSan: Object.freeze(lastSan), sanTruncated: snapshot.history.length > 12,
+    legalUci: Object.freeze(moves.slice(0, 64)), legalMovesTruncated: moves.length > 64 });
+}
+
 export function boardSquares(orientation: Color): Square[] {
   const ranks = orientation === "b" ? blackRanks : whiteRanks;
   const rankFiles = orientation === "b" ? [...files].reverse() : files;

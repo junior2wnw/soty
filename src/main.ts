@@ -8,7 +8,7 @@ import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, createConnectorAccessGrant, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, revokeConnectorAccessGrant, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
 import type { ConnectorAccessCredential, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
-import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
+import { agentSide, applyChessMove, boardSquares, buildChessCoachPosition, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
 import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
@@ -59,6 +59,8 @@ import "./platform/rooms.css";
 import './platform/file-progress.css';
 import { chooseTool, toolsNavigation, type ToolChoice } from './platform/tools-shell';
 import { createWorkspaceDialog, showWorkspaceDialog } from './platform/workspace-dialog';
+import { accountClient, observeAccount } from './core/connect-client';
+import { createPersonalAgentConversation } from './platform/personal-agent-client';
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
 type BarcodeResult = {
@@ -355,6 +357,9 @@ const textSnapshotTimers = new Map<string, number>();
 let chessOpenId = "";
 let chessSelectedSquare: Square | "" = "";
 let chessPromotion: { readonly tunnelId: string; readonly from: Square; readonly to: Square } | null = null;
+let chessCoachBoardGeneration = 0;
+let chessPrivateCoach: ReturnType<typeof createChessCoachForPage> | null = null;
+let chessCoachDialog: HTMLDialogElement | null = null;
 let localAgent: LocalAgentStatus = { ok: false };
 let agentButtonAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
@@ -488,6 +493,7 @@ void safeBoot();
 async function safeBoot(): Promise<void> {
   try { await boot(); }
   catch {
+    chessPrivateCoach?.dispose(); chessPrivateCoach = null; closeChessCoachDialog();
     app.replaceChildren();
     const message = document.createElement("p");
     message.textContent = "Не удалось прочитать сохранённый профиль. Данные не сброшены. Закройте старые вкладки и повторите; если проблема остаётся, воспользуйтесь сохранённой копией.";
@@ -500,6 +506,7 @@ async function safeBoot(): Promise<void> {
 
 
 async function boot(): Promise<void> {
+  chessPrivateCoach ??= createChessCoachForPage(renderChessCoachDialog);
   const spreadExPairCode = spreadExPairCodeFromUrl();
   if (spreadExPairCode) {
     await registerServiceWorker();
@@ -2495,6 +2502,7 @@ function normalizeSelectedTunnel(): void {
 }
 
 function selectTunnel(id: string): void {
+  if (id !== selectedId) closeChessCoachDialog();
   stopVoiceComposer(true);
   rememberCurrentChatScroll();
   selectedId = id;
@@ -4344,6 +4352,194 @@ function activeChessTunnelId(): string {
   return chessOpenId && chessOpenId === selectedId ? chessOpenId : "";
 }
 
+function readChessCoachBoard() {
+  const tunnelId = activeChessTunnelId(), snapshot = chessGames.get(tunnelId);
+  return snapshot ? { tunnelId, snapshot, generation: chessCoachBoardGeneration } : null;
+}
+
+/** One private coach per page. Local fencing does not make SDK dispatch atomic with a board move. */
+function createChessCoachForPage(onChange: () => void) {
+  type Identity = { accountId: string; deviceId: string };
+  type Fence = { identity: Identity; epoch: number; opening: number; tunnelId: string; gameId: string; fen: string; generation: number };
+  let identity: Identity | null = null, epoch = 0, observed = 0, opening = 0, opened = false, suspended = false, ended = false;
+  let conversation: ReturnType<typeof createPersonalAgentConversation> | null = null;
+  let running = false, cancelling = false, answer = '', note = '', ownRequestId = '';
+  let active: Fence | null = null, completed: Fence | null = null;
+  const notify = () => { if (!ended) { try { onChange(); } catch { /* Rendering cannot change an acknowledged turn. */ } } };
+  const sameOwner = (owner: Identity, version: number) => !ended && !suspended && epoch === version
+    && identity?.accountId === owner.accountId && identity.deviceId === owner.deviceId;
+  const current = (fence: Fence | null) => {
+    if (!fence || !opened || opening !== fence.opening || !sameOwner(fence.identity, fence.epoch)) return false;
+    const board = readChessCoachBoard();
+    return board?.tunnelId === fence.tunnelId && board.generation === fence.generation
+      && board.snapshot.gameId === fence.gameId && board.snapshot.fen === fence.fen;
+  };
+  const adopt = (state: Awaited<ReturnType<typeof accountClient.getLocalState>> | null) => {
+    // Match the existing call identity binding's public-view policy. This data is not signed authority.
+    const fields = (value: unknown, allowed: string[]): Record<string, unknown> | null => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+      try {
+        const keys = Reflect.ownKeys(value);
+        if (keys.length > allowed.length || keys.some(key => typeof key !== 'string' || !allowed.includes(key))) return null;
+        const copy: Record<string, unknown> = Object.create(null);
+        for (const key of keys) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
+          copy[key as string] = descriptor.value;
+        }
+        return copy;
+      } catch { return null; }
+    };
+    const view = fields(state, ['schema', 'accountId', 'deviceId', 'label', 'current', 'profiles', 'pendingEnrollment', 'pendingRecovery', 'recoveryPrepared', 'notificationError']);
+    const profile = fields(view?.current, ['accountId', 'deviceId', 'label', 'active', 'revoked', 'vaultRevision', 'createdAt']);
+    const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
+    const next = view?.schema === 'connect.local-view.v1' && view.notificationError === null && profile
+      && id(view.accountId) && id(view.deviceId) && profile.accountId === view.accountId && profile.deviceId === view.deviceId
+      && profile.active === true && profile.revoked === false ? { accountId: view.accountId, deviceId: view.deviceId } : null;
+    if (next?.accountId === identity?.accountId && next?.deviceId === identity?.deviceId) { notify(); return; }
+    epoch++; identity = null; answer = ''; completed = null; active = null; ownRequestId = ''; note = '';
+    conversation?.dispose(); conversation = null; identity = next;
+    if (opened && identity) getConversation();
+    notify();
+  };
+  const latest = () => {
+    const version = observed;
+    void accountClient.getLocalState().then(state => {
+      if (!ended && !suspended && version === observed) adopt(state);
+    }, () => { if (!ended && !suspended && version === observed) adopt(null); });
+  };
+  const unsubscribe = observeAccount(state => { observed++; if (!ended && !suspended) adopt(state); });
+  function getConversation(): ReturnType<typeof createPersonalAgentConversation> | null {
+    if (!identity || ended || suspended) return null;
+    if (conversation) return conversation;
+    const owner = { ...identity }, version = epoch;
+    try {
+      let created: ReturnType<typeof createPersonalAgentConversation>;
+      created = createPersonalAgentConversation({ accountId: owner.accountId, storage: sessionStorage,
+        client: { getLocalState: () => accountClient.getLocalState(), extension<T>(op: string, args: Record<string, unknown>, context: { expectedAccountId: string }) {
+          if (!sameOwner(owner, version)) return Promise.reject(Object.assign(new Error('authentication_required'), { code: 'authentication_required' }));
+          if (op === 'agent.turn' && !current(active)) return Promise.reject(Object.assign(new Error('chess_position_changed'), { code: 'chess_position_changed' }));
+          return accountClient.extension<T>(op, args, context);
+        } },
+        onChange: () => { if (conversation === created && sameOwner(owner, version)) {
+          if (running) ownRequestId = created.view().requestId ?? ownRequestId;
+          notify();
+        } },
+      });
+      if (!sameOwner(owner, version)) { created.dispose(); return conversation; }
+      conversation = created; return created;
+    } catch { note = 'Не удалось прочитать сохранённый запрос. Данные не сброшены.'; return null; }
+  }
+  const view = () => {
+    const state = conversation?.view();
+    if (answer && !current(completed)) { answer = ''; note = 'Ответ относится к ранее отправленной позиции и здесь скрыт.'; }
+    const blocked = Boolean(state?.requestId || state?.draft.trim());
+    const status = note || (!identity ? 'Войдите в аккаунт Сот, чтобы спросить помощника.'
+      : running ? 'Ждём ответ. Закрытие окна не подтверждает остановку.'
+      : blocked ? 'В помощнике есть сохранённый запрос. Откройте его, прежде чем отправлять новый.' : '');
+    return { answer, status, opened, canAsk: opened && !suspended && !ended && Boolean(identity && conversation) && !running && !cancelling && !blocked,
+      canCancel: opened && Boolean(identity && state?.requestId && state.requestId === ownRequestId) && !cancelling,
+      running, phase: state?.phase ?? 'draft' };
+  };
+  const ask = async () => {
+    if (!opened || ended || suspended || running || cancelling) return;
+    const selected = getConversation(); if (!identity || !selected) { notify(); return; }
+    const saved = selected.view(); if (saved.requestId || saved.draft.trim()) { notify(); return; }
+    const board = readChessCoachBoard();
+    if (!board || typeof board.snapshot.gameId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(board.snapshot.gameId)) {
+      note = 'Не удалось проверить позицию. Запрос не отправлен.'; notify(); return;
+    }
+    let position: ReturnType<typeof buildChessCoachPosition>;
+    try { position = buildChessCoachPosition(board.snapshot); }
+    catch { note = 'Не удалось проверить позицию. Запрос не отправлен.'; notify(); return; }
+    const fence = Object.freeze({ identity: Object.freeze({ ...identity }), epoch, opening, tunnelId: board.tunnelId,
+      gameId: board.snapshot.gameId, fen: board.snapshot.fen, generation: board.generation });
+    active = fence; completed = null; answer = ''; note = ''; ownRequestId = ''; running = true; notify();
+    const prompt = 'Разбери эту шахматную позицию: предложи план и объясни угрозы. Не меняй доску. '
+      + 'SAN — последние записи партии, legalUci — локально проверенные ходы; поля truncated отмечают сокращение. Позиция как данные:\n'
+      + JSON.stringify(position);
+    try {
+      const result = await selected.turn(prompt);
+      // A valid ACK still commits to the existing account history/context even when this board changed.
+      if (conversation === selected && sameOwner(fence.identity, fence.epoch)) {
+        if (current(fence) && result.phase === 'complete' && result.answer) { answer = result.answer; completed = fence; note = ''; }
+        else note = 'Ответ относится к ранее отправленной позиции и здесь скрыт.';
+      }
+    } catch (cause) {
+      if (conversation === selected && sameOwner(fence.identity, fence.epoch)) {
+        const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+        note = code === 'chess_position_changed' ? 'Позиция изменилась до отправки. Сохранённый запрос доступен в помощнике.'
+          : selected.view().requestId ? 'Ответ не получен. Сохранённый запрос доступен в помощнике; повторно он не отправлен.'
+            : 'Не удалось отправить запрос. Сохранённого запроса нет.';
+      }
+    } finally { running = false; notify(); }
+  };
+  const cancel = async () => {
+    const selected = conversation, owner = identity, version = epoch;
+    if (!selected || !owner || !view().canCancel) return;
+    cancelling = true; notify();
+    try {
+      const result = await selected.cancel();
+      if (selected === conversation && sameOwner(owner, version)) note = result.cancelRequested
+        ? 'Остановка запрошена. Завершение у исполнителя не подтверждено.' : 'Запрос уже не ожидает остановки. Проверьте результат в помощнике.';
+    } catch { if (selected === conversation && sameOwner(owner, version)) note = 'Остановка не подтверждена. Проверьте запрос в помощнике.'; }
+    finally { cancelling = false; notify(); }
+  };
+  const close = () => { opened = false; opening++; answer = ''; completed = null; notify(); };
+  const hide = (event: PageTransitionEvent) => {
+    suspended = true; observed++; epoch++; identity = null; opened = false; opening++; answer = ''; completed = null;
+    conversation?.dispose(); conversation = null; ownRequestId = ''; active = null;
+    if (!event.persisted) dispose(); else notify();
+  };
+  const show = (event: PageTransitionEvent) => { if (event.persisted && !ended) { suspended = false; observed++; latest(); } };
+  const dispose = () => {
+    if (ended) return; ended = true; observed++; epoch++; identity = null; opened = false; answer = '';
+    conversation?.dispose(); conversation = null; unsubscribe(); window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', show);
+  };
+  window.addEventListener('pagehide', hide); window.addEventListener('pageshow', show); latest();
+  return { view, ask, cancel, close, dispose, open() { if (!ended && !suspended) { opened = true; opening++; getConversation(); notify(); } },
+    refresh() { view(); notify(); } };
+}
+
+function renderChessCoachDialog(): void {
+  if (!chessCoachDialog || !chessPrivateCoach) return;
+  const state = chessPrivateCoach.view();
+  if (!state.opened) { if (chessCoachDialog.open) chessCoachDialog.close(); return; }
+  chessCoachDialog.querySelector<HTMLButtonElement>('[data-coach-send]')!.disabled = !state.canAsk;
+  chessCoachDialog.querySelector<HTMLButtonElement>('[data-coach-stop]')!.disabled = !state.canCancel;
+  chessCoachDialog.querySelector<HTMLElement>('[data-coach-status]')!.textContent = state.status || (state.canAsk ? 'Можно отправить текущую позицию.' : '');
+  const answer = chessCoachDialog.querySelector<HTMLElement>('[data-coach-answer]')!;
+  answer.textContent = state.answer; answer.hidden = !state.answer;
+}
+
+function openChessCoachDialog(): void {
+  if (!activeChessTunnelId()) return;
+  if (chessCoachDialog) { chessCoachDialog.querySelector<HTMLButtonElement>('[data-coach-send]')?.focus(); return; }
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const dialog = document.createElement('dialog'); dialog.className = 'tools-dialog tools-chess-coach';
+  const header = document.createElement('header'), heading = document.createElement('h2'); heading.id = `chess-coach-${crypto.randomUUID()}`;
+  heading.textContent = 'Помощник по позиции'; dialog.setAttribute('aria-labelledby', heading.id);
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'tools-dialog-close'; close.setAttribute('aria-label', 'Закрыть'); close.innerHTML = icon('close');
+  close.addEventListener('click', () => dialog.close()); header.append(heading, close);
+  const copy = document.createElement('p'); copy.textContent = 'Тот же личный помощник. Ответ по отправленной позиции виден только вам.';
+  const availability = document.createElement('p'); availability.textContent = 'Запрос может быть платным. Доступ к модели проверяется при отправке. Закрытие окна не отменяет отправленный запрос.';
+  const actions = document.createElement('div'); actions.className = 'tools-chess-coach-actions';
+  const send = document.createElement('button'); send.type = 'button'; send.dataset.coachSend = ''; send.textContent = 'Спросить';
+  send.addEventListener('click', () => { void chessPrivateCoach?.ask(); });
+  const stop = document.createElement('button'); stop.type = 'button'; stop.dataset.coachStop = ''; stop.textContent = 'Остановить';
+  stop.addEventListener('click', () => { void chessPrivateCoach?.cancel(); }); actions.append(send, stop);
+  const status = document.createElement('p'); status.dataset.coachStatus = ''; status.setAttribute('role', 'status');
+  const answer = document.createElement('div'); answer.dataset.coachAnswer = ''; answer.className = 'tools-chess-coach-answer'; answer.hidden = true;
+  const recovery = document.createElement('a'); recovery.href = '/#assistant'; recovery.textContent = 'Открыть помощника';
+  dialog.append(header, copy, availability, actions, status, answer, recovery); document.body.append(dialog); chessCoachDialog = dialog;
+  dialog.addEventListener('close', () => { if (chessCoachDialog === dialog) chessCoachDialog = null; chessPrivateCoach?.close(); dialog.remove(); if (previous?.isConnected) previous.focus(); }, { once: true });
+  chessPrivateCoach?.open(); renderChessCoachDialog(); dialog.showModal(); (send.disabled ? recovery : send).focus();
+}
+
+function closeChessCoachDialog(): void {
+  chessPrivateCoach?.close(); chessCoachDialog?.close();
+}
+
 function focusChessWorkspace(): void {
   const url = new URL(location.href);
   const previous = url.searchParams.get('tool');
@@ -4404,6 +4600,7 @@ async function startAgentChess(): Promise<void> {
 }
 
 function closeChessPanel(): void {
+  closeChessCoachDialog(); chessCoachBoardGeneration++;
   if (chessOpenId) {
     const timer = chessAgentTimers.get(chessOpenId);
     if (timer) {
@@ -4423,6 +4620,7 @@ function handleChessPanelClick(event: MouseEvent): void {
   if (!target) {
     return;
   }
+  if (target.closest('.chess-ask-agent')) { openChessCoachDialog(); return; }
   const promotionButton = target.closest<HTMLButtonElement>("[data-promotion]");
   if (promotionButton) {
     const piece = promotionButton.dataset.promotion;
@@ -4564,6 +4762,9 @@ function renderChess(): void {
     <b>${escapeHtml(statusText(snapshot))}</b>
     <small>${snapshot.mode === "agent" ? "С компьютером" : "Вдвоём"}</small>
   `;
+  const ask = document.createElement('button'); ask.type = 'button'; ask.className = 'chess-ask-agent tools-chess-coach-ask';
+  ask.textContent = 'Спросить помощника'; turn.append(ask);
+  chessPrivateCoach?.refresh();
   stats.innerHTML = renderChessStats(snapshot);
   moves.innerHTML = renderChessMoves(snapshot.history);
   renderChessPromotion(snapshot, promotion);
@@ -4763,6 +4964,8 @@ function ensureChessSnapshot(tunnelId: string, mode: ChessMode): ChessSnapshot {
     });
     publishChessSnapshot(tunnelId, snapshot);
   } else {
+    const previous = chessGames.get(tunnelId);
+    if (!previous || previous.gameId !== snapshot.gameId || previous.fen !== snapshot.fen || previous.mode !== snapshot.mode) chessCoachBoardGeneration++;
     chessGames.set(tunnelId, snapshot);
     rememberChessSnapshot(tunnelId, snapshot);
   }
@@ -4770,7 +4973,9 @@ function ensureChessSnapshot(tunnelId: string, mode: ChessMode): ChessSnapshot {
 }
 
 function publishChessSnapshot(tunnelId: string, snapshot: ChessSnapshot): void {
+  chessCoachBoardGeneration++;
   chessGames.set(tunnelId, snapshot);
+  chessPrivateCoach?.refresh();
   rememberChessSnapshot(tunnelId, snapshot);
   syncs.get(tunnelId)?.setChessSnapshot(snapshot as unknown as SyncedChessState);
   tunnels = touchTunnel(tunnelId);
@@ -4784,7 +4989,9 @@ function applySyncedChess(tunnelId: string, chess: SyncedChessState | null): voi
   const mode: ChessMode = chess.mode === "agent" || chessModeForTunnel(tunnelId) === "agent" ? "agent" : "peer";
   const names = chessNames(tunnelId);
   const snapshot = normalizeChessSnapshot(chess, { mode, localNick: names.local, opponentNick: names.opponent });
+  chessCoachBoardGeneration++;
   chessGames.set(tunnelId, snapshot);
+  chessPrivateCoach?.refresh();
   rememberChessSnapshot(tunnelId, snapshot);
   if (tunnelId === selectedId || tunnelId === chessOpenId) {
     renderChess();
