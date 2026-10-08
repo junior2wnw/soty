@@ -15,3 +15,4 @@
 /deploy/connect/verify-backup.mjs text eol=lf
 /docs/implementation/private-attach-current-root-source-freeze-20261008.json text eol=lf
 /test-fixtures/planner-source-ci/** text eol=lf
+/modules/personal-agent/runtime/vendor/agent-runtime-core.ts text eol=lf

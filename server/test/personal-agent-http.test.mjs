@@ -300,12 +300,43 @@ test('actual shared UI accepts the genuine Connect ok envelope and retains its o
 
 test('actual shared client profile switch while turn is held denies delivery and cannot cancel another account', async t => {
   const f = await fixture(t), first = await sharedBrowser(t, f), second = await sharedBrowser(t, f);
-  const good = await first.ui.turn('Profile switch baseline'); assert.equal(good.phase, 'complete'); first.mergeProfile(second);
+  const good = await first.ui.turn('Profile switch baseline'); assert.equal(good.phase, 'complete');
+  const readNotes = browser => browser.client.extension('notes.list', { expectedAccountId: browser.account.accountId }, { expectedAccountId: browser.account.accountId });
+  const ownNotes = await readNotes(first), ownNoteId = ownNotes.notes.find(note => note.title === 'Диалог с помощником').noteId;
+  const readOwnNote = () => first.client.extension('notes.get', { expectedAccountId: first.account.accountId, noteId: ownNoteId }, { expectedAccountId: first.account.accountId });
+  const before = (await readOwnNote()).note, foreignBefore = await readNotes(second);
+  assert.equal(JSON.parse(before.body).history.length, 2); first.mergeProfile(second);
   const barrier = f.hold(), turn = first.ui.turn('Do not deliver to another profile'); await barrier.entered.promise;
+  assert.equal(first.ui.view().answer, undefined); assert.deepEqual(first.ui.view().sources, []);
   await first.client.switchProfile(second.account.accountId);
+  assert.equal((await first.client.getLocalState()).accountId, second.account.accountId);
   await assert.rejects(first.client.extension('agent.cancel', { requestId: first.ui.view().requestId }, { expectedAccountId: first.account.accountId }), { code: 'ACTIVE_PROFILE_CHANGED' });
+  await assert.rejects(first.ui.cancel(), { code: 'authentication_required' });
   barrier.release.resolve(); await assert.rejects(turn, { code: 'ACTIVE_PROFILE_CHANGED' });
-  assert.equal(first.ui.view().unconfirmed, 1); assert.equal(first.ui.view().answer, 'Подтверждённый ответ', 'only the earlier own confirmed answer remains in its old controller');
+  assert.equal(first.ui.view().phase, 'unknown'); assert.equal(first.ui.view().unconfirmed, 1);
+  assert.equal(first.ui.view().answer, undefined); assert.deepEqual(first.ui.view().sources, []);
+  assert.equal(second.ui.view().answer, undefined); assert.deepEqual(second.ui.view().sources, []); assert.equal(second.ui.view().unconfirmed, 0);
+  assert.deepEqual(await readNotes(second), foreignBefore, 'the foreign account receives no new Note/history');
+  await assert.rejects(second.client.extension('notes.get', { expectedAccountId: second.account.accountId, noteId: ownNoteId },
+    { expectedAccountId: second.account.accountId }), { code: 'notes_note_not_found' });
+  // Only restore the fixture's old signing profile for a durable owner read;
+  // do not deliver/retry a turn or restore an answer in the foreign UI.
+  await first.client.switchProfile(first.account.accountId);
+  assert.equal((await first.client.getLocalState()).accountId, first.account.accountId);
+  const after = (await readOwnNote()).note;
+  assert.equal(after.noteId, before.noteId);
+  const confirmed = JSON.parse(before.body).history, current = JSON.parse(after.body).history;
+  assert.equal(JSON.stringify(current.slice(0, confirmed.length)), JSON.stringify(confirmed), 'prior own confirmed entries remain byte-equal');
+  assert.ok(current.length === confirmed.length || current.length === confirmed.length + 2, 'unknown UI ACK allows at most one whole same-owner pair');
+  assert.equal(after.revision, before.revision + (current.length === confirmed.length ? 0 : 1));
+  if (current.length > confirmed.length) {
+    assert.deepEqual(current.slice(confirmed.length), [
+      JSON.stringify({ role: 'user', content: 'Do not deliver to another profile' }),
+      JSON.stringify({ role: 'assistant', content: 'Подтверждённый ответ' }),
+    ]);
+  }
+  assert.equal(first.ui.view().unconfirmed, 1); assert.equal(first.ui.view().answer, undefined); assert.deepEqual(first.ui.view().sources, []);
+  assert.equal(f.calls.length, 2, 'no foreign cancellation/retry or second model dispatch');
 });
 
 test('actual shared client dispose while held denies late delivery without declaring remote rollback', async t => {
