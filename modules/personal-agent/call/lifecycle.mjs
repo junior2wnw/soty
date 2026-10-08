@@ -128,16 +128,27 @@ export function createCallLifecycle({ host, media, transport, onState = () => {}
       return ok();
     } finally { teardown--; }
   }
-  function join({ roomId, mode } = {}) {
+  function join(options = {}) {
+    const { roomId, mode } = options || {};
+    const hasExpectedCallId = Object.hasOwn(options || {}, 'expectedCallId');
+    const hasExpectedEpoch = Object.hasOwn(options || {}, 'expectedEpoch');
+    const expectedCallId = options?.expectedCallId, expectedEpoch = options?.expectedEpoch;
     if (closed) return Promise.resolve(no('disposed'));
     if (teardown) return Promise.resolve(no('call_transition'));
     if (!identity) return Promise.resolve(no('identity_required'));
     if (!validId(roomId) || !MODES.has(mode)) return Promise.resolve(no('invalid_room'));
+    if (hasExpectedCallId !== hasExpectedEpoch) return Promise.resolve(no('invalid_invitation'));
+    if (hasExpectedCallId && (mode !== 'one-to-one' || !validId(expectedCallId)
+      || !Number.isSafeInteger(expectedEpoch) || expectedEpoch <= 0)) return Promise.resolve(no('invalid_invitation'));
     if (active) return active.scope.roomId === roomId && active.scope.mode === mode
+      && active.scope.expectedCallId === (hasExpectedCallId ? expectedCallId : undefined)
+      && active.scope.expectedEpoch === (hasExpectedEpoch ? expectedEpoch : undefined)
       ? active.joinPromise : Promise.resolve(no('call_active'));
     const lease = reserve();
     if (!lease) return Promise.resolve(no('call_capacity'));
-    const c = { scope: Object.freeze({ ...identity, roomId, mode, generation: ++generation }),
+    const scope = { ...identity, roomId, mode, generation: ++generation };
+    if (hasExpectedCallId) { scope.expectedCallId = expectedCallId; scope.expectedEpoch = expectedEpoch; }
+    const c = { scope: Object.freeze(scope),
       abort: new AbortController(), state: 'joining', micState: 'off', code: null,
       mic: null, session: null, lease, tracks: new WeakMap(), disposed: new WeakSet(),
       trackStats: { observedLocalTracks: 0, stopCallsReturned: 0, endedLocallyObserved: 0, stopCallFailures: 0, disableFailures: 0 },

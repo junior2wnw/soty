@@ -63,9 +63,10 @@ class ElementPort {
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
-  const timers = new Map(); let timerId = 0;
+  const timers = new Map(), intervals = new Map(); let timerId = 0;
   const view = Object.assign(new EventTarget(), { location, Node: ElementPort, crypto, btoa,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
+    setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   const discussionCalls = { refresh: 0 };
@@ -102,7 +103,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController });
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
-    module, exports: module.exports, require: name => ports[name] ?? {}, location,
+    module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
     document, HTMLElement: ElementPort, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
@@ -147,7 +148,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
 
 test('actual app onboarding cannot paint a delayed device list after A switches to B', async () => {
@@ -449,6 +450,65 @@ test('same-account network loss during shell refresh preserves the running app s
   f.setOnline(false); await f.app.refresh();
   assert.equal(f.app.appStage, stage); assert.equal(f.app.main.querySelector('iframe'), frame);
   assert.equal(f.app.lastToast, 'NETWORK_ERROR'); f.app.cleanScreen();
+});
+
+test('incoming call polling stays single-flight, pauses on pagehide, and never joins before Accept', async () => {
+  const f = fixture(), pending = deferred(); let checks = 0, snapshots = 0, cancels = 0, joins = 0;
+  f.app.options.humanCalls = {
+    async checkIncoming() { checks++; return pending.promise; },
+    cancelIncomingChecks() { cancels++; },
+    snapshot() { snapshots++; return { state: 'idle', microphone: 'off', connection: 'idle', peers: 0,
+      playbackBlocked: false, roomId: null, mode: null, code: null, turnConfigured: false, incomingCall: null }; },
+    join() { joins++; return Promise.resolve({ ok: true }); },
+  };
+  f.app.destroyed = false; f.app.incomingPollTimer = null; f.app.incomingPollGeneration = 0;
+  f.app.incomingPollInFlight = false; f.app.incomingPollSuspended = false;
+  assert.equal(typeof f.app.options.humanCalls.checkIncoming, 'function');
+  f.app.startIncomingCallPolling(); await turn();
+  assert.equal(checks, 1, 'starting the poll checks the inbox immediately');
+  assert.equal(f.intervals.size, 1, 'starting the poll schedules one interval');
+  assert.equal([...f.intervals.values()][0].delay, 5000);
+  [...f.intervals.values()][0].fn(); await turn(); assert.equal(checks, 1, 'an interval tick cannot overlap the first inbox read');
+  f.app.stopIncomingCallPolling(); assert.equal(f.intervals.size, 0); assert.equal(cancels, 1);
+  pending.resolve({ callId: 'call-late', epoch: 2, roomId: 'caller', label: 'Contact' }); await turn();
+  assert.equal(snapshots, 0, 'pagehide invalidates the late inbox result'); assert.equal(joins, 0, 'polling never auto-joins');
+});
+
+test('pagehide and pageshow share one unresolved inbox poll and retry after its stale result settles', async () => {
+  const f = fixture(), requests = []; let unsettled = 0, maximum = 0, snapshots = 0, painted = 0;
+  f.app.destroyed = false; f.app.incomingPollTimer = null; f.app.incomingPollGeneration = 0;
+  f.app.incomingPollInFlight = false; f.app.incomingPollSuspended = false;
+  f.app.options.humanCalls = {
+    checkIncoming() {
+      const request = deferred(); requests.push(request); unsettled++; maximum = Math.max(maximum, unsettled);
+      return request.promise.finally(() => { unsettled--; });
+    },
+    cancelIncomingChecks() {},
+    snapshot() { snapshots++; return { state: 'idle', microphone: 'off', connection: 'idle', peers: 0,
+      playbackBlocked: false, roomId: null, mode: null, code: null, turnConfigured: false, incomingCall: null }; },
+  };
+  f.app.receiveHumanCallState = () => { painted++; };
+  f.app.startIncomingCallPolling(); await turn(); assert.equal(requests.length, 1);
+  f.app.stopIncomingCallPolling(); f.app.startIncomingCallPolling(); await turn();
+  assert.equal(requests.length, 1, 'resume cannot overlap the unresolved pagehide request');
+  requests[0].resolve(null); await turn();
+  assert.equal(requests.length, 2, 'the active resumed generation retries after the old request settles');
+  assert.equal(maximum, 1, 'there is never more than one unresolved request');
+  assert.equal(snapshots, 0, 'the stale hidden generation cannot paint its result'); assert.equal(painted, 0);
+  requests[1].resolve(null); await turn();
+  assert.equal(snapshots, 1); assert.equal(painted, 1, 'the current generation can recover after the old request settles');
+  f.app.stopIncomingCallPolling(); assert.equal(f.intervals.size, 0); assert.equal(unsettled, 0);
+});
+
+test('incoming call card names explicit actions and disables Accept while another call is active', () => {
+  const f = fixture(), app = f.app, element = () => new ElementPort();
+  app.humanCallIncoming = element(); app.humanCallIncomingLabel = element(); app.humanCallIncomingStatus = element();
+  app.humanCallIncomingAccept = element(); app.humanCallIncomingDecline = element(); app.humanCallIncomingPending = false;
+  app.renderHumanIncomingCall({ callId: 'call-1', epoch: 1, roomId: 'peer', label: 'Собеседник' }, true);
+  assert.equal(app.humanCallIncoming.hidden, false); assert.equal(app.humanCallIncomingLabel.textContent, 'Входящий звонок: Собеседник');
+  assert.equal(app.humanCallIncomingAccept.textContent, 'Принять'); assert.equal(app.humanCallIncomingAccept.disabled, true);
+  assert.equal(app.humanCallIncomingDecline.textContent, 'Отклонить'); assert.equal(app.humanCallIncomingDecline.disabled, false);
+  assert.match(app.humanCallIncomingStatus.textContent, /текущий звонок/u);
 });
 
 test('actual app controller enqueues launch before slow optional metadata on the real serialized Connect client', { timeout: 10_000 }, async t => {

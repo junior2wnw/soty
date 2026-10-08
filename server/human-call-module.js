@@ -19,7 +19,7 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
   check(typeof getConnect === 'function' && typeof getWorld === 'function' && typeof clock === 'function');
   check(Array.isArray(allowedOrigins) && allowedOrigins.length <= 64);
   const origins = new Set(allowedOrigins.map(value => { const url = new URL(value); check(url.origin === value); return value; }));
-  const operations = new Set(['call.join', 'call.microphone', 'call.leave']);
+  const operations = new Set(['call.join', 'call.microphone', 'call.leave', 'call.inbox', 'call.decline']);
   const calls = new Map(), scopes = new Map(), refs = new Map(), sockets = new Map();
   let closed = false, wss = null, timer = null, epoch = 0, unsubscribeDevice, unsubscribeMembership;
   const now = () => { const value = clock(); check(Number.isSafeInteger(value) && value >= 0); return value; };
@@ -66,6 +66,28 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
     const member = call?.members.get(actor.deviceId);
     check(member?.actor.accountId === actor.accountId, 'human_call_denied'); return member;
   };
+  const accountHasCall = (accountId, allowedCall = null) => [...calls.values()].some(call => call !== allowedCall
+    && [...call.members.values()].some(member => member.actor.accountId === accountId));
+  const liveCallerFor = (call, calleeAccountId) => [...call.members.values()].find(member =>
+    member.actor.accountId !== calleeAccountId && member.ws?.readyState === 1 && member.expiresAt > now());
+  function inbox(actor) {
+    current(actor, null, () => true);
+    const accountId = actor.accountId;
+    const candidates = [...calls.values()].filter(call => call.mode === 'one-to-one'
+      && call.parties.includes(accountId) && ![...call.members.values()].some(member => member.actor.accountId === accountId))
+      .sort((a, b) => a.epoch - b.epoch);
+    for (const call of candidates) {
+      const caller = liveCallerFor(call, accountId);
+      if (!caller || !getConnect().isActorActive(caller.actor)) continue;
+      try {
+        // The callee fence checks the reciprocal relationship; caller activity is host-checked outside it.
+        current(actor, call, () => true);
+        return { invitation: { callId: call.id, epoch: call.epoch, roomId: caller.actor.accountId,
+          label: typeof caller.actor.label === 'string' ? caller.actor.label.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 160) : '' } };
+      } catch { /* Stale or no longer reciprocal invitations are omitted. */ }
+    }
+    return { invitation: null };
+  }
   function reference(call, member, purpose, requestId) {
     check(refs.size < MAX_REFS, 'human_call_capacity');
     const id = randomUUID(), expiresAt = now() + REF_MS;
@@ -76,28 +98,62 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
   function execute({ op, args = {}, actor } = {}) {
     check(operations.has(op), 'human_call_invalid'); prune();
     check(wss && !closed, 'human_call_unavailable');
+    if (op === 'call.inbox') { fields(args, []); return inbox(actor); }
+    if (op === 'call.decline') {
+      fields(args, ['callId', 'epoch']); check(validId(args.callId) && Number.isSafeInteger(args.epoch) && args.epoch > 0);
+      const call = calls.get(args.callId); check(call && call.epoch === args.epoch && call.mode === 'one-to-one', 'human_call_stale');
+      check(call.parties.includes(actor?.accountId), 'human_call_denied');
+      const caller = liveCallerFor(call, actor?.accountId); check(caller, 'human_call_stale');
+      check(![...call.members.values()].some(member => member.actor.accountId === actor.accountId), 'human_call_active');
+      check(getConnect().isActorActive(caller.actor), 'human_call_stale');
+      return current(actor, call, () => {
+        check(calls.get(call.id) === call && call.epoch === args.epoch
+          && call.members.get(caller.actor.deviceId) === caller && caller.ws?.readyState === 1 && caller.expiresAt > now(), 'human_call_stale');
+        check(![...call.members.values()].some(member => member.actor.accountId === actor.accountId), 'human_call_active');
+        drop(call, caller, 'human_call_declined'); return { declined: true };
+      });
+    }
     if (op === 'call.join') {
-      fields(args, ['requestId', 'mode', 'targetId']);
+      fields(args, ['requestId', 'mode', 'targetId'], ['expectedCallId', 'expectedEpoch']);
       check(validId(args.requestId) && validId(args.targetId) && ['one-to-one', 'group'].includes(args.mode));
+      const expected = Object.hasOwn(args, 'expectedCallId') || Object.hasOwn(args, 'expectedEpoch');
+      check(!expected || (args.mode === 'one-to-one' && validId(args.expectedCallId)
+        && Number.isSafeInteger(args.expectedEpoch) && args.expectedEpoch > 0), 'human_call_stale');
+      let expectedCall = null;
+      if (expected) {
+        expectedCall = calls.get(args.expectedCallId);
+        check(expectedCall && expectedCall.epoch === args.expectedEpoch && expectedCall.mode === 'one-to-one'
+          && expectedCall.parties.includes(actor?.accountId) && expectedCall.parties.includes(args.targetId), 'human_call_stale');
+        const caller = liveCallerFor(expectedCall, actor.accountId);
+        check(caller?.actor.accountId === args.targetId, 'human_call_stale');
+        check(getConnect().isActorActive(caller.actor), 'human_call_stale');
+      }
       return current(actor, null, () => {
         check(args.mode !== 'one-to-one' || actor.accountId !== args.targetId);
         const parties = args.mode === 'one-to-one' ? [actor.accountId, args.targetId].sort() : null;
         const key = JSON.stringify([args.mode, parties ?? args.targetId]);
         let call = scopes.get(key);
+        if (expected) check(call === expectedCall && call.id === args.expectedCallId && call.epoch === args.expectedEpoch,
+          'human_call_stale');
         if (args.mode === 'group') check(getWorld().canAccessCommunity(actor.accountId, args.targetId), 'human_call_denied');
         else check(getConnect().hasCurrentContact(actor, args.targetId), 'human_call_denied');
-        if (!call) {
-          check(calls.size < MAX_CALLS && epoch < Number.MAX_SAFE_INTEGER, 'human_call_capacity');
-          call = { id: randomUUID(), epoch: ++epoch, key, mode: args.mode, targetId: args.targetId, parties, members: new Map() };
-          calls.set(call.id, call); scopes.set(key, call);
+        if (expected) {
+          const caller = liveCallerFor(call, actor.accountId);
+          check(caller?.actor.accountId === args.targetId, 'human_call_stale');
         }
-        const existing = [...call.members.values()].find(member => member.actor.accountId === actor.accountId);
+        const existing = call && [...call.members.values()].find(member => member.actor.accountId === actor.accountId);
         if (existing) {
           check(existing.actor.deviceId === actor.deviceId && existing.requestId === args.requestId && !existing.ws,
             'human_call_active');
           const ref = [...refs.entries()].find(([, value]) => value.member === existing && value.purpose === 'join' && value.state === 'issued');
           check(ref, 'human_call_reconcile_required');
           return { ...existing.admission };
+        }
+        check(!accountHasCall(actor.accountId, call), 'human_call_account_active');
+        if (!call) {
+          check(calls.size < MAX_CALLS && epoch < Number.MAX_SAFE_INTEGER, 'human_call_capacity');
+          call = { id: randomUUID(), epoch: ++epoch, key, mode: args.mode, targetId: args.targetId, parties, members: new Map() };
+          calls.set(call.id, call); scopes.set(key, call);
         }
         check(call.members.size < (args.mode === 'group' ? 4 : 2), 'human_call_full');
         const member = { actor, requestId: args.requestId, ws: null, microphone: false, expiresAt: now() + LEASE_MS };

@@ -1,6 +1,6 @@
 import { accountClient, observeAccount } from '../core/connect-client';
 import { mountWorldApp, type WorldAppHandle } from '../world/app';
-import type { WorldAppOptions, WorldProfile, WorldHumanCallPort, WorldHumanCallState } from '../world/types';
+import type { WorldAppOptions, WorldProfile, WorldHumanCallPort, WorldHumanCallState, WorldIncomingCall } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
 import { bindCallIdentity, type CallIdentityLifecycle } from './call-identity';
@@ -11,8 +11,9 @@ import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle
 
 interface HumanLifecycle extends CallIdentityLifecycle {
   snapshot(): { state: string; microphone: WorldHumanCallState['microphone'];
-    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number } | null; code: string | null };
-  join(target: { roomId: string; mode: 'one-to-one' | 'group' }): Promise<{ ok: boolean; code?: string }>;
+    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
+      expectedCallId?: string; expectedEpoch?: number } | null; code: string | null };
+  join(target: { roomId: string; mode: 'one-to-one' | 'group'; expectedCallId?: string; expectedEpoch?: number }): Promise<{ ok: boolean; code?: string }>;
   enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
   mute(): unknown;
 }
@@ -90,6 +91,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       const owner = ownedLifecycle, ports = callPorts;
       const belongs = () => current() && owner.snapshot().scope?.accountId === accountId;
       let presentation: { accountId: string; mountGeneration: number; scopeGeneration: number; roomId: string; mode: 'one-to-one' | 'group'; label: string } | null = null;
+      let incomingInvitation: WorldIncomingCall | null = null, inboxGeneration = 0;
       const cleanDisplayLabel = (value: unknown): string => typeof value === 'string'
         ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 160).trim()
         : '';
@@ -103,11 +105,64 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
           && presentation.scopeGeneration === scope.generation
           && (local.state === 'joining' || local.state === 'listening') ? presentation.label : null;
         return { state: local.state, microphone: local.microphone, ...connection,
-          roomId: scope?.roomId ?? null, mode: scope?.mode ?? null, code: local.code, targetLabel };
+          roomId: scope?.roomId ?? null, mode: scope?.mode ?? null, code: local.code, targetLabel,
+          incomingCall: current() ? incomingInvitation : null };
       };
       humanCalls = {
         snapshot,
         subscribe(listener) { const notify = () => listener(snapshot()); callObservers.add(notify); return () => callObservers.delete(notify); },
+        async checkIncoming() {
+          if (!current() || !accountId) return null;
+          const request = ++inboxGeneration;
+          try {
+            const response = await ports.inbox(accountId);
+            if (!current() || request !== inboxGeneration) return null;
+            const value = response?.invitation;
+            incomingInvitation = value && /^[A-Za-z0-9_.:-]{1,160}$/u.test(value.callId)
+              && Number.isSafeInteger(value.epoch) && value.epoch > 0
+              && /^[A-Za-z0-9_.:-]{1,160}$/u.test(value.roomId)
+              ? { callId: value.callId, epoch: value.epoch, roomId: value.roomId, label: cleanDisplayLabel(value.label) }
+              : null;
+            notifyCall(); return incomingInvitation;
+          } catch { return null; }
+        },
+        cancelIncomingChecks() { inboxGeneration++; },
+        async acceptIncoming(invitation) {
+          if (!current() || !accountId || !incomingInvitation || invitation.callId !== incomingInvitation.callId
+            || invitation.epoch !== incomingInvitation.epoch || invitation.roomId !== incomingInvitation.roomId)
+            return stale();
+          const label = cleanDisplayLabel(incomingInvitation.label), pending = owner.join({ roomId: invitation.roomId,
+            mode: 'one-to-one', expectedCallId: invitation.callId, expectedEpoch: invitation.epoch });
+          const startedScope = owner.snapshot().scope;
+          const generationAtStart = startedScope?.accountId === accountId && startedScope.roomId === invitation.roomId
+            && startedScope.mode === 'one-to-one' && startedScope.expectedCallId === invitation.callId
+            && startedScope.expectedEpoch === invitation.epoch ? startedScope.generation : null;
+          const result = await pending;
+          const local = owner.snapshot(), scope = local.scope;
+          if (result.ok && generationAtStart !== null && current() && scope?.accountId === accountId
+            && scope.roomId === invitation.roomId && scope.mode === 'one-to-one' && scope.expectedCallId === invitation.callId
+            && scope.expectedEpoch === invitation.epoch && scope.generation === generationAtStart
+            && (local.state === 'joining' || local.state === 'listening')) {
+            presentation = label ? { accountId, mountGeneration: generation, scopeGeneration: generationAtStart,
+              roomId: invitation.roomId, mode: 'one-to-one', label } : null;
+            if (incomingInvitation?.callId === invitation.callId && incomingInvitation.epoch === invitation.epoch) incomingInvitation = null;
+            notifyCall();
+          }
+          return result;
+        },
+        async declineIncoming(invitation) {
+          if (!current() || !accountId || !incomingInvitation || invitation.callId !== incomingInvitation.callId
+            || invitation.epoch !== incomingInvitation.epoch || invitation.roomId !== incomingInvitation.roomId) return stale();
+          try {
+            const response = await ports.decline(accountId, invitation);
+            if (!current()) return stale();
+            const result = { ok: response.declined === true, ...(response.declined ? {} : { code: 'human_call_stale' }) };
+            if (result.ok && incomingInvitation?.callId === invitation.callId && incomingInvitation.epoch === invitation.epoch) {
+              incomingInvitation = null; notifyCall();
+            }
+            return result;
+          } catch { return { ok: false, code: 'human_call_stale' }; }
+        },
         join(target) {
           if (!current()) return Promise.resolve(stale());
           const ownerTarget = { roomId: target.roomId, mode: target.mode };

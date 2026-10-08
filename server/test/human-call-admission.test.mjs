@@ -2,9 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+import ts from 'typescript';
 import { createConnectService, digestArgs } from '../../modules/connect/server/index.mjs';
 import { createWorldService } from '../../modules/world/server/index.mjs';
 import { createHumanCallModule } from '../human-call-module.js';
+import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';
 
 const ORIGIN = 'https://human-call.test';
 const identity = () => {
@@ -20,6 +24,16 @@ class Socket extends EventEmitter {
   ping(value) { this.nativePings.push(Buffer.from(value)); if (this.autoPong) this.emit('pong', Buffer.from(value)); }
 }
 const good = value => { assert.equal(value.ok, true, value.error?.code); return value; };
+async function loadHumanCallPorts() {
+  const source = await readFile(new URL('../../src/sync.ts', import.meta.url), 'utf8');
+  const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const module = { exports: {} }, exports = module.exports;
+  const emptyImport = new Proxy({}, { get: (_target, key) => key === '__esModule' ? true : undefined });
+  vm.runInNewContext(code, { module, exports, require: () => emptyImport, crypto: globalThis.crypto,
+    AbortController, AbortSignal, URL, Buffer, performance, setTimeout, clearTimeout, setInterval, clearInterval,
+    queueMicrotask, console }, { timeout: 5000 });
+  return module.exports.createHumanCallPorts;
+}
 async function fixture(t, count = 2, { controlledHeartbeat = false } = {}) {
   let at = 1_800_000_000_000, connect;
   const world = createWorldService({ databasePath: ':memory:', projectId: 'human-call-test', clock: () => at });
@@ -63,7 +77,7 @@ async function fixture(t, count = 2, { controlledHeartbeat = false } = {}) {
     const request = good(await rpc(left, 'contacts.requestAccount', { accountId: right.state.accountId }));
     return good(await rpc(right, 'contacts.accept', { requestId: request.requestId }));
   }
-  return { actors, connect, world, calls, rpc, group, groupJoin, personalJoin, socketFor, pendingSocket, contact,
+  return { actors, connect, world, calls, rpc, group, groupJoin, personalJoin, socketFor, pendingSocket, contact, wss,
     advance(ms) { at += ms; }, pulse() { assert.equal(typeof heartbeatPulse, 'function'); heartbeatPulse(); } };
 }
 
@@ -194,6 +208,123 @@ test('actual Connect block after contact acceptance denies stale microphone gran
   assert.equal(left.readyState, 3); assert.equal(left.messages.some(value => value.type === 'call.published'), false);
   assert.equal(right.messages.some(value => value.type === 'call.peers' && value.peers.some(peer => peer.microphone)), false);
 });
+test('one account cannot reserve simultaneous calls in separate groups', async t => {
+  const f = await fixture(t, 2), actor = f.actors[0];
+  const groups = [f.group];
+  for (let index = 1; index < 16; index++) {
+    f.advance(60_000);
+    groups.push(good(await f.rpc(actor, 'world.community.create', { requestId: `quota_group_${index}`,
+      name: `Synthetic quota group ${index}`, joinPolicy: 'open' })).community);
+  }
+  const results = [];
+  for (let index = 0; index < groups.length; index++) results.push(await f.rpc(actor, 'call.join', {
+    requestId: `quota_call_${index}`, mode: 'group', targetId: groups[index].communityId }));
+  assert.equal(results.filter(result => result.ok).length, 1);
+  assert.equal(results.slice(1).every(result => !result.ok && result.error.code === 'human_call_account_active'), true);
+  assert.equal(f.calls.status().calls, 1);
+});
+test('incoming one-to-one is caller-bound, exact-epoch accepted, and never creates from a stale intent', async t => {
+  const f = await fixture(t, 2), [caller, callee] = f.actors; await f.contact(caller, callee);
+  const call = good(await f.personalJoin(caller, callee, 'incoming_caller_join'));
+  const socket = f.socketFor(call);
+  const inbox = good(await f.rpc(callee, 'call.inbox', {}));
+  assert.equal(inbox.invitation.callId, call.callId); assert.equal(inbox.invitation.epoch, call.epoch);
+  assert.equal(inbox.invitation.roomId, caller.state.accountId); assert.equal(inbox.invitation.label, 'Synthetic participant');
+  assert.equal(Object.hasOwn(inbox.invitation, 'grantRef'), false); assert.equal(Object.hasOwn(inbox.invitation, 'deviceId'), false);
+  const stale = await f.rpc(callee, 'call.join', { requestId: 'incoming_wrong_epoch', mode: 'one-to-one',
+    targetId: caller.state.accountId, expectedCallId: call.callId, expectedEpoch: call.epoch + 1 });
+  assert.equal(stale.ok, false); assert.equal(stale.error.code, 'human_call_stale'); assert.equal(f.calls.status().calls, 1);
+  const accepted = good(await f.rpc(callee, 'call.join', { requestId: 'incoming_accept', mode: 'one-to-one',
+    targetId: caller.state.accountId, expectedCallId: call.callId, expectedEpoch: call.epoch }));
+  assert.equal(accepted.callId, call.callId); assert.equal(accepted.epoch, call.epoch); assert.equal(f.calls.status().calls, 1);
+  good(await f.rpc(callee, 'call.leave', { callId: call.callId, epoch: call.epoch }));
+  good(await f.rpc(caller, 'call.leave', { callId: call.callId, epoch: call.epoch }));
+  assert.equal(f.calls.status().calls, 0); assert.equal(socket.readyState, 3);
+  const staleAfterEnd = await f.rpc(callee, 'call.join', { requestId: 'incoming_after_end', mode: 'one-to-one',
+    targetId: caller.state.accountId, expectedCallId: call.callId, expectedEpoch: call.epoch });
+  assert.equal(staleAfterEnd.ok, false); assert.equal(staleAfterEnd.error.code, 'human_call_stale'); assert.equal(f.calls.status().calls, 0);
+});
+test('same expected incoming join request retries the still-unbound admission idempotently', async t => {
+  const f = await fixture(t, 2), [caller, callee] = f.actors; await f.contact(caller, callee);
+  const call = good(await f.personalJoin(caller, callee, 'incoming_retry_caller'));
+  f.socketFor(call);
+  const args = { requestId: 'incoming_retry_same', mode: 'one-to-one', targetId: caller.state.accountId,
+    expectedCallId: call.callId, expectedEpoch: call.epoch };
+  const first = good(await f.rpc(callee, 'call.join', args)), refs = f.calls.status().references;
+  const retry = good(await f.rpc(callee, 'call.join', args));
+  assert.deepEqual(retry, first, 'an identical retry receives the same unconsumed admission');
+  assert.equal(f.calls.status().calls, 1); assert.equal(f.calls.status().references, refs);
+  const differentRequest = await f.rpc(callee, 'call.join', { ...args, requestId: 'incoming_retry_different' });
+  assert.equal(differentRequest.ok, false); assert.equal(differentRequest.error.code, 'human_call_active');
+  assert.equal(f.calls.status().references, refs);
+  const bound = f.socketFor(retry); assert.equal(bound.readyState, 1);
+});
+test('inbox is read-only, omits unbound or blocked callers, and never extends the invitation lease', async t => {
+  const f = await fixture(t, 2), [caller, callee] = f.actors; await f.contact(caller, callee);
+  const call = good(await f.personalJoin(caller, callee, 'inbox_readonly_call'));
+  const unbound = good(await f.rpc(callee, 'call.inbox', {})); assert.equal(unbound.invitation, null);
+  const socket = f.socketFor(call), refs = f.calls.status().references;
+  const visible = good(await f.rpc(callee, 'call.inbox', {}));
+  assert.equal(visible.invitation.callId, call.callId); assert.equal(f.calls.status().references, refs);
+  f.advance(29_000); assert.equal(good(await f.rpc(callee, 'call.inbox', {})).invitation.callId, call.callId);
+  f.advance(1_000); assert.equal(good(await f.rpc(callee, 'call.inbox', {})).invitation, null);
+  assert.equal(f.calls.status().calls, 0); assert.equal(socket.readyState, 3);
+
+  const second = good(await f.personalJoin(caller, callee, 'inbox_block_call')); f.socketFor(second);
+  good(await f.rpc(callee, 'contacts.block', { peerAccountId: caller.state.accountId }));
+  assert.equal(good(await f.rpc(callee, 'call.inbox', {})).invitation, null);
+});
+test('actual lifecycle and media ports forward exact expected call intent to the signed server before transport', async t => {
+  const f = await fixture(t, 2), [caller, callee] = f.actors; await f.contact(caller, callee);
+  const invitation = good(await f.personalJoin(caller, callee, 'route_caller_join')); f.socketFor(invitation);
+  const extensionCalls = [], createPorts = await loadHumanCallPorts();
+  const client = { async extension(op, args, context) {
+    const wireArgs = JSON.parse(JSON.stringify(args));
+    extensionCalls.push({ op, args: wireArgs, expectedAccountId: context.expectedAccountId });
+    const result = await f.rpc(callee, op, wireArgs);
+    if (!result.ok) throw Object.assign(new Error(result.error.code), { code: result.error.code });
+    return result;
+  } };
+  let socketCount = 0;
+  const socketFactory = rawUrl => {
+    socketCount++;
+    const id = decodeURIComponent(new URL(rawUrl).pathname.split('/').at(-1));
+    const clientSocket = { readyState: 0, onopen: null, onmessage: null, onclose: null,
+      send(raw) { serverSocket.input(JSON.parse(raw)); }, close() { serverSocket.close(); } };
+    const serverSocket = new Socket(), send = serverSocket.send.bind(serverSocket), close = serverSocket.close.bind(serverSocket);
+    serverSocket.send = raw => { send(raw); clientSocket.onmessage?.({ data: raw }); };
+    serverSocket.close = () => { close(); clientSocket.readyState = 3; clientSocket.onclose?.({}); };
+    queueMicrotask(() => { f.wss.emit('connection', serverSocket, { headers: { origin: ORIGIN } }, id);
+      clientSocket.readyState = 1; clientSocket.onopen?.(); });
+    return clientSocket;
+  };
+  const ports = createPorts({ client, socketFactory, rtcFactory: () => ({ connectionState: 'new', signalingState: 'stable',
+    addTransceiver() {}, createDataChannel() { return { close() {} }; }, close() {} }), acquire: async () => { throw new Error('capture_not_expected'); } });
+  const lifecycle = createCallLifecycle({ host: ports.host, media: ports.media, transport: ports.transport });
+  t.after(() => lifecycle.dispose()); lifecycle.setIdentity({ accountId: callee.state.accountId, deviceId: callee.state.deviceId });
+  const joined = await lifecycle.join({ roomId: caller.state.accountId, mode: 'one-to-one',
+    expectedCallId: invitation.callId, expectedEpoch: invitation.epoch });
+  assert.equal(joined.ok, true, joined.code); assert.equal(lifecycle.snapshot().microphone, 'off');
+  assert.deepEqual(extensionCalls[0], { op: 'call.join', expectedAccountId: callee.state.accountId,
+    args: { requestId: extensionCalls[0].args.requestId, mode: 'one-to-one', targetId: caller.state.accountId,
+      expectedCallId: invitation.callId, expectedEpoch: invitation.epoch } });
+  assert.equal(socketCount, 1); lifecycle.end();
+});
+test('declining a pending personal invitation does not leave the callee current group call', async t => {
+  const f = await fixture(t, 3), [groupMember, caller, callee] = f.actors;
+  const group = good(await f.groupJoin(callee, 'decline_keep_group'));
+  await f.contact(caller, callee); await f.contact(caller, groupMember);
+  const call = good(await f.personalJoin(caller, callee, 'decline_caller_join')); const socket = f.socketFor(call);
+  const inbox = good(await f.rpc(callee, 'call.inbox', {})); assert.equal(inbox.invitation.callId, call.callId);
+  const strangerDecline = await f.rpc(groupMember, 'call.decline', { callId: call.callId, epoch: call.epoch });
+  assert.equal(strangerDecline.ok, false); assert.equal(strangerDecline.error.code, 'human_call_denied');
+  assert.equal(f.calls.status().calls, 2); assert.equal(socket.readyState, 1);
+  const declined = good(await f.rpc(callee, 'call.decline', { callId: call.callId, epoch: call.epoch }));
+  assert.equal(declined.declined, true); assert.equal(socket.readyState, 3);
+  assert.equal(f.calls.status().calls, 1);
+  const secondGroupMember = good(await f.groupJoin(groupMember, 'decline_group_peer'));
+  assert.equal(secondGroupMember.callId, group.callId);
+});
 test('microphone purpose is single-use and tied to the bound canonical peer, not a second socket', async t => {
   const f = await fixture(t), a = good(await f.groupJoin(f.actors[0])), b = good(await f.groupJoin(f.actors[1]));
   const left = f.socketFor(a); f.socketFor(b);
@@ -230,11 +361,14 @@ test('ninth pending socket in one valid call is denied and an observed close fre
   assert.equal(replacement.readyState, 1); assert.equal(f.calls.status().ownedSockets, 8);
 });
 test('129th owned pending socket across sixteen valid calls is denied without allocating another slot', async t => {
-  const f = await fixture(t, 16), admissions = [good(await f.groupJoin(f.actors[0]))];
+  const f = await fixture(t, 16), groups = [f.group], admissions = [];
   for (let n = 1; n < 16; n++) {
     const group = good(await f.rpc(f.actors[n], 'world.community.create', { requestId: 'socket_group_' + n, name: 'Synthetic bounded group', joinPolicy: 'open' })).community;
-    admissions.push(good(await f.rpc(f.actors[n], 'call.join', { requestId: 'socket_join_' + n, mode: 'group', targetId: group.communityId })));
+    groups.push(group); f.advance(60_000);
   }
+  // Finish all rate-limited group creation before starting the 30-second call leases.
+  for (let n = 0; n < 16; n++) admissions.push(good(await f.rpc(f.actors[n], 'call.join', {
+    requestId: 'socket_join_' + n, mode: 'group', targetId: groups[n].communityId })));
   const pending = admissions.flatMap(admission => Array.from({ length: 8 }, () => f.pendingSocket(admission)));
   assert.equal(pending.length, 128); assert.equal(pending.every(socket => socket.readyState === 1), true);
   const denied = f.pendingSocket(admissions[0]); assert.equal(denied.readyState, 3);

@@ -90,9 +90,11 @@ export interface WorldHumanCallState {
   mode: 'one-to-one' | 'group' | null;
   code: string | null;
   turnConfigured: false;
+  incomingCall?: WorldIncomingCall | null;
   /** Display-only name supplied by the current authenticated UI target. Never a call grant. */
   targetLabel?: string | null;
 }
+export interface WorldIncomingCall { callId: string; epoch: number; roomId: string; label: string }
 export interface WorldHumanCallPort {
   snapshot(): WorldHumanCallState;
   subscribe(listener: (state: WorldHumanCallState) => void): () => void;
@@ -101,6 +103,10 @@ export interface WorldHumanCallPort {
   disableMicrophone(): void;
   end(): void;
   resumeListening(): Promise<void>;
+  checkIncoming(): Promise<WorldIncomingCall | null>;
+  cancelIncomingChecks(): void;
+  acceptIncoming(invitation: WorldIncomingCall): Promise<{ ok: boolean; code?: string }>;
+  declineIncoming(invitation: WorldIncomingCall): Promise<{ ok: boolean; code?: string }>;
 }
 export interface WorldAppOptions {
   api: WorldApi;

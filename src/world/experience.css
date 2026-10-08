@@ -1355,19 +1355,53 @@
 .sw-human-call-actions > .sw-button { box-sizing: border-box; min-width: 44px; min-height: 44px; padding: 8px 12px; font-size: 12px; line-height: 16px; white-space: nowrap; }
 .sw-human-call-actions > .sw-button[hidden] { display: none; }
 
-/* Full-screen chat hides the normal header and navigation. Keep the call in
-   the same document flow and give it an explicit row above the conversation. */
-.sw-app[data-human-call-active="true"]:has(.sw-inbox.has-room) {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas: "notice" "call" "main";
+/* A single explicit incoming personal-call decision; no action starts media before Accept. */
+.sw-app[data-human-call-incoming="true"]:not([data-human-call-active="true"]) {
+  grid-template-rows: 60px auto auto minmax(0, 1fr);
+  grid-template-areas: "rail header" "rail notice" "rail call" "rail main";
 }
-.sw-app[data-human-call-active="true"]:has(.sw-detail-view.has-chat) {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas: "notice" "call" "main";
+.sw-app[data-human-call-incoming="true"] > .sw-human-call-strip { grid-area: call; }
+.sw-human-call-strip { flex-direction: column; align-items: stretch; justify-content: initial; gap: 6px; }
+.sw-human-call-live { box-sizing: border-box; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sw-human-call-live[hidden] { display: none; }
+.sw-human-call-incoming[hidden] { display: none; }
+.sw-human-call-incoming {
+  box-sizing: border-box; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border: 1px solid var(--sw-line); border-radius: 10px; background: var(--sw-bg);
+}
+.sw-human-call-incoming-label { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.sw-human-call-incoming-status { flex: 0 1 auto; min-width: 0; color: var(--sw-muted); font-size: 12px; line-height: 16px; }
+.sw-human-call-incoming-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.sw-human-call-incoming-actions > .sw-button { box-sizing: border-box; min-width: 44px; min-height: 44px; padding: 8px 12px; font-size: 13px; line-height: 18px; white-space: nowrap; }
+.sw-human-call-incoming-actions > .sw-button[hidden] { display: none; }
+.sw-human-call-incoming-actions > .sw-button:disabled { opacity: .62; }
+@media (max-width: 760px) and (min-width: 721px) {
+  .sw-app[data-human-call-incoming="true"]:not([data-human-call-active="true"]) {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px auto auto minmax(0, 1fr) calc(64px + env(safe-area-inset-bottom, 0px));
+    grid-template-areas: "header" "notice" "call" "main" "footer";
+  }
+}
+@media (max-width: 720px) {
+  .sw-app[data-human-call-incoming="true"]:not([data-human-call-active="true"]) {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: 64px auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "header" "notice" "call" "main" "footer";
+  }
+  .sw-human-call-strip { padding: 6px max(10px, env(safe-area-inset-right, 0px)) 6px max(10px, env(safe-area-inset-left, 0px)); }
+  .sw-human-call-live { flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .sw-human-call-incoming { flex-wrap: wrap; gap: 4px 8px; padding: 4px; }
+  .sw-human-call-incoming-label { flex-basis: 100%; }
+  .sw-human-call-incoming-status { flex: 1 1 auto; }
+  .sw-human-call-incoming-actions { margin-left: auto; max-width: 100%; }
+  .sw-human-call-incoming-actions > .sw-button { padding-inline: 10px; }
+  .sw-app[data-human-call-incoming="true"]:not([data-human-call-active="true"]):has(.sw-inbox.has-room),
+  .sw-app[data-human-call-incoming="true"]:not([data-human-call-active="true"]):has(.sw-detail-view.has-chat) {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "notice" "call" "main";
+  }
 }
 
+/* Full-screen chat hides the normal header and navigation. Keep the call in
+   the same document flow and give it an explicit row above the conversation. */
 @media (max-width: 760px) and (min-width: 721px) {
   .sw-app[data-human-call-active="true"] {
     grid-template-columns: minmax(0, 1fr);
@@ -1390,6 +1424,12 @@
   .sw-human-call-copy { flex: 1 1 100%; }
   .sw-human-call-actions { margin-left: auto; max-width: 100%; }
   .sw-human-call-actions > .sw-button { padding-inline: 10px; }
+  .sw-app[data-human-call-active="true"]:has(.sw-inbox.has-room),
+  .sw-app[data-human-call-active="true"]:has(.sw-detail-view.has-chat) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "notice" "call" "main";
+  }
 }
 
 @media(max-width:1100px) {

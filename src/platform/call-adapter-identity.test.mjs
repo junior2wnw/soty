@@ -84,12 +84,14 @@ test('fanout uses one listener snapshot, reentrant listener replacement cannot c
   await c.options.onState(view()); assert.equal(first, 2); assert.equal(later, 2);
 });
 
-async function worldFixture({ failRead = false, failMount = false, failBootstrap = false, captureOwnerJoin = false, holdFirstOwnerJoinResult = false } = {}) {
+async function worldFixture({ failRead = false, failMount = false, failBootstrap = false, captureOwnerJoin = false, holdFirstOwnerJoinResult = false,
+  incomingInvitation = null, holdIncomingRead = false } = {}) {
   const subscribers = new Set(), pageListeners = new Map(), mounts = [], order = [];
   let current = failBootstrap ? view(null, null) : view(), resets = 0;
   let authorizations = 0, captures = 0, connections = 0, sessionCloses = 0, createdOwner;
   const ownerJoinTargets = [];
   const heldOwnerJoinResult = deferred(); let holdNextOwnerJoinResult = holdFirstOwnerJoinResult;
+  const heldIncomingRead = deferred(); let holdNextIncomingRead = holdIncomingRead, incomingReads = 0, declineCalls = [];
   const startupError = new Error('synthetic startup failure');
   const client = { getLocalState() { order.push('read'); return failRead ? Promise.reject(startupError) : Promise.resolve(current); },
     async bootstrap() { if (failBootstrap) throw startupError; throw new Error('unexpected bootstrap'); }, async extension() { return {}; } };
@@ -107,7 +109,9 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
       media: { acquire() { captures++; throw new Error('unexpected capture'); } },
       transport: { join() { connections++; return { close() { sessionCloses++; }, preparePublication() {} }; } },
       snapshot: () => ({ connection: connections ? 'admitted' : 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }),
-      subscribe: () => () => {}, async resumeListening() {} }) },
+      subscribe: () => () => {}, async resumeListening() {},
+      async inbox(accountId) { incomingReads++; if (holdNextIncomingRead) { holdNextIncomingRead = false; return heldIncomingRead.promise; } return { invitation: incomingInvitation }; },
+      async decline(accountId, invite) { declineCalls.push({ accountId, callId: invite.callId, epoch: invite.epoch }); return { declined: true }; } }) },
     '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle(ports) {
       createdOwner = createCallLifecycle(ports);
       return captureOwnerJoin ? {
@@ -137,7 +141,8 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     dispatch(type, persisted) { for (const callback of [...(pageListeners.get(type) ?? [])]) callback({ persisted }); },
     authorizations: () => authorizations, captures: () => captures, resets: () => resets,
     connections: () => connections, sessionCloses: () => sessionCloses, createdOwner: () => createdOwner,
-    ownerJoinTargets: () => ownerJoinTargets, releaseHeldOwnerJoinResult: () => heldOwnerJoinResult.resolve() };
+    ownerJoinTargets: () => ownerJoinTargets, releaseHeldOwnerJoinResult: () => heldOwnerJoinResult.resolve(),
+    incomingReads: () => incomingReads, declineCalls: () => declineCalls, releaseIncomingRead(value) { heldIncomingRead.resolve(value); } };
 }
 
 test('actual world default owns one lazy call lifecycle with no automatic admission capture or connection', async () => {
@@ -228,6 +233,34 @@ test('a late successful join result cannot relabel a newer same-room call genera
   assert.equal((await oldJoin).ok, true, 'the older join completed successfully before its result was released');
   assert.deepEqual(f.ownerJoinTargets(), [{ roomId: 'R', mode: 'group' }, { roomId: 'R', mode: 'group' }]);
   assert.equal(call.snapshot().targetLabel, 'Новое имя', 'the old result cannot overwrite the newer same-room scope label');
+  f.dispatch('pagehide', false);
+});
+
+test('incoming Accept passes the exact call intent through the lifecycle without treating its label as authority', async () => {
+  const invitation = { callId: 'call-123', epoch: 7, roomId: 'caller-account', label: '  Контакт\u0000 Имя  ' };
+  const f = await worldFixture({ captureOwnerJoin: true, incomingInvitation: invitation }); await f.adapter.startWorld({}); await tick();
+  const call = f.mounts[0].options.humanCalls;
+  assert.deepEqual(JSON.parse(JSON.stringify(await call.checkIncoming())), { ...invitation, label: 'Контакт Имя' });
+  assert.equal(call.snapshot().incomingCall.callId, invitation.callId);
+  assert.equal((await call.acceptIncoming(call.snapshot().incomingCall)).ok, true);
+  assert.deepEqual(f.ownerJoinTargets(), [{ roomId: invitation.roomId, mode: 'one-to-one',
+    expectedCallId: invitation.callId, expectedEpoch: invitation.epoch }]);
+  assert.equal(call.snapshot().targetLabel, 'Контакт Имя'); assert.equal(call.snapshot().microphone, 'off');
+  assert.equal(call.snapshot().incomingCall, null); f.dispatch('pagehide', false);
+});
+
+test('late incoming poll from an old account mount is ignored and decline is scoped to the current account', async () => {
+  const invitation = { callId: 'call-old', epoch: 3, roomId: 'caller-old', label: 'Собеседник' };
+  const f = await worldFixture({ incomingInvitation: invitation, holdIncomingRead: true }); await f.adapter.startWorld({}); await tick();
+  const old = f.mounts[0].options.humanCalls, pendingRead = old.checkIncoming(); await tick();
+  f.emit(view('B', 'DB')); f.emit(view('A', 'D')); await tick();
+  const current = f.mounts[2].options.humanCalls;
+  const currentInvite = await current.checkIncoming(); assert.equal(currentInvite.callId, invitation.callId);
+  f.releaseIncomingRead({ invitation: { callId: 'stale-call', epoch: 2, roomId: 'stale-caller', label: 'Старое имя' } });
+  assert.equal(await pendingRead, null); assert.equal(old.snapshot().incomingCall ?? null, null);
+  assert.equal((await old.declineIncoming(invitation)).code, 'ACTIVE_PROFILE_CHANGED');
+  assert.equal((await current.declineIncoming(currentInvite)).ok, true);
+  assert.deepEqual(f.declineCalls(), [{ accountId: 'A', callId: invitation.callId, epoch: invitation.epoch }]);
   f.dispatch('pagehide', false);
 });
 

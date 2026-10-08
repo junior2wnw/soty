@@ -62,6 +62,13 @@ class WorldApplication {
   private readonly mobileNav = el('nav', 'sw-mobile-nav');
   private readonly live = el('div', 'sw-sr-only');
   private readonly humanCallStrip = el('section', 'sw-human-call-strip');
+  private readonly humanCallIncoming = el('div', 'sw-human-call-incoming');
+  private readonly humanCallIncomingLabel = el('strong', 'sw-human-call-incoming-label');
+  private readonly humanCallIncomingStatus = el('span', 'sw-human-call-incoming-status');
+  private readonly humanCallIncomingActions = el('div', 'sw-human-call-incoming-actions');
+  private readonly humanCallIncomingAccept = button('Принять', undefined, 'sw-button-quiet', () => { void this.acceptHumanIncomingCall(); });
+  private readonly humanCallIncomingDecline = button('Отклонить', undefined, 'sw-button-quiet', () => { void this.declineHumanIncomingCall(); });
+  private readonly humanCallLive = el('div', 'sw-human-call-live');
   private readonly humanCallTarget = el('span', 'sw-human-call-target');
   private readonly humanCallStatus = el('strong', 'sw-human-call-status');
   private readonly humanCallMicStatus = el('span', 'sw-human-call-mic-status');
@@ -74,6 +81,11 @@ class WorldApplication {
   private humanCallJoinPending = false;
   private humanCallMicPending = false;
   private humanCallResumePending = false;
+  private humanCallIncomingPending = false;
+  private incomingPollTimer: number | null = null;
+  private incomingPollGeneration = 0;
+  private incomingPollInFlight = false;
+  private incomingPollSuspended = false;
   private readonly controller = new AbortController();
   private readonly avatars: AvatarHydrator;
   private readonly dialogs = new Set<WorldDialog>();
@@ -156,13 +168,22 @@ class WorldApplication {
     this.main.id = 'soty-main'; this.main.tabIndex = -1;
     this.humanCallStrip.setAttribute('role', 'region'); this.humanCallStrip.setAttribute('aria-label', 'Текущий звонок');
     this.humanCallStrip.hidden = true;
+    this.humanCallIncoming.hidden = true;
+    this.humanCallIncoming.setAttribute('role', 'group');
+    this.humanCallIncomingLabel.setAttribute('aria-live', 'polite');
+    this.humanCallIncomingStatus.setAttribute('role', 'status'); this.humanCallIncomingStatus.setAttribute('aria-live', 'polite');
+    this.humanCallIncomingAccept.setAttribute('aria-label', 'Принять входящий личный звонок');
+    this.humanCallIncomingDecline.setAttribute('aria-label', 'Отклонить входящий личный звонок');
     this.humanCallStatus.setAttribute('role', 'status'); this.humanCallStatus.setAttribute('aria-live', 'polite'); this.humanCallStatus.setAttribute('aria-atomic', 'true');
     this.humanCallMicButton.setAttribute('aria-label', 'Включить микрофон'); this.humanCallLeaveButton.setAttribute('aria-label', 'Выйти из звонка');
     this.humanCallResumeButton.setAttribute('aria-label', 'Разрешить воспроизведение звука звонка'); this.humanCallResumeButton.title = 'Нажмите, чтобы услышать звонок';
     this.humanCallResumeButton.hidden = true;
     const humanCallCopy = el('div', 'sw-human-call-copy'); humanCallCopy.append(this.humanCallTarget, this.humanCallStatus, this.humanCallMicStatus);
     this.humanCallActions.append(this.humanCallResumeButton, this.humanCallMicButton, this.humanCallLeaveButton);
-    this.humanCallStrip.append(humanCallCopy, this.humanCallActions);
+    this.humanCallIncomingActions.append(this.humanCallIncomingAccept, this.humanCallIncomingDecline);
+    this.humanCallIncoming.append(this.humanCallIncomingLabel, this.humanCallIncomingStatus, this.humanCallIncomingActions);
+    this.humanCallLive.append(humanCallCopy, this.humanCallActions);
+    this.humanCallStrip.append(this.humanCallIncoming, this.humanCallLive);
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
     root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
@@ -172,6 +193,7 @@ class WorldApplication {
       this.unsubscribeHumanCall = options.humanCalls.subscribe(state => this.receiveHumanCallState(state));
       this.humanCallState = options.humanCalls.snapshot();
       this.renderHumanCallStrip();
+      this.startIncomingCallPolling();
     }
     this.unsubscribePwa = this.pwa.subscribe(state => {
       const recovered = state.connection === 'online' && this.connection !== 'online';
@@ -194,6 +216,8 @@ class WorldApplication {
     this.avatars = new AvatarHydrator(this.api, root);
     this.renderNavigation(); this.main.append(this.loading('Открываем Соты'));
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
+    window.addEventListener('pagehide', () => this.stopIncomingCallPolling(), { signal: this.controller.signal });
+    window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); }, { signal: this.controller.signal });
     window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
@@ -227,9 +251,14 @@ class WorldApplication {
 
   private renderHumanCallStrip(): void {
     const state = this.humanCallState, active = this.humanCallActive(state);
-    this.humanCallStrip.hidden = !active;
+    const invitation = state?.incomingCall ?? null;
+    this.humanCallStrip.hidden = !active && !invitation;
     if (active) this.root.dataset.humanCallActive = 'true';
     else delete this.root.dataset.humanCallActive;
+    if (invitation) this.root.dataset.humanCallIncoming = 'true';
+    else delete this.root.dataset.humanCallIncoming;
+    this.renderHumanIncomingCall(invitation, active);
+    this.humanCallLive.hidden = !active;
     if (!state || !active) { this.humanCallTarget.hidden = true; this.updateGroupCallButtons(); return; }
 
     const targetLabel = state.targetLabel?.trim() || (state.mode === 'group' ? 'Звонок группы' : 'Личный звонок');
@@ -273,6 +302,78 @@ class WorldApplication {
     this.humanCallResumeButton.querySelector('span')!.textContent = this.humanCallResumePending ? 'Включаем звук…' : 'Слушать';
     this.humanCallResumeButton.setAttribute('aria-label', this.humanCallResumePending ? 'Включаем звук звонка' : 'Разрешить воспроизведение звука звонка');
     this.updateGroupCallButtons();
+  }
+
+  private renderHumanIncomingCall(invitation: WorldHumanCallState['incomingCall'], active: boolean): void {
+    this.humanCallIncoming.hidden = !invitation;
+    if (!invitation) return;
+    const name = invitation.label.trim() || 'Личный контакт';
+    this.humanCallIncomingLabel.textContent = `Входящий звонок: ${name}`;
+    this.humanCallIncomingLabel.title = name;
+    this.humanCallIncoming.setAttribute('aria-label', `Входящий личный звонок от ${name}`);
+    this.humanCallIncomingStatus.textContent = active ? 'Сначала завершите текущий звонок, чтобы принять новый.'
+      : this.humanCallIncomingPending ? 'Обрабатываем приглашение…' : '';
+    this.humanCallIncomingAccept.disabled = active || this.humanCallIncomingPending;
+    this.humanCallIncomingDecline.disabled = this.humanCallIncomingPending;
+    this.humanCallIncomingAccept.textContent = this.humanCallIncomingPending ? 'Подключаемся…' : 'Принять';
+    this.humanCallIncomingDecline.textContent = this.humanCallIncomingPending ? 'Подождите' : 'Отклонить';
+  }
+
+  private async pollHumanIncomingCall(): Promise<void> {
+    const port = this.options.humanCalls;
+    if (!port || typeof port.checkIncoming !== 'function' || this.destroyed || this.incomingPollSuspended || this.incomingPollInFlight) return;
+    this.incomingPollInFlight = true;
+    const generation = ++this.incomingPollGeneration;
+    try {
+      await port.checkIncoming();
+      if (!this.destroyed && !this.incomingPollSuspended && generation === this.incomingPollGeneration)
+        this.receiveHumanCallState(port.snapshot());
+    } catch { /* A quiet poll retries on the next interval. */ }
+    finally {
+      this.incomingPollInFlight = false;
+      if (!this.destroyed && !this.incomingPollSuspended && generation !== this.incomingPollGeneration)
+        void this.pollHumanIncomingCall();
+    }
+  }
+
+  private startIncomingCallPolling(): void {
+    if (!this.options.humanCalls || typeof this.options.humanCalls.checkIncoming !== 'function' || this.destroyed) return;
+    this.incomingPollSuspended = false;
+    if (this.incomingPollTimer !== null) return;
+    void this.pollHumanIncomingCall();
+    this.incomingPollTimer = window.setInterval(() => { void this.pollHumanIncomingCall(); }, 5000);
+  }
+
+  private stopIncomingCallPolling(): void {
+    this.incomingPollSuspended = true; this.incomingPollGeneration++;
+    if (this.incomingPollTimer !== null) window.clearInterval(this.incomingPollTimer);
+    this.incomingPollTimer = null; this.options.humanCalls?.cancelIncomingChecks?.();
+  }
+
+  private async acceptHumanIncomingCall(): Promise<void> {
+    const port = this.options.humanCalls, invitation = this.humanCallState?.incomingCall;
+    if (!port || !invitation || this.humanCallActive() || this.humanCallIncomingPending) return;
+    this.humanCallIncomingPending = true; this.renderHumanCallStrip();
+    try {
+      const result = await port.acceptIncoming(invitation);
+      if (this.destroyed) return;
+      this.receiveHumanCallState(port.snapshot());
+      if (!result.ok) { this.toast('Это приглашение уже недоступно. Проверяем новые звонки.', true); void this.pollHumanIncomingCall(); }
+    } catch { if (!this.destroyed) this.toast('Не удалось принять звонок. Попробуйте ещё раз.', true); }
+    finally { this.humanCallIncomingPending = false; if (!this.destroyed) this.renderHumanCallStrip(); }
+  }
+
+  private async declineHumanIncomingCall(): Promise<void> {
+    const port = this.options.humanCalls, invitation = this.humanCallState?.incomingCall;
+    if (!port || !invitation || this.humanCallIncomingPending) return;
+    this.humanCallIncomingPending = true; this.renderHumanCallStrip();
+    try {
+      const result = await port.declineIncoming(invitation);
+      if (this.destroyed) return;
+      this.receiveHumanCallState(port.snapshot());
+      if (!result.ok) { this.toast('Это приглашение уже недоступно. Проверяем новые звонки.', true); void this.pollHumanIncomingCall(); }
+    } catch { if (!this.destroyed) this.toast('Не удалось отклонить звонок. Попробуйте ещё раз.', true); }
+    finally { this.humanCallIncomingPending = false; if (!this.destroyed) this.renderHumanCallStrip(); }
   }
 
   private updateGroupCallButtons(): void {
@@ -363,6 +464,7 @@ class WorldApplication {
   }
 
   destroy(): void {
+    this.stopIncomingCallPolling();
     this.destroyed = true; this.requestSequence++; this.screenSequence++;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
     this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();

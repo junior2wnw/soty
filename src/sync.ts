@@ -458,8 +458,10 @@ export interface HumanCallConnectionState {
   connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
   peers: number; playbackBlocked: boolean; turnConfigured: false;
 }
-interface HumanCallScope { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number }
+interface HumanCallScope { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
+  expectedCallId?: string; expectedEpoch?: number }
 interface HumanCallAdmission { schema: string; purpose: string; callId: string; epoch: number; accountId: string; deviceId: string; grantRef: string; expiresAt: number }
+interface HumanCallInvitation { callId: string; epoch: number; roomId: string; label: string }
 interface HumanCallClient { extension<T>(operation: string, args: Record<string, unknown>, context: { expectedAccountId: string }): Promise<T> }
 type HumanPeer = P2pPeer & { microphone: boolean; makingOffer: boolean; ignoreOffer: boolean; queuedOffer: boolean };
 
@@ -486,9 +488,12 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     if (signal.aborted) fail();
     const join = purpose === 'join', session = active;
     if (!join && (purpose !== 'microphone' || !session || !session.matches(scope))) fail();
+    const hasExpectedCallId = scope.expectedCallId !== undefined, hasExpectedEpoch = scope.expectedEpoch !== undefined;
+    if (join && hasExpectedCallId !== hasExpectedEpoch) fail('human_call_stale');
     const token = join ? 0 : session!.reserveMicrophone();
     const reply = await client.extension<HumanCallAdmission>(join ? 'call.join' : 'call.microphone', join
-      ? { requestId: nonce(), mode: scope.mode, targetId: scope.roomId }
+      ? { requestId: nonce(), mode: scope.mode, targetId: scope.roomId,
+        ...(hasExpectedCallId ? { expectedCallId: scope.expectedCallId!, expectedEpoch: scope.expectedEpoch! } : {}) }
       : { requestId: nonce(), callId: session!.reply.callId, epoch: session!.reply.epoch }, { expectedAccountId: scope.accountId });
     if (reply.schema !== 'soty.human-call-admission.v1' || reply.purpose !== purpose || reply.accountId !== scope.accountId
       || reply.deviceId !== scope.deviceId || typeof reply.grantRef !== 'string' || !/^[a-zA-Z0-9-]{1,160}$/.test(reply.callId)
@@ -715,6 +720,15 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
   }
   return {
     host: { authorize }, media: { acquire: () => acquire ? acquire() : navigator.mediaDevices.getUserMedia({ audio: true, video: false }) },
+    async inbox(accountId: string) {
+      if (!/^[A-Za-z0-9_.:-]{1,160}$/u.test(accountId)) fail('human_call_stale');
+      return client.extension<{ invitation: HumanCallInvitation | null }>('call.inbox', {}, { expectedAccountId: accountId });
+    },
+    async decline(accountId: string, invitation: Pick<HumanCallInvitation, 'callId' | 'epoch'>) {
+      if (!/^[A-Za-z0-9_.:-]{1,160}$/u.test(accountId) || !/^[A-Za-z0-9_.:-]{1,160}$/u.test(invitation?.callId)
+        || !Number.isSafeInteger(invitation?.epoch) || invitation.epoch < 1) fail('human_call_stale');
+      return client.extension<{ declined: boolean }>('call.decline', { callId: invitation.callId, epoch: invitation.epoch }, { expectedAccountId: accountId });
+    },
     transport: { async join({ scope, admission, signal }: { scope: HumanCallScope; admission: object; signal: AbortSignal }) {
       const proof = admitted.get(admission); if (!proof || proof.reply.purpose !== 'join' || proof.scope !== scope || signal.aborted || active) fail();
       if (ownedSessions.size >= 16) fail('human_call_capacity');
