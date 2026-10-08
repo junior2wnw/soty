@@ -44,7 +44,11 @@ export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): 
   function cancel(): void { generation++; controller.abort(); controller = new AbortController(); }
   function closeDialog(): void {
     if (!current()) return;
-    if (unsaved() && !window.confirm('Закрыть и удалить черновик? Если подтверждение не получено, запись могла сохраниться в Поведай.')) return;
+    const unconfirmed = [...drafts.values()].some(draft => draft.pending || draft.unknown);
+    const question = unconfirmed
+      ? 'Отправка не подтверждена. Удалить черновик в этом окне? Уже отправленный отзыв в Поведай останется.'
+      : 'Закрыть и удалить черновик в этом окне?';
+    if (unsaved() && !window.confirm(question)) return;
     drafts.clear(); draftEntry = null; cancel(); dialog.close(); options.onClose?.();
   }
   dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
@@ -89,7 +93,7 @@ export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): 
     function nativeFailure(error: unknown): string {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       if (['managed_reviews_unavailable', 'unsupported_operation'].includes(code)) return 'Вход Сот для Поведай пока не подключён. Откройте отзывы у источника.';
-      if (['managed_source_grant_required', 'managed_principal_revoked'].includes(code)) return 'Источник не разрешил это действие.';
+      if (['managed_source_grant_required', 'managed_principal_revoked'].includes(code)) return 'Недостаточно прав в Поведай. Проверьте доступ на странице Поведай.';
       if (['managed_reviews_authentication_required', 'managed_actor_invalid', 'managed_identity_expired'].includes(code)) return 'Подтвердите вход в Поведай.';
       return 'Не удалось подтвердить вход или объект у источника.';
     }

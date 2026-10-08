@@ -100,6 +100,6 @@ test('current Source grant denial retires previously displayed private Native hi
   assert.equal(all(f.host).some(node => node.textContent === privateText), true, 'control: permitted private history is actually rendered');
   await f.click('Обновить записи');
   assert.equal(all(f.host).some(node => node.textContent === privateText), false, 'current Native denial must retire earlier private rows');
-  assert.equal(all(f.host).some(node => node.textContent === 'Источник не разрешил это действие.'), true);
+  assert.equal(all(f.host).some(node => node.textContent === 'Недостаточно прав в Поведай. Проверьте доступ на странице Поведай.'), true);
   assert.equal(f.calls.filter(value => value.method.includes('.collect')).length, 0);
 });
