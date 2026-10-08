@@ -10,5 +10,14 @@ export function observeAccount(listener: (state: LocalState) => void): () => voi
 export const accountClient = createConnectClient({
   projectId: 'soty', endpoint: '/api/connect/rpc', dbName: 'soty-connect-v1',
   scopedAppCleanup: true,
-  onState: state => { for (const listener of listeners) listener(state); },
+  onState: state => {
+    const outcomes: Promise<void>[] = [];
+    // Every committed observer runs synchronously; one screen fault cannot
+    // prevent another owner from retiring its resources. SDK sees failures.
+    for (const listener of [...listeners]) {
+      try { outcomes.push(Promise.resolve(listener(state))); }
+      catch (error) { outcomes.push(Promise.reject(error)); }
+    }
+    return Promise.all(outcomes).then(() => undefined);
+  },
 });

@@ -3,8 +3,12 @@ import { mountWorldApp, type WorldAppHandle } from '../world/app';
 import type { WorldAppOptions, WorldProfile } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
+import { bindCallIdentity, type CallIdentityLifecycle } from './call-identity';
 
-export async function startWorld(root: HTMLElement): Promise<void> {
+export async function startWorld(root: HTMLElement, dependencies: { callLifecycle?: CallIdentityLifecycle } = {}): Promise<void> {
+  const detachCall = dependencies.callLifecycle ? bindCallIdentity({ lifecycle: dependencies.callLifecycle,
+    client: accountClient, observeAccount, pageEvents: window }) : undefined;
+  try {
   // An existing durable identity can open local drafts before the network returns.
   // Every server operation still verifies the active installation through Connect.
   if (!(await accountClient.getLocalState()).accountId) await accountClient.bootstrap('Мои соты');
@@ -79,4 +83,5 @@ export async function startWorld(root: HTMLElement): Promise<void> {
     actionUrl.searchParams.delete('action'); history.replaceState({}, '', actionUrl);
     await actions.connectDevice();
   }
+  } catch (error) { detachCall?.(); throw error; }
 }
