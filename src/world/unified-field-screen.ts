@@ -441,7 +441,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         });
         actions.append(join, button('О сообществе', 'info', 'sw-button-quiet', () => options.onOpen(item, directory.getRecord(item.entity))));
       }
-    } else { const open = button(item.entity.kind === 'person' ? 'Профиль и контакт' : item.entity.kind === 'device' ? 'Управление устройствами' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity))); open.disabled = !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open); }
+    } else {
+      const open = button(item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
+      if (item.entity.kind === 'person') open.setAttribute('aria-label', 'Профиль и контакт');
+      else if (item.entity.kind === 'device') open.setAttribute('aria-label', 'Управление устройствами');
+      open.disabled = !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
+    }
     if (item.entity.kind === 'app' && record && 'canManage' in record && record.canManage && options.onAppSettings) actions.append(button('Настройки приложения', 'settings', 'sw-button-quiet', () => options.onAppSettings!(record as DirectoryApp)));
     const alreadyPlaced = engine?.snapshot().shortcuts.some(shortcut => fieldEntityKey(shortcut.entity) === fieldEntityKey(item.entity));
     actions.append(button(alreadyPlaced ? 'Добавить в другое пространство' : 'На моё поле', 'plus', 'sw-button-quiet', () => addToContext(item)));
