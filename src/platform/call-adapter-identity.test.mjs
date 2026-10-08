@@ -84,10 +84,12 @@ test('fanout uses one listener snapshot, reentrant listener replacement cannot c
   await c.options.onState(view()); assert.equal(first, 2); assert.equal(later, 2);
 });
 
-async function worldFixture({ failRead = false, failMount = false, failBootstrap = false } = {}) {
+async function worldFixture({ failRead = false, failMount = false, failBootstrap = false, captureOwnerJoin = false, holdFirstOwnerJoinResult = false } = {}) {
   const subscribers = new Set(), pageListeners = new Map(), mounts = [], order = [];
   let current = failBootstrap ? view(null, null) : view(), resets = 0;
   let authorizations = 0, captures = 0, connections = 0, sessionCloses = 0, createdOwner;
+  const ownerJoinTargets = [];
+  const heldOwnerJoinResult = deferred(); let holdNextOwnerJoinResult = holdFirstOwnerJoinResult;
   const startupError = new Error('synthetic startup failure');
   const client = { getLocalState() { order.push('read'); return failRead ? Promise.reject(startupError) : Promise.resolve(current); },
     async bootstrap() { if (failBootstrap) throw startupError; throw new Error('unexpected bootstrap'); }, async extension() { return {}; } };
@@ -106,7 +108,25 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
       transport: { join() { connections++; return { close() { sessionCloses++; }, preparePublication() {} }; } },
       snapshot: () => ({ connection: connections ? 'admitted' : 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }),
       subscribe: () => () => {}, async resumeListening() {} }) },
-    '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle(ports) { createdOwner = createCallLifecycle(ports); return createdOwner; } },
+    '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle(ports) {
+      createdOwner = createCallLifecycle(ports);
+      return captureOwnerJoin ? {
+        snapshot: () => createdOwner.snapshot(),
+        setIdentity: value => createdOwner.setIdentity(value),
+        join: value => {
+          ownerJoinTargets.push(structuredClone(value));
+          const pending = createdOwner.join(value);
+          if (holdNextOwnerJoinResult) {
+            holdNextOwnerJoinResult = false;
+            return pending.then(result => heldOwnerJoinResult.promise.then(() => result));
+          }
+          return pending;
+        },
+        enableMicrophone: (...args) => createdOwner.enableMicrophone(...args),
+        mute: (...args) => createdOwner.mute(...args), end: (...args) => createdOwner.end(...args),
+        dispose: (...args) => createdOwner.dispose(...args),
+      } : createdOwner;
+    } },
   }, { URL, window });
   const lifecycle = createCallLifecycle({ host: { authorize() { authorizations++; return {}; } },
     media: { acquire() { captures++; throw new Error('unexpected capture'); } },
@@ -116,7 +136,8 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     emit(value) { current = value; for (const callback of [...subscribers]) callback(value); },
     dispatch(type, persisted) { for (const callback of [...(pageListeners.get(type) ?? [])]) callback({ persisted }); },
     authorizations: () => authorizations, captures: () => captures, resets: () => resets,
-    connections: () => connections, sessionCloses: () => sessionCloses, createdOwner: () => createdOwner };
+    connections: () => connections, sessionCloses: () => sessionCloses, createdOwner: () => createdOwner,
+    ownerJoinTargets: () => ownerJoinTargets, releaseHeldOwnerJoinResult: () => heldOwnerJoinResult.resolve() };
 }
 
 test('actual world default owns one lazy call lifecycle with no automatic admission capture or connection', async () => {
@@ -165,6 +186,49 @@ test('default World call control from an old A mount cannot adopt a later A afte
   first.disableMicrophone(); first.end();
   assert.equal(f.createdOwner().snapshot().state, 'listening'); assert.equal(f.authorizations(), 2);
   assert.equal(f.sessionCloses(), 1); f.dispatch('pagehide', false);
+});
+
+test('display labels stay presentation-only and are fenced to the current A-B-A mount and call scope', async () => {
+  const f = await worldFixture({ captureOwnerJoin: true }); await f.adapter.startWorld({}); await tick();
+  const first = f.mounts[0].options.humanCalls;
+  assert.equal(first.snapshot().targetLabel, null);
+  assert.equal((await first.join({ roomId: 'R', mode: 'group', displayLabel: '  Старое\u0000 имя  ' })).ok, true);
+  assert.deepEqual(f.ownerJoinTargets()[0], { roomId: 'R', mode: 'group' }, 'display text never reaches the call owner');
+  assert.equal(first.snapshot().targetLabel, 'Старое имя');
+
+  f.emit(view('B', 'DB')); f.emit(view('A', 'D')); await tick();
+  const current = f.mounts[2].options.humanCalls;
+  assert.equal((await current.join({ roomId: 'R', mode: 'group', displayLabel: 'Новое имя' })).ok, true);
+  assert.equal(current.snapshot().targetLabel, 'Новое имя');
+  assert.equal((await current.join({ roomId: 'other-room', mode: 'group', displayLabel: 'Не тот звонок' })).ok, false);
+  assert.equal(current.snapshot().targetLabel, 'Новое имя', 'failed busy join cannot replace the active call label');
+  assert.equal(first.snapshot().targetLabel ?? null, null, 'stale A mount cannot expose a label on the new A mount');
+  assert.equal((await first.join({ roomId: 'R', mode: 'group', displayLabel: 'Подмена' })).code, 'ACTIVE_PROFILE_CHANGED');
+  assert.equal(current.snapshot().targetLabel, 'Новое имя', 'stale A-to-B-to-A presentation cannot replace the current label');
+  f.dispatch('pagehide', false);
+});
+
+test('a late successful join result cannot relabel a newer same-room call generation', async () => {
+  const f = await worldFixture({ captureOwnerJoin: true, holdFirstOwnerJoinResult: true });
+  await f.adapter.startWorld({}); await tick();
+  const call = f.mounts[0].options.humanCalls;
+  const oldJoin = call.join({ roomId: 'R', mode: 'group', displayLabel: 'Старое имя' });
+  await tick();
+  const oldGeneration = f.createdOwner().snapshot().scope.generation;
+  assert.equal(f.createdOwner().snapshot().state, 'listening');
+  assert.equal(call.snapshot().targetLabel, null, 'held result has not assigned its presentation label yet');
+
+  call.end(); await tick();
+  assert.equal(f.createdOwner().snapshot().state, 'ended');
+  assert.equal((await call.join({ roomId: 'R', mode: 'group', displayLabel: 'Новое имя' })).ok, true);
+  assert.notEqual(f.createdOwner().snapshot().scope.generation, oldGeneration);
+  assert.equal(call.snapshot().targetLabel, 'Новое имя');
+
+  f.releaseHeldOwnerJoinResult();
+  assert.equal((await oldJoin).ok, true, 'the older join completed successfully before its result was released');
+  assert.deepEqual(f.ownerJoinTargets(), [{ roomId: 'R', mode: 'group' }, { roomId: 'R', mode: 'group' }]);
+  assert.equal(call.snapshot().targetLabel, 'Новое имя', 'the old result cannot overwrite the newer same-room scope label');
+  f.dispatch('pagehide', false);
 });
 
 test('default World BFCache ends voice while keeping DOM and revalidates identity without capture or rejoin', async () => {

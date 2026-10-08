@@ -1337,6 +1337,18 @@
   gap: 2px;
   min-width: 0;
 }
+.sw-human-call-target {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sw-ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sw-human-call-status { font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
 .sw-human-call-mic-status { color: var(--sw-muted); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
 .sw-human-call-actions { display: flex; flex: none; align-items: center; gap: 6px; min-width: 0; }

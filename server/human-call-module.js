@@ -149,9 +149,32 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
       if (closed || !call || socket.readyState !== 1 || !origins.has(request?.headers?.origin)) { rejectSocket(socket); return; }
       const pending = [...sockets.values()].filter(record => record.call === call && !record.bound).length;
       if (sockets.size >= MAX_SOCKETS || pending >= MAX_PENDING_PER_CALL) { rejectSocket(socket); return; }
-      const record = { call, bound: false }; sockets.set(socket, record);
+      const record = { call, bound: false, ping: null, pingExpiresAt: 0, pulse: null }; sockets.set(socket, record);
       const waiting = setTimeout(() => { if (!bound) socket.close(1008, 'human_call_bind_timeout'); }, 10_000); waiting.unref?.();
       socket.on('close', () => { clearTimeout(waiting); sockets.delete(socket); if (bound?.ws === socket) drop(call, bound); });
+      // Browsers answer a native WebSocket ping independently of a background
+      // page's JavaScript timers. Sending a ping grants nothing: only its fresh,
+      // single-use echo under the current original actor fence renews a lease.
+      socket.on('pong', raw => {
+        try {
+          if (!record.bound) return;
+          check(!closed && record.bound && sockets.get(socket) === record && calls.get(call.id) === call
+            && bound?.ws === socket && call.members.get(bound.actor.deviceId) === bound
+            && socket.readyState === 1 && bound.expiresAt > now(), 'human_call_stale');
+          // RFC6455 also permits unsolicited pong. It does not acknowledge our
+          // challenge and therefore cannot refresh any authority or deadline.
+          if (!Buffer.isBuffer(raw) || !record.ping || record.pingExpiresAt <= now()
+            || raw.length !== record.ping.length || !raw.equals(record.ping)) return;
+          record.ping = null; record.pingExpiresAt = 0;
+          current(bound.actor, call, () => { bound.expiresAt = now() + LEASE_MS; });
+        } catch { if (bound?.ws === socket) drop(call, bound, 'human_call_revoked'); else rejectSocket(socket); }
+      });
+      record.pulse = () => {
+        if (!record.bound || bound?.ws !== socket || call.members.get(bound.actor.deviceId) !== bound || socket.readyState !== 1) return;
+        if (record.ping && record.pingExpiresAt > now()) return;
+        record.ping = Buffer.from(randomUUID()); record.pingExpiresAt = now() + 10_000;
+        try { socket.ping(record.ping); } catch { drop(call, bound, 'human_call_heartbeat_failed'); }
+      };
       socket.on('message', raw => {
         try {
           prune(); check(!closed && sockets.has(socket) && calls.get(call.id) === call, 'human_call_stale');
@@ -205,7 +228,9 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
     timer = setInterval(() => {
       try { prune(); for (const call of [...calls.values()]) for (const member of [...call.members.values()]) {
         try { current(member.actor, call, () => true); } catch { drop(call, member, 'human_call_revoked'); }
-      } } catch { close(); }
+      }
+      for (const record of [...sockets.values()]) record.pulse();
+      } catch { close(); }
     }, 5000); timer.unref?.();
     server.on('close', close);
   }

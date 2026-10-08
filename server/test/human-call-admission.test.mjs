@@ -13,19 +13,30 @@ const identity = () => {
   return { key: a.privateKey, publicJwk: a.publicKey.export({ format: 'jwk' }), encryptionPublicJwk: b.publicKey.export({ format: 'jwk' }) };
 };
 class Socket extends EventEmitter {
-  readyState = 1; messages = []; closeCalls = 0;
+  readyState = 1; messages = []; closeCalls = 0; nativePings = []; autoPong = false;
   send(raw) { this.messages.push(JSON.parse(raw)); }
   close() { if (this.readyState === 3) return; this.closeCalls++; this.readyState = 3; this.emit('close'); }
   input(value) { this.emit('message', Buffer.from(JSON.stringify(value))); }
+  ping(value) { this.nativePings.push(Buffer.from(value)); if (this.autoPong) this.emit('pong', Buffer.from(value)); }
 }
 const good = value => { assert.equal(value.ok, true, value.error?.code); return value; };
-async function fixture(t, count = 2) {
+async function fixture(t, count = 2, { controlledHeartbeat = false } = {}) {
   let at = 1_800_000_000_000, connect;
   const world = createWorldService({ databasePath: ':memory:', projectId: 'human-call-test', clock: () => at });
   const calls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: [ORIGIN], clock: () => at });
   connect = createConnectService({ databasePath: ':memory:', projectId: 'human-call-test', clock: () => at,
     allowedOrigins: [ORIGIN], extensions: [world, calls], canRequestContact: (a, b) => world.canRequestContact(a, b) });
-  const wss = new EventEmitter(); calls.attachSignaling(wss);
+  const wss = new EventEmitter(); let heartbeatPulse;
+  if (controlledHeartbeat) {
+    const original = globalThis.setInterval;
+    try {
+      globalThis.setInterval = (callback, delay) => {
+        assert.equal(delay, 5000); heartbeatPulse = callback;
+        return { unref() {} };
+      };
+      calls.attachSignaling(wss);
+    } finally { globalThis.setInterval = original; }
+  } else calls.attachSignaling(wss);
   t.after(() => { calls.close(); connect.close(); world.close(); });
   async function rpc(actor, op, args = {}) {
     const challenge = good(await connect.handle({ origin: ORIGIN, op: 'challenge', args: { operation: op, digest: digestArgs(args) } }));
@@ -52,8 +63,75 @@ async function fixture(t, count = 2) {
     const request = good(await rpc(left, 'contacts.requestAccount', { accountId: right.state.accountId }));
     return good(await rpc(right, 'contacts.accept', { requestId: request.requestId }));
   }
-  return { actors, connect, world, calls, rpc, group, groupJoin, personalJoin, socketFor, pendingSocket, contact, advance(ms) { at += ms; } };
+  return { actors, connect, world, calls, rpc, group, groupJoin, personalJoin, socketFor, pendingSocket, contact,
+    advance(ms) { at += ms; }, pulse() { assert.equal(typeof heartbeatPulse, 'function'); heartbeatPulse(); } };
 }
+
+test('native control pong keeps a currently authorized listener waiting without browser JS messages', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const first = good(await f.groupJoin(f.actors[0]));
+  const a = f.socketFor(first); a.autoPong = true;
+  for (let i = 0; i < 13; i++) { f.advance(5000); f.pulse(); }
+  assert.equal(a.readyState, 1, 'waiting listener must survive 65 seconds with native pong and no application heartbeat');
+  assert.equal(f.calls.status().calls, 1);
+  assert.ok(a.nativePings.length > 0);
+  const later = good(await f.groupJoin(f.actors[1]));
+  assert.equal(later.callId, first.callId); assert.equal(later.epoch, first.epoch);
+  const b = f.socketFor(later);
+  assert.equal(b.messages.find(value => value.type === 'call.ready').peers.length, 2);
+  assert.equal(b.messages.find(value => value.type === 'call.ready').peers.every(value => value.microphone === false), true);
+});
+
+test('native ping alone never extends the unchanged thirty-second listener lease', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const first = good(await f.groupJoin(f.actors[0])), socket = f.socketFor(first);
+  for (let i = 0; i < 6; i++) { f.advance(5000); f.pulse(); }
+  assert.ok(socket.nativePings.length > 0); assert.equal(socket.readyState, 3);
+  assert.equal(f.calls.status().calls, 0);
+  const later = good(await f.groupJoin(f.actors[1]));
+  assert.notEqual(later.callId, first.callId); assert.ok(later.epoch > first.epoch);
+});
+
+test('unsolicited or replayed native pong is ignored without renewing a listener lease', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const first = good(await f.groupJoin(f.actors[0])), socket = f.socketFor(first);
+  f.advance(5000); f.pulse(); const echo = socket.nativePings.at(-1);
+  assert.ok(echo); socket.emit('pong', echo); assert.equal(socket.readyState, 1);
+  f.advance(29000); socket.emit('pong', echo); socket.emit('pong', Buffer.from('unsolicited'));
+  assert.equal(socket.readyState, 1, 'RFC6455 permits unsolicited pong; it is not a fresh lease proof');
+  f.advance(1000); f.pulse();
+  assert.equal(socket.readyState, 3); assert.equal(f.calls.status().calls, 0);
+});
+
+test('a fresh native challenge cannot resurrect an already expired member lease', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const first = good(await f.groupJoin(f.actors[0])), socket = f.socketFor(first);
+  for (let i = 0; i < 5; i++) { f.advance(5000); f.pulse(); }
+  const echo = socket.nativePings.at(-1); assert.ok(echo);
+  // Challenge at25s remains valid until35s; the member lease expired at30s.
+  f.advance(6000); socket.emit('pong', echo);
+  assert.equal(socket.readyState, 3); assert.equal(f.calls.status().calls, 0);
+});
+
+test('native pong rechecks current contact authority before renewing a one-to-one lease', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true }), [a, b] = f.actors;
+  await f.contact(a, b); const first = good(await f.personalJoin(a, b)), socket = f.socketFor(first);
+  f.advance(5000); f.pulse(); const echo = socket.nativePings.at(-1); assert.ok(echo);
+  good(await f.rpc(b, 'contacts.block', { peerAccountId: a.state.accountId }));
+  socket.emit('pong', echo);
+  assert.equal(socket.readyState, 3); assert.equal(f.calls.status().calls, 0);
+  assert.equal((await f.personalJoin(a, b, 'after_native_pong_block')).ok, false);
+});
+
+test('revoked group membership cannot use a delayed native pong after leaving', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const first = good(await f.groupJoin(f.actors[1])), socket = f.socketFor(first);
+  f.advance(5000); f.pulse(); const echo = socket.nativePings.at(-1); assert.ok(echo);
+  good(await f.rpc(f.actors[1], 'world.membership.leave', { communityId: f.group.communityId }));
+  socket.emit('pong', echo);
+  assert.equal(socket.readyState, 3); assert.equal(f.calls.status().calls, 0);
+  assert.equal((await f.groupJoin(f.actors[1], 'after_native_pong_leave')).ok, false);
+});
 
 test('signed join returns bounded admission before any peer wait, with microphone off', async t => {
   const f = await fixture(t); const admission = good(await f.groupJoin(f.actors[0]));

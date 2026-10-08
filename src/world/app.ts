@@ -62,6 +62,7 @@ class WorldApplication {
   private readonly mobileNav = el('nav', 'sw-mobile-nav');
   private readonly live = el('div', 'sw-sr-only');
   private readonly humanCallStrip = el('section', 'sw-human-call-strip');
+  private readonly humanCallTarget = el('span', 'sw-human-call-target');
   private readonly humanCallStatus = el('strong', 'sw-human-call-status');
   private readonly humanCallMicStatus = el('span', 'sw-human-call-mic-status');
   private readonly humanCallActions = el('div', 'sw-human-call-actions');
@@ -159,7 +160,7 @@ class WorldApplication {
     this.humanCallMicButton.setAttribute('aria-label', 'Включить микрофон'); this.humanCallLeaveButton.setAttribute('aria-label', 'Выйти из звонка');
     this.humanCallResumeButton.setAttribute('aria-label', 'Разрешить воспроизведение звука звонка'); this.humanCallResumeButton.title = 'Нажмите, чтобы услышать звонок';
     this.humanCallResumeButton.hidden = true;
-    const humanCallCopy = el('div', 'sw-human-call-copy'); humanCallCopy.append(this.humanCallStatus, this.humanCallMicStatus);
+    const humanCallCopy = el('div', 'sw-human-call-copy'); humanCallCopy.append(this.humanCallTarget, this.humanCallStatus, this.humanCallMicStatus);
     this.humanCallActions.append(this.humanCallResumeButton, this.humanCallMicButton, this.humanCallLeaveButton);
     this.humanCallStrip.append(humanCallCopy, this.humanCallActions);
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
@@ -229,7 +230,16 @@ class WorldApplication {
     this.humanCallStrip.hidden = !active;
     if (active) this.root.dataset.humanCallActive = 'true';
     else delete this.root.dataset.humanCallActive;
-    if (!state || !active) { this.updateGroupCallButtons(); return; }
+    if (!state || !active) { this.humanCallTarget.hidden = true; this.updateGroupCallButtons(); return; }
+
+    const targetLabel = state.targetLabel?.trim() || (state.mode === 'group' ? 'Звонок группы' : 'Личный звонок');
+    const targetDescription = state.mode === 'group' ? `Группа: ${targetLabel}`
+      : state.targetLabel?.trim() ? `Собеседник: ${targetLabel}` : targetLabel;
+    this.humanCallTarget.hidden = false;
+    this.humanCallTarget.textContent = targetDescription;
+    this.humanCallTarget.title = targetDescription;
+    this.humanCallTarget.setAttribute('aria-label', targetDescription);
+    this.humanCallStrip.setAttribute('aria-label', `Текущий звонок. ${targetDescription}`);
 
     let status = 'Подключаемся';
     if (state.state === 'listening') {
@@ -269,6 +279,7 @@ class WorldApplication {
     const active = this.humanCallActive();
     for (const control of this.main.querySelectorAll<HTMLButtonElement>('.sw-human-call-join')) {
       const sameRoom = active && this.humanCallState?.roomId === control.dataset.roomId && this.humanCallState?.mode === 'group';
+      control.hidden = !!sameRoom;
       control.disabled = this.humanCallJoinPending || active;
       control.title = active ? sameRoom ? 'Вы уже подключены к звонку этой группы.' : 'Сначала завершите текущий звонок.'
         : 'Подключиться только для прослушивания; микрофон выключен. В некоторых сетях звонок может не подключиться.';
@@ -283,6 +294,7 @@ class WorldApplication {
     control.title = 'Подключиться только для прослушивания; микрофон выключен. В некоторых сетях звонок может не подключиться.';
     control.setAttribute('aria-label', `Подключиться к звонку группы ${group.name} и слушать; микрофон выключен`);
     control.disabled = this.humanCallActive() || this.humanCallJoinPending;
+    control.hidden = this.humanCallActive() && this.humanCallState?.roomId === group.communityId && this.humanCallState?.mode === 'group';
     if (this.humanCallActive()) {
       control.title = this.humanCallState?.roomId === group.communityId ? 'Вы уже подключены к звонку этой группы.' : 'Сначала завершите текущий звонок.';
       control.setAttribute('aria-label', this.humanCallState?.roomId === group.communityId ? 'Вы уже слушаете звонок этой группы' : 'Сначала завершите текущий звонок');
@@ -296,7 +308,7 @@ class WorldApplication {
     if (!port || group.membership?.state !== 'active' || this.humanCallActive() || this.humanCallJoinPending) return;
     this.humanCallJoinPending = true; this.updateGroupCallButtons();
     try {
-      const result = await port.join({ roomId: group.communityId, mode: 'group' });
+      const result = await port.join({ roomId: group.communityId, mode: 'group', displayLabel: group.name });
       if (this.destroyed) return;
       this.receiveHumanCallState(port.snapshot());
       if (!result.ok) this.toast('Не удалось подключиться. Микрофон выключен.', true);

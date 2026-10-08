@@ -11,7 +11,7 @@ import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle
 
 interface HumanLifecycle extends CallIdentityLifecycle {
   snapshot(): { state: string; microphone: WorldHumanCallState['microphone'];
-    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group' } | null; code: string | null };
+    scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number } | null; code: string | null };
   join(target: { roomId: string; mode: 'one-to-one' | 'group' }): Promise<{ ok: boolean; code?: string }>;
   enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
   mute(): unknown;
@@ -52,8 +52,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const panel = openConnectPanel({ client: accountClient, label: state.label || 'Мой профиль', productName: 'Соты',
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       initialIntent: parseConnectLink(window.location.href), initialTab,
-      ...(callView ? { onContactCall: async ({ peerAccountId }: { peerAccountId: string; label: string }) => {
-        const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one' });
+      ...(callView ? { onContactCall: async ({ peerAccountId, label }: { peerAccountId: string; label: string }) => {
+        const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one', displayLabel: label });
         if (!result.ok) throw Object.assign(new Error('Call did not start.'), { code: result.code });
       } } : {}),
       snapshotDescription: 'Профиль и сообщества сохранены в Сотах. Сохранение прежних комнат доступно в разделе «Комнаты и инструменты».',
@@ -89,17 +89,45 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (ownedLifecycle && callPorts) {
       const owner = ownedLifecycle, ports = callPorts;
       const belongs = () => current() && owner.snapshot().scope?.accountId === accountId;
+      let presentation: { accountId: string; mountGeneration: number; scopeGeneration: number; roomId: string; mode: 'one-to-one' | 'group'; label: string } | null = null;
+      const cleanDisplayLabel = (value: unknown): string => typeof value === 'string'
+        ? value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 160).trim()
+        : '';
       const snapshot = (): WorldHumanCallState => {
         const local = owner.snapshot(), connection = ports.snapshot();
         if (!current()) return { state: 'ended', microphone: 'off', connection: 'closed', peers: 0,
           playbackBlocked: false, roomId: null, mode: null, code: 'ACTIVE_PROFILE_CHANGED', turnConfigured: false };
+        const scope = local.scope;
+        const targetLabel = scope && presentation && presentation.accountId === accountId && presentation.mountGeneration === generation
+          && presentation.roomId === scope.roomId && presentation.mode === scope.mode && scope.accountId === accountId
+          && presentation.scopeGeneration === scope.generation
+          && (local.state === 'joining' || local.state === 'listening') ? presentation.label : null;
         return { state: local.state, microphone: local.microphone, ...connection,
-          roomId: local.scope?.roomId ?? null, mode: local.scope?.mode ?? null, code: local.code };
+          roomId: scope?.roomId ?? null, mode: scope?.mode ?? null, code: local.code, targetLabel };
       };
       humanCalls = {
         snapshot,
         subscribe(listener) { const notify = () => listener(snapshot()); callObservers.add(notify); return () => callObservers.delete(notify); },
-        join(target) { return current() ? owner.join(target) : Promise.resolve(stale()); },
+        join(target) {
+          if (!current()) return Promise.resolve(stale());
+          const ownerTarget = { roomId: target.roomId, mode: target.mode };
+          const label = cleanDisplayLabel(target.displayLabel);
+          const pending = owner.join(ownerTarget);
+          const startedScope = owner.snapshot().scope;
+          const scopeGeneration = startedScope?.accountId === accountId && startedScope.roomId === target.roomId
+            && startedScope.mode === target.mode ? startedScope.generation : null;
+          return pending.then(result => {
+            const local = owner.snapshot(), scope = local.scope;
+            if (result.ok && scopeGeneration !== null && current() && scope?.accountId === accountId && scope.roomId === target.roomId
+              && scope.mode === target.mode && scope.generation === scopeGeneration
+              && (local.state === 'joining' || local.state === 'listening')) {
+              presentation = label ? { accountId, mountGeneration: generation, scopeGeneration,
+                roomId: target.roomId, mode: target.mode, label } : null;
+              notifyCall();
+            }
+            return result;
+          });
+        },
         enableMicrophone() { return belongs() ? owner.enableMicrophone() : Promise.resolve(stale()); },
         disableMicrophone() { if (belongs()) owner.mute(); },
         end() { if (belongs()) owner.end(); },

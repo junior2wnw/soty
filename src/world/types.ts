@@ -90,11 +90,13 @@ export interface WorldHumanCallState {
   mode: 'one-to-one' | 'group' | null;
   code: string | null;
   turnConfigured: false;
+  /** Display-only name supplied by the current authenticated UI target. Never a call grant. */
+  targetLabel?: string | null;
 }
 export interface WorldHumanCallPort {
   snapshot(): WorldHumanCallState;
   subscribe(listener: (state: WorldHumanCallState) => void): () => void;
-  join(target: { roomId: string; mode: 'one-to-one' | 'group' }): Promise<{ ok: boolean; code?: string }>;
+  join(target: { roomId: string; mode: 'one-to-one' | 'group'; displayLabel?: string }): Promise<{ ok: boolean; code?: string }>;
   enableMicrophone(): Promise<{ ok: boolean; code?: string }>;
   disableMicrophone(): void;
   end(): void;
