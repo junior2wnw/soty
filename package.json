@@ -30,6 +30,7 @@
     "spreadex:release:sign": "node scripts/sign-spreadex-ml-release.mjs",
     "agent:integration": "node scripts/connector-integration-selftest.mjs",
     "agent:admission:test": "node --test server/integration-test/personal-agent-admission.test.mjs",
+    "existing-apps:integration:test": "node --test --test-concurrency=1 server/integration-test/existing-app-host-composition.test.mjs",
     "agent:proxy:smoke": "node scripts/gonka-proxy-live-smoke.mjs",
     "inference:selftest": "node scripts/gonka-proxy-selftest.mjs && node scripts/model-aliases-selftest.mjs && node scripts/minimax-contract-selftest.mjs && node scripts/inference-resilience-selftest.mjs && node scripts/inference-race-keys-selftest.mjs && node scripts/deepseek-routing-selftest.mjs",
     "connector": "node scripts/soty-connector.mjs",
