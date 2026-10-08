@@ -104,15 +104,20 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
   }
   return Object.freeze({ probe, renew,
     beginCaptureLease() {
-      if (disposed) return () => {};
+      if (disposed || flight || pending) throw new Error('capture_context_changed');
       captureLeases++; let released = false;
       return () => { if (!released) { released = true; captureLeases--; } };
     },
     async ensure(minRemaining = 190000) {
+      const before = readBinding(), sourcePin = before?.source && { ...before.source };
+      if (!before || !live(before)) return false;
+      const draining = flight;
+      if (draining && !await draining) return false;
       const binding = readBinding();
-      if (!binding || !live(binding)) return false;
+      if (!binding || !live(binding) || binding.source?.id !== sourcePin?.id
+        || binding.source?.version !== sourcePin?.version || binding.source?.digest !== sourcePin?.digest) return false;
       const context = await read(binding.handle);
-      if (!live(binding)) return false;
+      if (!live(binding) || flight || pending) return false;
       const attempt = mayAttempt(context, binding), source = context?.sourceSession;
       // Missing ACK or Root TTL alone is never readiness. Basic and long
       // sessions require actual readiness and BOTH deadlines long enough.
@@ -123,7 +128,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
       const next = readBinding();
       if (!next || !live(next)) return false;
       const fresh = await read(next.handle);
-      return live(next) && sameSource(fresh, next) && fresh.sourceSession?.ready === true
+      return live(next) && !flight && !pending && sameSource(fresh, next) && fresh.sourceSession?.ready === true
         && Number.isSafeInteger(fresh.sourceSession.accessExpiresAt)
         && fresh.sourceSession.accessExpiresAt - clock() >= minRemaining
         && fresh.expiresAt - clock() >= minRemaining;
