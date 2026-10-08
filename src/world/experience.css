@@ -2311,6 +2311,9 @@
 }
 @media(max-width:720px) {
   .sw-app:not(:has(.sw-inbox.has-room,.sw-detail-view.has-chat,.sa-stage.has-discussion)) { grid-template-rows: 56px auto minmax(0,1fr) auto; }
+  .sw-app[data-field="unified"][data-human-call-incoming="true"]:not([data-human-call-active="true"]):not(:has(.sw-inbox.has-room,.sw-detail-view.has-chat,.sa-stage.has-discussion)) {
+    grid-template-rows: 56px auto auto minmax(0,1fr) auto;
+  }
   .sw-app .sw-topbar { height: 56px; min-height: 56px; padding-block: 6px; }
   .sw-app .sx-mobile-profile { width: 44px; height: 44px; }
   .sw-app .sx-mobile-profile .sw-avatar { width: 32px; height: 32px; }
