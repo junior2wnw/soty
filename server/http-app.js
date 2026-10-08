@@ -36,6 +36,7 @@ import { captureUniversalPreparedness } from '../modules/app-contract/universal-
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 import { createPersonalAgentComposition } from './personal-agent-composition.js';
 import { createHumanCallModule } from './human-call-module.js';
+import { captureNativeSourceHandlers } from './native-source-handlers.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
 // asynchronous worker shutdown so supervisors can wait before retrying or
@@ -47,8 +48,20 @@ export async function waitForRejectedHttpStart(error) {
   if (cleanup) { await cleanup; rejectedStarts.delete(error); }
 }
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource } = {}) {
+export function createHttpApp(distDir, options = {}) {
+  const nativeSources = captureNativeSourceHandlers(options);
+  try { return createHttpAppWithNativeSources(distDir, options, nativeSources); }
+  catch (error) {
+    if (nativeSources.enabled) {
+      const cleanup = Promise.all([rejectedStarts.get(error), nativeSources.close()]).then(() => undefined);
+      if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
+    }
+    throw error;
+  }
+}
+
+function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource } = {}, nativeSources) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
@@ -135,6 +148,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     res.setHeader("X-Frame-Options", "DENY");
     next();
   });
+  if (nativeSources.enabled) app.use(nativeSources.middleware);
   attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
   const failedStart = error => {
@@ -272,6 +286,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });
   app.locals.closeServices = async () => {
+    if (nativeSources.enabled) await nativeSources.close();
     personal.close();
     humanCalls.close();
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
