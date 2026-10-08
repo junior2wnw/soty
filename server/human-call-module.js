@@ -163,14 +163,23 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
         return { ...member.admission };
       });
     }
-    fields(args, ['callId', 'epoch'], op === 'call.microphone' ? ['requestId'] : []);
+    fields(args, ['callId', 'epoch'], op === 'call.microphone' ? ['requestId'] : ['expectedJoinRef']);
     check(validId(args.callId) && Number.isSafeInteger(args.epoch));
+    check(args.expectedJoinRef === undefined || validId(args.expectedJoinRef));
     const call = calls.get(args.callId);
     if (!call && op === 'call.leave') return current(actor, null, () => ({ left: true }));
     check(call && call.epoch === args.epoch, 'human_call_stale');
     return current(actor, call, () => {
+      if (op === 'call.leave') {
+        check(call.mode !== 'one-to-one' || call.parties.includes(actor.accountId), 'human_call_denied');
+        const member = call.members.get(actor.deviceId);
+        if (member) check(member.actor.accountId === actor.accountId, 'human_call_denied');
+        // A socket close may have removed this device before its signed cleanup.
+        // The original admission also prevents an older cleanup from ending a rejoin.
+        if (!member || args.expectedJoinRef !== undefined && member.admission.grantRef !== args.expectedJoinRef) return { left: true };
+        drop(call, member); return { left: true };
+      }
       const member = memberFor(call, actor);
-      if (op === 'call.leave') { drop(call, member); return { left: true }; }
       check(validId(args.requestId) && member.ws?.readyState === 1, 'human_call_not_joined');
       check([...call.members.values()].some(value => value !== member && value.ws?.readyState === 1), 'human_call_waiting');
       check(!member.microphone && ![...refs.values()].some(ref => ref.member === member && ref.purpose === 'microphone' && ref.state === 'issued'),

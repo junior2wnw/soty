@@ -376,3 +376,78 @@ test('129th owned pending socket across sixteen valid calls is denied without al
   pending[0].close(); assert.equal(f.pendingSocket(admissions[0]).readyState, 1);
   assert.equal(f.calls.status().ownedSockets, 128);
 });
+
+test('leave reconciliation acknowledges an already closed current socket without affecting its peer', async t => {
+  const f = await fixture(t), a = good(await f.groupJoin(f.actors[0])), b = good(await f.groupJoin(f.actors[1]));
+  const left = f.socketFor(a), right = f.socketFor(b); right.close();
+  const before = f.calls.status();
+  assert.equal(good(await f.rpc(f.actors[1], 'call.leave', { callId: b.callId, epoch: b.epoch })).left, true);
+  assert.equal(left.readyState, 1); assert.deepEqual(f.calls.status(), before);
+});
+
+test('leave reconciliation remains a no-op after admission refs expire during a healthy call', async t => {
+  const f = await fixture(t, 2, { controlledHeartbeat: true });
+  const a = good(await f.groupJoin(f.actors[0])), b = good(await f.groupJoin(f.actors[1]));
+  const left = f.socketFor(a), right = f.socketFor(b); left.autoPong = right.autoPong = true;
+  for (let n = 0; n < 7; n++) { f.advance(5000); f.pulse(); }
+  right.close(); const before = f.calls.status();
+  assert.equal(good(await f.rpc(f.actors[1], 'call.leave', { callId: b.callId, epoch: b.epoch })).left, true);
+  assert.equal(left.readyState, 1); assert.deepEqual(f.calls.status(), before);
+});
+
+test('leave reconciliation for an old admission cannot close a newer listener in the same call', async t => {
+  const f = await fixture(t), a = good(await f.groupJoin(f.actors[0])), b = good(await f.groupJoin(f.actors[1]));
+  const left = f.socketFor(a), old = f.socketFor(b); old.close();
+  const later = good(await f.groupJoin(f.actors[1], 'group_rejoin_later')), right = f.socketFor(later);
+  assert.equal(later.callId, b.callId); assert.equal(later.epoch, b.epoch); assert.notEqual(later.grantRef, b.grantRef);
+  const before = f.calls.status();
+  assert.equal(good(await f.rpc(f.actors[1], 'call.leave', { callId: b.callId, epoch: b.epoch, expectedJoinRef: b.grantRef })).left, true);
+  assert.equal(right.readyState, 1); assert.equal(left.readyState, 1); assert.deepEqual(f.calls.status(), before);
+  assert.equal(good(await f.rpc(f.actors[1], 'call.leave', { callId: later.callId, epoch: later.epoch, expectedJoinRef: later.grantRef })).left, true);
+  assert.equal(right.readyState, 3); assert.equal(left.readyState, 1);
+});
+
+test('leave reconciliation preserves current actor, membership, exact epoch and personal parties', async t => {
+  const f = await fixture(t, 3), [caller, callee, outsider] = f.actors;
+  await f.contact(caller, callee); await f.contact(caller, outsider);
+  const a = good(await f.personalJoin(caller, callee)), b = good(await f.personalJoin(callee, caller));
+  const left = f.socketFor(a), right = f.socketFor(b); right.close();
+  assert.equal((await f.rpc(outsider, 'call.leave', { callId: b.callId, epoch: b.epoch })).ok, false);
+  assert.equal((await f.rpc(callee, 'call.leave', { callId: b.callId, epoch: b.epoch + 1 })).ok, false);
+  good(await f.rpc(callee, 'contacts.block', { peerAccountId: caller.state.accountId }));
+  assert.equal((await f.rpc(callee, 'call.leave', { callId: b.callId, epoch: b.epoch })).ok, false);
+  assert.equal(left.readyState, 1);
+});
+
+test('leave reconciliation client cleanup captures the original admission on ordinary close', async () => {
+  const createPorts = await loadHumanCallPorts(), requests = [];
+  const scope = { accountId: 'account-leave', deviceId: 'device-leave', roomId: 'group-leave', mode: 'group', generation: 1 };
+  const reply = { schema: 'soty.human-call-admission.v1', purpose: 'join', accountId: scope.accountId, deviceId: scope.deviceId,
+    callId: 'call-leave', epoch: 1, grantRef: 'admission-leave-original', expiresAt: Date.now() + 30_000 };
+  const ws = { readyState: 0, send() {}, close() { this.readyState = 3; this.onclose?.(); } };
+  const ports = createPorts({ client: { async extension(op, args, options) { requests.push({ op, args, options }); return op === 'call.join' ? reply : { left: true }; } }, socketFactory: () => ws });
+  const signal = new AbortController().signal, admission = await ports.host.authorize(scope, 'join', { signal });
+  const joining = ports.transport.join({ scope, admission, signal }); ws.readyState = 1; ws.onopen();
+  const self = { accountId: scope.accountId, deviceId: scope.deviceId, microphone: false };
+  ws.onmessage({ data: JSON.stringify({ type: 'call.ready', callId: reply.callId, epoch: reply.epoch, self, peers: [self] }) });
+  const session = await joining; await session.close();
+  const request = requests.find(value => value.op === 'call.leave');
+  assert.equal(request.args.expectedJoinRef, reply.grantRef);
+  assert.equal(request.options.expectedAccountId, scope.accountId);
+  assert.equal(requests.filter(value => value.op === 'call.leave').length, 1);
+});
+
+test('leave reconciliation client cleanup captures the original admission after late cancelled authorization', async () => {
+  const createPorts = await loadHumanCallPorts(), requests = []; let deliver;
+  const held = new Promise(done => { deliver = done; });
+  const scope = { accountId: 'account-leave', deviceId: 'device-leave', roomId: 'group-leave', mode: 'group', generation: 1 };
+  const reply = { schema: 'soty.human-call-admission.v1', purpose: 'join', accountId: scope.accountId, deviceId: scope.deviceId,
+    callId: 'call-late', epoch: 2, grantRef: 'admission-late-original', expiresAt: Date.now() + 30_000 };
+  const ports = createPorts({ client: { async extension(op, args, options) { requests.push({ op, args, options }); return op === 'call.join' ? held : { left: true }; } } });
+  const abort = new AbortController(), pending = ports.host.authorize(scope, 'join', { signal: abort.signal });
+  abort.abort(); deliver(reply); await assert.rejects(pending);
+  const request = requests.find(value => value.op === 'call.leave');
+  assert.equal(request.args.expectedJoinRef, reply.grantRef);
+  assert.equal(request.options.expectedAccountId, scope.accountId);
+  assert.equal(requests.filter(value => value.op === 'call.leave').length, 1);
+});

@@ -500,7 +500,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       || !Number.isSafeInteger(reply.epoch) || reply.epoch < 1) fail('human_call_admission_invalid');
     if (signal.aborted) {
       if (!join && session?.matches(scope)) session.unpublish(token);
-      if (join) void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch }, { expectedAccountId: scope.accountId }).catch(() => {});
+      if (join) void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {});
       fail();
     }
     if (!join && !session!.consentCurrent(token)) fail();
@@ -683,7 +683,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       if (active === session) active = null; emit({ connection: 'closed', peers: 0 });
       rejectJoin(new Error('human_call_closed'));
       try { if (ws.readyState === 3) observedClose(); else ws.close(); } catch { clearTimeout(closeTimer); closeReject?.(new Error('human_call_close_unknown')); }
-      void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch }, { expectedAccountId: scope.accountId }).catch(() => {});
+      void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {});
       return closePromise;
     }
     function observedClose() { clearTimeout(closeTimer); if (cleanupUnknown) closeReject?.(new Error('human_call_cleanup_unknown')); else { ownedSessions.delete(session); closeResolve?.(); } }
