@@ -15,11 +15,23 @@ export function mountRootVoiceCarrier({view,getFrame,isCurrent,client,mount,appI
     const state=await client.getLocalState();if(!matches(event)||state.accountId!==accountId||!state.deviceId||state.current?.revoked!==false)return;
     if(scope){event.source.postMessage({schema:S,method:'scope',requestId:input.requestId,accountId:state.accountId,deviceId:state.deviceId},mount.frameOrigin);return;}
     const key=JSON.stringify([input.consentId,input.taskId]);
-    if(input.method==='turn'){if(owned.has(key)||owned.size>=128)return;owned.set(key,{requestId:input.requestId,accountId:state.accountId,finished:false});}
+    if(input.method==='turn'){if(owned.has(key)||owned.size>=128)return;owned.set(key,{requestId:input.requestId,accountId:state.accountId,deviceId:state.deviceId,finished:false});}
     else if(!owned.has(key))return;
-    try{await client.extension(input.method==='turn'?'voice.agent.turn':'voice.agent.cancel',input.method==='turn'
-      ?{requestId:input.requestId,taskId:input.taskId,consentId:input.consentId}:{requestId:owned.get(key).requestId},{expectedAccountId:accountId});}
-    catch{/* Unknown dispatch is retained by existing host receipts; never retry. */}
+    const reply=async outcome=>{const original=owned.get(key),after=await client.getLocalState();
+      if(!original||disposed||!matches(event)||after.accountId!==original.accountId||after.deviceId!==original.deviceId||after.current?.revoked!==false)return;
+      event.source.postMessage({schema:S,method:'result',requestId:original.requestId,taskId:input.taskId,consentId:input.consentId,outcome},mount.frameOrigin);};
+    try{const value=await client.extension(input.method==='turn'?'voice.agent.turn':'voice.agent.cancel',input.method==='turn'
+      ?{requestId:input.requestId,taskId:input.taskId,consentId:input.consentId}:{requestId:owned.get(key).requestId},{expectedAccountId:accountId});
+      if(input.method==='turn'){
+        const binding=value?.ok===true&&value.schema==='soty.native-voice-turn.v1'&&value.requestId===input.requestId&&value.taskId===input.taskId
+          &&value.consentId===input.consentId&&value.playbackVerified===false;
+        if(binding&&exact(value,['ok','schema','requestId','taskId','consentId','kind','delivery','playbackVerified'])
+          &&value.kind==='source-permission'&&value.delivery==='native_commit_ack')await reply('committed');
+        else if(binding&&exact(value,['ok','schema','requestId','taskId','consentId','delivery','playbackVerified'])
+          &&value.delivery==='pre_complete_denied')await reply('pre_complete_denied');
+        else if(value?.kind==='source-permission'||value?.delivery!=='native_commit_ack')await reply('unknown');
+      }}
+    catch{if(input.method==='turn')try{await reply('unknown');}catch{/* Closed frame/local profile cannot publish a result. */}}
     finally{if(input.method==='turn'&&owned.has(key))owned.get(key).finished=true;}
   };
   view.addEventListener('message',receive);

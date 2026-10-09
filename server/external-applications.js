@@ -6,6 +6,7 @@ import { canonicalHash, canonicalJson, freezeDeep, AccessError } from '../module
 import { snapshot } from '../modules/app-contract/json.mjs';
 import { bindRootVoiceSourceAdapter } from '../modules/native-voice/root-source-adapters.mjs';
 
+const captureProvenance = new WeakMap();
 const check = value => { if(!value)throw new AccessError('external_application_configuration_invalid'); };
 function fields(value,names,optional=[]) {
   check(value&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value)));
@@ -33,6 +34,9 @@ export function captureExternalApplications(input=[]) {
     const profile=Object.getOwnPropertyDescriptor(value.adapter,'profile');check(profile&&'value' in profile);
     const readonly=profile.value===READONLY_QUERY_PROFILE;
     const captured=(readonly?captureReadonlyQueryAdapters:captureExternalAdapters)([{contract,adapter:value.adapter}])[0];
+    // Capturing effects binds their function references. Retain only private CODE
+    // provenance for the original Voice port's one-time host binding, transitively.
+    captureProvenance.set(captured.adapter, captureProvenance.get(value.adapter) ?? value.adapter);
     const guidance = snapshot(value.guidance ?? []); check(Array.isArray(guidance));
     const capturedGuidance = captureExternalGuidance(guidance.map(item=>{
       fields(item,['kind','language','title','summary','content']); return {contract,...item};
@@ -52,7 +56,7 @@ export function composeExternalApplications(entries,{withConnectFence,capabiliti
     };
     // This fixed port retains the original ready Source record and holds its
     // own Apps fence; nesting the ordinary Apps transaction would be invalid.
-    const voice=bindRootVoiceSourceAdapter(value.adapter,{appId:value.appId,target:value.target,withOwner,apps});
+    const voice=bindRootVoiceSourceAdapter(captureProvenance.get(value.adapter) ?? value.adapter,{appId:value.appId,target:value.target,withOwner,apps});
     const withAuthority=(request,callback)=>{
       if(voice)return value.adapter.withAuthority(request,callback);
       return withConnectFence(()=>{

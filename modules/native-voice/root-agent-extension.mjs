@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
+import { AppsError } from '../apps/server/protocol.mjs';
 import { firstAnswerParagraph,validateLiveAnswerText } from './live-answer.ts';
 import { canonicalHash } from '../capabilities/server/validation.mjs';
 const need=(ok,code='voice_root_denied')=>{if(!ok)throw new Error(code);};
 const fields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
 const id=v=>typeof v==='string'&&/^[A-Za-z0-9_.:-]{8,160}$/u.test(v);
+const knownReadDenial=error=>{try{return !types.isProxy(error)&&types.isNativeError(error)&&Object.getPrototypeOf(error)===AppsError.prototype
+  &&Object.getOwnPropertyDescriptor(error,'code')?.value==='voice_source_session_unavailable'
+  &&Object.getOwnPropertyDescriptor(error,'status')?.value===403;}catch{return false;}};
 
 /** Root-installed adapter. source is the existing authenticated Source broker
  * assembly below, not a browser-returned permission/answer. All model work stays
@@ -27,18 +32,24 @@ export function createRootNativeVoiceExtension({getConnect,agent,source}){
       for(const [retiredKey,value]of owned)if(value.finished&&value.retireAt<=Date.now()){owned.delete(retiredKey);byTask.delete(value.taskKey);}
       const ownedKey=key(actor,args.requestId),taskKey=key(actor,`${args.consentId}:${args.taskId}`);
       need(!owned.has(ownedKey)&&!byTask.has(taskKey),'voice_reconcile_required');need(owned.size<128,'voice_capacity');
-      const frame={modelId:randomUUID(),cancelled:false,taskKey,actor,retireAt:Date.now()+1800000};owned.set(ownedKey,frame);byTask.set(taskKey,frame);
+      const frame={modelId:randomUUID(),cancelled:false,completionAttempted:false,taskKey,actor,retireAt:Date.now()+1800000};owned.set(ownedKey,frame);byTask.set(taskKey,frame);
       try{
-        const task=await source.readTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId});current(actor);
+        let task;
+        try{task=await source.readTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId});}
+        catch(error){current(actor);if(!frame.cancelled&&!frame.completionAttempted&&knownReadDenial(error))
+          return {schema:'soty.native-voice-turn.v1',requestId:args.requestId,taskId:args.taskId,consentId:args.consentId,
+            delivery:'pre_complete_denied',playbackVerified:false};throw error;}
+        current(actor);
         need(!frame.cancelled&&task.taskId===args.taskId&&task.consent.scope==='kvartalufa.voice'
           &&task.consent.consentId===args.consentId&&task.consent.rootPrincipal.accountId===actor.accountId
           &&task.consent.rootPrincipal.deviceId===actor.deviceId&&task.consent.transcript===true&&task.consent.rootBrain===true
           &&task.consent.expiresAt>Date.now()&&(task.kind==='source-permission'||typeof task.prompt==='string'&&task.prompt.trim()&&task.prompt.length<=8000));
         frame.retireAt=Math.min(frame.retireAt,task.consent.expiresAt);
         if(task.kind==='source-permission'){
-          const delivery=await source.completeTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId,result:{sourceCurrent:true}});current(actor);
+          frame.completionAttempted=true;const delivery=await source.completeTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId,result:{sourceCurrent:true}});current(actor);
           need(!frame.cancelled&&delivery.taskId===args.taskId&&delivery.admitted===true);
-          return {schema:'soty.native-voice-turn.v1',requestId:args.requestId,delivery:'native_commit_ack',playbackVerified:false};
+          return {schema:'soty.native-voice-turn.v1',requestId:args.requestId,taskId:args.taskId,consentId:args.consentId,
+            kind:'source-permission',delivery:'native_commit_ack',playbackVerified:false};
         }
         const result=await agent.executeAsync({op:'agent.turn',args:{requestId:frame.modelId,prompt:task.prompt},actor});current(actor);
         need(!frame.cancelled&&result.schema==='soty.personal-agent-turn.v1'&&result.requestId===frame.modelId&&result.status==='complete'
@@ -46,7 +57,7 @@ export function createRootNativeVoiceExtension({getConnect,agent,source}){
         const text=validateLiveAnswerText({answer:result.answer,speech:firstAnswerParagraph(result.answer)});
         // Source Native commit independently rechecks its genuine consent/owner
         // and task signal at the exact publication boundary. Lost ACK is unknown.
-        const delivery=await source.completeTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId,result:text});current(actor);
+        frame.completionAttempted=true;const delivery=await source.completeTask({actor,taskId:args.taskId,consentId:args.consentId,requestId:args.requestId,result:text});current(actor);
         need(!frame.cancelled&&delivery.taskId===args.taskId&&delivery.admitted===true);
         return {schema:'soty.native-voice-turn.v1',requestId:args.requestId,delivery:'native_commit_ack',playbackVerified:false};
       } finally{frame.finished=true;}
