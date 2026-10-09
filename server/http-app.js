@@ -35,6 +35,7 @@ import { attachExternalCapabilities } from './external-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 import { createPersonalAgentComposition } from './personal-agent-composition.js';
+import { createNativeVoiceComposition } from './native-voice-composition.js';
 import { createHumanCallModule } from './human-call-module.js';
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
 
@@ -61,7 +62,7 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice } = {}, nativeSources) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
@@ -72,7 +73,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal,
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
@@ -134,7 +135,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     res.setHeader("Origin-Agent-Cluster", "?1");
     res.setHeader("Permissions-Policy", [
       "camera=(self)",
-      "microphone=(self)",
+      `microphone=(self${voice?.publicMount()?' "'+voice.publicMount().frameOrigin+'"':''})`,
       "geolocation=()",
       "payment=()",
       "usb=()",
@@ -159,7 +160,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [personal, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [voice, personal, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -168,6 +169,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   };
   try {
     personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities, apps, connectors }), configuration: personalAgent });
+    voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
@@ -256,7 +258,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
-      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), personal],
+      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), personal, ...(voice.operations.size ? [voice] : [])],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
@@ -276,7 +278,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
-  app.locals.personalAgent = personal;
+  app.locals.personalAgent = personal; app.locals.nativeVoice=voice;
   app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
@@ -288,6 +290,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   app.locals.closeServices = async () => {
     if (nativeSources.enabled) await nativeSources.close();
     personal.close();
+    voice.close();
     humanCalls.close();
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
     await mcp?.close();
@@ -296,7 +299,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status() });
+    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status(), nativeVoice: voice.publicMount() });
   });
   app.get('/api/calls/capabilities', (_req, res) => {
     const state = humanCalls.status();

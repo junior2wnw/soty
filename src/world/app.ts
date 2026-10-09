@@ -1906,7 +1906,7 @@ class WorldApplication {
     this.cleanScreen();
     const sequence = this.screenSequence, accountId = this.deskAccount, accountGeneration = this.accountGeneration;
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
-    const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current,
+    const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
       request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
         : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?:AppLaunchBinding;runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
           const cleanup=this.options.appSlotCleanup?.(result);return{url:result.launchUrl,entry:result.entry,

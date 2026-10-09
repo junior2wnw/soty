@@ -9,6 +9,7 @@ import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord } from './types';
 import { isAppExternalRequest } from './app-actions.mjs';
 import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
+import { mountRootVoiceCarrier } from './native-voice-carrier.mjs';
 import { mountAppFullscreen } from './app-fullscreen.mjs';
 import { icon } from './icons';
 import { mountAppFeedback, type AppFeedbackHandle } from './app-feedback';
@@ -20,6 +21,7 @@ import {captureSourcePin,matchesScopedCaptureContext} from './app-project-captur
 import {createScopedSlotRenewal,attachScopedRenewalLoads,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
+  nativeVoice?: { client:any; mount:any };
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
@@ -73,6 +75,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   name.tabIndex = -1; const subtitle = el('p'); title.append(name, subtitle);
   const workspace = el('div', 'sa-workspace'), runtime = el('div', 'sa-runtime'), panel = el('aside', 'sa-discussion');
   const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
+  const detachVoiceBridge=options.nativeVoice?mountRootVoiceCarrier({view,getFrame:()=>runtime.querySelector('iframe'),isCurrent:current,client:options.nativeVoice.client,mount:options.nativeVoice.mount,appId:app.appId,accountId}):()=>{};
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status');
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
@@ -268,6 +271,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
+    if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin!==view.location.origin){
+      runtimeStarted=true;runtime.replaceChildren(emptyState('Голосовое приложение недоступно на этом адресе',
+        'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
+    }
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.hidden = true; showMessage('');
     const existingFrame = runtime.querySelector('iframe');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
@@ -276,7 +283,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!url || !alive()) return;
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
-      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      const voiceFrame=options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin
+        &&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+options.nativeVoice.mount.frameOrigin+'; autoplay '+options.nativeVoice.mount.frameOrigin;
       frameGeneration++;
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
       runtime.replaceChildren(frame);
@@ -370,6 +380,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

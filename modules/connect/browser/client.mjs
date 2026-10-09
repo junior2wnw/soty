@@ -315,7 +315,7 @@ export function createClientWithStorage(options, storage) {
           expectedAccountId = requiredString(context.expectedAccountId, 'Expected account ID');
         } catch (error) { return Promise.reject(error); }
       }
-      if (operation === 'agent.turn' || operation === 'agent.cancel') {
+      if (operation === 'agent.turn' || operation === 'agent.cancel' || operation === 'voice.agent.turn' || operation === 'voice.agent.cancel') {
         // Capture the displayed account and actual private installation in the normal state queue.
         // Await only these long turn/control RPCs outside it: getLocalState/cancel must remain usable.
         // No signer escapes this closure; rpc still checks current state before challenge/sign and after response.

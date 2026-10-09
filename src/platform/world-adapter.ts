@@ -68,7 +68,10 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     else panel.close();
     await refresh();
   };
+  const voiceResponse=await fetch('/api/apps/capabilities',{cache:'no-store',signal:AbortSignal.timeout(8000)}).catch(()=>null);
+  const voiceMount=voiceResponse?.ok?(await voiceResponse.json()).nativeVoice:null;
   const options: Omit<WorldAppOptions, 'api' | 'requestContact'> = {
+    ...(voiceMount?{nativeVoice:{client:accountClient,mount:voiceMount}}:{}),
     localAccount: async () => { const state = await accountClient.getLocalState(); return { accountId: state.accountId ?? null, label: state.label || 'Я' }; },
     openLegacy, openAccount, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
     appSlotCleanup:reply=>accountClient.appSlotCleanup(reply),

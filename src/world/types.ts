@@ -109,6 +109,7 @@ export interface WorldHumanCallPort {
   declineIncoming(invitation: WorldIncomingCall): Promise<{ ok: boolean; code?: string }>;
 }
 export interface WorldAppOptions {
+  nativeVoice?: { client:any; mount:any };
   api: WorldApi;
   humanCalls?: WorldHumanCallPort;
   fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;

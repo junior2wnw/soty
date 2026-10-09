@@ -13,6 +13,7 @@ import { loadUniversalConfiguration } from './universal-configuration.js';
 import { startUniversalOperator } from './universal-operator.js';
 import { connectAllowedOrigins } from './connect-module.js';
 import { loadPersonalAgentConfiguration } from './personal-agent-configuration.js';
+import { loadNativeVoiceConfiguration } from './native-voice-configuration.js';
 import { loadInstalledApplicationsEntry } from './installed-applications-entry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,7 @@ const host = process.env.HOST || "0.0.0.0";
 const capabilityConfiguration = loadCapabilityConfiguration();
 const universalConfiguration = loadUniversalConfiguration();
 const personalAgentConfiguration = loadPersonalAgentConfiguration();
+const nativeVoiceConfiguration = loadNativeVoiceConfiguration();
 const operatorFlag = process.env.SOTY_UNIVERSAL_OPERATOR_ENABLED ?? '';
 if (!['', '0', '1'].includes(operatorFlag)) throw Object.assign(new Error('universal_operator_configuration_invalid'), { code: 'universal_operator_configuration_invalid' });
 
@@ -39,7 +41,7 @@ const installedApplications = await loadInstalledApplicationsEntry();
 const personalAgent = installedApplications.sourceCredentialFor ? { ...personalAgentConfiguration.personalAgent,
   sourceReferences: installedApplications.sourceReferences, sourceCredentialFor: installedApplications.sourceCredentialFor
 } : personalAgentConfiguration.personalAgent;
-try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent }); }
+try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration }); }
 catch (error) { await waitForRejectedHttpStart(error); throw error; }
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first
