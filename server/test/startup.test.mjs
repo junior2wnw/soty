@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,7 +151,8 @@ test('ordinary wrapper preserves normal ready but cannot publish a ready after s
     const root = { server, trafficTunnel: { enabled: false },
       start() { if (!pending) server.emit('listening'); return starting; },
       close() { closeCalls++; rejectStart?.(Object.assign(new Error('root_startup_closed'), { code: 'root_startup_closed' })); return cleanup; } };
-    const processPort = { env: {}, connected: false, send: value => ready.push(value), once: (name, callback) => handlers.set(name, callback) };
+    const processPort = { env: {}, connected: false, send: value => ready.push(value),
+      once: (name, callback) => handlers.set(name, callback), on: (name, callback) => handlers.set(name, callback) };
     const work = new AsyncFunction('createRootStartup', 'process', 'console', body)(async () => root, processPort, { log: value => logs.push(value) });
     void work.catch(() => {});
     return { server, handlers, ready, logs, work, closeCalls: () => closeCalls };
@@ -166,4 +168,101 @@ test('ordinary wrapper preserves normal ready but cannot publish a ready after s
   assert.equal(retired.ready.length, 0, 'a closed ordinary wrapper cannot send a late ready IPC');
   assert.equal(retired.logs.length, 0, 'a closed ordinary wrapper cannot log a late ready');
   assert.equal(retired.closeCalls(), 2);
+});
+
+// Optional BEFORE mode selects only the retained, exact public old entry. It
+// changes no assertions, production config or actual singleton/Core identity.
+const shutdownEntryOverride = process.env.SOTY_SHUTDOWN_COUNTER_ENTRY;
+const shutdownEntryBytes = await readFile(shutdownEntryOverride || new URL('../index.js', import.meta.url));
+if (shutdownEntryOverride) {
+  assert.equal(createHash('sha256').update(shutdownEntryBytes).digest('hex'),
+    'a1144719182fd0d13e154f3154e96fc91c2a252e2bc27a80c68f4b2090d46b2a', 'BEFORE must use the exact old public index');
+}
+const shutdownEntry = shutdownEntryBytes.toString('utf8');
+const turn = () => new Promise(done => setImmediate(done));
+function controlledShutdownEntry() {
+  // Reuse the actual startup/close body with the maintained controlled I/O
+  // ports. No browser account, provider or native/source instance is created.
+  const factory = controlledStartup(), server = factory.server, processPort = new EventEmitter();
+  const messages = [], callbacks = [], logs = [], counts = { start: 0, close: 0, ref: 0, disconnect: 0,
+    source: 0, native: 0, provider: 0 };
+  let resolveClose, rejectClose, sendFailure = false;
+  const cleanup = new Promise((resolve, reject) => { resolveClose = resolve; rejectClose = reject; });
+  processPort.env = {}; processPort.connected = true;
+  processPort.channel = { ref() { counts.ref++; } };
+  processPort.disconnect = () => {
+    counts.disconnect++; processPort.connected = false; processPort.emit('disconnect');
+  };
+  processPort.send = (message, callback) => {
+    if (sendFailure && callback) throw new Error('controlled private send detail');
+    messages.push(message); if (callback) callbacks.push(callback); return true;
+  };
+  server.address = () => ({ port: 12345 });
+  const create = async () => {
+    const root = await factory.create({ env: { HOST: 'controlled.invalid' } });
+    root.app.locals.closeServices = () => cleanup;
+    return { ...root, start() { counts.start++; return root.start(); }, close() { counts.close++; return root.close(); } };
+  };
+  const body = shutdownEntry.replace(/^import .*?;\r?\n/gm, '');
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const work = new AsyncFunction('createRootStartup', 'process', 'console', body)(create, processPort, { log: value => logs.push(value) });
+  const closed = () => messages.filter(message => message.type === 'soty:closed');
+  return { server, processPort, counts, messages, callbacks, logs, work, closed, resolveClose, rejectClose, factory,
+    failSend() { sendFailure = true; }, request(value = { type: 'soty:shutdown' }, handle) { processPort.emit('message', value, handle); } };
+}
+
+test('ordinary actual entry holds IPC and acknowledges the SAME deferred close once before disconnect', async () => {
+  const f = controlledShutdownEntry(); await f.work;
+  assert.deepEqual(f.messages, [{ type: 'soty:ready', port: 12345 }]);
+  f.request(); f.request(); f.processPort.emit('SIGINT');
+  assert.equal(f.counts.close, 1); assert.equal(f.counts.ref, 1);
+  assert.equal(f.closed().length, 0); assert.equal(f.counts.disconnect, 0);
+  f.server.emit('listening'); assert.equal(f.messages.filter(value => value.type === 'soty:ready').length, 1);
+  f.resolveClose(); await turn();
+  assert.deepEqual(f.closed(), [{ type: 'soty:closed', outcome: 'fulfilled' }]);
+  assert.equal(f.counts.disconnect, 0); assert.equal(f.callbacks.length, 1);
+  f.callbacks[0](null);
+  assert.equal(f.counts.disconnect, 1); assert.equal(f.counts.close, 1);
+  assert.equal(f.factory.state.installedClosed, 1);
+  assert.deepEqual(f.counts, { start: 1, close: 1, ref: 1, disconnect: 1, source: 0, native: 0, provider: 0 });
+});
+
+test('ordinary actual entry reports close rejection only as a closed enum and preserves one close', async () => {
+  const f = controlledShutdownEntry(); await f.work; f.request();
+  f.rejectClose(new Error('controlled private cleanup detail')); await turn();
+  assert.deepEqual(f.closed(), [{ type: 'soty:closed', outcome: 'rejected' }]);
+  assert.equal(f.processPort.exitCode, 1); assert.equal(f.counts.disconnect, 0);
+  f.callbacks[0](null); f.request(); f.processPort.emit('SIGTERM');
+  assert.equal(f.counts.close, 1); assert.equal(f.counts.disconnect, 1);
+  assert.equal(JSON.stringify(f.messages).includes('private'), false);
+});
+
+test('ordinary actual entry ignores unknown, extra, inherited, accessor and handle-bearing shutdown requests', async () => {
+  const f = controlledShutdownEntry(); await f.work; let getterCalls = 0;
+  const getter = {}; Object.defineProperty(getter, 'type', { enumerable: true, get() { getterCalls++; return 'soty:shutdown'; } });
+  for (const value of [null, 'soty:shutdown', ['soty:shutdown'], { type: 'other' },
+    { type: 'soty:shutdown', extra: true }, Object.create({ type: 'soty:shutdown' }), getter]) f.request(value);
+  f.request({ type: 'soty:shutdown' }, {});
+  assert.equal(f.counts.close, 0); assert.equal(f.closed().length, 0); assert.equal(getterCalls, 0);
+  f.request(); assert.equal(f.counts.close, 1); f.resolveClose(); await turn(); f.callbacks[0](null);
+});
+
+test('ordinary actual entry refuses send callback errors and send throws without raw details or close retry', async () => {
+  for (const mode of ['callback', 'throw']) {
+    const f = controlledShutdownEntry(); await f.work; f.request();
+    if (mode === 'throw') f.failSend();
+    f.resolveClose(); await turn();
+    if (mode === 'callback') f.callbacks[0](new Error('controlled private callback detail'));
+    assert.equal(f.processPort.exitCode, 1); assert.equal(f.counts.disconnect, 1); assert.equal(f.counts.close, 1);
+    assert.equal(JSON.stringify(f.messages).includes('private'), false);
+  }
+});
+
+test('ordinary actual entry closes on parent disconnect and cannot claim a late ACK after channel loss', async () => {
+  for (const requestFirst of [true, false]) {
+    const f = controlledShutdownEntry(); await f.work; if (requestFirst) f.request();
+    f.processPort.connected = false; f.processPort.emit('disconnect');
+    assert.equal(f.counts.close, 1); f.resolveClose(); await turn();
+    assert.equal(f.closed().length, 0); assert.equal(f.callbacks.length, 0); assert.equal(f.counts.close, 1);
+  }
 });
