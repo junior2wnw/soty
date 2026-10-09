@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
+import { defaultGonkaProxyModel, glmProxyModel } from "../server/gonka-proxy.js";
 
 const root = await mkdtemp(path.join(tmpdir(), "soty-connector-integration-"));
 const serverPort = await freePort();
@@ -21,18 +21,27 @@ const openCodePath = String(process.env.SOTY_OPENCODE_E2E_PATH || "").trim();
 const connectorRuntime = String(process.env.SOTY_CONNECTOR_E2E_RUNTIME || "scripts/soty-connector.mjs").trim();
 let gonkaServer;
 let gonkaRequests = [];
+let gonkaPort = 0;
+let connector, connectorEnv;
+const modelCases = [];
+const childClosures = new WeakMap();
+const evidenceDir = String(process.env.SOTY_CONNECTOR_E2E_EVIDENCE_DIR || "").trim();
 
 try {
-  const gonkaPort = openCodePath ? await freePort() : 0;
+  gonkaPort = openCodePath ? await freePort() : 0;
   if (openCodePath) {
     ({ server: gonkaServer, requests: gonkaRequests } = await startFakeGonka(gonkaPort));
   }
   const server = start(process.execPath, ["server/index.js"], {
+    HOST: "127.0.0.1",
     PORT: String(serverPort),
     DATA_DIR: path.join(root, "server-data"),
     ...(openCodePath ? {
       SOTY_GONKA_API_KEY: "integration-server-gonka-key",
-      SOTY_GONKA_BASE_URL: `http://127.0.0.1:${gonkaPort}/v1`
+      SOTY_GONKA_BASE_URL: `http://127.0.0.1:${gonkaPort}/v1`,
+      // /ready also checks the application proxy; this is an own synthetic
+      // localhost credential, not an inherited provider/application secret.
+      SOTY_GONKA_APPLICATION_TOKENS: JSON.stringify({ "integration-app": "a".repeat(43) })
     } : {})
   });
   processes.push(server);
@@ -41,10 +50,11 @@ try {
   await mkdir(connectorDataDir, { recursive: true });
   await writeFile(path.join(connectorDataDir, "connector-config.json"), `${JSON.stringify({
     workspaceRoot: path.join(root, "removed-workspace"),
-    allowedRoots: [path.join(root, "removed-workspace")]
+    allowedRoots: [path.join(root, "removed-workspace")],
+    ...(openCodePath ? { gonkaModel: "MiniMaxAI/MiniMax-M2.7" } : {})
   })}\n`, "utf8");
 
-  const connector = start(process.execPath, [connectorRuntime], {
+  connectorEnv = {
     SOTY_CONNECTOR_PORT: String(connectorPort),
     SOTY_CONNECTOR_DATA_DIR: connectorDataDir,
     SOTY_CONNECTOR_LINK_ID: linkId,
@@ -58,9 +68,11 @@ try {
       Path: path.dirname(process.execPath)
     } : {}),
     ...(openCodePath ? {
-      SOTY_OPENCODE_PATH: openCodePath
+      SOTY_OPENCODE_PATH: openCodePath,
+      SOTY_CONNECTOR_MODEL: defaultGonkaProxyModel
     } : {})
-  });
+  };
+  connector = start(process.execPath, [connectorRuntime, ...(openCodePath ? ["--model", glmProxyModel] : [])], connectorEnv);
   processes.push(connector);
   const connectorHealth = await waitJson(`http://127.0.0.1:${connectorPort}/health`, (value) => value.ok === true && value.connector === true);
   assert.equal(connectorHealth.package?.wrapper?.id, "soty-connector");
@@ -98,22 +110,20 @@ try {
   if (openCodePath) {
     await waitJson(`${baseUrl}/ready`, (value) => value.ok === true && value.agentModelProxy?.ready === true);
     await waitJson(`http://127.0.0.1:${connectorPort}/agent/status`, (value) => value.agent?.available === true, 20_000);
-    const agentJob = await createJob({
-      kind: "agent",
-      input: {
-        text: "Reply with exactly: gonka-opencode-ok",
-        cwd: root,
-        timeoutMs: 60_000
-      }
-    });
-    const agentState = await waitJob(agentJob.id, 60_000);
-    assert.equal(agentState.status, "succeeded");
-    assert.equal(agentState.result.text.trim(), "gonka-opencode-ok");
-    assert.match(agentState.result.sessionId, /^ses_/u);
-    assert.ok(agentState.events.some((event) => event.type === "message" && event.text.includes("gonka-opencode-ok")));
-    assert.ok(gonkaRequests.some((request) => request.url === "/v1/chat/completions"
-      && request.authorization === "Bearer integration-server-gonka-key"
-      && request.body?.model === defaultGonkaProxyModel));
+    await runAgentModelCase("cli_over_env_and_saved", glmProxyModel);
+    const saved = JSON.parse(await readFile(path.join(connectorDataDir, "connector-config.json"), "utf8"));
+    assert.equal(saved.gonkaModel, glmProxyModel);
+    await restartConnector("");
+    await runAgentModelCase("saved_model_after_restart", glmProxyModel);
+    await restartConnector(defaultGonkaProxyModel);
+    await runAgentModelCase("env_over_saved", defaultGonkaProxyModel);
+    const defaultConfig = JSON.parse(await readFile(path.join(connectorDataDir, "connector-config.json"), "utf8"));
+    delete defaultConfig.gonkaModel;
+    await stopOwnedChild(connector);
+    await writeFile(path.join(connectorDataDir, "connector-config.json"), JSON.stringify(defaultConfig), { mode: 0o600 });
+    await restartConnector("");
+    await runAgentModelCase("unchanged_empty_default", defaultGonkaProxyModel);
+    if (process.platform === "win32") await verifyCompanionModelTransfer();
   }
 
   const completed = await createJob({
@@ -244,10 +254,78 @@ while($true){Start-Sleep -Seconds 1}`,
 
   process.stdout.write("connector:integration:selftest:ok\n");
 } finally {
-  for (const child of processes.reverse()) child.kill();
-  if (gonkaServer) await new Promise((resolveClose) => gonkaServer.close(resolveClose));
-  await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+  const closed = await Promise.allSettled(processes.reverse().map(stopOwnedChild));
+  if (gonkaServer) {
+    gonkaServer.closeAllConnections();
+    await new Promise((resolveClose, reject) => gonkaServer.close(error => error ? reject(error) : resolveClose()));
+  }
+  const allChildrenClosed = closed.every(value => value.status === "fulfilled")
+    && processes.every(child => child.exitCode !== null || child.signalCode !== null);
+  const portsFree = await Promise.all([serverPort, connectorPort, ...(gonkaPort ? [gonkaPort] : [])].map(portIsFree));
+  if (evidenceDir) {
+    assert.ok(path.isAbsolute(evidenceDir)); await mkdir(evidenceDir, { recursive: true });
+    await writeFile(path.join(evidenceDir, "MODEL-REQUESTS-AND-CLOSURE.json"), JSON.stringify({
+      realOpenCode: Boolean(openCodePath), controlledLocalUpstream: Boolean(openCodePath), externalProvider: false,
+      modelCases, requests: gonkaRequests.map(request => ({
+        route: request.url === "/v1/chat/completions" ? "chat_completions" : "other",
+        model: [defaultGonkaProxyModel, glmProxyModel, "MiniMaxAI/MiniMax-M2.7"].includes(request.body?.model) ? request.body.model : "unknown",
+        maxTokens: Number.isSafeInteger(request.body?.max_tokens) ? request.body.max_tokens : null,
+        maxCompletionTokens: Number.isSafeInteger(request.body?.max_completion_tokens) ? request.body.max_completion_tokens : null,
+        syntheticAuthorizationMatches: request.authorization === "Bearer integration-server-gonka-key"
+      })), allChildrenClosed, ownedChildCount: processes.length, allOwnedPortsFree: portsFree.every(Boolean),
+      privateValuesPrinted: false, machineCompanionInstalled: false
+    }, null, 2) + "\n", { flag: "wx" });
+  }
+  assert.equal(allChildrenClosed, true); assert.equal(portsFree.every(Boolean), true);
+  assert.ok(path.dirname(root) === path.resolve(tmpdir()) && path.basename(root).startsWith("soty-connector-integration-"));
   await rm(root, { recursive: true, force: true });
+}
+
+async function restartConnector(modelEnv) {
+  await stopOwnedChild(connector);
+  connector = start(process.execPath, [connectorRuntime], { ...connectorEnv, SOTY_CONNECTOR_MODEL: modelEnv });
+  processes.push(connector);
+  await waitJson(`http://127.0.0.1:${connectorPort}/agent/status`, value => value.agent?.available === true, 20_000);
+  await waitJson(`${baseUrl}/api/connectors/status?linkId=${linkId}`, value => value.connected === true);
+}
+
+async function runAgentModelCase(name, expectedModel) {
+  const before = gonkaRequests.length;
+  const job = await createJob({ kind: "agent", input: {
+    text: "Reply with exactly: gonka-opencode-ok", cwd: root, timeoutMs: 60_000,
+    // An inbound job DTO must not select the host's model.
+    model: "MiniMaxAI/MiniMax-M2.7"
+  } });
+  const state = await waitJob(job.id, 60_000);
+  assert.equal(state.status, "succeeded"); assert.equal(state.result.text.trim(), "gonka-opencode-ok");
+  assert.match(state.result.sessionId, /^ses_/u);
+  assert.ok(state.events.some(event => event.type === "message" && event.text.includes("gonka-opencode-ok")));
+  const requests = gonkaRequests.slice(before).filter(request => request.url === "/v1/chat/completions");
+  modelCases.push({ name, expectedModel, actualModels: [...new Set(requests.map(request => request.body?.model))],
+    requestCount: requests.length, jobSucceeded: true,
+    jobModelIgnored: requests.length > 0 && requests.every(request => request.body?.model !== "MiniMaxAI/MiniMax-M2.7") });
+  assert.ok(requests.length > 0, "real OpenCode must reach the controlled upstream");
+  assert.ok(requests.every(request => request.authorization === "Bearer integration-server-gonka-key"));
+  assert.deepEqual([...new Set(requests.map(request => request.body?.model))], [expectedModel]);
+  for (const request of requests) for (const field of ["max_tokens", "max_completion_tokens"])
+    if (request.body[field] !== undefined) assert.ok(Number.isSafeInteger(request.body[field]) && request.body[field] > 0 && request.body[field] <= 8192);
+}
+
+async function verifyCompanionModelTransfer() {
+  const source = await readFile(connectorRuntime, "utf8");
+  const block = source.match(/"    foreach \(\$name in @\([^\n]+\)\) \{",[\s\S]*?"    \}",/u)?.[0];
+  assert.ok(block);
+  // Execute ONLY the literal existing config-copy loop, against memory-only
+  // synthetic rows. No registry/task/SYSTEM/user installation is executed.
+  const script = block.split(/\r?\n/u).map(line => JSON.parse(line.trim().replace(/,$/u, ""))).join("\n");
+  const prefix = `$sourceData=[pscustomobject]@{schema='synthetic';gonkaModel='${glmProxyModel}';privateExtra='never-copy'};`;
+  const body = prefix + "$userData=[pscustomobject]@{gonkaModel='old';userOnly='retained'};" + script
+    + ";[pscustomobject]@{model=$userData.gonkaModel;kept=$userData.userOnly -eq 'retained';extraCopied=$null -ne $userData.PSObject.Properties['privateExtra']}|ConvertTo-Json -Compress";
+  const executable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const result = JSON.parse(execFileSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(body, "utf16le").toString("base64")],
+    { encoding: "utf8", timeout: 5000, windowsHide: true }));
+  assert.equal(result.model, glmProxyModel); assert.equal(result.kept, true); assert.equal(result.extraCopied, false);
+  modelCases.push({ name: "actual_companion_copy_loop", modelCopied: true, userFieldsPreserved: true, nonWhitelistRefused: true, memoryOnly: true });
 }
 
 async function startFakeGonka(port) {
@@ -342,11 +420,27 @@ function start(command, args, extraEnv) {
     stdio: ["ignore", "pipe", "pipe"]
   });
   let stderr = "";
+  childClosures.set(child, new Promise(resolveClose => child.once("close", resolveClose)));
   child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_000); });
   child.on("exit", (code) => {
     if (code && !process.exitCode) process.stderr.write(`child:${code}:${stderr}\n`);
   });
   return child;
+}
+
+async function stopOwnedChild(child) {
+  const closed = childClosures.get(child); assert.ok(closed);
+  if (child.exitCode === null && child.signalCode === null) child.kill();
+  let timer;
+  try { await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("owned_child_close_timeout")), 5000); })]); }
+  finally { clearTimeout(timer); }
+}
+
+function portIsFree(port) {
+  return new Promise(resolveFree => {
+    const server = createServer(); server.once("error", () => resolveFree(false));
+    server.listen(port, "127.0.0.1", () => server.close(error => resolveFree(!error)));
+  });
 }
 
 async function waitJson(url, predicate, timeoutMs = 10_000) {

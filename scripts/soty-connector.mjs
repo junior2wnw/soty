@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/connector-host.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
-import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
+import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
@@ -41,7 +41,7 @@ const updateConfirmMs = safeInteger(env("SOTY_CONNECTOR_UPDATE_CONFIRM_MS"), 1_0
 const maxEventChars = 64_000;
 const maxResultChars = 1_000_000;
 const persisted = loadConfig();
-const gonkaModel = defaultGonkaModel;
+const gonkaModel = selectGonkaModel(arg("--model") || env("SOTY_CONNECTOR_MODEL"), persisted.gonkaModel);
 const gonkaModelLimits = gonkaModelLimitsFor(gonkaModel);
 let linkId = safeLinkId(arg("--link-id") || arg("--relay-id") || env("SOTY_CONNECTOR_LINK_ID", "SOTY_AGENT_RELAY_ID") || persisted.linkId || persisted.relayId);
 let relayBaseUrl = safeBaseUrl(env("SOTY_CONNECTOR_SERVER_URL", "SOTY_AGENT_RELAY_URL") || persisted.serverUrl || persisted.relayBaseUrl || originOf(updateManifestUrl) || "https://xn--n1afe0b.online");
@@ -1644,7 +1644,7 @@ async function ensureUserCompanion() {
     `    $sourceData = Get-Content -LiteralPath ${sourceConfig} -Raw | ConvertFrom-Json`,
     "    $userExists = Test-Path -LiteralPath $userConfig",
     "    $userData = if ($userExists) { Get-Content -LiteralPath $userConfig -Raw | ConvertFrom-Json } else { $sourceData }",
-    "    foreach ($name in @('schema','linkId','serverUrl','deviceId','deviceNick','installId','connectorToken')) {",
+    "    foreach ($name in @('schema','linkId','serverUrl','deviceId','deviceNick','installId','connectorToken','gonkaModel')) {",
     "      $sourceProperty = $sourceData.PSObject.Properties[$name]",
     "      if ($null -eq $sourceProperty) { continue }",
     "      $userProperty = $userData.PSObject.Properties[$name]",
@@ -1735,6 +1735,7 @@ async function saveConfig() {
     deviceNick,
     installId,
     connectorToken,
+    gonkaModel,
     workspaceRoot: persisted.workspaceRoot || homedir(),
     allowedRoots: Array.isArray(persisted.allowedRoots) ? persisted.allowedRoots : [persisted.workspaceRoot || homedir()],
     trafficFabric: trafficFabricState,

@@ -13,6 +13,7 @@ export function selectGonkaModel(explicitModel, persistedModel) {
 
 export function gonkaModelLimitsFor(model) {
   if (model === defaultGonkaModel) return Object.freeze({ context: 380_000, output: 8_192 });
+  if (model === "zai-org/GLM-5.3-Flash") return Object.freeze({ context: 262_144, output: 8_192 });
   return Object.freeze({ context: 262_144, output: 32_768 });
 }
 
