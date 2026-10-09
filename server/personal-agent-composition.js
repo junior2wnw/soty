@@ -28,7 +28,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
   const historyEnabled = configuration.historyEnabled !== false, localTargetFor = configuration.localTargetFor;
   need(typeof getConnect === 'function' && typeof getServices === 'function');
   const enabled = configuration.enabled === true, refs = configuration.sourceReferences ?? [];
-  need(Array.isArray(refs) && !types.isProxy(refs) && refs.length <= 8);
+  need(Array.isArray(refs) && !types.isProxy(refs) && refs.length <= 64);
   const refFields = Object.getOwnPropertyDescriptors(refs);
   need(Reflect.ownKeys(refFields).length === refs.length + 1);
   const references = Object.freeze(Array.from({ length: refs.length }, (_, index) => {
@@ -40,7 +40,9 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     return freeze({ ...ref });
   }));
   need(new Set(references.map(ref => `${ref.capabilityId}@${ref.version}`)).size === references.length);
-  need(configuration.sourceCredentialFor === undefined || typeof configuration.sourceCredentialFor === 'function');
+  need(configuration.sourceCredentialFor === undefined || typeof configuration.sourceCredentialFor === 'function'
+    && !types.isProxy(configuration.sourceCredentialFor) && !types.isAsyncFunction(configuration.sourceCredentialFor)
+    && !types.isGeneratorFunction(configuration.sourceCredentialFor));
   const sourceCredentialFor = configuration.sourceCredentialFor;
   const sourceBound = references.length === 0 || typeof sourceCredentialFor === 'function';
   const gateway = configuration.gateway ?? {};
@@ -53,30 +55,67 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     return getConnect().withActorAuthorityFence(actor, () => callback(getServices()));
   };
   const toolsForActor = ({ actor, scope, turnId }) => {
+    const keyFor = reference => `${reference.capabilityId}@${reference.version}`;
+    const admitted = new Map(references.map(reference => [keyFor(reference), reference]));
+    const selected = new Map(), readKeys = new Map(), prefix = randomUUID();
+    const pinned = value => {
+      simple(value, ['capabilityId', 'version', 'digest']);
+      const reference = admitted.get(keyFor(value));
+      need(reference && reference.capabilityId === value.capabilityId && reference.version === value.version
+        && reference.digest === value.digest, 'agent_source_denied'); return reference;
+    };
     const sourceActor = reference => current(actor, services => {
       need(sourceBound && services.capabilities, 'agent_source_unavailable');
       const credential = sourceCredentialFor({ actor, reference });
       if (types.isPromise(credential)) { void Promise.prototype.then.call(credential, () => {}, () => {}); throw agentError('agent_current_port_async'); }
       simple(credential, ['token', 'audience']);
       const delegated = services.capabilities.authenticateCredential(credential);
-      // A billing tenant or installed app publisher does not supply another user's capability authority.
+      // A billing tenant or installed publisher cannot substitute a user's account/device authority.
       services.capabilities.withOwnerAuthority({ actor: delegated }, owner => need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied'));
       return delegated;
     });
-    const sourceDetail = reference => {
-      const delegated = sourceActor(reference);
-      // The existing broker opens its own Connect/Apps/Source fence. Never nest it in the actor fence.
-      // Its live root-grant creator is exactly the caller device checked above, so admission fences that same principal.
+    const sourceDetail = (reference, delegated) => {
+      current(actor, services => services.capabilities.withOwnerAuthority({ actor: delegated }, owner =>
+        need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied')));
+      // Existing Connect/Apps/Native fences remain outside the current actor fence.
       const contract = getServices().capabilities.external?.getContract({ actor: delegated, reference });
+      need(contract && contract.effects.length === 0 && contract.executionEnabled === true, 'agent_source_denied');
       current(actor, () => true); return contract;
     };
     const assertCurrent = () => {
       current(actor, services => need(services.notes && services.capabilities, 'agent_source_unavailable'));
-      for (const reference of references) {
-        const contract = sourceDetail(reference);
-        need(contract && contract.effects.length === 0 && contract.executionEnabled === true, 'agent_source_denied');
-      }
+      // EMPTY on a Notes/apps-only turn. Only Source data/metadata actually used
+      // by this turn retains its original credential and Native current predicate.
+      for (const value of selected.values()) sourceDetail(value.reference, value.delegated);
       return true;
+    };
+    const denied = error => {
+      if (!error || typeof error !== 'object' || types.isProxy(error) || !types.isNativeError(error)) return false;
+      const field = Object.getOwnPropertyDescriptor(error, 'code');
+      return field && Object.hasOwn(field, 'value') && ['authorization_required', 'access_denied', 'not_found',
+        'apps_access_denied', 'apps_owner_required', 'app_unavailable', 'external_resource_denied', 'agent_source_denied'].includes(field.value);
+    };
+    const sourceMatches = (query, signal) => {
+      const items = new Map(), checkedGrants = new Set(), service = current(actor, services => services.capabilities.external);
+      need(service && typeof service.search === 'function', 'agent_source_unavailable');
+      for (const reference of references) {
+        need(!signal.aborted, 'agent_cancelled'); let delegated;
+        try { delegated = sourceActor(reference); } catch (error) { if (denied(error)) continue; throw error; }
+        const grantKey = canonical({ accountId: delegated.accountId, clientId: delegated.clientId, principalId: delegated.principalId, grantId: delegated.grantId });
+        if (checkedGrants.has(grantKey)) continue; checkedGrants.add(grantKey);
+        let cursor, pages = 0;
+        do {
+          need(++pages <= 4, 'agent_capacity'); need(!signal.aborted, 'agent_cancelled');
+          const page = service.search({ actor: delegated, query, limit: 20, ...(cursor ? { cursor } : {}) });
+          for (const item of page.items) {
+            const own = admitted.get(keyFor(item.reference));
+            if (!own || own.digest !== item.reference.digest || item.effects.length || item.executionEnabled !== true) continue;
+            items.set(keyFor(own), { item, delegated, reference: own });
+          }
+          cursor = page.cursor;
+        } while (cursor);
+      }
+      return [...items.values()].sort((a, b) => keyFor(a.reference).localeCompare(keyFor(b.reference)));
     };
     assertCurrent();
     const evidence = (title, data) => ({ evidence: [{ id: `root_${randomUUID().replaceAll('-', '')}`, title,
@@ -151,24 +190,58 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             completionVerified: ['succeeded', 'failed', 'cancelled'].includes(result.job.status) });
         } };
     }
-    references.forEach((reference, index) => {
-      const detail = sourceDetail(reference);
-      const keys = new Map(), prefix = randomUUID();
-      tools[`source_read_${index + 1}`] = { capability: `source_read_${index + 1}`, description: detail.description,
-        inputSchema: detail.inputSchema,
-        validate(input) { try { captureQueryData(input); return true; } catch { return false; } },
+    if (references.length) {
+      tools.source_catalog = { capability: 'source_catalog',
+        description: 'Discover current permitted readonly Native Source contracts. Metadata is unprobed availability and grants no rights.',
+        inputSchema: schema({ query: { type: 'string', maxLength: 200 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }),
+        validate: input => validate(input, [], ['query', 'limit']) && (input.query === undefined || typeof input.query === 'string'
+          && input.query.isWellFormed() && input.query.length <= 200) && (input.limit === undefined || Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 20),
+        execute(input, signal) {
+          need(!signal.aborted, 'agent_cancelled'); assertCurrent();
+          const ordered = sourceMatches(input.query ?? '', signal);
+          const chosen = ordered.filter(value => selected.has(keyFor(value.reference))).slice(0, input.limit ?? 20);
+          for (const value of ordered) {
+            if (chosen.length >= (input.limit ?? 20) || selected.size + chosen.filter(item => !selected.has(keyFor(item.reference))).length >= 8) break;
+            if (!selected.has(keyFor(value.reference))) chosen.push(value);
+          }
+          for (const value of chosen) {
+            const retained = selected.get(keyFor(value.reference)) ?? value;
+            sourceDetail(retained.reference, retained.delegated); selected.set(keyFor(retained.reference), retained);
+          }
+          assertCurrent(); need(!signal.aborted, 'agent_cancelled');
+          return evidence('Разрешённые источники', { items: chosen.map(value => value.item), hasMore: ordered.length > chosen.length, availability: 'unprobed' });
+        } };
+      tools.source_read_1 = { capability: 'source_read_1',
+        description: 'Read one exact reference or UNIQUE authorized catalogue query through current Root/Apps/Native grants. Ambiguous queries never read. Omission selects only a sole installed Source.',
+        inputSchema: schema({ reference: { type: 'object', additionalProperties: false, properties: { capabilityId: { type: 'string', maxLength: 160 },
+          version: { type: 'integer', minimum: 1, maximum: 1000000 }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['capabilityId', 'version', 'digest'] }, query: { type: 'string', maxLength: 200 }, input: { type: 'object' } }),
+        validate(input) {
+          try { if (!validate(input, [], ['reference', 'query', 'input']) || input.reference !== undefined && input.query !== undefined
+              || input.reference === undefined && input.query === undefined && references.length !== 1) return false;
+            if (input.reference !== undefined) pinned(input.reference);
+            if (input.query !== undefined && (typeof input.query !== 'string' || !input.query.isWellFormed() || input.query.length > 200)) return false;
+            if (input.input !== undefined) captureQueryData(input.input); return true;
+          } catch { return false; }
+        },
         async execute(input, signal) {
           need(!signal.aborted, 'agent_cancelled'); assertCurrent();
-          const digest = createHash('sha256').update(canonical(input, 65536)).digest('hex');
-          if (!keys.has(digest)) { need(keys.size < 8, 'agent_capacity'); keys.set(digest, `agent_read_${prefix}_${digest.slice(0, 32)}`); }
+          const matches = input.query === undefined ? null : sourceMatches(input.query, signal);
+          if (matches) need(matches.length === 1, 'agent_source_denied');
+          const reference = matches ? matches[0].reference : input.reference === undefined ? references[0] : pinned(input.reference), key = keyFor(reference);
+          need(selected.has(key) || selected.size < 8, 'agent_capacity');
+          const delegated = selected.get(key)?.delegated ?? matches?.[0].delegated ?? sourceActor(reference),
+            detail = sourceDetail(reference, delegated), data = captureQueryData(input.input ?? {});
+          const keys = readKeys.get(key) ?? new Map(), digest = createHash('sha256').update(canonical(data, 65536)).digest('hex');
+          if (!keys.has(digest)) { need(keys.size < 8, 'agent_capacity'); keys.set(digest, `agent_read_${prefix}_${createHash('sha256').update(key).digest('hex').slice(0, 16)}_${digest.slice(0, 32)}`); }
+          readKeys.set(key, keys);
           const service = current(actor, services => services.capabilities.external);
-          // Existing coordinator validates input and current Root+Native authority, accounts dispatch, and returns its actual receipt.
-          const result = await service.query({ actor: sourceActor(reference), reference, idempotencyKey: keys.get(digest), input });
-          assertCurrent(); need(!signal.aborted, 'agent_cancelled');
+          // The original coordinator owns validation/current Native predicates, durable dispatch CAS and receipt.
+          const result = await service.query({ actor: delegated, reference, idempotencyKey: keys.get(digest), input: data });
+          sourceDetail(reference, delegated); assertCurrent(); need(!signal.aborted, 'agent_cancelled');
           need(result.resultUnavailable === false && result.invocation.status === 'succeeded', 'agent_source_unavailable');
-          return evidence(detail.title, result.result);
+          selected.set(key, { reference, delegated }); return evidence(detail.title, result.result);
         } };
-    });
+    }
     return { tools, assertCurrent, ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
       // The module wraps every context callback in its fresh Connect fence. Do not nest that fence here.
       io: (op, args) => getServices().notes.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } }) }) } : {}) };

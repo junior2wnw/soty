@@ -14,6 +14,8 @@ import { captureExternalApplications } from '../external-applications.js';
 import { canonicalHash } from '../../modules/capabilities/server/validation.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createPersonalAgentConversation } from '../../src/platform/personal-agent-client.ts';
+import { agentError } from '../personal-agent-transport.js';
+import { loadInstalledApplicationsEntry } from '../installed-applications-entry.js';
 
 const defer = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const identity = () => { const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }), encryption = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -36,7 +38,7 @@ async function fixture(t, { enabled = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-agent-http-owned-')), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Owned agent fixture</title>');
   const tenant = 'synthetic_billing', keyRef = Object.freeze({}), receipts = new Map(), calls = [], holds = [];
-  let allowed = true, lost = false, hold = null, app, closed = false, settledReceiptReads = 0;
+  let allowed = true, lost = false, hold = null, app, closed = false, settledReceiptReads = 0, sourceInput = {};
   const connections = new Set(), server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   server.on('connection', socket => { connections.add(socket); socket.once('close', () => connections.delete(socket)); });
   server.on('upgrade', (req, socket, head) => { if (!app?.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
@@ -53,12 +55,13 @@ async function fixture(t, { enabled = true } = {}) {
       assert.equal(url, 'https://fixture-commerce.invalid/v1/chat/completions');
       const body = JSON.parse(init.body); assert.equal(body.model, GLM_MODEL); assert.equal(body.autoFallback, false);
       calls.push({ body, key: init.headers['Idempotency-Key'] });
-      if (hold) { const barrier = hold; hold = null; barrier.entered.resolve(); await barrier.release.promise; }
+      if (hold && (!hold.afterTool || body.messages.at(-1).role === 'tool')) { const barrier = hold; hold = null; barrier.entered.resolve(); await barrier.release.promise; }
       const last = body.messages.at(-1);
       let name = 'finish_answer', args = { answer: 'Подтверждённый ответ', selectedEvidenceIds: [], claims: [] };
       if (last.role === 'user' && last.content === 'Read my notes') { name = 'list_my_notes'; args = {}; }
       if (last.role === 'user' && last.content.startsWith('Read note ')) { name = 'read_my_note'; args = { noteId: last.content.slice(10) }; }
-      if (last.role === 'user' && last.content === 'Read source') { name = 'source_read_1'; args = {}; }
+      if (last.role === 'user' && last.content === 'Read source') { name = 'source_read_1'; args = sourceInput; }
+      if (last.role === 'user' && last.content === 'Catalog sources') { name = 'source_catalog'; args = { limit: 20 }; }
       if (last.role === 'user' && last.content.startsWith('Local task ')) { name = 'run_on_my_device'; args = { text: last.content.slice(11) }; }
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; args = { answer: 'Источник проверен', selectedEvidenceIds: evidence.map(item => item.id),
         claims: [{ kind: 'fact', statement: 'Источник доступен текущему пользователю', evidenceIds: evidence.map(item => item.id),
@@ -95,7 +98,8 @@ async function fixture(t, { enabled = true } = {}) {
   return { directory, dist, origin, alice, bob, a, b, calls, call, base, configuration, settledReceipts: () => settledReceiptReads,
     service: () => app, stop,
     turn: (actor, requestId, prompt = 'Neutral question', extra = {}) => call(actor, 'agent.turn', { requestId, prompt, ...extra }),
-    hold() { const barrier = { entered: defer(), release: defer() }; holds.push(barrier); hold = barrier; return barrier; },
+    hold(afterTool = false) { const barrier = { entered: defer(), release: defer(), afterTool }; holds.push(barrier); hold = barrier; return barrier; },
+    setSourceInput(value) { sourceInput = value; },
     setAllowed(value) { allowed = value; }, setLost(value) { lost = value; },
     async restart(extra = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...base, ...extra }); },
     async phone() { const phone = identity(), started = await call(phone, 'enrollment.start', { label: 'Own second device', encryptionPublicJwk: phone.encryptionPublicJwk });
@@ -193,7 +197,7 @@ test('actual Root HTTP preserves unknown ACK and stable no-redispatch semantics'
   assert.equal(JSON.stringify(retry).includes('private_fixture_payload'), false);
 });
 
-test('actual registered Root Source query tool preserves independent Source denial and foreign app isolation', { timeout: 20000 }, async t => {
+async function sourceFixture(t, { count = 1 } = {}) {
   const f = await fixture(t); await f.restart({ universalAppsEnabled: true });
   const source = createServer((_req, res) => res.end('Synthetic Source contract fixture'));
   await new Promise(done => source.listen(0, '127.0.0.1', done));
@@ -223,35 +227,116 @@ test('actual registered Root Source query tool preserves independent Source deni
   const adapter = createTrustedReadonlyQueryAdapter({ withAuthority(request, callback) {
     assert.equal(request.actor.accountId, f.a.accountId); if (!sourceAllowed) throw new Error('synthetic_native_source_permission_denied'); return callback();
   }, query(_request, _signal, current) { current(); sourceReads++; return { text: 'Private scoped Source result' }; } });
-  const capabilityId = `app.${appId}:read`, resource = `app.${appId}:selected`;
-  const catalog = { capabilityId, version: 1, appId, title: 'Selected Source read', description: 'Read one independently authorized Source resource',
-    visibility: 'private', executionEnabled: true, inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    outputSchema: { type: 'object', properties: { text: { type: 'string', maxLength: 1000 } }, required: ['text'], additionalProperties: false },
-    resources: [resource], effects: [], recipients: [resource], executionBinding: { kind: 'registered', handler: capabilityId, version: 1,
-      binding: { id: `app.${appId}:readonly`, version: 1, digest: canonicalHash({ source: 'synthetic', resource }) } } };
-  const entry = { appId, target: { revision: pin.revision, digest: pin.digest }, catalog, adapter };
-  const reference = captureExternalApplications([entry])[0].contract;
-  await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, externalApplications: [entry] });
+  const capabilityIds = Array.from({ length: count }, (_, index) => `app.${appId}:read${index + 1}`), resources = capabilityIds.map(id => id + ':selected');
+  const entries = capabilityIds.map((capabilityId, index) => ({ appId, target: { revision: pin.revision, digest: pin.digest }, adapter,
+    catalog: { capabilityId, version: 1, appId, title: `Selected Source read ${index + 1}`, description: 'Read one independently authorized Source resource',
+      visibility: 'private', executionEnabled: true, inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      outputSchema: { type: 'object', properties: { text: { type: 'string', maxLength: 1000 } }, required: ['text'], additionalProperties: false },
+      resources: [resources[index]], effects: [], recipients: [resources[index]], executionBinding: { kind: 'registered', handler: capabilityId, version: 1,
+        binding: { id: capabilityId + ':readonly', version: 1, digest: canonicalHash({ source: 'synthetic', resource: resources[index] }) } } } }));
+  const references = captureExternalApplications(entries).map(value => value.contract), reference = references[0];
+  await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, externalApplications: entries });
   // Actual signed grant/credential consent, kept private in this synthetic fixture. The composition never creates one.
   const principal = (await f.call(f.alice, 'access.principals.create', { expectedAccountId: f.a.accountId, label: 'Explicit fixture reader' })).principal;
   const grant = (await f.call(f.alice, 'access.grants.issue', { expectedAccountId: f.a.accountId, principalId: principal.id,
-    capabilities: [{ capabilityId, version: 1 }], resources: [resource], effects: [], recipients: [resource], expiresAt: Date.now() + 600000,
-    allowDelegation: false, maxDepth: 0, budget: { unit: 'invocations', limit: 4 } })).grant;
+    capabilities: capabilityIds.map(capabilityId => ({ capabilityId, version: 1 })), resources, effects: [], recipients: resources, expiresAt: Date.now() + 600000,
+    allowDelegation: false, maxDepth: 0, budget: { unit: 'invocations', limit: Math.max(4, count + 4) } })).grant;
   const issued = await f.call(f.alice, 'access.credentials.issue', { expectedAccountId: f.a.accountId, grantId: grant.id, audience: f.origin + '/mcp' });
   assert.equal(issued.ok, true);
-  await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, externalApplications: [entry], personalAgent: { ...f.configuration,
-    sourceReferences: [reference], sourceCredentialFor: () => ({ token: issued.token, audience: f.origin + '/mcp' }) } });
+  // Genuine Root grant above remains distinct from CODE registry and Native port.
+  // Exercise the actual installed loader; it derives refs and captures this private callback.
+  const installedFile = join(f.directory, 'installed-source.mjs');
+  const held = { entries, sourceCredentialFor: () => ({ token: issued.token, audience: f.origin + '/mcp' }), closed: 0 };
+  globalThis.__installedAgentSourceFixture = held; t.after(() => { delete globalThis.__installedAgentSourceFixture; });
+  const code = `export default async function(api){const held=globalThis.__installedAgentSourceFixture;
+    const close=()=>{held.closed++;};api.ownClose(close);
+    return {...await api.loadInstalledExistingApplications({createRegistry:()=>held.entries}),close,sourceCredentialFor:held.sourceCredentialFor};}`;
+  await writeFile(installedFile, code);
+  const installed = await loadInstalledApplicationsEntry({ SOTY_INSTALLED_APPLICATIONS_MODULE: installedFile,
+    SOTY_INSTALLED_APPLICATIONS_SHA256: createHash('sha256').update(code).digest('hex') });
+  assert.deepEqual(installed.sourceReferences, references); assert.equal(installed.sourceCredentialFor, held.sourceCredentialFor);
+  const personalAgent = { ...f.configuration, sourceReferences: installed.sourceReferences, sourceCredentialFor: installed.sourceCredentialFor };
+  assert.equal(personalAgent.enabled, f.configuration.enabled); assert.equal(personalAgent.gateway, f.configuration.gateway);
+  await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, ...installed.httpOptions, personalAgent });
+  return { f, references, reference, entries, grant, issued, reads: () => sourceReads, setNativeAllowed(value) { sourceAllowed = value; } };
+}
+
+test('actual registered Root Source query tool preserves independent Source denial and foreign app isolation', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t), { f, grant } = source;
   const baseline = await f.turn(f.alice, 'source_good_001', 'Read source'); assert.equal(baseline.ok, true, baseline.error?.code);
-  assert.equal(sourceReads, 1); assert.equal(baseline.evidence[0].data.text, 'Private scoped Source result');
-  const before = f.calls.length;
-  assert.equal((await f.turn(f.bob, 'source_other_01', 'Read source')).ok, false); assert.equal(f.calls.length, before);
-  sourceAllowed = false;
-  assert.equal((await f.turn(f.alice, 'source_denied_1', 'Read source')).ok, false); assert.equal(f.calls.length, before); assert.equal(sourceReads, 1);
-  sourceAllowed = true;
-  const fresh = await f.turn(f.alice, 'source_fresh_01', 'Read source'); assert.equal(fresh.ok, true); assert.equal(sourceReads, 2);
+  assert.equal(source.reads(), 1); assert.equal(baseline.evidence[0].data.text, 'Private scoped Source result');
+  const before = source.reads();
+  assert.equal((await f.turn(f.bob, 'source_other_01', 'Read source')).ok, false); assert.equal(source.reads(), before, 'foreign/denied source gets no read');
+  source.setNativeAllowed(false);
+  assert.equal((await f.turn(f.alice, 'source_denied_1', 'Read source')).ok, false); assert.equal(source.reads(), before, 'foreign/denied source gets no read'); assert.equal(source.reads(), 1);
+  source.setNativeAllowed(true);
+  const fresh = await f.turn(f.alice, 'source_fresh_01', 'Read source'); assert.equal(fresh.ok, true); assert.equal(source.reads(), 2);
   const barrier = f.hold(), running = f.turn(f.alice, 'source_revoke_1', 'Read source', { contextId: fresh.contextId }); await barrier.entered.promise;
   assert.equal((await f.call(f.alice, 'access.grants.revoke', { expectedAccountId: f.a.accountId, grantId: grant.id })).ok, true);
-  barrier.release.resolve(); assert.equal((await running).ok, false); assert.equal(sourceReads, 2, 'current grant must be checked before any further Source read');
+  barrier.release.resolve(); assert.equal((await running).ok, false); assert.equal(source.reads(), 2, 'current grant must be checked before any further Source read');
+});
+
+test('unused actual Root Source grant revoke leaves current-owner Notes and conversation usable', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t), { f, grant } = source;
+  const prior = await f.turn(f.alice, 'unused_baseline_1', 'Read source'); assert.equal(prior.ok, true);
+  const own = await historyNote(f, f.alice, f.a.accountId);
+  assert.equal((await f.call(f.alice, 'access.grants.revoke', { expectedAccountId: f.a.accountId, grantId: grant.id })).ok, true);
+  assert.equal((await f.call(f.alice, 'notes.get', { expectedAccountId: f.a.accountId, noteId: own.noteId })).ok, true);
+  const reads = source.reads(), next = await f.turn(f.alice, 'unused_notes_001', 'Read my notes', { contextId: prior.contextId });
+  assert.equal(next.ok, true, next.error?.code); assert.equal(next.evidence[0].title, 'Мои записки'); assert.equal(source.reads(), reads);
+});
+
+test('selected Source SAME credential and Native predicate remain current through the held next model await', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t), { f, grant } = source;
+  const baseline = await f.turn(f.alice, 'selected_baseline', 'Read source'); assert.equal(baseline.ok, true);
+  const held = f.hold(true), running = f.turn(f.alice, 'selected_native_1', 'Read source'); await held.entered.promise;
+  assert.equal(source.reads(), 2); source.setNativeAllowed(false); held.release.resolve(); assert.equal((await running).ok, false);
+  source.setNativeAllowed(true);
+  const second = f.hold(true), pending = f.turn(f.alice, 'selected_root_001', 'Read source'); await second.entered.promise;
+  assert.equal(source.reads(), 3);
+  assert.equal((await f.call(f.alice, 'access.grants.revoke', { expectedAccountId: f.a.accountId, grantId: grant.id })).ok, true);
+  second.release.resolve(); assert.equal((await pending).ok, false); assert.equal(source.reads(), 3);
+  assert.equal((await f.turn(f.alice, 'selected_notes_1', 'Read my notes')).ok, true, 'later Notes-only turn carries no used Source');
+});
+
+test('nine admitted Source contracts use constant tools and an eight-selection turn context without a global app cap', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t, { count: 9 }), { f, references } = source;
+  const catalog = await f.turn(f.alice, 'nine_catalog_001', 'Catalog sources'); assert.equal(catalog.ok, true, catalog.error?.code);
+  assert.equal(catalog.evidence[0].data.items.length, 8); assert.equal(catalog.evidence[0].data.hasMore, true);
+  assert.equal(catalog.evidence[0].data.availability, 'unprobed'); assert.equal(source.reads(), 0);
+  const names = f.calls.at(-1).body.tools.map(value => value.function.name); assert.equal(names.filter(name => name.startsWith('source_')).length, 2);
+  f.setSourceInput({ reference: references[8], input: {} });
+  const ninth = await f.turn(f.alice, 'nine_read_001', 'Read source'); assert.equal(ninth.ok, true, ninth.error?.code); assert.equal(source.reads(), 1);
+  f.setSourceInput({ reference: { ...references[8], version: '1' }, input: {} });
+  assert.equal((await f.turn(f.alice, 'nine_typed_001', 'Read source')).ok, false); assert.equal(source.reads(), 1);
+  const foreign = await f.turn(f.bob, 'nine_foreign_01', 'Read source'); assert.equal(foreign.ok, false); assert.equal(source.reads(), 1);
+  f.setSourceInput({ query: 'read9', input: {} });
+  const callsBeforeUnique = f.calls.length;
+  const unique = await f.turn(f.alice, 'nine_unique_001', 'Read source'); assert.equal(unique.ok, true, unique.error?.code); assert.equal(source.reads(), 2);
+  const queryMessages = f.calls.slice(callsBeforeUnique).map(value => value.body.messages.at(-1).role);
+  assert.deepEqual(queryMessages, ['user', 'tool'], 'one nonterminal query/read then terminal, without Core policy changes');
+  f.setSourceInput({ query: 'Selected Source', input: {} });
+  assert.equal((await f.turn(f.alice, 'nine_ambiguous_1', 'Read source')).ok, false); assert.equal(source.reads(), 2);
+  f.setSourceInput({ query: 'No matching Source at all', input: {} });
+  assert.equal((await f.turn(f.alice, 'nine_absent_001', 'Read source')).ok, false); assert.equal(source.reads(), 2);
+});
+
+test('Source callback unknown/getter/Promise/cancel failures remain failed while unused callbacks do not gate Notes', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t), { f, references, entries } = source;
+  let getters = 0, traps = 0;
+  const getter = new Error('PRIVATE_ERROR_CANARY'); Object.defineProperty(getter, 'code', { get() { getters++; throw Error('PRIVATE_ERROR_CANARY'); } });
+  const proxy = new Proxy(new Error('PRIVATE_ERROR_CANARY'), { get() { traps++; throw Error('PRIVATE_ERROR_CANARY'); } });
+  const callbacks = [() => { throw getter; }, () => { throw proxy; }, () => Promise.reject(Error('PRIVATE_ERROR_CANARY')), () => { throw agentError('agent_cancelled'); }];
+  for (const [index, callback] of callbacks.entries()) {
+    await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, externalApplications: entries,
+      personalAgent: { ...f.configuration, sourceReferences: references, sourceCredentialFor: callback } });
+    const catalogue = await f.turn(f.alice, `unknown_catalog_${index}`, 'Catalog sources');
+    assert.equal(catalogue.ok, false); assert.equal(JSON.stringify(catalogue).includes('PRIVATE_ERROR_CANARY'), false);
+    if (index === 3) assert.equal(catalogue.error.code, 'agent_cancelled', 'cancellation is not hidden permission');
+    assert.equal((await f.turn(f.alice, `unknown_notes_${index}`, 'Read my notes')).ok, true);
+    assert.equal(source.reads(), 0);
+  }
+  assert.equal(getters, 0); assert.equal(traps, 0);
 });
 
 test('actual mounted close aborts a held turn before dependent stores close and prevents delivery', async t => {

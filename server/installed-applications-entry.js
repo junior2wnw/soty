@@ -101,8 +101,11 @@ export async function loadInstalledApplicationsEntry(env = process.env) {
       createTavyshDeviceStatusAdapter, ownClose });
     const produced = factory(api);
     need(!types.isProxy(produced));
-    const result = fields(types.isPromise(produced) ? await produced : produced, ['httpOptions', 'sourceReferences', 'close']);
+    const result = fields(types.isPromise(produced) ? await produced : produced, ['httpOptions', 'sourceReferences', 'close'], ['sourceCredentialFor']);
     ownClose(result.close);
+    const sourceCredentialFor = result.sourceCredentialFor;
+    need(sourceCredentialFor === undefined || typeof sourceCredentialFor === 'function' && !types.isProxy(sourceCredentialFor)
+      && !types.isAsyncFunction(sourceCredentialFor) && !types.isGeneratorFunction(sourceCredentialFor));
     const options = fields(result.httpOptions, ['externalApplications'], ['nativeSourceHandlers']);
     const composition = await loadInstalledExistingApplications({ createRegistry: () => options.externalApplications });
     need(canonicalHash(captureQueryData(result.sourceReferences)) === canonicalHash(composition.sourceReferences));
@@ -123,7 +126,8 @@ export async function loadInstalledApplicationsEntry(env = process.env) {
       }, close,
     });
     return Object.freeze({ httpOptions: Object.freeze({ ...composition.httpOptions,
-      nativeSourceHandlers: Object.freeze([lifecycle]) }), sourceReferences: composition.sourceReferences, close });
+      nativeSourceHandlers: Object.freeze([lifecycle]) }), sourceReferences: composition.sourceReferences,
+      ...(sourceCredentialFor === undefined ? {} : { sourceCredentialFor }), close });
   } catch {
     await close();
     // Never retain/serialize an operator exception, getter, proxy, path or secret.

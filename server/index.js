@@ -36,7 +36,10 @@ const trafficTunnel = combineTunnelProxies([
 ]);
 let app;
 const installedApplications = await loadInstalledApplicationsEntry();
-try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration, ...installedApplications.httpOptions }); }
+const personalAgent = installedApplications.sourceCredentialFor ? { ...personalAgentConfiguration.personalAgent,
+  sourceReferences: installedApplications.sourceReferences, sourceCredentialFor: installedApplications.sourceCredentialFor
+} : personalAgentConfiguration.personalAgent;
+try { app = createHttpApp(distDir, { dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration, ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent }); }
 catch (error) { await waitForRejectedHttpStart(error); throw error; }
 const server = createServer(app);
 // The front proxy keeps idle connections for 30 seconds. Closing them first

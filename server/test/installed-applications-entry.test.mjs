@@ -152,3 +152,32 @@ test('captured module bytes and callback refs survive later operator-file rewrit
   const entry = await loadInstalledApplicationsEntry(env); await writeFile(f.file, 'throw Error("PRIVATE_ERROR_CANARY");');
   assert.deepEqual(entry.sourceReferences, []); await entry.close(); await entry.close(); assert.equal(globalThis.__entryCapturedClosed, 1);
 });
+
+test('private CODE Source callback is sync, captured and cannot supply references or HTTP/billing options', async t => {
+  const f = await fixture(t); globalThis.__entrySourceCallbacks = { calls: 0, closed: 0, getters: 0 };
+  t.after(() => { delete globalThis.__entrySourceCallbacks; });
+  const env = await f.code(`export default async function(api){const state=globalThis.__entrySourceCallbacks;
+    const close=()=>{state.closed++;};api.ownClose(close);const c=await api.loadInstalledExistingApplications();
+    const callback=()=>{state.calls++;return {token:'synthetic-only',audience:'https://fixture.invalid/mcp'};};
+    const result={...c,close,sourceCredentialFor:callback};state.result=result;return result;}`);
+  const entry = await loadInstalledApplicationsEntry(env), held = entry.sourceCredentialFor;
+  assert.equal(globalThis.__entrySourceCallbacks.calls, 0); assert.deepEqual(entry.sourceReferences, []);
+  assert.deepEqual(Object.keys(entry.httpOptions).sort(), ['externalApplications', 'nativeSourceHandlers']);
+  globalThis.__entrySourceCallbacks.result.sourceCredentialFor = () => { throw Error('PRIVATE_ERROR_CANARY'); };
+  assert.equal(entry.sourceCredentialFor, held); assert.equal(held().token, 'synthetic-only');
+  await entry.close(); assert.equal(globalThis.__entrySourceCallbacks.closed, 1);
+  for (const callback of ['async()=>({})', 'function*(){}', 'new Proxy(()=>({}),{get(){throw Error("PRIVATE_ERROR_CANARY")}})']) {
+    const bad = await f.code(`export default async function(api){const state=globalThis.__entrySourceCallbacks;
+      const close=()=>{state.closed++;};api.ownClose(close);return {...await api.loadInstalledExistingApplications(),close,sourceCredentialFor:${callback}};}`);
+    await assert.rejects(loadInstalledApplicationsEntry(bad), error => error.code === 'installed_applications_entry_unavailable');
+  }
+  const getter = await f.code(`export default async function(api){const state=globalThis.__entrySourceCallbacks;
+    const close=()=>{state.closed++;};api.ownClose(close);const result={...await api.loadInstalledExistingApplications(),close};
+    Object.defineProperty(result,'sourceCredentialFor',{enumerable:true,get(){state.getters++;throw Error('PRIVATE_ERROR_CANARY');}});return result;}`);
+  await assert.rejects(loadInstalledApplicationsEntry(getter), error => error.code === 'installed_applications_entry_unavailable');
+  assert.equal(globalThis.__entrySourceCallbacks.closed, 5); assert.equal(globalThis.__entrySourceCallbacks.getters, 0);
+  const returnedClose = await f.code(`export default async function(api){const state=globalThis.__entrySourceCallbacks;
+    return {...await api.loadInstalledExistingApplications(),close:()=>{state.closed++;},sourceCredentialFor:async()=>({})};}`);
+  await assert.rejects(loadInstalledApplicationsEntry(returnedClose), error => error.code === 'installed_applications_entry_unavailable');
+  assert.equal(globalThis.__entrySourceCallbacks.closed, 6, 'known returned close is retained before callback validation');
+});
