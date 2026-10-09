@@ -24,6 +24,9 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
   assertApps(typeof onRetireInTransaction === 'function' && typeof onPolicyChanged === 'function', 'apps_policy_validator_required', 500);
   const limits = normalizeDomainLimits(domainLimits);
   const zoneOrigin = normalizeNamedAppZone(namedAppZone);
+  // Generated app-* names remain private canonical entries. Human aliases
+  // still require the separate explicit claim/publication flow.
+  const canonicalTemplate = legacyTemplate || (zoneOrigin ? namedZone(zoneOrigin).template.replace('{slug}', '{appId}') : '');
   function transaction(callback) {
     assertApps(!db.isTransaction, 'apps_nested_transaction', 500);
     db.exec('BEGIN IMMEDIATE');
@@ -48,8 +51,25 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
     assertApps(result && result.owner_account_id === actor.accountId, 'apps_owner_required', 403);
     return result;
   }
+  function ensureCanonical(value) {
+    const prior = db.prepare("SELECT owner_account_id FROM app_domains WHERE app_id=? AND role='canonical'").get(value.id);
+    if (!legacyTemplate && prior) {
+      assertApps(prior.owner_account_id === value.owner_account_id, 'apps_canonical_origin_conflict', 409);
+      return; // Existing addresses, including tombstones, are never rewritten.
+    }
+    ensureCanonicalDomain(db, value, canonicalTemplate);
+  }
   function read(actor, id) {
-    own(actor, id);
+    const current = own(actor, id);
+    if (current.state === 'enabled' && canonicalTemplate
+      && !db.prepare("SELECT 1 FROM app_domains WHERE app_id=? AND role='canonical'").get(id)) {
+      transaction(() => {
+        const fresh = own(actor, id);
+        assertApps(fresh.state === 'enabled', 'app_revoked', 409);
+        ensureCanonical(fresh);
+        own(actor, id); // A current owner fence also precedes this lazy COMMIT.
+      });
+    }
     const rows = db.prepare("SELECT * FROM app_domains WHERE app_id=? ORDER BY CASE role WHEN 'canonical' THEN 0 ELSE 1 END,created_at,id").all(id);
     return { schema: 'soty.app-domains.v1', revision: head(id),
       canonicalOrigin: rows.find(item => item.role === 'canonical')?.origin ?? null,
@@ -147,7 +167,7 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
         ? { slug, available: false, reason: 'unavailable' } : { slug, available: true };
     },
     // Internal registration hook: cannot commit a second, partially independent transaction.
-    ensureCanonicalForApp(value) { ensureCanonicalDomain(db, value, legacyTemplate); },
+    ensureCanonicalForApp(value) { ensureCanonical(value); },
     originFor(id) { return db.prepare("SELECT origin FROM app_domains WHERE app_id=? AND role='canonical'").get(id)?.origin ?? null; },
   };
 }

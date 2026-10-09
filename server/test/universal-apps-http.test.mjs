@@ -25,7 +25,8 @@ function memory() {
     async claim(candidate) { value ??= structuredClone(candidate); return structuredClone(value); },
     async compareAndSwap(revision, candidate) { assert.equal(value.localRevision, revision); value = structuredClone(candidate); return structuredClone(value); } };
 }
-async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled = true, appName = 'Independent application' } = {}) {
+async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled = true, appName = 'Independent application',
+  addressMode = 'legacy', captureRegistrationFailure = false } = {}) {
   const folder = await mkdtemp(join(tmpdir(), 'soty-universal-http-')), dist = join(folder, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Universal test</title>');
   let app, runtime;
@@ -47,7 +48,10 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
     assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-universal-http-/);
     await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  app = createHttpApp(dist, { dataDir, connectOrigins: [origin], appOriginTemplate: `http://{appId}.localhost:${server.address().port}`, universalAppsEnabled: initialUniversalEnabled });
+  const namedZone = `http://apps.localhost:${server.address().port}`;
+  const addressOptions = { appOriginTemplate: addressMode === 'legacy' ? `http://{appId}.localhost:${server.address().port}` : '',
+    ...(addressMode === 'named' ? { namedAppZone: namedZone } : {}) };
+  app = createHttpApp(dist, { dataDir, connectOrigins: [origin], ...addressOptions, universalAppsEnabled: initialUniversalEnabled });
   server.on('upgrade', (req, socket, head) => { if (!app.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
   const token = randomBytes(32).toString('base64url');
   const identity = { linkId: 'universal_http_link_123456789012345', hostDeviceId: 'universal_http_host', connectorId: 'universal_http_connector', name: 'Fixture device' };
@@ -69,18 +73,100 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
   const registrationArgs = { hostDeviceId: claim.hostDeviceId, connectorId: claim.connectorId,
     name: appName, port: source.address().port, entryPath: '/', grants: { accountIds: [one.account.accountId, two.account.accountId], communityIds: [] } };
   const blocked = holdFirstFeedback ? new DatabaseSync(join(dataDir, 'feedback', 'feedback.sqlite')) : null;
-  let created;
+  let created, registrationError = null;
   try {
     blocked?.exec('BEGIN IMMEDIATE');
     created = await owner.client.extension('apps.register', registrationArgs);
+  } catch (error) {
+    if (!captureRegistrationFailure) throw error;
+    registrationError = error;
   } finally { if (blocked) { blocked.exec('ROLLBACK'); blocked.close(); } }
-  const appId = created.app.id;
+  const recovered = created ? [] : (await owner.client.extension('apps.list')).apps.filter(item => item.name === appName && item.port === source.address().port);
+  if (!created) assert.equal(recovered.length, 1);
+  const appId = created?.app.id ?? recovered[0].id;
   await until(async () => (await owner.client.extension('apps.list')).apps.find(item => item.id === appId)?.state === 'ready');
-  return { app, origin, owner, one, two, appId, dataDir, created, registrationArgs,
-    async restart(options = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { dataDir, connectOrigins: [origin], appOriginTemplate: `http://{appId}.localhost:${server.address().port}`, ...options }); },
+  return { app, origin, owner, one, two, appId, dataDir, created, registrationArgs, registrationError, namedZone,
+    async restart(options = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { dataDir, connectOrigins: [origin], ...addressOptions, ...options }); },
     service() { return app; } };
 }
 const fails = code => error => error.code === code;
+
+test('named canonical: signed registration commits its app and universal metadata without an explicit legacy template', { timeout: 20000 }, async t => {
+  const f = await fixture(t, { addressMode: 'named', captureRegistrationFailure: true });
+  assert.equal(f.registrationError, null);
+  assert.equal(f.created.app.id, f.appId);
+  assert.equal((await f.owner.client.extension('apps.list')).apps.length, 1);
+  const domains = await f.owner.client.extension('apps.domains.get', { appId: f.appId });
+  assert.equal(domains.canonicalOrigin, `http://${f.appId}.apps.localhost:${new URL(f.namedZone).port}`);
+  assert.equal(domains.domains.length, 1); assert.equal(domains.domains[0].role, 'canonical');
+  assert.equal(domains.domains[0].state, 'bound'); assert.equal(domains.revision, 0);
+  const current = await f.owner.client.extension('apps.universal.get', { expectedAccountId: f.owner.account.accountId, appId: f.appId });
+  assert.ok(current.registration); assert.equal(current.registration.appId, f.appId);
+  const publication = await f.owner.client.extension('apps.publication.get', { appId: f.appId });
+  assert.equal(publication.launchPolicy, 'restricted'); assert.equal(publication.listed, false);
+  assert.deepEqual(publication.activeDomainIds, []);
+  const metadata = new DatabaseSync(join(f.dataDir, 'apps', 'registry.sqlite'));
+  try { assert.equal(metadata.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get()?.value, ''); }
+  finally { metadata.close(); }
+});
+
+test('named canonical: owner read reconciles a prior persisted app without register replay or foreign effects', { timeout: 20000 }, async t => {
+  const f = await fixture(t, { addressMode: 'none', initialUniversalEnabled: false });
+  const inspect = () => {
+    const db = new DatabaseSync(join(f.dataDir, 'apps', 'registry.sqlite'));
+    try { return { app: db.prepare('SELECT * FROM local_apps WHERE id=?').get(f.appId),
+      target: db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=?').all(f.appId),
+      grants: db.prepare('SELECT * FROM local_app_grants WHERE app_id=? ORDER BY kind,principal_id').all(f.appId),
+      publication: db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(f.appId),
+      canonicalCount: db.prepare("SELECT count(*) AS n FROM app_domains WHERE app_id=? AND role='canonical'").get(f.appId).n }; }
+    finally { db.close(); }
+  };
+  const before = inspect(); assert.equal(before.canonicalCount, 0);
+  await f.restart({ universalAppsEnabled: true, namedAppZone: f.namedZone });
+  await assert.rejects(() => f.one.client.extension('apps.domains.get', { appId: f.appId }), fails('apps_owner_required'));
+  assert.deepEqual(inspect(), before);
+  const domains = await f.owner.client.extension('apps.domains.get', { appId: f.appId });
+  assert.equal(domains.canonicalOrigin, `http://${f.appId}.apps.localhost:${new URL(f.namedZone).port}`);
+  const after = inspect(); assert.equal(after.canonicalCount, 1); after.canonicalCount = 0;
+  assert.deepEqual(after, before);
+  assert.deepEqual(await f.owner.client.extension('apps.domains.get', { appId: f.appId }), domains);
+  const absent = await f.owner.client.extension('apps.universal.get', { expectedAccountId: f.owner.account.accountId, appId: f.appId });
+  assert.equal(absent.registration, null);
+  const admitted = await f.owner.client.extension('apps.universal.admit', { expectedAccountId: f.owner.account.accountId,
+    appId: f.appId, requestId: 'named-canonical-first-admit', expectedRevision: 0, proposal: { kind: 'author-draft', draft: { title: f.created.app.name } } });
+  assert.ok(admitted.registration); assert.equal((await f.owner.client.extension('apps.list')).apps.length, 1);
+});
+
+test('named canonical: explicit legacy template remains canonical and missing both configurations still denies admission', { timeout: 20000 }, async t => {
+  const legacy = await fixture(t);
+  const domains = await legacy.owner.client.extension('apps.domains.get', { appId: legacy.appId });
+  assert.equal(domains.canonicalOrigin, `http://${legacy.appId}.localhost:${new URL(legacy.origin).port}`);
+  assert.ok(legacy.created.universalRegistration);
+  const missing = await fixture(t, { addressMode: 'none', captureRegistrationFailure: true });
+  assert.equal(missing.registrationError?.code, 'apps_access_denied');
+  assert.equal((await missing.owner.client.extension('apps.list')).apps.length, 1);
+  assert.equal((await missing.owner.client.extension('apps.domains.get', { appId: missing.appId })).canonicalOrigin, null);
+  await assert.rejects(() => missing.owner.client.extension('apps.universal.get', {
+    expectedAccountId: missing.owner.account.accountId, appId: missing.appId }), fails('apps_access_denied'));
+});
+
+test('named canonical: aliases remain explicit and reserved or retired names cannot rewrite the canonical', { timeout: 20000 }, async t => {
+  const f = await fixture(t, { addressMode: 'named' });
+  const initial = await f.owner.client.extension('apps.domains.get', { appId: f.appId });
+  await assert.rejects(() => f.owner.client.extension('apps.domains.claim', { appId: f.appId, slug: f.appId,
+    requestId: 'named-canonical-reserved', expectedDomainsRevision: 0 }), fails('app_name_reserved'));
+  const claimed = await f.owner.client.extension('apps.domains.claim', { appId: f.appId, slug: 'visible-project',
+    requestId: 'named-canonical-alias', expectedDomainsRevision: 0 });
+  const retired = await f.owner.client.extension('apps.domains.retire', { appId: f.appId, domainId: claimed.receipt.domainId,
+    requestId: 'named-canonical-retire', expectedDomainsRevision: 1 });
+  assert.equal(retired.receipt.state, 'tombstone');
+  await assert.rejects(() => f.owner.client.extension('apps.domains.claim', { appId: f.appId, slug: 'visible-project',
+    requestId: 'named-canonical-no-reclaim', expectedDomainsRevision: 2 }), fails('app_name_unavailable'));
+  const final = await f.owner.client.extension('apps.domains.get', { appId: f.appId });
+  assert.deepEqual(final.domains.find(item => item.role === 'canonical'), initial.domains[0]);
+  assert.equal(final.domains.find(item => item.role === 'alias').state, 'tombstone');
+  assert.equal((await f.owner.client.extension('apps.publication.get', { appId: f.appId })).activeDomainIds.length, 0);
+});
 
 for (const withGuidance of [false, true]) test(`real signed Apps/Connect authority and separate HTTP/MCP audiences guard the generic application ledger${withGuidance ? ' with private guidance' : ''}`, { timeout: 20000 }, async t => {
   const f = await fixture(t), source = f.created.universalRegistration.descriptor.app.source;
