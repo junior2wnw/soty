@@ -463,7 +463,7 @@ interface HumanCallScope { accountId: string; deviceId: string; roomId: string; 
 interface HumanCallAdmission { schema: string; purpose: string; callId: string; epoch: number; accountId: string; deviceId: string; grantRef: string; expiresAt: number }
 interface HumanCallInvitation { callId: string; epoch: number; roomId: string; label: string }
 interface HumanCallClient { extension<T>(operation: string, args: Record<string, unknown>, context: { expectedAccountId: string }): Promise<T> }
-type HumanPeer = P2pPeer & { microphone: boolean; makingOffer: boolean; ignoreOffer: boolean; queuedOffer: boolean };
+type HumanPeer = P2pPeer & { microphone: boolean; makingOffer: boolean; ignoreOffer: boolean; isSettingRemoteAnswerPending: boolean };
 
 /** Concrete Root signed-call -> existing RTC -> existing local lifecycle ports.
  * Test hooks replace native IO only; production defaults perform no capture before authorize+click. */
@@ -558,12 +558,12 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     };
     async function offer(link: HumanPeer) {
       if (!live() || links.get(link.id) !== link) return;
-      if (link.makingOffer) { link.queuedOffer = true; return; }
-      if (link.pc.signalingState !== 'stable') { link.queuedOffer = true; return; }
+      if (link.makingOffer || link.pc.signalingState !== 'stable') return;
       link.makingOffer = true;
       try {
-        const description = await link.pc.createOffer(); if (!live() || links.get(link.id) !== link) return;
-        await link.pc.setLocalDescription(description); if (!live() || links.get(link.id) !== link) return;
+        // Use the native operations chain for creating and installing one offer.
+        await link.pc.setLocalDescription(); if (!live() || links.get(link.id) !== link) return;
+        const description = link.pc.localDescription; if (!description || description.type !== 'offer') fail();
         signalOut('p2p.offer', link.id, { kind: 'offer', sdp: description.sdp || '' });
       } catch { if (live() && links.get(link.id) === link) interrupt(); }
       finally { link.makingOffer = false; }
@@ -581,7 +581,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
         state(candidateLink) { if (live() && links.get(deviceId) === candidateLink) { if (['failed', 'disconnected'].includes(candidateLink.pc.connectionState)) interrupt(); else connectionState(); } },
         iceFailed(candidateLink) { if (live() && links.get(deviceId) === candidateLink) interrupt(); },
       }, rtcFactory) as HumanPeer;
-      Object.assign(link, { microphone, makingOffer: false, ignoreOffer: false, queuedOffer: false }); links.set(deviceId, link);
+      Object.assign(link, { microphone, makingOffer: false, ignoreOffer: false, isSettingRemoteAnswerPending: false }); links.set(deviceId, link);
       link.pc.onnegotiationneeded = () => { void offer(link); };
       link.pc.ontrack = event => {
         const track = event.track;
@@ -593,7 +593,6 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       link.pc.addTransceiver('audio', { direction: 'recvonly' });
       if (reply.deviceId < deviceId) link.channel = link.pc.createDataChannel('soty', { ordered: true });
       if (publication) publication.addPeer(link);
-      if (reply.deviceId < deviceId) void offer(link);
       return link;
     }
     function removePeer(id: string) {
@@ -612,19 +611,21 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
           if (!link.pc.remoteDescription) { if (link.pendingCandidates.length >= 64) fail('human_call_candidate_capacity'); link.pendingCandidates.push(data); return; }
           await link.pc.addIceCandidate(data); return;
         }
-        const collision = data.kind === 'offer' && (link.makingOffer || link.pc.signalingState !== 'stable');
+        const readyForOffer = !link.makingOffer && (link.pc.signalingState === 'stable' || link.isSettingRemoteAnswerPending);
+        const collision = data.kind === 'offer' && !readyForOffer;
         link.ignoreOffer = reply.deviceId < link.id && collision; if (link.ignoreOffer) return;
-        if (collision) await link.pc.setLocalDescription({ type: 'rollback' });
-        if (!live() || links.get(link.id) !== link) return;
-        await link.pc.setRemoteDescription({ type: data.kind, sdp: data.sdp });
+        link.isSettingRemoteAnswerPending = data.kind === 'answer';
+        try {
+          // Incoming offers use native implicit rollback on the same operations chain.
+          await link.pc.setRemoteDescription({ type: data.kind, sdp: data.sdp });
+        } finally { link.isSettingRemoteAnswerPending = false; }
         if (!live() || links.get(link.id) !== link) return;
         for (const candidate of link.pendingCandidates.splice(0)) { if (!live() || links.get(link.id) !== link) return; await link.pc.addIceCandidate(candidate); }
         if (data.kind === 'offer') {
-          const answer = await link.pc.createAnswer(); if (!live() || links.get(link.id) !== link) return;
-          await link.pc.setLocalDescription(answer); if (!live() || links.get(link.id) !== link) return;
+          await link.pc.setLocalDescription(); if (!live() || links.get(link.id) !== link) return;
+          const answer = link.pc.localDescription; if (!answer || answer.type !== 'answer') fail();
           signalOut('p2p.answer', link.id, { kind: 'answer', sdp: answer.sdp || '' });
         }
-        if (link.queuedOffer && link.pc.signalingState === 'stable') { link.queuedOffer = false; void offer(link); }
       } catch { if (live() && links.get(link.id) === link) interrupt(); }
     }
     function unpublish(token = micVersion) {

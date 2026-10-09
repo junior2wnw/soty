@@ -24,11 +24,40 @@ class Socket {
 class RTC {
   connectionState = 'connected'; iceConnectionState = 'connected'; signalingState = 'stable'; remoteDescription = null;
   senders = []; addCalls = 0; removeCalls = 0; closes = 0; localCalls = 0; channels = [];
-  async createOffer() { return { type: 'offer', sdp: 'v=0\r\n' }; }
-  async createAnswer() { return { type: 'answer', sdp: 'v=0\r\n' }; }
-  async setLocalDescription(value) { this.localCalls++; this.signalingState = value.type === 'offer' ? 'have-local-offer' : 'stable'; }
-  async setRemoteDescription(value) { this.remoteDescription = value; this.signalingState = value.type === 'offer' ? 'have-remote-offer' : 'stable'; }
-  async addIceCandidate() {}
+  localDescription = null; operations = Promise.resolve(); generatingLocal = false;
+  operation(action) { const result = this.operations.then(action); this.operations = result.catch(() => {}); return result; }
+  async createOffer() {
+    const generate = () => { assert.ok(['stable', 'have-local-offer'].includes(this.signalingState)); return { type: 'offer', sdp: 'v=0\r\n' }; };
+    return this.generatingLocal ? generate() : this.operation(generate);
+  }
+  async createAnswer() {
+    const generate = () => { assert.equal(this.signalingState, 'have-remote-offer'); return { type: 'answer', sdp: 'v=0\r\n' }; };
+    return this.generatingLocal ? generate() : this.operation(generate);
+  }
+  setLocalDescription(value) { return this.operation(async () => {
+    if (value === undefined) {
+      // Existing deferred generation hooks still exercise the native no-arg SLD
+      // operation. No queued description may install after the PC was closed.
+      this.generatingLocal = true;
+      try { value = await (this.signalingState === 'have-remote-offer' ? this.createAnswer() : this.createOffer()); }
+      finally { this.generatingLocal = false; }
+    }
+    if (this.connectionState === 'closed') throw new DOMException('controlled_closed', 'InvalidStateError');
+    if (value.type === 'rollback') {
+      if (this.signalingState === 'stable') throw new DOMException('controlled_rollback_stable', 'InvalidStateError');
+      this.signalingState = 'stable'; this.localDescription = null; return;
+    }
+    assert.ok(value.type === 'offer' ? ['stable', 'have-local-offer'].includes(this.signalingState) : this.signalingState === 'have-remote-offer');
+    this.localCalls++; this.localDescription = value;
+    this.signalingState = value.type === 'offer' ? 'have-local-offer' : 'stable';
+  }); }
+  setRemoteDescription(value) { return this.operation(() => {
+    if (this.connectionState === 'closed') throw new DOMException('controlled_closed', 'InvalidStateError');
+    if (value.type === 'offer' && this.signalingState === 'have-local-offer') { this.signalingState = 'stable'; this.localDescription = null; }
+    assert.ok(value.type === 'offer' ? this.signalingState === 'stable' : this.signalingState === 'have-local-offer');
+    this.remoteDescription = value; this.signalingState = value.type === 'offer' ? 'have-remote-offer' : 'stable';
+  }); }
+  addIceCandidate() { return this.operation(() => {}); }
   addTransceiver() {}
   createDataChannel() { const value = { closes: 0, close() { this.closes++; } }; this.channels.push(value); return value; }
   addTrack(value) { this.addCalls++; const sender = { track: value }; this.senders.push(sender); return sender; }
