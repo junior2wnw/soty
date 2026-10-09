@@ -205,6 +205,8 @@
   .sw-app .sw-composer>textarea { max-height: min(144px,28dvh); overflow-y: auto; }
   .sw-app .sw-composer>.sw-button { width: 44px; height: 44px; min-height: 44px; }
   .sw-app .sw-chat-header>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; padding: 10px; }
+  .sw-app .sw-chat-header>.sw-human-call-join { flex: none; width: 44px; height: 44px; min-height: 44px; padding: 10px; gap: 0; }
+  .sw-app .sw-chat-header>.sw-human-call-join>span { display: none; }
   .sw-app .sw-chat-search { grid-template-columns: 18px minmax(60px,1fr) 44px 44px 44px; }
   .sw-app .sw-chat-search>.sw-icon { grid-column: 1; grid-row: 1; }
   .sw-app .sw-chat-search>input { grid-column: 2; grid-row: 1; }
