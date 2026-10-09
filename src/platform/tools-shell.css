@@ -42,12 +42,12 @@ body[data-motion=off] .tools-navigation *,body[data-motion=off] .tools-dialog{an
 .tools-chess-personal .tools-chess-coach-actions{display:grid;grid-template-columns:minmax(0,1fr)}
 .tools-chess-personal .tools-chess-coach-actions button{width:100%;overflow-wrap:normal;word-break:normal;hyphens:none}
 .chess-panel:has(.tools-chess-personal) .chess-body{align-items:start;grid-template-rows:auto;overflow:auto;overscroll-behavior:contain}
-.chess-panel:has(.tools-chess-personal) .chess-board-frame{container-type:inline-size;height:auto}
+.chess-panel:has(.tools-chess-personal) .chess-board-frame{container-type:inline-size;height:auto;min-height:max-content}
 .chess-panel:has(.tools-chess-personal) .chess-board{width:min(100%,560px)}
 .chess-panel:has(.tools-chess-personal) .chess-desk{align-self:start;grid-template-rows:auto auto auto;max-height:none;overflow:visible}
 .chess-panel:has(.tools-chess-personal) .chess-moves{max-height:none;overflow:visible}
 @media(max-width:760px){
- .chess-panel:has(.tools-chess-personal) .chess-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto}
+ .chess-panel:has(.tools-chess-personal) .chess-body{grid-template-columns:minmax(0,1fr);grid-template-rows:max-content max-content}
  .chess-panel:has(.tools-chess-personal) .chess-head button{width:44px!important;min-width:44px!important;min-height:44px!important}
 }
 @media(forced-colors:active){.tools-nav-item[aria-current=page]{outline:2px solid Highlight;outline-offset:-3px}.tools-choices>button{border-color:CanvasText}}
