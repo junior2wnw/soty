@@ -4812,7 +4812,8 @@ function renderChess(): void {
     return;
   }
 
-  const snapshot = chessPersonalOpen ? chessPersonal?.view()?.board : ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const personal = chessPersonalOpen ? chessPersonal?.view() : null;
+  const snapshot = chessPersonalOpen ? personal?.board : ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
   if (!snapshot) return;
   const game = chessFromSnapshot(snapshot);
   if (chessSelectedSquare) {
@@ -4878,14 +4879,18 @@ function renderChess(): void {
     (target ?? board).focus({ preventScroll: true });
   }
 
+  const turnLabel = personal && !snapshot.result
+    ? game.turn() === personal.humanSide ? 'Ваш ход' : 'Ход помощника'
+    : statusText(snapshot);
   turn.innerHTML = `
-    <b>${escapeHtml(statusText(snapshot))}</b>
+    <b>${escapeHtml(turnLabel)}</b>
     <small>${chessPersonalOpen ? 'Личная партия' : snapshot.mode === "agent" ? "С компьютером" : "Вдвоём"}</small>
   `;
   const ask = document.createElement('button'); ask.type = 'button'; ask.className = 'chess-ask-agent tools-chess-coach-ask';
   ask.textContent = 'Спросить помощника'; turn.append(ask);
   if (chessPersonalOpen) { const controls = document.createElement('div'); controls.className = 'chess-personal-controls tools-chess-personal'; turn.append(controls); }
   chessPrivateCoach?.refresh();
+  stats.hidden = chessPersonalOpen;
   stats.innerHTML = renderChessStats(snapshot);
   moves.innerHTML = renderChessMoves(snapshot.history);
   renderChessPromotion(snapshot, promotion);
