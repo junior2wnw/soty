@@ -61,7 +61,7 @@ export function createHttpApp(distDir, options = {}) {
   }
 }
 
-function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = process.env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
+function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice } = {}, nativeSources) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -72,7 +72,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   scopedEmbedRegistryConfigured = universalEnabled && scopedEmbedRegistryConfigured;
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
-  const shellOrigins = connectAllowedOrigins(connectOrigins);
+  const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
@@ -99,7 +99,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
   const safeConnectorPort = Number.isSafeInteger(localConnectorPort) && localConnectorPort >= 1024 && localConnectorPort <= 65535 ? localConnectorPort : 49424;
   const localConnectorOrigin = `http://127.0.0.1:${safeConnectorPort}`;
   app.disable("x-powered-by");
-  if (process.env.SOTY_TRUST_PROXY) app.set('trust proxy', process.env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
+  if (env.SOTY_TRUST_PROXY) app.set('trust proxy', env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
   app.use(fenceClosingHttpSocket);
   app.use((req, res, next) => {
     if (!hasSingleHostHeader(req)) { res.status(400).set('Cache-Control', 'no-store').end(); return; }
@@ -108,7 +108,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
       next();
     }
   });
-  const devConnectSrc = String(process.env.SOTY_DEV_CONNECT_SRC || "")
+  const devConnectSrc = String(env.SOTY_DEV_CONNECT_SRC || "")
     .split(/\s+/u)
     .map((item) => item.trim())
     .filter(Boolean)
@@ -150,7 +150,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     next();
   });
   if (nativeSources.enabled) app.use(nativeSources.middleware);
-  attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
+  attachConnectReleaseSource(app, { directory: env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
   const failedStart = error => {
     const pending = [];
@@ -257,7 +257,7 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
-    app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
+    app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
       ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), personal, ...(voice.operations.size ? [voice] : [])],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
@@ -287,15 +287,35 @@ function createHttpAppWithNativeSources(distDir, { dataDir, trafficTunnel, conne
     selectedRegistryConfigured: scopedEmbedRegistryConfigured,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });
-  app.locals.closeServices = async () => {
-    if (nativeSources.enabled) await nativeSources.close();
-    personal.close();
-    voice.close();
-    humanCalls.close();
-    nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
-    await mcp?.close();
-    human?.close(); universal?.close(); managedReviews?.close(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
-    await connectors.store.close();
+  let servicesCleanup;
+  app.locals.closeServices = () => {
+    if (servicesCleanup) return servicesCleanup;
+    let complete, reject;
+    servicesCleanup = new Promise((resolve, fail) => { complete = resolve; reject = fail; });
+    const cleanup = async () => {
+      let failed = false;
+      const attempt = async action => { try { await action(); } catch { failed = true; } };
+      if (nativeSources.enabled) await attempt(() => nativeSources.close());
+      await attempt(() => personal.close());
+      await attempt(() => voice.close());
+      await attempt(() => humanCalls.close());
+      await attempt(() => nativeRecovery?.close());
+      await attempt(() => oauthCleanup?.close());
+      await attempt(() => unsubscribeRevocations());
+      await attempt(() => mcp?.close());
+      await attempt(() => human?.close());
+      await attempt(() => universal?.close());
+      await attempt(() => managedReviews?.close());
+      await attempt(() => apps.close());
+      await attempt(() => world.close());
+      await attempt(() => notes.close());
+      await attempt(() => capabilities.close());
+      await attempt(() => connect.close());
+      await attempt(() => connectors.store.close());
+      if (failed) throw Object.assign(new Error('root_services_cleanup_failed'), { code: 'root_services_cleanup_failed' });
+    };
+    void cleanup().then(complete, reject);
+    return servicesCleanup;
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
