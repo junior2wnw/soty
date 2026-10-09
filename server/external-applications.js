@@ -4,6 +4,7 @@ import { captureExternalGuidance } from '../modules/capabilities/server/external
 import {READONLY_QUERY_PROFILE,captureReadonlyQueryAdapters,createTrustedReadonlyQueryAdapter} from '../modules/capabilities/server/readonly-queries.mjs';
 import { canonicalHash, canonicalJson, freezeDeep, AccessError } from '../modules/capabilities/server/validation.mjs';
 import { snapshot } from '../modules/app-contract/json.mjs';
+import { bindRootVoiceSourceAdapter } from '../modules/native-voice/root-source-adapters.mjs';
 
 const check = value => { if(!value)throw new AccessError('external_application_configuration_invalid'); };
 function fields(value,names,optional=[]) {
@@ -45,7 +46,15 @@ export function captureExternalApplications(input=[]) {
 
 export function composeExternalApplications(entries,{withConnectFence,capabilities,apps}) {
   return Object.freeze(entries.map(value=>{
+    const withOwner=(request,callback)=>{
+      const caps=capabilities();check(caps);return request.actor?caps.withOwnerAuthority({actor:request.actor},callback)
+        :caps.withSnapshotOwnerAuthority({authorization:request.authorization},callback);
+    };
+    // This fixed port retains the original ready Source record and holds its
+    // own Apps fence; nesting the ordinary Apps transaction would be invalid.
+    const voice=bindRootVoiceSourceAdapter(value.adapter,{appId:value.appId,target:value.target,withOwner,apps});
     const withAuthority=(request,callback)=>{
+      if(voice)return value.adapter.withAuthority(request,callback);
       return withConnectFence(()=>{
         const caps=capabilities();check(caps);
         const ownerFence=request.actor

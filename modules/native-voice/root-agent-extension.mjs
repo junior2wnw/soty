@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { firstAnswerParagraph,validateLiveAnswerText } from './live-answer.ts';
+import { canonicalHash } from '../capabilities/server/validation.mjs';
 const need=(ok,code='voice_root_denied')=>{if(!ok)throw new Error(code);};
 const fields=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
 const id=v=>typeof v==='string'&&/^[A-Za-z0-9_.:-]{8,160}$/u.test(v);
@@ -71,7 +72,12 @@ export function createRootVoiceSourceBroker({getServices,getConnect,readReferenc
     need(Array.isArray(contract.effects)&&(write?contract.effects.length===1:contract.effects.length===0),'voice_source_contract_changed');
     const result=await services.capabilities.external[write?'invoke':'query']({actor:delegated,reference,
       idempotencyKey:`voice_${requestId}_${write?'complete':'read'}`,input});
-    principal(actor,reference);need(result.resultUnavailable===false&&result.invocation.status==='succeeded','voice_native_source_unknown');return result.result;}
+    principal(actor,reference);need(result.invocation?.status==='succeeded','voice_native_source_unknown');
+    if(!write){need(result.resultUnavailable===false,'voice_native_source_unknown');return result.result;}
+    const expected={taskId:input.taskId,admitted:true},effect={kind:'updated',resourceType:'native-voice-task',resourceId:input.taskId,revision:1},
+      receipt={verificationMethod:'domain_read',artifacts:[{type:'native-voice-task',id:input.taskId,revision:1,sha256:canonicalHash(expected)}]};
+    need(result.invocation.effectState==='committed'&&canonicalHash(result.invocation.effects)===canonicalHash([effect])
+      &&canonicalHash(result.invocation.receipt)===canonicalHash(receipt),'voice_native_source_unknown');return expected;}
   return Object.freeze({
     readTask:({actor,taskId,consentId,requestId})=>invoke(actor,{operation:'voice.task.read',taskId,consentId},requestId,false),
     completeTask:({actor,taskId,consentId,requestId,result})=>invoke(actor,{operation:'voice.task.complete',taskId,consentId,result},requestId,true)
