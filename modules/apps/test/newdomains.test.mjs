@@ -87,15 +87,20 @@ test('v1 migration preserves app identity, exact ACL JSON and revisions; stale g
   const reopened = f.open(); assert.deepEqual(call(reopened, 'apps.domains.get', { appId: appA }), view);
 });
 
-test('an empty legacy template preserves null canonical origin and is pinned across reopen', async t => {
+test('an empty legacy template stays pinned while a named zone supplies a stable private canonical', async t => {
   const f = await fixture(t, { appOriginTemplate: '' }); const service = f.open();
   const view = call(service, 'apps.domains.get', { appId: appA });
-  assert.equal(view.canonicalOrigin, null); assert.deepEqual(view.domains, []);
+  assert.equal(view.canonicalOrigin, `https://${appA}.apps.example`);
+  assert.equal(view.domains.length, 1); assert.equal(view.domains[0].role, 'canonical');
+  assert.equal(view.domains[0].state, 'bound'); assert.equal(view.revision, 0);
+  assert.equal(f.inspect().prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get().value, '');
   const created = claim(service, 'my-app'); assert.equal(created.receipt.origin, 'https://my-app.apps.example');
-  assert.equal(call(service, 'apps.domains.get', { appId: appA }).canonicalOrigin, null);
+  assert.equal(call(service, 'apps.domains.get', { appId: appA }).canonicalOrigin, view.canonicalOrigin);
   service.close();
   assert.throws(() => f.open({ appOriginTemplate: legacy }), /apps_origin_template_changed/u);
-  assert.equal(call(f.open(), 'apps.domains.get', { appId: appA }).canonicalOrigin, null);
+  const reopened = call(f.open(), 'apps.domains.get', { appId: appA });
+  assert.equal(reopened.canonicalOrigin, view.canonicalOrigin);
+  assert.deepEqual(reopened.domains.find(item => item.role === 'canonical'), view.domains[0]);
 });
 
 test('unknown and structurally unrecognized schemas fail before schema or journal mutations', async t => {
