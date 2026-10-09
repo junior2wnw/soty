@@ -32,28 +32,41 @@ const defer = () => { let resolve, reject; const promise = new Promise((done, fa
 const ticks = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
 const main = await readFile(new URL('../main.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('main.ts', main, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-const names = ['createChessCoachForPage', 'readChessCoachBoard', 'activeChessTunnelId', 'publishChessSnapshot', 'applySyncedChess', 'ensureChessSnapshot', 'selectTunnel', 'closeChessPanel'];
+const names = ['createChessCoachForPage', 'readChessCoachBoard', 'activeChessTunnelId', 'activeChessTargetId', 'retirePersonalChess', 'publishChessSnapshot', 'applySyncedChess', 'ensureChessSnapshot', 'selectTunnel', 'closeChessPanel', 'makeChessMove', 'canMoveOnChessBoard', 'buildOperatorExport', 'renderPersonalChessControls'];
 const nodes = names.map(name => { const node = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name); assert.ok(node, `actual main function ${name}`); return node.getText(parsed); });
 const compiled = ts.transpileModule(nodes.join('\n') + '\nmodule.exports = {' + names.join(',') + '};', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const privateSource = await readFile(new URL('./chess-personal.ts', import.meta.url), 'utf8');
+const privateModule = { exports: {} };
+vm.runInNewContext(ts.transpileModule(privateSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText,
+  { module: privateModule, exports: privateModule.exports, require: () => chessFeature });
 
-async function fixture({ saved, initialRead, hold = false, onChange } = {}) {
+async function fixture({ saved, initialRead, hold = false, onChange, answer = 'CURRENT_POSITION_ANSWER', holdCancel = false } = {}) {
   const data = new Map(), calls = [], gates = [], listeners = new Map(), reads = [];
   const snapshot = chessFeature.createChessSnapshot({ mode: 'agent', localNick: 'PRIVATE_LOCAL_NAME', opponentNick: 'PRIVATE_PEER_NAME' });
   if (saved) data.set('soty.personal-agent-ui.v1:account_A', JSON.stringify({ schema: 'soty.personal-agent-ui.v1', draft: '', pending: [], ...saved }));
-  let state = publicView(), observer, coach, firstRead = true;
-  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  let state = publicView(), observer, coach, firstRead = true, refusePrivateWrites = 0;
+  const storage = { getItem: key => data.get(key) ?? null, setItem(key, value) {
+    if (key.startsWith('soty.personal-chess-match.v1:') && refusePrivateWrites > 0) {
+      refusePrivateWrites--; throw Object.assign(new Error('synthetic_private_write_refusal'), { code: 'synthetic_private_write_refusal' });
+    }
+    data.set(key, value);
+  } };
   const client = {
     getLocalState() { reads.push({ ...state }); if (firstRead && initialRead) { firstRead = false; return initialRead.promise; } firstRead = false; return Promise.resolve({ ...state }); },
     extension(op, args, options) {
       calls.push({ op, args: JSON.parse(JSON.stringify(args)), options });
-      if (op === 'agent.cancel') return Promise.resolve({ schema: 'soty.personal-agent-cancel.v1', requestId: args.requestId, cancelRequested: true, remoteTerminationVerified: false });
-      const reply = { schema: 'soty.personal-agent-turn.v1', requestId: args.requestId, status: 'complete', answer: 'CURRENT_POSITION_ANSWER', contextId, evidence: [] };
+      if (op === 'agent.cancel') { const reply = { schema: 'soty.personal-agent-cancel.v1', requestId: args.requestId, cancelRequested: true, remoteTerminationVerified: false };
+        if (holdCancel) { const gate = defer(); gates.push({ ...gate, reply, cancel: true }); return gate.promise; } return Promise.resolve(reply); }
+      const reply = { schema: 'soty.personal-agent-turn.v1', requestId: args.requestId, status: 'complete', answer, contextId, evidence: [] };
       if (hold) { const gate = defer(); gates.push({ ...gate, reply }); return gate.promise; }
       return Promise.resolve(reply);
     },
   };
   const environment = { module: { exports: {} }, accountClient: client, observeAccount(fn) { observer = fn; return () => { observer = null; }; },
-    createPersonalAgentConversation, buildChessCoachPosition: chessFeature.buildChessCoachPosition, sessionStorage: storage,
+    createPersonalAgentConversation, createPersonalChess: privateModule.exports.createPersonalChess,
+    buildChessCoachPosition: chessFeature.buildChessCoachPosition, buildChessOpponentPosition: chessFeature.buildChessOpponentPosition, sessionStorage: storage,
+    localStorage: { ...storage, get length() { return data.size; }, key(index) { return [...data.keys()][index] ?? null; } },
+    chessPersonal: null, chessPersonalOpen: false,
     selectedId: 'room-one', chessOpenId: 'room-one', chessGames: new Map([['room-one', snapshot]]), chessCoachBoardGeneration: 0, chessPrivateCoach: null,
     chessAgentTimers: new Map(), chessSelectedSquare: '', chessPromotion: null, tunnels: [],
     rememberChessSnapshot() {}, syncs: new Map(), touchTunnel: () => [], renderTiles() {}, renderChess() {}, renderTerminal() {},
@@ -61,16 +74,32 @@ async function fixture({ saved, initialRead, hold = false, onChange } = {}) {
     closeChessCoachDialog() { coach?.close(); },
     chessNames: () => ({ local: 'PRIVATE_LOCAL_NAME', opponent: 'PRIVATE_PEER_NAME' }), loadStoredChessSnapshot: () => null,
     normalizeChessSnapshot: chessFeature.normalizeChessSnapshot, createChessSnapshot: chessFeature.createChessSnapshot,
+    applyChessMove: chessFeature.applyChessMove, cleanNick: value => value?.trim() ?? '', device: null,
+    loadTunnels: () => [], texts: new Map(), files: new Map(),
     geniusCoach: chessFeature.geniusCoach, chessModeForTunnel: () => 'agent',
     window: { addEventListener(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
       removeEventListener(name, fn) { listeners.get(name)?.delete(fn); }, clearTimeout() {} },
   };
   vm.createContext(environment); vm.runInContext(compiled, environment);
   const actual = environment.module.exports;
-  coach = actual.createChessCoachForPage(() => { onChange?.(coach); }); environment.chessPrivateCoach = coach;
+  coach = actual.createChessCoachForPage(() => { onChange?.(coach); }, actual.retirePersonalChess); environment.chessPrivateCoach = coach;
   await ticks();
   const savedValue = () => JSON.parse(data.get('soty.personal-agent-ui.v1:account_A') ?? 'null');
   return { coach, calls, gates, data, reads, snapshot, actual, environment, savedValue,
+    refusePrivateWrites(count = 1) { refusePrivateWrites = count; },
+    controls() {
+      const host = { children: [], replaceChildren(...nodes) { this.children = nodes; } };
+      environment.app = { querySelector: selector => selector === '.chess-personal-controls' ? host : null };
+      environment.document = { createElement: tag => ({ tag, children: [], handlers: {}, textContent: '', append(...nodes) { this.children.push(...nodes); },
+        setAttribute() {}, addEventListener(name, fn) { this.handlers[name] = fn; } }) };
+      actual.renderPersonalChessControls(); const nodes = host.children.flatMap(node => [node, ...node.children]);
+      return { host, nodes, button: label => nodes.find(node => node.tag === 'button' && node.textContent === label) };
+    },
+    startPersonal(side = 'w') {
+      assert.equal(coach.startOpponent(), true); environment.chessPersonalOpen = true;
+      if (side === 'b') environment.chessPersonal.start(side);
+      environment.chessPersonal.resume(); return environment.chessPersonal;
+    },
     async emit(next) {
       const changed = Object.hasOwn(next, 'accountId') && next.accountId !== state.accountId || Object.hasOwn(next, 'deviceId') && next.deviceId !== state.deviceId;
       state = publicView({ ...state, ...next, ...(changed && !Object.hasOwn(next, 'current') ? { current: undefined } : {}) });
@@ -249,4 +278,168 @@ test('revoked inactive mismatched or incomplete public view cannot expose or dis
   Object.defineProperty(current, 'active', { enumerable: true, get() { getters++; return true; } });
   await f.emit({ current }); await f.coach.ask();
   assert.equal(getters, 0); assert.equal(f.calls.length, 0); assert.equal(f.coach.view().canAsk, false);
+});
+
+test('Stop on the private opponent immediately fences a valid turn ACK that beats the cancel ACK', async () => {
+  const f = await fixture({ hold: true, holdCancel: true, answer: 'e7e5' }), game = f.startPersonal();
+  assert.equal(f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'), true);
+  const before = game.view().board.fen, pending = f.coach.askMove(); await ticks();
+  assert.equal(f.coach.view().canCancel, true);
+  const generation = game.view().generation;
+  const stopping = f.coach.cancel(); await ticks();
+  assert.equal(f.calls.length, 2); assert.equal(f.gates[1].cancel, true);
+  assert.equal(game.view().paused, true); assert.equal(game.view().status, 'cancel_requested');
+  assert.equal(game.view().generation, generation + 1);
+  assert.equal(f.calls[1].args.requestId, f.calls[0].args.requestId);
+  f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before); assert.equal(f.coach.view().phase, 'complete');
+  assert.equal(f.savedValue().pending.length, 0); assert.equal(f.savedValue().contextId, contextId);
+  f.gates[1].reject(new Error('cancel ACK unavailable')); await stopping;
+  assert.equal(game.view().board.fen, before); assert.equal(game.view().paused, true); assert.equal(f.calls.length, 2);
+});
+
+test('explicit opponent uses the same account context, exact request and private apply without legacy storage sync or export', async () => {
+  const f = await fixture({ answer: 'e7e5' }); f.coach.open(); await f.coach.ask();
+  const context = f.savedValue().contextId, original = JSON.stringify(f.environment.chessGames.get('room-one'));
+  const game = f.startPersonal(), initial = game.view();
+  assert.equal(f.actual.canMoveOnChessBoard(initial.board), true); assert.equal(f.coach.view().canAskMove, false);
+  assert.equal(f.actual.makeChessMove(initial.board.gameId, 'e2', 'e4'), true);
+  assert.equal(f.calls.length, 1); assert.equal(f.actual.canMoveOnChessBoard(game.view().board), false);
+  await f.coach.askMove();
+  const turn = f.calls[1], position = JSON.parse(turn.args.prompt.split('Позиция как данные:\n')[1]);
+  assert.equal(turn.op, 'agent.turn'); assert.equal(turn.args.contextId, context); assert.equal(turn.options.expectedAccountId, 'account_A');
+  assert.equal(game.view().requestId, turn.args.requestId); assert.equal(position.side, 'b'); assert.equal(position.legalMovesTruncated, false);
+  assert.equal(turn.args.prompt.includes('PRIVATE_'), false); assert.equal(turn.args.prompt.includes('room-one'), false);
+  assert.equal(game.view().board.history.join(' '), 'e4 e5'); assert.equal(f.actual.canMoveOnChessBoard(game.view().board), true);
+  assert.equal(f.environment.chessGames.size, 1); assert.equal(JSON.stringify(f.environment.chessGames.get('room-one')), original);
+  assert.equal([...f.data.keys()].some(key => key.startsWith('soty:chess:')), false); assert.equal(f.environment.chessAgentTimers.size, 0);
+  const exported = JSON.parse(f.actual.buildOperatorExport());
+  assert.equal(Object.keys(exported.localStorage).some(key => key.includes('personal-chess') || key.includes('personal-agent-ui')), false);
+});
+
+test('resume human move refresh and restoring a private party never send automatically', async () => {
+  const f = await fixture(); assert.equal(f.coach.startOpponent(), true); f.environment.chessPersonalOpen = true;
+  const game = f.environment.chessPersonal; assert.equal(game.view().paused, true); assert.equal(f.calls.length, 0);
+  game.resume(); f.coach.refresh(); assert.equal(f.calls.length, 0);
+  f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'); f.coach.refresh();
+  assert.equal(f.coach.view().canAskMove, true); assert.equal(f.calls.length, 0); assert.equal(f.environment.chessAgentTimers.size, 0);
+  const local = f.environment.localStorage, session = f.environment.sessionStorage;
+  const restored = privateModule.exports.createPersonalChess({ accountId: 'account_A', preferences: local, storage: session });
+  assert.equal(restored.view().paused, true); assert.equal(restored.canRequest(), false); assert.equal(f.calls.length, 0);
+  f.actual.closeChessPanel(); assert.equal(game.view().paused, true); assert.equal(f.calls.length, 0);
+});
+
+test('coach purpose on a private board remains advice with no board-write capability', async () => {
+  const f = await fixture({ answer: 'e7e5' }), game = f.startPersonal();
+  f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'); const before = game.view().board.fen;
+  f.coach.open(); await f.coach.ask();
+  assert.equal(f.coach.view().answer, 'e7e5'); assert.equal(game.view().board.fen, before); assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0].args.prompt, /Не меняй доску/u); assert.equal(game.view().status, 'idle');
+});
+
+test('invalid but complete UCI leaves a known completion and only a second explicit action creates a new request ID', async () => {
+  const f = await fixture({ hold: true }), game = f.startPersonal();
+  f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'); const before = game.view().board.fen;
+  const first = f.coach.askMove(); await ticks(); f.gates[0].reply.answer = 'e7e5 followed by another action';
+  f.gates[0].resolve(f.gates[0].reply); await first;
+  assert.equal(game.view().board.fen, before); assert.equal(game.view().status, 'invalid'); assert.equal(f.coach.view().phase, 'complete');
+  assert.equal(f.savedValue().pending.length, 0); assert.equal(f.coach.view().canAskMove, true); f.coach.refresh(); assert.equal(f.calls.length, 1);
+  const second = f.coach.askMove(); await ticks(); assert.notEqual(f.calls[1].args.requestId, f.calls[0].args.requestId);
+  f.gates[1].reply.answer = 'e7e5'; f.gates[1].resolve(f.gates[1].reply); await second;
+  assert.equal(game.view().board.history.join(' '), 'e4 e5'); assert.equal(f.calls.length, 2);
+});
+
+test('unknown opponent keeps the same shared intent across new party resume and does not retry', async () => {
+  const f = await fixture({ hold: true }), game = f.startPersonal(); f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4');
+  const pending = f.coach.askMove(); await ticks(); const original = JSON.stringify(f.savedValue());
+  f.gates[0].reject(new Error('lost ACK')); await pending;
+  assert.equal(game.view().status, 'unknown'); assert.equal(game.view().paused, true);
+  game.start('b'); game.resume(); f.coach.refresh(); await f.coach.askMove();
+  assert.equal(JSON.stringify(f.savedValue()), original); assert.equal(f.coach.view().canAskMove, false); assert.equal(f.calls.length, 1);
+});
+
+test('a nonempty assistant draft or previous unknown intent blocks opponent without clobbering the shared record', async () => {
+  for (const saved of [{ draft: 'PRIVATE_EXISTING_DRAFT' }, { draft: 'Original prompt', active: 'retained_intent_1', pending: [{ requestId: 'retained_intent_1', prompt: 'Original prompt' }], contextId }]) {
+    const f = await fixture({ saved }), before = f.data.get('soty.personal-agent-ui.v1:account_A'); f.startPersonal('b');
+    assert.equal(f.coach.view().canAskMove, false); await f.coach.askMove();
+    assert.equal(f.data.get('soty.personal-agent-ui.v1:account_A'), before); assert.equal(f.calls.length, 0);
+  }
+});
+
+for (const kind of ['restart', 'pause/resume ABA', 'close/reopen']) test(`private opponent delayed ACK after ${kind} cannot write a board and remains a confirmed account ACK`, async () => {
+  const f = await fixture({ hold: true, answer: 'e7e5' }), game = f.startPersonal();
+  f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'); const pending = f.coach.askMove(); await ticks();
+  if (kind === 'restart') { game.start('w'); game.resume(); }
+  else if (kind === 'pause/resume ABA') { game.pause(); game.resume(); }
+  else { f.actual.closeChessPanel(); f.environment.chessPersonalOpen = true; game.resume(); }
+  const before = game.view().board.fen; f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before); assert.equal(f.coach.view().phase, 'complete'); assert.equal(f.savedValue().pending.length, 0);
+  assert.equal(f.savedValue().contextId, contextId); assert.equal(f.calls.length, 1);
+});
+
+test('private current owner and same-ID revocation retire board before late ACK without pretending backend revocation', async () => {
+  for (const change of [{ accountId: 'account_B', deviceId: 'device_B' }, { deviceId: 'device_B' }, { current: { ...publicView().current, revoked: true } }]) {
+    const f = await fixture({ hold: true, answer: 'e7e5' }), game = f.startPersonal();
+    f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4'); const pending = f.coach.askMove(); await ticks(); const original = JSON.stringify(f.savedValue());
+    await f.emit(change); assert.equal(f.environment.chessPersonalOpen, false); assert.equal(f.environment.chessPersonal, null); assert.equal(game.view(), null);
+    await f.emit({ accountId: 'account_A', deviceId: 'device_A', current: publicView().current });
+    f.gates[0].resolve(f.gates[0].reply); await pending;
+    assert.equal(JSON.stringify(f.savedValue()), original); assert.equal(f.calls.length, 1); assert.equal(f.coach.view().canAskMove, false);
+  }
+});
+
+test('private board generation changes during current read deny dispatch and preserve actual intent', async () => {
+  const f = await fixture(), read = defer(), game = f.startPersonal(); f.actual.makeChessMove(game.view().board.gameId, 'e2', 'e4');
+  f.nextRead(read); const pending = f.coach.askMove(); await ticks(); game.pause(); game.resume(); read.resolve(publicView()); await pending;
+  assert.equal(f.calls.length, 0); assert.equal(f.savedValue().pending.length, 1); assert.equal(f.coach.view().phase, 'unknown'); assert.equal(f.coach.view().canAskMove, false);
+});
+
+test('actual private controls resume without dispatch and deliver Stop only for the visible owned opponent request', async () => {
+  const f = await fixture({ hold: true, answer: 'e2e4' }); assert.equal(f.coach.startOpponent(), true);
+  f.environment.chessPersonal.start('b'); f.environment.chessPersonalOpen = true; const game = f.environment.chessPersonal;
+  let ui = f.controls(); assert.equal(ui.button('Продолжить').hidden, false); assert.equal(ui.button('Остановить').disabled, true);
+  assert.equal(ui.nodes.some(node => node.textContent === 'Запрос может быть платным.'), true);
+  ui.button('Продолжить').handlers.click(); assert.equal(f.calls.length, 0); assert.equal(game.view().paused, false);
+  const pending = f.coach.askMove(); await ticks(); ui = f.controls(); assert.equal(ui.button('Остановить').disabled, false);
+  ui.button('Остановить').handlers.click(); await ticks(); assert.equal(game.view().paused, true); assert.equal(f.calls[1].op, 'agent.cancel');
+  const before = game.view().board.fen; f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before); assert.equal(f.coach.view().phase, 'complete');
+  f.actual.closeChessPanel(); assert.equal(f.controls().host.children.length, 0); await f.coach.askMove(); assert.equal(f.calls.length, 2);
+});
+
+test('private storage refusal cannot prevent Stop RPC or roll back its local pause generation', async () => {
+  const f = await fixture({ hold: true, answer: 'e2e4' }), game = f.startPersonal('b');
+  const pending = f.coach.askMove(); await ticks(); const before = game.view(); f.refusePrivateWrites();
+  await f.coach.cancel(); assert.equal(f.calls.filter(call => call.op === 'agent.cancel').length, 1);
+  assert.equal(game.view().paused, true); assert.ok(game.view().generation > before.generation);
+  f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before.board.fen); assert.equal(f.coach.view().phase, 'complete');
+  assert.equal(f.savedValue().pending.length, 0); assert.equal(f.savedValue().contextId, contextId); assert.equal(f.calls.length, 2);
+});
+
+test('private storage refusal cannot keep Close target open or allow a late valid ACK to move it', async () => {
+  const f = await fixture({ hold: true, answer: 'e2e4' }), game = f.startPersonal('b');
+  const pending = f.coach.askMove(); await ticks(); const before = game.view(); f.refusePrivateWrites();
+  f.actual.closeChessPanel(); assert.equal(f.environment.chessPersonalOpen, false); assert.equal(f.actual.activeChessTargetId(), '');
+  assert.equal(game.view().paused, true); assert.ok(game.view().generation > before.generation);
+  f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before.board.fen); assert.equal(f.coach.view().phase, 'complete'); assert.equal(f.calls.length, 1);
+});
+
+test('known complete ACK with a refused private board write remains complete and shows an unsaved paused board', async () => {
+  const f = await fixture({ hold: true, answer: 'e2e4' }), game = f.startPersonal('b');
+  const pending = f.coach.askMove(); await ticks(); const before = game.view(); f.refusePrivateWrites();
+  f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(f.coach.view().phase, 'complete'); assert.equal(f.savedValue().pending.length, 0); assert.equal(f.savedValue().contextId, contextId);
+  assert.equal(game.view().board.fen, before.board.fen); assert.equal(game.view().paused, true); assert.ok(game.view().generation > before.generation);
+  assert.match(f.coach.view().status, /Ход не сохранён/u); assert.equal(f.coach.view().canAskMove, false); assert.equal(f.calls.length, 1);
+});
+
+test('private storage refusal cannot interrupt selection clear before a late ACK', async () => {
+  const f = await fixture({ hold: true, answer: 'e2e4' }), game = f.startPersonal('b');
+  const pending = f.coach.askMove(); await ticks(); const before = game.view(); f.refusePrivateWrites();
+  f.actual.selectTunnel('room-two'); assert.equal(f.environment.selectedId, 'room-two'); assert.equal(f.environment.chessPersonalOpen, false);
+  assert.equal(f.actual.activeChessTargetId(), ''); assert.equal(game.view().paused, true); assert.ok(game.view().generation > before.generation);
+  f.gates[0].resolve(f.gates[0].reply); await pending;
+  assert.equal(game.view().board.fen, before.board.fen); assert.equal(f.coach.view().phase, 'complete'); assert.equal(f.calls.length, 1);
 });

@@ -153,6 +153,14 @@ export interface ChessCoachPosition {
 
 /** Position data only. Never replace an invalid board with a starting position. */
 export function buildChessCoachPosition(snapshot: ChessSnapshot): ChessCoachPosition {
+  return buildChessPosition(snapshot, 64);
+}
+
+export function buildChessOpponentPosition(snapshot: ChessSnapshot): ChessCoachPosition {
+  return buildChessPosition(snapshot, 256);
+}
+
+function buildChessPosition(snapshot: ChessSnapshot, limit: 64 | 256): ChessCoachPosition {
   const invalid = () => Object.assign(new Error('chess_position_invalid'), { code: 'chess_position_invalid' });
   if (typeof snapshot.fen !== 'string' || snapshot.fen.length > 200 || snapshot.fen.trim() !== snapshot.fen
     || !Array.isArray(snapshot.history) || snapshot.history.length > 400) throw invalid();
@@ -166,8 +174,17 @@ export function buildChessCoachPosition(snapshot: ChessSnapshot): ChessCoachPosi
   if (lastSan.some(san => typeof san !== 'string' || san.length > 16
     || !/^(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?$/u.test(san))) throw invalid();
   const moves = board.moves({ verbose: true }).map(move => `${move.from}${move.to}${move.promotion ?? ''}`);
+  if (limit === 256 && moves.length > limit) throw invalid();
   return Object.freeze({ fen: board.fen(), side: board.turn(), lastSan: Object.freeze(lastSan), sanTruncated: snapshot.history.length > 12,
-    legalUci: Object.freeze(moves.slice(0, 64)), legalMovesTruncated: moves.length > 64 });
+    legalUci: Object.freeze(moves.slice(0, limit)), legalMovesTruncated: moves.length > limit });
+}
+
+/** A model answer is a candidate, never a board or executable action. */
+export function parseChessOpponentMove(answer: string, offered: readonly string[]): { from: Square; to: Square; promotion?: PieceSymbol } | null {
+  const uci = answer.trim();
+  if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/u.test(uci) || !offered.includes(uci)) return null;
+  return { from: uci.slice(0, 2) as Square, to: uci.slice(2, 4) as Square,
+    ...(uci.length === 5 ? { promotion: uci[4] as PieceSymbol } : {}) };
 }
 
 export function boardSquares(orientation: Color): Square[] {

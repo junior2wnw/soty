@@ -8,7 +8,7 @@ import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, createConnectorAccessGrant, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, revokeConnectorAccessGrant, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
 import type { ConnectorAccessCredential, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
-import { agentSide, applyChessMove, boardSquares, buildChessCoachPosition, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
+import { agentSide, applyChessMove, boardSquares, buildChessCoachPosition, buildChessOpponentPosition, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
 import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
@@ -61,6 +61,7 @@ import { chooseTool, toolsNavigation, type ToolChoice } from './platform/tools-s
 import { createWorkspaceDialog, showWorkspaceDialog } from './platform/workspace-dialog';
 import { accountClient, observeAccount } from './core/connect-client';
 import { createPersonalAgentConversation } from './platform/personal-agent-client';
+import { createPersonalChess } from './platform/chess-personal';
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
 type BarcodeResult = {
@@ -360,6 +361,8 @@ let chessPromotion: { readonly tunnelId: string; readonly from: Square; readonly
 let chessCoachBoardGeneration = 0;
 let chessPrivateCoach: ReturnType<typeof createChessCoachForPage> | null = null;
 let chessCoachDialog: HTMLDialogElement | null = null;
+let chessPersonal: ReturnType<typeof createPersonalChess> | null = null;
+let chessPersonalOpen = false;
 let localAgent: LocalAgentStatus = { ok: false };
 let agentButtonAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
@@ -506,7 +509,7 @@ async function safeBoot(): Promise<void> {
 
 
 async function boot(): Promise<void> {
-  chessPrivateCoach ??= createChessCoachForPage(renderChessCoachDialog);
+  chessPrivateCoach ??= createChessCoachForPage(() => { renderChessCoachDialog(); renderPersonalChessControls(); }, retirePersonalChess);
   const spreadExPairCode = spreadExPairCodeFromUrl();
   if (spreadExPairCode) {
     await registerServiceWorker();
@@ -696,6 +699,7 @@ function openRequestedTool(): void {
   }
   else if (tool === 'chess') {
     const choices: ToolChoice[] = [{ label: 'С компьютером', description: 'Партия и подсказки — можно начать сразу', symbol: 'sparkle', run: () => startAgentChess() },
+      { label: 'С личным помощником', description: 'Каждый ход — отдельный запрос; он может быть платным', symbol: 'sparkle', run: () => startPersonalChess() },
       { label: 'Пригласить друга', description: 'Создать комнату и поделиться приглашением', symbol: 'people', run: async () => { createFreshDialog('Шахматы', { archiveCurrent: false }); renderApp(); await openChessForSelected(); await showQr(); } }];
     for (const tunnel of sortedVisibleTunnels().filter(item => !isAgentTunnel(item))) choices.push({ label: tunnel.label || 'Общая комната', description: 'Продолжить партию в этой комнате', symbol: 'game', run: async () => { selectTunnel(tunnel.id); renderApp(); await openChessForSelected(); } });
     chooseTool('С кем играем?', 'Выберите соперника.', choices);
@@ -2503,6 +2507,10 @@ function normalizeSelectedTunnel(): void {
 
 function selectTunnel(id: string): void {
   if (id !== selectedId) closeChessCoachDialog();
+  if (id !== selectedId && chessPersonalOpen) {
+    chessPersonalOpen = false;
+    try { chessPersonal?.pause(); } catch { /* The local pause survives a refused durable write. */ }
+  }
   stopVoiceComposer(true);
   rememberCurrentChatScroll();
   selectedId = id;
@@ -4285,7 +4293,7 @@ function renderTerminal(): void {
     return;
   }
   const tunnelId = activeTerminalTunnelId();
-  const chessActive = Boolean(activeChessTunnelId());
+  const chessActive = Boolean(activeChessTargetId());
   const controller = Boolean(tunnelId && remoteAccess.has(tunnelId));
   const host = Boolean(tunnelId && remoteEnabled.has(tunnelId));
   const active = !chessActive && (controller || host);
@@ -4349,29 +4357,48 @@ function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad"
 }
 
 function activeChessTunnelId(): string {
+  if (chessPersonalOpen) return '';
   return chessOpenId && chessOpenId === selectedId ? chessOpenId : "";
 }
 
-function readChessCoachBoard() {
-  const tunnelId = activeChessTunnelId(), snapshot = chessGames.get(tunnelId);
-  return snapshot ? { tunnelId, snapshot, generation: chessCoachBoardGeneration } : null;
+function activeChessTargetId(): string {
+  return chessPersonalOpen ? chessPersonal?.view()?.board.gameId ?? '' : activeChessTunnelId();
 }
 
-/** One private coach per page. Local fencing does not make SDK dispatch atomic with a board move. */
-function createChessCoachForPage(onChange: () => void) {
+function retirePersonalChess(): void {
+  const previous = chessPersonal, wasOpen = chessPersonalOpen; chessPersonal = null; chessPersonalOpen = false;
+  try { previous?.pause(); } catch { /* Retire private display even when storage failed. */ } finally { previous?.dispose(); }
+  if (wasOpen) { closeChessCoachDialog(); renderChess(); }
+}
+
+function readChessCoachBoard() {
+  if (chessPersonalOpen) {
+    const match = chessPersonal?.view();
+    return match ? { kind: 'personal' as const, tunnelId: match.board.gameId, snapshot: match.board, generation: match.generation, humanSide: match.humanSide } : null;
+  }
+  const tunnelId = activeChessTunnelId(), snapshot = chessGames.get(tunnelId);
+  return snapshot ? { kind: 'legacy' as const, tunnelId, snapshot, generation: chessCoachBoardGeneration } : null;
+}
+
+/** One purpose-tagged personal conversation per page. Local board fencing is not atomic with SDK dispatch. */
+function createChessCoachForPage(onChange: () => void, onIdentityChanged: () => void = () => {}) {
   type Identity = { accountId: string; deviceId: string };
-  type Fence = { identity: Identity; epoch: number; opening: number; tunnelId: string; gameId: string; fen: string; generation: number };
+  type Fence = { identity: Identity; epoch: number; opening: number; tunnelId: string; gameId: string; fen: string; generation: number;
+    purpose: 'coach' | 'opponent-move'; kind: 'legacy' | 'personal'; side: Color; offered: readonly string[] };
   let identity: Identity | null = null, epoch = 0, observed = 0, opening = 0, opened = false, suspended = false, ended = false;
   let conversation: ReturnType<typeof createPersonalAgentConversation> | null = null;
   let running = false, cancelling = false, answer = '', note = '', ownRequestId = '';
   let active: Fence | null = null, completed: Fence | null = null;
+  let cancelled = false;
   const notify = () => { if (!ended) { try { onChange(); } catch { /* Rendering cannot change an acknowledged turn. */ } } };
   const sameOwner = (owner: Identity, version: number) => !ended && !suspended && epoch === version
     && identity?.accountId === owner.accountId && identity.deviceId === owner.deviceId;
   const current = (fence: Fence | null) => {
-    if (!fence || !opened || opening !== fence.opening || !sameOwner(fence.identity, fence.epoch)) return false;
+    if (!fence || !sameOwner(fence.identity, fence.epoch)) return false;
+    if (fence.purpose === 'coach' && (!opened || opening !== fence.opening)) return false;
+    if (fence.purpose === 'opponent-move' && (!chessPersonalOpen || cancelled || chessPersonal?.view()?.paused)) return false;
     const board = readChessCoachBoard();
-    return board?.tunnelId === fence.tunnelId && board.generation === fence.generation
+    return board?.kind === fence.kind && board.tunnelId === fence.tunnelId && board.generation === fence.generation
       && board.snapshot.gameId === fence.gameId && board.snapshot.fen === fence.fen;
   };
   const adopt = (state: Awaited<ReturnType<typeof accountClient.getLocalState>> | null) => {
@@ -4398,6 +4425,7 @@ function createChessCoachForPage(onChange: () => void) {
       && profile.active === true && profile.revoked === false ? { accountId: view.accountId, deviceId: view.deviceId } : null;
     if (next?.accountId === identity?.accountId && next?.deviceId === identity?.deviceId) { notify(); return; }
     epoch++; identity = null; answer = ''; completed = null; active = null; ownRequestId = ''; note = '';
+    onIdentityChanged();
     conversation?.dispose(); conversation = null; identity = next;
     if (opened && identity) getConversation();
     notify();
@@ -4418,7 +4446,10 @@ function createChessCoachForPage(onChange: () => void) {
       created = createPersonalAgentConversation({ accountId: owner.accountId, storage: sessionStorage,
         client: { getLocalState: () => accountClient.getLocalState(), extension<T>(op: string, args: Record<string, unknown>, context: { expectedAccountId: string }) {
           if (!sameOwner(owner, version)) return Promise.reject(Object.assign(new Error('authentication_required'), { code: 'authentication_required' }));
-          if (op === 'agent.turn' && !current(active)) return Promise.reject(Object.assign(new Error('chess_position_changed'), { code: 'chess_position_changed' }));
+          if (op === 'agent.turn') {
+            if (!current(active) || args.requestId !== ownRequestId) return Promise.reject(Object.assign(new Error('chess_position_changed'), { code: 'chess_position_changed' }));
+            if (active!.purpose === 'opponent-move' && (!chessPersonal?.begin(ownRequestId, active!.generation) || !current(active))) return Promise.reject(Object.assign(new Error('chess_position_changed'), { code: 'chess_position_changed' }));
+          }
           return accountClient.extension<T>(op, args, context);
         } },
         onChange: () => { if (conversation === created && sameOwner(owner, version)) {
@@ -4435,14 +4466,15 @@ function createChessCoachForPage(onChange: () => void) {
     if (answer && !current(completed)) { answer = ''; note = 'Ответ относится к ранее отправленной позиции и здесь скрыт.'; }
     const blocked = Boolean(state?.requestId || state?.draft.trim());
     const status = note || (!identity ? 'Войдите в аккаунт Сот, чтобы спросить помощника.'
-      : running ? 'Ждём ответ. Закрытие окна не подтверждает остановку.'
+      : running ? 'Позиция отправлена. Ждём ответ. Закрытие окна не подтверждает остановку.'
       : blocked ? 'В помощнике есть сохранённый запрос. Откройте его, прежде чем отправлять новый.' : '');
     return { answer, status, opened, canAsk: opened && !suspended && !ended && Boolean(identity && conversation) && !running && !cancelling && !blocked,
-      canCancel: opened && Boolean(identity && state?.requestId && state.requestId === ownRequestId) && !cancelling,
+      canAskMove: Boolean(identity && conversation && chessPersonalOpen && chessPersonal?.canRequest()) && !running && !cancelling && !blocked,
+      canCancel: (opened || chessPersonalOpen && active?.purpose === 'opponent-move') && Boolean(identity && state?.requestId && state.requestId === ownRequestId) && !cancelling,
       running, phase: state?.phase ?? 'draft' };
   };
-  const ask = async () => {
-    if (!opened || ended || suspended || running || cancelling) return;
+  const ask = async (purpose: 'coach' | 'opponent-move' = 'coach') => {
+    if (purpose === 'coach' && !opened || ended || suspended || running || cancelling) return;
     const selected = getConversation(); if (!identity || !selected) { notify(); return; }
     const saved = selected.view(); if (saved.requestId || saved.draft.trim()) { notify(); return; }
     const board = readChessCoachBoard();
@@ -4450,22 +4482,49 @@ function createChessCoachForPage(onChange: () => void) {
       note = 'Не удалось проверить позицию. Запрос не отправлен.'; notify(); return;
     }
     let position: ReturnType<typeof buildChessCoachPosition>;
-    try { position = buildChessCoachPosition(board.snapshot); }
+    if (purpose === 'opponent-move' && (board.kind !== 'personal' || !chessPersonal?.canRequest())) return;
+    try { position = purpose === 'opponent-move' ? buildChessOpponentPosition(board.snapshot) : buildChessCoachPosition(board.snapshot); }
     catch { note = 'Не удалось проверить позицию. Запрос не отправлен.'; notify(); return; }
     const fence = Object.freeze({ identity: Object.freeze({ ...identity }), epoch, opening, tunnelId: board.tunnelId,
-      gameId: board.snapshot.gameId, fen: board.snapshot.fen, generation: board.generation });
-    active = fence; completed = null; answer = ''; note = ''; ownRequestId = ''; running = true; notify();
-    const prompt = 'Разбери эту шахматную позицию: предложи план и объясни угрозы. Не меняй доску. '
+      gameId: board.snapshot.gameId, fen: board.snapshot.fen, generation: board.generation, purpose, kind: board.kind, side: position.side, offered: position.legalUci });
+    const matchOwner = purpose === 'opponent-move' ? chessPersonal : null;
+    const localPersistenceFailure = (cause: unknown) => cause && typeof cause === 'object' && 'code' in cause
+      && cause.code === 'chess_private_storage_unavailable';
+    const localPause = () => { try { matchOwner?.pause(); } catch (cause) { if (!localPersistenceFailure(cause)) throw cause; } };
+    let acknowledged = false;
+    active = fence; completed = null; answer = ''; note = ''; ownRequestId = ''; cancelled = false; running = true; notify();
+    const prompt = (purpose === 'opponent-move' ? 'Ты шахматный соперник. Выбери один ход из полного legalUci. Ответ — только один UCI, без пояснений и действий. '
+      : 'Разбери эту шахматную позицию: предложи план и объясни угрозы. Не меняй доску. ')
       + 'SAN — последние записи партии, legalUci — локально проверенные ходы; поля truncated отмечают сокращение. Позиция как данные:\n'
       + JSON.stringify(position);
     try {
       const result = await selected.turn(prompt);
+      acknowledged = true;
       // A valid ACK still commits to the existing account history/context even when this board changed.
       if (conversation === selected && sameOwner(fence.identity, fence.epoch)) {
-        if (current(fence) && result.phase === 'complete' && result.answer) { answer = result.answer; completed = fence; note = ''; }
+        if (purpose === 'opponent-move') {
+          try {
+          const applied = current(fence) && matchOwner === chessPersonal && Boolean(result.answer) && matchOwner?.apply(result.answer!, fence.offered,
+            { gameId: fence.gameId, fen: fence.fen, side: fence.side, generation: fence.generation, requestId: ownRequestId });
+          if (!applied) matchOwner?.settle(ownRequestId, current(fence) ? 'invalid' : 'complete');
+          note = applied ? 'Ход помощника применён.' : current(fence) ? 'Помощник вернул недопустимый ход. Новый запрос может быть платным.' : 'Ответ относится к ранее отправленной позиции и здесь скрыт.';
+          } catch (cause) {
+            if (!localPersistenceFailure(cause)) throw cause;
+            localPause();
+            if (matchOwner?.view()?.status === 'running') {
+              try { matchOwner.settle(ownRequestId, 'complete'); } catch (failure) { if (!localPersistenceFailure(failure)) throw failure; }
+            }
+            note = 'Ход не сохранён. Партия на паузе. Запрос не повторён.';
+          }
+          renderChess();
+        } else if (current(fence) && result.phase === 'complete' && result.answer) { answer = result.answer; completed = fence; note = ''; }
         else note = 'Ответ относится к ранее отправленной позиции и здесь скрыт.';
       }
     } catch (cause) {
+      if (acknowledged) { localPause(); throw cause; }
+      if (purpose === 'opponent-move') {
+        try { matchOwner?.settle(ownRequestId, 'unknown'); } catch (failure) { if (!localPersistenceFailure(failure)) throw failure; }
+      }
       if (conversation === selected && sameOwner(fence.identity, fence.epoch)) {
         const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
         note = code === 'chess_position_changed' ? 'Позиция изменилась до отправки. Сохранённый запрос доступен в помощнике.'
@@ -4477,6 +4536,11 @@ function createChessCoachForPage(onChange: () => void) {
   const cancel = async () => {
     const selected = conversation, owner = identity, version = epoch;
     if (!selected || !owner || !view().canCancel) return;
+    cancelled = true;
+    if (active?.purpose === 'opponent-move') {
+      try { chessPersonal?.pause(); } catch (cause) { if (!cause || typeof cause !== 'object' || !('code' in cause) || cause.code !== 'chess_private_storage_unavailable') throw cause; }
+      try { chessPersonal?.settle(ownRequestId, 'cancel_requested'); } catch (cause) { if (!cause || typeof cause !== 'object' || !('code' in cause) || cause.code !== 'chess_private_storage_unavailable') throw cause; }
+    }
     cancelling = true; notify();
     try {
       const result = await selected.cancel();
@@ -4489,6 +4553,7 @@ function createChessCoachForPage(onChange: () => void) {
   const hide = (event: PageTransitionEvent) => {
     suspended = true; observed++; epoch++; identity = null; opened = false; opening++; answer = ''; completed = null;
     conversation?.dispose(); conversation = null; ownRequestId = ''; active = null;
+    onIdentityChanged();
     if (!event.persisted) dispose(); else notify();
   };
   const show = (event: PageTransitionEvent) => { if (event.persisted && !ended) { suspended = false; observed++; latest(); } };
@@ -4498,6 +4563,15 @@ function createChessCoachForPage(onChange: () => void) {
   };
   window.addEventListener('pagehide', hide); window.addEventListener('pageshow', show); latest();
   return { view, ask, cancel, close, dispose, open() { if (!ended && !suspended) { opened = true; opening++; getConversation(); notify(); } },
+    startOpponent() {
+      if (!identity || ended || suspended || running || cancelling) return false;
+      getConversation();
+      try { chessPersonal ??= createPersonalChess({ accountId: identity.accountId, preferences: localStorage, storage: sessionStorage });
+        if (!chessPersonal.view()) chessPersonal.start('w');
+        return true;
+      } catch { note = 'Не удалось прочитать личную партию. Данные не сброшены.'; notify(); return false; }
+    },
+    askMove() { return ask('opponent-move'); },
     refresh() { view(); notify(); } };
 }
 
@@ -4513,9 +4587,9 @@ function renderChessCoachDialog(): void {
 }
 
 function openChessCoachDialog(): void {
-  const openingTunnelId = activeChessTunnelId();
+  const openingTunnelId = activeChessTargetId();
   if (!openingTunnelId) return;
-  const openingGameId = chessGames.get(openingTunnelId)?.gameId;
+  const openingGameId = readChessCoachBoard()?.snapshot.gameId;
   if (chessCoachDialog) { chessCoachDialog.querySelector<HTMLButtonElement>('[data-coach-send]')?.focus(); return; }
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const dialog = document.createElement('dialog'); dialog.className = 'tools-dialog tools-chess-coach';
@@ -4537,8 +4611,8 @@ function openChessCoachDialog(): void {
   dialog.addEventListener('close', () => {
     if (chessCoachDialog === dialog) chessCoachDialog = null;
     chessPrivateCoach?.close(); dialog.remove();
-    if (chessCoachDialog || activeChessTunnelId() !== openingTunnelId
-      || chessGames.get(openingTunnelId)?.gameId !== openingGameId) return;
+    if (chessCoachDialog || activeChessTargetId() !== openingTunnelId
+      || readChessCoachBoard()?.snapshot.gameId !== openingGameId) return;
     const trigger = previous?.isConnected && previous.matches('.chess-ask-agent') ? previous
       : app.querySelector<HTMLButtonElement>('.chess-panel .chess-ask-agent');
     trigger?.focus();
@@ -4562,7 +4636,38 @@ function focusChessWorkspace(): void {
   renderApp();
 }
 
+function startPersonalChess(): void {
+  if (!chessPrivateCoach?.startOpponent()) {
+    chooseTool('Личная партия', chessPrivateCoach?.view().status || 'Войдите в аккаунт Сот.',
+      [{ label: 'Открыть Соты', description: 'Проверить текущий аккаунт', symbol: 'person', run: () => location.assign('/#mine') }]); return;
+  }
+  closeChessPanel(); chessPersonalOpen = true; chessSelectedSquare = ''; chessPromotion = null;
+  focusChessWorkspace(); renderChess();
+}
+
+function renderPersonalChessControls(): void {
+  const host = app.querySelector<HTMLElement>('.chess-personal-controls');
+  if (!host || !chessPersonalOpen) return;
+  const match = chessPersonal?.view(), agent = chessPrivateCoach?.view();
+  if (!match || !agent) { host.replaceChildren(); return; }
+  const text = document.createElement('p');
+  text.textContent = match.paused ? `Партия на паузе. ${agent.status || 'Продолжение само не отправляет запрос.'}` : agent.status
+    || (match.side === match.humanSide ? 'Ваш ход.' : 'Ход помощника — только по запросу. Запрос может быть платным.');
+  text.setAttribute('role', 'status');
+  const actions = document.createElement('div'); actions.className = 'tools-chess-coach-actions';
+  const resume = document.createElement('button'); resume.type = 'button'; resume.textContent = 'Продолжить'; resume.hidden = !match.paused;
+  resume.addEventListener('click', () => { chessPersonal?.resume(); renderChess(); });
+  const send = document.createElement('button'); send.type = 'button'; send.textContent = match.status === 'invalid' ? 'Новый ход помощника' : 'Ход помощника';
+  send.disabled = !agent.canAskMove; send.addEventListener('click', () => { void chessPrivateCoach?.askMove(); });
+  const stop = document.createElement('button'); stop.type = 'button'; stop.textContent = 'Остановить'; stop.disabled = !agent.canCancel;
+  stop.addEventListener('click', () => { void chessPrivateCoach?.cancel(); });
+  const recovery = document.createElement('a'); recovery.href = '/#assistant'; recovery.textContent = 'Открыть помощника';
+  const cost = document.createElement('p'); cost.textContent = 'Запрос может быть платным.';
+  actions.append(resume, send, stop); host.replaceChildren(text, actions, cost, recovery);
+}
+
 async function openChessForSelected(): Promise<void> {
+  if (chessPersonalOpen) { closeChessPanel(); return; }
   if (!selectedId) {
     return;
   }
@@ -4584,6 +4689,7 @@ async function openChessForSelected(): Promise<void> {
 }
 
 async function startAgentChess(): Promise<void> {
+  if (chessPersonalOpen) closeChessPanel();
   let tunnel = findActiveAgentDialog();
   if (!tunnel) {
     tunnel = createFreshDialog(agentDialogLabel, { agent: true, archiveCurrent: false });
@@ -4610,6 +4716,8 @@ async function startAgentChess(): Promise<void> {
 }
 
 function closeChessPanel(): void {
+  chessPersonalOpen = false;
+  try { chessPersonal?.pause(); } catch { /* RAM pause is retained; closing must not depend on durable storage. */ }
   closeChessCoachDialog(); chessCoachBoardGeneration++;
   if (chessOpenId) {
     const timer = chessAgentTimers.get(chessOpenId);
@@ -4634,7 +4742,7 @@ function handleChessPanelClick(event: MouseEvent): void {
   const promotionButton = target.closest<HTMLButtonElement>("[data-promotion]");
   if (promotionButton) {
     const piece = promotionButton.dataset.promotion;
-    if (isChessPromotionPiece(piece) && chessPromotion && chessPromotion.tunnelId === activeChessTunnelId()) {
+    if (isChessPromotionPiece(piece) && chessPromotion && chessPromotion.tunnelId === activeChessTargetId()) {
       makeChessMove(chessPromotion.tunnelId, chessPromotion.from, chessPromotion.to, piece);
     }
     return;
@@ -4653,14 +4761,15 @@ function handleChessPanelClick(event: MouseEvent): void {
     return;
   }
   if (target.closest(".chess-new")) {
-    const tunnelId = activeChessTunnelId();
+    if (chessPersonalOpen) { chessPersonal?.start(chessPersonal.view()?.humanSide ?? 'w'); chessSelectedSquare = ''; chessPromotion = null; renderChess(); return; }
+    const tunnelId = activeChessTargetId();
     if (tunnelId) {
       restartChessGame(tunnelId);
     }
     return;
   }
   if (target.closest(".chess-flip")) {
-    const tunnelId = activeChessTunnelId();
+    const tunnelId = activeChessTargetId();
     if (tunnelId) {
       if (chessFlipped.has(tunnelId)) {
         chessFlipped.delete(tunnelId);
@@ -4692,7 +4801,7 @@ function renderChess(): void {
   if (!panel || !editor) {
     return;
   }
-  const tunnelId = activeChessTunnelId();
+  const tunnelId = activeChessTargetId();
   const active = Boolean(tunnelId);
   editor.classList.toggle("chess-active", active);
   action?.classList.toggle("is-on", active);
@@ -4703,7 +4812,8 @@ function renderChess(): void {
     return;
   }
 
-  const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const snapshot = chessPersonalOpen ? chessPersonal?.view()?.board : ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  if (!snapshot) return;
   const game = chessFromSnapshot(snapshot);
   if (chessSelectedSquare) {
     const piece = game.get(chessSelectedSquare);
@@ -4728,12 +4838,12 @@ function renderChess(): void {
   panel.dataset.mode = snapshot.mode;
   panel.dataset.result = snapshot.result || "play";
   if (title) {
-    title.textContent = snapshot.mode === "agent" ? "С компьютером" : "Шахматы";
+    title.textContent = chessPersonalOpen ? 'С личным помощником' : snapshot.mode === "agent" ? "С компьютером" : "Шахматы";
   }
   if (status) {
     status.textContent = snapshot.result ? "Завершена" : game.isCheck() ? "Шах" : `Ход ${game.moveNumber()}`;
   }
-  coach.hidden = snapshot.mode !== "agent";
+  coach.hidden = chessPersonalOpen || snapshot.mode !== "agent";
   coach.classList.toggle("is-on", snapshot.coach === geniusCoach);
   coach.setAttribute('aria-pressed', String(snapshot.coach === geniusCoach));
 
@@ -4770,25 +4880,28 @@ function renderChess(): void {
 
   turn.innerHTML = `
     <b>${escapeHtml(statusText(snapshot))}</b>
-    <small>${snapshot.mode === "agent" ? "С компьютером" : "Вдвоём"}</small>
+    <small>${chessPersonalOpen ? 'Личная партия' : snapshot.mode === "agent" ? "С компьютером" : "Вдвоём"}</small>
   `;
   const ask = document.createElement('button'); ask.type = 'button'; ask.className = 'chess-ask-agent tools-chess-coach-ask';
   ask.textContent = 'Спросить помощника'; turn.append(ask);
+  if (chessPersonalOpen) { const controls = document.createElement('div'); controls.className = 'chess-personal-controls tools-chess-personal'; turn.append(controls); }
   chessPrivateCoach?.refresh();
   stats.innerHTML = renderChessStats(snapshot);
   moves.innerHTML = renderChessMoves(snapshot.history);
   renderChessPromotion(snapshot, promotion);
-  if (isAgentTurn(snapshot)) {
+  renderPersonalChessControls();
+  if (!chessPersonalOpen && isAgentTurn(snapshot)) {
     scheduleChessAgentMove(tunnelId);
   }
 }
 
 function handleChessSquare(square: Square): void {
-  const tunnelId = activeChessTunnelId();
+  const tunnelId = activeChessTargetId();
   if (!tunnelId) {
     return;
   }
-  const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const snapshot = chessPersonalOpen ? chessPersonal?.view()?.board : ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  if (!snapshot) return;
   if (!canMoveOnChessBoard(snapshot)) {
     return;
   }
@@ -4819,6 +4932,10 @@ function handleChessSquare(square: Square): void {
 }
 
 function makeChessMove(tunnelId: string, from: Square, to: Square, promotion: PieceSymbol = "q"): boolean {
+  if (chessPersonalOpen) {
+    const moved = activeChessTargetId() === tunnelId && Boolean(chessPersonal?.human(from, to, promotion));
+    chessSelectedSquare = ''; chessPromotion = null; renderChess(); return moved;
+  }
   const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
   const moved = applyChessMove(snapshot, from, to, promotion);
   if (!moved) {
@@ -4907,7 +5024,7 @@ function toggleChessCoach(tunnelId: string): void {
 }
 
 function renderChessPromotion(snapshot: ChessSnapshot, promotion: HTMLDivElement): void {
-  if (!chessPromotion || chessPromotion.tunnelId !== activeChessTunnelId()) {
+  if (!chessPromotion || chessPromotion.tunnelId !== activeChessTargetId()) {
     promotion.hidden = true;
     promotion.innerHTML = "";
     return;
@@ -5022,6 +5139,7 @@ function chessNames(tunnelId: string): { readonly local: string; readonly oppone
 }
 
 function canMoveOnChessBoard(snapshot: ChessSnapshot): boolean {
+  if (chessPersonalOpen) return Boolean(chessPersonal?.canHuman());
   return !snapshot.result && !(snapshot.mode === "agent" && chessFromSnapshot(snapshot).turn() === agentSide(snapshot));
 }
 
