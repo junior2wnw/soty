@@ -76,6 +76,25 @@ test('receipt Source uses the existing exact management GET, current cancellatio
   await assert.rejects(rejected.readReceipt({ requestId: id, billingTenant: 'fixture_tenant', keyRef: rejected.keyRef }), error => error.code === 'agent_accounting_unknown');
 });
 
+test('receipt Source adapts canonical PostgreSQL bigint counters without changing billing metadata', async t => {
+  const f = await files(t); await f.save(profile());
+  const id = '7ace962a-51a2-4f20-b911-c1ef69fc5d1b';
+  let wire = { id, status: 'completed', model_requested: 'zai-org/GLM-5.3-Flash', model_resolved: 'zai-org/GLM-5.3-Flash',
+    input_tokens: '27', output_tokens: '85', charge_urub: '2576', error_code: null };
+  const gateway = loadPersonalAgentConfiguration(f.env, { fetchImpl: async () => Response.json({ request: wire }) }).personalAgent.gateway;
+  const read = () => gateway.readReceipt({ requestId: id, billingTenant: 'fixture_tenant', keyRef: gateway.keyRef });
+  assert.deepEqual((await read()).request, { ...wire, input_tokens: 27, output_tokens: 85 });
+  assert.equal(wire.input_tokens, '27');
+  wire = { ...wire, input_tokens: '0', output_tokens: 0 };
+  assert.deepEqual((await read()).request, { ...wire, input_tokens: 0 });
+  wire = { ...wire, status: 'usage_pending', input_tokens: null, output_tokens: null };
+  assert.deepEqual((await read()).request, wire);
+  for (const value of ['01', '-1', ' 27', '+27', '2.7', '2e1', '', '9007199254740992', '99999999999999999']) {
+    wire = { ...wire, status: 'completed', input_tokens: value, output_tokens: '85' };
+    await assert.rejects(read(), error => error.code === 'agent_accounting_unknown');
+  }
+});
+
 async function entry(t, fixture, enabled) {
   const environment = Object.fromEntries(['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATH'].filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]]));
   Object.assign(environment, { NODE_NO_WARNINGS: '1', HOST: '127.0.0.1', PORT: '0', DATA_DIR: join(fixture.dir, 'data'), SOTY_DIST_DIR: fixture.dist,

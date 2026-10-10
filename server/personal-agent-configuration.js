@@ -31,7 +31,18 @@ async function receiptJson(response) {
     }
     const body = Buffer.concat(chunks.map(value => Buffer.from(value)));
     const packet = parseJson(new TextDecoder('utf-8', { fatal: true }).decode(body), { maxBytes: 32768, maxDepth: 8, maxNodes: 1024 });
-    fields(packet, ['request']); return packet.request;
+    fields(packet, ['request']);
+    const request = { ...packet.request };
+    // PostgreSQL bigint counters arrive as decimal strings from the management
+    // API. Adapt that wire format once; the transport still checks exact usage.
+    for (const name of ['input_tokens', 'output_tokens']) {
+      const value = request[name];
+      if (typeof value !== 'string') continue;
+      const number = /^(?:0|[1-9]\d{0,15})$/u.test(value) ? Number(value) : NaN;
+      if (!Number.isSafeInteger(number)) throw agentError('agent_accounting_unknown');
+      request[name] = number;
+    }
+    return request;
   } catch { throw agentError('agent_accounting_unknown'); }
   finally { try { await reader.cancel(); } catch {} reader.releaseLock(); }
 }
