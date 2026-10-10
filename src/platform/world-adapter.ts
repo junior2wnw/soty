@@ -76,8 +76,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     openLegacy, openAccount, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
     appSlotCleanup:reply=>accountClient.appSlotCleanup(reply),
     openAppBuilder: (host: HTMLElement) => actions.mountAppBuilder(host),
-    openAssistant: (host: HTMLElement) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice,
-      createApp: () => actions.agentCreate(), resumeApp: target => actions.agentCreate(undefined, target) }),
+    openAssistant: (host: HTMLElement, context) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice,
+      createApp: () => actions.agentCreate(), resumeApp: target => actions.agentCreate(undefined, target) }, context),
     accessAvailability: async () => {
       const response = await fetch('/api/capabilities/v1/status', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
       if (!response.ok) throw new TypeError('Capabilities unavailable');

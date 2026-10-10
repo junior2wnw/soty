@@ -1,5 +1,5 @@
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
-import type { WorldAssistantHandle } from '../world/types';
+import type { WorldAssistantHandle, WorldAssistantMountContext } from '../world/types';
 import { button, el, heading, iconButton, labeledField, textInput } from '../world/dom';
 import { icon } from '../world/icons';
 import { createAssistantState, type AssistantTarget } from './assistant-state.mjs';
@@ -29,6 +29,8 @@ function friendly(cause: unknown): string {
     authentication_required: 'Аккаунт изменился. Откройте помощника заново.', job_not_found: 'Эта задача больше недоступна.',
     agent_transport_unavailable: 'Личный помощник пока не подключён. Текст сохранён; задачи на компьютере доступны отдельно.',
     agent_reconcile_required: 'Подтверждение отправки не получено. Автоматического повтора нет.',
+    agent_app_context_invalid: 'Не удалось проверить контекст приложения. Откройте помощника заново. Текст сохранён.',
+    agent_prompt_too_large: 'Текст вместе с контекстом приложения превышает лимит. Сократите запрос; черновик сохранён целиком.',
     agent_actor_denied: 'Доступ профиля изменился. Откройте помощника заново.', agent_source_denied: 'Доступ к источнику изменился. Результат не подтверждён.',
     agent_accounting_unknown: 'Подтверждение выполнения и оплаты ещё не получено. Повторно не отправляю.',
     agent_model_unknown: 'Подтверждение модели не получено. Повторно не отправляю.', agent_cancelled: 'Остановка запрошена. Удалённое выполнение и изменения не считаются отменёнными.',
@@ -44,9 +46,11 @@ function jobLabel(job: Pick<Job, 'status' | 'cancelRequested' | 'executionUncert
   return ({ queued: 'Ждём устройство', leased: 'Помощник подключается', running: 'Выполняется', succeeded: 'Выполнение завершено', failed: 'Нужно проверить результат', cancelled: 'Задача отменена · изменения не откатываются' } as Record<string, string>)[job.status] || 'Уточняем состояние';
 }
 
-export async function mountAssistant(host: HTMLElement, options: Options): Promise<WorldAssistantHandle> {
+export async function mountAssistant(host: HTMLElement, options: Options, mountContext?: WorldAssistantMountContext): Promise<WorldAssistantHandle> {
+  const mountCurrent = () => !mountContext || mountContext.isCurrent() === true;
+  if (!mountCurrent()) throw new Error('authentication_required');
   const identity = await options.client.getLocalState();
-  if (!identity.accountId) throw new Error('authentication_required');
+  if (!identity.accountId || !mountCurrent()) throw new Error('authentication_required');
   const accountId = identity.accountId;
   let storage: Pick<Storage, 'getItem' | 'setItem'>, tabStorage: Pick<Storage, 'getItem' | 'setItem'>;
   try { storage = localStorage; tabStorage = sessionStorage; }
@@ -57,7 +61,8 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
   let answerNote: ReturnType<typeof createAssistantAnswerNote> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
-    onChange: () => { if (!disposed && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
+    isCurrent: () => !disposed && mountCurrent(),
+    onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
   let timer: ReturnType<typeof setTimeout> | undefined, cursor: string | null = null;
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
@@ -67,9 +72,9 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     const message = el('div', 'sw-assistant'); message.append(el('h2', '', 'Аккаунт изменился'), el('p', 'sw-muted', 'Содержимое закрыто. Откройте помощника в текущем профиле.'), button('Открыть заново', 'refresh', '', () => location.reload())); host.replaceChildren(message);
   };
   const current = async () => {
-    if (disposed) return false;
+    if (disposed || !mountCurrent()) return false;
     const identity = await options.client.getLocalState();
-    if (disposed) return false;
+    if (disposed || !mountCurrent()) return false;
     if (identity.accountId !== accountId) { lock(); return false; } return true;
   };
   const request = async <T>(op: string, args: Record<string, unknown> = {}): Promise<T> => {
@@ -342,7 +347,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
       if (sending || !personalReady || !await current()) return;
       answerNote?.dispose(); answerNote = undefined;
       sending = true; error.textContent = ''; updateControls();
-      try { const state = await conversation().turn(prompt.value); if (!await current()) return;
+      try { const state = await conversation().turn(prompt.value, mountContext?.context()); if (!await current()) return;
         prompt.value = state.draft; welcome(); }
       catch (cause) { if (!disposed) error.textContent = friendly(cause); }
       finally { sending = false; if (!disposed) updateControls(); }
