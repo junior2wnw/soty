@@ -13,6 +13,10 @@ test('actual installed Basic ACK reports only usable AT/Source/Root bound and st
   // A Source session can lawfully end before its raw AT. The closed ACK must
   // remain usable by the real installed broker, rather than report the AT alone.
   realm.instance.store.tx(()=>realm.instance.store.db.prepare('UPDATE source_sessions SET expires_at=? WHERE id_hash=?').run(Date.now()+120000,row.id_hash));
+  const shortened=await realm.instance.store.storage.readSession(row.id_hash),tokenProof=await realm.instance.store.storage.readTokenProof(shortened);
+  assert.ok(shortened.expiresAt<session.expiresAt,'Source deadline was shortened');
+  assert.equal(tokenProof.expiresAt,session.accessExpiresAt,'sealed AT expiry is independent of the current Source bound');
+  assert.ok(tokenProof.expiresAt>shortened.expiresAt);
   const reply=await continuation(f,realm,'actual-basic-bound-0001');assert.equal(reply.status,200);
   const ack=sourceContinuationAck(reply.value);assert.equal(ack.ready,true);assert.equal(ack.renewable,false);
   assert.equal(ack.accessExpiresAt,ack.sessionExpiresAt);assert.ok(ack.accessExpiresAt<=row.expires_at);

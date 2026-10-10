@@ -135,7 +135,15 @@ export function createOrdinaryAppStore(options) {
         // consumed locator/session under fresh original Source/Root authority.
         db.prepare('UPDATE source_completions SET consumed=1 WHERE id_hash=?').run(hash); return { token: currentSession.cookieToken }; });
     },
-    async readTokenProof(currentSession) { return { accessToken: currentSession.accessToken, expiresAt: currentSession.expiresAt }; },
+    async readTokenProof(currentSession) {
+      current(); const row = db.prepare('SELECT * FROM source_sessions WHERE id_hash=?').get(currentSession.idHash);
+      check(row?.active === 1 && row.expires_at > clock(), 'authentication_required', 401);
+      const payload = decrypt('Session', row.id_hash, 0, row.cipher, row.key_id);
+      // Token expiry belongs to the sealed login result; a shorter mutable
+      // Source deadline remains independently enforced by readSession/BFF.
+      // Older sealed records retain their original conservative token bound.
+      return { accessToken: payload.accessToken, expiresAt: payload.accessExpiresAt ?? payload.expiresAt };
+    },
     async revokeSession(hash) { tx(() => { db.prepare('UPDATE source_sessions SET active=0 WHERE id_hash=?').run(hash); }); },
   });
   return Object.freeze({ db, storage, clock, realmId: value.realmId, format:reader.format, tx, inTransaction: () => transaction, encrypt, decrypt,

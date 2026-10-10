@@ -33,6 +33,26 @@ async function fixture(t, { realm = 'board', beforeCommit, emptyGuest = false } 
     restart() { runtime.close(); store.close(); store = createOrdinaryAppStore({ ...options, initialize: false }); createRuntime(); } };
 }
 
+test('sealed token expiry stays separate from the shortened Source deadline; fresh expiry and revoke still deny', async t => {
+  const f = await fixture(t), originalEnd = Date.now() + 300000, tokenEnd = originalEnd + 300000, sourceEnd = Date.now() + 120000;
+  for (const legacy of [false, true]) {
+    const idHash = digest('synthetic-source-session-' + legacy);
+    const payload = { idHash, accessToken: 'synthetic-access-token', expiresAt: originalEnd, ...(legacy ? {} : { accessExpiresAt: tokenEnd }) };
+    f.store.tx(() => f.store.db.prepare('INSERT INTO source_sessions VALUES(?,?,?,?,?,?,?,?)').run(idHash, digest(f.sessions.owner),
+      'native-owner', 'selected', 1, sourceEnd, f.store.encrypt('Session', idHash, 0, payload), 'fixture-key'));
+    f.restart();
+    const session = await f.store.storage.readSession(idHash);
+    assert.equal(session.expiresAt, sourceEnd);
+    const token = await f.store.storage.readTokenProof(session);
+    assert.equal(token.expiresAt, legacy ? originalEnd : tokenEnd);
+    assert.ok(token.expiresAt > session.expiresAt);
+    f.store.tx(() => f.store.db.prepare('UPDATE source_sessions SET expires_at=? WHERE id_hash=?').run(Date.now() - 1, idHash));
+    await assert.rejects(f.store.storage.readTokenProof(session), error => error.code === 'authentication_required');
+    f.store.tx(() => f.store.db.prepare('UPDATE source_sessions SET expires_at=?,active=0 WHERE id_hash=?').run(sourceEnd, idHash));
+    await assert.rejects(f.store.storage.readTokenProof(session), error => error.code === 'authentication_required');
+  }
+});
+
 test('actual example Native SQL: Root App owner cannot become Native support; feedback receipt/media and exact writes survive restart', async t => {
   const f = await fixture(t), participant = await f.legacy('participant'), owner = await f.legacy('owner');
   const write = { requestId: 'ordinary-item-0001', input: { operation: 'items.create', title: 'Synthetic item' } };

@@ -127,7 +127,7 @@ export function createSourceAppBff(options) {
     const basic = { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
       rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
       createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
-      accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
+      accessToken: identity.accessToken, accessExpiresAt: identity.expiresAt, cookieToken: sessionToken, completionHash: digest(completion),
       ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) };
     if (identity.refreshToken === undefined) return basic;
     check(value.rpSessions && typeof value.rpSessions.prepareSession === 'function', 'source_app_long_session_not_ready', 503);
