@@ -40,10 +40,10 @@ export async function createOrdinaryAppServer(options) {
       ui: { appLabel: label, resourceLabel: 'Выбранный проект' }, ...(value.clock ? { clock: value.clock } : {}) });
     const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
     const page = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(label)}</title>
-      <link rel="stylesheet" href="/assets/ordinary-app.css"><main data-native-origin="${escape(value.profile.nativeOrigin)}" data-processing="${processing!==null}"><h1>${escape(label)}</h1><p id="state" role="status">Проверяем подключение…</p>
+      <link rel="stylesheet" href="/assets/ordinary-app.css"><main data-native-origin="${escape(value.profile.nativeOrigin)}" data-profile-version="${value.profile.sourceProfile.version}" data-processing="${processing!==null}"><h1>${escape(label)}</h1><p id="state" role="status">Проверяем подключение…</p>
       <button id="connect" type="button" hidden>Войти через Соты</button>
       <section id="content" hidden><form id="create"><label>Название записи<input id="title" maxlength="500" required></label><button>Добавить запись</button></form>
-      <ul id="items"></ul><button id="feedback-open" type="button">Сообщить проблему</button><section id="feedback" hidden><h2>Сообщить проблему</h2>
+      <ul id="items"></ul><button id="feedback-open" type="button">Сообщить проблему</button><button id="feedback-inbox-open" type="button">Обращения</button><section id="feedback-inbox" hidden></section><section id="feedback" hidden><h2>Сообщить проблему</h2>
       <p id="recipient"></p><label>Что произошло?<textarea id="feedback-body" maxlength="8000"></textarea></label><p>Сообщение и выбранные материалы увидит владелец приложения.</p>
       <label>Материал к обращению<input id="feedback-file" type="file" accept="image/png,image/jpeg,image/webp,audio/webm,audio/ogg"></label>
       <button id="feedback-send" type="button">Отправить</button><p id="feedback-state" role="status"></p></section>
@@ -53,6 +53,7 @@ export async function createOrdinaryAppServer(options) {
     const assetRoot = new URL('./assets/', import.meta.url), browserBundle = new URL(bundled ? './browser.mjs' : '../../dist/browser.mjs', import.meta.url);
     const assets = new Map([['/assets/ordinary-app.js', { file: new URL('app.js', assetRoot), type: 'text/javascript' }],
       ['/assets/ordinary-app.css', { file: new URL('app.css', assetRoot), type: 'text/css' }],
+      ['/assets/feedback-inbox.js', { file: new URL('feedback-inbox.js', assetRoot), type: 'text/javascript' }],
       ['/assets/processing.js',{file:new URL('processing.js',assetRoot),type:'text/javascript'}], ['/assets/source-sdk.js', { file: browserBundle, type: 'text/javascript' }]]);
     const server = createServer(async (req, res) => {
       try {
@@ -60,7 +61,7 @@ export async function createOrdinaryAppServer(options) {
         if (!['GET', 'HEAD'].includes(req.method) || typeof req.url !== 'string') { res.writeHead(404).end(); return; }
         if (req.url === '/embed') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
-            'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors " + value.profile.parentOrigin });
+            'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src blob:; media-src blob:; frame-ancestors " + value.profile.parentOrigin });
           res.end(req.method === 'HEAD' ? undefined : page); return;
         }
         const asset = assets.get(req.url); if (!asset) { res.writeHead(404).end(); return; }

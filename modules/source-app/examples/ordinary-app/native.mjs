@@ -87,13 +87,13 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     check(db.prepare('SELECT count(*) AS n FROM native_receipts WHERE resource_id=? AND principal_id=?').get(resourceId, actor.principalId).n < 20000, 'ordinary_native_capacity', 503);
     const result = action(intentDigest); db.prepare('INSERT INTO native_receipts VALUES(?,?,?,?,?)').run(resourceId, actor.principalId, args.requestId, intentDigest, JSON.stringify(result)); return result;
   }
-  function ticket(actor, id, includeBytes = false) {
+  function ticket(actor, id, includeBytes = false, summary = false) {
     const row = db.prepare('SELECT * FROM native_tickets WHERE id=? AND resource_id=?').get(id, resourceId);
     check(row && (row.reporter_id === actor.principalId || actor.role === 'owner'), 'ordinary_native_ticket_denied', 403);
     const media = db.prepare('SELECT * FROM native_ticket_media WHERE ticket_id=? ORDER BY ordinal').all(id).map(item => ({ ...JSON.parse(item.metadata_json),
       ...(includeBytes ? { dataBase64: Buffer.from(item.bytes).toString('base64') } : {}) }));
-    const messages = db.prepare('SELECT * FROM native_ticket_messages WHERE ticket_id=? ORDER BY created_at,id').all(id).map(item => ({ id: item.id, kind: item.kind, body: item.body, createdAt: item.created_at }));
-    return { id, revision: row.revision, status: row.status, body: row.body, createdAt: row.created_at, updatedAt: row.updated_at,
+    const messages = summary ? [] : db.prepare('SELECT * FROM native_ticket_messages WHERE ticket_id=? ORDER BY created_at,id').all(id).map(item => ({ id: item.id, kind: item.kind, body: item.body, createdAt: item.created_at }));
+    return { id, revision: row.revision, status: row.status, body: summary ? Array.from(row.body).slice(0, 200).join('') : row.body, createdAt: row.created_at, updatedAt: row.updated_at,
       canReply: true, canManage: actor.role === 'owner', canAccept: row.reporter_id === actor.principalId && row.status === 'ready_to_check', attachments: media, messages };
   }
   async function feedbackMutation(operation, proof, binding, args, final) {
@@ -203,10 +203,30 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
       async context(proof, binding) { const actor = dataActor(proof, binding); return { schema: 'soty.source-feedback.context.v1', ready: true, canSubmit: true,
         bindingDigest: digest({ realm: store.realmId, resourceId, incarnationId, principal: actor.principalId }), recipientLabel: 'Владелец приложения',
         limits: SOURCE_FEEDBACK_LIMITS, capabilities: { text: true, voice: true, screenshot: true, asr: false } }; },
-      async list(proof, binding, args) { const actor = dataActor(proof, binding); check(!args.cursor, 'ordinary_native_cursor_unavailable', 400);
-        const rows = actor.role === 'owner' ? db.prepare('SELECT id FROM native_tickets WHERE resource_id=? ORDER BY created_at,id LIMIT ?').all(resourceId, args.limit ?? 20)
-          : db.prepare('SELECT id FROM native_tickets WHERE resource_id=? AND reporter_id=? ORDER BY created_at,id LIMIT ?').all(resourceId, actor.principalId, args.limit ?? 20);
-        return { tickets: rows.map(row => ticket(actor, row.id)), nextCursor: null }; },
+      async list(proof, binding, args) {
+        const actor = dataActor(proof, binding), limit = args.limit ?? 20;
+        let after = { createdAt: 0, id: '' };
+        if (args.cursor) {
+          try { after = JSON.parse(Buffer.from(args.cursor, 'base64url').toString('utf8')); } catch { check(false, 'ordinary_native_cursor_invalid', 400); }
+          check(after && Object.keys(after).sort().join(',') === 'createdAt,id' && Number.isSafeInteger(after.createdAt) && after.createdAt > 0
+            && typeof after.id === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(after.id), 'ordinary_native_cursor_invalid', 400);
+        }
+        check(Number.isSafeInteger(limit) && limit >= 1 && limit <= 50, 'ordinary_native_cursor_invalid', 400);
+        const permission = actor.role === 'owner' ? '' : ' AND reporter_id=?';
+        const parameters = actor.role === 'owner' ? [resourceId] : [resourceId, actor.principalId];
+        const rows = db.prepare('SELECT id,created_at FROM native_tickets WHERE resource_id=?' + permission
+          + ' AND (created_at>? OR (created_at=? AND id>?)) ORDER BY created_at,id LIMIT ?')
+          .all(...parameters, after.createdAt, after.createdAt, after.id, limit + 1);
+        const page = []; let bytes = 128, last;
+        for (const row of rows.slice(0, limit)) {
+          const value = ticket(actor, row.id, false, true), size = Buffer.byteLength(JSON.stringify(value));
+          if (bytes + size > 60000) break;
+          page.push(value); bytes += size + 1; last = row;
+        }
+        check(rows.length === 0 || page.length > 0, 'ordinary_native_feedback_page_unavailable', 503);
+        return { tickets: page, nextCursor: rows.length > page.length
+          ? Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString('base64url') : null };
+      },
       async get(proof, binding, args) { return { ticket: ticket(dataActor(proof, binding), args.ticketId, true) }; },
       submit: (...args) => feedbackMutation('submit', ...args), reply: (...args) => feedbackMutation('reply', ...args),
       status: (...args) => feedbackMutation('status', ...args), accept: (...args) => feedbackMutation('accept', ...args),

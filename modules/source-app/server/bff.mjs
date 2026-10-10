@@ -42,7 +42,7 @@ export function createSourceAppBff(options) {
   check(Object.values(labels).every(label => typeof label === 'string' && label.isWellFormed() && label.trim().length > 0 && label.length <= 160
     && !/[\u0000-\u001f\u007f]/u.test(label)), 'source_app_configuration_invalid', 503);
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
-    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession']);
+    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
   const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile });
   const protocol = createSourceRpProtocol(value.rp, { clock });
@@ -86,11 +86,26 @@ export function createSourceAppBff(options) {
       && digest(session.rootPrincipal) === digest(context.rootPrincipal), 'authentication_required', 401);
     // Basic is bound to the original Root slot. It cannot silently become a
     // new-slot/resume authority merely because actor/resource strings match.
-    check(session.rootReferenceDigest === digest(context.reference), 'authentication_required', 401);
+    if (!session.rpMarker) check(session.rootReferenceDigest === digest(context.reference), 'authentication_required', 401);
     let proof;
     if (session.rpMarker) {
       check(value.rpSessions && typeof value.rpSessions.currentProof === 'function', 'source_app_long_session_not_ready', 503);
-      proof = await value.rpSessions.currentProof(session.rpMarker, hostOptions);
+      // Native capture receives the same already-linked original request,
+      // before shared RP refresh; the host adapter checks current Root/Native
+      // authority before/after each CAS and immediately before RT send.
+      const before = await native.capture(binding(context, session.identity, operation, session.idHash));
+      await native.assertCurrent(before); await freshRoot(context);
+      proof = await value.rpSessions.currentProof(session.rpMarker, hostOptions,
+        { context, assertRootCurrent: () => freshRoot(context) });
+      check(proof.expiresAt - clock() >= (hostOptions?.minimumAccessRemainingMs ?? 0), 'authentication_required', 401);
+      if (session.rootReferenceDigest !== digest(context.reference)) {
+        check(typeof store.rebindSession === 'function', 'source_app_long_session_not_ready', 503);
+        const rebound = await storageCommit(store.rebindSession, [{ idHash: session.idHash,
+          expectedReference: session.rootReferenceDigest, context }], () => native.withCurrent(before, () => true));
+        check(rebound === true, 'source_app_commit_unknown', 503); await postCommit(context, before);
+        session = await store.readSession(session.idHash);
+        check(session?.rootReferenceDigest === digest(context.reference), 'source_app_commit_unknown', 503);
+      }
     } else {
       const secret = await store.readTokenProof(session);
       check(secret.expiresAt > clock(), 'authentication_required', 401);
@@ -101,22 +116,30 @@ export function createSourceAppBff(options) {
     await freshRoot(context);
     const authority = await native.capture(binding(context, { issuer: proof.issuer, subject: proof.sub }, operation, session.idHash));
     await native.assertCurrent(authority); await freshRoot(context);
+    check(proof.expiresAt - clock() >= (hostOptions?.minimumAccessRemainingMs ?? 0), 'authentication_required', 401);
     return { session, proof, authority };
   }
   async function currentSession(req, context, operation, hostOptions) {
     const token = cookie(req, COOKIE); check(token, 'authentication_required', 401);
     return proveSession(await store.readSession(digest(token)), context, operation, hostOptions);
   }
+  async function sessionRecord(interaction, identity, sessionToken, completion) {
+    const basic = { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
+      rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
+      createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
+      accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
+      ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) };
+    if (identity.refreshToken === undefined) return basic;
+    check(value.rpSessions && typeof value.rpSessions.prepareSession === 'function', 'source_app_long_session_not_ready', 503);
+    return value.rpSessions.prepareSession(basic, identity, interaction.context,
+      { context: interaction.context, assertRootCurrent: () => freshRoot(interaction.context) });
+  }
   async function completeIdentity(interaction, identity, authority) {
     check(identity.issuer === profile.issuer && identity.subject === interaction.context.humanPrincipal.subject, 'source_app_identity_mismatch', 403);
     await freshRoot(interaction.context); await native.assertCurrent(authority); await freshRoot(interaction.context);
     const sessionToken = nonce(), completion = nonce();
     const result = await storageCommit(store.completeInteraction, [{ idHash: interaction.idHash, revision: interaction.revision + 1, completionToken: completion,
-      session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
-        rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
-        createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
-        accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
-        ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) } }],
+      session: await sessionRecord(interaction, identity, sessionToken, completion) }],
       () => native.commitIdentity(authority, { issuer: identity.issuer, subject: identity.subject }, { createEmptyGuest: value.allowCreateEmptyGuest === true }));
     check(result === true, 'source_app_commit_unknown', 503); await postCommit(interaction.context, authority);
     return store.getInteraction(interaction.idHash);
@@ -225,11 +248,7 @@ export function createSourceAppBff(options) {
       const sessionToken = nonce(), completion = nonce();
       const result = await storageCommit(store.completeInteraction, [{ idHash: interaction.idHash, revision: interaction.revision + 1,
         completionToken: completion,
-        session: { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
-          rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
-          createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
-          accessToken: identity.accessToken, cookieToken: sessionToken, completionHash: digest(completion),
-          ...(value.processingProofEnabled===true?{processingContext:interaction.context}:{}) } }], () => {
+        session: await sessionRecord(interaction, identity, sessionToken, completion) }], () => {
         return native.commitIdentity(authority, { issuer: identity.issuer, subject: identity.subject }, { createEmptyGuest: value.allowCreateEmptyGuest === true });
       });
       check(result === true, 'source_app_commit_unknown', 503);
@@ -319,7 +338,7 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, 'continue', { minimumAccessRemainingMs: 190000 });
       // Basic continuation never changes Source authority or creates a long
       // session. S2 durable resume/rebind requires an explicit storage consumer.
-      send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: false,
+      send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: Boolean(current.session.rpMarker),
         sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt),
         // This is the usable Basic access bound. A raw AT may outlive the
         // original Source session or Root slot; the ACK must not widen either.

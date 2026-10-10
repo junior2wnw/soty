@@ -17,6 +17,13 @@ import * as appScopedRenewal from './app-scoped-renewal.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { migrateAppsSchema, ensureCanonicalDomain, ensureInitialPublication, runtimeTargetDigest } from '../../modules/apps/server/schema.mjs';
+import { createPublicationRegistry } from '../../modules/apps/server/publications.mjs';
+import { createSourceRegistry } from '../../modules/apps/server/sources.mjs';
+import { createEngagementEntryResolver } from '../../modules/apps/server/engagement-access.mjs';
+import { createScopedAdmissionRegistry } from '../../modules/apps/scoped-embed/admissions.mjs';
+import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 
 // Exercise the actual controller methods. UI/network ports are inert fixtures;
 // no source regex assertions, copied transition implementation or DOM package.
@@ -311,6 +318,109 @@ const stageResponse = path => ({ url: `https://runtime.example/_soty/boot?${new 
   entry: { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path } });
 const stageBinding = { schema: 'soty.app-launch-binding.v1', policyEpoch: 1, targetRevision: 1,
   targetDigest: 'b'.repeat(64), profile: 'soty.relay-restricted.v1', bindingFloor: 1 };
+
+// Real Apps8 publication, Source promotion, admission and entry projection.
+// The controller's transport remains an inert UI port, not Native/SSO proof.
+function promotedEntryFixture(t) {
+  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON');
+  migrateAppsSchema(db, { allowScopedEmbedMigration: true, allowSelectedResourceMigration: true });
+  const actor = Object.freeze({ accountId: 'account-A', deviceId: 'synthetic-browser' });
+  const identity = { linkId: 'synthetic-link', hostDeviceId: 'synthetic-host', connectorId: 'synthetic-connector' };
+  const connectorKey = [identity.linkId, identity.hostDeviceId, identity.connectorId].join('|');
+  db.exec('BEGIN IMMEDIATE');
+  db.prepare('INSERT INTO app_devices VALUES(?,?,?,?,?)').run(connectorKey, actor.accountId, JSON.stringify(identity), 'Synthetic device', 1);
+  db.prepare('INSERT INTO local_apps VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(stageAppId, actor.accountId, connectorKey, 'Отзывы', 63345, '/',
+    JSON.stringify({ accountIds: [], communityIds: [] }), 'enabled', 1, 1, 1);
+  const row = db.prepare('SELECT * FROM local_apps WHERE id=?').get(stageAppId);
+  ensureCanonicalDomain(db, row, 'https://{appId}.runtime.example'); ensureInitialPublication(db, row); db.exec('COMMIT');
+  const target = { appId: stageAppId, revision: 2, ownerAccountId: actor.accountId, connectorKey, port: 63345,
+    entryPath: '/embed', profile: 'soty.selected-human-embed.v2' };
+  target.digest = runtimeTargetDigest(target);
+  const assertActor = value => assert.deepEqual(value, actor);
+  const admissions = createScopedAdmissionRegistry({ db, profiles: [{ schema: target.profile, appId: stageAppId, connector: identity,
+    target: { revision: target.revision, digest: target.digest }, sourceProfile: { ...HIVE_SELECTED_SOURCE },
+    resource: { registryId: 'soty', tenantId: actor.accountId, appId: stageAppId, environmentId: 'production', resourceId: 'selected',
+      selection: { kind: 'hive.project.v1', nativeId: 'synthetic-native', incarnationId: 'one' } },
+    issuer: 'https://shell.example/human-identity', clientId: 'synthetic-selected', embedOrigin: `https://${stageAppId}.runtime.example`,
+    nativeOrigin: 'https://native.example', parentOrigin: 'https://shell.example' }] });
+  const publications = createPublicationRegistry({ db, assertActor, canUse: value => value.accountId === actor.accountId && value.deviceId === actor.deviceId });
+  const channel = Object.freeze({ owned: true });
+  const sources = createSourceRegistry({ db, assertActor, publications, scopedAdmission: admissions,
+    prepareTarget: async frame => Object.freeze({ target: frame.target, channel }),
+    verifyPreparedTarget: frame => frame.evidence.channel === channel && frame.evidence.target === frame.target });
+  const resolve = createEngagementEntryResolver({ db, assertActor, publications, inspectSource: () => ({ state: 'responding' }) });
+  t.after(() => { sources.close(); db.close(); });
+  function entry(args = {}) {
+    db.exec('BEGIN');
+    try { const { appId, domainId, origin, path } = resolve({ actor, appId: stageAppId,
+      ...(args.domainId === undefined ? {} : { domainId: args.domainId }), ...(args.path === undefined ? {} : { path: args.path }) });
+      db.exec('COMMIT'); return { appId, domainId, origin, path };
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  return { entry, db, async promote() {
+    const before = publications.execute({ op: 'apps.publication.get', actor, args: { appId: stageAppId } });
+    const prepared = await sources.execute({ op: 'apps.source.prepare', actor, args: { appId: stageAppId,
+      expectedPolicyEpoch: before.policyEpoch, expectedTargetRevision: before.activeTargetRevision,
+      source: { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, port: target.port,
+        entryPath: target.entryPath, profile: target.profile } } });
+    const ack = sources.execute({ op: 'apps.source.promote', actor, args: { appId: stageAppId, requestId: 'synthetic-promotion',
+      preparationId: prepared.preparationId, expectedPolicyEpoch: prepared.expectedPolicyEpoch,
+      expectedTargetRevision: prepared.expectedTargetRevision, launchPolicy: 'restricted', listed: false } });
+    assert.equal(ack.current.activeTargetRevision, 2); assert.equal(admissions.require(target).schema, target.profile);
+  } };
+}
+function entryTransport(f, model, calls, denyLaunch = () => false) {
+  f.app.api = { async request(op, args) {
+    assert.equal(args.expectedAccountId, 'account-A'); calls.push({ op, args: structuredClone(args) });
+    assert.ok(op === 'apps.launch' || op === 'apps.entry.get');
+    if (op === 'apps.launch' && denyLaunch(args)) throw failure('app_scoped_admission_required');
+    const entry = model.entry(args);
+    return op === 'apps.entry.get' ? { entry } : { entry,
+      launchUrl: `${entry.origin}/_soty/boot?${new URLSearchParams({ path: entry.path })}#${'e'.repeat(43)}` };
+  } };
+}
+
+test('ordinary application click resolves the active entry after actual Apps8 Source promotion', async t => {
+  const model = promotedEntryFixture(t), f = fixture(), calls = [];
+  const cached = { appId: stageAppId, name: 'Отзывы', entry: model.entry() };
+  entryTransport(f, model, calls);
+  await f.app.openApplication(cached);
+  assert.equal(f.app.appStage.entry().path, '/'); assert.ok(f.app.main.querySelector('iframe'));
+  await model.promote(); assert.equal(model.entry().path, '/embed');
+  assert.equal(model.db.prepare('SELECT entry_path FROM local_apps WHERE id=?').get(stageAppId).entry_path, '/');
+  calls.length = 0; await f.app.openApplication(cached);
+  assert.equal(cached.entry.path, '/', 'the existing field/catalogue snapshot remains stale');
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
+  assert.equal(Object.hasOwn(calls[0].args, 'path'), false, 'ordinary click asks the server for its current default');
+  assert.equal(calls[0].args.domainId, cached.entry.domainId);
+  assert.equal(f.app.appStage.entry().path, '/embed');
+  assert.equal(new URL(f.app.main.querySelector('iframe').src).searchParams.get('path'), '/embed');
+  assert.equal(appLaunch.parseAppLaunchRoute(f.location.hash).target.path, '/embed');
+  f.app.cleanScreen();
+});
+
+test('explicit legacy deep links stay exact on refusal; a new ordinary click recovers the active Source entry', async t => {
+  const model = promotedEntryFixture(t), f = fixture(), calls = [];
+  const cached = { appId: stageAppId, name: 'Отзывы', entry: model.entry() };
+  const deep = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId,
+    domainId: cached.entry.domainId, path: '/old-report?tab=private' }));
+  entryTransport(f, model, calls); await f.app.openApplication(cached, deep);
+  assert.equal(calls[0].args.path, deep.target.path); assert.equal(f.app.appStage.entry().path, deep.target.path);
+  await model.promote(); calls.length = 0;
+  // Exercise the actual UI's handling of the selected server's existing denial.
+  entryTransport(f, model, calls, args => args.path !== undefined && args.path !== '/embed');
+  const old = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId,
+    domainId: cached.entry.domainId, path: '/' }, undefined, { panel: 'discussion' }));
+  await f.app.openApplication(cached, old);
+  assert.equal(f.app.main.querySelector('iframe'), null);
+  assert.deepEqual(calls.map(({ op, args }) => [op, args.path]), [['apps.launch', '/'], ['apps.entry.get', '/']]);
+  assert.equal(f.app.appStage.entry().path, '/'); assert.equal(appLaunch.parseAppLaunchRoute(f.location.hash).target.path, '/');
+  const failures = calls.length; await turn(); assert.equal(calls.length, failures, 'no automatic default retry of a refused deep link');
+  calls.length = 0; await f.app.openApplication(cached);
+  assert.equal(calls.length, 1); assert.equal(Object.hasOwn(calls[0].args, 'path'), false);
+  assert.equal(f.app.appStage.entry().path, '/embed'); assert.ok(f.app.main.querySelector('iframe'));
+  f.app.cleanScreen();
+});
 function bootHint(f, frame) {
   frame.emit('load'); const sent = frame.contentWindow.sent.at(-1); assert.ok(sent);
   assert.equal(sent.origin, 'https://runtime.example');

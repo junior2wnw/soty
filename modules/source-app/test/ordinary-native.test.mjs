@@ -95,3 +95,32 @@ test('existing Native link needs real Native session, conflicting immutable issu
   assert.equal(guest.store.db.prepare('SELECT count(*) AS n FROM native_items').get().n, 0);
   await assert.rejects(guest.runtime.capture(guest.binding('another-guest'), { headers: {} }), error => error.code === 'ordinary_guest_existing_resource_denied');
 });
+
+test('private queue keyset pages retain every ticket and preserve reporter/owner isolation', async t => {
+  const f = await fixture(t), participant = await f.legacy('participant'), owner = await f.legacy('owner');
+  for (let i = 0; i < 23; i++) await f.runtime.feedback(participant, 'submit', {
+    requestId: 'paging-participant-' + String(i).padStart(4, '0'), body: 'Synthetic participant ticket ' + i, attachments: [] });
+  await f.runtime.feedback(owner, 'submit', { requestId: 'paging-owner-ticket-0001', body: 'Synthetic owner-only ticket', attachments: [] });
+  const first = feedbackOutput('list', await f.runtime.feedback(participant, 'list', { limit: 20 }));
+  assert.equal(first.tickets.length, 20); assert.equal(typeof first.nextCursor, 'string');
+  const last = feedbackOutput('list', await f.runtime.feedback(participant, 'list', { limit: 20, cursor: first.nextCursor }));
+  assert.equal(last.tickets.length, 3); assert.equal(last.nextCursor, null);
+  assert.equal(new Set([...first.tickets, ...last.tickets].map(value => value.id)).size, 23);
+  assert.ok([...first.tickets, ...last.tickets].every(value => value.body.startsWith('Synthetic participant')));
+  const all = feedbackOutput('list', await f.runtime.feedback(owner, 'list', { limit: 50 })); assert.equal(all.tickets.length, 24);
+  await assert.rejects(f.runtime.feedback(participant, 'list', { limit: 20, cursor: 'invalid_cursor' }), error => error.code === 'ordinary_native_cursor_invalid');
+});
+test('long private threads stay out of the 64KiB list while detail retains the original text and replies', async t => {
+  const f = await fixture(t), participant = await f.legacy('participant'), owner = await f.legacy('owner');
+  let first;
+  for (let i = 0; i < 9; i++) {
+    const result = await f.runtime.feedback(participant, 'submit', { requestId: 'long-list-report-' + String(i).padStart(4, '0'), body: 'Ж'.repeat(8000), attachments: [] });
+    if (!first) first = result.ticket.id;
+    await f.runtime.feedback(owner, 'reply', { requestId: 'long-list-reply-' + String(i).padStart(4, '0'), ticketId: result.ticket.id, expectedRevision: 1, body: 'Я'.repeat(8000) });
+  }
+  const page = feedbackOutput('list', await f.runtime.feedback(owner, 'list', { limit: 20 }));
+  assert.equal(page.tickets.length, 9); assert.ok(Buffer.byteLength(JSON.stringify({ ok: true, data: page })) < 65536);
+  assert.ok(page.tickets.every(value => Array.from(value.body).length === 200 && value.messages.length === 0));
+  const detail = feedbackOutput('get', await f.runtime.feedback(owner, 'get', { ticketId: first }));
+  assert.equal(detail.ticket.body, 'Ж'.repeat(8000)); assert.equal(detail.ticket.messages[0].body, 'Я'.repeat(8000));
+});

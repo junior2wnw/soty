@@ -5,6 +5,8 @@ import { icon } from '../world/icons';
 import { createAssistantState, type AssistantTarget } from './assistant-state.mjs';
 import { deviceKey as keyOf, resolveDeviceKey } from './device-key.mjs';
 import { createPersonalAgentConversation } from './personal-agent-client';
+import { createAssistantAnswerNote } from './assistant-answer-note';
+import { createDraftStore } from '../../modules/notes/browser/state.mjs';
 import './assistant.css';
 
 interface Host { hostDeviceId: string; connectorId: string; name: string; online: boolean }
@@ -53,6 +55,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   let draft = drafts.read(), disposed = false, sending = false, devices: Host[] = [], modelReady = false;
   let mode: 'personal' | 'device' = 'device', modeChosen = false, personalReady = false;
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
+  let answerNote: ReturnType<typeof createAssistantAnswerNote> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
     onChange: () => { if (!disposed && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
@@ -60,7 +63,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
   const abort = new AbortController(), tasks = new Map<string, Task>();
   const lock = () => {
-    if (disposed) return; disposed = true; personal?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer);
+    if (disposed) return; disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer);
     const message = el('div', 'sw-assistant'); message.append(el('h2', '', 'Аккаунт изменился'), el('p', 'sw-muted', 'Содержимое закрыто. Откройте помощника в текущем профиле.'), button('Открыть заново', 'refresh', '', () => location.reload())); host.replaceChildren(message);
   };
   const current = async () => {
@@ -197,6 +200,29 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
       const state = conversation().view();
       if (state.answer) {
         const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer));
+        const note = answerNote ??= createAssistantAnswerNote({ accountId, answer: state.answer, api: { request },
+          store: createDraftStore(accountId, 'soty'), isCurrent: current });
+        const noteActions = el('div', 'sw-row sw-assistant-answer-notes'), noteStatus = el('p', 'sw-muted'); noteStatus.setAttribute('role', 'status');
+        const saveNote = button('Сохранить в Записки', 'note', 'sw-button-quiet', () => {
+          const saving = note.save(); renderNote();
+          void saving.catch(() => {}).finally(() => { if (!disposed && response.isConnected) renderNote(); });
+        });
+        const openNote = button('Открыть записку', 'external', 'sw-button-quiet', () => {
+          void current().then(valid => { const saved = note.view();
+            if (valid && response.isConnected && saved.noteId) location.hash = `notes/${saved.noteId}`;
+          }).catch(() => {});
+        });
+        function renderNote() {
+          const saved = note.view();
+          saveNote.disabled = ['saving', 'saved', 'closed'].includes(saved.phase);
+          saveNote.querySelector('span')!.textContent = saved.phase === 'saving' ? 'Сохраняем…' : saved.phase === 'saved' ? 'Сохранено в Записках'
+            : saved.phase === 'pending' ? 'Проверить сохранение' : 'Сохранить в Записки';
+          openNote.hidden = !saved.noteId;
+          noteStatus.textContent = saved.phase === 'pending' ? 'Подтверждение пока не получено. Черновик сохранён на этом устройстве.'
+            : saved.phase === 'local-error' ? 'Не удалось сохранить черновик на устройстве. Ответ остаётся здесь; попробуйте ещё раз.'
+              : saved.phase === 'unavailable' ? 'Не удалось проверить аккаунт. Ответ остаётся здесь; попробуйте ещё раз.' : '';
+        }
+        renderNote(); noteActions.append(saveNote, openNote); response.append(noteActions, noteStatus);
         if (state.sources.length) {
           const disclosure = el('details', 'sw-assistant-sources');
           disclosure.append(el('summary', '', `Источники (${state.sources.length})`));
@@ -222,7 +248,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
     intro.append(starters); thread.append(intro);
   }
   async function reset(): Promise<void> {
-    if (mode === 'personal') { if (sending || !await current()) return; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
+    if (mode === 'personal') { if (sending || !await current()) return; answerNote?.dispose(); answerNote = undefined; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
     if (!await current() || sending || drafts.read().pending) return;
     try { draft = drafts.select({ conversationId: crypto.randomUUID(), cwd: cwd.value, deviceKey: hosts.value }); }
     catch (cause) { error.textContent = friendly(cause); return; }
@@ -314,6 +340,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   async function submit(): Promise<void> {
     if (mode === 'personal') {
       if (sending || !personalReady || !await current()) return;
+      answerNote?.dispose(); answerNote = undefined;
       sending = true; error.textContent = ''; updateControls();
       try { const state = await conversation().turn(prompt.value); if (!await current()) return;
         prompt.value = state.draft; welcome(); }
@@ -426,7 +453,7 @@ export async function mountAssistant(host: HTMLElement, options: Options): Promi
   }, { signal: abort.signal });
   welcome(); updateControls(); void refresh();
   if (draft.lastJob && !draft.pending) follow(draft.lastJob);
-  return { dispose() { disposed = true; personal?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); host.replaceChildren(); }, refresh,
-    async flush() { drafts.flush(); if (mode === 'personal' && !conversation().view().requestId) conversation().saveDraft(prompt.value); },
-    hasUnsavedChanges: () => sending || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
+  return { dispose() { disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); host.replaceChildren(); }, refresh,
+    async flush() { drafts.flush(); await answerNote?.flush(); if (mode === 'personal' && !conversation().view().requestId) conversation().saveDraft(prompt.value); },
+    hasUnsavedChanges: () => sending || Boolean(answerNote?.hasUnsavedChanges()) || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
 }

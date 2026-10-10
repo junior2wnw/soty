@@ -35,9 +35,21 @@ export interface SourceStoragePort {
   completeInteraction(record:unknown,finalNativeLink:()=>unknown):Promise<boolean>;
   readSession(hash:string):Promise<any>;readCompletion(hash:string):Promise<any>;consumeCompletion(hash:string,sessionHash:string,finalNativeAssert:()=>unknown):Promise<{token:string}|null>;
   readTokenProof(session:unknown):Promise<{accessToken:string;expiresAt:number}>;revokeSession(hash:string):Promise<void>;
+  /** Private constructor-only Long CAS; Basic storage omits this method. */
+  rebindSession?(input:{idHash:string;expectedReference:string;context:unknown},finalNativeAssert:()=>unknown):Promise<boolean>;
+}
+export interface SourceRpRootFrame {readonly context:unknown;assertRootCurrent():Promise<unknown>}
+export interface SourceAppRenewalPort {
+  prepareSession(basic:unknown,identity:{issuer:string;subject:string;accessToken:string;expiresAt:number;refreshToken?:string;nonce?:string},context:unknown,root:SourceRpRootFrame):Promise<unknown>;
+  currentProof(marker:SourceRpMarker,hostOptions:undefined|{minimumAccessRemainingMs?:number},root:SourceRpRootFrame):Promise<SourceRpCurrentProof>;
+}
+/** Existing Basic/current-proof constructor port. Own RT preparation is
+ * admitted only when the runtime also finds prepareSession on its CODE port. */
+export interface SourceAppLegacyRpPort {
+  currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>;
 }
 export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp:SourceRpProfile;
-  clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:{currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>}}):{
+  clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:SourceAppRenewalPort|SourceAppLegacyRpPort}):{
   readonly profile:SourceProfile;/** Private host proof; never a response/body/persisted permission. */currentFeedbackJobProof(sessionHash:string):Promise<object>;
   handleRequest(req:IncomingMessage,res:ServerResponse):Promise<boolean>;close():void;
 };

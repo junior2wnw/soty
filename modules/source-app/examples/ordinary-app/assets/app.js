@@ -1,7 +1,12 @@
 import { createSourceFeedbackClient, createSourceFeedbackController } from './source-sdk.js';
+import { mountFeedbackInbox } from './feedback-inbox.js';
 const byId = id => document.getElementById(id), state = byId('state');
 const requestId = () => 'ordinary-' + crypto.randomUUID();
 let pendingWrite = null, disposed = false, polling = null, pollUntil = 0, pollDelay = 700;
+const profileVersion = Number(document.querySelector('main').dataset.profileVersion);
+if (![1, 2, 3].includes(profileVersion)) throw new Error('invalid_profile');
+const feedbackApi = createSourceFeedbackClient({ profileVersion });
+const inbox = mountFeedbackInbox({ host: byId('feedback-inbox'), api: feedbackApi, isCurrent: () => !disposed && !byId('content').hidden });
 async function call(path, input) {
   const response = await fetch(path, { method: 'POST', credentials: 'same-origin', redirect: 'error', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ requestId: requestId(), input }) });
@@ -17,13 +22,13 @@ async function refreshConnection() {
     if (!context.ok || (await context.json()).ready !== true || disposed) throw new Error('login_required');
     await render(); if (disposed) return false;
     state.textContent = 'Подключено к выбранному проекту'; byId('content').hidden = false; byId('connect').hidden = true; return true;
-  } catch { if (!disposed) { state.textContent = 'Войдите через Соты. Доступ к выбранному проекту проверит приложение.'; byId('connect').hidden = false; byId('content').hidden = true; } return false; }
+  } catch { if (!disposed) { inbox.invalidate(); state.textContent = 'Войдите через Соты. Доступ к выбранному проекту проверит приложение.'; byId('connect').hidden = false; byId('content').hidden = true; } return false; }
 }
 function pollConnection() {
   clearTimeout(polling);
   polling = setTimeout(async () => { if (disposed || Date.now() >= pollUntil) return;
     try { const response = await fetch('/api/embed/session-status', { credentials: 'same-origin', redirect: 'error', signal: AbortSignal.timeout(10000) });
-      if ([401, 403].includes(response.status)) { pollUntil = 0; state.textContent = 'Подключение закрыто или доступ изменён. Откройте приложение заново из Сот.'; byId('content').hidden = true; return; }
+      if ([401, 403].includes(response.status)) { pollUntil = 0; inbox.invalidate(); state.textContent = 'Подключение закрыто или доступ изменён. Откройте приложение заново из Сот.'; byId('content').hidden = true; return; }
       if (response.ok && (await response.json()).ready === true && await refreshConnection()) return; } catch {}
     if (!disposed) { pollDelay = Math.min(5000, Math.ceil(pollDelay * 1.6)); pollConnection(); }
   }, pollDelay);
@@ -63,7 +68,7 @@ byId('create').addEventListener('submit', async event => {
   } catch { byId('title').disabled = true; button.textContent = 'Проверить результат'; state.textContent = 'Ответ потерян. Проверим квитанцию без повторной записи.'; }
   finally { button.disabled = false; }
 });
-const feedback = createSourceFeedbackController({ api: createSourceFeedbackClient(), onChange(snapshot) {
+const feedback = createSourceFeedbackController({ api: feedbackApi, onChange(snapshot) {
   byId('recipient').textContent = snapshot.context?.recipientLabel ?? '';
   byId('feedback-state').textContent = snapshot.state === 'received' ? 'Обращение получено' : snapshot.state === 'unknown'
     ? 'Ответ потерян. Повторная отправка проверит то же обращение.' : snapshot.state === 'login_required' ? 'Нужно войти снова' : snapshot.state === 'sending' ? 'Отправляем…' : '';
@@ -73,6 +78,7 @@ const feedback = createSourceFeedbackController({ api: createSourceFeedbackClien
   byId('feedback-file').disabled = snapshot.pending;
 } });
 byId('feedback-open').addEventListener('click', async () => { byId('feedback').hidden = false; await feedback.open(); });
+byId('feedback-inbox-open').addEventListener('click', async () => { byId('feedback-inbox').hidden = false; await inbox.open(); });
 byId('feedback-send').addEventListener('click', async () => {
   try{
     const file=byId('feedback-file').files[0],attachments=[];
@@ -85,4 +91,4 @@ byId('feedback-send').addEventListener('click', async () => {
 if(document.querySelector('main').dataset.processing==='true'){
   const {mountProcessingUi}=await import('/assets/processing.js');mountProcessingUi({isCurrent:()=>!disposed});
 }
-addEventListener('pagehide', () => { disposed = true; clearTimeout(polling); feedback.dispose(); }, { once: true });
+addEventListener('pagehide', () => { disposed = true; clearTimeout(polling); feedback.dispose(); inbox.dispose(); }, { once: true });

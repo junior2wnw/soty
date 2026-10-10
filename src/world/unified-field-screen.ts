@@ -89,8 +89,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   toolbar.append(zoom, contextSelector, overview, spaces, viewTools);
   const arrangeHint = el('p', 'uf-arrange-hint', 'Перетащите соту или нажмите на неё'); arrangeHint.hidden = true;
   const more = button('Показать ещё', 'plus', 'uf-more', () => run(searchDirectory(true))); more.hidden = true;
+  const searchLimit = el('div', 'uf-search-limit'); searchLimit.hidden = true;
+  const searchLimitCopy = el('span', '', 'Показаны первые 256 результатов. Уточните поиск.'); searchLimitCopy.setAttribute('role', 'status');
+  searchLimit.append(searchLimitCopy, button('Уточнить поиск', 'search', 'sw-button-quiet', () => searchInput.focus()));
   const undo = button('Отменить', 'back', 'uf-undo', () => run(engine?.undo())); undo.hidden = true;
-  host.append(loading, empty, feedback, toolbar, arrangeHint, more, undo); element.append(head, localSearch, filters, host);
+  host.append(loading, empty, feedback, toolbar, arrangeHint, more, undo); element.append(head, localSearch, filters, searchLimit, host);
   const dialogs = new Set<WorldDialog>();
   const metadata = new Map<string, DirectoryEntity>(BUILTINS.map(item => [fieldEntityKey(item.entity), item]));
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;
@@ -156,6 +159,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   function updateChrome(): void {
     const focused = document.activeElement;
     element.dataset.mode = mode; element.dataset.filter = filter; title.textContent = mode === 'mine' ? 'Мои соты' : 'Найти своё';
+    if (mode !== 'search') searchLimit.hidden = true;
     element.dataset.query = queries[mode] ? 'active' : 'empty';
     element.setAttribute('aria-label', mode === 'mine' ? 'Мои соты' : 'Поиск в Сотах');
     mineButton.setAttribute('aria-pressed', String(mode === 'mine')); searchButton.setAttribute('aria-pressed', String(mode === 'search'));
@@ -181,7 +185,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     element.dataset.query = queries[mode] ? 'active' : 'empty';
     if (searchTimer) clearTimeout(searchTimer);
     if (mode === 'mine') { updateMineFilter(); return; }
-    searchGeneration++; searchCursor = null; more.hidden = true;
+    searchGeneration++; searchCursor = null; more.hidden = true; searchLimit.hidden = true;
     closePreview(false);
     if (!composing) { if (immediate) run(searchDirectory()); else searchTimer = setTimeout(() => run(searchDirectory()), 160); }
   }
@@ -314,14 +318,16 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (mode !== 'search') return;
     const generation = ++searchGeneration, query = queries.search, selectedFilter = filter;
     const freshScope = searchResponseScope !== `${query}:${selectedFilter}` || searchItems.length === 0;
-    more.disabled = true; element.dataset.searchState = 'loading'; empty.hidden = true;
+    more.disabled = true; element.dataset.searchState = 'loading'; empty.hidden = true; searchLimit.hidden = true;
     if (!await searchSlot()) return;
     try {
       if (!current() || generation !== searchGeneration || mode !== 'search' || query !== queries.search || selectedFilter !== filter) return;
       const page = await directory.search({ query, kinds: selectedFilter === 'all' ? ['app', 'person', 'community'] : [selectedFilter], ...(append && searchCursor ? { cursor: searchCursor } : {}), limit: 36 });
       if (!current() || generation !== searchGeneration || mode !== 'search' || query !== queries.search || selectedFilter !== filter) return;
       const builtins = selectedFilter === 'all' || selectedFilter === 'app' ? BUILTINS.filter(item => matches(item, query, 'app')) : [];
-      searchItems = append ? [...new Map([...searchItems, ...page.items].map(item => [fieldEntityKey(item.entity), item])).values()].slice(0, 256) : [...builtins, ...page.items];
+      const combined = append ? [...new Map([...searchItems, ...page.items].map(item => [fieldEntityKey(item.entity), item])).values()] : [...builtins, ...page.items];
+      searchItems = combined.slice(0, 256);
+      searchLimit.hidden = !(combined.length > 256 || Boolean(page.cursor) && searchItems.length >= 256);
       if (!append && selected) closePreview(false);
       merge(page.items); searchCursor = page.cursor; more.hidden = !searchCursor || searchItems.length >= 256;
       searchResponseScope = `${query}:${selectedFilter}`; pruneMetadata();

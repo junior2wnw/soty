@@ -5,6 +5,9 @@ import { selectedRoute, selectedRouteAdapter } from './resource-route-adapters.m
 
 export const RESOURCE_PROOF_HEADER = 'x-soty-selected-proof';
 export const RESOURCE_MAC_HEADER = 'x-soty-selected-mac';
+// Reserve1s of the existing transport budget for issuer-ahead skew. Receiver
+// expiry/nonce/storage bounds stay unchanged; this is not a clock-quality guarantee.
+const PROOF_ISSUANCE_CLOCK_SKEW_MS = 1000;
 const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value);
 const mac = (key, value) => createHmac('sha256', key).update(value).digest('base64url');
 function hostKey(key) { need(Buffer.isBuffer(key) && key.length === 32, 'scoped_embed_key_required'); return Buffer.from(key); }
@@ -50,14 +53,14 @@ export function createResourceSourceProofSigner({ profile: raw, key, clock = Dat
       need(bytes.length <= route.requestBytes && typeof cookie === 'string' && Buffer.byteLength(cookie) <= 4096,
         'scoped_embed_request_limit', 413);
       const proof = { schema: RESOURCE_SOURCE_PROOF, context: captured, method, path, bodyDigest: hash(bytes.toString('base64')),
-        cookieDigest: hash(cookie), nonce: randomBytes(32).toString('base64url'), expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs) };
+        cookieDigest: hash(cookie), nonce: randomBytes(32).toString('base64url'), expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS) };
       const text = Buffer.from(JSON.stringify(proof)).toString('base64url');
       need(text.length <= RESOURCE_TRANSPORT_LIMITS.proofHeaderBytes, 'scoped_embed_proof_limit', 413);
       return Object.freeze({ [RESOURCE_PROOF_HEADER]: text, [RESOURCE_MAC_HEADER]: mac(secret, text) });
     },
     probeHeaders() {
       const proof = { schema: 'soty.selected-source-probe.v2', profileDigest: profile.digest,
-        nonce: randomBytes(32).toString('base64url'), expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs };
+        nonce: randomBytes(32).toString('base64url'), expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS };
       const text = Buffer.from(JSON.stringify(proof)).toString('base64url');
       return { request: Object.freeze(proof), headers: { 'x-soty-selected-probe': text, [RESOURCE_MAC_HEADER]: mac(secret, 'probe\0' + text) } };
     },

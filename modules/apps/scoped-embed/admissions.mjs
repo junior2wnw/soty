@@ -22,20 +22,29 @@ export function createScopedAdmissionRegistry({ db, profiles = [], clock = Date.
       && target.entryPath === '/embed', 'app_scoped_admission_mismatch', 403);
     return item;
   }
-  function read(target) {
-    const item = verifyTarget(target);
+  function requireSchema(profile) {
     // Full DDL/row recognition belongs to startup. Per-request authority stays
     // bounded and checks the exact current immutable admission plus host pin.
     const version = Number(db.prepare('PRAGMA user_version').get().user_version);
     need([7,8].includes(version) && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value==='soty.apps-registry.v'+version
-      && (item.profile.schema !== 'soty.selected-human-embed.v2' || version === 8), 'app_scoped_migration_required', 503);
+      && (profile.schema !== 'soty.selected-human-embed.v2' || version === 8), 'app_scoped_migration_required', 503);
+  }
+  function read(target) {
+    const item = verifyTarget(target);
+    requireSchema(item.profile);
     const row = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.appId, target.revision);
     need(row && row.target_digest === target.digest && row.profile_digest === item.profile.digest
       && row.approved_pin_json === canonical(item.raw), 'app_scoped_admission_required', 503);
     return item.profile;
   }
   return Object.freeze({
-    verifyCandidate: verifyTarget,
+    verifyCandidate(target) {
+      const item = verifyTarget(target);
+      // Candidate pins cannot turn an unmigrated relay schema into selected
+      // transport readiness. Refuse before a probe or durable promotion effect.
+      requireSchema(item.profile);
+      return item;
+    },
     commit(target) {
       need(db.isTransaction && ['v7','v8'].includes(inspectAppsSchema(db)), 'app_scoped_transaction_required', 500);
       const item = verifyTarget(target);

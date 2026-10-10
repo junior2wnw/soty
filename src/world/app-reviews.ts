@@ -24,16 +24,17 @@ function publicLink(binding: ReviewBinding): HTMLAnchorElement {
   link.target = '_blank'; link.rel = 'noopener noreferrer'; link.referrerPolicy = 'no-referrer'; return link;
 }
 
-/** Immutable per-stage account/entry lifetime. No provider script, cookies,
- * author identity matching or review write authority is introduced here. */
+/** Immutable per-stage account/entry lifetime. Native owns write/reply rights;
+ * provider metadata, an alias and a displayed row never grant authority. */
 export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): AppReviewsHandle {
   let disposed = false, generation = 0, controller = new AbortController();
   const current = () => !disposed && options.isCurrent();
-  type NativeDraft = { body: string; authorLabel: string; rating: string; requestId: string | null; pending: boolean; unknown: boolean };
+  type NativeDraft = { subjectKey: string; parentId: string | null; body: string; authorLabel: string; rating: string; requestId: string | null; pending: boolean; unknown: boolean };
   const drafts = new Map<string, NativeDraft>();
   let draftEntry: string | null = null;
   const entryKey = () => JSON.stringify(options.entry());
-  const unsaved = () => [...drafts.values()].some(draft => draft.pending || draft.unknown || draft.body.trim() || draft.authorLabel.trim() || draft.rating);
+  const hasDraft = (draft: NativeDraft) => !!(draft.pending || draft.unknown || draft.body.trim() || draft.authorLabel.trim() || draft.rating);
+  const unsaved = () => [...drafts.values()].some(hasDraft);
   const dialog = el('dialog', 'sr-dialog'); dialog.setAttribute('aria-labelledby', `reviews-heading-${options.appId}`);
   const header = el('header', 'sr-header'), heading = el('h2', '', 'Отзывы'); heading.id = `reviews-heading-${options.appId}`;
   const close = button('Закрыть', 'close', 'sw-button-quiet', () => closeDialog()); header.append(heading, close);
@@ -82,7 +83,23 @@ export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): 
     let nextCursor: string | null = null, pages = 0, loading = false;
     const seenItems = new Set<string>(), seenCursors = new Set<string>();
     const active = () => current() && stamp === generation && dialog.open && !signal.aborted;
-    const capturedEntry = entryKey(), draftKey = reviewSubjectKey(binding);
+    const capturedEntry = entryKey(), subjectKey = reviewSubjectKey(binding);
+    const keyFor = (parentId: string | null) => JSON.stringify([capturedEntry, subjectKey, parentId]);
+    let activeParentId: string | null = null, composerGeneration = 0;
+    const approvedParents = new Map<string, string>();
+    function draftFor(parentId: string | null): NativeDraft | undefined {
+      // One retained reply slot per subject, plus its separate root draft.
+      // An unknown/pending/typed reply is never evicted to select another parent.
+      if (parentId !== null) for (const [key, prior] of drafts) {
+        if (prior.subjectKey !== subjectKey || prior.parentId === null || prior.parentId === parentId) continue;
+        if (hasDraft(prior)) return undefined;
+        drafts.delete(key);
+      }
+      const key = keyFor(parentId), prior = drafts.get(key);
+      if (prior) return prior;
+      const draft: NativeDraft = { subjectKey, parentId, body: '', authorLabel: '', rating: '', requestId: null, pending: false, unknown: false };
+      drafts.set(key, draft); return draft;
+    }
     const selectedArgs = { appId: options.appId, subjectKind: binding.subjectKind, providerRef: binding.providerRef,
       subjectRef: binding.subjectRef, providerSubjectId: binding.providerSubjectId };
     const nativeStatus = el('p', 'sr-detail'); nativeStatus.setAttribute('role', 'status');
@@ -95,6 +112,7 @@ export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): 
       if (['managed_reviews_unavailable', 'unsupported_operation'].includes(code)) return 'Вход Сот для Поведай пока не подключён. Откройте отзывы у источника.';
       if (['managed_source_grant_required', 'managed_principal_revoked'].includes(code)) return 'Недостаточно прав в Поведай. Проверьте доступ на странице Поведай.';
       if (['managed_reviews_authentication_required', 'managed_actor_invalid', 'managed_identity_expired'].includes(code)) return 'Подтвердите вход в Поведай.';
+      if (code === 'managed_source_app_native_proof_missing') return 'Сеанс доступа к объекту закончился. Подтвердите вход в приложении, затем проверьте доступ здесь.';
       return 'Не удалось подтвердить вход или объект у источника.';
     }
     async function openNative(): Promise<void> {
@@ -110,60 +128,112 @@ export function mountAppReviews(host: HTMLElement, options: AppReviewsOptions): 
         if (result.subjectKind !== binding.subjectKind || result.providerSubjectId !== binding.providerSubjectId
           || !equalRef(result.providerRef, binding.providerRef) || !equalRef(result.subjectRef, binding.subjectRef)) throw new TypeError('Native subject changed');
         if (draftEntry !== capturedEntry) { drafts.clear(); draftEntry = capturedEntry; }
-        const draft = drafts.get(draftKey) ?? { body: '', authorLabel: '', rating: '', requestId: null, pending: false, unknown: false };
-        drafts.set(draftKey, draft); showComposer(draft);
+        const draft = draftFor(activeParentId); if (draft) showComposer(draft);
       } catch (error) { if (nativeCurrent()) nativeStatus.textContent = nativeFailure(error); }
       finally { if (nativeCurrent()) { nativePending = false; nativeOpen.disabled = false; } }
     }
     function showComposer(draft: NativeDraft): void {
+      const draftKey = keyFor(draft.parentId), composerStamp = ++composerGeneration;
+      const composerCurrent = () => nativeCurrent() && composerStamp === composerGeneration && drafts.get(draftKey) === draft;
+      activeParentId = draft.parentId;
       nativeOpen.hidden = true; nativeStatus.textContent = draft.unknown ? 'Подтверждение не получено. Запись могла сохраниться; автоматического повтора нет.' : 'Право отправки проверит источник. Новые записи сначала проходят проверку.';
-      const form = el('form', 'sr-list'), bodyLabel = el('label', '', 'Текст отзыва'), body = el('textarea'); body.maxLength = 10000; body.rows = 4; body.value = draft.body;
+      const context = el('p', 'sr-detail', `${labels[binding.subjectKind]} · ${draft.parentId === null ? 'Новый отзыв' : 'Ответ выбранной записи'}`);
+      const form = el('form', 'sr-list'), bodyLabel = el('label', '', draft.parentId === null ? 'Текст отзыва' : 'Текст ответа'), body = el('textarea'); body.maxLength = 10000; body.rows = 4; body.value = draft.body;
       const aliasLabel = el('label', '', 'Имя для публикации (необязательно)'), alias = el('input'); alias.maxLength = 120; alias.value = draft.authorLabel; alias.autocomplete = 'off';
       const ratingLabel = el('label', '', 'Оценка (необязательно)'), ratingInput = el('select');
       for (const value of ['', '1', '2', '3', '4', '5']) { const option = el('option', '', value || 'Без оценки'); option.value = value; ratingInput.append(option); } ratingInput.value = draft.rating;
+      ratingLabel.hidden = draft.parentId !== null;
       bodyLabel.append(body); aliasLabel.append(alias); ratingLabel.append(ratingInput);
-      const submit = button('Отправить на проверку', undefined, '', () => {}); submit.type = 'submit';
+      const submit = button(draft.parentId === null ? 'Отправить на проверку' : 'Отправить ответ на проверку', undefined, '', () => {}); submit.type = 'submit';
+      const access = button('Проверить доступ', 'refresh', '', () => { if (composerCurrent() && !draft.pending) void openNative(); });
+      const clear = button('Удалить черновик', undefined, 'sw-button-quiet', () => {
+        if (!composerCurrent() || draft.pending) return;
+        if (hasDraft(draft) && !window.confirm(draft.unknown
+          ? 'Удалить черновик только в этом окне? Отправка не подтверждена; запись могла сохраниться в Поведай.'
+          : 'Удалить черновик только в этом окне?')) return;
+        draft.body = ''; draft.authorLabel = ''; draft.rating = ''; draft.requestId = null; draft.unknown = false;
+        body.value = ''; alias.value = ''; ratingInput.value = ''; nativeStatus.textContent = 'Черновик в этом окне удалён. Записи у источника не изменены.'; update();
+      });
+      const cancelReply = button('Вернуться к отзыву', undefined, 'sw-button-quiet', () => {
+        if (!composerCurrent() || draft.pending) return;
+        const root = draftFor(null); if (!root) return; showComposer(root);
+        if (hasDraft(draft)) nativeStatus.textContent = 'Черновик ответа сохранён в этом окне. Переключение не отменяет отправку у источника.';
+      }); cancelReply.hidden = draft.parentId === null;
+      const heldReply = [...drafts.values()].find(value => value.subjectKey === subjectKey && value.parentId !== null && hasDraft(value));
+      const returnReply = button('Вернуться к черновику ответа', undefined, 'sw-button-quiet', () => {
+        if (composerCurrent() && !draft.pending && heldReply) showComposer(heldReply);
+      }); returnReply.hidden = draft.parentId !== null || !heldReply;
       const check = button('Обновить записи', 'refresh', '', () => void readNative()), list = el('section', 'sr-list');
-      form.append(bodyLabel, aliasLabel, ratingLabel, submit, check); native.append(el('h3', '', 'Записи этого входа'), form, list);
+      form.append(context, bodyLabel, aliasLabel, ratingLabel, submit, access, clear, cancelReply, returnReply, check);
+      native.replaceChildren(nativeOpen, nativeStatus, el('h3', '', 'Записи этого входа'), form, list);
       const update = () => { body.readOnly = alias.readOnly = draft.pending || draft.unknown; ratingInput.disabled = draft.pending || draft.unknown;
-        submit.disabled = draft.pending || draft.unknown || !draft.body.trim(); };
+        const parentBody = draft.parentId === null ? undefined : approvedParents.get(draft.parentId);
+        context.textContent = `${labels[binding.subjectKind]} · ${draft.parentId === null ? 'Новый отзыв' : 'Ответ выбранной записи'}`
+          + (parentBody === undefined ? '' : `: ${parentBody.slice(0, 160)}`);
+        submit.disabled = draft.pending || draft.unknown || !draft.body.trim() || draft.parentId !== null && !approvedParents.has(draft.parentId);
+        access.disabled = clear.disabled = cancelReply.disabled = returnReply.disabled = draft.pending; };
       for (const input of [body, alias, ratingInput]) input.addEventListener('input', () => {
-        if (!nativeCurrent() || draft.pending || draft.unknown) return;
+        if (!composerCurrent() || draft.pending || draft.unknown) return;
         draft.body = body.value; draft.authorLabel = alias.value; draft.rating = ratingInput.value; draft.requestId = null; update();
       }); update();
       form.addEventListener('submit', event => { event.preventDefault(); void collect(); });
       async function collect(): Promise<void> {
-        if (!nativeCurrent() || draft.pending || draft.unknown || !draft.body.trim()) return;
+        if (!composerCurrent() || draft.pending || draft.unknown || !draft.body.trim() || draft.parentId !== null && !approvedParents.has(draft.parentId)) return;
         draft.requestId ??= crypto.randomUUID(); const requestId = draft.requestId;
         const input = { ...selectedArgs, requestId, body: draft.body,
-          ...(draft.authorLabel.trim() ? { authorLabel: draft.authorLabel.trim() } : {}), ...(draft.rating ? { rating: Number(draft.rating) } : {}) };
+          ...(draft.parentId === null ? {} : { parentId: draft.parentId }),
+          ...(draft.authorLabel.trim() ? { authorLabel: draft.authorLabel.trim() } : {}), ...(draft.parentId === null && draft.rating ? { rating: Number(draft.rating) } : {}) };
         draft.pending = true; update(); nativeStatus.textContent = 'Отправляем…';
         try {
           const reply = await options.api.request<{ status: string; reviewId: string; requestId: string }>('apps.reviews.managed.collect', input);
           if (!current() || capturedEntry !== entryKey() || drafts.get(draftKey) !== draft || draft.requestId !== requestId) return;
           if (reply.status !== 'pending' || reply.requestId !== requestId || typeof reply.reviewId !== 'string' || !reply.reviewId) throw new TypeError('Unconfirmed Native ACK');
           draft.body = ''; draft.authorLabel = ''; draft.rating = ''; draft.requestId = null; draft.unknown = false;
-          if (nativeCurrent()) { body.value = ''; alias.value = ''; ratingInput.value = ''; nativeStatus.textContent = 'Запись сохранена и ожидает проверки источника.'; }
-        } catch {
+          if (composerCurrent()) { body.value = ''; alias.value = ''; ratingInput.value = ''; nativeStatus.textContent = 'Запись сохранена и ожидает проверки источника.'; }
+        } catch (error) {
           if (current() && capturedEntry === entryKey() && drafts.get(draftKey) === draft && draft.requestId === requestId) {
-            draft.unknown = true;
-            if (nativeCurrent()) nativeStatus.textContent = 'Подтверждение не получено. Текст сохранён; запись могла дойти до источника. Автоматического повтора нет.';
+            // On this managed-collect route this closed code reaches the caller
+            // from credential resolution before token/Native collect entry.
+            // Other Source login/read paths reuse it but are not this RPC.
+            // Other errors (including post-commit fences) remain UNKNOWN.
+            let beforeCollect = false;
+            try { const code = error && typeof error === 'object' ? Object.getOwnPropertyDescriptor(error, 'code') : undefined;
+              beforeCollect = !!code && Object.hasOwn(code, 'value') && code.value === 'managed_source_app_native_proof_missing'; } catch { /* Unknown diagnostic shape stays UNKNOWN. */ }
+            draft.unknown = !beforeCollect;
+            if (composerCurrent()) nativeStatus.textContent = beforeCollect
+              ? 'Запись не отправлена: сеанс доступа закончился. Текст сохранён. Подтвердите вход в приложении и проверьте доступ перед новой явной отправкой.'
+              : 'Подтверждение не получено. Текст сохранён; запись могла дойти до источника. Автоматического повтора нет.';
           }
-        } finally { draft.pending = false; if (nativeCurrent()) update(); }
+        } finally { draft.pending = false; if (composerCurrent()) update(); }
       }
       async function readNative(): Promise<void> {
-        if (!nativeCurrent() || check.disabled) return; check.disabled = true;
+        if (!composerCurrent() || check.disabled) return; check.disabled = true;
         try {
           const result = await options.api.request<{ items: { id: string; body: string; status: string }[]; nextCursor: string | null }>('apps.reviews.managed.list', { ...selectedArgs, limit: 20 });
-          if (!nativeCurrent()) return;
+          if (!composerCurrent()) return;
           if (!Array.isArray(result.items) || result.items.length > 20) throw new TypeError('Invalid Native list');
-          list.replaceChildren();
-          for (const item of result.items) { if (typeof item.body !== 'string' || typeof item.status !== 'string') throw new TypeError('Invalid Native item');
-            const row = el('article', 'sr-review'); row.append(el('small', 'sr-detail', item.status === 'pending' ? 'Ожидает проверки источника' : 'Запись источника'), el('p', 'sr-body', item.body)); list.append(row); }
+          list.replaceChildren(); approvedParents.clear();
+          for (const item of result.items) {
+            if (typeof item.id !== 'string' || !item.id || item.id.length > 200 || /[\u0000-\u001f\u007f]/u.test(item.id)
+              || typeof item.body !== 'string' || item.body.length > 10000 || !['pending', 'approved', 'rejected', 'spam', 'deleted'].includes(item.status)) throw new TypeError('Invalid Native item');
+            const depth = (item as { depth?: unknown }).depth;
+            const row = el('article', 'sr-review'); row.append(el('small', 'sr-detail', item.status === 'pending' ? 'Ожидает проверки источника' : 'Запись источника'), el('p', 'sr-body', item.body));
+            if (item.status === 'approved' && typeof depth === 'number' && Number.isSafeInteger(depth) && depth >= 0 && depth < 64) {
+              approvedParents.set(item.id, item.body);
+              row.append(button('Ответить', undefined, '', () => {
+                if (!composerCurrent() || draft.pending) return;
+                const reply = draftFor(item.id);
+                if (!reply) { nativeStatus.textContent = 'Сначала сохраните или удалите прежний черновик ответа этому объекту.'; return; }
+                showComposer(reply);
+              }));
+            } else row.append(el('small', 'sr-detail', item.status === 'pending' ? 'Ответ после проверки' : 'Ответ этой записи недоступен.'));
+            list.append(row);
+          }
           if (!result.items.length) list.append(el('p', 'sr-detail', 'В этом списке записей нет.'));
           if (draft.unknown) nativeStatus.textContent = 'Список обновлён. Он не подтверждает точный результат прежней отправки.';
-        } catch (error) { if (nativeCurrent()) { list.replaceChildren(); nativeStatus.textContent = nativeFailure(error); } }
-        finally { if (nativeCurrent()) check.disabled = false; }
+          update();
+        } catch (error) { if (composerCurrent()) { list.replaceChildren(); approvedParents.clear(); nativeStatus.textContent = nativeFailure(error); update(); } }
+        finally { if (composerCurrent()) check.disabled = false; }
       }
     }
     const more = button('Показать ещё отзывы', undefined, '', () => void loadMore()); more.hidden = true; pageControls.append(more);

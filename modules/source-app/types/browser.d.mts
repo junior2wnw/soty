@@ -13,10 +13,16 @@ export interface FeedbackClient {
   status(input:FeedbackAction&{status:'in_progress'|'needs_action'|'ready_to_check'},signal?:AbortSignal):Promise<FeedbackWrite>;
   accept(input:FeedbackAction,signal?:AbortSignal):Promise<FeedbackWrite>;
 }
-export function createSourceFeedbackClient(options?:{fetch?:typeof fetch}):FeedbackClient;
+export function createSourceFeedbackClient(options?:{fetch?:typeof fetch;profileVersion?:1|2|3}):FeedbackClient;
 export class SourceFeedbackClientError extends Error {readonly code:string;readonly status:number}
 export const SOURCE_FEEDBACK_LIMITS:Readonly<{bodyChars:8000;totalAttachmentBytes:1048576;maxAttachments:3;maxAudioSeconds:120}>;
 export function createSourceFeedbackController(options?:{api?:Pick<FeedbackClient,'context'|'submit'>;isCurrent?:()=>boolean;requestId?:()=>string;onChange?:(value:unknown)=>void}):{
   snapshot():unknown;open():Promise<boolean>;setDraft(value:FeedbackDraft):boolean;send():Promise<boolean>;invalidate():void;dispose():void;
+};
+export interface FeedbackInboxSnapshot {state:string;context:FeedbackContext|null;tickets:FeedbackTicket[];ticket:FeedbackTicket|null;
+  nextCursor:string|null;pending:boolean;replyDraft:string}
+export function createSourceFeedbackInbox(options?:{api?:FeedbackClient;isCurrent?:()=>boolean;requestId?:()=>string;onChange?:(value:FeedbackInboxSnapshot)=>void}):{
+  snapshot():FeedbackInboxSnapshot;open():Promise<boolean>;more():Promise<boolean>;select(ticketId:string):Promise<boolean>;setReply(body:string):boolean;
+  write(operation?:'reply'|'status'|'accept',status?:'in_progress'|'needs_action'|'ready_to_check'):Promise<boolean>;invalidate():void;dispose():void;
 };
 export {createSourceFeedbackProcessingClient} from './processing.mjs';

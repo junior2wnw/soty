@@ -32,11 +32,11 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
   const sha = data => createHash('sha256').update(data).digest('hex');
   const outputs = [];
   await mkdir(join(outdir, 'assets'), { recursive: true });
-  for (const name of ['app.js', 'app.css','processing.js']){const path=join(packageRoot,'examples/ordinary-app/assets',name);inputs.add(path);
+  for (const name of ['app.js', 'app.css','processing.js','feedback-inbox.js']){const path=join(packageRoot,'examples/ordinary-app/assets',name);inputs.add(path);
     await writeFile(join(outdir,'assets',name),await bytes(path));}
   const sourceFiles = [];
   for (const path of [...inputs].sort()) sourceFiles.push({ path: sourcePath(path), sha256: sha(await bytes(path)) });
-  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
+  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js','assets/feedback-inbox.js']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
   const manifest = { schema: 'soty.source-app.build.v1', packageVersion: '0.1.0-preview.1', esbuild: esbuild.version,
     protocolDependency: { name: 'openid-client', version: '6.8.4' }, ...(sourceCommit?{sourceCommit}:{}),sourceFiles, outputs };
   await writeFile(join(outdir, 'provenance.json'), JSON.stringify(manifest, null, 2) + '\n'); return manifest;

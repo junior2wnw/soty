@@ -1,0 +1,123 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { migrateAppsSchema, inspectAppsSchema, ensureInitialPublication, ensureCanonicalDomain, runtimeTargetDigest } from '../server/schema.mjs';
+import { createPublicationRegistry } from '../server/publications.mjs';
+import { createSourceRegistry } from '../server/sources.mjs';
+import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
+import { HIVE_SELECTED_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
+
+// Actual Apps DDL/SourceRegistry/Publication/ScopedAdmission, all in OWN synthetic SQLite.
+// Constructor-owned actor/channel fixture ports are not Native or public-body authority.
+function fixture(t, version = 8, profileVersion = 2) {
+  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON');
+  migrateAppsSchema(db, { allowScopedEmbedMigration: version >= 7, allowSelectedResourceMigration: version >= 8 });
+  assert.equal(inspectAppsSchema(db), 'v' + version);
+  const owner = Object.freeze({ accountId: 'synthetic_owner', deviceId: 'synthetic_browser' });
+  const appId = 'app-' + 'a'.repeat(32), identity = { linkId: 'synthetic_link', hostDeviceId: 'synthetic_host', connectorId: 'synthetic_connector' };
+  const connectorKey = [identity.linkId, identity.hostDeviceId, identity.connectorId].join('|');
+  const grants = { accountIds: ['synthetic_reader'], communityIds: [] };
+  db.exec('BEGIN IMMEDIATE');
+  db.prepare('INSERT INTO app_devices VALUES(?,?,?,?,?)').run(connectorKey, owner.accountId, JSON.stringify(identity), 'Synthetic device', 1);
+  db.prepare('INSERT INTO local_apps VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(appId, owner.accountId, connectorKey, 'Preserved project', 63345, '/', JSON.stringify(grants), 'enabled', 1, 1, 1);
+  db.prepare('INSERT INTO local_app_grants VALUES(?,?,?)').run(appId, 'account', grants.accountIds[0]);
+  const app = db.prepare('SELECT * FROM local_apps WHERE id=?').get(appId);
+  ensureCanonicalDomain(db, app, ''); ensureInitialPublication(db, app); db.exec('COMMIT');
+  let active = true, clock = 100000, probeCalls = 0, notify;
+  const assertActor = actor => {
+    if (!active || actor.accountId !== owner.accountId || actor.deviceId !== owner.deviceId) throw Object.assign(Error('apps_authentication_required'), { code: 'apps_authentication_required', status: 401 });
+  };
+  const target = { appId, revision: 2, ownerAccountId: owner.accountId, connectorKey, port: 63345,
+    entryPath: '/embed', profile: 'soty.selected-human-embed.v' + profileVersion };
+  target.digest = runtimeTargetDigest(target);
+  const profile = { schema: target.profile, appId, connector: identity, target: { revision: target.revision, digest: target.digest },
+    sourceProfile: profileVersion === 2 ? { ...HIVE_SELECTED_SOURCE } : { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) },
+    resource: { registryId: 'soty', tenantId: owner.accountId, appId, environmentId: 'production', resourceId: 'selected',
+      ...(profileVersion === 2 ? { selection: { kind: 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
+    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: 'https://selected.apps.test',
+    nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
+  const admissions = createScopedAdmissionRegistry({ db, profiles: [profile], clock: () => clock });
+  const publications = createPublicationRegistry({ db, now: () => clock, assertActor, canUse: actor => actor.accountId === owner.accountId });
+  const channel = Object.freeze({ fixture: 'constructor-owned-current-channel' });
+  const openSources = () => createSourceRegistry({ db, now: () => clock, assertActor, publications, scopedAdmission: admissions,
+    prepareTarget: async frame => { assert.equal(db.isTransaction, false); probeCalls++; return Object.freeze({ target: frame.target, channel }); },
+    verifyPreparedTarget: frame => frame.evidence.channel === channel && frame.evidence.target === frame.target,
+    onChanged: event => notify?.(event) });
+  let sources = openSources();
+  t.after(() => { sources.close(); db.close(); });
+  const get = () => publications.execute({ op: 'apps.publication.get', actor: owner, args: { appId } });
+  const prepareArgs = () => ({ appId, expectedPolicyEpoch: get().policyEpoch, expectedTargetRevision: get().activeTargetRevision,
+    source: { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, port: target.port, entryPath: target.entryPath, profile: target.profile } });
+  const prepare = () => sources.execute({ op: 'apps.source.prepare', actor: owner, args: prepareArgs() });
+  const intent = prepared => ({ appId, requestId: 'synthetic-selected-promotion', preparationId: prepared.preparationId,
+    expectedPolicyEpoch: prepared.expectedPolicyEpoch, expectedTargetRevision: prepared.expectedTargetRevision, launchPolicy: 'restricted', listed: false });
+  const promote = args => sources.execute({ op: 'apps.source.promote', actor: owner, args });
+  const rows = () => Object.fromEntries(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all()
+    .map(({ name }) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
+  return { db, admissions, target, appId, get, rows, prepare, intent, promote, probeCalls: () => probeCalls,
+    reopen() { sources.close(); sources = openSources(); }, revoke() { active = false; }, advance() { clock += 60000; },
+    notify(work) { notify = work; }, history() { return sources.execute({ op: 'apps.source.history', actor: owner, args: { appId } }); } };
+}
+
+test('selected v2 on actual Apps6/7 refuses before probe; legacy SQLite promotion failure stays an effect0 counter', async t => {
+  for (const version of [6, 7]) {
+    const f = fixture(t, version), before = f.rows();
+    let prepared, failure, oldPromotionClass = 'not_attempted';
+    try { prepared = await f.prepare(); } catch (error) { failure = error; }
+    if (prepared) {
+      // Diagnostic only on the old unguarded implementation, never an actual owner retry.
+      try { f.promote(f.intent(prepared)); oldPromotionClass = 'unexpected_commit'; }
+      catch (error) { oldPromotionClass = error.code === 'ERR_SQLITE_ERROR' && error.errcode === 275 ? 'sqlite_check_constraint' : 'other_error'; }
+    }
+    t.diagnostic(JSON.stringify({ schemaVersion: version, probeCalls: f.probeCalls(), oldPromotionClass,
+      policyEpoch: f.get().policyEpoch, activeTargetRevision: f.get().activeTargetRevision,
+      historyRows: f.rows().app_runtime_targets.length, sourceReceipts: f.rows().app_source_receipts.length }));
+    assert.deepEqual(f.rows(), before);
+    assert.equal(failure?.code, 'app_scoped_migration_required'); assert.equal(failure?.status, 503);
+    assert.equal(prepared, undefined); assert.equal(f.probeCalls(), 0);
+  }
+});
+
+test('real Apps8 promotion commits exact target2/admission/floor/epoch/receipt/history; lost ACK replays after reopening', async t => {
+  const f = fixture(t), before = f.rows(), prepared = await f.prepare();
+  assert.deepEqual(f.rows(), before); assert.equal(prepared.target.revision, 2);
+  f.notify(() => { throw Error('synthetic_lost_ACK_after_commit'); });
+  const args = f.intent(prepared);
+  assert.throws(() => f.promote(args), /synthetic_lost_ACK_after_commit/);
+  const after = f.rows();
+  assert.equal(f.get().policyEpoch, 2); assert.equal(f.get().activeTargetRevision, 2);
+  assert.equal(f.get().requiredBindingVersion, 2); assert.equal(after.app_source_receipts.length, 1);
+  assert.equal(after.app_scoped_embed_admissions.length, 1); assert.equal(after.app_runtime_targets.length, 2);
+  assert.equal(f.admissions.require(f.target).schema, 'soty.selected-human-embed.v2');
+  for (const name of ['local_apps', 'local_app_grants', 'app_devices', 'app_domains', 'app_publication_domains']) assert.deepEqual(after[name], before[name]);
+  assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(), []); assert.equal(inspectAppsSchema(f.db), 'v8');
+  f.notify(undefined); f.advance(); f.reopen();
+  const replay = f.promote(args);
+  assert.equal(replay.replayed, true); assert.equal(replay.receipt.targetRevision, 2); assert.equal(replay.current.activeTargetRevision, 2);
+  assert.deepEqual(f.rows(), after); assert.equal(f.history().targets.length, 2); assert.equal(f.probeCalls(), 1);
+});
+
+test('legacy selected v1 still prepares and promotes on the real Apps7 schema', async t => {
+  const f = fixture(t, 7, 1), prepared = await f.prepare(), result = f.promote(f.intent(prepared));
+  assert.equal(result.current.activeTargetRevision, 2); assert.equal(f.admissions.require(f.target).schema, 'soty.selected-human-embed.v1');
+  assert.equal(inspectAppsSchema(f.db), 'v7'); assert.equal(f.rows().app_scoped_embed_admissions.length, 1);
+});
+
+test('after a valid Apps8 preparation, original DDL inspection failure rolls back partial target/floor writes atomically', async t => {
+  const f = fixture(t), prepared = await f.prepare();
+  f.db.exec('DROP TRIGGER app_scoped_admission_no_update');
+  const tampered = f.rows();
+  assert.throws(() => f.promote(f.intent(prepared)), { code: 'apps_schema_unsupported' });
+  assert.deepEqual(f.rows(), tampered); assert.equal(f.get().activeTargetRevision, 1);
+  assert.equal(f.get().policyEpoch, 1); assert.equal(f.get().requiredBindingVersion, 1);
+  assert.equal(f.rows().app_source_receipts.length, 0); assert.equal(f.rows().app_scoped_embed_admissions.length, 0);
+  assert.equal(f.db.isTransaction, false);
+});
+
+test('valid Apps8 preparation still requires current owner and exact target/policy CAS before any effect', async t => {
+  const f = fixture(t), prepared = await f.prepare(), args = f.intent(prepared), before = f.rows();
+  assert.throws(() => f.promote({ ...args, expectedTargetRevision: 2 }), { code: 'app_publication_target_conflict' });
+  assert.throws(() => f.promote({ ...args, expectedPolicyEpoch: 2 }), { code: 'app_publication_revision_conflict' });
+  f.revoke(); assert.throws(() => f.promote(args), { code: 'apps_authentication_required', status: 401 });
+  assert.deepEqual(f.rows(), before);
+});

@@ -155,6 +155,9 @@
 .uf-empty[hidden],.uf-more[hidden],.uf-undo[hidden],.uf-storage-status[hidden],.uf-search-clear[hidden] { display: none; }
 .uf-empty h2 { margin: 0 0 8px; font-size: 22px; line-height: 28px; }
 .uf-empty p { color: var(--sw-muted); font-size: 15px; line-height: 22px; }
+.uf-search-limit { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--sw-line); color: var(--sw-muted); font-size: 14px; line-height: 20px; }
+.uf-search-limit[hidden] { display: none; }
+.uf-search-limit .sw-button { min-height: 44px; }
 .uf-loading { position: absolute; inset: 0; z-index: 6; display: grid; place-items: center; padding: 24px; background: var(--sw-bg); color: var(--sw-muted); font-size: 16px; line-height: 24px; text-align: center; }
 .uf-more,.uf-undo { position: absolute; right: 24px; bottom: 24px; z-index: 10; min-height: 44px; }
 .uf-preview-content { padding: 28px 26px; }

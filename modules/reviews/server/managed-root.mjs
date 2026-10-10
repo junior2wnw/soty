@@ -95,14 +95,14 @@ export function createManagedRootReviews({ configuration = EMPTY_REVIEWS_CONFIGU
       const method = methods.find(value => prefix + value === op); need(method, 'managed_reviews_operation_unknown');
       const input = capture(args);
       closed(input, ['appId', 'subjectKind', 'providerRef', 'subjectRef', 'providerSubjectId'],
-        method === 'collect' ? ['requestId', 'body', 'rating', 'authorLabel'] : method === 'list' ? ['limit', 'beforeId'] : []);
+        method === 'collect' ? ['requestId', 'body', 'rating', 'authorLabel', 'parentId'] : method === 'list' ? ['limit', 'beforeId'] : []);
       const matches = config.bindings.filter(binding => binding.scope.appId === input.appId && binding.localSubject.kind === input.subjectKind
         && same(binding.providerRef, input.providerRef) && same(binding.subjectRef, input.subjectRef) && binding.providerSubjectId === input.providerSubjectId);
       need(matches.length === 1, 'managed_reviews_binding_not_found', 404); const binding = matches[0];
       if (!port) { need(method === 'context', 'managed_reviews_unavailable', 503); return unavailable(actor, binding); }
       need(same(binding.providerRef, managedSource.providerRef), 'managed_reviews_provider_invalid', 403);
       const selected = { appId: input.appId, localSubject: binding.localSubject };
-      for (const key of ['requestId', 'body', 'rating', 'authorLabel', 'limit', 'beforeId']) if (Object.hasOwn(input, key)) selected[key] = input[key];
+      for (const key of ['requestId', 'body', 'rating', 'authorLabel', 'parentId', 'limit', 'beforeId']) if (Object.hasOwn(input, key)) selected[key] = input[key];
       const result = await port.execute({ op: method, actor, args: selected });
       need(!disposed, 'managed_reviews_closed', 503);
       if (method === 'context') return freezeDeep({ available: true, subjectKind: binding.localSubject.kind,

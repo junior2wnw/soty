@@ -155,6 +155,35 @@ for (const kind of ['app', 'project', 'person']) test('explicit collect for ' + 
   assert.equal(listed.items[1].author.verified, false);
 });
 
+for (const kind of ['app', 'project', 'person']) test('explicit reply keeps exact selected '+kind+' placement and Native parent', async t => {
+  let f, received;
+  f=fixture(t,{source:{async collect(actor,input){
+    assert.equal(actor,f.sourceActor);const binding=f.config.bindings.find(value=>value.localSubject.kind===kind);
+    assert.deepEqual(input.localSubject,binding.localSubject);assert.deepEqual(input.scope,scope);
+    assert.equal(input.parentId,'prior-'+kind);received=input;f.effects.push({kind,requestId:input.requestId});
+    return {reviewId:'reply-'+kind,authorId:'native-author',rootId:'prior-'+kind,parentId:'prior-'+kind,depth:1,status:'pending'};
+  }}});
+  const args={...selector(f.config.bindings.find(value=>value.localSubject.kind===kind)),requestId:'reply-'+kind,body:'Synthetic reply',parentId:'prior-'+kind};
+  const result=await f.execute('apps.reviews.managed.collect',args);
+  assert.deepEqual(result,{status:'pending',reviewId:'reply-'+kind,requestId:args.requestId});
+  assert.equal(received.parentId,args.parentId);assert.equal(f.effects.length,1);assert.deepEqual(f.calls,['withActor','context']);
+  assert.equal(f.priorReviews.length,1);
+});
+
+test('invalid reply parent denies before credential or Source and lost reply ACK is not retried',async t=>{
+  let resolutions=0,f;
+  f=fixture(t,{resolveSourceCredential:async()=>{resolutions++;return f.credential;},source:{async collect(_actor,input){
+    assert.equal(input.parentId,'prior-app');f.effects.push({requestId:input.requestId});
+    throw Object.assign(new Error('managed_source_unknown_ack'),{code:'managed_source_unknown_ack',status:503});
+  }}});
+  const args={...selector(f.config.bindings[0]),requestId:'stable-reply',body:'Synthetic reply'};
+  for(const parentId of ['',null,{},'bad\u0000parent', 'x'.repeat(201)])await assert.rejects(f.execute('apps.reviews.managed.collect',{...args,parentId}));
+  assert.equal(resolutions,0);assert.deepEqual(f.calls,[]);assert.deepEqual(f.effects,[]);
+  await assert.rejects(f.execute('apps.reviews.managed.collect',{...args,parentId:'prior-app'}),/managed_source_unknown_ack/);
+  assert.equal(f.effects.length,1);assert.equal(resolutions,1);
+  await f.execute('apps.reviews.managed.list',selector(f.config.bindings[0]));assert.equal(f.effects.length,1);
+});
+
 test('lost Source ACK creates no automatic write retry; explicit list is read-only and leaves outcome unknown', async t => {
   let f;
   f = fixture(t, { source: { async collect(_actor, input) {

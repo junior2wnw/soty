@@ -5,6 +5,9 @@
 .sr-app-title { margin:12px 0; font-weight:600; }.sr-notice { background:var(--sw-soft,#eff3ed); border-radius:12px; padding:10px 12px; line-height:1.5; }
 .sr-subject-tabs { margin:12px 0; }.sr-subject-tabs [aria-pressed=true] { background:var(--sw-selected,#edf2ec); font-weight:650; }
 .sr-content,.sr-list,.sr-summary,.sr-page-controls { display:grid; gap:12px; }.sr-content { margin:12px 0; }
+.sr-list > label { display:grid; gap:8px; min-width:0; }
+.sr-list textarea,.sr-list input,.sr-list select { width:100%; min-width:0; box-sizing:border-box; border:1px solid var(--sw-line,#d7dce0); border-radius:10px; padding:10px 12px; background:var(--sw-surface,#fff); color:inherit; font:inherit; font-size:16px; line-height:1.5; }
+.sr-list textarea { min-height:112px; resize:vertical; }
 .sr-source,.sr-rights,.sr-detail,.sr-provider-verification,.sr-counts { font-size:.85rem; line-height:1.5; color:var(--sw-muted,#55646c); }
 .sr-source { margin:0; }.sr-public-link { min-height:44px; display:inline-flex; align-items:center; color:var(--sw-accent,#206784); text-decoration:underline; }
 .sr-rating { font-size:1.1rem; font-weight:650; }.sr-summary p,.sr-summary h3,.sr-review p,.sr-review h4 { margin:0; }
