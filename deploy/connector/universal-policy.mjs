@@ -10,6 +10,7 @@ import { canonicalJson } from '../../modules/capabilities/server/validation.mjs'
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { selectedClientRedirect } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
+import { loadPersonalAgentConfiguration } from '../../server/personal-agent-configuration.js';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
   captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
@@ -17,11 +18,13 @@ export const UNIVERSAL_POLICY_SCHEMA = 'soty.universal-rollout-policy.v1';
 export { UNIVERSAL_RUNTIME_SCHEMA };
 export const universalModeLabel = 'io.soty.universal.legacy';
 export const humanPrivateTarget = '/run/secrets/soty-human-identity.json';
+export const personalAgentPrivateTarget = '/run/secrets/soty-personal-agent.json';
 export const reviewsTarget = '/run/config/soty-reviews-bindings.json';
 export const selectedTarget = '/run/config/soty-selected-embed.json';
 const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human: 'SOTY_HUMAN_IDENTITY_ENABLED',
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
   operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
+  personalAgent: 'SOTY_PERSONAL_AGENT_ENABLED', personalAgentFile: 'SOTY_PERSONAL_AGENT_CONFIG_FILE',
   selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION', selectedResourceMigration: 'SOTY_SELECTED_RESOURCE_MIGRATION' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
 const fail = (code = 'universal_policy_invalid') => { throw new SafeError(code); };
@@ -224,9 +227,9 @@ function approvedNativeTransport(value) {
 export async function prepareUniversalPolicy(input, options = { shellOrigins: [] }) {
   const files = []; let context;
   try {
-    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected']);
+    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent']);
     check(plan.schema === UNIVERSAL_POLICY_SCHEMA && ['legacy-baseline', 'features'].includes(plan.phase));
-    check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected);
+    check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected && !plan.personalAgent);
     context = await filesystemContext(options);
     let human = { configured: false }, reviews = validateReviews({ providers: [], bindings: [] });
     if (plan.human !== null) {
@@ -267,8 +270,22 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
         }
       }
     }
+    const personalAgent = plan.personalAgent !== undefined && plan.personalAgent !== null;
+    if (personalAgent) {
+      closed(plan.personalAgent, ['source']); exactPath(plan.personalAgent.source);
+      check(!files.some(file => file.source === plan.personalAgent.source), 'universal_policy_file_invalid');
+      const file = await readBounded(plan.personalAgent.source, 'private', context); file.target = personalAgentPrivateTarget; files.push(file);
+      try {
+        // Reuse the installed runtime validator, including its closed account allowlist.
+        // Validation creates no credential and must never contact the gateway.
+        loadPersonalAgentConfiguration({ [settings.personalAgent]: '1', [settings.personalAgentFile]: file.source },
+          { fetchImpl: async () => fail('universal_policy_personal_agent_invalid') });
+      } catch { fail('universal_policy_personal_agent_invalid'); }
+    }
     const environment = [{ name: settings.operator, value: '1' }, ...(plan.phase === 'legacy-baseline' ? [] : [
       { name: settings.universal, value: 'true' }, { name: settings.human, value: human.configured ? '1' : '0' },
+      { name: settings.personalAgent, value: personalAgent ? '1' : '0' },
+      ...(personalAgent ? [{ name: settings.personalAgentFile, value: personalAgentPrivateTarget }] : []),
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
       ...(plan.reviews ? [{ name: settings.reviews, value: reviewsTarget }] : []),
       ...(selected ? [{ name: settings.selected, value: selectedTarget },
@@ -280,7 +297,11 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
       human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) }, ...(selected ? { selected } : {}) };
     const receipt = freeze({ ...publicValue, policyDigest: digest(publicValue) }), handle = Object.freeze(Object.create(null));
-    handles.set(handle, { active: true, context, files, receipt }); return handle;
+    handles.set(handle, { active: true, context, files, receipt });
+    // The runtime loader reads the approved pathname independently. Recheck the
+    // captured bytes and file identity before granting a handle for that read.
+    if (personalAgent) await assertUniversalPolicyCurrent(handle);
+    return handle;
   } catch (error) { files.forEach(file => file.bytes.fill(0)); if (error instanceof SafeError) throw error; fail(); }
 }
 export function publicUniversalPolicy(handle) { return stateFor(handle).receipt; }

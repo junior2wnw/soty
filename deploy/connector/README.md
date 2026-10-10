@@ -74,6 +74,12 @@ The original container retains its protected configuration for pre-admission rol
 
 The preservation projection normalizes only two Docker API1.45 defaults proven by disposable roundtrip: OomKillDisable null/false and an absent legacy top-level MAC reflected from the explicitly supplied primary endpoint MAC. An explicit conflicting MAC, endpoint change or enabled OOM-disable remains a mismatch. The candidate reports the SHA256 of the valid nonsecret policy bytes actually parsed at startup; admission checks that digest against the reviewed file hash, in addition to re-reading the host file. No credential digest is published.
 
+## Private personal-agent opt-in
+
+The existing `soty.universal-rollout-policy.v1` feature plan may explicitly include `"personalAgent": {"source": "/home/operator/.config/soty/personal-agent.json"}`. Omission or `null` sets `SOTY_PERSONAL_AGENT_ENABLED=0`; enabling is refused in `legacy-baseline`. The two-step baseline/features image and storage gates are unchanged.
+
+The operator supplies a private `soty.personal-agent-installed.v1` file for the existing [runtime loader](../../server/personal-agent-configuration.js), with the exact intended account IDs in `accountIds`. The policy reuses that validator without network calls, binds the private bytes and file identity to the existing encrypted witness, and adds only `SOTY_PERSONAL_AGENT_ENABLED=1`, `SOTY_PERSONAL_AGENT_CONFIG_FILE=/run/secrets/soty-personal-agent.json`, and the matching read-only bind mount. Conflicting inherited settings or shadowing mounts are refused. No key, account, credential, provider configuration or authority is generated. Private contents and their digests do not enter the public receipt. Runtime actor/source checks still apply; policy validation does not claim a successful model turn or billing receipt.
+
 ## Offline SQLite observation
 
 After the exact single writer has stopped, the probe mounts production /data read-only and copies only the four recognized stores into private RAM. SQLite reads that snapshot normally with WAL; it may create SHM in RAM. It never uses immutable=1 and never creates SHM in the production volume. Unknown store files and orphan journals remain rejection evidence. Retained legacy room JSON is omitted only when rooms-v2.sqlite is present, matching the original probe priority. File and directory identities, sizes and timestamps are checked again after copying. Symlinks and non-regular files fail closed.
