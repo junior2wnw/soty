@@ -307,9 +307,11 @@
   .uf-scene-host { display: flex; flex-direction: column; min-height: 0; }
   .uf-scene-host>.uf-viewport { order: 1; flex: 1 1 0; height: auto; min-height: 0; }
   .uf-screen[data-mode=mine] .uf-scene-host>.uf-viewport { margin-bottom: 52px; }
-  .uf-context-toolbar { order: 0; position: static; display: grid; grid-template-columns: minmax(0,1fr) 44px; max-width: none; gap: 8px; padding: 0 16px 8px; background: var(--sw-bg); }
-  .uf-context-toolbar>.uf-context-selector { grid-area: auto; min-width: 0; max-width: 100%; padding: 9px 14px; }
-  .uf-context-toolbar>:is(.uf-zoom-controls,.uf-overview-button,.sw-icon-button:not(.uf-view-tools)) { display: none; }
+  .uf-context-toolbar { order: 0; position: static; display: grid; grid-template-columns: minmax(0,1fr) 140px 44px; max-width: none; gap: 6px; padding: 0 12px 8px; background: var(--sw-bg); }
+  .uf-context-toolbar>.uf-context-selector { grid-column: 1; grid-row: 1; min-width: 0; max-width: 100%; padding: 9px 6px; text-overflow: ellipsis; }
+  .uf-context-toolbar>.uf-zoom-controls { grid-column: 2; grid-row: 1; display: inline-flex; }
+  .uf-context-toolbar>:is(.uf-overview-button,.sw-icon-button:not(.uf-view-tools)) { display: none; }
+  .uf-context-toolbar>.uf-view-tools { grid-column: 3; grid-row: 1; }
   .uf-context-toolbar>.uf-view-tools { display: inline-flex; grid-area: auto; align-items: center; justify-content: center; width: 44px; height: 44px; min-height: 44px; border-radius: 14px; }
   .uf-screen-arrange { position: absolute; right: 16px; bottom: 4px; z-index: 10; min-height: 44px; padding: 9px 12px; font-size: 14px; background: var(--sw-surface); }
   .uf-undo { left: 16px; right: auto; bottom: 4px; min-height: 44px; }

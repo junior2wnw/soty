@@ -80,6 +80,9 @@ export interface WorldAssistantHandle {
   flush?(): Promise<void>;
   hasUnsavedChanges?(): boolean;
 }
+/** Display context, never an authority, source grant or private app contents. */
+export interface WorldAssistantContext { appId: string; name: string; path: string; status: string }
+export interface WorldAssistantMountContext { context(): WorldAssistantContext | null; isCurrent(): boolean }
 export interface WorldHumanCallState {
   state: string;
   microphone: 'off' | 'permission' | 'publishing' | 'on';
@@ -118,7 +121,7 @@ export interface WorldAppOptions {
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
-  openAssistant?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
+  openAssistant?: (host: HTMLElement, context?: WorldAssistantMountContext) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null }>;
   requestContact?: (profile: WorldProfile) => void | Promise<void>;

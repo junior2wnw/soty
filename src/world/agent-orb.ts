@@ -1,0 +1,144 @@
+import { el, emptyState, iconButton } from './dom';
+import { createDialog, type WorldDialog } from './dialogs';
+import { clampOrb, dockOrb, readOrbPosition, writeOrbPosition, type OrbPoint, type OrbViewport } from './agent-orb-position';
+import type { WorldAssistantContext, WorldAssistantHandle, WorldAppOptions } from './types';
+import './agent-orb.css';
+
+export interface AgentOrbHandle {
+  setAccount(accountId: string): void;
+  setStage(stage: HTMLElement, expanded: boolean): void;
+  resetScreen(): void;
+  mountIn(host: HTMLElement): Promise<WorldAssistantHandle>;
+  flush(): Promise<void>;
+  hasUnsavedChanges(): boolean;
+  dispose(): void;
+}
+
+/** A shell control only. It never reads the iframe or creates app permissions. */
+export function mountAgentOrb(root: HTMLElement, options: {
+  mount: WorldAppOptions['openAssistant'];
+  context(): WorldAssistantContext | null;
+  focusExisting(): boolean;
+}): AgentOrbHandle {
+  const doc = root.ownerDocument, view = doc.defaultView!;
+  const abort = new AbortController();
+  const orb = iconButton('Помощник', 'sparkle'); orb.classList.add('sw-agent-orb'); orb.hidden = true;
+  orb.title = 'Помощник · можно перемещать'; orb.setAttribute('aria-haspopup', 'dialog'); orb.setAttribute('aria-expanded', 'false');
+  const hint = el('span', 'sw-sr-only', 'Нажмите, чтобы открыть. Перетащите или переместите стрелками. Home — вернуть в угол.');
+  hint.id = `agent-orb-${crypto.randomUUID()}`; orb.setAttribute('aria-describedby', hint.id); orb.append(hint);
+  const parking = el('div'); parking.hidden = true; parking.className = 'sw-agent-parking';
+  root.append(orb, parking);
+  let account = '', epoch = 0, sessionEpoch = 0, disposed = false, expandedStage: HTMLElement | null = null;
+  let position: OrbPoint | null = null, drag: { pointer: number; start: OrbPoint; before: OrbPoint | null; x: number; y: number; moved: boolean } | null = null;
+  let suppressClick = false, dialog: WorldDialog | null = null, host: HTMLElement | null = null;
+  let handle: WorldAssistantHandle | null = null, mounting: Promise<void> | null = null;
+  const viewport = (): OrbViewport => {
+    const visible = view.visualViewport;
+    return { width: visible?.width ?? view.innerWidth, height: visible?.height ?? view.innerHeight, left: visible?.offsetLeft ?? 0, top: visible?.offsetTop ?? 0 };
+  };
+  const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
+  function layout(): void {
+    if (disposed) return;
+    const point = position ? clampOrb(position, viewport()) : dockOrb(viewport());
+    orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
+    root.dataset.agentOrb = account ? 'ready' : 'hidden';
+    orb.hidden = !account; orb.dataset.docked = String(!position);
+  }
+  function save(): void { const store = storage(); if (store) writeOrbPosition(store, account, position, viewport()); }
+  function closeDialog(restoreFocus = true): void { dialog?.close({ restoreFocus }); }
+  function resetScreen(): void {
+    closeDialog(false); if (host) parking.append(host);
+    expandedStage = null; orb.inert = false; if (orb.parentElement !== root) root.append(orb); layout();
+  }
+  function resetSession(): void {
+    sessionEpoch++; resetScreen(); handle?.dispose(); handle = null; host?.remove(); host = null; mounting = null;
+  }
+  function ensure(parent: HTMLElement): Promise<void> {
+    const owner = account, generation = epoch, screen = sessionEpoch;
+    const current = (): boolean => !disposed && !!owner && account === owner && epoch === generation && sessionEpoch === screen;
+    host ??= el('div', 'sw-assistant-host'); host.dataset.pwaIgnore = ''; parent.append(host);
+    if (handle || mounting) return mounting ?? Promise.resolve();
+    const target = host;
+    if (!options.mount) { target.replaceChildren(emptyState('Помощник пока не подключён', 'Продолжайте работу в приложении.')); return Promise.resolve(); }
+    target.replaceChildren(el('p', 'sw-muted', 'Открываем помощника…'));
+    mounting = Promise.resolve().then(() => {
+      if (!current()) return null;
+      return options.mount!(target, { context: () => current() ? options.context() : null, isCurrent: current });
+    }).then(result => {
+      if (!result) return;
+      if (!current()) { result.dispose(); return; }
+      handle = result;
+    }).catch(() => {
+      if (current()) target.replaceChildren(emptyState('Помощник пока недоступен', 'Закройте это окно и попробуйте ещё раз.'));
+    }).finally(() => { if (current()) mounting = null; });
+    return mounting;
+  }
+  function open(): void {
+    if (disposed || !account || dialog?.element.open || options.focusExisting()) return;
+    const owner = account, generation = epoch, screen = sessionEpoch;
+    const current = (): boolean => !disposed && account === owner && epoch === generation && sessionEpoch === screen;
+    const parent = expandedStage?.isConnected ? expandedStage : doc.body;
+    const next = createDialog('Помощник', () => {
+      if (host) parking.append(host);
+      if (dialog === next) dialog = null;
+      orb.setAttribute('aria-expanded', 'false');
+    }, { isCurrent: current, resolve: () => orb }, parent);
+    dialog = next; next.element.classList.add('sw-agent-dialog'); orb.setAttribute('aria-expanded', 'true');
+    next.element.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation(); next.close();
+    });
+    const context = current() ? options.context() : null;
+    if (context) next.body.append(el('p', 'sw-agent-context', `Открыто: ${context.name}`));
+    void ensure(next.body);
+  }
+  orb.addEventListener('click', event => { if (suppressClick && event.detail > 0) { suppressClick = false; event.preventDefault(); return; } suppressClick = false; open(); }, { signal: abort.signal });
+  orb.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || !account) return;
+    suppressClick = false;
+    const rect = orb.getBoundingClientRect(); drag = { pointer: event.pointerId, start: { x: rect.x, y: rect.y }, before: position, x: event.clientX, y: event.clientY, moved: false };
+    orb.setPointerCapture(event.pointerId);
+  }, { signal: abort.signal });
+  orb.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointer) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+    drag.moved = true; position = clampOrb({ x: drag.start.x + dx, y: drag.start.y + dy }, viewport()); layout();
+  }, { signal: abort.signal });
+  orb.addEventListener('pointerup', event => {
+    if (!drag || event.pointerId !== drag.pointer) return;
+    suppressClick = drag.moved; drag = null; save();
+    if (orb.hasPointerCapture(event.pointerId)) orb.releasePointerCapture(event.pointerId);
+  }, { signal: abort.signal });
+  const cancelDrag = (): void => { if (!drag) return; const pointer = drag.pointer; position = drag.before; drag = null; suppressClick = true;
+    if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); layout(); };
+  orb.addEventListener('pointercancel', cancelDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelDrag, { signal: abort.signal });
+  orb.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && drag) { event.preventDefault(); cancelDrag(); return; }
+    const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (event.key !== 'Home' && !delta[event.key]) return;
+    event.preventDefault(); suppressClick = false;
+    if (event.key === 'Home') position = null;
+    else { const point = position ?? dockOrb(viewport()), [x, y] = delta[event.key]!;
+      position = clampOrb({ x: point.x + x * (event.shiftKey ? 40 : 16), y: point.y + y * (event.shiftKey ? 40 : 16) }, viewport()); }
+    layout(); save();
+  }, { signal: abort.signal });
+  view.addEventListener('resize', layout, { signal: abort.signal });
+  view.visualViewport?.addEventListener('resize', layout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', layout, { signal: abort.signal });
+  layout();
+  return {
+    setAccount(next) { if (next === account) return; epoch++; drag = null; resetSession(); account = next;
+      const store = storage(); position = store ? readOrbPosition(store, account, viewport()) : null; layout(); },
+    setStage(stage, expanded) { if (disposed) return; closeDialog(false); expandedStage = expanded ? stage : null;
+      const parent = expanded ? stage : root; orb.inert = false; if (orb.parentElement !== parent) parent.append(orb); layout(); },
+    resetScreen,
+    async mountIn(parent) { closeDialog(false); const owner = account, generation = epoch;
+      const pending = ensure(parent), target = host; await pending;
+      const bound = owner === account && generation === epoch ? handle : null;
+      return { dispose: () => { if (target && parent.contains(target)) parking.append(target); },
+        flush: async () => { await bound?.flush?.(); }, hasUnsavedChanges: () => false }; },
+    async flush() { await mounting; await handle?.flush?.(); },
+    hasUnsavedChanges: () => !!handle?.hasUnsavedChanges?.(),
+    dispose() { if (disposed) return; resetSession(); disposed = true; epoch++; abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
+  };
+}

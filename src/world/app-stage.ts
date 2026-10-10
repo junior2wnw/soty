@@ -6,7 +6,7 @@ import { createAppBootRecovery } from './app-boot-recovery.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
-import type { WorldApi, WorldAppRecord } from './types';
+import type { WorldApi, WorldAppRecord, WorldAssistantContext } from './types';
 import { isAppExternalRequest } from './app-actions.mjs';
 import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
 import { mountRootVoiceCarrier } from './native-voice-carrier.mjs';
@@ -28,6 +28,7 @@ export interface AppStageOptions {
   renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
+  onFullscreenChange?(stage: HTMLElement, expanded: boolean): void;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
   onPlaceInField?(app: WorldAppRecord): void;
   onCommunity?(communityId: string): void;
@@ -37,6 +38,7 @@ export interface AppStageHandle {
   ready: Promise<void>; matches(intent: AppLaunchIntent): boolean; updateRoute(intent: AppLaunchIntent): void;
   updateApp(app: WorldAppRecord): void; updateCommunity(group: { communityId: string; name: string } | null): void;
   entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void;
+  assistantContext(): WorldAssistantContext | null;
 }
 
 export function appLaunchFailure(error: unknown): { title: string; detail: string } {
@@ -119,6 +121,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     expand.title = label; expand.setAttribute('aria-label', label); expand.setAttribute('aria-pressed', String(state.active));
     expand.disabled = state.pending;
     expand.replaceChildren(icon(state.active ? 'collapse' : 'expand'), el('span', '', label));
+    options.onFullscreenChange?.(screen, state.active);
   } });
   const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(); });
   refresh.dataset.stageControl = 'refresh';
@@ -379,6 +382,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
+    assistantContext: () => current() && selectedEntry ? { appId: app.appId, name: app.name, path: selectedEntry.path.split(/[?#]/u)[0]!, status: app.status } : null,
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
     dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };

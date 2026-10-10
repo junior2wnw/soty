@@ -3,6 +3,7 @@ import { resolveFieldAppArt } from './field-art.mjs';
 import { createFieldDocument, validateFieldDocument, type FieldDocument } from '../../modules/field/contract.mjs';
 import { el, button } from './dom';
 import { createAppActions } from '../platform/local-apps';
+import { mountAssistant } from '../platform/assistant';
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
 import type { WorldProfile, WorldCommunity, WorldMessage, WorldAppRecord, WorldApi } from './types';
 if (!import.meta.env.DEV)
@@ -278,9 +279,11 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
         return result as T;
     } };
 const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
+const assistant = (host: HTMLElement) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
+  connectDevice: () => toast('Устройство: локальный пример'), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) });
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
-mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: () => toast('Устройство: локальный пример'), agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host) });
+mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: () => toast('Устройство: локальный пример'), agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
 const marker = el('aside', 'sx-fixture-badge', 'Примеры · локальная проверка');
 marker.setAttribute('aria-label', 'Изолированный UI пример. Данные вымышленные, операции локальные.');
 document.body.append(marker);

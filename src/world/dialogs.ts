@@ -24,7 +24,7 @@ export function isDialogFocusTarget(node: HTMLElement | null): node is HTMLEleme
   return true;
 }
 
-export function createDialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget?: DialogReturnTarget): WorldDialog {
+export function createDialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget?: DialogReturnTarget, parent: HTMLElement = document.body): WorldDialog {
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const parentDialog = returnFocus?.closest('dialog[open]') ?? null;
   const dialog = el('dialog', 'sw-dialog');
@@ -66,7 +66,7 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
   const heading = el('h2', '', title); heading.id = titleId;
   header.append(heading, iconButton('Закрыть', 'close', () => close()));
   const body = el('div', 'sw-dialog-content');
-  dialog.append(header, body); document.body.append(dialog);
+  dialog.append(header, body); parent.append(dialog);
   dialog.addEventListener('close', () => finish(), { once: true });
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;

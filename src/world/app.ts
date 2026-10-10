@@ -17,6 +17,7 @@ import type { DirectoryApp, DirectoryContact, DirectoryPerson } from './field-di
 import { createBrandMark } from './brand';
 import { createOriginContinuityLinks } from '../platform/origin-continuity';
 import { observeVisibleViewport } from './visible-viewport';
+import { mountAgentOrb, type AgentOrbHandle } from './agent-orb';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
@@ -153,12 +154,14 @@ class WorldApplication {
   private requestSequence = 0;
   private screenSequence = 0;
   private destroyed = false;
+  private agentOrb: AgentOrbHandle | null = null;
   private visibilityOpen = false;
   private routeLoaded = false;
   private readonly releaseViewport: () => void;
 
   constructor(root: HTMLElement, options: WorldAppOptions) {
     this.root = root; this.options = options; this.api = options.api;
+    this.assistantMode = options.openAssistant ? 'chat' : 'create';
     this.releaseViewport = observeVisibleViewport(root.ownerDocument);
     this.preferences = loadPreferences(); this.view = this.preferences.view;
     this.theme = createThemeController({ initial: this.preferences, onChange: next => { Object.assign(this.preferences, next); this.persist(); } });
@@ -187,6 +190,11 @@ class WorldApplication {
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
     root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
+    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.appStage?.assistantContext?.() ?? null,
+      focusExisting: () => {
+        if (this.view !== 'assistant' || this.assistantMode !== 'chat' || !this.assistantHandle) return false;
+        this.main.querySelector<HTMLTextAreaElement>('.sw-assistant-host textarea')?.focus(); return true;
+      } });
     this.pwaBanner.setAttribute('aria-live', 'polite'); this.pwaBanner.setAttribute('aria-label', 'Состояние приложения');
     if (options.humanCalls) {
       this.humanCallState = options.humanCalls.snapshot();
@@ -206,10 +214,10 @@ class WorldApplication {
         if (!this.profile && this.deskAccount) void this.refresh(true);
       }
     });
-    this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); return !this.screenHasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
+    this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sa-stage,.uf-screen,.uf-global-search') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -218,7 +226,7 @@ class WorldApplication {
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
     window.addEventListener('pagehide', () => this.stopIncomingCallPolling(), { signal: this.controller.signal });
     window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); }, { signal: this.controller.signal });
-    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
+    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
@@ -465,7 +473,7 @@ class WorldApplication {
 
   destroy(): void {
     this.stopIncomingCallPolling();
-    this.destroyed = true; this.requestSequence++; this.screenSequence++;
+    this.destroyed = true; this.requestSequence++; this.screenSequence++; this.agentOrb?.dispose(); this.agentOrb = null;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
     this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
@@ -558,7 +566,7 @@ class WorldApplication {
   private transitionAccount(accountId: string | null): boolean {
     const next = typeof accountId === 'string' && accountId.trim() ? accountId : '';
     if (next === this.deskAccount) return false;
-    this.deskAccount = next; this.accountGeneration++; this.homeRequest++;
+    this.deskAccount = next; this.accountGeneration++; this.homeRequest++; this.agentOrb?.setAccount(next);
     this.fieldOutbox?.dispose(); this.fieldOutbox = null;
     this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
     this.profile = null; this.communities = []; this.apps = []; this.devices = []; this.homeNotes = null;
@@ -600,7 +608,7 @@ class WorldApplication {
     const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
     node.append(el('span', '', label)); return node;
   }
-  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private cleanScreen(): void { this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
   private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
@@ -913,7 +921,7 @@ class WorldApplication {
   private renderAssistant(): void {
     const section = el('section', 'sx-assistant');
     const header = el('header', 'sx-assistant-heading');
-    const copy = el('div'); copy.append(el('h1', '', 'Помощник'), el('p', 'sx-subtitle', this.assistantMode === 'create' ? 'Из идеи — в полезное приложение' : 'Задачи на ваших устройствах'));
+    const copy = el('div'); copy.append(el('h1', '', 'Помощник'), el('p', 'sx-subtitle', this.assistantMode === 'create' ? 'Из идеи — в полезное приложение' : 'Разговоры и задачи'));
     const tabs = el('div', 'sx-assistant-modes'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Режим помощника');
     const choose = (mode: 'create' | 'chat', keyboard = false): void => this.afterNoteSaved(() => {
       this.assistantMode = mode; this.navigateReady('assistant');
@@ -932,7 +940,7 @@ class WorldApplication {
     const host = el('div', 'sx-assistant-content sw-assistant-host'); host.dataset.pwaIgnore = '';
     header.append(copy, tabs); section.append(header, host); this.main.replaceChildren(section);
     const sequence = this.screenSequence;
-    const mount = this.assistantMode === 'create' ? this.options.openAppBuilder : this.options.openAssistant;
+    const mount = this.assistantMode === 'create' ? this.options.openAppBuilder : this.agentOrb ? (target: HTMLElement) => this.agentOrb!.mountIn(target) : this.options.openAssistant;
     if (!mount) {
       const panel = el('div', 'sx-assistant-fallback'); panel.append(heading('Помощник', 'Ваши задачи и устройства'),
         button('Создать приложение', 'sparkle', 'sw-button-primary', () => this.runHook(() => this.options.agentCreate())),
@@ -1935,6 +1943,7 @@ class WorldApplication {
         if (stage.hasUnsavedChanges()) { this.toast('Скопируйте черновик перед сменой аккаунта', true); return; }
         await this.options.openAccount('recovery'); if (current()) await this.refresh();
       },
+      onFullscreenChange: (screen, expanded) => { if (current()) this.agentOrb?.setStage(screen, expanded); },
       onSettings: (value, onUpdated) => { if (current()) this.openAppSettings(value, onUpdated); },
       onPlaceInField: value => { if (current()) this.openAppFieldPlacement(value, contextId => {
         if (!current()) return;
