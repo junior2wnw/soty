@@ -136,3 +136,86 @@ test('new Human2 data fences a reader1-only fallback before any downgrade helper
   assert.equal(f.map.get(args.originalId).State.Running, false); assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name, 'no');
   assert.equal(f.events.includes('helper:rollback'), false); assert.equal(f.events.includes('start-old'), false);
 });
+
+const generatedBridgeMac='02:42:ac:11:00:03';
+function clearBridgeMacOnStop(f,{mode='bridge',afterStop=()=>{}}={}){
+  const old=f.map.get(args.originalId);old.HostConfig.NetworkMode=mode;
+  old.NetworkSettings.Networks={bridge:{IPAMConfig:null,Aliases:null,Links:null,DriverOpts:null,GwPriority:0,MacAddress:generatedBridgeMac}};
+  const stop=f.engine.stop;
+  f.engine.stop=async id=>{await stop(id);if(id===args.originalId){old.NetworkSettings.Networks.bridge.MacAddress='';afterStop(old);}};
+  return old;
+}
+
+test('universal promotion preserves generated bridge MAC intent after its confirmed original STOP',async t=>{
+  for(const phase of ['legacy-baseline','features'])for(const mode of ['bridge','default']){
+    const f=await fixture(t,{phase}),old=clearBridgeMacOnStop(f,{mode});
+    await f.run.prepare(f.request);
+    const config=structuredClone(f.run.config),original=structuredClone(f.run.original);
+    await f.run.promote();
+    assert.equal(f.run.state.phase,'committed');assert.equal(old.NetworkSettings.Networks.bridge.MacAddress,'');
+    assert.deepEqual(f.run.config,config);assert.deepEqual(f.run.original,original);
+    assert.equal(f.map.get(f.run.candidate.Id).NetworkSettings.Networks.bridge.MacAddress,generatedBridgeMac);
+    assert.ok(f.events.indexOf('stop:'+args.originalId)<f.events.indexOf('start-candidate'));
+    assert.equal(f.events.includes('helper:rollback'),false);
+  }
+});
+
+test('universal failed readiness can restore the same original after Docker cleared its bridge MAC',async t=>{
+  const f=await fixture(t,{fault:{op:'readiness',when:'before'}}),old=clearBridgeMacOnStop(f);
+  await f.run.prepare(f.request);await assert.rejects(f.run.promote(),/injected_failure/u);
+  assert.equal(f.run.state.phase,'restored');assert.equal(old.State.Running,true);
+  assert.equal(old.Id,args.originalId);assert.equal(old.Image,args.originalImage);
+  assert.equal(old.HostConfig.RestartPolicy.Name,'unless-stopped');
+  assert.equal(f.events.filter(x=>x==='start-old').length,1);
+  assert.equal(f.map.get(f.run.candidate.Id).State.Running,false);
+});
+
+test('post-STOP MAC reconciliation still fences configuration and identity drift before either application START',async t=>{
+  const changes={
+    nonemptyMac:old=>old.NetworkSettings.Networks.bridge.MacAddress='02:42:ac:11:00:04',
+    nullMac:old=>old.NetworkSettings.Networks.bridge.MacAddress=null,
+    absentMac:old=>delete old.NetworkSettings.Networks.bridge.MacAddress,
+    env:old=>old.Config.Env.push('UNAPPROVED=1'),
+    ipam:old=>old.NetworkSettings.Networks.bridge.IPAMConfig={IPv4Address:'172.17.0.4'},
+    alias:old=>old.NetworkSettings.Networks.bridge.Aliases=['unapproved'],
+    links:old=>old.NetworkSettings.Networks.bridge.Links=['other:alias'],
+    driver:old=>old.NetworkSettings.Networks.bridge.DriverOpts={unapproved:'1'},
+    priority:old=>old.NetworkSettings.Networks.bridge.GwPriority=1,
+    explicitMac:old=>old.Config.MacAddress=generatedBridgeMac,
+    identity:old=>old.Id='9'.repeat(64),
+    image:old=>old.Image='sha256:'+'9'.repeat(64),
+  };
+  for(const [name,afterStop] of Object.entries(changes))await t.test(name,async t=>{
+    const f=await fixture(t);clearBridgeMacOnStop(f,{afterStop});await f.run.prepare(f.request);
+    await assert.rejects(f.run.promote());
+    assert.equal(f.run.state.phase,'recovery_required');
+    assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('start-old'),false);
+  });
+});
+
+test('cleared MAC cannot be normalized before our STOP, on a candidate, or for configured network intent',async t=>{
+  for(const state of ['running','externally-stopped']){
+    const f=await fixture(t),old=clearBridgeMacOnStop(f);await f.run.prepare(f.request);
+    old.NetworkSettings.Networks.bridge.MacAddress='';
+    if(state==='externally-stopped')Object.assign(old.State,{Running:false,Status:'exited'});
+    await assert.rejects(f.run.checkUniversalCurrent(),/universal_policy_rollout_mismatch/u);
+    await assert.rejects(f.run.checkOriginalPreserved(),/original_configuration_changed/u);
+    assert.equal(f.events.some(x=>x.startsWith('stop:')),false);
+  }
+  {
+    const f=await fixture(t);clearBridgeMacOnStop(f);await f.run.prepare(f.request);
+    f.map.get(f.run.candidate.Id).NetworkSettings.Networks.bridge.MacAddress='';
+    await assert.rejects(f.run.promote(),/candidate_configuration_mismatch/u);
+    assert.equal(f.events.some(x=>x.startsWith('stop:')),false);
+  }
+  const settings=[old=>old.Config.MacAddress=generatedBridgeMac,
+    old=>old.NetworkSettings.Networks.bridge.IPAMConfig={IPv4Address:'172.17.0.3'},
+    old=>old.NetworkSettings.Networks.bridge.Aliases=['configured'],
+    old=>old.NetworkSettings.Networks.bridge.Links=['other:configured'],
+    old=>old.NetworkSettings.Networks.bridge.DriverOpts={configured:'1'}];
+  for(const configure of settings){
+    const f=await fixture(t),old=clearBridgeMacOnStop(f);configure(old);await f.run.prepare(f.request);
+    await assert.rejects(f.run.promote());assert.equal(f.run.state.phase,'recovery_required');
+    assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('start-old'),false);
+  }
+});

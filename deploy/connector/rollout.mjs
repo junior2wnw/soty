@@ -97,7 +97,7 @@ export class Rollout {
       }
       requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
     }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');
-    this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy,args.universalPolicy);this.fingerprint=preservationHash(this.config);
+    this.args=args;this.original=old;this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy,args.universalPolicy);this.fingerprint=preservationHash(this.config);
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
@@ -110,6 +110,24 @@ export class Rollout {
   }
   universalBinding(preservationFingerprint){return {preservationFingerprint,originalId:this.args.originalId,originalImage:this.args.originalImage,
     candidateImage:this.args.candidateImage,revision:this.args.revision,transaction:this.args.transaction};}
+  originalForComparison(current){
+    const before=this.original.NetworkSettings?.Networks,after=current.NetworkSettings?.Networks;
+    const prior=before?.bridge,next=after?.bridge;
+    const empty=value=>value===undefined||value===null||value==='';
+    // Docker clears a generated default-bridge MAC after STOP. Recover only
+    // that observed representation for comparison, never for CREATE or START.
+    if(!this.originalStopConfirmed||current.Id!==this.original.Id||current.Image!==this.original.Image
+      ||current.State.Running||current.State.Paused||current.State.Status!=='exited'
+      ||!['bridge','default'].includes(this.original.HostConfig.NetworkMode)
+      ||current.HostConfig.NetworkMode!==this.original.HostConfig.NetworkMode
+      ||!empty(this.original.Config.MacAddress)||!empty(current.Config.MacAddress)
+      ||Object.keys(before||{}).length!==1||Object.keys(after||{}).length!==1||!prior||!next
+      ||['IPAMConfig','Aliases','Links','DriverOpts'].some(key=>prior[key]!=null||next[key]!=null)
+      ||typeof prior.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(prior.MacAddress)
+      ||next.MacAddress!=='')return current;
+    const compared=clone(current);compared.NetworkSettings.Networks.bridge.MacAddress=prior.MacAddress;
+    return compared;
+  }
   async checkUniversalCurrent(){
     if(!this.args.universalPolicy)return;
     await assertUniversalPolicyCurrent(this.args.universalPolicy);
@@ -121,7 +139,7 @@ export class Rollout {
     requireThat(hash(old.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)
       ||this.originalPolicySuspended&&hash(old.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'original_configuration_changed');
     old.HostConfig.RestartPolicy=clone(this.original.HostConfig.RestartPolicy);
-    const fingerprint=preservationHash(createConfig(old,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy));
+    const fingerprint=preservationHash(createConfig(this.originalForComparison(old),this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy));
     bindUniversalRollout(this.args.universalPolicy,this.universalBinding(fingerprint));
     if(this.candidate)this.validateCandidate(await this.engine.inspect(this.candidate.Id));
   }
@@ -131,7 +149,7 @@ export class Rollout {
     requireThat(hash(current.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)
       ||this.originalPolicySuspended&&hash(current.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'original_configuration_changed');
     current.HostConfig.RestartPolicy=clone(this.original.HostConfig.RestartPolicy);
-    requireThat(preservationHash(createConfig(current,current.Image,this.args.transaction))===preservationHash(createConfig(this.original,this.original.Image,this.args.transaction)),
+    requireThat(preservationHash(createConfig(this.originalForComparison(current),current.Image,this.args.transaction))===preservationHash(createConfig(this.original,this.original.Image,this.args.transaction)),
       'original_configuration_changed');
   }
   validateCandidate(c,{stopped=false}={}) {
@@ -161,7 +179,7 @@ export class Rollout {
       await this.guardStart(this.original.Id,{running:true});
       await this.note('stopping_original');
       await this.checkUniversalCurrent();
-      await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
+      await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;this.originalStopConfirmed=true;
       await this.note('original_stopped');
       await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256),'offline_admission_race');
