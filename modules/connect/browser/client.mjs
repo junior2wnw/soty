@@ -162,7 +162,10 @@ export function createClientWithStorage(options, storage) {
   }
   async function post(body) {
     let response;
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20_000);
+    // Only the signed long-running turn receives a longer transport deadline.
+    // Challenges, cancellation and all other RPCs retain the normal bound.
+    const timeoutMs = body.op === 'agent.turn' && body.proof ? 120_000 : 20_000;
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       response = await fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonicalJson({ protocol: 1, ...body }),
         credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal });

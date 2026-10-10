@@ -43,14 +43,14 @@ function channelBus() {
 async function fixture(t) {
   const operations = [], traffic = [], clients = [];
   const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
-    operations: new Set(['world.profile.get', 'world.community.list', 'world.echo']),
+    operations: new Set(['world.profile.get', 'world.community.list', 'world.echo', 'agent.turn', 'agent.cancel', 'voice.agent.turn']),
     execute({ op, args, actor }) { operations.push({ op, accountId: actor.accountId, args }); return { accountId: actor.accountId, text: args.text ?? null }; },
   }] });
   let afterResponse = null;
   const fetcher = async (_url, options) => {
     const body = JSON.parse(options.body); traffic.push(body.op);
     const response = await service.handle({ ...body, origin });
-    if (afterResponse) await afterResponse(body, response);
+    if (afterResponse) await afterResponse(body, response, options);
     return new Response(JSON.stringify(response), { status: response.ok ? 200 : 400 });
   };
   const client = (store, options = {}) => {
@@ -137,3 +137,70 @@ test('malformed or mismatched context dispatches no challenge; two-argument API 
   assert.deepEqual(f.traffic, []);
   assert.equal((await f.primary.extension('world.echo', { text: 'legacy' })).text, 'legacy');
 });
+
+
+function transportClock(t) {
+  let now = 0, next = 0;
+  const timers = new Map();
+  t.mock.method(globalThis, 'setTimeout', (callback, ms) => {
+    const id = ++next; timers.set(id, { callback, at: now + ms }); return id;
+  });
+  t.mock.method(globalThis, 'clearTimeout', id => timers.delete(id));
+  return { pending: () => timers.size, advance(ms) {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.callback(); }
+  } };
+}
+function holdResponse(f, operation) {
+  const entered = deferred(), release = deferred();
+  let signal;
+  f.afterResponse((body, _response, options) => {
+    if (body.op !== operation) return;
+    signal = options.signal; entered.resolve();
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+      signal.addEventListener('abort', abort, { once: true });
+      release.promise.then(() => { signal.removeEventListener('abort', abort); resolve(); });
+    });
+  });
+  return { entered: entered.promise, release: release.resolve, signal: () => signal };
+}
+
+test('signed agent turn survives 20 seconds while local state and cancel remain usable; success clears deadline', async t => {
+  const f = await fixture(t), clock = transportClock(t), held = holdResponse(f, 'agent.turn');
+  const pending = f.primary.extension('agent.turn', { text: 'long turn' }, { expectedAccountId: f.a });
+  await held.entered; clock.advance(20_001);
+  assert.equal(held.signal().aborted, false);
+  assert.equal((await f.primary.getLocalState()).accountId, f.a);
+  assert.equal((await f.primary.extension('agent.cancel', {}, { expectedAccountId: f.a })).accountId, f.a);
+  clock.advance(69_999); assert.equal(held.signal().aborted, false);
+  held.release(); assert.equal((await pending).text, 'long turn');
+  assert.equal(clock.pending(), 0);
+  clock.advance(120_000); assert.equal(held.signal().aborted, false);
+  assert.equal(f.traffic.filter(op => op === 'agent.turn').length, 1);
+});
+
+test('signed agent turn aborts at its fixed bound without retries and clears the deadline', async t => {
+  const f = await fixture(t), clock = transportClock(t), held = holdResponse(f, 'agent.turn');
+  const pending = f.primary.extension('agent.turn', { timeoutMs: 999999999 });
+  const rejected = assert.rejects(pending, { code: 'NETWORK_TIMEOUT' });
+  await held.entered; clock.advance(119_999); assert.equal(held.signal().aborted, false);
+  clock.advance(1); await rejected;
+  assert.equal(held.signal().aborted, true); assert.equal(clock.pending(), 0);
+  held.release(); await turn();
+  assert.equal(f.traffic.filter(op => op === 'agent.turn').length, 1);
+  assert.equal((await f.primary.getLocalState()).accountId, f.a);
+});
+
+for (const operation of ['challenge', 'world.echo', 'agent.cancel', 'voice.agent.turn']) {
+  test(`${operation} retains 20-second deadline even with a caller timeout argument`, async t => {
+    const f = await fixture(t), clock = transportClock(t), held = holdResponse(f, operation);
+    const pending = f.primary.extension(operation === 'challenge' ? 'agent.turn' : operation, { timeoutMs: 999999999 });
+    const rejected = assert.rejects(pending, { code: 'NETWORK_TIMEOUT' });
+    await held.entered; clock.advance(19_999); assert.equal(held.signal().aborted, false);
+    clock.advance(1); await rejected; assert.equal(clock.pending(), 0);
+    held.release(); await turn();
+    assert.equal(f.traffic.filter(op => op === operation).length, 1);
+    if (operation === 'challenge') assert.equal(f.operations.length, 0);
+  });
+}

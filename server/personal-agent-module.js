@@ -130,7 +130,8 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
           tool_calls: result.message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name,
             arguments: canonical(call.arguments, modelPolicy.toolArgumentBytes, modelPolicy.jsonDepth) } })) } }] };
       };
-      const result = await runtime.runTurn({ adapter, role: 'human', prompt, contextStore, contextId: args.contextId, tools, provider });
+      // Keep the complete runtime below the browser's signed-turn transport deadline.
+      const result = await runtime.runTurn({ timeoutMs: 90_000, adapter, role: 'human', prompt, contextStore, contextId: args.contextId, tools, provider });
       assertCurrent(); requireValue(result.status === 'complete', 'agent_output_invalid');
       turn.state = 'completed';
       return { schema: 'soty.personal-agent-turn.v1', requestId: turnId, ...result, accounting: turn.receipts };
