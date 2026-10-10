@@ -658,8 +658,13 @@ class WorldApplication {
   }
 
   private dialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget = this.dialogReturnTarget()): WorldDialog {
-    const dialog = createDialog(title, context => { this.dialogs.delete(dialog); onClose?.(context); }, returnTarget);
-    this.dialogs.add(dialog); this.avatars.observe(dialog.element); return dialog;
+    const account = this.accountGeneration;
+    const dialog = createDialog(title, context => {
+      this.dialogs.delete(dialog);
+      if (!this.destroyed && account === this.accountGeneration && this.agentOrb?.releaseModal(dialog.element)) this.agentOrb.setModal([...this.dialogs].reverse().find(value => value.element.open && value.element.isConnected)?.element ?? null);
+      onClose?.(context);
+    }, returnTarget);
+    this.dialogs.add(dialog); this.agentOrb?.setModal(dialog.element); this.avatars.observe(dialog.element); return dialog;
   }
 
   private renderNavigation(): void {
@@ -1944,6 +1949,7 @@ class WorldApplication {
         await this.options.openAccount('recovery'); if (current()) await this.refresh();
       },
       onFullscreenChange: (screen, expanded) => { if (current()) this.agentOrb?.setStage(screen, expanded); },
+      onModalChange: (modal, open) => { if (open) { if (current()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); },
       onSettings: (value, onUpdated) => { if (current()) this.openAppSettings(value, onUpdated); },
       onPlaceInField: value => { if (current()) this.openAppFieldPlacement(value, contextId => {
         if (!current()) return;

@@ -7,6 +7,8 @@ import './agent-orb.css';
 export interface AgentOrbHandle {
   setAccount(accountId: string): void;
   setStage(stage: HTMLElement, expanded: boolean): void;
+  setModal(modal: HTMLDialogElement | null): void;
+  releaseModal(modal: HTMLDialogElement): boolean;
   resetScreen(): void;
   mountIn(host: HTMLElement): Promise<WorldAssistantHandle>;
   flush(): Promise<void>;
@@ -29,6 +31,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   const parking = el('div'); parking.hidden = true; parking.className = 'sw-agent-parking';
   root.append(orb, parking);
   let account = '', epoch = 0, sessionEpoch = 0, disposed = false, expandedStage: HTMLElement | null = null;
+  let modal: HTMLDialogElement | null = null;
   let position: OrbPoint | null = null, drag: { pointer: number; start: OrbPoint; before: OrbPoint | null; x: number; y: number; moved: boolean } | null = null;
   let suppressClick = false, dialog: WorldDialog | null = null, host: HTMLElement | null = null;
   let handle: WorldAssistantHandle | null = null, mounting: Promise<void> | null = null;
@@ -46,9 +49,16 @@ export function mountAgentOrb(root: HTMLElement, options: {
   }
   function save(): void { const store = storage(); if (store) writeOrbPosition(store, account, position, viewport()); }
   function closeDialog(restoreFocus = true): void { dialog?.close({ restoreFocus }); }
+  function clearModal(): void { modal?.classList.remove('sw-agent-modal-host'); modal = null; }
+  function placeOrb(): void {
+    if (modal && (!modal.isConnected || !modal.open)) clearModal();
+    const parent = modal ?? (expandedStage?.isConnected ? expandedStage : root);
+    orb.inert = false; if (orb.parentElement !== parent) parent.append(orb); layout();
+  }
   function resetScreen(): void {
+    cancelDrag();
     closeDialog(false); if (host) parking.append(host);
-    expandedStage = null; orb.inert = false; if (orb.parentElement !== root) root.append(orb); layout();
+    expandedStage = null; placeOrb();
   }
   function resetSession(): void {
     sessionEpoch++; resetScreen(); handle?.dispose(); handle = null; host?.remove(); host = null; mounting = null;
@@ -74,10 +84,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
     return mounting;
   }
   function open(): void {
-    if (disposed || !account || dialog?.element.open || options.focusExisting()) return;
+    if (disposed || !account || dialog?.element.open || !modal && options.focusExisting()) return;
     const owner = account, generation = epoch, screen = sessionEpoch;
     const current = (): boolean => !disposed && account === owner && epoch === generation && sessionEpoch === screen;
-    const parent = expandedStage?.isConnected ? expandedStage : doc.body;
+    const parent = modal?.isConnected && modal.open ? modal : expandedStage?.isConnected ? expandedStage : doc.body;
     const next = createDialog('Помощник', () => {
       if (host) parking.append(host);
       if (dialog === next) dialog = null;
@@ -110,11 +120,12 @@ export function mountAgentOrb(root: HTMLElement, options: {
     suppressClick = drag.moved; drag = null; save();
     if (orb.hasPointerCapture(event.pointerId)) orb.releasePointerCapture(event.pointerId);
   }, { signal: abort.signal });
-  const cancelDrag = (): void => { if (!drag) return; const pointer = drag.pointer; position = drag.before; drag = null; suppressClick = true;
-    if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); layout(); };
-  orb.addEventListener('pointercancel', cancelDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelDrag, { signal: abort.signal });
+  function cancelDrag(): void { if (!drag) return; const pointer = drag.pointer; position = drag.before; drag = null; suppressClick = true;
+    if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); layout(); }
+  const cancelPointerDrag = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer) cancelDrag(); };
+  orb.addEventListener('pointercancel', cancelPointerDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelPointerDrag, { signal: abort.signal });
   orb.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && drag) { event.preventDefault(); cancelDrag(); return; }
+    if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancelDrag(); return; }
     const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (event.key !== 'Home' && !delta[event.key]) return;
     event.preventDefault(); suppressClick = false;
@@ -127,10 +138,17 @@ export function mountAgentOrb(root: HTMLElement, options: {
   view.visualViewport?.addEventListener('resize', layout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', layout, { signal: abort.signal });
   layout();
   return {
-    setAccount(next) { if (next === account) return; epoch++; drag = null; resetSession(); account = next;
+    setAccount(next) { if (next === account) return; epoch++; clearModal(); resetSession(); account = next;
       const store = storage(); position = store ? readOrbPosition(store, account, viewport()) : null; layout(); },
-    setStage(stage, expanded) { if (disposed) return; closeDialog(false); expandedStage = expanded ? stage : null;
-      const parent = expanded ? stage : root; orb.inert = false; if (orb.parentElement !== parent) parent.append(orb); layout(); },
+    setStage(stage, expanded) { if (disposed) return; cancelDrag(); closeDialog(false); expandedStage = expanded ? stage : null; placeOrb(); },
+    setModal(next) {
+      if (disposed) return;
+      const target = next?.ownerDocument === doc && next.isConnected && next.open ? next : null;
+      if (target === modal) { placeOrb(); return; }
+      cancelDrag(); closeDialog(false); clearModal(); modal = target;
+      modal?.classList.add('sw-agent-modal-host'); placeOrb();
+    },
+    releaseModal(previous) { if (disposed || modal !== previous) return false; cancelDrag(); closeDialog(false); clearModal(); placeOrb(); return true; },
     resetScreen,
     async mountIn(parent) { closeDialog(false); const owner = account, generation = epoch;
       const pending = ensure(parent), target = host; await pending;
@@ -139,6 +157,6 @@ export function mountAgentOrb(root: HTMLElement, options: {
         flush: async () => { await bound?.flush?.(); }, hasUnsavedChanges: () => false }; },
     async flush() { await mounting; await handle?.flush?.(); },
     hasUnsavedChanges: () => !!handle?.hasUnsavedChanges?.(),
-    dispose() { if (disposed) return; resetSession(); disposed = true; epoch++; abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
+    dispose() { if (disposed) return; clearModal(); resetSession(); disposed = true; epoch++; abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
   };
 }

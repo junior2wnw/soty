@@ -29,6 +29,7 @@ export interface AppStageOptions {
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onFullscreenChange?(stage: HTMLElement, expanded: boolean): void;
+  onModalChange?(modal: HTMLDialogElement, open: boolean): void;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
   onPlaceInField?(app: WorldAppRecord): void;
   onCommunity?(communityId: string): void;
@@ -85,7 +86,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const reviewsHost = el('div');
   const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
     if (!current()) return;
-    feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: current });
+    feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: current,
+      onModalChange: (modal, open) => { if (!open || current()) options.onModalChange?.(modal, open); } });
     feedback.open();
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';

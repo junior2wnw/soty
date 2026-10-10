@@ -70,6 +70,7 @@ export function createDialog(title: string, onClose?: (context: DialogCloseConte
   dialog.addEventListener('close', () => finish(), { once: true });
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
+    if (event.target instanceof HTMLElement && event.target.closest('dialog[open]') !== dialog) return;
     const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, input, textarea, select, summary, a[href], [tabindex]')).filter(node => {
       if (node.tabIndex < 0 || node.matches(':disabled') || node.closest('[hidden]') || !node.getClientRects().length) return false;
       // Collapsed details can retain layout boxes for their hidden content.

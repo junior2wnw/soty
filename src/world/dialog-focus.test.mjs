@@ -28,7 +28,7 @@ function fixture() {
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     hasAttribute(name) { return name === 'open' ? this.open : this.attributes.has(name); }
     removeAttribute(name) { this.attributes.delete(name); }
-    append(...nodes) { for (const node of nodes) if (node instanceof Element) { node.parentElement = this; this.children.push(node); } }
+    append(...nodes) { for (const node of nodes) if (node instanceof Element) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(child => child !== node); node.parentElement = this; this.children.push(node); } }
     replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
     contains(node) { return node === this || this.children.some(child => child.contains(node)); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = document.body; const parent = this.parentElement; if (parent) parent.children = parent.children.filter(child => child !== this); this.parentElement = null; }
@@ -95,6 +95,14 @@ function fixture() {
   const changed = () => settings.onChanged({ app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
   return { document, location, el, app, main, dialogs, record, opener, chain, changed, settings: () => settings,
     disposed: () => disposed, renders: () => renders, drain() { while (tasks.length) tasks.shift()(); } };
+}
+
+function bubbleTab(target, shiftKey = false) {
+  const event = new Event('keydown', { cancelable: true, bubbles: true });
+  Object.defineProperties(event, { target: { value: target }, key: { value: 'Tab' }, shiftKey: { value: shiftKey } });
+  let stopped = false; const stop = event.stopPropagation.bind(event); event.stopPropagation = () => { stopped = true; stop(); };
+  for (let node = target; node; node = node.parentElement) { node.dispatchEvent(event); if (stopped) break; }
+  return event;
 }
 
 test('managed close runs cleanup/render once before resolving a replacement, never again in the native close task', () => {
@@ -187,4 +195,62 @@ test('owned same-group repaint gets a new main target without reviving the old s
     const outside = f.el('button'); f.document.body.append(outside); outside.focus(); f.drain();
     assert.equal(f.document.activeElement, outside);
   }
+});
+
+test('Parent World dialog leaves Tab from a nested native dialog to that dialog', () => {
+  const f = fixture(), parent = f.dialogs.createDialog('Settings'), outerLast = f.el('button', '', 'Save settings'); parent.body.append(outerLast);
+  const nested = f.el('dialog'), first = f.el('button', '', 'Nested first'), last = f.el('button', '', 'Nested last'); nested.append(first, last); parent.body.append(nested); nested.showModal(); last.focus();
+  const forward = bubbleTab(last); assert.equal(forward.defaultPrevented, false); assert.equal(f.document.activeElement, last); assert.equal(parent.element.open, true);
+  // A parent trap must also ignore a nested target when its own focus fallback
+  // would otherwise activate; the nested top-layer dialog owns that sequence.
+  f.document.activeElement = f.document.body; const backward = bubbleTab(first, true);
+  assert.equal(backward.defaultPrevented, false); assert.equal(f.document.activeElement, f.document.body);
+  nested.close(); nested.remove(); parent.close(); f.drain();
+});
+
+test('Nested production helper traps both Tab boundaries without activating the settings trap', () => {
+  const f = fixture(), settings = f.dialogs.createDialog('Settings'), outerLast = f.el('button', '', 'Save settings'); settings.body.append(outerLast); outerLast.focus();
+  const helper = f.dialogs.createDialog('Helper', undefined, undefined, settings.element), input = f.el('textarea'), helperLast = f.el('button', '', 'Send'); helper.body.append(input, helperLast);
+  const helperFirst = helper.element.querySelector('button'); helperLast.focus();
+  const forward = bubbleTab(helperLast); assert.equal(forward.defaultPrevented, true); assert.equal(f.document.activeElement, helperFirst);
+  const backward = bubbleTab(helperFirst, true); assert.equal(backward.defaultPrevented, true); assert.equal(f.document.activeElement, helperLast);
+  assert.equal(settings.element.open, true); assert.equal(helper.element.open, true); assert.equal(helper.element.contains(f.document.activeElement), true);
+  helper.close(); f.drain(); assert.equal(f.document.activeElement, outerLast); assert.equal(settings.element.open, true);
+  const parentFirst = settings.element.querySelector('button'); outerLast.focus(); assert.equal(bubbleTab(outerLast).defaultPrevented, true); assert.equal(f.document.activeElement, parentFirst);
+  assert.equal(bubbleTab(parentFirst, true).defaultPrevented, true); assert.equal(f.document.activeElement, outerLast); settings.close(); f.drain();
+});
+
+test('Closing a nested production helper keeps the parent form, current focus and close callback intact', () => {
+  const f = fixture(); let parentCloses = 0, helperCloses = 0;
+  const settings = f.dialogs.createDialog('Settings', () => parentCloses++), input = f.el('input'); input.value = 'Synthetic unsaved setting'; settings.body.append(input); input.focus();
+  const helper = f.dialogs.createDialog('Helper', () => helperCloses++, undefined, settings.element); helper.element.requestClose(); f.drain();
+  assert.equal(helperCloses, 1); assert.equal(parentCloses, 0); assert.equal(helper.element.isConnected, false); assert.equal(settings.element.open, true);
+  assert.equal(input.value, 'Synthetic unsaved setting'); assert.equal(f.document.activeElement, input);
+  settings.close(); f.drain(); assert.equal(parentCloses, 1); assert.equal(helperCloses, 1);
+});
+
+test('Actual World dialogs select the latest open owned modal and fence account ABA or destruction callbacks', () => {
+  for (const boundary of ['account ABA', 'destroy']) {
+    const f = fixture(), moves = []; let activeModal = null;
+    f.app.agentOrb = { setModal(value) { activeModal = value; moves.push(value); },
+      releaseModal(expected) { if (activeModal !== expected) return false; activeModal = null; return true; } };
+    const older = f.app.dialog('Older settings'), newer = f.app.dialog('Newer profile');
+    assert.equal(moves.at(-1), newer.element); older.element.close(); f.drain(); assert.equal(moves.at(-1), newer.element); assert.equal(f.app.dialogs.size, 1);
+    newer.close(); f.drain(); assert.equal(moves.at(-1), null); assert.equal(f.app.dialogs.size, 0);
+    const stale = f.app.dialog('Stale settings');
+    if (boundary === 'account ABA') f.app.accountGeneration += 2; else f.app.destroyed = true;
+    const count = moves.length; stale.element.close(); f.drain(); assert.equal(moves.length, count, boundary); assert.equal(f.app.dialogs.size, 0);
+  }
+});
+
+test('Actual World close restores its Set only after matching release, preserving a newer raw modal/helper focus', () => {
+  const f = fixture(), moves = [], releases = []; let activeModal = null;
+  f.app.agentOrb = { setModal(value) { activeModal = value; moves.push(value); },
+    releaseModal(expected) { const matched = activeModal === expected; releases.push({ expected, matched }); if (matched) activeModal = null; return matched; } };
+  const world = f.app.dialog('Older World settings'); world.element.close();
+  const raw = f.el('dialog', 'sf-dialog'), opener = f.el('button', '', 'Synthetic orb'); raw.append(opener); f.document.body.append(raw); raw.showModal(); f.app.agentOrb.setModal(raw); opener.focus();
+  const helper = f.dialogs.createDialog('Helper', undefined, undefined, raw), focus = f.document.activeElement, before = moves.length; f.drain();
+  assert.equal(activeModal === raw, true); assert.equal(moves.length, before); assert.equal(releases.at(-1).expected === world.element, true); assert.equal(releases.at(-1).matched, false);
+  assert.equal(helper.element.open, true); assert.equal(f.document.activeElement === focus, true); assert.equal(f.app.dialogs.size, 0);
+  helper.close(); f.drain(); assert.equal(raw.open, true); assert.equal(f.document.activeElement === opener, true); raw.close(); raw.remove(); f.drain();
 });

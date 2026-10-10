@@ -17,6 +17,9 @@
 .sw-agent-orb:focus-visible { outline: 2px solid var(--sw-focus); outline-offset: 3px; }
 .sw-agent-orb>.sw-icon { width: 22px; height: 22px; }
 .sw-agent-parking[hidden] { display: none; }
+/* Fixed owned controls keep viewport coordinates while their modal enters. */
+.sw-agent-modal-host[open] { animation-name: sw-agent-modal-enter; }
+@keyframes sw-agent-modal-enter { from { opacity: 0; } to { opacity: 1; } }
 .sw-agent-dialog.sw-dialog { width: min(920px,calc(100vw - 16px)); max-height: calc(var(--soty-visible-height,100dvh) - 16px); }
 .sw-agent-dialog>.sw-dialog-header { padding: 6px 12px; gap: 8px; }
 .sw-agent-dialog>.sw-dialog-header h2 { font-size: 16px; }

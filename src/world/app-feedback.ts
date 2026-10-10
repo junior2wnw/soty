@@ -33,6 +33,7 @@ interface Draft {
 }
 export interface AppFeedbackOptions {
   api: WorldApi; accountId: string; appId: string; title: string; isCurrent(): boolean;
+  onModalChange?(modal: HTMLDialogElement, open: boolean): void;
 }
 export interface AppFeedbackHandle { open(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void; }
 
@@ -66,6 +67,7 @@ const formatDate = (value: string | number) => { const date = new Date(value); r
 export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions): AppFeedbackHandle {
   let disposed = false, context: FeedbackContext | null = null, readiness = 'pending', saving = true, saved = true, busy = false, localConflict = false;
   let session = new AbortController(), generation = 0, recording: ReturnType<typeof createFeedbackRecorder> | null = null;
+  let ownsModal = false;
   const current = () => !disposed && options.isCurrent();
   const key = `soty.feedback.v1:${encodeURIComponent(options.accountId)}:${encodeURIComponent(options.appId)}`;
   const lockKey = `${key}:submit`;
@@ -143,14 +145,15 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     submit.querySelector('span')!.textContent = pending ? 'Проверить отправку' : 'Отправить';
     if (recording) { recordButton.disabled = false; submit.disabled = captureButton.disabled = fileButton.disabled = true; }
   }
+  function releaseModal(): void { if (!ownsModal || dialog.open) return; ownsModal = false; options.onModalChange?.(dialog, false); }
   function closeDialog(): void {
     if (!current()) return;
     persist();
     if (contents() && !saved) { say('Черновик не сохранён. Скопируйте текст или включите сохранение перед закрытием.'); return; }
-    session.abort(); recording?.cancel(); recording = null; dialog.close(); controls();
+    session.abort(); recording?.cancel(); recording = null; dialog.close(); releaseModal(); controls();
   }
   dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
-  dialog.addEventListener('close', () => { session.abort(); recording?.cancel(); recording = null; });
+  dialog.addEventListener('close', () => { if (dialog.open) return; session.abort(); recording?.cancel(); recording = null; releaseModal(); });
   text.addEventListener('input', () => { draft.body = text.value; persist(); });
   storage.addEventListener('change', () => { saving = storage.checked; persist(); say(saving ? 'Черновик сохраняется в этом браузере. Он не зашифрован.' : 'Черновик хранится только в открытом окне.'); });
 
@@ -420,9 +423,9 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
 
   renderPreviews(); controls();
   return {
-    open() { if (!current()) return; if (session.signal.aborted) session = new AbortController(); if (!dialog.open) dialog.showModal(); compose.hidden = false; history.hidden = true; text.focus(); void loadContext(); },
+    open() { if (!current()) return; if (session.signal.aborted) session = new AbortController(); if (!dialog.open) dialog.showModal(); ownsModal = true; options.onModalChange?.(dialog, true); compose.hidden = false; history.hidden = true; text.focus(); void loadContext(); },
     async flush() { persist(); },
     hasUnsavedChanges: () => contents() && !saved,
-    dispose() { if (disposed) return; if (current()) persist(); disposed = true; generation++; historyGeneration++; ticketGeneration++; session.abort(); recording?.cancel(); dialog.remove(); },
+    dispose() { if (disposed) return; if (current()) persist(); disposed = true; generation++; historyGeneration++; ticketGeneration++; session.abort(); recording?.cancel(); dialog.close(); releaseModal(); dialog.remove(); },
   };
 }
