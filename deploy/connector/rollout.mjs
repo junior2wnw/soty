@@ -209,6 +209,7 @@ export class Rollout {
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
+      if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed'});
       if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
         ||(error.code==='operation_unresolved'&&(this.state.applicationStart?.state==='starting'||this.state.restartPolicyIntent))){await this.note('recovery_required',{failureCode:error.code});throw error;}
       if(leaveAttempted){await this.note('recovery_required',{failureCode:'leave_boundary_ambiguous'});throw new SafeError('leave_boundary_ambiguous');}
@@ -222,7 +223,14 @@ export class Rollout {
         if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
         // Refuse before the legacy connector rollback helper can mutate storage.
         await this.guardStart(this.original.Id);
-        if(entered){const back=safeStatus(await this.maintenance('rollback',this));requireThat(pendingMatches(back,this.args.preserveQueuedSha256)&&back.maintenance,'rollback_not_quiescent');}
+        if(entered){
+          const current=await this.engine.inspect(this.candidate.Id),state=current.State;
+          // A confirmed never-started candidate cannot have changed the storage format.
+          const neverStarted=current.Id===this.candidate.Id&&current.Image===this.args.candidateImage&&!this.state.applicationStart
+            &&state?.Status==='created'&&state.Running===false&&state.Restarting===false&&state.Pid===0&&state.StartedAt==='0001-01-01T00:00:00Z';
+          const back=safeStatus(await this.maintenance(neverStarted?'status':'rollback',this));
+          requireThat(pendingMatches(back,this.args.preserveQueuedSha256)&&back.maintenance,'rollback_not_quiescent');
+        }
         const latest=await this.engine.inspect(this.candidate.Id);
         if(latest.Name==='/'+this.originalName)await this.reconcile(()=>this.engine.rename(latest.Id,'soty-connector-next-'+this.args.transaction),latest.Id,c=>c.Name==='/soty-connector-next-'+this.args.transaction);
         const prev=await this.engine.inspect(this.original.Id);

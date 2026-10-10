@@ -219,3 +219,98 @@ test('cleared MAC cannot be normalized before our STOP, on a candidate, or for c
     assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('start-old'),false);
   }
 });
+
+function failBeforeCandidateStart(f,{error=new SafeError('universal_policy_rollout_mismatch'),change=()=>{}}={}){
+  const candidate=f.map.get(f.run.candidate.Id),check=f.run.checkUniversalCurrent.bind(f.run);
+  Object.assign(candidate.State,{Status:'created',Running:false,Restarting:false,Pid:0,StartedAt:'0001-01-01T00:00:00Z'});
+  let failed=false;
+  f.run.checkUniversalCurrent=async()=>{
+    await check();
+    if(!failed&&candidate.Name==='/soty-online-chat'){
+      failed=true;change(candidate.State);throw error;
+    }
+  };
+}
+
+test('confirmed never-started candidate restores the original without downgrading durable storage',async t=>{
+  for(const phase of ['legacy-baseline','features']){
+    const f=await fixture(t,{phase,fault:{rollbackFailure:true}}),old=clearBridgeMacOnStop(f);
+    await f.run.prepare(f.request);failBeforeCandidateStart(f);
+    await assert.rejects(f.run.promote(),/universal_policy_rollout_mismatch/u);
+    assert.equal(f.run.state.phase,'restored');assert.equal(f.run.state.activationFailureCode,'universal_policy_rollout_mismatch');
+    assert.equal(old.Id,args.originalId);assert.equal(old.Image,args.originalImage);assert.equal(old.Name,'/soty-online-chat');
+    assert.equal(old.State.Running,true);assert.equal(old.HostConfig.RestartPolicy.Name,'unless-stopped');
+    assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('helper:rollback'),false);
+    assert.equal(f.events.filter(x=>x==='helper:status').length,3);assert.equal(f.events.filter(x=>x==='start-old').length,1);
+    assert.ok(f.events.lastIndexOf('ready:original')<f.events.indexOf('helper:leave'));
+    assert.equal(f.map.get(f.run.candidate.Id).State.Status,'created');assert.equal(f.map.get('sentinel').State.Running,true);
+  }
+});
+
+test('incomplete or contrary never-started evidence retains the existing rollback barrier',async t=>{
+  const changes={
+    statusMissing:s=>delete s.Status,statusExited:s=>s.Status='exited',runningMissing:s=>delete s.Running,runningTrue:s=>s.Running=true,
+    restartingMissing:s=>delete s.Restarting,restartingTrue:s=>s.Restarting=true,restartingString:s=>s.Restarting='false',
+    pidMissing:s=>delete s.Pid,pidNonzero:s=>s.Pid=7,pidString:s=>s.Pid='0',
+    startedAtMissing:s=>delete s.StartedAt,startedAtNull:s=>s.StartedAt=null,startedAtEmpty:s=>s.StartedAt='',
+    startedAtNonzero:s=>s.StartedAt='2026-10-11T00:00:00Z',startedAtMalformed:s=>s.StartedAt='0001-01-01',
+  };
+  for(const [name,change] of Object.entries(changes))await t.test(name,async t=>{
+    const f=await fixture(t,{fault:{rollbackFailure:true}});await f.run.prepare(f.request);failBeforeCandidateStart(f,{change});
+    await assert.rejects(f.run.promote(),/recovery_required/u);
+    assert.equal(f.run.state.phase,'recovery_required');assert.equal(f.run.state.failureCode,'rollback_failed');
+    assert.equal(f.run.state.activationFailureCode,'universal_policy_rollout_mismatch');
+    assert.equal(f.events.includes('helper:rollback'),true);assert.equal(f.events.includes('start-old'),false);
+    assert.equal(f.map.get(args.originalId).State.Running,false);
+  });
+});
+
+test('START intent and a completed candidate START both require rollback even when restoration would fail',async t=>{
+  for(const intent of ['starting','confirmed']){
+    const f=await fixture(t,{fault:{rollbackFailure:true}});await f.run.prepare(f.request);
+    failBeforeCandidateStart(f,{change:()=>{f.run.state.applicationStart={id:f.run.candidate.Id,state:intent};}});
+    await assert.rejects(f.run.promote(),/recovery_required/u);
+    assert.equal(f.events.includes('helper:rollback'),true);assert.equal(f.events.includes('start-old'),false);
+    assert.equal(f.run.state.failureCode,'rollback_failed');assert.equal(f.run.state.activationFailureCode,'universal_policy_rollout_mismatch');
+  }
+  const f=await fixture(t,{fault:{op:'readiness',when:'before',rollbackFailure:true}});await f.run.prepare(f.request);
+  Object.assign(f.map.get(f.run.candidate.Id).State,{Restarting:false,Pid:0,StartedAt:'0001-01-01T00:00:00Z'});
+  await assert.rejects(f.run.promote(),/recovery_required/u);
+  assert.equal(f.events.includes('start-candidate'),true);assert.equal(f.run.state.applicationStart.state,'confirmed');
+  assert.equal(f.events.includes('helper:rollback'),true);assert.equal(f.events.includes('start-old'),false);
+  assert.equal(f.run.state.activationFailureCode,'injected_failure');assert.equal(f.run.state.failureCode,'rollback_failed');
+});
+
+test('never-started status still requires unchanged pending work and the maintenance marker',async t=>{
+  for(const mismatch of ['pending','maintenance']){
+    const f=await fixture(t,{fault:{rollbackFailure:true}});await f.run.prepare(f.request);failBeforeCandidateStart(f);
+    const maintenance=f.run.maintenance;
+    f.run.maintenance=async verb=>{
+      const result=await maintenance(verb);
+      return verb==='status'&&f.run.state.activationFailureCode
+        ?{...result,...(mismatch==='pending'?{count:1,activeJobs:[{id:'new-job',status:'queued'}]}:{maintenance:false})}:result;
+    };
+    await assert.rejects(f.run.promote(),/recovery_required/u);
+    assert.equal(f.run.state.failureCode,'rollback_not_quiescent');assert.equal(f.events.includes('helper:rollback'),false);
+    assert.equal(f.events.includes('start-old'),false);assert.equal(f.map.get(args.originalId).State.Running,false);
+  }
+});
+
+test('activation failure is journaled once and survives secondary rollback failure',async t=>{
+  for(const error of [new SafeError('primary_activation_failure'),Object.assign(new Error('private diagnostic detail'),{code:'not_a_safe_error'})]){
+    const f=await fixture(t,{fault:{rollbackFailure:true}});await f.run.prepare(f.request);
+    failBeforeCandidateStart(f,{error,change:s=>delete s.StartedAt});
+    await assert.rejects(f.run.promote(),/recovery_required/u);
+    const expected=error instanceof SafeError?'primary_activation_failure':'activation_failed';
+    assert.equal(f.run.state.activationFailureCode,expected);assert.equal(f.run.state.failureCode,'rollback_failed');
+    const first=f.records.findIndex(s=>s.activationFailureCode!==undefined);
+    assert.ok(first>=0);assert.equal(f.records[first].phase,'maintenance_entered');
+    assert.equal(f.records.slice(first).every(s=>s.activationFailureCode===expected),true);
+    assert.equal(JSON.stringify(f.records).includes('private diagnostic detail'),false);
+  }
+  const f=await fixture(t,{fault:{rollbackFailure:true}});await f.run.prepare(f.request);
+  await f.run.note('prepared',{activationFailureCode:'first_activation_failure'});
+  failBeforeCandidateStart(f,{change:s=>delete s.StartedAt});
+  await assert.rejects(f.run.promote(),/recovery_required/u);
+  assert.equal(f.run.state.activationFailureCode,'first_activation_failure');assert.equal(f.run.state.failureCode,'rollback_failed');
+});
