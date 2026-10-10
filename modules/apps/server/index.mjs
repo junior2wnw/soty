@@ -37,13 +37,14 @@ const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
-export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
+export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
+  assertApps(typeof namedCanonical === 'boolean', 'apps_named_canonical_configuration_invalid', 500);
   assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
@@ -64,7 +65,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
     migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
-    domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, retainedNamedAppZones: retainedZones, domainLimits: limits,
+    domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, namedCanonical, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
       onPolicyChanged: publications.notifyChanged });
     db.exec('PRAGMA journal_mode=WAL;');

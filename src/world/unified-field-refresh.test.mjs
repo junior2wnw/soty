@@ -16,11 +16,13 @@ const parsed = ts.createSourceFile('unified-field-screen.ts', source, ts.ScriptT
 const printer = ts.createPrinter(), print = node => printer.printNode(ts.EmitHint.Unspecified, node, parsed);
 const production = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedFieldScreen');
 const statements = [...production.body.statements];
+const searchLimit = statements.find(node => ts.isVariableStatement(node)
+  && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === 'searchLimit'));
 const search = statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'searchDirectory');
 const returned = statements.find(ts.isReturnStatement)?.expression;
 const refresh = returned.properties.find(node => ts.isMethodDeclaration(node) && node.name.getText(parsed) === 'refresh');
 assert.ok(search && refresh, 'actual public methods must exist');
-const compiled = ts.transpileModule(print(search) + '\nexports.api = {' + print(refresh) + '};',
+const compiled = ts.transpileModule(print(searchLimit) + '\n' + print(search) + '\nexports.api = {' + print(refresh) + '};',
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const appId = 'app-' + 'a'.repeat(32), domainId = 'dom_' + 'b'.repeat(32);
 const app = { id: appId, name: 'ХочуИпотеку', state: 'ready', access: 'owner', canManage: true,
@@ -36,6 +38,7 @@ function fixture({ mode = 'search', loadMine = async () => {}, beforeRead = asyn
     searchResponseScope: 'Хочу:app', searchItems: [], searchCursor: null, selected: null, summary: null, contextKey: '',
     ready: Promise.resolve(), current: () => state.current, loadMine,
     searchSlot: async () => true, releaseSearchSlot() {}, directory, BUILTINS: [], matches: () => false,
+    el: () => ({ hidden: false }),
     element: { dataset: {} }, more: { disabled: false, hidden: true }, empty: { hidden: false, replaceChildren() {} },
     merge(items) { for (const item of items) metadata.set(fieldEntityKey(item.entity), item); },
     pruneMetadata() {}, allMetadata: () => [...metadata.values()], searchPlacement: createFieldSearchPlacement(),

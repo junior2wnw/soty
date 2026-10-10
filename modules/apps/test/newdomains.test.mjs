@@ -88,7 +88,7 @@ test('v1 migration preserves app identity, exact ACL JSON and revisions; stale g
 });
 
 test('an empty legacy template stays pinned while a named zone supplies a stable private canonical', async t => {
-  const f = await fixture(t, { appOriginTemplate: '' }); const service = f.open();
+  const f = await fixture(t, { appOriginTemplate: '', namedCanonical: true }); const service = f.open();
   const view = call(service, 'apps.domains.get', { appId: appA });
   assert.equal(view.canonicalOrigin, `https://${appA}.apps.example`);
   assert.equal(view.domains.length, 1); assert.equal(view.domains[0].role, 'canonical');
@@ -101,6 +101,23 @@ test('an empty legacy template stays pinned while a named zone supplies a stable
   const reopened = call(f.open(), 'apps.domains.get', { appId: appA });
   assert.equal(reopened.canonicalOrigin, view.canonicalOrigin);
   assert.deepEqual(reopened.domains.find(item => item.role === 'canonical'), view.domains[0]);
+});
+
+test('named-only defaults do not create canonical addresses and disabling generation preserves existing addresses', async t => {
+  const f = await fixture(t, { appOriginTemplate: '' });
+  const namedOnly = f.open();
+  const before = call(namedOnly, 'apps.domains.get', { appId: appA });
+  assert.equal(before.canonicalOrigin, null); assert.deepEqual(before.domains, []); assert.equal(before.revision, 0);
+  assert.equal(f.inspect().prepare("SELECT count(*) AS n FROM app_domains WHERE role='canonical'").get().n, 0);
+  namedOnly.close();
+  const universal = f.open({ namedCanonical: true });
+  const generated = call(universal, 'apps.domains.get', { appId: appA });
+  assert.equal(generated.canonicalOrigin, `https://${appA}.apps.example`);
+  assert.equal(generated.revision, 0); universal.close();
+  const retained = f.open({ namedAppZone: '' });
+  assert.deepEqual(call(retained, 'apps.domains.get', { appId: appA }), generated);
+  assert.equal(call(retained, 'apps.domains.get', { appId: appC }).canonicalOrigin, null);
+  assert.throws(() => f.open({ namedCanonical: 'true' }), /apps_named_canonical_configuration_invalid/u);
 });
 
 test('unknown and structurally unrecognized schemas fail before schema or journal mutations', async t => {

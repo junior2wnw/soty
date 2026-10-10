@@ -18,15 +18,16 @@ export function readNamedOrigins(db) {
   });
 }
 
-export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', retainedNamedAppZones = [], domainLimits = {}, shellOrigins = [], validateNamedZone, allowShellZoneRoot = false,
+export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, shellOrigins = [], validateNamedZone, allowShellZoneRoot = false,
   onRetireInTransaction, onPolicyChanged }) {
   assertApps(typeof assertActor === 'function', 'apps_actor_validator_required', 500);
   assertApps(typeof onRetireInTransaction === 'function' && typeof onPolicyChanged === 'function', 'apps_policy_validator_required', 500);
   const limits = normalizeDomainLimits(domainLimits);
   const zoneOrigin = normalizeNamedAppZone(namedAppZone);
-  // Generated app-* names remain private canonical entries. Human aliases
-  // still require the separate explicit claim/publication flow.
-  const canonicalTemplate = legacyTemplate || (zoneOrigin ? namedZone(zoneOrigin).template.replace('{slug}', '{appId}') : '');
+  assertApps(typeof namedCanonical === 'boolean', 'apps_named_canonical_configuration_invalid', 500);
+  // The universal host explicitly requests private generated addresses.
+  // A named-only registry otherwise serves only explicitly published aliases.
+  const canonicalTemplate = legacyTemplate || (namedCanonical && zoneOrigin ? namedZone(zoneOrigin).template.replace('{slug}', '{appId}') : '');
   function transaction(callback) {
     assertApps(!db.isTransaction, 'apps_nested_transaction', 500);
     db.exec('BEGIN IMMEDIATE');

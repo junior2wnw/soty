@@ -28,7 +28,9 @@ test('actual world adapter keeps each controller and late contact action bound t
     '../sync': { createHumanCallPorts() { return { subscribe: () => () => {}, snapshot: () => ({ connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }) }; } },
     '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle() { return { snapshot: () => ({ state: 'idle', microphone: 'off', scope: null, code: null }), dispose() {} }; } },
   };
-  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name], URL,
+  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name], URL, AbortSignal,
+    // This account-fence fixture exposes an unavailable capability service.
+    fetch: async () => ({ ok: false, status: 503 }),
     window: { location: { href: 'https://shell.example/#mine' }, addEventListener() {} },
   });
   await module.exports.startWorld({});

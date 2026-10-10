@@ -131,7 +131,11 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
         dispose: (...args) => createdOwner.dispose(...args),
       } : createdOwner;
     } },
-  }, { URL, window });
+  }, { URL, window, AbortSignal,
+    // Capability discovery is unavailable in this isolated lifecycle fixture.
+    // Never perform network I/O or advertise a native voice mount.
+    fetch: async () => ({ ok: false, status: 503 }),
+  });
   const lifecycle = createCallLifecycle({ host: { authorize() { authorizations++; return {}; } },
     media: { acquire() { captures++; throw new Error('unexpected capture'); } },
     transport: { join: () => ({ close() {}, preparePublication() {} }) } });

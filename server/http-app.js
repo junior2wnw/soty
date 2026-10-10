@@ -201,6 +201,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     });
   } catch (error) { failedStart(error); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
+    namedCanonical: universalEnabled,
     allowScopedEmbedMigration,allowSelectedResourceMigration,scopedEmbedProfiles,
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return human.withSubjectAuthority(request,callback);}:undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',

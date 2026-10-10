@@ -64,6 +64,7 @@
     "yjs": "^13.6.21"
   },
   "devDependencies": {
+    "esbuild": "0.27.7",
     "@modelcontextprotocol/client": "2.2.0",
     "@types/node": "^22.15.0",
     "@types/qrcode": "^1.5.6",
