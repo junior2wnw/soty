@@ -42,7 +42,7 @@ export function createSourceAppBff(options) {
   check(Object.values(labels).every(label => typeof label === 'string' && label.isWellFormed() && label.trim().length > 0 && label.length <= 160
     && !/[\u0000-\u001f\u007f]/u.test(label)), 'source_app_configuration_invalid', 503);
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
-    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession']);
+    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession', 'findRenewableSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
   const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock, workspaceCapacity: value.workspaceCapacity });
   const protocol = createSourceRpProtocol(value.rp, { clock });
@@ -123,6 +123,28 @@ export function createSourceAppBff(options) {
   async function currentSession(req, context, operation, hostOptions) {
     const token = cookie(req, COOKIE); check(token, 'authentication_required', 401);
     return proveSession(await store.readSession(digest(token)), context, operation, hostOptions);
+  }
+  async function continueSession(req, context) {
+    const hostOptions = { minimumAccessRemainingMs: 190000 };
+    if (cookie(req, COOKIE)) return currentSession(req, context, 'continue', hostOptions);
+    check(typeof store.findRenewableSession === 'function' && typeof store.rebindSession === 'function'
+      && typeof value.rpSessions?.currentProof === 'function', 'authentication_required', 401);
+    await freshRoot(context);
+    // Host lookup is bounded to the linked Native account and this namespace.
+    // Its locator conveys no authority; reread the sealed canonical session.
+    const found = await store.findRenewableSession(deepFreeze({ context, semanticDigest }));
+    check(found, 'authentication_required', 401); fields(found, ['idHash']);
+    check(typeof found.idHash === 'string' && /^[a-f0-9]{64}$/u.test(found.idHash), 'authentication_required', 401);
+    const session = await store.readSession(found.idHash);
+    check(session?.idHash === found.idHash && session.rpMarker && opaque(session.cookieToken)
+      && digest(session.cookieToken) === found.idHash, 'authentication_required', 401);
+    const current = await proveSession(session, context, 'continue', hostOptions);
+    check(current.session.idHash === session.idHash && current.session.cookieToken === session.cookieToken
+      && current.session.active === true && current.session.expiresAt === session.expiresAt
+      && current.session.semanticDigest === semanticDigest && digest(current.session.identity) === digest(session.identity)
+      && digest(current.session.rootPrincipal) === digest(context.rootPrincipal) && current.session.rpMarker
+      && current.proof.issuer === profile.issuer && current.proof.sub === context.humanPrincipal.subject, 'authentication_required', 401);
+    return { ...current, resumedCookie: session.cookieToken };
   }
   async function sessionRecord(interaction, identity, sessionToken, completion) {
     const basic = { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
@@ -337,15 +359,22 @@ export function createSourceAppBff(options) {
     }
     if (url.pathname === '/api/embed/session-continue') {
       const args = fields(input, ['requestId']); check(requestId(args.requestId));
-      const current = await currentSession(req, context, 'continue', { minimumAccessRemainingMs: 190000 });
-      // Basic continuation never changes Source authority or creates a long
-      // session. S2 durable resume/rebind requires an explicit storage consumer.
-      send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: Boolean(current.session.rpMarker),
+      const current = await continueSession(req, context);
+      const reply = headers => send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: Boolean(current.session.rpMarker),
         sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt),
         // This is the usable Basic access bound. A raw AT may outlive the
         // original Source session or Root slot; the ACK must not widen either.
         accessExpiresAt: Math.min(current.proof.expiresAt, current.proof.sessionExpiresAt, context.expiresAt),
-        receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }); return;
+        receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }, headers);
+      if (current.resumedCookie) {
+        await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+        // Rebind already used the final Native fence inside the storage CAS;
+        // these post-await checks also support async SQL Native hosts.
+        const deadline = Math.min(current.session.expiresAt, current.proof.sessionExpiresAt);
+        check(deadline > clock() && current.proof.expiresAt > clock(), 'authentication_required', 401);
+        reply({ 'set-cookie': cookieHeader(COOKIE, current.resumedCookie, Math.max(1, Math.floor((deadline - clock()) / 1000))) });
+      } else reply();
+      return;
     }
     const operation = url.pathname === '/api/embed/query' ? 'read' : url.pathname === '/api/embed/invoke' ? 'execute' : url.pathname === '/api/embed/receipt' ? 'readProof' : null;
     if (operation) {
