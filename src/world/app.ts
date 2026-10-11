@@ -193,7 +193,7 @@ class WorldApplication {
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
     root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
-    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.widgets?.assistantContext() ?? this.appStage?.assistantContext?.() ?? null,
+    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.widgets?.hasActiveWidget() ? this.widgets.assistantContext() : this.appStage?.assistantContext?.() ?? null,
       focusExisting: () => {
         if (this.view !== 'assistant' || this.assistantMode !== 'chat' || !this.assistantHandle) return false;
         this.main.querySelector<HTMLTextAreaElement>('.sw-assistant-host textarea')?.focus(); return true;

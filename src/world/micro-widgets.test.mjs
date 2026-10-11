@@ -205,3 +205,29 @@ test('browsers without Popover API never query its unsupported selector and reta
   assert.equal(f.stages[1].current(), true); assert.equal(f.stages[1].disposed, false);
   assert.ok(f.root.contains(f.stages[1].host));
 });
+
+
+test('actual orb context never falls back to main A while focused widget B is pending or failed', async t => {
+  const app = ts.createSourceFile('app.ts', await readFile(new URL('./app.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
+  let context;
+  const visit = node => {
+    if (ts.isCallExpression(node) && node.expression.getText(app) === 'mountAgentOrb') {
+      context = node.arguments[1].properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(app) === 'context').initializer.getText(app);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(app); assert.ok(context, 'use the actual WorldApplication orb context callback');
+  const f = fixture(); t.after(() => f.control.dispose());
+  const mainA = { appId: 'main-a' }, widgetB = { appId: 'widget-b' };
+  let ready = false; f.stages[0].assistantContext = () => ready ? widgetB : null;
+  const owner = { widgets: f.control, appStage: { assistantContext: () => mainA } };
+  const readContext = vm.runInNewContext(`(function () { return (${context}); })`).call(owner);
+  assert.equal(readContext(), mainA);
+  f.stages[0].host.parent.dispatchEvent(new Event('focusin'));
+  assert.equal(readContext(), null, 'pending widget B must not borrow main A context');
+  f.doc.activeElement = f.el('button'); f.view.dispatchEvent(new Event('blur')); await tick();
+  assert.equal(readContext(), null, 'failed widget B stays selected when the orb gets focus');
+  f.control.clearActive(); assert.equal(readContext(), mainA);
+  f.stages[0].host.parent.dispatchEvent(new Event('focusin')); ready = true;
+  assert.equal(readContext(), widgetB);
+});

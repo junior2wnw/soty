@@ -11,6 +11,7 @@ export interface MicroWidgetsHandle {
   setAccount(account: string): void;
   pin(app: WorldAppRecord, intent: AppLaunchIntent): void;
   clearActive(): void;
+  hasActiveWidget(): boolean;
   assistantContext(): WorldAssistantContext | null;
   flush(): Promise<void>;
   hasUnsavedChanges(): boolean;
@@ -222,6 +223,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
           x: Math.max(0, 0.65 - value.widgets.length * 0.08), y: Math.min(0.75, 0.12 + value.widgets.length * 0.06), width: 320, height: 260 }); });
     },
     clearActive() { active = ''; },
+    hasActiveWidget: () => mounted.has(active),
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
     async flush() { await Promise.all([...mounted.values()].map(row => row.stage?.flush())); },
     hasUnsavedChanges: () => [...mounted.values()].some(row => row.stage?.hasUnsavedChanges()),
