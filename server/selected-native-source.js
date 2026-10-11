@@ -71,10 +71,19 @@ export function createSelectedNativeSourceApplication(raw) {
     fields(envelope, ['ok', 'data']); need(envelope.ok === true); return captureQueryData(envelope.data);
   }
   function hiveOperation(value) {
-    fields(value, ['operation', 'expectedRevision', 'id', 'title']);
-    need(value.operation === 'hive.cell.title' && Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 1
+    const create = value.operation === 'hive.cell.create';
+    fields(value, ['operation', 'expectedRevision', 'id', 'title', ...(create ? ['viewId', 'x', 'y'] : [])]);
+    need((create || value.operation === 'hive.cell.title') && Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 1
       && typeof value.id === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value.id)
       && typeof value.title === 'string' && value.title.trim() && value.title.length <= 240);
+    if (create) {
+      need(typeof value.viewId === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value.viewId)
+        && [value.x, value.y].every(number => Number.isFinite(number) && Math.abs(number) <= 1000000));
+      return [{ op: 'object.add', object: { id: value.id, type: 'hive.process/action', title: value.title,
+        summary: '', content: [], properties: {}, extensions: {} } },
+      { op: 'occurrence.add', viewId: value.viewId, occurrence: { id: `${value.id}:first`,
+        target: { kind: 'object', id: value.id }, x: value.x, y: value.y, width: 280, height: 240 } }];
+    }
     return [{ op: 'object.update', id: value.id, patch: { title: value.title } }];
   }
   const adapter = effectful ? Object.freeze({ profile: EXTERNAL_ADAPTER_PROFILE, withAuthority,
@@ -114,7 +123,7 @@ export function createSelectedNativeSourceApplication(raw) {
         const data = input(request.input); need(current() === true);
         let result;
         if (hive) {
-          fields(data.input, ['operation']); need(data.input.operation === 'hive.cells.list');
+          fields(data.input, ['operation']); need(['hive.cells.list', 'hive.cells.context'].includes(data.input.operation));
           const stored = await call(request, '/api/embed/project', {}, signal), project = stored.project;
           need(project?.id === scope.resource.selection.nativeId && project.schema === 'hive.document' && project.version === 2
             && Number.isSafeInteger(stored.revision) && stored.revision >= 1 && typeof project.title === 'string'
@@ -123,6 +132,26 @@ export function createSelectedNativeSourceApplication(raw) {
             need(typeof item?.id === 'string' && typeof item.title === 'string'); return { id: item.id, title: item.title };
           }).sort((a, b) => a.id.localeCompare(b.id));
           need(cells.length <= 100); result = { title: project.title, revision: stored.revision, cells };
+          if (data.input.operation === 'hive.cells.context') {
+            need(project.views && typeof project.views === 'object' && !Array.isArray(project.views));
+            const views = Object.values(project.views), insertionViews = [];
+            // No current-view pin is carried by this profile. Multiple views
+            // must never silently select the first; creation is then omitted.
+            if (views.length === 1) {
+              const view = views[0]; need(typeof view.id === 'string' && view.placements
+                && typeof view.placements === 'object' && !Array.isArray(view.placements));
+              const placements = Object.values(view.placements); need(placements.length <= 100);
+              let right = -40, top = 0;
+              for (const item of placements) {
+                const x = item.x ?? 0, y = item.y ?? 0, width = item.width ?? 280;
+                need([x, y, width].every(Number.isFinite) && width >= 0 && Math.abs(x) <= 1000000 && Math.abs(y) <= 1000000);
+                right = Math.max(right, x + width); top = Math.min(top, y);
+              }
+              if (/^[A-Za-z0-9_.:-]{1,128}$/u.test(view.id) && right + 40 <= 1000000)
+                insertionViews.push({ id: view.id, x: right + 40, y: top });
+            }
+            result.insertionViews = insertionViews;
+          }
         } else result = await call(request, '/api/embed/query', data.input, signal);
         need(current() === true); registry.validateOutput(entry, result); return result;
       } });

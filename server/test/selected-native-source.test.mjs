@@ -79,3 +79,43 @@ test('HIVE proof uses exact original durable change, ignores a POST replay head 
     else assert.equal(proof.outcome, 'unknown');
   }
 });
+
+test('HIVE creation is one exact Native object/occurrence batch and its receipt rejects either changed operation', async () => {
+  const hiveScope = { ...scope, sourceProfile: HIVE_SELECTED_SOURCE, resource: { ...scope.resource,
+    selection: { kind: 'hive.project.v1', nativeId: 'one', incarnationId: 'one' } } };
+  for (const changed of [false, true]) {
+    const row = createSelectedHiveSourceApplications(hiveScope)[2], data = { handle, input: {
+      operation: 'hive.cell.create', expectedRevision: 7, id: 'card_1', title: 'Synthetic card', viewId: 'map', x: 320, y: 0 } };
+    let operations;
+    bind(row, async value => {
+      if (value.path === '/api/embed/operations') { operations = value.input.operations; return { status: 200, data: { revision: 99, replayed: true } }; }
+      assert.equal(value.path, '/api/embed/changes'); const stored = structuredClone(operations);
+      if (changed) stored[1].viewId = 'foreign';
+      return { status: 200, data: { projectId: 'one', changes: [{ revision: 8, requestId, operations: stored, actor: null, createdAt: 'synthetic' }] } };
+    });
+    const request = { requestId, input: data, inputDigest: canonicalHash(data) };
+    await row.adapter.execute(request, signal()); assert.deepEqual(operations.map(item => item.op), ['object.add', 'occurrence.add']);
+    const proof = await row.adapter.readProof(request, signal());
+    assert.equal(proof.outcome, changed ? 'unknown' : 'committed');
+    if (!changed) assert.deepEqual(proof.receipt.artifacts.map(item => [item.type, item.id, item.revision]), [['hive-object', 'card_1', 8], ['hive-project', 'one', 8]]);
+  }
+});
+
+test('HIVE insertion context never chooses the first of multiple views and preserves the original list wire', async () => {
+  const hiveScope = { ...scope, sourceProfile: HIVE_SELECTED_SOURCE, resource: { ...scope.resource,
+    selection: { kind: 'hive.project.v1', nativeId: 'one', incarnationId: 'one' } } };
+  for (const views of [1, 2]) {
+    const rows = createSelectedHiveSourceApplications(hiveScope), project = { id: 'one', schema: 'hive.document', version: 2,
+      title: 'Synthetic field', core: { objects: { cell: { id: 'cell', title: 'Old card' } } }, views: {
+        map: { id: 'map', placements: { cell: { x: 10, y: -20, width: 280 } } }, ...(views === 2 ? { second: { id: 'second', placements: {} } } : {}) } };
+    for (const index of [0, 3]) {
+      const row = rows[index]; bind(row, async value => {
+        assert.equal(value.path, '/api/embed/project'); return { status: 200, data: { project, revision: 7 } };
+      });
+      const data = { handle, input: { operation: index === 0 ? 'hive.cells.list' : 'hive.cells.context' } };
+      const result = await row.adapter.query({ requestId, input: data, inputDigest: canonicalHash(data) }, signal(), () => true);
+      if (index === 0) assert.deepEqual(result, { title: 'Synthetic field', revision: 7, cells: [{ id: 'cell', title: 'Old card' }] });
+      else assert.deepEqual(result.insertionViews, views === 1 ? [{ id: 'map', x: 330, y: -20 }] : []);
+    }
+  }
+});

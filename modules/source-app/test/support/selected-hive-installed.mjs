@@ -23,7 +23,7 @@ function wireHttp(p,path,{host,cookie,origin,method,body,fields,headers={}}={}){
     ...(bytes!==null?{'content-type':fields?'application/x-www-form-urlencoded':'application/json','content-length':Buffer.byteLength(bytes)}:{}),...headers},signal:AbortSignal.timeout(15000)},res=>{
     const parts=[];let n=0;res.on('data',p=>{n+=p.length;if(n>4194304)res.destroy();else parts.push(p);});res.on('error',reject);res.on('end',()=>{const bytes=Buffer.concat(parts),text=bytes.toString('utf8');let body=null;try{body=JSON.parse(text);}catch{}done({status:res.statusCode,headers:res.headers,text,body,bytes});});});req.on('error',reject);req.end(bytes);
 });}
-export async function selectedRootEnvironment(t,{renewal=false,selectedMigration=true,sourcePackageRoot=root,rootBindings=()=>({})}={}){
+export async function selectedRootEnvironment(t,{renewal=false,selectedMigration=true,sourcePackageRoot=root,rootBindings=()=>({}),initialNodes=[{id:'old-cell',title:'Original cell'}]}={}){
   assert.ok(sourcePackageRoot,'An explicit owned HIVE package is required; no fake Source or skipped Native gate.');
   const packageRoot=resolve(sourcePackageRoot);
   const from=path=>import(pathToFileURL(join(source,path)).href);
@@ -87,7 +87,7 @@ export async function selectedRootEnvironment(t,{renewal=false,selectedMigration
   const signature=Buffer.from(await webcrypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},pair.privateKey,new TextEncoder().encode(`hive.device.register.v1\n${challenge.body.challenge}\n${deviceId}`))).toString('base64url');
   assert.equal((await request(native+'/api/account/devices/register',{body:{id:deviceId,label:'Synthetic old HIVE device',publicJwk:jwk,challenge:challenge.body.challenge,signature}})).status,200);
   const legacy=(await request(native+'/api/account/session')).body;
-  const created=await request(native+'/api/hive/projects',{body:{requestId:'native-create',project:{schema:'hive.project',version:1,id:'selected-native',title:'Native old project',graph:{nodes:[{id:'old-cell',title:'Original cell'}],edges:[],groups:[]}}}});assert.equal(created.status,201);
+  const created=await request(native+'/api/hive/projects',{body:{requestId:'native-create',project:{schema:'hive.project',version:1,id:'selected-native',title:'Native old project',graph:{nodes:initialNodes,edges:[],groups:[]}}}});assert.equal(created.status,201);
   const locator=await request(native+'/api/soty/selected-resource',{body:{projectId:'selected-native'}});assert.equal(locator.status,200,'locator='+locator.body?.error?.code);
   startConnector();const claim=await until(async()=>{assert.equal(connector.exitCode,null,'connector running; diagnostics bytes='+outputBytes);try{const result=await wireHttp(connectorPort,'/apps/claim',{origin,body:{}});return result.status===200?result.body:null;}catch{return null;}});
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
