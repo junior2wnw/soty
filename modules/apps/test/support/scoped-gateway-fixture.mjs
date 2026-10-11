@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import {createServer,request as httpRequest} from 'node:http';
-import {spawn} from 'node:child_process';
 import {generateKeyPairSync,randomBytes,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,rm,access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve,dirname,basename} from 'node:path';
-import {fileURLToPath,pathToFileURL} from 'node:url';
+import {pathToFileURL} from 'node:url';
 import {createHttpApp} from '../../../../server/http-app.js';
 import {createClientWithStorage} from '../../../connect/browser/client.mjs';
 import {runtimeTargetDigest,SCOPED_RUNTIME_PROFILE} from '../../server/schema.mjs';
+import {leaseLoopbackPort,startScopedConnector} from './scoped-connector-startup.mjs';
 
 export const sourceRoot=resolve(process.env.SOTY_PLANNER_GATEWAY_SOURCE_ROOT||'C:/Users/Junio/.codex/worktrees/planner-scoped-source');
 let sourceAvailable=false,renewalSourceAvailable=false,source,sdk,createSotyBffProtocol;
@@ -23,7 +23,7 @@ export {sourceAvailable,renewalSourceAvailable};
 const random=()=>randomBytes(32).toString('base64url');
 const wait=ms=>new Promise(done=>setTimeout(done,ms));
 export async function until(check,timeout=10000){const end=Date.now()+timeout;while(Date.now()<end){const value=await check();if(value)return value;await wait(30);}throw new Error('scoped_fixture_timeout');}
-export async function freePort(){const server=createServer();await new Promise(done=>server.listen(0,'127.0.0.1',done));const port=server.address().port;await new Promise(done=>server.close(done));return port;}
+export async function freePort(){const lease=await leaseLoopbackPort();await lease.release();return lease.port;}
 const memory=()=>{let value;return{async read(){return structuredClone(value??null);},async claim(next){value??=structuredClone(next);return structuredClone(value);},async compareAndSwap(revision,next){assert.equal(value.localRevision,revision);value=structuredClone(next);return structuredClone(value);}};};
 
 /** Synthetic/temp-only environment. All app admission, Connect, installed
@@ -31,28 +31,38 @@ const memory=()=>{let value;return{async read(){return structuredClone(value??nu
 export async function createScopedGatewayFixture({frontPort,appPort,backendPort:requestedBackendPort,distDir,t,renewal=false}={}) {
   assert.ok(sourceAvailable);
   const directory=await mkdtemp(join(tmpdir(),'soty-scoped-full-')),runtimeDir=join(directory,'runtime'),dataDir=join(directory,'root'),dist=distDir||join(directory,'dist');
-  await mkdir(runtimeDir);if(!distDir){await mkdir(dist);await writeFile(join(dist,'index.html'),'<!doctype html><title>Synthetic Root interaction</title>');}
-  const connectorPort=await freePort(), appTlsPort=appPort||await freePort(),sourceDb=join(directory,'planner.sqlite');
-  let root,planner,child;const clients=[],sockets=new Set();let outputBytes=0;
+  let root,planner,child,connectorLease,appTlsLease;const clients=[],sockets=new Set();
   const server=createServer((req,res)=>root?root(req,res):res.writeHead(503).end());
   server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
   server.on('upgrade',(req,socket,head)=>{if(!root?.locals.appsService.handleUpgrade(req,socket,head))socket.destroy();});
   let ended=false;if(t)t.after(()=>close());
+  async function stopChild(){if(!child)return;const old=child;await old.stop();if(child===old)child=null;}
+  async function close(){if(ended)return;ended=true;const failures=[];
+    const cleanup=async action=>{try{await action();return true;}catch{failures.push(true);return false;}};
+    const childStopped=await cleanup(stopChild);for(const value of clients)await cleanup(()=>value.dispose());
+    await cleanup(()=>connectorLease?.release());await cleanup(()=>appTlsLease?.release());
+    if(planner)await cleanup(async()=>{planner.server.closeAllConnections();await planner.close();planner=null;});
+    await cleanup(()=>root?.locals.closeServices());sockets.forEach(socket=>socket.destroy());
+    if(server.listening)await cleanup(()=>new Promise((done,fail)=>server.close(error=>error?fail(error):done())));
+    assert.equal(dirname(resolve(directory)),resolve(tmpdir()));assert.match(basename(directory),/^soty-scoped-full-/);
+    // Never delete a runtime directory underneath a child whose termination
+    // was not confirmed. Keep it for diagnosis and fail the test explicitly.
+    if(childStopped)await cleanup(()=>rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100}));
+    if(failures.length)throw new Error('scoped_fixture_cleanup_failed: resources='+failures.length);
+  }
+  try{
+  await mkdir(runtimeDir);if(!distDir){await mkdir(dist);await writeFile(join(dist,'index.html'),'<!doctype html><title>Synthetic Root interaction</title>');}
+  connectorLease=await leaseLoopbackPort();if(!appPort)appTlsLease=await leaseLoopbackPort();
+  const connectorPort=connectorLease.port,appTlsPort=appPort||appTlsLease.port,sourceDb=join(directory,'planner.sqlite');
   await new Promise(done=>server.listen(requestedBackendPort||0,'127.0.0.1',done));
   const backendPort=server.address().port,backendOrigin=`http://127.0.0.1:${backendPort}`,origin=frontPort?`http://127.0.0.1:${frontPort}`:backendOrigin;
   const template=`https://{appId}.localhost:${appTlsPort}`;
   const hostFile=join(runtimeDir,'selected-hosts.json'),configFile=join(runtimeDir,'connector-config.json');
   await writeFile(configFile,JSON.stringify({workspaceRoot:runtimeDir,allowedRoots:[runtimeDir],installId:'fixture_scoped_install'}));
-  async function stopChild(){if(!child)return;const old=child;child=null;if(old.exitCode===null){old.kill('SIGTERM');await Promise.race([new Promise(done=>old.once('exit',done)),wait(3000)]);if(old.exitCode===null)old.kill('SIGKILL');}}
-  function startChild(selected=false){
-    child=spawn(process.execPath,[fileURLToPath(new URL('../../../../public/agent/soty-connector.mjs',import.meta.url)),'--port',String(connectorPort),'--scope','Dev'],{
-      windowsHide:true,stdio:['ignore','pipe','pipe'],cwd:runtimeDir,env:{
-        PATH:[dirname(process.execPath),process.env.SystemRoot?join(process.env.SystemRoot,'System32'):'/usr/bin','/bin'].join(process.platform==='win32'?';':':'),
-        ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{}),TEMP:directory,TMP:directory,USERPROFILE:directory,APPDATA:join(directory,'appdata'),LOCALAPPDATA:join(directory,'localappdata'),
-        SOTY_CONNECTOR_DATA_DIR:runtimeDir,SOTY_CONNECTOR_SERVER_URL:origin,SOTY_CONNECTOR_LINK_ID:'fixture_scoped_link_12345678901234567',SOTY_CONNECTOR_DEVICE_ID:'fixture_scoped_host',
-        SOTY_CONNECTOR_DEVICE_NICK:'Synthetic scoped device',SOTY_CONNECTOR_AUTO_UPDATE:'0',SOTY_CONNECTOR_MANAGED:'0',SOTY_CONNECTOR_UPDATE_URL:origin+'/agent/manifest.json',
-        ...(selected?{SOTY_SELECTED_EMBED_HOST_FILE:hostFile}:{})}});
-    child.stdout.on('data',bytes=>{outputBytes+=bytes.length;});child.stderr.on('data',bytes=>{outputBytes+=bytes.length;});
+  async function startChild(selected=false){
+    await connectorLease.release();
+    child=startScopedConnector({port:connectorPort,directory,runtimeDir,origin,...(selected?{selectedHostFile:hostFile}:{})});
+    return child.waitForClaim(timeoutMs=>wireHttp(connectorPort,'/apps/claim',{method:'POST',origin,body:{},timeoutMs}),60000);
   }
   const rootOptions={dataDir,connectOrigins:[origin],appOriginTemplate:template,localConnectorPort:connectorPort};
   root=createHttpApp(dist,rootOptions);
@@ -71,8 +81,7 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
     const value=createClientWithStorage({projectId:'soty',endpoint:backendOrigin+'/api/connect/rpc',scopedAppCleanup:true,fetch:fetcher},storage);
     clients.push(value);return{client:value,account:await value.bootstrap(label),storage,hooks,fetch:fetcher};};
   const owner=await client('Synthetic scoped owner'),reader=await client('Synthetic scoped participant'),foreign=await client('Synthetic foreign participant');
-  startChild();
-  const claim=await until(async()=>{assert.equal(child.exitCode,null,'installed connector exited; output bytes='+outputBytes);try{const result=await wireHttp(connectorPort,'/apps/claim',{method:'POST',origin,body:{}});return result.status===200?result.body:null;}catch{return null;}},60000);
+  const claim=await startChild();
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
   const created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Планировщик · Synthetic project',port:sourcePort,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
   const appId=created.app.id,embedded=`https://${appId}.localhost:${appTlsPort}`,issuer=origin+'/human-identity',clientSecret=random(),sourceKey=randomBytes(32);
@@ -100,8 +109,7 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
     currentSotySubject:sdk.createSourceCurrentSubjectPort({profile,verifier,readAuthority:authorityReader,verifyHuman:async proof=>({issuer,subject:await rp.currentSubject(proof.accessToken,proof.subject)})})}};
   planner=await source.createPlannerServer(sourceOptions);await planner.listen();
   await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:[{profile,key:sourceKey.toString('base64url')}]}));
-  startChild(true);
-  await until(async()=>{try{return(await wireHttp(connectorPort,'/apps/claim',{method:'POST',origin,body:{}})).status===200;}catch{return false;}},60000);
+  await startChild(true);
   const publication=await owner.client.extension('apps.publication.get',{appId});
   const preparation=await owner.client.extension('apps.source.prepare',{appId,expectedPolicyEpoch:publication.policyEpoch,expectedTargetRevision:publication.activeTargetRevision,
     source:{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,port:sourcePort,entryPath:'/embed',profile:SCOPED_RUNTIME_PROFILE}});
@@ -121,13 +129,12 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
   async function nativeConsent(page){const url=/<a href="([^"]+\/soty\/connect\?intent=[A-Za-z0-9_-]+)">/.exec(page.text)?.[1];assert.ok(url);
     const value=await wire.request(url),intent=/name="intent" value="([A-Za-z0-9_-]+)"/.exec(value.text)?.[1];assert.ok(intent);
     const approved=await wire.request(native+'/soty/connect',{fields:{intent}});assert.equal(approved.status,302);return wire.request(approved.location,{withoutAppCookie:true});}
-  async function close(){if(ended)return;ended=true;await stopChild();clients.forEach(value=>value.dispose());if(planner){planner.server.closeAllConnections();await planner.close();planner=null;}await root?.locals.closeServices();sockets.forEach(socket=>socket.destroy());await new Promise(done=>server.close(done));
-    assert.equal(dirname(resolve(directory)),resolve(tmpdir()));assert.match(basename(directory),/^soty-scoped-full-/);await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
   return{directory,root:()=>root,server,backendPort,backendOrigin,origin,connectorPort,appTlsPort,sourcePort,embedded,native,appId,owner,reader,foreign,workspaceId,foreignWorkspaceId,target,profile,wire,launch,login,nativeConsent,close,
     planner:()=>planner,async grant(accountId){await owner.client.extension('apps.update',{appId,grants:{accountIds:[reader.account.accountId,accountId],communityIds:[]}});},
     async restartSource(){planner.server.closeAllConnections();await planner.close();planner=await source.createPlannerServer(sourceOptions);await planner.listen();},
     async restartRoot(overrides={}){await root.locals.closeServices();root=createHttpApp(dist,{...selectedOptions,...overrides});},
     sourceOptions,selectedOptions};
+  }catch(error){await close();throw error;}
 }
 
 class FixtureWire {
@@ -139,8 +146,8 @@ class FixtureWire {
       for(const value of response.headers['set-cookie']){const pair=value.split(';')[0],split=pair.indexOf('=');jar.set(pair.slice(0,split),pair.slice(split+1));}this.cookies.set(url.hostname,[...jar].map(([name,value])=>name+'='+value).join('; '));}
     response.location=response.headers.location?new URL(response.headers.location,url):null;return response;}
 }
-export function wireHttp(port,path,{host,cookie,origin,method,body,fields,headers={}}={}){return new Promise((resolve,reject)=>{
+export function wireHttp(port,path,{host,cookie,origin,method,body,fields,headers={},timeoutMs=10000}={}){return new Promise((resolve,reject)=>{
   const bytes=fields?new URLSearchParams(fields).toString():body===undefined?null:Buffer.isBuffer(body)?body:JSON.stringify(body);
   const request=httpRequest({hostname:'127.0.0.1',port,path,method:method||(bytes===null?'GET':'POST'),agent:false,headers:{...(host?{host}:{}),...(cookie?{cookie}:{}),...(origin?{origin}:{}),
-    ...(bytes!==null?{'content-type':fields?'application/x-www-form-urlencoded':'application/json','content-length':Buffer.byteLength(bytes)}:{}),...headers},signal:AbortSignal.timeout(10000)},response=>{
+    ...(bytes!==null?{'content-type':fields?'application/x-www-form-urlencoded':'application/json','content-length':Buffer.byteLength(bytes)}:{}),...headers},signal:AbortSignal.timeout(timeoutMs)},response=>{
     const chunks=[];let size=0;response.on('data',part=>{size+=part.length;if(size>4194304)response.destroy();else chunks.push(part);});response.on('error',reject);response.on('end',()=>{const text=Buffer.concat(chunks).toString('utf8');let body=null;try{body=JSON.parse(text);}catch{}resolve({status:response.statusCode,headers:response.headers,text,body});});});request.on('error',reject);request.end(bytes);});}
