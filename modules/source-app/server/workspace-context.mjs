@@ -44,7 +44,10 @@ export function workspaceWitness({ after, artifact, requestId, inputDigest, scop
 /** Bounded, private Native leases. The caller invokes all methods inside its
  * existing withCurrent fence; Native supplies current child ACL/generation.
  * References cannot create permission and are never recoverable after restart. */
-export function createWorkspaceContextAuthority({ clock = Date.now } = {}) {
+export function createWorkspaceContextAuthority(options = {}) {
+  const value = fields(options, [], ['clock', 'maxSlots']), clock = value.clock ?? Date.now, maxSlots = value.maxSlots === undefined ? 128 : value.maxSlots;
+  check(typeof clock === 'function' && Number.isSafeInteger(maxSlots) && maxSlots >= 1 && maxSlots <= 65536,
+    'source_workspace_capacity_invalid', 503);
   const slots = new Map();
   function current(binding, raw, create) {
     const now = clock(), projection = fields(raw, ['key', 'generation', 'expiresAt', 'title', 'role', 'revision']);
@@ -60,7 +63,7 @@ export function createWorkspaceContextAuthority({ clock = Date.now } = {}) {
     let entry = slots.get(key);
     if (entry && (entry.child !== projection.key || entry.generation !== projection.generation)) { slots.delete(key); entry = undefined; }
     if (!entry && create) {
-      denied(slots.size < 128);
+      denied(slots.size < maxSlots);
       entry = { child: projection.key, ref: nonce(), generation: projection.generation,
         expiresAt: Math.min(now + 300000, binding.rootExpiresAt, projection.expiresAt) }; slots.set(key, entry);
     }

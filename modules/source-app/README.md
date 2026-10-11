@@ -261,9 +261,31 @@ Catalog resource и recipient — `workspace:<appId>:<resourceId>`; новый g
 Ref связан с исходным Root slot, Source session, человеком, устройством и
 namespace; срок не превышает пяти минут, Root и Native lease. Переключение,
 ABA, revoke, close или expiry не позволяют использовать старый ref. Один BFF
-держит максимум 128 актуальных leases в RAM: истёкшие удаляются, переполнение
-отказывается создавать новый lease, не вытесняя действующий. Это ограничение
-параллельных контекстов, не обещание неограниченной ёмкости приложения.
+по умолчанию держит максимум 128 актуальных leases в RAM. Host может передать
+`createSourceAppBff({..., workspaceCapacity:{maxSlots:256}})`; допустимо целое
+число 1–65536, только для workspace. Параметр проходит BFF → Native runtime →
+authority и не принимается из HTTP, RPC, профиля или descriptor. Истёкшие leases
+удаляются; переполнение отказывает новому lease, не вытесняя действующий.
+TTL, account/device/slot isolation и Native ACL этим параметром не меняются.
+
+До первого выпуска SDK и установки workspace сделана одна явная финализация
+пина `soty.standard-workspace@1`: `context.maxSlots:128` заменено на
+`context.slotCapacity:'host-configured'`. Старый невыпущенный digest
+`1f8f2251e41e5afcceacf811109f0aaeb32c0b7a80ea19d18b88c9fb83b2c254`
+заменён на
+`5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c`;
+старый digest отклоняется, alias нет. Пины Source1/2/3 не изменены. Fixtures,
+installed profiles и Native bundle должны брать экспорт `STANDARD_WORKSPACE_SOURCE`.
+
+Root имеет отдельный host-only `personalAgent.capacity`:
+`{maxRetainedTurns:256,maxAccountContexts:256}`. Его можно передать через
+`createPersonalAgentComposition({configuration:{...,capacity}})` или существующий
+приватный installed JSON с полем `capacity`; каждый предел — целое 1–65536,
+default128. `maxRetainedTurns` считает running, completed и unknown записи до
+прежнего 30-минутного срока от начала, не только одновременные запросы.
+`maxAccountContexts` ограничивает лишь fallback RAM history; штатная Notes history
+его не использует. Живые turns/contexts не вытесняются. Эти параметры не меняют
+128-account installed allowlist, grants, модельные бюджеты или HTTP/RPC контракт.
 
 После эффекта Native вызывает `final.contextAfter()` **внутри** исходного
 `final.commit(action)` и сохраняет результат в той же SQL-транзакции вместе

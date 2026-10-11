@@ -29,9 +29,11 @@ export function isSourceNativeCommitPort(value) { return !!value && approvedComm
  * Exactly one synchronous final Native fence also runs inside Source commits. */
 export function createNativeAuthorityRuntime(port, options = {}) {
   check(isSourceNativeAuthorityPort(port), 'source_app_native_authority_required', 503);
-  const selected = fields(options, [], ['sourceProfile', 'clock']);
+  const selected = fields(options, [], ['sourceProfile', 'clock', 'workspaceCapacity']);
   const contract = standardSourceContract(selected.sourceProfile);
-  const workspace = contract.kind === 'soty.workspace.v1' ? createWorkspaceContextAuthority({ clock: selected.clock }) : null;
+  check(selected.workspaceCapacity === undefined || contract.kind === 'soty.workspace.v1', 'source_workspace_capacity_invalid', 503);
+  const capacity = selected.workspaceCapacity === undefined ? {} : fields(selected.workspaceCapacity, [], ['maxSlots']);
+  const workspace = contract.kind === 'soty.workspace.v1' ? createWorkspaceContextAuthority({ clock: selected.clock, ...capacity }) : null;
   check(!workspace || typeof port.currentContext === 'function', 'source_workspace_context_required', 503);
   const feedbackGetBytes = contract.rules.find(row => row.path === '/api/embed/feedback/ticket').responseBytes;
   const proofs = new WeakMap(); let closed = false, fencing = false;
