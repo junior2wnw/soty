@@ -47,7 +47,8 @@ class MemorySocket extends EventEmitter {
   ping() { this.emit('pong'); }
 }
 
-async function fixture(t, { enabled = true, sourceReferences = [], sourceCredentialFor } = {}) {
+async function fixture(t, { enabled = true, sourceReferences = [], sourceCredentialFor,
+  missingUsage = false, receiptStatus = 'completed', receiptOutputTokens = 2 } = {}) {
   let connect, personal, rawApps, selectedInput = {}, selectedTool = 'list_my_apps', hold = null;
   const providerCalls = [], appReads = [], receipts = new Map(), rowsSeen = [], auth = new Map();
   const notes = createNotesService({ databasePath: ':memory:', projectId: 'soty' });
@@ -68,12 +69,12 @@ async function fixture(t, { enabled = true, sourceReferences = [], sourceCredent
       const last = body.messages.at(-1); let name = selectedTool, args = selectedInput;
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; name = 'finish_answer'; args = {
         answer: 'Текущая разрешённая проекция проверена.', selectedEvidenceIds: evidence.map(item => item.id), claims: [] }; }
-      const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
-        input_tokens: 3, output_tokens: 2, charge_urub: '0' });
+      const id = randomUUID(); receipts.set(id, { id, status: receiptStatus, model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
+        input_tokens: missingUsage ? null : 3, output_tokens: missingUsage ? null : receiptOutputTokens, charge_urub: '0' });
       assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false);
       const packet = JSON.stringify({ id: 'fixture_completion', model: GLM_MODEL, choices: [{ index: 0, message: { role: 'assistant',
         tool_calls: [{ id: 'fixture_tool_call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }],
-        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } });
+        ...(!missingUsage ? { usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } } : {}) });
       return new Response(packet, { status: 200, headers: { 'content-type': 'application/json', 'x-soty-request-id': id } });
     }
   } };
@@ -111,6 +112,22 @@ async function fixture(t, { enabled = true, sourceReferences = [], sourceCredent
 }
 
 const appData = result => result.evidence.find(item => item.title === 'Мои приложения').data;
+for (const [label, options] of [
+  ['missing JSON usage and pending price', { missingUsage: true, receiptStatus: 'usage_pending' }],
+  ['missing JSON usage with completed receipt', { missingUsage: true }],
+  ['reported JSON usage but pending receipt', { receiptStatus: 'usage_pending' }],
+  ['completed receipt with mismatched token count', { receiptOutputTokens: 3 }],
+]) test(`Root accounting gate denies ${label} before answer or Notes persistence`, async t => {
+  const f = await fixture(t, options);
+  f.input({ answer: 'Unconfirmed draft must not be delivered', selectedEvidenceIds: [], claims: [] }, 'finish_answer');
+  const result = await f.turn(f.alice);
+  assert.equal(result.ok, false); assert.equal(result.error.code, 'agent_accounting_unknown');
+  assert.equal(Object.hasOwn(result, 'answer'), false); assert.equal(Object.hasOwn(result, 'accounting'), false);
+  const notes = good(await f.rpc(f.alice, 'notes.list', { expectedAccountId: f.alice.account.accountId }));
+  assert.equal(notes.notes.length, 0); assert.equal(f.appReads.length, 0); assert.equal(f.providerCalls.length, 1);
+  const retry = await f.turn(f.alice);
+  assert.equal(retry.error.code, 'agent_reconcile_required'); assert.equal(f.providerCalls.length, 1);
+});
 test('current signed account receives only its Apps projection through an accounted finish', async t => {
   const f = await fixture(t), a = await f.ownedHost(f.alice), b = await f.ownedHost(f.bob);
   const own = await f.register(f.alice, a, 'Own application'), foreign = await f.register(f.bob, b, 'Other private application');

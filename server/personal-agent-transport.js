@@ -96,14 +96,13 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
         requireValue(proof.tenantId === billingTenant, 'agent_key_binding_invalid');
         const receipt = proof.request;
         requireValue(receipt.id === round.requestId && receipt.model_requested === GLM_MODEL && receipt.model_resolved === GLM_MODEL
-          && ['completed', 'usage_pending'].includes(receipt.status), 'agent_accounting_unknown');
+          && receipt.status === 'completed', 'agent_accounting_unknown');
         requireValue(typeof receipt.charge_urub === 'string' && /^\d{1,30}$/u.test(receipt.charge_urub), 'agent_accounting_unknown');
-        const reported = result.usage.status === 'reported';
-        requireValue(receipt.status === 'usage_pending' ? !reported
-          : reported && receipt.input_tokens === result.usage.promptTokens && receipt.output_tokens === result.usage.completionTokens, 'agent_accounting_unknown');
+        requireValue(result.usage.status === 'reported' && receipt.input_tokens === result.usage.promptTokens
+          && receipt.output_tokens === result.usage.completionTokens, 'agent_accounting_unknown');
         round.state = receipt.status;
         return Object.freeze({ status: receipt.status, usage: result.usage,
-          chargeMicrorubles: receipt.status === 'completed' ? receipt.charge_urub : null });
+          chargeMicrorubles: receipt.charge_urub });
       } catch (error) {
         guard();
         throw agentError(signal?.aborted ? 'agent_cancelled' : errors.has(error) ? agentErrorCode(error) : 'agent_accounting_unknown');
