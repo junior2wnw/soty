@@ -27,7 +27,7 @@ function html(text) { return String(text).replaceAll('&', '&amp;').replaceAll('<
  * or turns an OIDC identity into a Native permission on its own. */
 export function createSourceAppBff(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native', 'rp'],
-    ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled']);
+    ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled', 'workspaceCapacity']);
   const profile = selectedResourceProfile(value.profile), clock = value.clock ?? Date.now;
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
@@ -44,7 +44,7 @@ export function createSourceAppBff(options) {
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
     'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
-  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock });
+  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock, workspaceCapacity: value.workspaceCapacity });
   const protocol = createSourceRpProtocol(value.rp, { clock });
   check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
     && value.rp.redirectUri === (embedOidc ? profile.embedOrigin + '/api/embed/callback' : profile.nativeOrigin + '/soty/callback'), 'source_app_profile_invalid', 503);

@@ -26,7 +26,7 @@ const validate = (value, required, optional = []) => { try { simple(value, requi
 /** Installed code only. No key/model/tenant/source authority is read from RPC, a manifest, or the HTTP Host header.
  * Notes are the existing account-owned Notes API; encrypted legacy rooms/identity are not an agent data source. */
 export function createPersonalAgentComposition({ getConnect, getServices, configuration = {} } = {}) {
-  simple(configuration, [], ['enabled', 'gateway', 'sourceReferences', 'sourceCredentialFor', 'scope', 'policy', 'clock', 'historyEnabled', 'localTargetFor']);
+  simple(configuration, [], ['enabled', 'gateway', 'sourceReferences', 'sourceCredentialFor', 'scope', 'policy', 'clock', 'historyEnabled', 'localTargetFor', 'capacity']);
   need(configuration.enabled === undefined || typeof configuration.enabled === 'boolean');
   need(configuration.historyEnabled === undefined || typeof configuration.historyEnabled === 'boolean');
   need(configuration.localTargetFor === undefined || typeof configuration.localTargetFor === 'function');
@@ -456,6 +456,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       isActionHrefAllowed: () => false }) };
   const module = createPersonalAgentModule({ getConnect, runtime: enabled && sourceBound ? runtime : undefined, transport, toolsForActor,
     ...(configuration.scope ? { scope: configuration.scope } : {}), ...(configuration.policy ? { policy: configuration.policy } : {}),
+    ...(configuration.capacity !== undefined ? { capacity: configuration.capacity } : {}),
     ...(configuration.clock ? { clock: configuration.clock } : {}) });
   return Object.freeze({ operations: module.operations, executeAsync: request => module.executeAsync(request),
     status() { const status = module.status(); return Object.freeze({ ...status, configured: !closed && status.configured,

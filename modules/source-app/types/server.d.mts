@@ -69,6 +69,8 @@ export interface SourceAppLegacyRpPort {
   currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>;
 }
 export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp:SourceRpProfile;
+  /** Host-only, workspace profile only: default128, integer1..65536. No permission or lease extension. */
+  workspaceCapacity?:{maxSlots?:number};
   clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:SourceAppRenewalPort|SourceAppLegacyRpPort}):{
   readonly profile:SourceProfile;/** Private host proof; never a response/body/persisted permission. */currentFeedbackJobProof(sessionHash:string):Promise<object>;
   handleRequest(req:IncomingMessage,res:ServerResponse):Promise<boolean>;close():void;

@@ -20,10 +20,14 @@ const terminalArguments = value => {
 /** Callable signed extension. Runtime functions are explicit host imports; no TS donor is dynamically loaded here.
  * outputProfile is local completed-result enforcement, not a claim of upstream forced-tool/json_schema support. */
 export function createPersonalAgentModule({ getConnect, runtime, transport, toolsForActor,
-  scope = { registryId: 'REG.soty', environmentId: 'production', audienceId: 'personal' }, policy = {}, clock = Date.now } = {}) {
+  scope = { registryId: 'REG.soty', environmentId: 'production', audienceId: 'personal' }, policy = {}, capacity = {}, clock = Date.now } = {}) {
   fields(scope, ['registryId', 'environmentId', 'audienceId']);
   for (const value of Object.values(scope)) identifier(value, 160);
   const hostScope = freeze({ ...scope }), modelPolicy = boundedPolicy(policy);
+  fields(capacity, [], ['maxAccountContexts', 'maxRetainedTurns']);
+  const maxAccountContexts = capacity.maxAccountContexts === undefined ? 128 : capacity.maxAccountContexts;
+  const maxRetainedTurns = capacity.maxRetainedTurns === undefined ? 128 : capacity.maxRetainedTurns;
+  requireValue([maxAccountContexts, maxRetainedTurns].every(value => Number.isSafeInteger(value) && value >= 1 && value <= 65536));
   const configured = typeof getConnect === 'function' && typeof runtime?.runTurn === 'function'
     && typeof runtime?.createContextStore === 'function' && typeof runtime?.adapterFor === 'function'
     && runtime.outputProfile === 'host-enforced-terminal.v1' && typeof toolsForActor === 'function'
@@ -42,7 +46,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     for (const [id, entry] of contexts) if (entry.active === 0 && entry.expiresAt <= at) contexts.delete(id);
     let entry = contexts.get(key);
     if (!entry) {
-      requireValue(contexts.size < 128, 'agent_capacity');
+      requireValue(contexts.size < maxAccountContexts, 'agent_capacity');
       entry = { store: runtime.createContextStore({ roles: ['human'], ttlMs: 1800000, maxContexts: 32 }), active: 0, expiresAt: at + 1800000 };
       contexts.set(key, entry);
     }
@@ -77,7 +81,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     // Only ephemeral dispatch metadata expires; the commerce ledger retains durable idempotency.
     const timestamp = now();
     for (const [id, value] of turns) if (value.state !== 'running' && value.retireAfter <= timestamp) turns.delete(id);
-    requireValue(turns.size < 128, 'agent_capacity');
+    requireValue(turns.size < maxRetainedTurns, 'agent_capacity');
     const turn = { intent, state: 'running', receipts: [], abort: new AbortController(), retireAfter: timestamp + 1800000 }; turns.set(key, turn);
     const unsubscribe = getConnect().subscribeRevocations(event => { if (event.deviceId === actor.deviceId) turn.abort.abort(); });
     let bundle, activeProvider, contextEntry;

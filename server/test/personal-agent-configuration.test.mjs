@@ -10,6 +10,20 @@ const profile = () => ({ schema: 'soty.personal-agent-installed.v1', gateway: { 
   inferenceBearer: 'synthetic-only-private-inference-key', managementSession: 'synthetic_only_private_session' }, accountIds: ['fixture_owner_A'],
   localTargets: [{ accountId: 'fixture_owner_A', hostDeviceId: 'fixture_device', connectorId: 'fixture_connector', cwd: 'C:\\fixture-workspace' }] });
 const closed = error => error.code === 'agent_gateway_configuration_invalid' && error.message === error.code && !error.cause;
+test('installed host capacity is optional and bounded without enlarging account admission', async t => {
+  const f = await files(t); await f.save(profile());
+  assert.equal(loadPersonalAgentConfiguration(f.env).personalAgent.capacity, undefined);
+  await f.save({ ...profile(), capacity: { maxRetainedTurns: 256, maxAccountContexts: 512 } });
+  const config = loadPersonalAgentConfiguration(f.env).personalAgent;
+  assert.deepEqual(config.capacity, { maxRetainedTurns: 256, maxAccountContexts: 512 });
+  assert.equal(Object.isFrozen(config.capacity), true);
+  assert.equal(config.gateway.authorizeActor({ actor: { accountId: 'foreign' }, billingTenant: 'fixture_tenant', keyRef: config.gateway.keyRef }), false);
+  for (const capacity of [null, { maxRetainedTurns: 65537 }, { maxAccountContexts: 0 }, { maxRetainedTurns: '256' }, { ttlMs: 1 }]) {
+    await f.save({ ...profile(), capacity }); assert.throws(() => loadPersonalAgentConfiguration(f.env), closed);
+  }
+  await f.save({ ...profile(), capacity: { maxAccountContexts: 512 }, accountIds: Array.from({ length: 129 }, (_, index) => 'account_' + index) });
+  assert.throws(() => loadPersonalAgentConfiguration(f.env), closed);
+});
 async function files(t) {
   const dir = await mkdtemp(join(tmpdir(), 'soty-agent-installed-owned-')), file = join(dir, 'private.json'), dist = join(dir, 'dist');
   const stoppers = []; await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Own source fixture</title>');

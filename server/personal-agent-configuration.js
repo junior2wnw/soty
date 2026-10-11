@@ -55,7 +55,13 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
     const flag = field(env, 'SOTY_PERSONAL_AGENT_ENABLED'); need(['', '0', '1'].includes(flag));
     if (flag !== '1') return { personalAgent: { enabled: false } };
     const value = privateFile(field(env, 'SOTY_PERSONAL_AGENT_CONFIG_FILE'));
-    fields(value, ['schema', 'gateway', 'accountIds'], ['localTargets']); need(value.schema === 'soty.personal-agent-installed.v1');
+    fields(value, ['schema', 'gateway', 'accountIds'], ['localTargets', 'capacity']); need(value.schema === 'soty.personal-agent-installed.v1');
+    let capacity;
+    if (value.capacity !== undefined) {
+      fields(value.capacity, [], ['maxAccountContexts', 'maxRetainedTurns']);
+      need(Object.values(value.capacity).every(limit => Number.isSafeInteger(limit) && limit >= 1 && limit <= 65536));
+      capacity = Object.freeze({ ...value.capacity });
+    }
     fields(value.gateway, ['origin', 'billingTenant', 'inferenceBearer', 'managementSession']);
     const gateway = value.gateway, origin = new URL(gateway.origin);
     need(origin.protocol === 'https:' && origin.origin === gateway.origin && !origin.username && !origin.password && !origin.search && !origin.hash);
@@ -75,6 +81,7 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
     }
     const keyRef = Object.freeze({}), billingTenant = gateway.billingTenant;
     return { personalAgent: { enabled: true, historyEnabled: true,
+      ...(capacity ? { capacity } : {}),
       ...(targets.size ? { localTargetFor: ({ actor }) => targets.get(actor.accountId) ?? null } : {}),
       gateway: { gatewayOrigin: gateway.origin, billingTenant, keyRef,
         authorizeActor: ({ actor, billingTenant: tenant, keyRef: ref }) => tenant === billingTenant && ref === keyRef && accounts.has(actor.accountId),

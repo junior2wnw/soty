@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createWorkspaceContextAuthority, workspaceMutationRef, workspaceWitness } from '../server/workspace-context.mjs';
 import { createNativeAuthorityRuntime, createSourceNativeAuthorityPort } from '../server/native-authority.mjs';
 import { STANDARD_WORKSPACE_SOURCE } from '../server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3, STANDARD_WORKSPACE_CONTRACT, standardSourceContract } from '../server/standard-profile.mjs';
+import { createSourceAppBff } from '../server/bff.mjs';
 import { digest } from '../server/wire.mjs';
 import { createSelectedNativeSourceApplication, bindSelectedNativeSourceAdapter } from '../../../server/selected-native-source.js';
 
@@ -10,6 +12,53 @@ const binding = () => ({ identity: { issuer: 'issuer', subject: 'subject' }, roo
   humanPrincipal: { subject: 'subject' }, resource: { selection: { kind: 'soty.workspace.v1', nativeId: 'workspace', incarnationId: 'one' } },
   semanticDigest: 'd', sessionIdHash: 'a'.repeat(64), rootReferenceDigest: 'b'.repeat(64), rootExpiresAt: 5000 });
 const projection = () => ({ key: 'first', generation: 1, title: 'First', role: 'editor', revision: 1, expiresAt: 4000 });
+
+test('one Native runtime admits 256 host-configured slots; default128 rejects129 without eviction or authority widening', async () => {
+  let now = 1000, active = true;
+  const port = createSourceNativeAuthorityPort({ capture: async () => ({}), withCurrent(_p, _b, action) { assert.ok(active); return action(); },
+    currentContext: () => ({ ...projection(), expiresAt: now + 3000 }), read: async () => ({ read: true }) });
+  const read = (runtime, proof) => runtime.call(proof, 'read', { requestId: 'workspace_capacity_read', input: { operation: 'soty.current_context' } });
+  for (const [capacity, total] of [[undefined, 128], [{ maxSlots: 256 }, 256]]) {
+    const runtime = createNativeAuthorityRuntime(port, { sourceProfile: STANDARD_WORKSPACE_SOURCE, clock: () => now, workspaceCapacity: capacity });
+    const rows = [];
+    for (let index = 0; index < total; index++) {
+      const proof = await runtime.capture({ ...binding(), rootReferenceDigest: digest(index), sessionIdHash: digest('session-' + index) });
+      rows.push({ proof, context: (await read(runtime, proof)).context });
+    }
+    assert.equal(new Set(rows.map(row => row.context.ref)).size, total);
+    const overflow = await runtime.capture({ ...binding(), rootReferenceDigest: digest('overflow') });
+    await assert.rejects(read(runtime, overflow), { code: 'source_workspace_context_denied' });
+    assert.equal((await read(runtime, rows[0].proof)).context.ref, rows[0].context.ref);
+    const args = { requestId: 'workspace_capacity_query', input: { operation: 'items.list' }, contextRef: rows[0].context.ref };
+    await assert.rejects(runtime.call(rows[1].proof, 'read', args), { code: 'source_workspace_context_denied' });
+    active = false; await assert.rejects(runtime.call(rows[0].proof, 'read', args)); active = true;
+    now = 4000; await assert.rejects(runtime.call(rows[0].proof, 'read', args), { code: 'source_workspace_context_denied' });
+    assert.equal((await read(runtime, overflow)).context.expiresAt, 5000, 'expired slots reclaimed; Root lease still clamps expiry');
+    now = 1000; runtime.close(); await assert.rejects(runtime.call(rows[0].proof, 'read', args));
+  }
+});
+
+test('BFF host capacity is closed, bounded and workspace-only; unreleased old pin is explicitly rejected', () => {
+  const appId = 'app-' + 'a'.repeat(32), parentOrigin = 'https://fixture.invalid', embedOrigin = 'https://' + appId + '.localhost:24444';
+  const profile = { schema: 'soty.selected-human-embed.v2', appId, connector: { linkId: 'fixture', hostDeviceId: 'host', connectorId: 'connector' },
+    target: { revision: 1, digest: 'a'.repeat(64) }, sourceProfile: STANDARD_WORKSPACE_SOURCE,
+    resource: { registryId: 'soty', environmentId: 'test', tenantId: 'owner', appId, resourceId: 'namespace', selection: { kind: 'soty.workspace.v1', nativeId: 'namespace', incarnationId: 'one' } },
+    issuer: parentOrigin + '/human-identity', clientId: 'fixture-client', embedOrigin, nativeOrigin: 'http://localhost:18085', parentOrigin };
+  const storage = Object.fromEntries(['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction', 'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'].map(key => [key, () => { throw Error('unexpected I/O'); }]));
+  const native = createSourceNativeAuthorityPort({ capture: async () => ({}), withCurrent: (_p, _b, action) => action(), currentContext: projection });
+  const options = { profile, transportKey: Buffer.alloc(32, 1), connectorPort: 49424, storage, native,
+    rp: { issuer: profile.issuer, clientId: profile.clientId, clientSecret: 'a'.repeat(43), redirectUri: embedOrigin + '/api/embed/callback' } };
+  for (const maxSlots of [1, 256, 65536]) createSourceAppBff({ ...options, workspaceCapacity: { maxSlots } }).close();
+  for (const maxSlots of [0, -1, 1.5, 65537, Infinity, '256', null])
+    assert.throws(() => createSourceAppBff({ ...options, workspaceCapacity: { maxSlots } }), { code: 'source_workspace_capacity_invalid' });
+  for (const capacity of [null, { ttlMs: 1 }, { maxSlots: 256, actor: 'foreign' }, { get maxSlots() { throw Error('getter executed'); } }])
+    assert.throws(() => createSourceAppBff({ ...options, workspaceCapacity: capacity }));
+  for (const sourceProfile of [STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3])
+    assert.throws(() => createNativeAuthorityRuntime(native, { sourceProfile, workspaceCapacity: { maxSlots: 256 } }), { code: 'source_workspace_capacity_invalid' });
+  assert.equal(STANDARD_WORKSPACE_CONTRACT.context.slotCapacity, 'host-configured');
+  assert.equal(STANDARD_WORKSPACE_SOURCE.digest, '5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c');
+  assert.throws(() => standardSourceContract({ ...STANDARD_WORKSPACE_SOURCE, digest: '1f8f2251e41e5afcceacf811109f0aaeb32c0b7a80ea19d18b88c9fb83b2c254' }), { code: 'source_app_profile_invalid' });
+});
 test('workspace references bind slot/actor/session/anchor; ABA, expiry, invalidation and capacity are bounded', () => {
   let now = 1000; const leases = createWorkspaceContextAuthority({ clock: () => now }), b = binding(), p = projection();
   const original = leases.read(b, p); assert.equal(original.context.expiresAt, 4000); assert.equal(leases.read(b, p).context.ref, original.context.ref);
