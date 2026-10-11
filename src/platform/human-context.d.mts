@@ -3,5 +3,6 @@ export interface HumanLoginContext {
   client: Readonly<{ id: string; label: string }>; scopes: readonly ('openid' | 'profile')[];
   expiresAt: number; decision: 'pending' | 'approved' | 'denied'; remainingMs: number;
   renewal?: Readonly<{ maximumSessionSeconds: 86400; approvedSessionSeconds?: 0 | 86400 }>;
+  deviceConsent?: Readonly<{ available: boolean; approvedRememberForDevice?: boolean }>;
 }
 export function parseHumanLoginContext(value: unknown, options: { interactionId: string; checkedAt: number }): Readonly<HumanLoginContext>;

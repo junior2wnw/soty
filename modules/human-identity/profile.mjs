@@ -61,7 +61,7 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
   if (options === undefined) return null;
   const code = 'human_identity_configuration_invalid';
   closed(options, ['enabled', 'issuer', 'registryId', 'environmentId'],
-    ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId', 'renewal'], code);
+    ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId', 'renewal', 'deviceConsent'], code);
   requireHuman(typeof options.enabled === 'boolean' && typeof options.issuer === 'string' && options.issuer.endsWith(HUMAN_IDENTITY_PATH), code, 503);
   const origin = originFor(options.issuer.slice(0, -HUMAN_IDENTITY_PATH.length));
   requireHuman(shellOrigins.includes(origin), code, 503); id(options.registryId); id(options.environmentId);
@@ -92,6 +92,14 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
       && new Set(renewal.clientIds).size === renewal.clientIds.length && renewal.clientIds.every(clientId => ids.has(clientId)), code, 503);
   }
   const renewalClients = new Set(renewal?.clientIds || []);
+  let deviceConsent;
+  if (options.deviceConsent !== undefined) {
+    deviceConsent = data(options.deviceConsent); closed(deviceConsent, ['admissionEnabled', 'clientIds'], [], code);
+    requireHuman(typeof deviceConsent.admissionEnabled === 'boolean' && Array.isArray(deviceConsent.clientIds)
+      && deviceConsent.clientIds.length <= 64 && new Set(deviceConsent.clientIds).size === deviceConsent.clientIds.length
+      && deviceConsent.clientIds.every(clientId => renewalClients.has(clientId)), code, 503);
+  }
+  const consentClients = new Set(deviceConsent?.clientIds || []);
   const protocolDigest = digest({ profile: HUMAN_IDENTITY_PROFILE, issuer, scopes: ['openid', 'profile'],
     responseTypes: ['code'], pkce: 'S256', clientAuth: 'client_secret_basic', subjectType: 'public' });
   const publicClients = clients.map(({ id: clientId, label, redirectUri, version }) => Object.freeze({ id: clientId, label, redirectUri, version,
@@ -103,6 +111,8 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
     profile: HUMAN_IDENTITY_PROFILE, protocolDigest, profileDigest: protocolDigest,
     publicClients: Object.freeze(publicClients),
     ...(renewal ? { renewalAdmissionEnabled: renewal.admissionEnabled, renewalAllowed(clientId) { return renewalClients.has(clientId); } } : {}),
+    ...(deviceConsent ? { deviceConsentAdmissionEnabled: deviceConsent.admissionEnabled,
+      deviceConsentAllowed(clientId) { return consentClients.has(clientId); } } : {}),
     client(clientId) { return publicClients.find(client => client.id === clientId); },
     isRegisteredRedirect(clientId, redirectUri) { return publicClients.some(client => client.id === clientId && client.redirectUri === redirectUri); },
     providerKeys() { return { jwks: data(jwks), cookieKeys: [...cookies] }; },

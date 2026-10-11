@@ -5,6 +5,8 @@ export const HUMAN_IDENTITY_SCHEMA_VERSION = 1;
 export const HUMAN_IDENTITY_LINEAGE = 'soty.human-identity.sqlite.v1';
 export const HUMAN_IDENTITY_RENEWAL_SCHEMA_VERSION = 2;
 export const HUMAN_IDENTITY_RENEWAL_LINEAGE = 'soty.human-identity.sqlite.v2';
+export const HUMAN_IDENTITY_DEVICE_CONSENT_SCHEMA_VERSION = 3;
+export const HUMAN_IDENTITY_DEVICE_CONSENT_LINEAGE = 'soty.human-identity.sqlite.v3';
 export const HUMAN_IDENTITY_DDL = `
 CREATE TABLE human_identity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
 CREATE TABLE human_identity_artifacts(
@@ -116,6 +118,36 @@ CREATE INDEX human_identity_grant_family_expiry ON human_identity_grant_bindings
 export const HUMAN_IDENTITY_RENEWAL_GUARDS = HUMAN_IDENTITY_GUARDS
   .replaceAll('a.expires_at>human_identity_gc_epoch()', 'a.retain_until>human_identity_gc_epoch()')
   .replace('OR NEW.interaction_hash<>OLD.interaction_hash', 'OR NEW.stay_in_app_seconds<>OLD.stay_in_app_seconds OR NEW.session_expires_at IS NOT OLD.session_expires_at OR NEW.interaction_hash<>OLD.interaction_hash');
+// A remembered preference is not a token, SDK grant or authorization cache.
+// Its exact revision fences an already approved interaction after logout.
+const CONSENT_TABLE = `
+CREATE TABLE human_identity_device_consents(
+ consent_hash TEXT PRIMARY KEY CHECK(length(consent_hash)=64),account_id TEXT NOT NULL,device_id TEXT NOT NULL,
+ client_id TEXT NOT NULL,profile_digest TEXT NOT NULL,client_generation INTEGER NOT NULL CHECK(client_generation>=1),
+ redirect_uri TEXT NOT NULL,scopes TEXT NOT NULL CHECK(json_valid(scopes) AND length(scopes)<=128),
+ revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 1000001),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+ revoked_at INTEGER,remembered_interaction_hash TEXT NOT NULL
+) STRICT;
+CREATE INDEX human_identity_device_consent_actor ON human_identity_device_consents(account_id,device_id,client_id);
+`;
+export const HUMAN_IDENTITY_DEVICE_CONSENT_DDL = HUMAN_IDENTITY_RENEWAL_DDL
+  .replace('CREATE TABLE human_identity_decisions(', 'CREATE TABLE "human_identity_decisions"(')
+  .replace('result_json TEXT NOT NULL CHECK(json_valid(result_json)),created_at INTEGER NOT NULL,PRIMARY KEY(account_id,request_id)',
+    'result_json TEXT NOT NULL CHECK(json_valid(result_json)),created_at INTEGER NOT NULL,consent_hash TEXT,consent_revision INTEGER,PRIMARY KEY(account_id,request_id),CHECK((consent_hash IS NULL AND consent_revision IS NULL) OR (consent_hash IS NOT NULL AND consent_revision IS NOT NULL AND length(consent_hash)=64 AND consent_revision>=1))')
+  + CONSENT_TABLE;
+export const HUMAN_IDENTITY_DEVICE_CONSENT_GUARDS = HUMAN_IDENTITY_RENEWAL_GUARDS + `
+CREATE TRIGGER human_identity_device_consent_pin BEFORE UPDATE ON human_identity_device_consents
+WHEN NEW.consent_hash<>OLD.consent_hash OR NEW.account_id<>OLD.account_id OR NEW.device_id<>OLD.device_id OR NEW.client_id<>OLD.client_id
+ OR NEW.profile_digest<>OLD.profile_digest OR NEW.client_generation<>OLD.client_generation OR NEW.redirect_uri<>OLD.redirect_uri
+ OR NEW.scopes<>OLD.scopes OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1
+ OR NEW.updated_at<OLD.updated_at
+BEGIN SELECT RAISE(ABORT,'human_identity_device_consent_immutable'); END;
+CREATE TRIGGER human_identity_device_consent_no_delete BEFORE DELETE ON human_identity_device_consents
+BEGIN SELECT RAISE(ABORT,'human_identity_device_consent_immutable'); END;
+CREATE TRIGGER human_identity_device_consent_no_replace BEFORE INSERT ON human_identity_device_consents
+WHEN EXISTS(SELECT 1 FROM human_identity_device_consents WHERE consent_hash=NEW.consent_hash)
+BEGIN SELECT RAISE(ABORT,'human_identity_device_consent_immutable'); END;
+`;
 const normalized = sql => sql.split(/('(?:[^']|'')*')/gu).map((part, index) => index % 2 ? part
   : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('');
 const layout = db => db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()
@@ -123,7 +155,8 @@ const layout = db => db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schem
 const expected = new Map();
 function reference(version) {
   if (!expected.has(version)) { const db = new DatabaseSync(':memory:'); try {
-    db.exec(version === 1 ? HUMAN_IDENTITY_DDL + HUMAN_IDENTITY_GUARDS : HUMAN_IDENTITY_RENEWAL_DDL + HUMAN_IDENTITY_RENEWAL_GUARDS);
+    db.exec(version === 1 ? HUMAN_IDENTITY_DDL + HUMAN_IDENTITY_GUARDS : version === 2
+      ? HUMAN_IDENTITY_RENEWAL_DDL + HUMAN_IDENTITY_RENEWAL_GUARDS : HUMAN_IDENTITY_DEVICE_CONSENT_DDL + HUMAN_IDENTITY_DEVICE_CONSENT_GUARDS);
     expected.set(version, JSON.stringify(layout(db)));
   } finally { db.close(); } }
   return expected.get(version);
@@ -146,9 +179,23 @@ CREATE INDEX human_identity_grant_family_expiry ON human_identity_grant_bindings
   db.prepare("UPDATE human_identity_meta SET value=? WHERE key='lineage'").run(HUMAN_IDENTITY_RENEWAL_LINEAGE);
   db.exec(HUMAN_IDENTITY_RENEWAL_GUARDS + 'PRAGMA user_version=2');
 }
-export function initializeHumanIdentitySchema(db, profile, { allowRenewalMigration = false } = {}) {
+function upgradeDeviceConsent(db) {
+  const decisions = HUMAN_IDENTITY_DEVICE_CONSENT_DDL.match(/CREATE TABLE "human_identity_decisions"\([\s\S]+?\) STRICT;/u)[0]
+    .replace('"human_identity_decisions"', 'human_identity_decisions_candidate');
+  db.exec(decisions + `INSERT INTO human_identity_decisions_candidate SELECT *,NULL,NULL FROM human_identity_decisions;
+DROP TABLE human_identity_decisions;ALTER TABLE human_identity_decisions_candidate RENAME TO human_identity_decisions;
+CREATE INDEX human_identity_decision_uid ON human_identity_decisions(uid_hash);`);
+  for (const guard of HUMAN_IDENTITY_RENEWAL_GUARDS.matchAll(/CREATE TRIGGER human_identity_decisions_[\s\S]+?END;/gu)) db.exec(guard[0]);
+  db.exec(CONSENT_TABLE + HUMAN_IDENTITY_DEVICE_CONSENT_GUARDS.slice(HUMAN_IDENTITY_RENEWAL_GUARDS.length));
+  db.exec('DROP TRIGGER human_identity_meta_no_update');
+  db.prepare("UPDATE human_identity_meta SET value=? WHERE key='lineage'").run(HUMAN_IDENTITY_DEVICE_CONSENT_LINEAGE);
+  db.exec("CREATE TRIGGER human_identity_meta_no_update BEFORE UPDATE ON human_identity_meta BEGIN SELECT RAISE(ABORT,'human_identity_immutable'); END;");
+  db.exec('PRAGMA user_version=3');
+}
+export function initializeHumanIdentitySchema(db, profile, { allowRenewalMigration = false, allowDeviceConsentMigration = false } = {}) {
   requireHuman(profile?.enabled === true, 'human_identity_disabled', 503);
   requireHuman(typeof allowRenewalMigration === 'boolean', 'human_identity_renewal_configuration_invalid', 503);
+  requireHuman(typeof allowDeviceConsentMigration === 'boolean', 'human_identity_device_consent_configuration_invalid', 503);
   db.exec('BEGIN IMMEDIATE');
   try {
     let version = Number(db.prepare('PRAGMA user_version').get().user_version);
@@ -160,15 +207,17 @@ export function initializeHumanIdentitySchema(db, profile, { allowRenewalMigrati
         environment_id: profile.environmentId, issuer: profile.issuer, profile: HUMAN_IDENTITY_PROFILE })) insert.run(key, value);
       db.exec('PRAGMA user_version=1');
       version = 1;
-    } else requireHuman([1, 2].includes(version), 'human_identity_storage_unknown', 503);
+    } else requireHuman([1, 2, 3].includes(version), 'human_identity_storage_unknown', 503);
     requireHuman(JSON.stringify(layout(db)) === reference(version), 'human_identity_storage_unknown', 503);
     const rows = db.prepare('SELECT key,value FROM human_identity_meta ORDER BY key').all(), values = Object.fromEntries(rows.map(row => [row.key, row.value]));
-    requireHuman(rows.length === 5 && values.lineage === (version === 1 ? HUMAN_IDENTITY_LINEAGE : HUMAN_IDENTITY_RENEWAL_LINEAGE) && values.registry_id === profile.registryId
+    requireHuman(rows.length === 5 && values.lineage === (version === 1 ? HUMAN_IDENTITY_LINEAGE : version === 2 ? HUMAN_IDENTITY_RENEWAL_LINEAGE : HUMAN_IDENTITY_DEVICE_CONSENT_LINEAGE) && values.registry_id === profile.registryId
       && values.environment_id === profile.environmentId && values.issuer === profile.issuer && values.profile === HUMAN_IDENTITY_PROFILE,
     'human_identity_storage_identity_mismatch', 503);
     requireHuman(!db.prepare('PRAGMA foreign_key_check').get(), 'human_identity_storage_corrupt', 503);
     if (version === 1 && allowRenewalMigration) { upgradeRenewal(db); version = 2; }
-    requireHuman(version === 2 || profile.renewalAdmissionEnabled !== true, 'human_identity_renewal_migration_required', 503);
+    if (version === 2 && allowDeviceConsentMigration) { upgradeDeviceConsent(db); version = 3; }
+    requireHuman(version >= 2 || profile.renewalAdmissionEnabled !== true, 'human_identity_renewal_migration_required', 503);
+    requireHuman(version === 3 || profile.deviceConsentAdmissionEnabled !== true, 'human_identity_device_consent_migration_required', 503);
     requireHuman(JSON.stringify(layout(db)) === reference(version) && !db.prepare('PRAGMA foreign_key_check').get(), 'human_identity_storage_unknown', 503);
     db.exec('COMMIT'); return Object.freeze({ schemaVersion: version });
   } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }

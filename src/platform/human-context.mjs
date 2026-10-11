@@ -8,7 +8,8 @@ const fail = () => { throw new TypeError('human_login_context_unavailable'); };
 export function parseHumanLoginContext(value, { interactionId, checkedAt } = {}) {
   if (!opaque(interactionId) || !Number.isSafeInteger(checkedAt)
     || !closed(value, ['schema', 'interactionId', 'browserNonce', 'csrf', 'client', 'scopes', 'expiresAt', 'decision',
-      ...(Object.hasOwn(value ?? {}, 'renewal') ? ['renewal'] : [])])
+      ...(Object.hasOwn(value ?? {}, 'renewal') ? ['renewal'] : []),
+      ...(Object.hasOwn(value ?? {}, 'deviceConsent') ? ['deviceConsent'] : [])])
     || value.schema !== 'soty.human-login-context.v1' || value.interactionId !== interactionId
     || !opaque(value.browserNonce) || !opaque(value.csrf)
     || !closed(value.client, ['id', 'label'])
@@ -23,8 +24,15 @@ export function parseHumanLoginContext(value, { interactionId, checkedAt } = {})
     || Object.hasOwn(value, 'renewal') && (!closed(value.renewal, ['maximumSessionSeconds',
       ...(Object.hasOwn(value.renewal ?? {}, 'approvedSessionSeconds') ? ['approvedSessionSeconds'] : [])])
       || value.renewal.maximumSessionSeconds !== 86400 || Object.hasOwn(value.renewal, 'approvedSessionSeconds')
-        && (value.decision !== 'approved' || ![0, 86400].includes(value.renewal.approvedSessionSeconds)))) fail();
+        && (value.decision !== 'approved' || ![0, 86400].includes(value.renewal.approvedSessionSeconds)))
+    || Object.hasOwn(value, 'deviceConsent') && (!closed(value.deviceConsent, ['available',
+      ...(Object.hasOwn(value.deviceConsent ?? {}, 'approvedRememberForDevice') ? ['approvedRememberForDevice'] : [])])
+      || typeof value.deviceConsent.available !== 'boolean' || value.deviceConsent.available && !value.renewal
+      || Object.hasOwn(value.deviceConsent, 'approvedRememberForDevice') && (value.decision !== 'approved'
+        || typeof value.deviceConsent.approvedRememberForDevice !== 'boolean'
+        || value.deviceConsent.approvedRememberForDevice && value.renewal?.approvedSessionSeconds !== 86400))) fail();
   return Object.freeze({ ...value, client: Object.freeze({ ...value.client }), scopes: Object.freeze([...value.scopes]),
     ...(Object.hasOwn(value, 'renewal') ? { renewal: Object.freeze({ ...value.renewal }) } : {}),
+    ...(Object.hasOwn(value, 'deviceConsent') ? { deviceConsent: Object.freeze({ ...value.deviceConsent }) } : {}),
     remainingMs: value.expiresAt - checkedAt });
 }

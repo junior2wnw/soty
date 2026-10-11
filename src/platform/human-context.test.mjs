@@ -32,3 +32,17 @@ test('a finite renewal choice is shown only for the exact eligible context witho
     renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds } }).renewal.approvedSessionSeconds, approvedSessionSeconds);
   assert.throws(() => parse({ ...context(), decision: 'approved', renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds: 86401 } }));
 });
+
+test('device remembering is presentation only and approved reload preserves the exact choice while admission is off', () => {
+  const pending = { ...context(), renewal: { maximumSessionSeconds: 86400 }, deviceConsent: { available: true } };
+  const value = parse(pending); assert.ok(Object.isFrozen(value.deviceConsent)); assert.equal(value.deviceConsent.available, true);
+  const approved = { ...pending, decision: 'approved', renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds: 86400 },
+    deviceConsent: { available: false, approvedRememberForDevice: true } };
+  assert.equal(parse(approved).deviceConsent.approvedRememberForDevice, true);
+  for (const deviceConsent of [null, {}, { available: 'yes' }, { available: true, accountId: 'claim' },
+    { available: true, revision: 1 }, { available: true, approvedRememberForDevice: true }]) assert.throws(() => parse({ ...pending, deviceConsent }));
+  assert.throws(() => parse({ ...context(), deviceConsent: { available: true } }));
+  assert.equal(parse({ ...context(), deviceConsent: { available: false } }).deviceConsent.available, false);
+  assert.throws(() => parse({ ...approved, renewal: { maximumSessionSeconds: 86400, approvedSessionSeconds: 0 } }));
+  assert.throws(() => parse({ ...approved, deviceConsent: { available: false, approvedRememberForDevice: 'true' } }));
+});

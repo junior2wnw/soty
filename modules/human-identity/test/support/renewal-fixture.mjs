@@ -50,9 +50,12 @@ function browser() {
   return { request, setCookie(origin, raw) { const url = new URL(origin), equal = raw.indexOf('='); jar.set(url.hostname + '\0/\0' + raw.slice(0, equal),
     { host: url.hostname, path: '/', name: raw.slice(0, equal), value: raw.slice(equal + 1), secure: false }); } };
 }
-export async function environment(t, { renewal = true, serviceDecorator = value => value, maxDatabaseBytes } = {}) {
+export async function environment(t, { renewal = true, serviceDecorator = value => value, maxDatabaseBytes,
+  deviceConsent = false, rpsCount = 2, renewalLimits } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'soty-human-oidc-')), clients = [];
-  const secrets = [random(), random()], rps = await Promise.all(['app-alpha', 'app-beta'].map((clientId, index) => createHumanBffFixture({ clientId, clientSecret: secrets[index], sessionDatabasePath:join(directory,'rp-'+index+'.sqlite') })));
+  assert.ok(Number.isInteger(rpsCount) && rpsCount >= 2 && rpsCount <= 9);
+  const names = Array.from({ length: rpsCount }, (_, index) => ['app-alpha', 'app-beta'][index] || 'app-extra-' + index);
+  const secrets = names.map(random), rps = await Promise.all(names.map((clientId, index) => createHumanBffFixture({ clientId, clientSecret: secrets[index], sessionDatabasePath:join(directory,'rp-'+index+'.sqlite') })));
   let app, identity, connect;
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   // Match the production transport. A slow synchronous quota fill must not
@@ -63,18 +66,21 @@ export async function environment(t, { renewal = true, serviceDecorator = value 
   Object.assign(privateJwk, { kid: 'human-fixture', alg: 'RS256', use: 'sig' });
   const options = { enabled: true, issuer, registryId: 'REG.soty', environmentId: 'fixture',
     clients: rps.map((rp, index) => ({ id: rp.clientId, label: 'Fixture ' + rp.clientId, redirectUri: rp.redirectUri, clientSecret: secrets[index], version:renewal ? 2 : 1 })),
-    jwks: { keys: [privateJwk] }, cookieKeys: [random()], artifactKey: randomBytes(32), artifactKeyId: 'human-fixture', ...(renewal ? {renewal:{admissionEnabled:true,clientIds:rps.map(rp=>rp.clientId)}} : {}) };
+    jwks: { keys: [privateJwk] }, cookieKeys: [random()], artifactKey: randomBytes(32), artifactKeyId: 'human-fixture', ...(renewal ? {renewal:{admissionEnabled:true,clientIds:rps.map(rp=>rp.clientId)}} : {}),
+    ...(deviceConsent ? { deviceConsent: { admissionEnabled: true, clientIds: rps.map(rp => rp.clientId) } } : {}) };
   let profile = createHumanIdentityHostProfile(options, { shellOrigins: [origin] });
   const identityPath = join(directory, 'human-identity', 'identity.sqlite'), distDir = join(directory, 'dist'); mkdirSync(distDir);
   writeFileSync(join(distDir, 'index.html'), '<!doctype html><title>Fixture root vault login</title><p>Existing Soty profile approval</p>');
   const create = () => {
     app = express();
     identity = createHumanIdentityService({ databasePath: identityPath, profile, allowRenewalMigration:profile.renewalAdmissionEnabled===true,
+      allowDeviceConsentMigration: deviceConsent, ...(renewalLimits ? { renewalLimits } : {}),
       ...(maxDatabaseBytes ? {maxDatabaseBytes} : {}), actorActive: actor => connect?.isActorActive(actor) === true,
       withAuthorityFence: callback => connect.withAuthorityFence(callback),
       readProfile: () => ({ name: 'Same display name', preferred_username: 'shared-profile' }) });
-    connect = attachConnectModule(app, { dataDir: directory, origins: [origin], extensions: [identity] });
-    attachHumanIdentity(app, { profile, service: serviceDecorator(identity), distDir });
+    const decorated = serviceDecorator(identity);
+    connect = attachConnectModule(app, { dataDir: directory, origins: [origin], extensions: [decorated] });
+    attachHumanIdentity(app, { profile, service: decorated, distDir });
     app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
   };
   create(); await Promise.all(rps.map(rp => rp.configure(issuer)));
@@ -126,10 +132,19 @@ export async function environment(t, { renewal = true, serviceDecorator = value 
     return finished;
   }
   return { origin, issuer, rps, actor, outsider, wire, begin, approve, complete, login, newClient, directory, identityPath, profile,
+    freshWire: browser,
     get identity() { return identity; }, get connect() { return connect; },
     async restart() { identity.close(); connect.close(); create(); },
     async admission(enabled) { options.renewal.admissionEnabled=enabled;identity.close();connect.close();profile=createHumanIdentityHostProfile(options,{shellOrigins:[origin]});create();},
+    async consentAdmission(enabled) { options.deviceConsent.admissionEnabled = enabled; identity.close(); connect.close(); profile = createHumanIdentityHostProfile(options, { shellOrigins: [origin] }); create(); },
+    async enableConsent() { deviceConsent = true; options.deviceConsent = { admissionEnabled: true, clientIds: options.renewal.clientIds.slice() };
+      identity.close(); connect.close(); profile = createHumanIdentityHostProfile(options, { shellOrigins: [origin] }); create(); },
+    async setRenewalLimits(value) { renewalLimits = value; identity.close(); connect.close(); create(); },
+    async clientVersion(index, version) { options.clients[index].version = version; identity.close(); connect.close(); profile = createHumanIdentityHostProfile(options, { shellOrigins: [origin] }); create(); },
     async refresh(rp,refreshToken) {const client=options.clients.find(client=>client.id===rp.clientId);return wire.request(issuer+'/token',{cookies:false,originHeader:null,headers:{authorization:'Basic '+Buffer.from(encodeURIComponent(rp.clientId)+':'+encodeURIComponent(client?.clientSecret||secrets[rps.indexOf(rp)])).toString('base64')},fields:{grant_type:'refresh_token',refresh_token:refreshToken}});},
+    async revoke(rp, token) { const client = options.clients.find(value => value.id === rp.clientId); return wire.request(issuer + '/revoke', {
+      cookies: false, originHeader: null, headers: { authorization: 'Basic ' + Buffer.from(encodeURIComponent(client.id) + ':' + encodeURIComponent(client.clientSecret)).toString('base64') },
+      fields: { token, token_type_hint: 'refresh_token' } }); },
     async exchangeCode(flow, { clientId = flow.rp.clientId, verifier = flow.rp.pendingFixture().verifier } = {}) {
       const client = options.clients.find(value => value.id === clientId);
       return wire.request(issuer + '/token', { cookies: false, originHeader: null, headers: { authorization: 'Basic ' + Buffer.from(clientId + ':' + client.clientSecret).toString('base64') },
@@ -137,6 +152,7 @@ export async function environment(t, { renewal = true, serviceDecorator = value 
     },
     async configureClients(change) {
       identity.close(); connect.close(); options.clients = change(structuredClone(options.clients)); if(options.renewal)options.renewal.clientIds=options.renewal.clientIds.filter(id=>options.clients.some(client=>client.id===id));
+      if (options.deviceConsent) options.deviceConsent.clientIds = options.deviceConsent.clientIds.filter(id => options.renewal.clientIds.includes(id));
       profile = createHumanIdentityHostProfile(options, { shellOrigins: [origin] }); create();
     },
     tryClientConfiguration(change) {

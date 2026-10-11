@@ -1,0 +1,55 @@
+{
+  "schema": "soty.human-device-consent-acceptance.v1",
+  "sourceBase": "4d33e0d8944b9bc639088d51e8adf7fb6f320dcc",
+  "branch": "codex/human-device-consent-20261012",
+  "runtime": "Node24.19",
+  "maintainedOidcProvider": "9.12.2",
+  "sourceRpProtocol": "6.8.4-unchanged-RP49",
+  "gates": {
+    "human": { "pass": 71, "fail": 0, "cancelled": 0, "skipped": 0 },
+    "sourceRp": { "pass": 22, "fail": 0, "cancelled": 0, "skipped": 0 },
+    "emittedHumanUi": { "pass": 12, "fail": 0, "cancelled": 0, "skipped": 0 },
+    "context": { "pass": 4, "fail": 0, "cancelled": 0, "skipped": 0 },
+    "typecheck": "pass",
+    "diffWhitespace": "pass",
+    "isolatedChromeFragmentRedirectAndReload": "pass"
+  },
+  "storage": {
+    "human2": { "schemaVersion": 2, "schemaObjects": 33, "layoutSha256": "b096f63d2b27fa301d9fd336a57205278495ea80355fd27477f46115d4f8a2c9" },
+    "human3": { "schemaVersion": 3, "schemaObjects": 38, "layoutSha256": "b3fa2360e7db5e44af0fb7f0716ecbb9c6e43793a9771574a73db30c01a3afb9" },
+    "migrationDefaultsOff": true,
+    "oldColumnsJsonCiphertextDeadlinesPreserved": true,
+    "oldHuman2ReaderRefusesHuman3": true,
+    "compatibleHuman3ConsentOffReader": true
+  },
+  "limits": {
+    "defaultGlobalActiveFamilies": 16,
+    "defaultFamiliesPerAccount": 8,
+    "hostOnlyOverrideMaximum": 4096,
+    "actualNineRpScenario": "pass",
+    "eachFamilyMaximumSeconds": 86400,
+    "liveLimitsChanged": false
+  },
+  "browser": {
+    "isolatedProfile": true,
+    "syntheticLoopbackIssuer": true,
+    "cliVersion": "0.1.19",
+    "ordinaryRpLogin": true,
+    "issuerAuthorizeRedirect": true,
+    "forgetFragmentRetained": true,
+    "fragmentSurvivesReload": true,
+    "browserConsentUiTested": false,
+    "liveProfileUsed": false,
+    "authUrlsLogged": false
+  },
+  "boundaries": {
+    "liveMutation": false,
+    "nativeAccountsChanged": false,
+    "sourceRp49Changed": false,
+    "foreverBearerIssued": false,
+    "freshSignedProofRequired": true,
+    "logoutExactPerClient": true,
+    "parentHostWiringAndColdFallbackPending": true,
+    "naturalNativeBrowserAcceptancePending": true
+  }
+}

@@ -9,6 +9,7 @@ export async function startHumanLogin(root: HTMLElement, interactionId: string):
   let observedId = (await accountClient.getLocalState()).accountId;
   const route = `/human-identity/interaction/${interactionId}`;
   const handle = mountHumanLogin(root, {
+    presentation: location.hash === '#forget' ? 'forget' : 'login',
     account: async () => { const local = await accountClient.getLocalState(); return {
       accountId: local.accountId, label: local.label || 'Ваш профиль', revoked: local.current?.revoked === true }; },
     observeAccount: listener => observeAccount(local => {
@@ -25,6 +26,14 @@ export async function startHumanLogin(root: HTMLElement, interactionId: string):
       const result = await accountClient.extension<{ schema: string; interactionId: string; requestId: string; decision: string }>('identity.human.approve', args, { expectedAccountId: args.expectedAccountId });
       if (result.schema !== 'soty.human-login-decision.v1' || result.interactionId !== args.interactionId
         || result.requestId !== args.requestId || result.decision !== (args.decision === 'approve' ? 'approved' : 'denied')) throw new TypeError('human_login_unconfirmed');
+    },
+    continue: async args => {
+      const result = await accountClient.extension<{ schema: string; interactionId: string; requestId: string; continued: boolean }>('identity.human.continue', args,
+        { expectedAccountId: args.expectedAccountId });
+      if (result.schema !== 'soty.human-login-continuation.v1' || result.interactionId !== args.interactionId
+        || result.requestId !== args.requestId || typeof result.continued !== 'boolean'
+        || Object.keys(result).sort().join(',') !== 'continued,interactionId,requestId,schema') throw new TypeError('human_login_unconfirmed');
+      return result.continued;
     },
     complete: csrf => submitHumanCompletion(interactionId, csrf),
     createProfile: async () => {
