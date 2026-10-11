@@ -78,13 +78,14 @@ export function createSourceAppBff(options) {
     return deepFreeze({ identity: { issuer: identity.issuer, subject: identity.subject ?? identity.sub },
       rootPrincipal: context.rootPrincipal, humanPrincipal: context.humanPrincipal, resource: profile.resource,
       semanticDigest, operation, ...(sessionIdHash ? { sessionIdHash } : {}),
-      ...(contract.kind === 'soty.workspace.v1' ? { rootReferenceDigest: digest(context.reference), rootExpiresAt: context.expiresAt } : {}) });
+      ...(contract.kind === 'soty.workspace.v1' ? { rootReferenceDigest: digest(context.reference), rootExpiresAt: context.expiresAt, ...(context.instanceId === undefined ? {} : { instanceId: context.instanceId }) } : {}) });
   }
   async function proveSession(session, context, operation, hostOptions) {
     await freshRoot(context);
     check(session && session.active === true && session.semanticDigest === semanticDigest && session.expiresAt > clock()
       && session.identity.issuer === profile.issuer && session.identity.subject === context.humanPrincipal.subject
       && digest(session.rootPrincipal) === digest(context.rootPrincipal), 'authentication_required', 401);
+    if (contract.kind === 'soty.workspace.v1') check(session.instanceId === context.instanceId, 'authentication_required', 401);
     // Basic is bound to the original Root slot. It cannot silently become a
     // new-slot/resume authority merely because actor/resource strings match.
     if (!session.rpMarker) check(session.rootReferenceDigest === digest(context.reference), 'authentication_required', 401);
@@ -105,7 +106,8 @@ export function createSourceAppBff(options) {
           expectedReference: session.rootReferenceDigest, context }], () => native.withCurrent(before, () => true));
         check(rebound === true, 'source_app_commit_unknown', 503); await postCommit(context, before);
         session = await store.readSession(session.idHash);
-        check(session?.rootReferenceDigest === digest(context.reference), 'source_app_commit_unknown', 503);
+        check(session?.rootReferenceDigest === digest(context.reference)
+          && (contract.kind !== 'soty.workspace.v1' || session.instanceId === context.instanceId), 'source_app_commit_unknown', 503);
       }
     } else {
       const secret = await store.readTokenProof(session);
@@ -141,6 +143,7 @@ export function createSourceAppBff(options) {
     const current = await proveSession(session, context, 'continue', hostOptions);
     check(current.session.idHash === session.idHash && current.session.cookieToken === session.cookieToken
       && current.session.active === true && current.session.expiresAt === session.expiresAt
+      && (contract.kind !== 'soty.workspace.v1' || current.session.instanceId === context.instanceId)
       && current.session.semanticDigest === semanticDigest && digest(current.session.identity) === digest(session.identity)
       && digest(current.session.rootPrincipal) === digest(context.rootPrincipal) && current.session.rpMarker
       && current.proof.issuer === profile.issuer && current.proof.sub === context.humanPrincipal.subject, 'authentication_required', 401);
@@ -148,6 +151,7 @@ export function createSourceAppBff(options) {
   }
   async function sessionRecord(interaction, identity, sessionToken, completion) {
     const basic = { idHash: digest(sessionToken), identity: { issuer: identity.issuer, subject: identity.subject },
+      ...(contract.kind === 'soty.workspace.v1' && interaction.context.instanceId !== undefined ? { instanceId: interaction.context.instanceId } : {}),
       rootPrincipal: interaction.context.rootPrincipal, rootReferenceDigest: digest(interaction.context.reference), semanticDigest, active: true,
       createdAt: interaction.createdAt, expiresAt: Math.min(identity.expiresAt, interaction.createdAt + 300000),
       accessToken: identity.accessToken, accessExpiresAt: identity.expiresAt, cookieToken: sessionToken, completionHash: digest(completion),

@@ -52,7 +52,7 @@ export const STANDARD_SELECTED_SOURCE_V3 = deepFreeze({ id: 'soty.standard-resou
 // The HTTP, RP, assets and budgets are exactly the maintained Source3 transport.
 export const STANDARD_WORKSPACE_CONTRACT = deepFreeze({ ...STANDARD_SOURCE_CONTRACT_3, kind: 'soty.workspace.v1',
   context: { schema: 'soty.current-context.v2', authority: 'application-namespace-and-current-child-native-acl',
-    readOperation: 'soty.current_context', uiOperation: 'soty.context.select', maxLeaseMs: 300000, slotCapacity: 'host-configured',
+    readOperation: 'soty.current_context', uiOperation: 'soty.context.select', maxLeaseMs: 300000, slotCapacity: 'host-configured', instanceBinding: 'optional-root-account-device-app-profile-main-or-widget',
     receipt: 'soty.context-after.v1', projection: 'soty.workspace-receipt.v1', witness: 'soty.workspace-context-witness.v1' } });
 export const STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: 'soty.standard-workspace', version: 1, digest: digest(STANDARD_WORKSPACE_CONTRACT) });
 export const isWorkspaceSource = pin => pin?.id === STANDARD_WORKSPACE_SOURCE.id && pin.version === 1 && pin.digest === STANDARD_WORKSPACE_SOURCE.digest;

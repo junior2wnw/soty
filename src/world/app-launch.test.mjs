@@ -179,3 +179,13 @@ test('approved capture pin gets a private per-launch slot; source mutation, refr
   source.id='planner.selected-workspace';await launcher.launch();assert.notEqual(launcher.scopedCapture().slot,first.slot);
   state.accountId='account-b';assert.equal(launcher.scopedCapture(),null);launcher.dispose();
 });
+
+test('stable main/widget locator survives a new launch without becoming a route or capability', async () => {
+  for(const instanceId of ['main','widget-11111111-1111-4111-8111-111111111111']){
+    const calls=[];const launcher=createAppLauncher({target,accountId:'account-a',instanceId,shellUrl,isCurrent:()=>true,
+      request:async args=>{calls.push(args);return {url:boot(),entry:{...target,origin:'https://demo.apps.example'}};}});
+    await launcher.launch();await launcher.launch();
+    assert.equal(calls.length,2);assert.ok(calls.every(value=>value.instanceId===instanceId&&value.expectedAccountId==='account-a'));
+    assert.equal(formatAppLaunchRoute(target).includes(instanceId),false);launcher.dispose();
+  }
+});

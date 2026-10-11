@@ -22,6 +22,8 @@ import {createScopedSlotRenewal,attachScopedRenewalLoads,type ScopedRenewReply} 
 
 export interface AppStageOptions {
   presentation?: 'widget';
+  /** Stable UI locator only; Root binds it to the authenticated app/person/device. */
+  instanceId?: string;
   nativeVoice?: { client:any; mount:any };
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
@@ -175,7 +177,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   moreBody.append(widget, publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
   header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
-  const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
+  const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),

@@ -1,5 +1,5 @@
 export interface AppLaunchTarget { readonly appId: string; readonly domainId?: string; readonly path?: string }
-export interface AppLaunchRequest extends AppLaunchTarget { readonly expectedAccountId: string }
+export interface AppLaunchRequest extends AppLaunchTarget { readonly expectedAccountId: string; readonly instanceId?: string }
 export interface AppResolvedEntry { readonly appId: string; readonly domainId: string; readonly origin: string; readonly path: string }
 export interface AppLaunchBinding { readonly schema: 'soty.app-launch-binding.v1'; readonly policyEpoch: number; readonly targetRevision: number; readonly targetDigest: string; readonly profile: 'soty.relay-restricted.v1'; readonly bindingFloor: 1 | 2 }
 export interface AppLaunchPresentation { readonly panel: 'discussion'; readonly conversationId?: string; readonly administrative?: true }
@@ -17,6 +17,7 @@ export function validateAppEntry(value: unknown, target: AppLaunchTarget, shellU
 export function validateAppLaunchBinding(value: unknown): AppLaunchBinding;
 export function sameAppLaunchBinding(first: AppLaunchBinding | null, next: AppLaunchBinding | null): boolean;
 export function createAppLauncher(options: {
+  instanceId?: string;
   target: AppLaunchTarget; accountId: string; shellUrl: string;
   isCurrent(accountId: string): boolean;
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;

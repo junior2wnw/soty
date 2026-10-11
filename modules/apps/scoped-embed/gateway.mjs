@@ -39,10 +39,10 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
     map.set(key, {record, expiresAt:record.context.expiresAt});
   }
   return Object.freeze({
-    open({actor,appId,domainId,target}) {
+    open({actor,appId,domainId,target,instanceId}) {
       sweep(); const profile=admissions.require(target);
       if(profile.schema==='soty.selected-human-embed.v2')need(attempts.size<SCOPED_EMBED_LIMITS.continuations,'app_scoped_attempt_busy',429);
-      const context=authority.open({actor,appId,domainId,targetRevision:target.revision}), handle=nonce();
+      const context=authority.open({actor,appId,domainId,targetRevision:target.revision,instanceId}), handle=nonce();
       const record={context,profile,handleHash:hash(handle),session:null,sourceSession:null};records.set(context.reference.id,record);handles.set(record.handleHash,record);
       // A bounded RAM witness permits ONLY a freshly signed attempt. It grants
       // no Source session, carries no cookie and does not make the old ref live.

@@ -148,14 +148,14 @@ export function validateAppLaunchUrl(value, shellUrl) {
 }
 
 /** One screen owns its pending popup. Completed external tabs belong to the user. */
-export function createAppLauncher({ target, accountId, shellUrl, isCurrent, request, resolveEntry, abandonScoped }) {
+export function createAppLauncher({ target, accountId, instanceId, shellUrl, isCurrent, request, resolveEntry, abandonScoped }) {
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
   let scoped=null;
   function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
   let originalBinding = null, bindingPinned = false;
-  const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId });
+  const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId, ...(instanceId === undefined ? {} : { instanceId }) });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
   function capture(value, requested, url) {
@@ -192,7 +192,8 @@ export function createAppLauncher({ target, accountId, shellUrl, isCurrent, requ
       // response with a missing/mismatched DTO must never be guessed later.
       if (initial && !received && typeof resolveEntry === 'function') {
         try {
-          const result = await resolveEntry(args);
+          const { instanceId: _instanceId, ...entryArgs } = args;
+          const result = await resolveEntry(entryArgs);
           if (current()) capture(result?.entry, intended);
         } catch { /* Keep the original launch failure; no substitute address. */ }
       }

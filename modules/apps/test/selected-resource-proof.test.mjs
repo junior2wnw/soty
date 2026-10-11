@@ -131,3 +131,8 @@ test('authentic over10s envelopes still deny and a nonce COMMIT after issued exp
   now = 109000; release(true);
   await assert.rejects(probing, { code: 'scoped_embed_proof_expired', status: 401 });
 });
+
+
+test('legacy selected resource proof rejects workspace-only instance fields',()=>{
+  const f=fixture();assert.throws(()=>f.signer.headers({context:{...f.context,instanceId:'main'},method:'GET',path:'/api/embed/project'}));
+});

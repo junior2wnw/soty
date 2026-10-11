@@ -56,7 +56,8 @@ test('BFF host capacity is closed, bounded and workspace-only; unreleased old pi
   for (const sourceProfile of [STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3])
     assert.throws(() => createNativeAuthorityRuntime(native, { sourceProfile, workspaceCapacity: { maxSlots: 256 } }), { code: 'source_workspace_capacity_invalid' });
   assert.equal(STANDARD_WORKSPACE_CONTRACT.context.slotCapacity, 'host-configured');
-  assert.equal(STANDARD_WORKSPACE_SOURCE.digest, '5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c');
+  assert.equal(STANDARD_WORKSPACE_SOURCE.digest, 'c1d52ca7865dfebf6ff05ee12f37e6d9d14e95b78928a5dee8f7defa331ddd99');
+  assert.throws(() => standardSourceContract({ ...STANDARD_WORKSPACE_SOURCE, digest: '5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c' }), { code: 'source_app_profile_invalid' });
   assert.throws(() => standardSourceContract({ ...STANDARD_WORKSPACE_SOURCE, digest: '1f8f2251e41e5afcceacf811109f0aaeb32c0b7a80ea19d18b88c9fb83b2c254' }), { code: 'source_app_profile_invalid' });
 });
 test('workspace references bind slot/actor/session/anchor; ABA, expiry, invalidation and capacity are bounded', () => {

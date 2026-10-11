@@ -21,7 +21,7 @@ export interface MicroWidgetsHandle {
 
 /** A presentation of existing admitted applications. No URLs or authority are invented here. */
 export function mountMicroWidgets(root: HTMLElement, options: {
-  mount(host: HTMLElement, app: WorldAppRecord, intent: AppLaunchIntent, current: () => boolean): AppStageHandle;
+  mount(host: HTMLElement, app: WorldAppRecord, intent: AppLaunchIntent, current: () => boolean, instanceId: string): AppStageHandle;
   dialog(title: string, onClose: () => void): WorldDialog;
   notify(text: string): void;
   onLayerChange?(): void;
@@ -149,7 +149,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       }, { signal: local.signal });
     };
     bindDrag(grip, 'move'); bindDrag(resize, 'size'); layout();
-    row.stage = options.mount(host, { appId: intent.target.appId, name: widget.name, status: 'unknown' }, intent, current);
+    row.stage = options.mount(host, { appId: intent.target.appId, name: widget.name, status: 'unknown' }, intent, current, widget.id);
   }
   function render(): void {
     for (const id of mounted.keys()) if (state.hidden || !state.widgets.some(widget => widget.id === id && widget.visible)) stop(id);

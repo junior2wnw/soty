@@ -290,12 +290,13 @@ authority и не принимается из HTTP, RPC, профиля или d
 удаляются; переполнение отказывает новому lease, не вытесняя действующий.
 TTL, account/device/slot isolation и Native ACL этим параметром не меняются.
 
-До первого выпуска SDK и установки workspace сделана одна явная финализация
+До первого выпуска SDK и установки workspace сделана явная финализация
 пина `soty.standard-workspace@1`: `context.maxSlots:128` заменено на
 `context.slotCapacity:'host-configured'`. Старый невыпущенный digest
 `1f8f2251e41e5afcceacf811109f0aaeb32c0b7a80ea19d18b88c9fb83b2c254`
 заменён на
-`5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c`;
+`c1d52ca7865dfebf6ff05ee12f37e6d9d14e95b78928a5dee8f7defa331ddd99`
+с описанной ниже привязкой instance;
 старый digest отклоняется, alias нет. Пины Source1/2/3 не изменены. Fixtures,
 installed profiles и Native bundle должны брать экспорт `STANDARD_WORKSPACE_SOURCE`.
 
@@ -340,3 +341,22 @@ Provider/accounting синтетические; жесты UI задаёт HTTP 
 acceptance и не готовая HIVE интеграция: ordinary example UI/feedback остаются
 fixed-resource; HIVE ещё должен подключить собственные account/storage/current
 UI hooks и тот же SQL COMMIT fence. Новых служб и per-project Root сборок нет.
+
+
+### Workspace instance binding
+
+`apps.launch` accepts optional `instanceId`: `main` or an existing `widget-<uuid>`.
+This UI locator is not authority. Root binds it to the fresh account/device/app/profile
+reference and retains it during `apps.scoped.renew`. AppStage uses `main`; micro-widgets
+use their persisted widget IDs. Independent main tabs are not represented.
+
+Workspace Source sessions seal `session.instanceId`. Hosts implementing
+`findRenewableSession({context,semanticDigest})` must select only a record with
+`session.instanceId === context.instanceId`, alongside existing actor/namespace/Native
+predicates. BFF independently checks equality for cookie proof, canonical reread and
+rebind. Absence remains absence; old selected profiles and Basic lifetimes are unchanged.
+
+The final prerelease workspace v1 pin adds `context.instanceBinding` and is
+`c1d52ca7865dfebf6ff05ee12f37e6d9d14e95b78928a5dee8f7defa331ddd99`.
+The earlier capacity-only `5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c`
+is rejected without an alias. Source1/2/3 pins are unchanged.

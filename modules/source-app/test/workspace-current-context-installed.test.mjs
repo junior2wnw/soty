@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createOrdinaryInstalledFixture } from './support/ordinary-installed.mjs';
 import { selectedNativeApplications } from './support/selected-native-contracts.mjs';
+import { createResourceSourceProofVerifier } from '../../apps/scoped-embed/resource-proof.mjs';
 import { STANDARD_WORKSPACE_SOURCE } from '../server/standard-profile.mjs';
 import { captureExternalApplications } from '../../../server/external-applications.js';
 import { GLM_MODEL } from '../../personal-agent/provider/validation.mjs';
@@ -167,4 +168,50 @@ test('one installed namespace serves two Root people with separate Native childr
   const foreignRef = await f.wire(a.embedded + '/api/embed/query', { body: { requestId: 'workspace_foreign_ref_0001', input: { operation: 'items.list' }, contextRef: first.value.data.context.ref } });
   assert.equal(foreignRef.status, 403);
   assert.equal(JSON.stringify(a.profile), profile); assert.equal(f.root(), root, 'same unchanged installed Root');
+});
+
+
+test('signed Apps launch and concurrent renew preserve independent workspace main/widget instances', {timeout:120000}, async t=>{
+  const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceProfile:STANDARD_WORKSPACE_SOURCE,
+    connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
+  const [realm]=f.realms,instances=['main','widget-11111111-1111-4111-8111-111111111111'];
+  const launches=[];
+  async function inspectContext(launch, candidate=false){
+    const boot=await f.wire(realm.embedded+'/_soty/session',{body:{ticket:new URL(launch.launchUrl).hash.slice(1)}});
+    assert.equal(boot.status,200);
+    if(candidate){
+      let request;const observe=req=>{if(req.url==='/api/embed/session-continue')request=req;};
+      realm.instance.server.prependListener('request',observe);
+      const body={requestId:'workspace-candidate-'+randomUUID()};
+      try{const response=await f.wire(realm.embedded+'/api/embed/session-continue',{body,headers:{'x-soty-boot-check':boot.value.sessionCheck}});
+        assert.equal(response.status,401,'no Source login has been completed');assert.ok(request);
+        const verifier=createResourceSourceProofVerifier({profile:realm.profile,key:realm.key,consumeNonce:()=>true});
+        const verified=await verifier.verify(request,{body:Buffer.from(JSON.stringify(body))});
+        const headers={...request.headers},proof=JSON.parse(Buffer.from(headers['x-soty-selected-proof'],'base64url').toString());
+        proof.context.instanceId=proof.context.instanceId==='main'?instances[1]:'main';
+        headers['x-soty-selected-proof']=Buffer.from(JSON.stringify(proof)).toString('base64url');
+        await assert.rejects(verifier.verify({url:request.url,method:request.method,headers},{body:Buffer.from(JSON.stringify(body))}),{code:'scoped_embed_proof_invalid'});
+        return verified;
+      }finally{realm.instance.server.off('request',observe);}
+    }
+    const prior=new Set(realm.instance.store.db.prepare('SELECT id_hash FROM source_interactions').all().map(row=>row.id_hash));
+    const start=await f.wire(realm.embedded+'/api/embed/login',{body:{}});assert.equal(start.status,200,start.value?.error?.code);
+    const row=realm.instance.store.db.prepare('SELECT id_hash FROM source_interactions').all().find(row=>!prior.has(row.id_hash));
+    assert.ok(row);return (await realm.instance.store.storage.getInteraction(row.id_hash)).context;
+  }
+  for(const instanceId of instances){
+    const launch=await f.reader.client.extension('apps.launch',{appId:realm.appId,instanceId});
+    const context=await inspectContext(launch);assert.equal(context.instanceId,instanceId);launches.push({launch,context});
+  }
+  assert.notEqual(launches[0].context.reference.digest,launches[1].context.reference.digest);
+  const renewed=await Promise.all(launches.map(({launch},index)=>f.reader.client.extension('apps.scoped.renew',{
+    appId:realm.appId,handle:launch.scopedCloseHandle,requestId:'workspace-instance-renew-'+index})));
+  for(const [index,launch]of renewed.entries()){
+    const context=await inspectContext(launch,true);assert.equal(context.instanceId,instances[index]);
+    assert.notEqual(context.reference.digest,launches[index].context.reference.digest);
+    assert.deepEqual(context.rootPrincipal,launches[index].context.rootPrincipal);
+  }
+  await assert.rejects(f.reader.client.extension('apps.launch',{appId:realm.appId,instanceId:'foreign-window'}));
+  await assert.rejects(f.reader.client.extension('apps.scoped.renew',{appId:realm.appId,handle:renewed[0].scopedCloseHandle,
+    requestId:'workspace-instance-retarget',instanceId:instances[1]}));
 });

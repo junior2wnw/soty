@@ -557,3 +557,9 @@ test("broker freezes pending headers, drops expired source cookies and bounds re
   );
   assert.equal(getterCalled, false);
 });
+
+
+test('legacy selected launch ignores valid workspace instance locators and keeps its exact context shape',()=>{
+  const f=fixture();const next=f.authority.open({actor:f.actor,appId:f.profile.appId,domainId:'domain_a',instanceId:'main'});
+  assert.equal(Object.hasOwn(next,'instanceId'),false);assert.deepEqual(Object.keys(next),Object.keys(f.context));
+});

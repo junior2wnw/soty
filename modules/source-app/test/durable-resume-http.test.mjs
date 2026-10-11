@@ -50,6 +50,7 @@ function renewableHost(t, realm, { root, client }) {
       for (const row of rows) {
         const session = await base.readSession(row.id_hash);
         if (session.rpMarker && session.semanticDigest === input.semanticDigest
+          && (realm.profile.resource.selection.kind !== 'soty.workspace.v1' || session.instanceId === input.context.instanceId)
           && session.identity.issuer === input.context.humanPrincipal.issuer && session.identity.subject === input.context.humanPrincipal.subject
           && digest(session.rootPrincipal) === digest(input.context.rootPrincipal)) candidates.push(session);
       }
@@ -61,7 +62,8 @@ function renewableHost(t, realm, { root, client }) {
         const row = realm.store.db.prepare('SELECT * FROM source_sessions WHERE id_hash=?').get(input.idHash);
         if (!row || row.active !== 1 || row.expires_at <= Date.now()) return false;
         const session = realm.store.decrypt('Session', row.id_hash, 0, row.cipher, row.key_id);
-        if (!session.rpMarker || session.rootReferenceDigest !== input.expectedReference) return false;
+        if (!session.rpMarker || session.rootReferenceDigest !== input.expectedReference
+          || realm.profile.resource.selection.kind === 'soty.workspace.v1' && session.instanceId !== input.context.instanceId) return false;
         final(); const cipher = realm.store.encrypt('Session', row.id_hash, 0,
           { ...session, rootReferenceDigest: digest(input.context.reference) });
         const changed = realm.store.db.prepare('UPDATE source_sessions SET cipher=? WHERE id_hash=? AND cipher=? AND active=1')
@@ -228,4 +230,29 @@ test('Native logout during the last Root HTTP authority await denies resumed rea
     assert.equal(realm.rpNative.head(idHash).revision, 0);
     assert.equal(realm.store.db.prepare('SELECT active FROM native_sessions WHERE id_hash=?').get(digest(realm.nativeToken)).active, 0);
   } finally { realm.beforeAsyncCheck = null; realm.ipc.off('request', duringRootRead); }
+});
+
+test('workspace main/widget survive expired references independently; foreign cookie and wrong lookup cannot rebind', {timeout:60000}, async t=>{
+  const advance=controlledClock(t);const f=await createOrdinaryHttpFixture(t,{embedOidc:true,workspace:true,renewal:true,
+    configureBff:(realm,host)=>renewableHost(t,realm,host)});const [realm]=f.realms,records=[];
+  for(const instanceId of ['main','widget-11111111-1111-4111-8111-111111111111']){
+    reopen(realm,f.root.actor);realm.context={...realm.context,instanceId};
+    const token=await login(realm,f.root.actor);const session=await realm.storage.readSession(digest(token));
+    assert.equal(session.instanceId,instanceId);records.push({instanceId,token,session});
+  }
+  assert.notEqual(records[0].session.idHash,records[1].session.idHash);advance(310);realm.restart();
+  for(const record of [...records].reverse().concat(records)){
+    reopen(realm,f.root.actor);realm.context={...realm.context,instanceId:record.instanceId};
+    const result=await continued(realm,'workspace-resume-'+random().slice(0,20));assert.equal(result.status,200);
+    assert.equal(realm.embedJar.get('soty_rp_session'),record.token);
+    const current=await realm.storage.readSession(record.session.idHash);assert.equal(current.instanceId,record.instanceId);
+    assert.equal(current.expiresAt,record.session.expiresAt);assert.equal(current.rootReferenceDigest,digest(realm.context.reference));
+  }
+  reopen(realm,f.root.actor);realm.context={...realm.context,instanceId:'main'};
+  const before=realm.rebinds;realm.embedJar.set('soty_rp_session',records[1].token);
+  assert.equal((await continued(realm)).status,401);assert.equal(realm.rebinds,before);
+  realm.embedJar.clear();realm.lookupOverride=()=>({idHash:records[1].session.idHash});
+  assert.equal((await continued(realm)).status,401);assert.equal(realm.rebinds,before);
+  realm.lookupOverride=null;delete realm.context.instanceId;
+  assert.equal((await continued(realm)).status,401,'no-instance cannot borrow an instance-bound session');
 });

@@ -9,6 +9,7 @@ import {
   need,
   SCOPED_EMBED_LIMITS,
 } from "./profile.mjs";
+import { isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { requireEmbedAdapter, embedContextSchema } from './profile-dispatch.mjs';
 
 /** Private Root constructor port. Original actors/authority callbacks never
@@ -104,6 +105,7 @@ export function createScopedEmbedAuthority({
   function view(slot) {
     return Object.freeze({
       schema: embedContextSchema(slot.profile),
+      ...(slot.instanceId === undefined ? {} : { instanceId: slot.instanceId }),
       reference: slot.reference,
       profileDigest: slot.profile.digest,
       appId: slot.profile.appId,
@@ -124,11 +126,14 @@ export function createScopedEmbedAuthority({
     });
   }
   return Object.freeze({
-    open({ actor, appId, domainId, targetRevision }) {
+    open({ actor, appId, domainId, targetRevision, instanceId }) {
       need(!stopped);
       const candidates = [...approved.values()].filter(value => value.appId === appId && (targetRevision === undefined || value.target.revision === targetRevision));
       const profile = candidates.length === 1 ? candidates[0] : null;
       need(profile, "scoped_embed_not_approved", 403);
+      need(instanceId === undefined || typeof instanceId === 'string' && /^(?:main|widget-[a-f0-9-]{36})$/u.test(instanceId), 'app_instance_invalid');
+      // A legacy app never receives this workspace-only UI locator.
+      const instance = isWorkspaceSource(profile.sourceProfile) && instanceId !== undefined ? { instanceId } : {};
       const humanPrincipal = human(actor, profile);
       for (const [id, slot] of slots)
         if (slot.expiresAt <= clock()) slots.delete(id);
@@ -158,6 +163,7 @@ export function createScopedEmbedAuthority({
             version: 1,
             digest: hash({
               profileDigest: profile.digest,
+              ...instance,
               accountId: snapshot.accountId,
               deviceId: actor.deviceId,
               domainId: snapshot.entry.domainId,
@@ -167,6 +173,7 @@ export function createScopedEmbedAuthority({
             }),
           });
           const slot = {
+            ...instance,
             reference,
             profile,
             actor,

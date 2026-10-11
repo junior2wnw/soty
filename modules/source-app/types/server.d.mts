@@ -12,7 +12,7 @@ export interface NativeWorkspaceReceipt {schema:'soty.workspace-receipt.v1';
   receipt:{verificationMethod:'domain_read';artifacts:{type:string;id:string;revision?:number}[]}}
 export interface NativeCommitPort {readonly [commitPortBrand]:true;/** Call once synchronously INSIDE the Native transaction. */commit<T>(action:()=>T):T;
   /** Workspace only: inside commit(action), after the effect; persist with the original receipt. */contextAfter?():Readonly<NativeContextAfter>}
-export interface NativeBinding {identity:{issuer:string;subject:string};rootPrincipal:{accountId:string;deviceId:string};humanPrincipal:unknown;resource:SourceProfile['resource'];semanticDigest:string;operation:string;sessionIdHash?:string;rootReferenceDigest?:string;rootExpiresAt?:number}
+export interface NativeBinding {identity:{issuer:string;subject:string};rootPrincipal:{accountId:string;deviceId:string};humanPrincipal:unknown;resource:SourceProfile['resource'];semanticDigest:string;operation:string;sessionIdHash?:string;rootReferenceDigest?:string;rootExpiresAt?:number;/** Workspace UI locator, never authority. */instanceId?:'main'|`widget-${string}`}
 export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
   capture(binding:Readonly<NativeBinding>,nativeBrowserRequest?:IncomingMessage):Promise<Proof>;

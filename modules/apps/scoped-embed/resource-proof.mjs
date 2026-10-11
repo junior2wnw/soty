@@ -1,3 +1,4 @@
+import { isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { capture, closed, continuation, hash, identifier, need } from './profile.mjs';
 import { selectedResourceProfile, RESOURCE_SOURCE_PROOF, RESOURCE_LAUNCH_CONTEXT, RESOURCE_TRANSPORT_LIMITS } from './resource-profile.mjs';
@@ -24,7 +25,8 @@ function fields(request) {
 function currentContext(input, profile) {
   const value = capture(input);
   closed(value, ['schema', 'reference', 'profileDigest', 'appId', 'sourceProfile', 'resource', 'rootPrincipal', 'humanPrincipal',
-    'entry', 'target', 'policyEpoch', 'expiresAt']);
+    'entry', 'target', 'policyEpoch', 'expiresAt'], isWorkspaceSource(profile.sourceProfile) ? ['instanceId'] : []);
+  need(value.instanceId === undefined || typeof value.instanceId === 'string' && /^(?:main|widget-[a-f0-9-]{36})$/u.test(value.instanceId), 'scoped_embed_context_mismatch', 403);
   continuation(value.reference); closed(value.rootPrincipal, ['accountId', 'deviceId']); Object.values(value.rootPrincipal).forEach(identifier);
   closed(value.humanPrincipal, ['issuer', 'subject', 'clientId', 'clientProfileDigest', 'clientGeneration']);
   const human = value.humanPrincipal;

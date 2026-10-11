@@ -199,8 +199,8 @@ class WorldApplication {
         this.main.querySelector<HTMLTextAreaElement>('.sw-assistant-host textarea')?.focus(); return true;
       } });
     this.widgets = mountMicroWidgets(root, {
-      mount: (host, app, intent, current) => mountAppStage(host, { api: this.api, app, accountId: this.deskAccount, intent,
-        presentation: 'widget', isCurrent: current, ...this.appRuntime(app),
+      mount: (host, app, intent, current, instanceId) => mountAppStage(host, { api: this.api, app, accountId: this.deskAccount, intent,
+        presentation: 'widget', instanceId, isCurrent: current, ...this.appRuntime(app),
         onNavigate: () => { /* The widget owns its route independently of the main screen. */ },
         onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
         onSettings: value => { if (current()) this.openAppSettings(value); },

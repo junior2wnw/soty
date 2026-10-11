@@ -63,8 +63,8 @@ function fixture({ popover = true } = {}) {
   doc.head = el('head'); doc.createElement = tag => el(tag);
   const root = el('main'); let layerChanges = 0;
   const control = exports.mountMicroWidgets(root, {
-    mount(host, _app, _intent, current) {
-      const stage = { host, current, disposed: false, dirty: false, flush: async () => {},
+    mount(host, _app, _intent, current, instanceId) {
+      const stage = { host, current, instanceId, disposed: false, dirty: false, flush: async () => {},
         hasUnsavedChanges() { return this.dirty; }, dispose() { this.disposed = true; },
         assistantContext: () => ({ appId: 'tasks' }) };
       stages.push(stage); return stage;
@@ -300,4 +300,11 @@ test('rejected widget pointer capture releases the guard without saving a layout
   const handle = f.nodes.find(node => node.className === 'sm-widget-grip');
   handle.setPointerCapture = () => { throw new Error('Synthetic inactive pointer'); };
   dragPointer(handle, 'pointerdown'); assert.equal(f.iframePointersBlocked(), false); assert.deepEqual(f.read(), before);
+});
+
+test('saved widget instance locator survives hide/show and remains distinct from main', async () => {
+  const f=fixture(); f.control.setAccount(f.account);
+  assert.equal(f.stages[0].instanceId,widget.id);
+  f.control.setAccount('another');f.control.setAccount(f.account);
+  assert.equal(f.stages.at(-1).instanceId,widget.id);assert.notEqual(widget.id,'main');f.control.dispose();
 });

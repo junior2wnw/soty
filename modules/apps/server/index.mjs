@@ -171,12 +171,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,first.entry.domainId);
           assertApps(domain&&domain.origin===first.entry.origin,'app_scoped_context_closed',403);
           const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor});assertRuntimeBinding(decision,{requireReady:true});
-          const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))}),next=scoped.record.context;
+          const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:first.instanceId}),next=scoped.record.context;
           voiceSourceActors.set(scoped.record,actor);
-          const same=sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
+          const same=next.instanceId===first.instanceId&&(sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
             &&['rootPrincipal','humanPrincipal','sourceProfile','resource'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]))
             :['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
-              &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]));
+              &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field])));
           if(!same){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
           issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId};scopedRenewals.set(key,issued);
         }
@@ -539,7 +539,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return scopedGateway.abandon(actor,id,args.handle);
     }
     if (op === 'apps.launch') {
-      exact(args, ['appId', 'domainId', 'path']);
+      exact(args, ['appId', 'domainId', 'path', 'instanceId']);
+      assertApps(args.instanceId === undefined || typeof args.instanceId === 'string' && /^(?:main|widget-[a-f0-9-]{36})$/u.test(args.instanceId), 'app_instance_invalid', 400);
       assertApps(app?.state === 'enabled', 'apps_access_denied', 403);
       const domain = args.domainId === undefined
         ? db.prepare("SELECT * FROM app_domains WHERE app_id=? AND role='canonical'").get(id)
@@ -554,7 +555,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       let scoped;
       if(selectedRuntimeProfile(decision.profile)) {
         assertApps(scopedGateway && entryPath==='/embed','app_scoped_admission_required',503);
-        scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id))});
+        scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:args.instanceId});
         voiceSourceActors.set(scoped.record,actor);
       }
       tickets.set(digest(ticket), { decision, entryPath,...(scoped?{scopedRecord:scoped.record}:{}) });
