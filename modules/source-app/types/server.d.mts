@@ -47,6 +47,10 @@ export interface SourceStoragePort {
   readTokenProof(session:unknown):Promise<{accessToken:string;expiresAt:number}>;revokeSession(hash:string):Promise<void>;
   /** Private constructor-only Long CAS; Basic storage omits this method. */
   rebindSession?(input:{idHash:string;expectedReference:string;context:unknown},finalNativeAssert:()=>unknown):Promise<boolean>;
+  /** Optional host-only S2 resume. Search only bounded sessions of the linked
+   * Native account in the exact verified context namespace; never Basic.
+   * The locator is reread and all Root/RP/Native checks still apply. */
+  findRenewableSession?(input:Readonly<{context:unknown;semanticDigest:string}>):Promise<{idHash:string}|null>;
 }
 /** Host-owned synchronous SQLite connection. The helper creates no schema and
  * never closes the connection or owns keys. Native callbacks run inside the

@@ -18,11 +18,12 @@ const opaque = () => randomBytes(32).toString('base64url');
 /** Native browser cookies are shared by hostname, NEVER by port. Embed jars
  * here model a private per-Source broker, not browser isolation on 127.0.0.1.
  * Root authority IPC is controlled; installed HTTP/WS remains a separate gate. */
-export async function createOrdinaryHttpFixture(t, { embedOidc = false, standardVersion3 = false, asyncNativeAuthority = false, stageSink = () => {} } = {}) {
+export async function createOrdinaryHttpFixture(t, { embedOidc = false, standardVersion3 = false, asyncNativeAuthority = false, stageSink = () => {},
+  renewal = false, configureBff = () => ({}) } = {}) {
   assert.equal(typeof standardVersion3, 'boolean'); assert.ok(!standardVersion3 || embedOidc);
   // Diagnostics are fixed phase names only. Never URLs/state/cookies/claims.
   stageSink('root.begin');
-  const root = await environment(t, { renewal: false }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
+  const root = await environment(t, { renewal }), directory = await mkdtemp(join(tmpdir(), 'soty-ordinary-http-'));
   stageSink('root.ready');
   const realms = [], sockets = new Set(), nativeJar = new Map();
   for (const [index, realmId] of ['board', 'library'].entries()) {
@@ -47,7 +48,7 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, standard
       embedOrigin: 'http://127.0.0.1:' + server.address().port, databasePath: join(directory, realmId + '.sqlite') }); realms.push(realm);
   }
   stageSink('source.listeners.ready');let configured;
-  await root.configureClients(clients => { configured = clients.map((client, index) => ({ ...client, version: 2,
+  await root.configureClients(clients => { configured = clients.map((client, index) => ({ ...client, version: client.version + 1,
     redirectUri: embedOidc ? realms[index].embedOrigin + '/api/embed/callback' : realms[index].nativeOrigin + '/soty/callback' })); return configured; });
   stageSink('root.clients.ready');
   for (const realm of realms) {
@@ -86,7 +87,8 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, standard
       realm.bff = createSourceAppBff({ profile: realm.profile, transportKey: realm.key, connectorPort: realm.ipc.address().port,
         storage: realm.store.storage, native,
         rp: { issuer: root.issuer, clientId: client.id, clientSecret: client.clientSecret, redirectUri: client.redirectUri },
-        ui: { appLabel: 'Synthetic ' + realm.realmId, resourceLabel: 'Выбранный проект' } });mark('bff.ready');
+        ui: { appLabel: 'Synthetic ' + realm.realmId, resourceLabel: 'Выбранный проект' },
+        ...configureBff(realm, { root, client }) });mark('bff.ready');
     };
     realm.restart(); nativeJar.set('ordinary_native_' + realm.realmId, realm.nativeToken);
     const signer = createResourceSourceProofSigner({ profile: realm.profile, key: realm.key });
@@ -110,10 +112,10 @@ export async function createOrdinaryHttpFixture(t, { embedOidc = false, standard
       return { form, start, page };
     };
     realm.authorizeNative = async intent => { const response = await realm.request('/soty/authorize', { method: 'POST', form: intent.form, native: true }); assert.equal(response.status, 303); return response; };
-    realm.completeOidc = async authorize => {
+    realm.completeOidc = async (authorize, actor = root.actor, stayInAppSeconds = 0) => {
       const response = await root.wire.request(authorize.location), interaction = await root.wire.request(response.location); assert.equal(interaction.status, 200);
       const current = await root.wire.request(response.location.href + '/context'), flow = { rp: { redirectUri: client.redirectUri }, session: root.wire, location: response.location, context: current.body };
-      await root.approve(flow); return root.complete(flow);
+      await root.approve(flow, actor, stayInAppSeconds ? { stayInAppSeconds } : {}); return root.complete(flow);
     };
     realm.finishNative = async callback => {
       if (embedOidc) {

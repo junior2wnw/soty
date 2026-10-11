@@ -173,11 +173,33 @@ Standard1 так же проверяет callback cookie; Standard2 после a
 Fixed embed cookies остаются в приватном per-slot Root broker; прямые Source
 origins на одном hostname нельзя считать изолированными только разными портами.
 
-Текущий BFF slice — **Basic300**, original Root slot и явный Native consent.
-Импорт RP49 не включает long session автоматически. Долговечный long consumer,
-Root rebind/ACK recovery и перезапуск — отдельные acceptance gates; текущий
-`session-continue` честно отвечает `renewable:false`. Не передавайте Basic на
-новый slot и не выдавайте manifest за подтверждение 24 часов.
+Пример приложения по умолчанию — **Basic300**, original Root slot и явный Native consent.
+Импорт RP49 не включает long session автоматически. Без собственного renewal
+consumer `session-continue` отвечает `renewable:false`; Basic не переносится на
+новый Root slot.
+
+Для уже выданной finite24h сессии host может добавить необязательный
+`storage.findRenewableSession({context, semanticDigest}) -> {idHash} | null` рядом
+с существующими `rpSessions` и атомарным `storage.rebindSession`. Hook вызывается
+только в `POST /api/embed/session-continue`, когда Source cookie отсутствует,
+после проверки свежего Root context. Native сначала определяет свой linked
+account по verified issuer/sub, затем ищет среди ограниченного host лимитом
+числа его активных Source sessions в точном пространстве приложения. Нельзя
+сканировать/дешифровать чужие сессии или выбирать account из HTTP body.
+
+Locator не является правом: BFF заново читает sealed session через `readSession`,
+проверяет exact semanticDigest, Root account/device, issuer/sub, finite deadline,
+`rpMarker` и `sha256(cookieToken) === idHash`, затем выполняет существующие
+RP currentProof, Native ACL и guarded rebind с final callback внутри Native
+транзакции. После свежих Root/Native проверок cookie возвращается только через
+прежний HttpOnly/Secure/SameSite header; публичный ACK не содержит credentials.
+Неверная присутствующая cookie не запускает поиск другой сессии. Нет hook,
+Basic, expiry, logout/revoke или смена actor — восстановления нет. Потерянный
+ACK восстанавливает ту же сохранённую сессию; BFF не повторяет OIDC issuance и
+не заменяет unknown RP refresh новой попыткой. Pins/маршруты/тела RPC неизменны.
+`test/durable-resume-http.test.mjs` проверяет два приложения и два Root actor,
+реальные OIDC/HTTP/RP49/SQLite, clock >300s, restart, revoke и lost ACK;
+Root authority IPC управляется fixture. Это не доказательство live установки.
 
 Feedback идёт только в текущий Source контекст: private «Сообщить проблему».
 RAM draft остаётся у исходного binding и не переносится при смене проекта/аккаунта.
