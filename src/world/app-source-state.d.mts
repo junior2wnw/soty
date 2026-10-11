@@ -13,7 +13,7 @@ export interface AppSourceStateView {
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
-  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'launchPolicy' | 'exposureConfirmed'>>): void;
+  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
   reset(): void;
@@ -26,4 +26,5 @@ export interface AppSourceState {
 }
 export function createAppSourceState(options: { accountId: string; appId: string; snapshot: AppInspection; now?: () => number }): AppSourceState;
 export function normalizeAppSourceTarget(value: unknown): AppSourceTarget;
+export function supportedAppSourceProfile(value: unknown): boolean;
 export function appSourcePreparationRemaining(preparation: Pick<AppSourcePreparation, 'checkedAt' | 'expiresAt'>, requestElapsedMs: number): number;

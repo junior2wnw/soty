@@ -87,7 +87,9 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   }
   await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:realms.map(realm=>({profile:realm.profile,key:realm.key.toString('base64url')}))}));startChild(true);
   await until(async()=>{try{return(await wireHttp(connectorPort,'/apps/claim',{origin,body:{}})).status===200;}catch{return false;}},60000);
-  for(const realm of realms){const pub=await owner.client.extension('apps.publication.get',{appId:realm.appId});const prepared=await owner.client.extension('apps.source.prepare',{appId:realm.appId,expectedPolicyEpoch:pub.policyEpoch,expectedTargetRevision:pub.activeTargetRevision,
+  for(const realm of realms){
+    if(options.promoteSource){await options.promoteSource({realm,owner,reader});continue;}
+    const pub=await owner.client.extension('apps.publication.get',{appId:realm.appId});const prepared=await owner.client.extension('apps.source.prepare',{appId:realm.appId,expectedPolicyEpoch:pub.policyEpoch,expectedTargetRevision:pub.activeTargetRevision,
     source:{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,port:realm.port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'}});
     await owner.client.extension('apps.source.promote',{appId:realm.appId,requestId:'ordinary-promote-'+realm.realmId,expectedPolicyEpoch:pub.policyEpoch,expectedTargetRevision:pub.activeTargetRevision,preparationId:prepared.preparationId,launchPolicy:'restricted',listed:false});
   }

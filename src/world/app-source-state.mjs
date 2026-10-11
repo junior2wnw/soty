@@ -1,6 +1,7 @@
 import { validateAppLaunchPath } from './app-launch.mjs';
 
 const PROFILE = 'soty.relay-restricted.v1';
+export const supportedAppSourceProfile = value => [PROFILE, 'soty.selected-human-embed.v1', 'soty.selected-human-embed.v2'].includes(value);
 const PAGE_SIZE = 20;
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value);
 const positive = value => Number.isSafeInteger(value) && value >= 1;
@@ -17,7 +18,7 @@ const targetKeys = ['revision', 'digest', 'profile', 'hostDeviceId', 'connectorI
 /** Bounded local receipt/display data, never a runtime proof or wire argument. */
 export function normalizeAppSourceTarget(value) {
   check(exact(value, targetKeys) && positive(value.revision) && typeof value.digest === 'string' && /^[a-f0-9]{64}$/u.test(value.digest)
-    && value.profile === PROFILE && id(value.hostDeviceId) && id(value.connectorId)
+    && supportedAppSourceProfile(value.profile) && id(value.hostDeviceId) && id(value.connectorId)
     && typeof value.deviceName === 'string' && value.deviceName.length <= 180
     && Number.isSafeInteger(value.port) && value.port >= 1024 && value.port <= 65535
     && typeof value.entryPath === 'string' && value.entryPath.length > 0 && value.entryPath.length <= 8192,
@@ -31,7 +32,7 @@ function historyTarget(value) {
   check(exact(value, [...targetKeys, 'createdAt']) && timestamp(value.createdAt), 'app_source_invalid_history');
   return { ...projectTarget(value), createdAt: value.createdAt };
 }
-function tuple(value) { return { hostDeviceId: value.hostDeviceId, connectorId: value.connectorId, port: Number(value.port), entryPath: value.entryPath }; }
+function tuple(value) { return { hostDeviceId: value.hostDeviceId, connectorId: value.connectorId, port: Number(value.port), entryPath: value.entryPath, profile: value.profile ?? PROFILE }; }
 function pins(value) { return { revision: value.revision, digest: value.digest, profile: value.profile }; }
 function baseIdentity(value) {
   return { appId: value.app.id, state: value.app.state, epoch: value.publication.policyEpoch,
@@ -45,6 +46,11 @@ function validateSnapshot(value, appId) {
     && typeof value.publication.listed === 'boolean' && Array.isArray(value.publication.activeDomainIds)
     && [1, 2].includes(value.source.requiredBindingVersion ?? 1), 'app_source_invalid_scope');
   projectTarget(value.source);
+  const integrations = value.source.integrations ?? [];
+  check(Array.isArray(integrations) && integrations.length <= 2
+    && integrations.every(item => exact(item, ['profile', 'entryPath']) && supportedAppSourceProfile(item.profile)
+      && item.profile !== PROFILE && item.entryPath === '/embed')
+    && new Set(integrations.map(item => item.profile)).size === integrations.length, 'app_source_invalid_scope');
   return clone(value);
 }
 
@@ -62,7 +68,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
   check(id(accountId) && typeof appId === 'string' && /^app-[a-f0-9]{32}$/u.test(appId), 'app_source_invalid_scope');
   let snapshot = validateSnapshot(initial, appId), base = clone(snapshot), disposed = false, generation = 0;
   const fresh = value => ({ mode: 'new', hostDeviceId: value.source.hostDeviceId, connectorId: value.source.connectorId,
-    port: String(value.source.port), entryPath: value.source.entryPath, launchPolicy: value.publication.launchPolicy,
+    port: String(value.source.port), entryPath: value.source.entryPath, profile: value.source.profile, launchPolicy: value.publication.launchPolicy,
     exposureConfirmed: false, targetRevision: null });
   let draft = fresh(snapshot), selected = null, prepared = null, inFlight = null, publicationDirty = false;
   let historyGeneration = 0, historyFlight = null, history = { loading: false, targets: [], nextCursor: null, stale: false };
@@ -77,6 +83,9 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     || draft.launchPolicy !== base.publication.launchPolicy;
   const conflict = () => historyConflict || (dirty() && !equal(baseIdentity(base), baseIdentity(snapshot)));
   const noChange = () => draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source));
+  const integrationAvailable = () => draft.profile === PROFILE || draft.mode === 'history'
+    || (snapshot.source.integrations ?? []).some(item => item.profile === draft.profile && item.entryPath === draft.entryPath
+      && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key]) && Number(draft.port) === snapshot.source.port);
   const remaining = () => {
     if (!prepared) return 0;
     const at = clock();
@@ -84,7 +93,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     return prepared.expired ? 0 : Math.max(0, prepared.deadline - at);
   };
   const eligible = () => !disposed && snapshot.app.state === 'enabled' && snapshot.actions.canEdit && snapshot.actions.canPublish
-    && !publicationDirty && !conflict() && !noChange();
+    && !publicationDirty && !conflict() && !noChange() && integrationAvailable();
   function invalidatePreparation() { generation++; prepared = null; draft.exposureConfirmed = false; }
   const reviewAvailable = () => eligible() && !!prepared && prepared.generation === generation;
   function ready() { return eligible() && !!prepared && prepared.generation === generation && remaining() > 0; }
@@ -102,7 +111,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     check(/^\d{1,5}$/u.test(draft.port), 'invalid_app_port');
     const port = Number(draft.port);
     check(Number.isSafeInteger(port) && port >= 1024 && port <= 65535 && port !== 49424, 'invalid_app_port');
-    return { ...common, source: { hostDeviceId: draft.hostDeviceId, connectorId: draft.connectorId, port, entryPath: validateAppLaunchPath(draft.entryPath) } };
+    return { ...common, source: { hostDeviceId: draft.hostDeviceId, connectorId: draft.connectorId, port, entryPath: validateAppLaunchPath(draft.entryPath),
+      ...(draft.profile === PROFILE ? {} : { profile: draft.profile }) } };
   }
   function validPreparation(value, request) {
     check(value?.schema === 'soty.app-source-preparation.v1' && value.appId === appId
@@ -111,7 +121,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       && timestamp(value.checkedAt) && timestamp(value.expiresAt) && value.expiresAt > value.checkedAt, 'app_source_invalid_preparation');
     const target = normalizeAppSourceTarget(value.target); validateAppLaunchPath(target.entryPath);
     check(target.port !== 49424, 'app_source_invalid_preparation');
-    check(request.args.source ? equal(tuple(target), request.args.source) && target.revision > request.args.expectedTargetRevision
+    check(request.args.source ? equal(tuple(target), tuple(request.args.source)) && target.revision > request.args.expectedTargetRevision
       : equal(pins(target), pins(request.selected)) && equal(tuple(target), tuple(request.selected)), 'app_source_invalid_preparation');
     return { schema: value.schema, appId, preparationId: value.preparationId, requiredBindingVersion: 2,
       expectedPolicyEpoch: value.expectedPolicyEpoch, expectedTargetRevision: value.expectedTargetRevision, target,
@@ -135,13 +145,14 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         canPromote: ready() && consentReady(), canRecheckPromote: canRecheck(), history });
     },
     patch(value) {
-      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'launchPolicy', 'exposureConfirmed']));
+      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'launchPolicy', 'exposureConfirmed']));
+      if (Object.hasOwn(value, 'profile')) check(supportedAppSourceProfile(value.profile));
       for (const key of ['hostDeviceId', 'connectorId', 'port', 'entryPath']) if (Object.hasOwn(value, key)) {
         check(typeof value[key] === 'string' && value[key].length <= (key === 'entryPath' ? 8192 : key === 'port' ? 32 : 180));
       }
       if (Object.hasOwn(value, 'launchPolicy')) check(['restricted', 'anyone'].includes(value.launchPolicy));
       if (Object.hasOwn(value, 'exposureConfirmed')) check(typeof value.exposureConfirmed === 'boolean');
-      const tupleChanged = ['hostDeviceId', 'connectorId', 'port', 'entryPath'].some(key => Object.hasOwn(value, key) && draft[key] !== value[key]);
+      const tupleChanged = ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile'].some(key => Object.hasOwn(value, key) && draft[key] !== value[key]);
       const changed = tupleChanged || (value.launchPolicy !== undefined && value.launchPolicy !== draft.launchPolicy)
         || (!!inFlight && Object.hasOwn(value, 'exposureConfirmed'));
       if (changed) invalidatePreparation();
@@ -153,11 +164,12 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       check(!disposed && exact(value, [...targetKeys, 'createdAt']), 'app_source_invalid_target');
       const target = projectTarget(value); invalidatePreparation(); selected = target;
       draft = { ...draft, mode: 'history', hostDeviceId: target.hostDeviceId, connectorId: target.connectorId,
-        port: String(target.port), entryPath: target.entryPath, targetRevision: target.revision };
+        port: String(target.port), entryPath: target.entryPath, profile: target.profile, targetRevision: target.revision };
     },
     observe(next, options = {}) {
       if (disposed) return;
-      const value = validateSnapshot(next, appId), changed = !equal(baseIdentity(snapshot), baseIdentity(value));
+      const value = validateSnapshot(next, appId), changed = !equal(baseIdentity(snapshot), baseIdentity(value))
+        || !equal(snapshot.source.integrations ?? [], value.source.integrations ?? []);
       const completed = matchesCompleted(options.completed), wasDirty = dirty();
       if (changed || (options.publicationDirty === true && !publicationDirty)) invalidatePreparation();
       if (Object.hasOwn(options, 'publicationDirty')) { check(typeof options.publicationDirty === 'boolean'); publicationDirty = options.publicationDirty; }

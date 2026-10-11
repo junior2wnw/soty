@@ -56,7 +56,7 @@ function deviceView(row, target, ownerAccountId) {
 // Caller supplies registries on this SAME DatabaseSync and a synchronous,
 // content-free observation of the supplied immutable target. No transport call
 // or await is allowed while this read snapshot is open.
-export function createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, shellOrigin,
+export function createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, shellOrigin,
   nameClaimsEnabled = false, namedAppZone = '', now = Date.now } = {}) {
   assertApps(db && typeof db.prepare === 'function' && typeof db.exec === 'function'
     && typeof assertActor === 'function' && typeof domains?.execute === 'function'
@@ -66,6 +66,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
   assertApps(typeof nameClaimsEnabled === 'boolean', 'apps_inspection_configuration_invalid', 500);
   assertApps(typeof now === 'function', 'apps_inspection_clock_invalid', 500);
   assertApps(inspectBinding === undefined || typeof inspectBinding === 'function', 'apps_inspection_dependencies_required', 500);
+  assertApps(inspectIntegrations === undefined || typeof inspectIntegrations === 'function', 'apps_inspection_dependencies_required', 500);
   const namedOrigin = normalizeNamedAppZone(namedAppZone);
   const claimOrigin = nameClaimsEnabled ? namedOrigin || null : null;
   function authenticate(actor) {
@@ -123,6 +124,12 @@ export function createAppInspection({ db, assertActor, domains, publications, in
           requiredBindingVersion: policy.requiredBindingVersion,
         });
         const observation = app.state === 'revoked' ? unknownObservation() : observe(sourceContext);
+        const integrations = app.state === 'revoked' ? [] : inspectIntegrations?.(sourceContext) ?? [];
+        assertApps(Array.isArray(integrations) && integrations.length <= 2
+          && integrations.every(item => isObject(item) && Object.keys(item).sort().join(',') === 'entryPath,profile'
+            && ['soty.selected-human-embed.v1', 'soty.selected-human-embed.v2'].includes(item.profile) && item.entryPath === '/embed')
+          && new Set(integrations.map(item => item.profile)).size === integrations.length,
+        'apps_integrations_invalid', 500);
         let binding;
         try { binding = app.state === 'revoked' ? { state: 'unavailable' } : bindingView(inspectBinding?.(sourceContext), policy.requiredBindingVersion); }
         catch (error) {
@@ -175,7 +182,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
             activeDomainIds: [...policy.activeDomainIds], activeTargetRevision: policy.activeTargetRevision },
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
             port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,
-            requiredBindingVersion: policy.requiredBindingVersion, binding, observation },
+            requiredBindingVersion: policy.requiredBindingVersion, binding, observation, ...(integrations.length ? { integrations } : {}) },
           actions: { canReserveName: enabled && Boolean(claimOrigin) && limits.usedByApp < limits.perApp && limits.usedByAccount < limits.perAccount,
             canEdit: enabled, canPublish: enabled, canPreview: canLink && Boolean(canonical || aliases.some(item => item.active)) },
         };

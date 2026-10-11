@@ -118,6 +118,21 @@ test('inspection uses immutable target identity and source fields instead of dri
   assert.deepEqual(reader.read(owner, { appId: appA }).app.grants.accountIds, [other.accountId]);
 });
 
+test('installed integration hints are owner-only, optional and reject private or malformed callback fields', async t => {
+  const f = await fixture(t); let calls = 0;
+  const integrations = [{ profile: 'soty.selected-human-embed.v2', entryPath: '/embed' }];
+  const reader = f.reader({ inspectIntegrations(context) { calls++; assert.equal(context.app.ownerAccountId, owner.accountId); return integrations; } });
+  assert.throws(() => reader.read(other, { appId: appA }), code('apps_owner_required')); assert.equal(calls, 0);
+  assert.deepEqual(reader.read(owner, { appId: appA }).source.integrations, integrations);
+  assert.equal(Object.hasOwn(f.reader().read(owner, { appId: appA }).source, 'integrations'), false);
+  for (const invalid of [[null], [{ ...integrations[0], resource: { tenantId: 'private' } }], [...integrations, ...integrations],
+    [{ profile: 'future', entryPath: '/embed' }], Promise.resolve(integrations)]) {
+    assert.throws(() => f.reader({ inspectIntegrations: () => invalid }).read(owner, { appId: appA }), code('apps_integrations_invalid'));
+  }
+  f.db.prepare("UPDATE local_apps SET state='revoked',revision=revision+1 WHERE id=?").run(appA);
+  assert.equal(Object.hasOwn(reader.read(owner, { appId: appA }).source, 'integrations'), false); assert.equal(calls, 1);
+});
+
 test('owner inspection projects only synchronous binding state for its current target and floor', async t => {
   const f = await fixture(t); let observed = 0;
   const reader = f.reader({ inspectBinding(context) {

@@ -53,6 +53,47 @@ function receipt(pending) {
     current: { appId, policyEpoch: a.expectedPolicyEpoch + 1, requiredBindingVersion: 2, activeTargetRevision: t.revision } };
 }
 
+test('installed selected option changes only profile/path and retains its exact profile through durable retry and readback', async () => {
+  for (const selectedProfile of ['soty.selected-human-embed.v1', 'soty.selected-human-embed.v2']) {
+    const snapshot = inspection(); snapshot.source.entryPath = '/embed';
+    snapshot.source.integrations = [{ profile: selectedProfile, entryPath: '/embed' }];
+    const f = fixture(snapshot), selected = target({ ...snapshot.source, revision: 5, digest: 'c'.repeat(64), profile: selectedProfile });
+    const expected = normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key => [key, selected[key]])));
+    f.source.patch({ profile: selectedProfile }); assert.equal(f.source.read().dirty, true); assert.equal(f.source.read().canPrepare, true);
+    await f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => {
+      assert.equal(args.source.profile, selectedProfile); assert.equal(args.source.port, snapshot.source.port);
+      return prepared(args, expected);
+    } } });
+    const store = storeFixture(), intent = f.source.promoteIntent();
+    await assert.rejects(dispatchAppSettingsIntent({ ...intent, state: store.state, isCurrent: () => true,
+      api: { request: async () => { throw Error('synthetic lost reply'); } } }));
+    const pending = store.state.read().pending; assert.equal(pending.expectedSource.profile, selectedProfile);
+    f.source.dispose(); const resumed = createAppSettingsState(store.options);
+    const accepted = await dispatchAppSettingsIntent({ state: resumed, expectedPending: resumed.read().pending, isCurrent: () => true,
+      api: { request: async (op, args) => { assert.equal(op, pending.op); assert.deepEqual(args, pending.args); return receipt(pending); } } });
+    assert.equal(accepted.status, 'accepted'); assert.equal(resumed.read().pending, null);
+    Object.assign(snapshot.source, expected); delete snapshot.source.integrations; snapshot.publication.activeTargetRevision = expected.revision;
+    const readback = fixture(snapshot).source.read(); assert.equal(readback.draft.profile, selectedProfile); assert.equal(readback.dirty, false);
+    assert.equal(readback.canPrepare, false); // Never silently offer a relay downgrade.
+  }
+});
+
+test('installed hints cannot retarget device/port or survive withdrawal during an in-flight check', async () => {
+  const snapshot = inspection(), selectedProfile = 'soty.selected-human-embed.v2';
+  snapshot.source.entryPath = '/embed'; snapshot.source.integrations = [{ profile: selectedProfile, entryPath: '/embed' }];
+  const f = fixture(snapshot); f.source.patch({ profile: selectedProfile });
+  for (const patch of [{ port: '6000' }, { hostDeviceId: 'another' }, { connectorId: 'another' }, { entryPath: '/' }]) {
+    f.source.patch(patch); assert.equal(f.source.read().canPrepare, false); f.source.reset(); f.source.patch({ profile: selectedProfile });
+  }
+  const wait = deferred(), flight = f.source.prepare({ isCurrent: () => true, api: { request: () => wait.promise } });
+  const withdrawn = copy(snapshot); delete withdrawn.source.integrations; f.source.observe(withdrawn);
+  wait.resolve({}); assert.deepEqual(await flight, { status: 'stale' }); assert.equal(f.source.read().canPrepare, false);
+  for (const integrations of [[null], [{ profile: selectedProfile, entryPath: '/embed', tenantId: 'private' }],
+    [{ profile: 'future', entryPath: '/embed' }], Array(2).fill(snapshot.source.integrations[0])]) {
+    assert.throws(() => fixture({ ...snapshot, source: { ...snapshot.source, integrations } }), { code: 'app_source_invalid_scope' });
+  }
+});
+
 test('bounded target projection preserves raw Unicode/hash paths but rejects readiness, proofs and unknown profiles', () => {
   assert.deepEqual(normalizeAppSourceTarget(target()), target());
   for (const bad of [{ ...target(), expiresAt: 123 }, { ...target(), proof: {} }, { ...target(), entryPath: 'x'.repeat(8193) },

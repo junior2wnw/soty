@@ -6,7 +6,7 @@ import { Writable } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { createWebSocketRelay, normalizeWebSocketLivenessTiming } from './websocket-relay.mjs';
-import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, selectedRuntimeProfile } from './schema.mjs';
+import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion, selectedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
@@ -80,7 +80,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
   try {
-    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
+    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
     appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry,requireScopedTarget:target=>scopedAdmissions.require(target) });
@@ -337,6 +337,25 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (!channel || channel.ws.readyState !== 1) return { state: 'offline' };
     if (channel.bindingVersion !== 2) return { state: floor === 2 ? 'update-required' : 'legacy' };
     return { state: runtimeBindings.getState(channel, app.id, target).state };
+  }
+  function inspectIntegrations({ app, target }) {
+    const channel = channels.get(target.connectorKey);
+    if (app.state !== 'enabled' || !withHumanSubjectAuthority || channel?.ws.readyState !== 1 || channel.bindingVersion !== 2) return [];
+    const next = db.prepare('SELECT max(revision) AS revision FROM app_runtime_targets WHERE app_id=?').get(app.id).revision + 1;
+    if (!Number.isSafeInteger(next)) return [];
+    const result = [];
+    for (const profile of scopedAdmissions.profiles()) {
+      if (profile.appId !== app.id || profile.target.revision !== next || !channel.runtimeProfiles.includes(profile.schema)) continue;
+      const candidate = { appId: app.id, ownerAccountId: app.ownerAccountId, revision: next,
+        connectorKey: target.connectorKey, port: target.port, entryPath: '/embed', profile: profile.schema };
+      candidate.digest = runtimeTargetDigest(candidate);
+      try { scopedAdmissions.verifyCandidate(candidate); }
+      catch { continue; }
+      // An installed option is a hint. The existing prepare still probes the
+      // exact connector and rechecks owner, admission and current revisions.
+      result.push({ profile: profile.schema, entryPath: '/embed' });
+    }
+    return result;
   }
   function deviceProjection(item) {
     const identity = JSON.parse(item.identity_json), channel = channels.get(item.connector_key);

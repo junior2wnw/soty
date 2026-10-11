@@ -406,6 +406,22 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceDetails = keyed(el('details', 'sw-app-settings-details sw-app-settings-source-editor'), 'source-editor');
   const sourceSummary = el('summary', '', 'Изменить источник');
   const sourceForm = el('form', 'sw-app-settings-source-form');
+  const sourceProfile = keyed(el('select', 'sw-select'), 'source-profile');
+  const profileOptions = new Map<string, HTMLOptionElement>();
+  const sourceProfileField = labeledField('Подключение', sourceProfile);
+  const sourceProfileHint = el('p', 'sw-muted sw-app-settings-hint', 'Подготовленное подключение выбранного пространства. Переключение изменит источник всего приложения. Доступ помощнику разрешается отдельно.');
+  sourceProfile.addEventListener('change', () => {
+    if (!sourceModel) return;
+    const { snapshot } = sourceModel.read();
+    if (sourceProfile.value === 'soty.relay-restricted.v1') sourceModel.patch({ profile: 'soty.relay-restricted.v1' });
+    else {
+      const integration = snapshot.source.integrations?.find(value => value.profile === sourceProfile.value);
+      if (!integration) return;
+      sourceModel.patch({ profile: integration.profile, entryPath: integration.entryPath, port: String(snapshot.source.port),
+        hostDeviceId: snapshot.source.hostDeviceId, connectorId: snapshot.source.connectorId });
+    }
+    changedSource();
+  });
   const sourceSelect = keyed(el('select', 'sw-select'), 'source-device'); sourceSelect.required = true;
   const deviceOptions = new Map<string, HTMLOptionElement>();
   const reloadDevices = keyed(iconButton('Обновить список устройств', 'refresh', () => { void loadSourceDevices(); }), 'source-devices-refresh');
@@ -454,7 +470,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     void perform(async () => { try { await mutation(undefined, undefined, undefined, pending); } catch (reason) { if (current()) sourceError = settingsError(reason); } });
   }), 'source-pending-retry');
   sourcePending.append(el('p', '', 'Результат пока не подтверждён. Прежний запрос сохранён.'), sourcePendingRetry);
-  sourceForm.append(deviceRow, deviceHint, deviceFailure, sourceFields, labeledField('Доступ после переключения', sourceAudience),
+  sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, labeledField('Доступ после переключения', sourceAudience),
     sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
   sourceForm.addEventListener('submit', event => { event.preventDefault(); void checkSource(); });
   sourceDetails.append(sourceSummary, sourceForm);
@@ -502,6 +518,16 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     const ordinary = model.read(), { snapshot } = ordinary;
     sourceModel.observe(snapshot, { publicationDirty: ordinary.publicationDirty });
     const state = sourceModel.read(), { draft } = state, editable = snapshot.actions.canEdit;
+    const selectedProfile = draft.profile !== 'soty.relay-restricted.v1';
+    const profiles = new Set(['soty.relay-restricted.v1', ...(snapshot.source.integrations ?? []).map(value => value.profile), draft.profile]);
+    for (const [value, node] of profileOptions) if (!profiles.has(value)) { node.remove(); profileOptions.delete(value); }
+    for (const value of profiles) {
+      let node = profileOptions.get(value);
+      if (!node) { node = el('option'); node.value = value; profileOptions.set(value, node); sourceProfile.append(node); }
+      text(node, value === 'soty.relay-restricted.v1' ? 'Сайт' : 'Вход Сот и помощник');
+    }
+    if (sourceProfile.value !== draft.profile) sourceProfile.value = draft.profile;
+    sourceProfile.disabled = !editable; sourceProfileField.hidden = profiles.size === 1; sourceProfileHint.hidden = !selectedProfile;
     if (!state.preparation && !state.preparing && (state.conflict || ordinary.publicationDirty || !editable)) hadPreparation = false;
     const observed = snapshot.source.observation, binding = snapshot.source.binding?.state;
     const observationState = ['responding', 'unreachable'].includes(observed.state) && performance.now() >= observationDeadline ? 'unknown' : observed.state;
@@ -529,13 +555,13 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       text(node, !devicesLoaded && selectedKey === deviceKey(snapshot.source) ? snapshot.source.deviceName : 'Выбранное устройство недоступно');
     }
     if (sourceSelect.value !== selectedKey) sourceSelect.value = selectedKey;
-    sourceSelect.disabled = !editable; disable(reloadDevices, devicesLoading || !editable); reloadDevices.setAttribute('aria-busy', String(devicesLoading));
+    sourceSelect.disabled = !editable || selectedProfile; disable(reloadDevices, devicesLoading || !editable); reloadDevices.setAttribute('aria-busy', String(devicesLoading));
     text(deviceHint, devicesLoading ? 'Обновляем список…' : selectedDevice?.bindingVersion === 1 ? 'Для переключения обновите Соты Коннектор на этом устройстве.'
       : selectedDevice && !selectedDevice.online ? 'Устройство не в сети. Проверка уточнит подключение.' : !devicesLoaded ? 'Загрузите список устройств для проверки.'
         : !selectedDevice ? 'Обновите список или выберите другое устройство.' : '');
     deviceHint.hidden = !deviceHint.textContent; text(deviceFailure, deviceError); deviceFailure.hidden = !deviceError;
     inputValue(sourcePortInput, draft.port); inputValue(sourcePathInput, draft.entryPath);
-    sourcePortInput.readOnly = sourcePathInput.readOnly = !editable;
+    sourcePortInput.readOnly = sourcePathInput.readOnly = !editable || selectedProfile;
     if (sourceAudience.value !== draft.launchPolicy) sourceAudience.value = draft.launchPolicy; sourceAudience.disabled = !editable;
     sourceAccessBlock.hidden = !ordinary.publicationDirty;
     disable(resetAccess, blocked || !ordinary.publicationDirty);

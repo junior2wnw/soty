@@ -11,7 +11,7 @@
 <strong>Изолированный стенд настроек источника</strong>
 <p class="qa-label">Настоящий компонент и диалог; вымышленные ответы. Сеть, рабочие приложения и аккаунты не используются. Проверка событий DOM не заменяет ручную проверку клавиатуры и экрана.</p>
 <div class="qa-controls">
-  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
   <button id="qa-open">Открыть</button><button id="qa-reset">Сбросить только стенд</button><button id="qa-tests">Проверить сценарии DOM</button><button id="qa-theme">Сменить тему</button>
 </div>
 <p id="qa-results" role="status" data-test-status="idle">Готов к запуску.</p>
@@ -49,6 +49,7 @@ function inspect(){const now=Date.now(),active=backend.app.state==='enabled';ret
     limits:{perApp:5,perAccount:30,usedByApp:1,usedByAccount:1}},
   publication:{policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision},
   source:{...clone(backend.source),requiredBindingVersion:backend.source.revision===1?1:2,binding:{state:active?'bound':'unavailable'},
+    ...(mode.value==='selected'&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
     observation:{state:active?'responding':'unknown',observedAt:active?now:null,freshUntil:active?now+45000:null,evidence:active?'connector-v2-observation':'not-observed'}},
   actions:{canEdit:active,canPublish:active,canPreview:active,canReserveName:active}};}
 function summary(){return {appId,policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision,requiredBindingVersion:backend.source.revision===1?1:2,appState:backend.app.state};}
@@ -62,7 +63,7 @@ const api={async request(op,args){
     const chosen=args.source??backend.targets.find(value=>value.revision===args.targetRevision);if(!chosen)fail('apps_source_target_unavailable');
     const device=[deviceA,deviceB].find(value=>value.hostDeviceId===chosen.hostDeviceId&&value.connectorId===chosen.connectorId);if(!device)fail('apps_device_not_owned');
     const revision=args.source?Math.max(...backend.targets.map(value=>value.revision))+1:chosen.revision;
-    const target={revision,digest:args.source?await sha(JSON.stringify([revision,chosen])):chosen.digest,profile,hostDeviceId:device.hostDeviceId,connectorId:device.connectorId,deviceName:device.name,port:chosen.port,entryPath:chosen.entryPath};
+    const target={revision,digest:args.source?await sha(JSON.stringify([revision,chosen])):chosen.digest,profile:chosen.profile??profile,hostDeviceId:device.hostDeviceId,connectorId:device.connectorId,deviceName:device.name,port:chosen.port,entryPath:chosen.entryPath};
     const now=Date.now(),value={schema:'soty.app-source-preparation.v1',appId,preparationId:nonce(),expectedPolicyEpoch:backend.epoch,expectedTargetRevision:backend.source.revision,
       requiredBindingVersion:2,target,checkedAt:now,expiresAt:now+(mode.value==='short'?1600:30000)};
     preparations.set(value.preparationId,value);
@@ -77,9 +78,9 @@ const api={async request(op,args){
     const previous=backend.source.revision;backend.source=clone(prepared.target);backend.epoch++;backend.launchPolicy=args.launchPolicy;
     if(!backend.targets.some(value=>value.revision===backend.source.revision))backend.targets.push({...clone(backend.source),createdAt:Date.now()});
     const reply={requestId:args.requestId,replayed:false,receipt:{schema:'soty.app-source-receipt.v1',namespace:'apps.source.promote.v1',requestKeyHash:await sha(args.requestId),
-      preparationKeyHash:await sha(args.preparationId),appId,previousTargetRevision:previous,targetRevision:backend.source.revision,targetDigest:backend.source.digest,profile,
+      preparationKeyHash:await sha(args.preparationId),appId,previousTargetRevision:previous,targetRevision:backend.source.revision,targetDigest:backend.source.digest,profile:backend.source.profile,
       requiredBindingVersion:2,policyEpoch:backend.epoch,launchPolicy:args.launchPolicy,listed:args.listed,exposureAck:args.exposureAck??null,committedAt:Date.now()},current:summary()};
-    backend.receipts[args.requestId]=clone(reply);persist();if(mode.value==='lost'&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
+    backend.receipts[args.requestId]=clone(reply);persist();if(['lost','selected'].includes(mode.value)&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
   }
   fail('fixture_operation_not_supported');
 }};
@@ -99,6 +100,16 @@ function assert(value,label){if(!value)throw new Error(label);}
 function reset(){close();backend=initial();preparations=new Map();calls=[];lostOnce=false;deferredReply=null;failedInspections=0;localStorage.removeItem(pendingKey);persist();}
 async function run(){if(automatic)return;automatic=true;result.dataset.testStatus='running';result.textContent='Выполняются сценарии компонента…';const passed=[];
   try{
+    mode.value='selected';reset();await open();assert(key('source-profile').value===profile,'installed option silently changed the source');
+    change('source-profile','soty.selected-human-embed.v2');
+    assert(key('source-path').value==='/embed'&&key('source-path').readOnly&&key('source-port').readOnly&&key('source-device').disabled,'installed choice did not retain its prepared device/port/path');
+    click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'selected public consent');
+    change('source-public-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','selected lost reply');
+    await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'selected receipt settled');
+    const selectedSends=calls.filter(value=>value.op==='apps.source.promote');
+    assert(selectedSends.length===2&&JSON.stringify(selectedSends[0].args)===JSON.stringify(selectedSends[1].args),'selected reload changed the durable command');
+    assert(key('source-profile').value==='soty.selected-human-embed.v2'&&backend.source.profile==='soty.selected-human-embed.v2','selected readback downgraded or failed');
+    passed.push('Готовое подключение: выбор → проверка → потерянный ответ → прежний запрос → чтение без подмены профиля');
     mode.value='normal';reset();await open();
     const field=change('source-path','/stable-черновик?x=1#part');field.setSelectionRange(4,10);const focus=field;click('source-devices-refresh');await delay(35);
     assert(key('source-path')===field&&field.value==='/stable-черновик?x=1#part','refresh replaced draft DOM');assert(document.activeElement===focus,'refresh stole focus');passed.push('Стабильный DOM, ввод и фокус после обновления устройств');

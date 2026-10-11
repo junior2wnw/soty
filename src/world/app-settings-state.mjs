@@ -1,4 +1,4 @@
-import { normalizeAppSourceTarget } from './app-source-state.mjs';
+import { normalizeAppSourceTarget, supportedAppSourceProfile } from './app-source-state.mjs';
 
 const appIdPattern = /^app-[a-f0-9]{32}$/u, domainIdPattern = /^dom_[a-f0-9]{32}$/u;
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value);
@@ -8,7 +8,6 @@ const clone = value => structuredClone(value);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const check = (ok, code = 'app_settings_invalid_intent') => { if (!ok) fail(code); };
-const profile = 'soty.relay-restricted.v1';
 const operations = ['apps.publication.update', 'apps.domains.claim', 'apps.domains.retire', 'apps.source.promote'];
 function uniqueIds(value, pattern = null, code = 'app_settings_invalid_intent') {
   check(Array.isArray(value) && value.length <= 100 && value.every(item => pattern ? typeof item === 'string' && pattern.test(item) : id(item)), code);
@@ -35,7 +34,7 @@ function normalize(op, args, includeRequest = false) {
       const ack = args.exposureAck;
       check(ack && typeof ack === 'object' && !Array.isArray(ack) && Object.keys(ack).length === 4 && ack.scope === 'whole-port' && positive(ack.targetRevision)
         && (source || ack.targetRevision === args.expectedTargetRevision)
-        && typeof ack.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(ack.targetDigest) && ack.profile === profile, 'app_exposure_ack_required');
+        && typeof ack.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(ack.targetDigest) && supportedAppSourceProfile(ack.profile), 'app_exposure_ack_required');
       exposureAck = { scope: 'whole-port', targetRevision: ack.targetRevision, targetDigest: ack.targetDigest, profile: ack.profile };
     } else check(args.exposureAck === undefined || args.exposureAck === null);
     Object.assign(base, { expectedPolicyEpoch: args.expectedPolicyEpoch, expectedTargetRevision: args.expectedTargetRevision,
@@ -74,8 +73,8 @@ async function verifyReceipt(pending, response) {
       && receipt.launchPolicy === args.launchPolicy && receipt.listed === args.listed
       && same(uniqueIds(receipt.activeDomainIds, domainIdPattern, 'app_settings_invalid_receipt'), args.activeDomainIds)
       && same(receipt.exposureAck ?? null, args.exposureAck ?? null)
-      && typeof receipt.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.targetDigest) && receipt.profile === profile
-      && (!args.exposureAck || receipt.targetDigest === args.exposureAck.targetDigest)
+      && typeof receipt.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.targetDigest) && supportedAppSourceProfile(receipt.profile)
+      && (!args.exposureAck || (receipt.targetDigest === args.exposureAck.targetDigest && receipt.profile === args.exposureAck.profile))
       && response.current?.appId === args.appId && positive(response.current.policyEpoch)
       && response.current.policyEpoch >= receipt.policyEpoch, 'app_settings_invalid_receipt');
   } else if (pending.op === 'apps.source.promote') {
