@@ -171,3 +171,30 @@ test('a stale mount cannot deliver a late app answer or erase its original pendi
   assert.equal(ui.view().answer, undefined); assert.deepEqual(ui.view().sources, []);
   assert.equal(ui.view().phase, 'unknown'); assert.deepEqual(JSON.parse([...f.data.values()][0]).pending, [sent]);
 });
+
+const selectedMetadata = () => ({ appId: 'app-' + 'a'.repeat(32), name: 'HIVE', path: '/embed', status: 'ready',
+  selection: { appId: 'app-' + 'a'.repeat(32), handle: 'H'.repeat(43) } });
+test('opaque selection travels only in signed arguments and is preserved without redispatch', async () => {
+  const f = fixture(), metadata = selectedMetadata(), ui = f.make({ readSelection: () => metadata.selection });
+  f.outcome('unknown'); await assert.rejects(ui.turn('Read current project', metadata));
+  assert.deepEqual(f.calls[0].args.selection, metadata.selection);
+  assert.equal(f.calls[0].args.prompt.includes(metadata.selection.handle), false);
+  assert.equal(JSON.stringify(ui.view()).includes(metadata.selection.handle), false);
+  assert.equal(f.make().view().unconfirmed, 1); assert.equal(f.calls.length, 1);
+});
+for (const change of ['project', 'app', 'closed']) test('selection ' + change + ' before late answer cannot deliver or erase the old intent', async () => {
+  const f = fixture(), metadata = selectedMetadata(); let selection = metadata.selection;
+  const ui = f.make({ readSelection: () => selection }); f.outcome('held');
+  const running = ui.turn('Read current project', metadata); await settled(f);
+  selection = change === 'closed' ? null : { ...selection, ...(change === 'app' ? { appId: 'app-' + 'b'.repeat(32) } : { handle: 'N'.repeat(43) }) };
+  f.gate.resolve(); await assert.rejects(running, { code: 'agent_source_denied' });
+  assert.equal(ui.view().answer, undefined); assert.equal(ui.view().unconfirmed, 1); assert.equal(f.calls.length, 1);
+});
+test('forged selection and stale selection fail before signed dispatch', async () => {
+  for (const handle of ['', 'invalid', 'H'.repeat(44)]) {
+    const f = fixture(), metadata = selectedMetadata(); metadata.selection.handle = handle;
+    await assert.rejects(f.make().turn('Read', metadata), { code: 'agent_app_context_invalid' }); assert.equal(f.calls.length, 0);
+  }
+  const f = fixture(); await assert.rejects(f.make({ readSelection: () => null }).turn('Read', selectedMetadata()), { code: 'agent_source_denied' });
+  assert.equal(f.calls.length, 0);
+});

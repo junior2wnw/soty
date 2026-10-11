@@ -3,6 +3,7 @@ import { types } from 'node:util';
 import { runBoundedRuntimeTurn, createIsolatedContextStore } from '../modules/personal-agent/runtime/vendor/agent-runtime-core.ts';
 import { fields, identifier, canonical, freeze } from '../modules/personal-agent/provider/validation.mjs';
 import { captureQueryData } from '../modules/capabilities/server/readonly-queries.mjs';
+import { currentContextCapability } from './current-context-source.js';
 import { createPersonalAgentModule } from './personal-agent-module.js';
 import { createPersonalAgentTransport, agentError } from './personal-agent-transport.js';
 import { createNotesConversationStore } from './personal-agent-history.js';
@@ -54,7 +55,16 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     need(!closed, 'agent_closed');
     return getConnect().withActorAuthorityFence(actor, () => callback(getServices()));
   };
-  const toolsForActor = ({ actor, scope, turnId }) => {
+  const toolsForActor = async ({ actor, scope, turnId, selection, signal }) => {
+    let selectedScope, verifyCurrent;
+    const currentSelection = () => {
+      if (!selection) return;
+      const apps = getServices().apps; need(typeof apps?.withScopedContextSourceAuthority === 'function', 'agent_source_unavailable');
+      apps.withScopedContextSourceAuthority({ owner: actor, scope: { appId: selection.appId }, handle: selection.handle }, context => {
+        if (selectedScope) need(canonical(context) === canonical(selectedScope), 'agent_source_denied');
+        else selectedScope = context;
+      });
+    };
     const keyFor = reference => `${reference.capabilityId}@${reference.version}`;
     const admitted = new Map(references.map(reference => [keyFor(reference), reference]));
     const selected = new Map(), readKeys = new Map(), prefix = randomUUID();
@@ -86,6 +96,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       current(actor, services => need(services.notes && services.capabilities, 'agent_source_unavailable'));
       // EMPTY on a Notes/apps-only turn. Only Source data/metadata actually used
       // by this turn retains its original credential and Native current predicate.
+      currentSelection();
       for (const value of selected.values()) sourceDetail(value.reference, value.delegated);
       return true;
     };
@@ -242,7 +253,38 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           selected.set(key, { reference, delegated }); return evidence(detail.title, result.result);
         } };
     }
-    return { tools, assertCurrent, ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
+    if (selection) {
+      // Fail closed before any paid model call. The handle is signed UI input,
+      // never a model argument, prompt, permission, or returned evidence field.
+      assertCurrent(); need(!signal.aborted, 'agent_cancelled');
+      const matches = references.filter(reference => reference.capabilityId === currentContextCapability(selection.appId));
+      need(matches.length === 1, 'agent_source_unavailable');
+      const reference = matches[0], delegated = sourceActor(reference), detail = sourceDetail(reference, delegated);
+      need(detail.appId === selection.appId, 'agent_source_denied');
+      selected.set(keyFor(reference), { reference, delegated });
+      let readSequence = 0;
+      const readCurrent = async readSignal => {
+        assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
+        const result = await getServices().capabilities.external.query({ actor: delegated, reference,
+          idempotencyKey: `agent_context_${prefix}_${readSequence++}`, input: { handle: selection.handle } });
+        assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
+        need(result.resultUnavailable === false && result.invocation.status === 'succeeded', 'agent_source_unavailable');
+        const data = captureQueryData(result.result);
+        simple(data, ['title', 'role', 'revision']);
+        need(typeof data.title === 'string' && data.title.trim() && data.title.length <= 240
+          && ['owner', 'editor', 'viewer', 'reader'].includes(data.role) && Number.isSafeInteger(data.revision) && data.revision >= 1, 'agent_source_denied');
+        return data;
+      };
+      const data = await readCurrent(signal);
+      // Fresh Native read after each accounted model round, before its tool or
+      // terminal answer. This observes current permission; it is not a cross-service transaction.
+      verifyCurrent = async readSignal => need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
+      tools.current_context = { capability: 'current_context', description: 'Read the verified title, role and revision of the current selected app project. Metadata only; no canvas contents or write permission.',
+        inputSchema: schema({}), validate: input => validate(input, []), execute(_input, toolSignal) {
+          assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled'); return evidence('Текущий проект', data);
+        } };
+    }
+    return { tools, assertCurrent, ...(verifyCurrent ? { verifyCurrent } : {}), ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
       // The module wraps every context callback in its fresh Connect fence. Do not nest that fence here.
       io: (op, args) => getServices().notes.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } }) }) } : {}) };
   };

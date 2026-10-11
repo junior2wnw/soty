@@ -384,7 +384,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
-    assistantContext: () => current() && selectedEntry ? { appId: app.appId, name: app.name, path: selectedEntry.path.split(/[?#]/u)[0]!, status: app.status } : null,
+    assistantContext: () => {
+      if (!current() || !selectedEntry) return null;
+      const binding = launcher.scopedCapture();
+      return { appId: app.appId, name: app.name, path: selectedEntry.path.split(/[?#]/u)[0]!, status: app.status,
+        ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
+    },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
     dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };

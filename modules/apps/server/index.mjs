@@ -73,7 +73,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
   const scopedAdmissions = createScopedAdmissionRegistry({ db, profiles: scopedEmbedProfiles, clock: now });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  const voiceSourceCalls=new Set();
+  const voiceSourceCalls=new Set(),contextSourceCalls=new Set();
   const voiceSourceActors=new WeakMap();
   let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway;
   const scopedRenewals=new Map();
@@ -931,6 +931,96 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }catch{abort();}
     return response;
   }
+  // Exact current selection; never search for another account/device/project slot.
+  function contextSourceSession(owner,scope,handle) {
+    assertApps(!closed&&scopedGateway,'context_source_unavailable',503);assertActor(owner);
+    const {record,context}=scopedGateway.ownedContext(owner,scope.appId,handle),session=record.session,profile=record.profile;
+    assertApps(session&&sessions.get(session.sessionKey)===session&&session.promotion?.state!=='pending'
+      &&profile.schema==='soty.selected-human-embed.v2'&&scopedGateway.sourceContext(record)?.ready===true,
+      'context_source_session_unavailable',403);
+    if(scope.target)assertApps(scopedHash(context.target)===scopedHash(scope.target)
+      &&scopedHash(context.sourceProfile)===scopedHash(scope.sourceProfile)&&scopedHash(context.resource)===scopedHash(scope.resource),
+      'context_source_scope_changed',403);
+    const decision=checkAccess(session),runtimeBinding=assertRuntimeBinding(decision,{requireReady:true}),channel=channels.get(decision.route.connectorKey);
+    assertApps(channel?.bindingVersion===2&&channel.ws.readyState===1,'context_source_unavailable',503);
+    return {session,record,context,runtimeBinding,channel};
+  }
+  function withScopedContextSourceAuthority({owner,scope,handle},callback) {
+    assertApps(typeof callback==='function','context_source_denied',403);
+    // Original scoped authority checks Human + Apps outside the later held Apps
+    // transaction; never nest Apps transactions or substitute an owner claim.
+    const held=contextSourceSession(owner,scope,handle);
+    const actor=voiceSourceActors.get(held.record);
+    assertApps(actor&&actor.accountId===owner.accountId&&actor.deviceId===owner.deviceId&&typeof withHumanSubjectAuthority==='function','context_source_actor_unavailable',403);
+    let entered=false,result;
+    // Original Human host port holds the ORIGINAL issued actor's Connect fence.
+    // An account/device projection cannot join or replace that actor authority.
+    const returned=withHumanSubjectAuthority({actor,issuer:held.record.profile.issuer,clientId:held.record.profile.clientId},human=>{
+      assertApps(!entered&&scopedHash(human)===scopedHash(held.context.humanPrincipal),'context_source_scope_changed',403);entered=true;
+      result=appAuthority({actor:owner,appId:scope.appId,mode:'participant',domainId:held.context.entry.domainId,path:'/embed'},snapshot=>{
+        assertApps(snapshot.target.revision===held.context.target.revision&&snapshot.target.digest===held.context.target.digest
+          &&snapshot.policyEpoch===held.context.policyEpoch&&snapshot.entry.origin===held.context.entry.origin
+          &&sessions.get(held.session.sessionKey)===held.session&&held.record.session===held.session,'context_source_scope_changed',403);
+        return callback(held.context);
+      });return result;
+    });
+    assertApps(entered&&returned===result&&!returned?.then,'context_source_authority_invalid',503);
+    const fresh=contextSourceSession(owner,scope,handle);
+    assertApps(fresh.record===held.record&&fresh.session===held.session&&fresh.channel===held.channel
+      &&fresh.runtimeBinding===held.runtimeBinding&&scopedHash(fresh.context)===scopedHash(held.context),'context_source_scope_changed',403);
+    return result;
+  }
+  async function callScopedContextSource({scope,handle,signal,withCurrentOwner}) {
+    const path='/api/embed/context',deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
+    assertApps(typeof withCurrentOwner==='function'
+      &&signal instanceof AbortSignal&&!signal.aborted,'context_source_denied',403);
+    assertApps(contextSourceCalls.size<SCOPED_EMBED_LIMITS.inflight,'context_source_capacity',429);
+    let held,stream;
+    const current=()=>withCurrentOwner(owner=>{
+      assertApps(!signal.aborted&&performance.now()<deadline,'context_source_unknown',503);
+      const value=contextSourceSession(owner,scope,handle);
+      assertApps(!held||value.record===held.record&&value.session===held.session&&value.channel===held.channel
+        &&value.runtimeBinding===held.runtimeBinding&&scopedHash(value.context)===scopedHash(held.context),'context_source_scope_changed',403);
+      assertApps(!signal.aborted&&performance.now()<deadline,'context_source_unknown',503);held??=value;return true;
+    });
+    assertApps(current()===true,'context_source_denied',403);
+    const route=embedRoute(held.record.profile,'GET',path);
+    assertApps(route.kind==='read'&&route.requestBytes===0&&route.responseBytes<=65536,'context_source_route_denied',403);
+    let timer,settled=false,finish,fail,status,headersSent=false,bytes=0;
+    const parts=[],headers=new Map();
+    const response=new Promise((yes,no)=>{finish=yes;fail=no;});
+    const sink=new Writable({write(chunk,_encoding,next){
+      bytes+=chunk.length;
+      if(bytes>route.responseBytes){next(new AppsError('context_source_response_bound',502));return;}
+      parts.push(Buffer.from(chunk));next();
+    }});
+    sink.setHeader=(name,value)=>{assertApps(!headersSent,'context_source_response_changed',502);headers.set(name.toLowerCase(),value);};
+    sink.getHeader=name=>headers.get(name.toLowerCase());
+    Object.defineProperty(sink,'headersSent',{get:()=>headersSent});
+    sink.writeHead=code=>{assertApps(Number.isSafeInteger(code)&&code>=100&&code<=599&&!headersSent,'context_source_response_changed',502);status=code;headersSent=true;return sink;};
+    const cleanup=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);contextSourceCalls.delete(sink);};
+    const reject=()=>{if(settled)return;settled=true;cleanup();if(stream&&!stream.closed)closeStream(stream,'app_client_closed');fail(new AppsError('context_source_unknown',503));};
+    const abort=()=>{if(stream&&!stream.closed)closeStream(stream,'app_client_closed');sink.destroy();reject();};
+    sink.once('error',reject);sink.once('close',()=>{if(!sink.writableFinished)reject();});
+    sink.once('finish',()=>{if(settled)return;try{
+      assertApps(!signal.aborted&&current()===true&&Number.isSafeInteger(status),'context_source_unknown',503);
+      assertApps(/^application\/json(?:;|$)/iu.test(headers.get('content-type')??''),'context_source_response_invalid',502);
+      const data=parseSourceJson(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(parts,bytes)));
+      settled=true;cleanup();finish(Object.freeze({status,data}));
+    }catch{reject();}});
+    contextSourceCalls.add(sink);signal.addEventListener('abort',abort,{once:true});
+    timer=setTimeout(abort,Math.max(1,deadline-performance.now()));timer.unref?.();
+    try{
+      assertApps(current()===true&&!signal.aborted,'context_source_denied',403);
+      const req={method:'GET',url:path,headers:{origin:held.record.profile.embedOrigin,accept:'application/json; profile="urn:soty:current-context:v1"'}};
+      stream=openStream({id:scope.appId},held.session,{kind:'http',req,res:sink});
+      assertApps(stream.channel===held.channel&&stream.runtimeBinding===held.runtimeBinding&&stream.scopedRecord===held.record,'context_source_scope_changed',403);
+      sendStream(stream,{type:'open',id:stream.id,kind:'http',appId:scope.appId,path,method:'GET',headers:req.headers});
+      assertApps(current()===true&&!signal.aborted,'context_source_scope_changed',403);
+      sendStream(stream,{type:'end',id:stream.id});
+    }catch{abort();}
+    return response;
+  }
   function openStream(app, session, values) {
     const decision = checkAccess(session, { renewPublic: true });
     const runtimeBinding = assertRuntimeBinding(decision, { requireReady: true });
@@ -1208,7 +1298,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return hostClassifier.allowsTlsDomain(domain);
   }
   return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
-    withScopedVoiceSourceAuthority,callScopedVoiceSource,
+    withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,
     withAppAuthority: appAuthority,
     withReviewedAppAuthority(request, callback) {
       return appAuthority({ ...request, mode: 'owner' }, ({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants }) =>

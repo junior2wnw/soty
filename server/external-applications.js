@@ -4,6 +4,7 @@ import { captureExternalGuidance } from '../modules/capabilities/server/external
 import {READONLY_QUERY_PROFILE,captureReadonlyQueryAdapters,createTrustedReadonlyQueryAdapter} from '../modules/capabilities/server/readonly-queries.mjs';
 import { canonicalHash, canonicalJson, freezeDeep, AccessError } from '../modules/capabilities/server/validation.mjs';
 import { snapshot } from '../modules/app-contract/json.mjs';
+import { bindCurrentContextSourceAdapter } from './current-context-source.js';
 import { bindRootVoiceSourceAdapter } from '../modules/native-voice/root-source-adapters.mjs';
 
 const captureProvenance = new WeakMap();
@@ -56,6 +57,7 @@ export function composeExternalApplications(entries,{withConnectFence,capabiliti
     };
     // This fixed port retains the original ready Source record and holds its
     // own Apps fence; nesting the ordinary Apps transaction would be invalid.
+    bindCurrentContextSourceAdapter(captureProvenance.get(value.adapter) ?? value.adapter,{appId:value.appId,target:value.target,withOwner,apps});
     const voice=bindRootVoiceSourceAdapter(captureProvenance.get(value.adapter) ?? value.adapter,{appId:value.appId,target:value.target,withOwner,apps});
     const withAuthority=(request,callback)=>{
       if(voice)return value.adapter.withAuthority(request,callback);

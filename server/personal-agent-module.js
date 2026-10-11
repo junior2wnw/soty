@@ -60,7 +60,13 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       return { schema: 'soty.personal-agent-cancel.v1', requestId: turnId, cancelRequested, remoteTerminationVerified: false };
     }
     requireValue(op === 'agent.turn');
-    fields(args, ['requestId', 'prompt'], ['contextId']);
+    fields(args, ['requestId', 'prompt'], ['contextId', 'selection']);
+    let selection;
+    if (args.selection !== undefined) {
+      fields(args.selection, ['appId', 'handle']);
+      requireValue(/^app-[a-f0-9]{32}$/u.test(args.selection.appId) && /^[A-Za-z0-9_-]{43}$/u.test(args.selection.handle));
+      selection = freeze({ ...args.selection });
+    }
     const turnId = identifier(args.requestId, 100), prompt = string(args.prompt, 16000);
     requireValue(turnId.length >= 8 && prompt.length <= 8000);
     if (args.contextId !== undefined) identifier(args.contextId, 160);
@@ -81,8 +87,9 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       if (bundle) requireValue(syncResult(bundle.assertCurrent()) === true, 'agent_source_denied');
     };
     try {
-      bundle = await toolsForActor({ actor, scope: frameScope, turnId }); currentActor(actor);
+      bundle = await toolsForActor({ actor, scope: frameScope, turnId, selection, signal: turn.abort.signal }); currentActor(actor);
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
+      requireValue(bundle.verifyCurrent === undefined || typeof bundle.verifyCurrent === 'function', 'agent_source_unavailable');
       assertCurrent();
       const bound = transport.bind({ actor, scope: frameScope, turnId, assertCurrent }); bound.guard();
       if (bundle.contextStore === undefined) contextEntry = contextFor(actor);
@@ -129,6 +136,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         finally { activeProvider.close(); activeProvider = null; }
         assertCurrent();
         const receipt = await bound.account(requestId, result, signal); assertCurrent(); turn.receipts.push(receipt);
+        if (bundle.verifyCurrent) { await bundle.verifyCurrent(signal); assertCurrent(); }
         requireValue(result.message.toolCalls.length === 1 && (required === undefined || result.message.toolCalls[0].name === required), 'agent_output_invalid');
         return { choices: [{ finish_reason: result.finishReason, message: { content: result.message.content || null,
           tool_calls: result.message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name,

@@ -1,10 +1,10 @@
-import type { WorldAssistantContext } from '../world/types';
+import type { WorldAssistantContext, WorldAssistantSelection } from '../world/types';
 
 type Client = {
   getLocalState(): Promise<{ accountId?: string | null }>;
   extension<T>(op: string, args: Record<string, unknown>, options: { expectedAccountId: string }): Promise<T>;
 };
-type Request = { requestId: string; prompt: string; contextId?: string };
+type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection };
 type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string };
 export type PersonalAgentView = { phase: 'draft' | 'running' | 'complete' | 'unknown' | 'cancel_requested'; draft: string;
   contextId?: string; requestId?: string; answer?: string; sources: SourcePresentation[]; unconfirmed: number };
@@ -20,9 +20,13 @@ const own = (value: unknown, names: string[]): value is Record<string, unknown> 
 const failure = (code: string) => Object.assign(new Error(code), { code });
 const boundedLabel = (value: unknown, max: number): value is string => typeof value === 'string'
   && value.trim().length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/u.test(value);
+const validSelection = (value: unknown): value is WorldAssistantSelection => own(value, ['appId', 'handle'])
+  && typeof value.appId === 'string' && /^app-[a-f0-9]{32}$/u.test(value.appId)
+  && typeof value.handle === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.handle);
 function promptWithAppContext(text: string, metadata?: WorldAssistantContext | null): string {
   if (metadata === undefined || metadata === null) return text;
-  if (!own(metadata, ['appId', 'name', 'path', 'status'])
+  if (!own(metadata, ['appId', 'name', 'path', 'status', 'selection'])
+    || metadata.selection !== undefined && (!validSelection(metadata.selection) || metadata.selection.appId !== metadata.appId)
     || typeof metadata.appId !== 'string' || !/^app-[a-f0-9]{32}$/u.test(metadata.appId)
     || !boundedLabel(metadata.name, 64) || !boundedLabel(metadata.status, 64)
     || typeof metadata.path !== 'string' || metadata.path.length > 2048
@@ -56,8 +60,8 @@ function projectSources(value: unknown): SourcePresentation[] | undefined {
 
 /** Browser intent only. The signed Connect server independently authenticates, authorizes, and accounts every turn.
  * Unknown sends are retained; neither refresh nor recovery automatically repeats a model POST. */
-export function createPersonalAgentConversation({ accountId, client, storage, idFactory = () => crypto.randomUUID(), onChange = () => {}, isCurrent = () => true }:
-  { accountId: string; client: Client; storage: Pick<Storage, 'getItem' | 'setItem'>; idFactory?: () => string; onChange?: () => void; isCurrent?: () => boolean }) {
+export function createPersonalAgentConversation({ accountId, client, storage, idFactory = () => crypto.randomUUID(), onChange = () => {}, isCurrent = () => true, readSelection }:
+  { accountId: string; client: Client; storage: Pick<Storage, 'getItem' | 'setItem'>; idFactory?: () => string; onChange?: () => void; isCurrent?: () => boolean; readSelection?: () => WorldAssistantSelection | null }) {
   const key = `soty.personal-agent-ui.v1:${accountId}`;
   let saved: Saved = { schema: 'soty.personal-agent-ui.v1', draft: '', pending: [] }, phase: PersonalAgentView['phase'] = 'draft';
   let disposed = false, running = false, answer: string | undefined, sources: SourcePresentation[] = [];
@@ -69,7 +73,8 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId']) || parsed.schema !== saved.schema
       || typeof parsed.draft !== 'string' || parsed.draft.length > 8000 || !Array.isArray(parsed.pending) || parsed.pending.length > 8
       || parsed.contextId !== undefined && !context(parsed.contextId)
-      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId']) || !requestId(item.requestId)
+      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection']) || !requestId(item.requestId)
+        || item.selection !== undefined && !validSelection(item.selection)
         || typeof item.prompt !== 'string' || !item.prompt.trim() || item.prompt.length > 8000 || item.contextId !== undefined && !context(item.contextId))
       || new Set(parsed.pending.map(item => item.requestId)).size !== parsed.pending.length
       || parsed.active !== undefined && !parsed.pending.some(item => item.requestId === parsed.active)) throw failure('assistant_storage_unavailable');
@@ -90,17 +95,24 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       if (running || saved.active) throw failure('agent_reconcile_required');
       if (!text.trim() || text.length > 8000 || saved.pending.length >= 8) throw failure('agent_capacity');
       const prompt = promptWithAppContext(text, metadata);
-      await current();
+      const selection = metadata?.selection ? { ...metadata.selection } : undefined;
+      const turnCurrent = async () => {
+        await current();
+        if (selection && readSelection) { const fresh = readSelection();
+          if (!fresh || fresh.appId !== selection.appId || fresh.handle !== selection.handle) throw failure('agent_source_denied');
+        }
+      };
+      await turnCurrent();
       if (running || saved.active) throw failure('agent_reconcile_required');
       if (saved.pending.length >= 8) throw failure('agent_capacity');
       const id = idFactory(); if (!requestId(id) || saved.pending.some(item => item.requestId === id)) throw failure('agent_invalid_input');
-      const intent: Request = { requestId: id, prompt, ...(saved.contextId ? { contextId: saved.contextId } : {}) };
+      const intent: Request = { requestId: id, prompt, ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
       // A storage failure precedes dispatch. Preserve the exact prompt, ID and context before asking the server.
       persist({ ...saved, draft: text, pending: [...saved.pending, intent], active: id });
       answer = undefined; sources = []; phase = 'running'; running = true; notify();
       try {
-        await current();
-        const result = await client.extension<Record<string, unknown>>('agent.turn', { ...intent }, { expectedAccountId: accountId }); await current();
+        await turnCurrent();
+        const result = await client.extension<Record<string, unknown>>('agent.turn', { ...intent }, { expectedAccountId: accountId }); await turnCurrent();
         if (!own(result, ['ok', 'schema', 'requestId', 'status', 'answer', 'contextId', 'evidence', 'claims', 'cards', 'actions', 'telemetry', 'accounting'])
           || result.ok !== undefined && result.ok !== true
           || result.schema !== 'soty.personal-agent-turn.v1' || result.requestId !== id || result.status !== 'complete'

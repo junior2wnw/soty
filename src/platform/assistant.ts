@@ -62,7 +62,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
   let answerNote: ReturnType<typeof createAssistantAnswerNote> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
-    isCurrent: () => !disposed && mountCurrent(),
+    isCurrent: () => !disposed && mountCurrent(), readSelection: () => mountContext?.context()?.selection ?? null,
     onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
   let timer: ReturnType<typeof setTimeout> | undefined, cursor: string | null = null;

@@ -81,7 +81,9 @@ export interface WorldAssistantHandle {
   hasUnsavedChanges?(): boolean;
 }
 /** Display context, never an authority, source grant or private app contents. */
-export interface WorldAssistantContext { appId: string; name: string; path: string; status: string }
+/** Opaque selection is a locator checked independently by the signed server. */
+export interface WorldAssistantSelection { appId: string; handle: string }
+export interface WorldAssistantContext { appId: string; name: string; path: string; status: string; selection?: WorldAssistantSelection }
 export interface WorldAssistantMountContext { context(): WorldAssistantContext | null; isCurrent(): boolean }
 export interface WorldHumanCallState {
   state: string;
