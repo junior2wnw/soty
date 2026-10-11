@@ -57,7 +57,7 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
       let response;
       try { response = await transport(Object.freeze({ requestId: request.requestId, requestDigest: request.requestDigest, body: request.body, signal })); }
       catch { if (signal.aborted) throw new ProviderError(abortCode()); throw new ProviderError('provider_transport_failed'); }
-      let reader, cancelPromise, removeCancel = () => {};
+      let reader, cancelPromise, bodyEnded = false, removeCancel = () => {};
       function cancelReader() {
         if (reader && !cancelPromise) {
           try { cancelPromise = Promise.resolve(reader.cancel()).catch(() => {}); }
@@ -77,16 +77,20 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
         check(contentType === 'text/event-stream', 'provider_invalid_stream');
         const assembler = createAssembler(policy, tools, { assertActive, onText: request.onText, state });
         const decoder = createSseDecoder(policy, assembler);
-        while (!assembler.done) {
+        // DONE ends SSE content, not the HTTP body. Gateway settlement still owns
+        // the stream until EOF; cancelling here can turn a valid answer into ABORT_ERR.
+        while (!bodyEnded) {
           assertActive(); let next;
           try { next = await reader.read(); } catch { if (signal.aborted) throw new ProviderError(abortCode()); throw new ProviderError('provider_body_failed'); }
           assertActive(); check(next && typeof next.done === 'boolean', 'provider_invalid_stream');
-          if (next.done) break; decoder.push(next.value);
+          if (next.done) { bodyEnded = true; break; }
+          decoder.push(next.value);
         }
         const result = decoder.finish(); assertActive();
         return freeze({ requestId: request.requestId, requestDigest: request.requestDigest, providerRequestId: state.providerRequestId, ...result });
       } finally {
-        cancelReader(); if (cancelPromise) await cancelPromise;
+        if (!bodyEnded) cancelReader();
+        if (cancelPromise) await cancelPromise;
         removeCancel(); if (reader) { try { reader.releaseLock(); } catch { /* Pending reads retain the slot until the work settles. */ } }
       }
     });
