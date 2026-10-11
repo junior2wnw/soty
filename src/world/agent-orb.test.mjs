@@ -10,6 +10,7 @@ import * as feedbackMedia from './feedback-media.mjs';
 // iframe runtime, SDK, model, Dev, server or network is started by this suite.
 const read = file => readFileSync(new URL(file, import.meta.url), 'utf8');
 const compile = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const pointerGuardCode = compile(read('./iframe-pointer-guard.ts'));
 const orbCode = compile(read('./agent-orb.ts')), positionCode = compile(read('./agent-orb-position.ts')), dialogsCode = compile(read('./dialogs.ts'));
 const appCode = compile(`${read('./app.ts')}\nexports.TestController = WorldApplication;`);
 const feedbackCode = compile(read('./app-feedback.ts'));
@@ -96,7 +97,7 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
     releasePointerCapture(id) { this.captures.delete(id); this.dispatchEvent(event('lostpointercapture', { pointerId: id })); }
   }
   document = Object.assign(new EventTarget(), { fullscreenEnabled: true, fullscreenElement: null });
-  document.body = new Element('body'); document.activeElement = document.body;
+  document.body = new Element('body'); document.head = new Element('head'); document.createElement = tag => new Element(tag); document.activeElement = document.body;
   document.querySelectorAll = selector => document.body.querySelectorAll(selector); document.querySelector = selector => document.body.querySelector(selector);
   const view = Object.assign(new EventTarget(), { innerWidth: width, innerHeight: height,
     visualViewport: Object.assign(new EventTarget(), { width, height, offsetLeft: 0, offsetTop: 0 }),
@@ -119,6 +120,7 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   }
   const positions = evaluate(positionCode); ports['./agent-orb-position'] = positions;
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;
+  ports['./iframe-pointer-guard'] = evaluate(pointerGuardCode);
   const { mountAgentOrb } = evaluate(orbCode);
   const root = el('section', 'sw-app'), main = el('main'); root.append(main); document.body.append(root);
   const agent = mountAgentOrb(root, {
@@ -135,6 +137,7 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   const orb = root.querySelector('.sw-agent-orb'), parking = root.querySelector('.sw-agent-parking');
   const click = (detail = 1) => { orb.focus(); return orb.dispatchEvent(event('click', { detail })); };
   return { agent, orb, parking, root, main, document, view, positions, saved, records, el, click,
+    iframePointersBlocked: () => document.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent)),
     dialog: () => document.querySelectorAll('.sw-agent-dialog').find(node => node.open) ?? null,
     close() { document.querySelectorAll('.sw-agent-dialog').find(node => node.open)?.querySelector('button')?.dispatchEvent(event('click', { detail: 1 })); },
     drain() { while (tasks.length) tasks.shift()(); },
@@ -251,7 +254,9 @@ test('Primary touch drag suppresses its click; the next tap opens normally', asy
 });
 for (const cancel of ['pointercancel', 'lostpointercapture', 'Escape']) test(`${cancel} restores docking and releases capture; keyboard activation is never eaten`, async () => {
   const f = fixture(); f.agent.setAccount('A'); const initial = { ...f.orb.style }; pointer(f.orb, 'pointerdown'); pointer(f.orb, 'pointermove', { clientX: 160, clientY: 120 });
+  assert.equal(f.iframePointersBlocked(), true);
   if (cancel === 'Escape') f.orb.dispatchEvent(event('keydown', { key: 'Escape' })); else pointer(f.orb, cancel);
+  assert.equal(f.iframePointersBlocked(), false);
   assert.equal(f.orb.hasPointerCapture(1), false); assert.equal(f.orb.dataset.docked, 'true'); assert.deepEqual(f.orb.style, initial); assert.equal(f.saved.size, 0);
   f.click(0); await f.agent.flush(); assert.ok(f.dialog()); f.agent.dispose();
 });
@@ -362,11 +367,13 @@ for (const options of [{ supported: true }, { supported: false }, { reject: true
 for (const boundary of ['modal switch', 'parent close', 'screen reset', 'account switch', 'dispose']) test(`Primary drag ${boundary} releases capture and cannot become an accidental helper click`, async () => {
   const f = fixture(), app = f.world(), settings = app.dialog('Synthetic settings'), initial = { ...f.orb.style }; let releases = 0;
   f.orb.addEventListener('lostpointercapture', () => releases++); pointer(f.orb, 'pointerdown'); pointer(f.orb, 'pointermove', { clientX: 140, clientY: 160 });
+  assert.equal(f.iframePointersBlocked(), true);
   if (boundary === 'modal switch') app.dialog('Another settings modal');
   if (boundary === 'parent close') settings.close();
   if (boundary === 'screen reset') app.cleanScreen();
   if (boundary === 'account switch') app.transitionAccount('B');
   if (boundary === 'dispose') f.agent.dispose();
+  assert.equal(f.iframePointersBlocked(), false);
   assert.equal(f.orb.hasPointerCapture(1), false); assert.equal(releases, 1); assert.equal(f.saved.size, 0);
   assert.deepEqual(f.orb.style, initial); pointer(f.orb, 'pointerup'); f.click(1); assert.equal(f.dialog(), null); assert.equal(f.records.length, 0);
   if (boundary !== 'dispose') { pointer(f.orb, 'pointerdown', { pointerId: 2 }); pointer(f.orb, 'pointerup', { pointerId: 2 }); f.click(1); await f.agent.flush(); assert.ok(f.dialog()); }
@@ -495,4 +502,20 @@ test('Queued native close from a World modal cannot steal a newer custom feedbac
   f.drain(); assert.equal(f.orb.parentElement === feedback.modal, true, 'An older World close must keep the orb inside the current custom modal');
   assert.equal(f.dialog() === helper, true, 'An older World close must retain the current helper view'); assert.equal(helper.contains(session.host), true);
   assert.equal(feedback.modal.open, true); assert.equal(session.disposeCount, 0); feedback.handle.dispose(); f.drain(); f.agent.dispose();
+});
+
+test('orb drag crosses a Native iframe and persists without replacing the iframe or opening the assistant', () => {
+  const f = fixture(); f.agent.setAccount('A'); const frame = f.el('iframe'); f.main.append(frame);
+  const blocked = () => f.document.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent));
+  pointer(f.orb, 'pointerdown'); pointer(f.orb, 'pointermove', { clientX: 280, clientY: 40 });
+  if (!blocked()) pointer(f.orb, 'lostpointercapture');
+  pointer(f.orb, 'pointermove', { clientX: 170, clientY: 170 }); pointer(f.orb, 'pointerup', { clientX: 170, clientY: 170 });
+  assert.equal(f.saved.has('soty.agent-orb.v1:A'), true); assert.equal(blocked(), false);
+  assert.equal(frame.parentElement, f.main); assert.equal(frame.isConnected, true); assert.equal(f.records.length, 0); f.agent.dispose();
+});
+
+test('rejected orb pointer capture releases the guard without saving position or mounting an assistant', () => {
+  const f = fixture(); f.agent.setAccount('A');
+  f.orb.setPointerCapture = () => { throw new Error('Synthetic inactive pointer'); };
+  pointer(f.orb, 'pointerdown'); assert.equal(f.iframePointersBlocked(), false); assert.equal(f.saved.size, 0); assert.equal(f.records.length, 0); f.agent.dispose();
 });

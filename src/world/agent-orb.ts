@@ -3,6 +3,7 @@ import { createDialog, type WorldDialog } from './dialogs';
 import { clampOrb, dockOrb, readOrbPosition, writeOrbPosition, type OrbPoint, type OrbViewport } from './agent-orb-position';
 import type { WorldAssistantContext, WorldAssistantHandle, WorldAppOptions } from './types';
 import './agent-orb.css';
+import { holdIframePointers } from './iframe-pointer-guard';
 
 export interface AgentOrbHandle {
   setAccount(accountId: string): void;
@@ -34,7 +35,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   root.append(orb, parking);
   let account = '', epoch = 0, sessionEpoch = 0, disposed = false, expandedStage: HTMLElement | null = null;
   let modal: HTMLDialogElement | null = null;
-  let position: OrbPoint | null = null, drag: { pointer: number; start: OrbPoint; before: OrbPoint | null; x: number; y: number; moved: boolean } | null = null;
+  let position: OrbPoint | null = null, drag: { pointer: number; start: OrbPoint; before: OrbPoint | null; x: number; y: number; moved: boolean; releaseIframes(): void } | null = null;
   let suppressClick = false, dialog: WorldDialog | null = null, host: HTMLElement | null = null;
   let handle: WorldAssistantHandle | null = null, mounting: Promise<void> | null = null;
   const viewport = (): OrbViewport => {
@@ -119,10 +120,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
   }
   orb.addEventListener('click', event => { if (suppressClick && event.detail > 0) { suppressClick = false; event.preventDefault(); return; } suppressClick = false; open(); }, { signal: abort.signal });
   orb.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !event.isPrimary || !account) return;
+    if (drag || event.button !== 0 || !event.isPrimary || !account) return;
     suppressClick = false;
-    const rect = orb.getBoundingClientRect(); drag = { pointer: event.pointerId, start: { x: rect.x, y: rect.y }, before: position, x: event.clientX, y: event.clientY, moved: false };
-    orb.setPointerCapture(event.pointerId);
+    const rect = orb.getBoundingClientRect(); drag = { pointer: event.pointerId, start: { x: rect.x, y: rect.y }, before: position, x: event.clientX, y: event.clientY, moved: false, releaseIframes: holdIframePointers(doc) };
+    try { orb.setPointerCapture(event.pointerId); } catch { cancelDrag(); }
   }, { signal: abort.signal });
   orb.addEventListener('pointermove', event => {
     if (!drag || event.pointerId !== drag.pointer) return;
@@ -132,10 +133,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
   }, { signal: abort.signal });
   orb.addEventListener('pointerup', event => {
     if (!drag || event.pointerId !== drag.pointer) return;
-    suppressClick = drag.moved; drag = null; save();
+    const previous = drag; suppressClick = previous.moved; drag = null; previous.releaseIframes(); save();
     if (orb.hasPointerCapture(event.pointerId)) orb.releasePointerCapture(event.pointerId);
   }, { signal: abort.signal });
-  function cancelDrag(): void { if (!drag) return; const pointer = drag.pointer; position = drag.before; drag = null; suppressClick = true;
+  function cancelDrag(): void { if (!drag) return; const previous = drag, pointer = previous.pointer; position = previous.before; drag = null; previous.releaseIframes(); suppressClick = true;
     if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); layout(); }
   const cancelPointerDrag = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer) cancelDrag(); };
   orb.addEventListener('pointercancel', cancelPointerDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelPointerDrag, { signal: abort.signal });

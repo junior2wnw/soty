@@ -8,6 +8,10 @@ import * as workspace from './workspace-widgets.mjs';
 import * as launch from './app-launch.mjs';
 
 // Run the actual controller with inert DOM ports: no browser, network or app runtime.
+const pointerGuard = {};
+vm.runInNewContext(ts.transpileModule(await readFile(new URL('./iframe-pointer-guard.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, { exports: pointerGuard });
 const source = ts.transpileModule(await readFile(new URL('./micro-widgets.ts', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -55,7 +59,8 @@ function fixture({ popover = true } = {}) {
   const exports = {};
   vm.runInNewContext(source, { exports, AbortController, crypto: globalThis.crypto, queueMicrotask,
     require: name => name === './dom' ? { el, button, iconButton: (label, icon, callback) => button(label, icon, '', callback) }
-      : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? launch : {} });
+      : name === './iframe-pointer-guard' ? pointerGuard : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? launch : {} });
+  doc.head = el('head'); doc.createElement = tag => el(tag);
   const root = el('main'); let layerChanges = 0;
   const control = exports.mountMicroWidgets(root, {
     mount(host, _app, _intent, current) {
@@ -80,6 +85,7 @@ function fixture({ popover = true } = {}) {
     const event = new Event('storage'); Object.defineProperty(event, 'key', { value: workspace.widgetStorageKey(account) }); view.dispatchEvent(event);
   };
   return { control, stages, notices, root, nodes, view, doc, el, click, remote, storage, account,
+    iframePointersBlocked: () => doc.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent)),
     layerChanges: () => layerChanges, read: () => workspace.readWidgetWorkspace(storage, account) };
 }
 
@@ -252,4 +258,46 @@ test('keyboard focus raises an overlapped widget while preserving its control, i
   assert.equal(back.current(), true); assert.equal(front.current(), true);
   assert.equal(frame.parent, back.host); assert.equal(back.host.parent, node); assert.equal(node.parent, layer);
   assert.deepEqual(layer.children, children);
+});
+
+const dragPointer = (handle, type, x = 100, y = 100) => {
+  const event = new Event(type); Object.assign(event, { pointerId: 7, button: 0, isPrimary: true, clientX: x, clientY: y }); handle.dispatchEvent(event);
+};
+test('resize crosses a Native iframe without losing capture and saves the final size on the same stage', t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const stage = f.stages[0];
+  const mainFrame = f.el('iframe'), widgetFrame = f.el('iframe'); f.root.append(mainFrame); stage.host.append(widgetFrame);
+  const handle = f.nodes.find(node => node.title === 'Потяните, чтобы изменить размер');
+  dragPointer(handle, 'pointerdown'); dragPointer(handle, 'pointermove', 112, 108);
+  // Browser boundary port: an unshielded child frame takes the pointer stream.
+  if (!f.iframePointersBlocked()) dragPointer(handle, 'lostpointercapture', 112, 108);
+  dragPointer(handle, 'pointermove', 140, 140); dragPointer(handle, 'pointerup', 140, 140);
+  assert.equal(f.read().widgets[0].width, 360); assert.equal(f.read().widgets[0].height, 300);
+  assert.equal(f.iframePointersBlocked(), false); assert.equal(f.stages.length, 1);
+  assert.equal(f.stages[0], stage); assert.equal(stage.disposed, false); assert.equal(stage.host.children[0], widgetFrame); assert.equal(mainFrame.parent, f.root);
+});
+
+for (const kind of ['move', 'size']) for (const end of ['pointerup', 'pointercancel', 'lostpointercapture', 'Escape', 'hide', 'account switch', 'dispose']) {
+  test(`${kind} drag restores iframe interaction after ${end}`, async t => {
+    const f = fixture(); t.after(() => f.control.dispose()); const before = f.read().widgets[0];
+    const handle = f.nodes.find(node => kind === 'move' ? node.className === 'sm-widget-grip' : node.title === 'Потяните, чтобы изменить размер');
+    dragPointer(handle, 'pointerdown'); assert.equal(f.iframePointersBlocked(), true);
+    dragPointer(handle, 'pointermove', 128, 128);
+    if (end === 'Escape') { const event = new Event('keydown'); Object.assign(event, { key: 'Escape' }); handle.dispatchEvent(event); }
+    else if (end === 'hide') { f.click('Скрыть виджет: Tasks'); await tick(); }
+    else if (end === 'account switch') f.control.setAccount('profile-b');
+    else if (end === 'dispose') f.control.dispose();
+    else dragPointer(handle, end, 128, 128);
+    assert.equal(f.iframePointersBlocked(), false); assert.equal(handle.hasPointerCapture(7), false);
+    if (end !== 'pointerup') {
+      dragPointer(handle, 'pointerup', 128, 128);
+      const after = f.read().widgets[0];
+      for (const key of ['x', 'y', 'width', 'height']) assert.equal(after[key], before[key]);
+    }
+  });
+}
+test('rejected widget pointer capture releases the guard without saving a layout', t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const before = f.read();
+  const handle = f.nodes.find(node => node.className === 'sm-widget-grip');
+  handle.setPointerCapture = () => { throw new Error('Synthetic inactive pointer'); };
+  dragPointer(handle, 'pointerdown'); assert.equal(f.iframePointersBlocked(), false); assert.deepEqual(f.read(), before);
 });

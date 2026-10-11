@@ -1,4 +1,5 @@
 import './micro-widgets.css';
+import { holdIframePointers } from './iframe-pointer-guard';
 import { button, el, iconButton } from './dom';
 import type { WorldDialog } from './dialogs';
 import type { AppStageHandle } from './app-stage';
@@ -105,13 +106,13 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       && !state.hidden && state.widgets.some(item => item.id === widget.id && item.visible);
     node.addEventListener('pointerdown', () => bringToFront(widget.id), { signal: local.signal });
     node.addEventListener('focusin', () => bringToFront(widget.id), { signal: local.signal });
-    let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; kind: 'move' | 'size'; moved: boolean } | null = null;
+    let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; kind: 'move' | 'size'; moved: boolean; releaseIframes(): void } | null = null;
     const bindDrag = (handle: HTMLElement, kind: 'move' | 'size'): void => {
       handle.addEventListener('pointerdown', event => {
-        if (!current() || event.button !== 0 || !event.isPrimary) return;
+        if (drag || !current() || event.button !== 0 || !event.isPrimary) return;
         const latest = state.widgets.find(item => item.id === widget.id)!;
-        drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: widgetRect(latest, viewport()), kind, moved: false };
-        handle.setPointerCapture(event.pointerId);
+        drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: widgetRect(latest, viewport()), kind, moved: false, releaseIframes: holdIframePointers(doc) };
+        try { handle.setPointerCapture(event.pointerId); } catch { cancel(); }
       }, { signal: local.signal });
       handle.addEventListener('pointermove', event => {
         if (!drag || drag.pointer !== event.pointerId || !current()) return;
@@ -123,7 +124,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       }, { signal: local.signal });
       handle.addEventListener('pointerup', event => {
         if (!drag || drag.pointer !== event.pointerId) return;
-        const previous = drag; drag = null;
+        const previous = drag; drag = null; previous.releaseIframes();
         if (current() && previous.moved) {
           const rect = node.getBoundingClientRect();
           const latest = state.widgets.find(item => item.id === widget.id)!;
@@ -131,7 +132,8 @@ export function mountMicroWidgets(root: HTMLElement, options: {
         }
         if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       }, { signal: local.signal });
-      const cancel = (): void => { if (!drag) return; const pointer = drag.pointer; drag = null; layout(); if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer); };
+      const cancel = (): void => { if (!drag || drag.kind !== kind) return; const previous = drag; drag = null; previous.releaseIframes(); layout(); if (handle.hasPointerCapture(previous.pointer)) handle.releasePointerCapture(previous.pointer); };
+      local.signal.addEventListener('abort', cancel, { once: true });
       const cancelled = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer && drag.kind === kind) cancel(); };
       handle.addEventListener('pointercancel', cancelled, { signal: local.signal }); handle.addEventListener('lostpointercapture', cancelled, { signal: local.signal });
       handle.addEventListener('keydown', event => {
