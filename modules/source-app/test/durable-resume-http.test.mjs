@@ -201,3 +201,31 @@ test('fresh Source resume after actual signed Root device revoke delivers no coo
   reopen(realm, f.root.actor); const result = await continued(realm);
   assert.equal(result.status, 401); assert.equal(realm.embedJar.size, 0); assert.equal(realm.refreshCalls, 0);
 });
+
+test('Native logout during the last Root HTTP authority await denies resumed readiness and cookie', { timeout: 30000 }, async t => {
+  controlledClock(t);
+  const f = await createOrdinaryHttpFixture(t, { embedOidc: true, renewal: true, asyncNativeAuthority: true,
+    configureBff: (realm, host) => renewableHost(t, realm, host) });
+  const [realm] = f.realms, token = await login(realm, f.root.actor), idHash = digest(token);
+  realm.embedJar.clear();
+  let checks = 0, revokeOnRootRead = false, revokedDuringRootRead = false;
+  // No reference change or rebind: capture/assert twice in proveSession, then
+  // the fifth async Native check precedes the cookie branch's last Root read.
+  realm.beforeAsyncCheck = () => { if (++checks === 5) revokeOnRootRead = true; };
+  const duringRootRead = () => {
+    if (!revokeOnRootRead || revokedDuringRootRead) return;
+    assert.equal(realm.store.inTransaction(), false);
+    realm.store.revokeNativeSession(realm.nativeToken); revokedDuringRootRead = true;
+  };
+  realm.ipc.prependListener('request', duringRootRead);
+  try {
+    const result = await continued(realm, 'resume-native-last-await-0001');
+    assert.equal(revokedDuringRootRead, true, 'revoke happens while the final Root HTTP response is pending');
+    assert.equal(result.status, 403);
+    assert.equal(result.value.error.code, 'ordinary_native_access_denied');
+    assert.equal(realm.embedJar.size, 0, 'no resumed cookie after Native logout');
+    assert.equal(realm.refreshCalls, 0); assert.equal(realm.rebinds, 0);
+    assert.equal(realm.rpNative.head(idHash).revision, 0);
+    assert.equal(realm.store.db.prepare('SELECT active FROM native_sessions WHERE id_hash=?').get(digest(realm.nativeToken)).active, 0);
+  } finally { realm.beforeAsyncCheck = null; realm.ipc.off('request', duringRootRead); }
+});

@@ -368,6 +368,7 @@ export function createSourceAppBff(options) {
         receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }, headers);
       if (current.resumedCookie) {
         await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+        await native.assertCurrent(current.authority);
         // Rebind already used the final Native fence inside the storage CAS;
         // these post-await checks also support async SQL Native hosts.
         const deadline = Math.min(current.session.expiresAt, current.proof.sessionExpiresAt);
