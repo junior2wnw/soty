@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGlmProvider, GLM_MODEL, ProviderError } from '../index.mjs';
 import { chunk, finish, request, fail, streamed, tool, provider, deferred, tick, wire } from './fixture.mjs';
+import { canonicalHash } from '../../../capabilities/server/validation.mjs';
 
 test('trusted transport receives exact key-free GLM body and stable identity; reasoning stays separate', async t => {
   const sent = [];
@@ -13,11 +14,20 @@ test('trusted transport receives exact key-free GLM body and stable identity; re
   const replay = await value.complete(request());
   assert.equal(result.model, GLM_MODEL); assert.equal(sent[0].body.model, GLM_MODEL);
   assert.equal(sent[0].body.stream, true); assert.equal(sent[0].body.stream_options.include_usage, true);
+  assert.equal(sent[0].body.reasoning_effort, 'low');
+  assert.equal(Object.hasOwn(sent[0].body, 'thinking'), false); assert.equal(Object.hasOwn(sent[0].body, 'tool_stream'), false);
+  const identity = body => canonicalHash({ schema: 'soty.glm-request.v1', requestId: sent[0].requestId, body });
+  assert.equal(sent[0].requestDigest, identity(sent[0].body));
+  const previousBody = { ...sent[0].body }; delete previousBody.reasoning_effort;
+  assert.notEqual(sent[0].requestDigest, identity(previousBody), 'the old implicit effort must not share the qualified request identity');
+  assert.notEqual(sent[0].requestDigest, identity({ ...sent[0].body, reasoning_effort: 'max' }));
   assert.equal(result.message.content, 'Привет 🌍'); assert.equal(visible, 'Привет 🌍');
   assert.equal(Object.hasOwn(result.diagnostics, 'reasoning'), false); assert.equal(result.diagnostics.reasoningBytes > 0, true);
   assert.deepEqual(result.usage, { status: 'reported', promptTokens: 10, completionTokens: 20, totalTokens: 30 });
   assert.equal(result.requestDigest, replay.requestDigest); assert.equal(Object.isFrozen(sent[0].body), true);
   assert.deepEqual(Object.keys(sent[0]).sort(), ['body', 'requestDigest', 'requestId', 'signal']);
+  await assert.rejects(value.complete(request({ reasoning_effort: 'max' })), fail('provider_invalid_input'));
+  assert.equal(sent.length, 2, 'untrusted per-call effort cannot dispatch');
 });
 
 test('interleaved tools are fully assembled, bounded, frozen and validated only after DONE', async t => {

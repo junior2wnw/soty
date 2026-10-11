@@ -34,11 +34,11 @@ async function sharedBrowser(t, f) {
     mergeProfile(other) { local = { ...local, installations: [...local.installations, ...other.snapshot().installations], localRevision: local.localRevision + 1 }; } };
 }
 
-async function fixture(t, { enabled = true, finishAnswer, policy } = {}) {
+async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-agent-http-owned-')), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Owned agent fixture</title>');
   const tenant = 'synthetic_billing', keyRef = Object.freeze({}), receipts = new Map(), calls = [], holds = [];
-  let allowed = true, lost = false, hold = null, app, closed = false, settledReceiptReads = 0, sourceInput = {};
+  let allowed = true, lost = false, hold = null, streamHold = null, receiptHold = null, app, closed = false, settledReceiptReads = 0, sourceInput = {};
   const connections = new Set(), server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   server.on('connection', socket => { connections.add(socket); socket.once('close', () => connections.delete(socket)); });
   server.on('upgrade', (req, socket, head) => { if (!app?.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
@@ -49,12 +49,16 @@ async function fixture(t, { enabled = true, finishAnswer, policy } = {}) {
   const configuration = { enabled, ...(policy ? { policy } : {}), gateway: { gatewayOrigin: 'https://fixture-commerce.invalid', billingTenant: tenant, keyRef,
     authorizeActor: () => allowed, resolveCredential: async ref => ({ keyRef: ref, tenantId: tenant, bearer: 'synthetic-only-fixture-accounted-key' }),
     readReceipt: async ({ requestId, billingTenant, keyRef: ref }) => { assert.equal(billingTenant, tenant); assert.equal(ref, keyRef);
+      if (receiptHold) { const barrier = receiptHold; receiptHold = null; barrier.entered.resolve(); await barrier.release.promise; }
       const request = receipts.get(requestId); if (request?.status === 'completed') settledReceiptReads++;
       return { tenantId: tenant, request }; },
     fetchImpl: async (url, init) => {
       assert.equal(url, 'https://fixture-commerce.invalid/v1/chat/completions');
       const body = JSON.parse(init.body); assert.equal(body.model, GLM_MODEL); assert.equal(body.autoFallback, false);
       calls.push({ body, key: init.headers['Idempotency-Key'] });
+      if (lowEffortHost && (body.reasoning_effort !== 'low' || Object.hasOwn(body, 'thinking') || Object.hasOwn(body, 'tool_stream'))) {
+        return new Response('{}', { status: 400, headers: { 'content-type': 'application/json' } });
+      }
       if (hold && (!hold.afterTool || body.messages.at(-1).role === 'tool')) { const barrier = hold; hold = null; barrier.entered.resolve(); await barrier.release.promise; }
       const last = body.messages.at(-1);
       let name = 'finish_answer', args = { answer: 'Подтверждённый ответ', selectedEvidenceIds: [], claims: [] };
@@ -77,11 +81,22 @@ async function fixture(t, { enabled = true, finishAnswer, policy } = {}) {
       const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
         input_tokens: 3, output_tokens: completionTokens, charge_urub: '7' });
       if (lost) throw new Error('private_fixture_payload_must_not_escape');
+      const split = lowEffortHost ? Math.floor(wireArguments.length / 2) : wireArguments.length;
+      const continuation = lowEffortHost ? `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0,
+        delta: { tool_calls: [{ index: 0, function: { arguments: wireArguments.slice(split) } }] }, finish_reason: null }] })}\n\n` : '';
       const packet = `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0,
-        id: 'call_owned', type: 'function', function: { name, arguments: wireArguments } }] }, finish_reason: null }] })}\n\n`
+        id: 'call_owned', type: 'function', function: { name, arguments: wireArguments.slice(0, split) } }] }, finish_reason: null }] })}\n\n`
+        + continuation
         + `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: truncated ? 'length' : 'tool_calls' }],
           usage: { prompt_tokens: 3, completion_tokens: completionTokens, total_tokens: 3 + completionTokens } })}\n\n` + 'data: [DONE]\n\n';
-      return new Response(packet, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-soty-request-id': id } });
+      const bytes = new TextEncoder().encode(packet), firstEventEnd = new TextEncoder().encode(packet.slice(0, packet.indexOf('\n\n') + 2)).length; let offset = 0;
+      const bodyStream = lowEffortHost ? new ReadableStream({ async pull(controller) {
+        if (streamHold && offset >= firstEventEnd) { const barrier = streamHold; streamHold = null; barrier.entered.resolve(); await barrier.release.promise; }
+        if (offset >= bytes.length) { controller.close(); return; }
+        const end = Math.min(offset + 17, offset < firstEventEnd ? firstEventEnd : bytes.length);
+        controller.enqueue(bytes.slice(offset, end)); offset = end;
+      } }) : packet;
+      return new Response(bodyStream, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-soty-request-id': id } });
     } } };
   const base = { dataDir: join(directory, 'data'), connectOrigins: [origin], appOriginTemplate: `http://{appId}.localhost:${server.address().port}`,
     appHosting: { domainProfile: 'separate-site', namedAppZone: '', discoveryOrigin: '' }, universalAppsEnabled: false,
@@ -107,6 +122,8 @@ async function fixture(t, { enabled = true, finishAnswer, policy } = {}) {
     service: () => app, stop,
     turn: (actor, requestId, prompt = 'Neutral question', extra = {}) => call(actor, 'agent.turn', { requestId, prompt, ...extra }),
     hold(afterTool = false) { const barrier = { entered: defer(), release: defer(), afterTool }; holds.push(barrier); hold = barrier; return barrier; },
+    holdReceipt() { const barrier = { entered: defer(), release: defer() }; holds.push(barrier); receiptHold = barrier; return barrier; },
+    holdStream() { const barrier = { entered: defer(), release: defer() }; holds.push(barrier); streamHold = barrier; return barrier; },
     setSourceInput(value) { sourceInput = value; },
     setAllowed(value) { allowed = value; }, setLost(value) { lost = value; },
     async restart(extra = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...base, ...extra }); },
@@ -153,6 +170,33 @@ test('portable generic runtime has an explicit bounded-budget local patch and ve
 });
 
 const longDraft = Array.from({ length: 28 }, (_, index) => `${index + 1}. Предлагаю проверить доступность обращения, уточнить ожидаемый результат и согласовать следующий шаг с владельцем.`).join('\n');
+
+test('signed HTTP low-only host accepts delayed fragmented finish_answer only after accounted completion', async t => {
+  const f = await fixture(t, { lowEffortHost: true, finishAnswer: { answer: longDraft, completionTokens: 1100 } });
+  const stream = f.holdStream(), barrier = f.holdReceipt(), pending = f.turn(f.alice, 'low_effort_draft_001', 'Draft a reply');
+  let settled = false, receiptEntered = false;
+  void pending.then(() => { settled = true; }); void barrier.entered.promise.then(() => { receiptEntered = true; });
+  try {
+    await Promise.race([stream.entered.promise, pending.then(() => { throw Error('fragment_barrier_not_reached'); })]);
+    const partialNotes = await f.call(f.alice, 'notes.list', { expectedAccountId: f.a.accountId });
+    assert.equal(partialNotes.ok, true); assert.equal(partialNotes.notes.length, 0);
+    assert.equal(f.settledReceipts(), 0); assert.equal(receiptEntered, false);
+    assert.equal(f.calls.length, 1); assert.equal(settled, false);
+    stream.release.resolve();
+    await Promise.race([barrier.entered.promise, pending.then(() => { throw Error('accounting_barrier_not_reached'); })]);
+    assert.equal(f.calls.length, 1); assert.equal(f.calls[0].body.reasoning_effort, 'low');
+    assert.equal(f.calls[0].body.max_tokens, 2048); assert.equal(f.settledReceipts(), 0);
+    const notes = await f.call(f.alice, 'notes.list', { expectedAccountId: f.a.accountId });
+    assert.equal(notes.ok, true); assert.equal(notes.notes.length, 0, 'a complete parsed draft is not persisted before accounting');
+  } finally { stream.release.resolve(); barrier.release.resolve(); }
+  const result = await pending; assert.equal(result.ok, true, result.error?.code); assert.equal(result.answer, longDraft);
+  assert.equal(f.settledReceipts(), 1); assert.equal(result.accounting[0].status, 'completed');
+  assert.equal(result.accounting[0].usage.completionTokens, 1100); assert.equal(result.accounting[0].chargeMicrorubles, '7');
+  const stored = JSON.parse((await historyNote(f, f.alice, f.a.accountId)).body).history.map(JSON.parse);
+  assert.deepEqual(stored, [{ role: 'user', content: 'Draft a reply' }, { role: 'assistant', content: longDraft }]);
+  assert.equal((await f.turn(f.alice, 'low_effort_draft_001', 'Draft a reply')).error.code, 'agent_reconcile_required');
+  assert.equal(f.calls.length, 1);
+});
 
 for (const prompt of ['Draft a reply', 'Read my notes']) {
   test(`signed HTTP completes and persists a long finish_answer with bounded output: ${prompt}`, async t => {
