@@ -64,6 +64,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
     }
   }
   function save(): void { const store = storage(); if (store) writeOrbPosition(store, account, position, viewport()); }
+  function viewportChanged(): void {
+    if (!drag) { const store = storage(); if (store) position = readOrbPosition(store, account, viewport()); }
+    layout();
+  }
   function closeDialog(restoreFocus = true): void { dialog?.close({ restoreFocus }); }
   function clearModal(): void { modal?.classList.remove('sw-agent-modal-host'); modal = null; }
   function placeOrb(): void {
@@ -133,11 +137,11 @@ export function mountAgentOrb(root: HTMLElement, options: {
   }, { signal: abort.signal });
   orb.addEventListener('pointerup', event => {
     if (!drag || event.pointerId !== drag.pointer) return;
-    const previous = drag; suppressClick = previous.moved; drag = null; previous.releaseIframes(); save();
+    const previous = drag; suppressClick = previous.moved; drag = null; previous.releaseIframes(); if (previous.moved) save(); viewportChanged();
     if (orb.hasPointerCapture(event.pointerId)) orb.releasePointerCapture(event.pointerId);
   }, { signal: abort.signal });
   function cancelDrag(): void { if (!drag) return; const previous = drag, pointer = previous.pointer; position = previous.before; drag = null; previous.releaseIframes(); suppressClick = true;
-    if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); layout(); }
+    if (orb.hasPointerCapture(pointer)) orb.releasePointerCapture(pointer); viewportChanged(); }
   const cancelPointerDrag = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer) cancelDrag(); };
   orb.addEventListener('pointercancel', cancelPointerDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelPointerDrag, { signal: abort.signal });
   orb.addEventListener('keydown', event => {
@@ -150,8 +154,8 @@ export function mountAgentOrb(root: HTMLElement, options: {
       position = clampOrb({ x: point.x + x * (event.shiftKey ? 40 : 16), y: point.y + y * (event.shiftKey ? 40 : 16) }, viewport()); }
     layout(); save();
   }, { signal: abort.signal });
-  view.addEventListener('resize', layout, { signal: abort.signal });
-  view.visualViewport?.addEventListener('resize', layout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', layout, { signal: abort.signal });
+  view.addEventListener('resize', viewportChanged, { signal: abort.signal });
+  view.visualViewport?.addEventListener('resize', viewportChanged, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', viewportChanged, { signal: abort.signal });
   layout();
   return {
     setAccount(next) { if (next === account) return; epoch++; clearModal(); resetSession(); account = next;

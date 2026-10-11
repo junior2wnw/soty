@@ -519,3 +519,40 @@ test('rejected orb pointer capture releases the guard without saving position or
   f.orb.setPointerCapture = () => { throw new Error('Synthetic inactive pointer'); };
   pointer(f.orb, 'pointerdown'); assert.equal(f.iframePointersBlocked(), false); assert.equal(f.saved.size, 0); assert.equal(f.records.length, 0); f.agent.dispose();
 });
+
+test('viewport changes restore normalized orb preferences without overwriting an active or cancelled drag', () => {
+  const f = fixture({ width: 1280, height: 720 }), key = 'soty.agent-orb.v1:A', saved = JSON.stringify({ x: .4, y: .6 });
+  f.saved.set(key, saved); f.agent.setAccount('A');
+  const point = () => ({ x: parseFloat(f.orb.style.left), y: parseFloat(f.orb.style.top) });
+  const resize = (width, height, left = 0, top = 0, type = 'resize') => {
+    Object.assign(f.view, { innerWidth: width, innerHeight: height });
+    Object.assign(f.view.visualViewport, { width, height, offsetLeft: left, offsetTop: top });
+    (type === 'resize' ? f.view : f.view.visualViewport).dispatchEvent(new Event(type));
+  };
+  assert.deepEqual(point(), { x: 512, y: 432 });
+  resize(390, 844); assert.deepEqual(point(), { x: 156, y: 506.4 });
+  resize(390, 844, 12, 25, 'scroll'); assert.deepEqual(point(), { x: 168, y: 531.4 });
+  resize(1280, 720); assert.deepEqual(point(), { x: 512, y: 432 }); assert.equal(f.saved.get(key), saved);
+
+  resize(390, 844);
+  pointer(f.orb, 'pointerdown', { clientX: 156, clientY: 506.4 });
+  pointer(f.orb, 'pointermove', { clientX: 176, clientY: 526.4 });
+  const dragging = point(); resize(420, 900);
+  assert.deepEqual(point(), dragging, 'resize cannot replace the unsaved drag with its old preference');
+  assert.equal(f.iframePointersBlocked(), true); assert.equal(f.saved.get(key), saved);
+  pointer(f.orb, 'pointercancel');
+  assert.deepEqual(point(), { x: 168, y: 540 }); assert.equal(f.saved.get(key), saved);
+  assert.equal(f.orb.hasPointerCapture(1), false); assert.equal(f.iframePointersBlocked(), false);
+
+  pointer(f.orb, 'pointerdown'); resize(390, 844); pointer(f.orb, 'pointerup');
+  assert.deepEqual(point(), { x: 156, y: 506.4 }); assert.equal(f.saved.get(key), saved, 'a click during resize must not save stale pixels');
+  assert.equal(f.iframePointersBlocked(), false);
+  pointer(f.orb, 'pointerdown', { clientX: 156, clientY: 506.4 });
+  pointer(f.orb, 'pointermove', { clientX: 176, clientY: 526.4 }); resize(420, 900); pointer(f.orb, 'pointerup');
+  assert.deepEqual(point(), { x: 176, y: 526.4 });
+  assert.deepEqual(JSON.parse(f.saved.get(key)), { x: 176 / 420, y: 526.4 / 900 });
+  assert.equal(f.iframePointersBlocked(), false); assert.equal(f.orb.hasPointerCapture(1), false);
+  Object.defineProperty(f.view, 'localStorage', { get() { throw new Error('Synthetic unavailable storage'); } });
+  resize(440, 920); assert.deepEqual(point(), { x: 176, y: 526.4 });
+  assert.equal(f.records.length, 0); f.agent.dispose();
+});
