@@ -1,6 +1,6 @@
 import { GLM_MODEL, ProviderError, check, boundedPolicy, freeze, identifier } from './validation.mjs';
 import { capturedTools, captureRequest } from './request.mjs';
-import { createAssembler, createSseDecoder } from './assembler.mjs';
+import { createAssembler, createSseDecoder, createCompletionDecoder } from './assembler.mjs';
 import { types } from 'node:util';
 export { GLM_MODEL, ProviderError, HARD_LIMITS } from './validation.mjs';
 
@@ -29,13 +29,15 @@ function safeResponseId(value) {
 }
 
 /** Transport is a trusted backend callback. This module neither constructs an URL nor handles a bearer. */
-export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: inputTools = [] } = {}) {
+export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: inputTools = [], responseMode = 'sse' } = {}) {
   check(typeof transport === 'function', 'provider_transport_required');
+  check(responseMode === 'sse' || responseMode === 'json');
   const policy = boundedPolicy(inputPolicy), tools = capturedTools(inputTools, policy), active = new Set();
   let closed = false;
   async function complete(input) {
     check(!closed, 'provider_closed');
-    const request = captureRequest(input, tools, policy);
+    const request = captureRequest(input, tools, policy, responseMode);
+    check(responseMode !== 'json' || request.onText === undefined);
     check(active.size < policy.concurrency, 'provider_busy');
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, ...(request.signal ? [request.signal] : [])]);
     const state = { requestId: request.requestId, requestDigest: request.requestDigest, dispatchAttempted: false,
@@ -74,9 +76,9 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
         if (signal.aborted) cancelReader(); assertActive();
         check(response.status === 200, 'provider_http_failed');
         const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
-        check(contentType === 'text/event-stream', 'provider_invalid_stream');
+        check(contentType === (responseMode === 'json' ? 'application/json' : 'text/event-stream'), 'provider_invalid_stream');
         const assembler = createAssembler(policy, tools, { assertActive, onText: request.onText, state });
-        const decoder = createSseDecoder(policy, assembler);
+        const decoder = responseMode === 'json' ? createCompletionDecoder(policy, assembler) : createSseDecoder(policy, assembler);
         // DONE ends SSE content, not the HTTP body. Gateway settlement still owns
         // the stream until EOF; cancelling here can turn a valid answer into ABORT_ERR.
         while (!bodyEnded) {

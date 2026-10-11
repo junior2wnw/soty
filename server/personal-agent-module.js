@@ -117,7 +117,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         const registry = Object.entries(selected).map(([name, tool]) => ({ name, description: tool.description, parameters: tool.inputSchema,
           validateArguments: name === 'finish_answer' ? terminalArguments : tool.validate.bind(tool) }));
         const requestId = `${turnId}:round:${round++}`;
-        activeProvider = createGlmProvider({ transport: bound.complete, tools: registry,
+        activeProvider = createGlmProvider({ transport: bound.complete, tools: registry, responseMode: 'json',
           policy: { ...modelPolicy, ...(options.maxTokens !== undefined ? { maxOutputTokens: Math.min(modelPolicy.maxOutputTokens, options.maxTokens) } : {}) } });
         let result;
         try { result = await activeProvider.complete({ requestId, messages, signal }); }

@@ -29,7 +29,11 @@ export function createAssembler(policy, tools, { assertActive, onText, state }) 
     assertActive();
     check(!done, 'provider_data_after_done');
     if (raw.trim() === '[DONE]') { done = true; return; }
-    const chunk = parsed(raw); check(chunk && typeof chunk === 'object' && !Array.isArray(chunk), 'provider_invalid_chunk');
+    accept(parsed(raw));
+  }
+  function accept(chunk) {
+    assertActive(); check(!done, 'provider_data_after_done');
+    check(chunk && typeof chunk === 'object' && !Array.isArray(chunk), 'provider_invalid_chunk');
     check(!chunk.error, 'provider_upstream_failure');
     if (chunk.model !== undefined) { check(chunk.model === GLM_MODEL, 'provider_model_mismatch'); modelSeen = true; }
     if (chunk.id !== undefined) {
@@ -96,7 +100,47 @@ export function createAssembler(policy, tools, { assertActive, onText, state }) 
     return freeze({ model: GLM_MODEL, completionId, finishReason, message: { role: 'assistant', content, toolCalls: ready },
       diagnostics: { reasoningBytes: Buffer.byteLength(reasoning), ...(policy.returnReasoning ? { reasoning } : {}) }, usage: state.usage });
   }
-  return Object.freeze({ event, result, get done() { return done; } });
+  function completion(raw) {
+    assertActive(); check(!done && !modelSeen, 'provider_data_after_done');
+    const body = parseJson(raw, { maxBytes: policy.streamBytes, maxDepth: policy.jsonDepth, maxNodes: policy.jsonNodes });
+    check(body && typeof body === 'object' && !Array.isArray(body), 'provider_invalid_chunk');
+    check(!body.error, 'provider_upstream_failure');
+    check(typeof body.id === 'string', 'provider_invalid_chunk');
+    check(Array.isArray(body.choices) && body.choices.length === 1, 'provider_invalid_choice');
+    const choice = body.choices[0], message = choice?.message;
+    check(choice && choice.index === 0, 'provider_invalid_choice');
+    check(message && typeof message === 'object' && !Array.isArray(message) && message.role === 'assistant', 'provider_role_mismatch');
+    const delta = { ...message };
+    if (message.tool_calls !== undefined) {
+      check(Array.isArray(message.tool_calls) && message.tool_calls.length > 0 && message.tool_calls.length <= policy.toolCalls, 'provider_invalid_tool');
+      delta.tool_calls = message.tool_calls.map((call, index) => {
+        check(call && call.type === 'function' && typeof call.id === 'string' && call.function
+          && typeof call.function.name === 'string' && typeof call.function.arguments === 'string', 'provider_invalid_tool');
+        return { ...call, index };
+      });
+    }
+    // A complete JSON message enters the same semantic validators, without an
+    // invented SSE envelope or DONE marker. Only a fully read body reaches here.
+    accept({ ...body, choices: [{ index: choice.index, delta, finish_reason: choice.finish_reason }] });
+    done = true;
+    return result();
+  }
+  return Object.freeze({ event, result, completion, get done() { return done; } });
+}
+
+export function createCompletionDecoder(policy, assembler) {
+  const decoder = new TextDecoder('utf-8', { fatal: true }); let text = '', total = 0;
+  return {
+    push(value) {
+      check(value instanceof Uint8Array, 'provider_invalid_stream'); total += value.byteLength;
+      check(total <= policy.streamBytes, 'provider_stream_limit');
+      try { text += decoder.decode(value, { stream: true }); } catch { throw new ProviderError('provider_invalid_utf8'); }
+    },
+    finish() {
+      try { text += decoder.decode(); } catch { throw new ProviderError('provider_invalid_utf8'); }
+      return assembler.completion(text);
+    },
+  };
 }
 
 export function createSseDecoder(policy, assembler) {

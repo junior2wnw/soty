@@ -63,16 +63,15 @@ async function fixture(t, options = {}) {
       const args = read ? { articleId: 'safe' } : { answer: last.role === 'tool' ? 'Grounded answer' : 'Neutral answer',
         selectedEvidenceIds: last.role === 'tool' ? ['evidence_one'] : [], claims: last.role === 'tool' ? [{ kind: 'fact', statement: 'The guide exists',
           evidenceIds: ['evidence_one'], freshness: 'current', confidence: 'high', applicability: 'Synthetic support' }] : [] };
-      const content = `data: ${JSON.stringify({ id: 'chatcmpl_synthetic', model: GLM_MODEL, choices: [{ index: 0,
-        delta: { tool_calls: [{ index: 0, id: 'call_synthetic', type: 'function', function: { name: read ? 'lookup_article' : 'finish_answer', arguments: JSON.stringify(args) } }] }, finish_reason: null }] })}\n\n`
-        + `data: ${JSON.stringify({ id: 'chatcmpl_synthetic', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage })}\n\n` + 'data: [DONE]\n\n';
-      return { kind: 'stream', model: GLM_MODEL, providerId: 'synthetic', stream: new ReadableStream({ start(controller) {
-        controller.enqueue(new TextEncoder().encode(content)); controller.close(); } }), completion: Promise.resolve({ outcome: 'success', usage }) };
+      assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false);
+      return { kind: 'json', model: GLM_MODEL, providerId: 'synthetic', usage,
+        body: { id: 'chatcmpl_synthetic', model: GLM_MODEL, choices: [{ index: 0,
+          message: { role: 'assistant', tool_calls: [{ id: 'call_synthetic', type: 'function', function: { name: read ? 'lookup_article' : 'finish_answer', arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }], usage } };
     },
   };
   const app = await createApp({ store, connector, baseUrl: 'https://gateway-fixture.invalid', installEnabled: false });
-  // One active owned loopback gateway per sequential fixture. inject() misreports SSE writableFinished;
-  // the genuine HTTP writer must settle before we accept an accounting receipt. No provider/network beyond loopback.
+  // One active owned loopback gateway per sequential fixture proves the actual
+  // JSON response is sent only after accounting. No provider/network beyond loopback.
   const gatewayOrigin = await app.listen({ port: 0, host: '127.0.0.1' });
   let connect;
   const transport = createPersonalAgentTransport({ gatewayOrigin, allowLoopbackFixture: true, billingTenant: tenant, keyRef,
@@ -81,6 +80,7 @@ async function fixture(t, options = {}) {
     fetchImpl: async (url, init) => {
       flags.fetchCalls++; assert.equal(url === `${gatewayOrigin}/v1/chat/completions`, true);
       const response = await fetch(url, init);
+      flags.responseObserved = true;
       if (flags.responseLost) throw new Error('private_sentinel');
       return response;
     },
@@ -199,10 +199,11 @@ test('current model ACL denial and module close prevent new model dispatches', a
   assert.equal(f.flags.connectorCalls, 1); f.module.close(); const closed = await f.turn(f.alice, 'turn_closed_01'); assert.equal(closed.error.code, 'agent_closed');
   assert.equal(f.flags.connectorCalls, 1);
 });
-test('actual gateway body completes before finish persistence; bounded readonly wait accepts only the later real receipt', async t => {
+test('actual gateway JSON response waits for finish persistence before the Root receipt check', async t => {
   const f = await fixture(t); f.flags.finishHold = { entered: defer(), read: defer(), release: defer() };
-  const pending = f.turn(f.alice, 'turn_finisher_01'); await f.flags.finishHold.entered.promise; await f.flags.finishHold.read.promise;
-  assert.equal(f.flags.receiptCompleted, false); assert.equal(f.flags.appendCalls, 0); assert.equal(f.flags.connectorCalls, 1);
+  const pending = f.turn(f.alice, 'turn_finisher_01'); await f.flags.finishHold.entered.promise; await tick();
+  assert.equal(f.flags.responseObserved, undefined); assert.equal(f.flags.receiptCompleted, undefined);
+  assert.equal(f.flags.appendCalls, 0); assert.equal(f.flags.connectorCalls, 1);
   f.flags.finishHold.release.resolve(); const value = await pending; assert.equal(value.ok, true, value.error?.code);
   assert.equal(value.accounting[0].status, 'completed'); assert.equal(f.flags.connectorCalls, 1); assert.equal(f.flags.finishes, 1);
 });

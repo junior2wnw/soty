@@ -81,22 +81,18 @@ async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost 
       const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
         input_tokens: 3, output_tokens: completionTokens, charge_urub: '7' });
       if (lost) throw new Error('private_fixture_payload_must_not_escape');
-      const split = lowEffortHost ? Math.floor(wireArguments.length / 2) : wireArguments.length;
-      const continuation = lowEffortHost ? `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0,
-        delta: { tool_calls: [{ index: 0, function: { arguments: wireArguments.slice(split) } }] }, finish_reason: null }] })}\n\n` : '';
-      const packet = `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0,
-        id: 'call_owned', type: 'function', function: { name, arguments: wireArguments.slice(0, split) } }] }, finish_reason: null }] })}\n\n`
-        + continuation
-        + `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: truncated ? 'length' : 'tool_calls' }],
-          usage: { prompt_tokens: 3, completion_tokens: completionTokens, total_tokens: 3 + completionTokens } })}\n\n` + 'data: [DONE]\n\n';
-      const bytes = new TextEncoder().encode(packet), firstEventEnd = new TextEncoder().encode(packet.slice(0, packet.indexOf('\n\n') + 2)).length; let offset = 0;
+      assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false); assert.equal(init.headers.Accept, 'application/json');
+      const packet = JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, message: { role: 'assistant',
+        tool_calls: [{ id: 'call_owned', type: 'function', function: { name, arguments: wireArguments } }] }, finish_reason: truncated ? 'length' : 'tool_calls' }],
+        usage: { prompt_tokens: 3, completion_tokens: completionTokens, total_tokens: 3 + completionTokens } });
+      const bytes = new TextEncoder().encode(packet), firstEventEnd = Math.floor(bytes.length / 2); let offset = 0;
       const bodyStream = lowEffortHost ? new ReadableStream({ async pull(controller) {
         if (streamHold && offset >= firstEventEnd) { const barrier = streamHold; streamHold = null; barrier.entered.resolve(); await barrier.release.promise; }
         if (offset >= bytes.length) { controller.close(); return; }
         const end = Math.min(offset + 17, offset < firstEventEnd ? firstEventEnd : bytes.length);
         controller.enqueue(bytes.slice(offset, end)); offset = end;
       } }) : packet;
-      return new Response(bodyStream, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-soty-request-id': id } });
+      return new Response(bodyStream, { status: 200, headers: { 'content-type': 'application/json', 'x-soty-request-id': id } });
     } } };
   const base = { dataDir: join(directory, 'data'), connectOrigins: [origin], appOriginTemplate: `http://{appId}.localhost:${server.address().port}`,
     appHosting: { domainProfile: 'separate-site', namedAppZone: '', discoveryOrigin: '' }, universalAppsEnabled: false,

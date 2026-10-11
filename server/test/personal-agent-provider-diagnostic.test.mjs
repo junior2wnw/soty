@@ -12,14 +12,11 @@ const terminal = { capability: '__terminal__', description: 'Complete a syntheti
   }, required: ['answer', 'selectedEvidenceIds', 'claims'] } };
 
 function packet({ finishReason = 'tool_calls', name = 'finish_answer', model = GLM_MODEL, outputTokens = 12 } = {}) {
-  const events = [
-    { id: 'synthetic_completion', model, choices: [{ index: 0, delta: { tool_calls: [{ index: 0,
+  return JSON.stringify(
+    { id: 'synthetic_completion', model, choices: [{ index: 0, message: { role: 'assistant', tool_calls: [{
       id: 'synthetic_call', type: 'function', function: { name,
-        arguments: JSON.stringify({ answer: PRIVATE, selectedEvidenceIds: [], claims: [] }) } }] }, finish_reason: null }] },
-    { id: 'synthetic_completion', model, choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-      usage: { prompt_tokens: 10, completion_tokens: outputTokens, total_tokens: 10 + outputTokens } },
-  ];
-  return events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join('') + 'data: [DONE]\n\n';
+        arguments: JSON.stringify({ answer: PRIVATE, selectedEvidenceIds: [], claims: [] }) } }] }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 10, completion_tokens: outputTokens, total_tokens: 10 + outputTokens } });
 }
 
 function fixture(t, options = {}) {
@@ -38,7 +35,7 @@ function fixture(t, options = {}) {
       observed.dispatches++;
       if (options.transportThrows) throw Error(PRIVATE);
       return new Response(packet(options), { status: options.httpStatus ?? 200,
-        headers: { 'content-type': options.contentType ?? 'text/event-stream',
+        headers: { 'content-type': options.contentType ?? 'application/json',
           'x-soty-request-id': options.missingRequestId ? 'invalid' : REQUEST_ID,
           'x-request-id': PRIVATE } });
     },
@@ -62,14 +59,14 @@ function fixture(t, options = {}) {
   return { observed, diagnostics, turn };
 }
 
-test('actual SSE failures have a safe cause code and keep the unknown-turn no-resend fence', async t => {
+test('actual JSON failures have a safe cause code and keep the unknown-turn no-resend fence', async t => {
   const cases = [
     ['truncated terminal output at the 384-token cap', { finishReason: 'length', outputTokens: 384 }, 'provider_output_incomplete'],
     ['invalid finish', { finishReason: 'synthetic-private-finish' }, 'provider_invalid_finish'],
     ['unknown tool', { name: 'synthetic_private_tool' }, 'provider_unknown_tool'],
     ['model mismatch', { model: 'synthetic-private-model' }, 'provider_model_mismatch'],
     ['invalid usage', { outputTokens: -1 }, 'provider_invalid_input'],
-    ['wrong content type', { contentType: 'application/json' }, 'provider_invalid_stream'],
+    ['wrong content type', { contentType: 'text/event-stream' }, 'provider_invalid_stream'],
     ['missing accounting response identifier', { missingRequestId: true }, 'provider_transport_failed'],
     ['HTTP failure', { httpStatus: 503 }, 'provider_http_failed'],
     ['lost transport ACK', { transportThrows: true }, 'provider_transport_failed'],

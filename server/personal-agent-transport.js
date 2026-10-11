@@ -49,7 +49,8 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
     async function complete(request) {
       guard(); fields(request, ['requestId', 'requestDigest', 'body', 'signal']);
       identifier(request.requestId, 160);
-      requireValue(request.body.model === GLM_MODEL && request.body.stream === true && request.signal instanceof AbortSignal);
+      requireValue(request.body.model === GLM_MODEL && request.body.stream === false
+        && !Object.hasOwn(request.body, 'stream_options') && request.signal instanceof AbortSignal);
       requireValue(!request.signal.aborted, 'agent_cancelled');
       const previous = rounds.get(request.requestId);
       if (previous) throw agentError(previous.digest === request.requestDigest ? 'agent_reconcile_required' : 'agent_intent_conflict');
@@ -62,7 +63,7 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
           && typeof credential.bearer === 'string' && /^[^\s\u0000-\u001f]{20,512}$/u.test(credential.bearer), 'agent_key_binding_invalid');
         requireValue(!request.signal.aborted, 'agent_cancelled');
         response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', signal: request.signal,
-          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', Authorization: `Bearer ${credential.bearer}`,
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${credential.bearer}`,
             'Idempotency-Key': keyFor(request.requestId) }, body: JSON.stringify({ ...request.body, autoFallback: false }) });
         guard();
         if (request.signal.aborted) { void response.body?.cancel().catch(() => {}); throw agentError('agent_cancelled'); }

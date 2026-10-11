@@ -17,7 +17,7 @@ export function capturedTools(value, policy) {
   }
   return result;
 }
-export function captureRequest(value, tools, policy) {
+export function captureRequest(value, tools, policy, responseMode = 'sse') {
   fields(value, ['requestId', 'messages'], ['signal', 'onText']);
   check(value.signal === undefined || value.signal instanceof AbortSignal);
   check(value.onText === undefined || (typeof value.onText === 'function' && value.onText.constructor?.name !== 'AsyncFunction'));
@@ -60,7 +60,8 @@ export function captureRequest(value, tools, policy) {
   }
   check(pending.size === 0);
   const wireTools = [...tools.values()].map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
-  const body = { model: GLM_MODEL, messages, reasoning_effort: 'low', max_tokens: policy.maxOutputTokens, stream: true, stream_options: { include_usage: true },
+  const body = { model: GLM_MODEL, messages, reasoning_effort: 'low', max_tokens: policy.maxOutputTokens, stream: responseMode === 'sse',
+    ...(responseMode === 'sse' ? { stream_options: { include_usage: true } } : {}),
     ...(wireTools.length ? { tools: wireTools, tool_choice: 'auto' } : {}) };
   const serialized = canonical(body, policy.requestBytes, policy.jsonDepth);
   return Object.freeze({ requestId, requestDigest: hash(canonical({ schema: 'soty.glm-request.v1', requestId, body }, policy.requestBytes + 1024, policy.jsonDepth + 1)),

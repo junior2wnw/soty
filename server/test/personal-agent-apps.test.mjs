@@ -70,11 +70,11 @@ async function fixture(t, { enabled = true, sourceReferences = [], sourceCredent
         answer: 'Текущая разрешённая проекция проверена.', selectedEvidenceIds: evidence.map(item => item.id), claims: [] }; }
       const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
         input_tokens: 3, output_tokens: 2, charge_urub: '0' });
-      const packet = `data: ${JSON.stringify({ id: 'fixture_completion', model: GLM_MODEL, choices: [{ index: 0, delta: {
-        tool_calls: [{ index: 0, id: 'fixture_tool_call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: null }] })}\n\n`
-        + `data: ${JSON.stringify({ id: 'fixture_completion', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } })}\n\n` + 'data: [DONE]\n\n';
-      return new Response(packet, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-soty-request-id': id } });
+      assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false);
+      const packet = JSON.stringify({ id: 'fixture_completion', model: GLM_MODEL, choices: [{ index: 0, message: { role: 'assistant',
+        tool_calls: [{ id: 'fixture_tool_call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } });
+      return new Response(packet, { status: 200, headers: { 'content-type': 'application/json', 'x-soty-request-id': id } });
     }
   } };
   personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, apps, capabilities: {} }), configuration });
