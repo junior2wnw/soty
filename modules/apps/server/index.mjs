@@ -27,6 +27,7 @@ import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
 import { selectedNativeHandoff } from '../scoped-embed/resource-route-adapters.mjs';
+import { STANDARD_SELECTED_SOURCE_V3 } from '../../source-app/server/standard-profile.mjs';
 import { hash as scopedHash, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
 
@@ -970,8 +971,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       &&fresh.runtimeBinding===held.runtimeBinding&&scopedHash(fresh.context)===scopedHash(held.context),'context_source_scope_changed',403);
     return result;
   }
-  async function callScopedContextSource({scope,handle,signal,withCurrentOwner}) {
-    const path='/api/embed/context',deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
+  async function callScopedContextSource({scope,handle,requestId,signal,withCurrentOwner}) {
+    const standard=scope.resource?.selection?.kind==='soty.resource.v1'&&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3);
+    assertApps(!standard||typeof requestId==='string'&&/^[A-Za-z0-9_.:-]{16,128}$/u.test(requestId),'context_source_denied',403);
+    const path=standard?'/api/embed/query':'/api/embed/context',method=standard?'POST':'GET',deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
+    // Fixed read operation, never a caller/model-selected URL, method or payload.
+    const body=standard?Buffer.from(JSON.stringify({requestId,input:{operation:'soty.current_context'}})):null;
     assertApps(typeof withCurrentOwner==='function'
       &&signal instanceof AbortSignal&&!signal.aborted,'context_source_denied',403);
     assertApps(contextSourceCalls.size<SCOPED_EMBED_LIMITS.inflight,'context_source_capacity',429);
@@ -984,8 +989,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(!signal.aborted&&performance.now()<deadline,'context_source_unknown',503);held??=value;return true;
     });
     assertApps(current()===true,'context_source_denied',403);
-    const route=embedRoute(held.record.profile,'GET',path);
-    assertApps(route.kind==='read'&&route.requestBytes===0&&route.responseBytes<=65536,'context_source_route_denied',403);
+    const route=embedRoute(held.record.profile,method,path);
+    assertApps(route.kind==='read'&&(body?body.length<=route.requestBytes:route.requestBytes===0)&&route.responseBytes<=65536,'context_source_route_denied',403);
     let timer,settled=false,finish,fail,status,headersSent=false,bytes=0;
     const parts=[],headers=new Map();
     const response=new Promise((yes,no)=>{finish=yes;fail=no;});
@@ -1012,10 +1017,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     timer=setTimeout(abort,Math.max(1,deadline-performance.now()));timer.unref?.();
     try{
       assertApps(current()===true&&!signal.aborted,'context_source_denied',403);
-      const req={method:'GET',url:path,headers:{origin:held.record.profile.embedOrigin,accept:'application/json; profile="urn:soty:current-context:v1"'}};
+      const req={method,url:path,headers:{origin:held.record.profile.embedOrigin,accept:'application/json; profile="urn:soty:current-context:v1"',
+        ...(body?{'content-type':'application/json'}:{})}};
       stream=openStream({id:scope.appId},held.session,{kind:'http',req,res:sink});
       assertApps(stream.channel===held.channel&&stream.runtimeBinding===held.runtimeBinding&&stream.scopedRecord===held.record,'context_source_scope_changed',403);
-      sendStream(stream,{type:'open',id:stream.id,kind:'http',appId:scope.appId,path,method:'GET',headers:req.headers});
+      sendStream(stream,{type:'open',id:stream.id,kind:'http',appId:scope.appId,path,method,headers:req.headers});
+      if(body)await sendChunks(stream,body);
       assertApps(current()===true&&!signal.aborted,'context_source_scope_changed',403);
       sendStream(stream,{type:'end',id:stream.id});
     }catch{abort();}

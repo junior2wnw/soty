@@ -33,6 +33,8 @@ const stageSource = await readFile(new URL('./app-stage.ts', import.meta.url), '
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
 const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const productSource = await readFile(new URL('./product.ts', import.meta.url), 'utf8');
+const productCompiled = ts.transpileModule(productSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const failure = code => Object.assign(new Error(code), { code });
@@ -106,6 +108,10 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const dialogsModule = { exports: {} };
   vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
+  const productModule = { exports: {} }, preferences = new Map();
+  vm.runInNewContext(productCompiled, { module: productModule, exports: productModule.exports, require: name => ports[name] ?? {},
+    localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
+  ports['./product'].saveDeskPreferences = productModule.exports.saveDeskPreferences;
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController });
   ports['./app-stage'] = stageModule.exports;
@@ -155,8 +161,25 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls,
+    workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
+    setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+test('actual shell stores its exact screen and restores the correct account workspace on a bare entry or account switch', () => {
+  const f = fixture(); f.useSavedWorkspace();
+  const route = 'launch/app-11111111111111111111111111111111/dom_11111111111111111111111111111111?path=%2Fwidget';
+  f.app.writeRoute(route); assert.equal(f.workspacePreferences.loadDeskPreferences('account-A').lastRoute, route);
+  f.workspacePreferences.saveDeskPreferences('account-B', { favorites: [], recent: [], lastRoute: 'notes/note-b' }, { selectedRoute: true });
+  f.app.transitionAccount('account-B'); assert.equal(f.location.hash, '#notes/note-b');
+  f.app.transitionAccount('account-A'); assert.equal(f.location.hash, '#' + route);
+  const fresh = fixture({ initial: '', hash: '#mine' }); fresh.useSavedWorkspace(); fresh.app.restoreLastRoute = true;
+  fresh.workspacePreferences.saveDeskPreferences('account-A', { favorites: [], recent: [], lastRoute: route }, { selectedRoute: true });
+  fresh.app.transitionAccount('account-A'); assert.equal(fresh.location.hash, '#' + route);
+  const linked = fixture({ initial: '', hash: '#notes/shared-note' }); linked.useSavedWorkspace(); linked.app.restoreLastRoute = false;
+  linked.workspacePreferences.saveDeskPreferences('account-A', { favorites: [], recent: [], lastRoute: route }, { selectedRoute: true });
+  linked.app.transitionAccount('account-A'); assert.equal(linked.location.hash, '#notes/shared-note');
+});
 
 test('actual app onboarding cannot paint a delayed device list after A switches to B', async () => {
   const f = fixture(), pending = deferred(); let received;

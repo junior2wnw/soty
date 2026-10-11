@@ -10,6 +10,7 @@ export interface AgentOrbHandle {
   setModal(modal: HTMLDialogElement | null): void;
   releaseModal(modal: HTMLDialogElement): boolean;
   resetScreen(): void;
+  raise(): void;
   mountIn(host: HTMLElement): Promise<WorldAssistantHandle>;
   flush(): Promise<void>;
   hasUnsavedChanges(): boolean;
@@ -25,6 +26,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   const doc = root.ownerDocument, view = doc.defaultView!;
   const abort = new AbortController();
   const orb = iconButton('Помощник', 'sparkle'); orb.classList.add('sw-agent-orb'); orb.hidden = true;
+  orb.setAttribute('popover', 'manual');
   orb.title = 'Помощник · можно перемещать'; orb.setAttribute('aria-haspopup', 'dialog'); orb.setAttribute('aria-expanded', 'false');
   const hint = el('span', 'sw-sr-only', 'Нажмите, чтобы открыть. Перетащите или переместите стрелками. Home — вернуть в угол.');
   hint.id = `agent-orb-${crypto.randomUUID()}`; orb.setAttribute('aria-describedby', hint.id); orb.append(hint);
@@ -40,12 +42,25 @@ export function mountAgentOrb(root: HTMLElement, options: {
     return { width: visible?.width ?? view.innerWidth, height: visible?.height ?? view.innerHeight, left: visible?.offsetLeft ?? 0, top: visible?.offsetTop ?? 0 };
   };
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
+  function raise(): void {
+    if (disposed || typeof orb.showPopover !== 'function') return;
+    try {
+      if (orb.matches(':popover-open')) orb.hidePopover();
+      if (account && orb.isConnected) orb.showPopover();
+    } catch { /* The control remains usable in browsers without top-layer support. */ }
+  }
   function layout(): void {
     if (disposed) return;
     const point = position ? clampOrb(position, viewport()) : dockOrb(viewport());
     orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
     root.dataset.agentOrb = account ? 'ready' : 'hidden';
     orb.hidden = !account; orb.dataset.docked = String(!position);
+    if (typeof orb.showPopover === 'function') {
+      try {
+        if (!account && orb.matches(':popover-open')) orb.hidePopover();
+        else if (account && !orb.matches(':popover-open')) orb.showPopover();
+      } catch { /* CSS supplies the ordinary fixed-position fallback. */ }
+    }
   }
   function save(): void { const store = storage(); if (store) writeOrbPosition(store, account, position, viewport()); }
   function closeDialog(restoreFocus = true): void { dialog?.close({ restoreFocus }); }
@@ -149,7 +164,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
       modal?.classList.add('sw-agent-modal-host'); placeOrb();
     },
     releaseModal(previous) { if (disposed || modal !== previous) return false; cancelDrag(); closeDialog(false); clearModal(); placeOrb(); return true; },
-    resetScreen,
+    resetScreen, raise,
     async mountIn(parent) { closeDialog(false); const owner = account, generation = epoch;
       const pending = ensure(parent), target = host; await pending;
       const bound = owner === account && generation === epoch ? handle : null;

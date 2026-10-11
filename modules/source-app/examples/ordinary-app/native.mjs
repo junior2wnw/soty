@@ -171,6 +171,15 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     ...(allowEmptyGuest ? { createEmptyGuest: (proof, binding, identity) => link(proof, binding, identity, true) } : {}),
     async read(proof, binding, args) {
       if(jobs&&['feedback.job.status','feedback.job.result','feedback.processing.context','feedback.processing.ticket'].includes(args.input?.operation)){const result=jobs.read(dataActor(proof,binding),args.input);dataActor(proof,binding);return result;}
+      if (args.input?.operation === 'soty.current_context') {
+        fields(args.input, ['operation']); const actor = dataActor(proof, binding), selected = resource(binding);
+        const title = selected.title.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 240).replace(/[\uD800-\uDBFF]$/u, '') || 'Моё приложение';
+        // Native projection version: this example's membership generation. Title
+        // and role are also compared by Root; this is not an items/body revision.
+        const result = { schema: 'soty.current-context.v1', selection: { ...binding.resource.selection },
+          title, role: actor.role === 'owner' ? 'owner' : 'editor', revision: actor.membershipRevision };
+        dataActor(proof, binding); return result;
+      }
       dataActor(proof, binding); const input = fields(args.input, ['operation']); check(input.operation === 'items.list', 'ordinary_native_operation_denied', 403);
       const rows = db.prepare('SELECT id,title,revision,created_at AS createdAt FROM native_items WHERE resource_id=? ORDER BY created_at,id LIMIT 100').all(resourceId);
       dataActor(proof, binding); return { items: rows.map(row => ({ ...row })), requestId: args.requestId };

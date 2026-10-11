@@ -3,7 +3,8 @@ import './product.css';
 import './shell.css';
 import './chat.css';
 import './community.css';
-import { mountAppStage, type AppStageHandle } from './app-stage';
+import { mountAppStage, type AppStageHandle, type AppStageOptions } from './app-stage';
+import { mountMicroWidgets, type MicroWidgetsHandle } from './micro-widgets';
 import { createAppFieldPlacementController, type AppFieldPlacementController, type AppFieldPlacementSnapshot } from './app-field-placement-browser';
 import { createFieldPersistence } from './field-persistence';
 import { preferredInspectionEntry } from './app-deployment.mjs';
@@ -155,8 +156,10 @@ class WorldApplication {
   private screenSequence = 0;
   private destroyed = false;
   private agentOrb: AgentOrbHandle | null = null;
+  private widgets: MicroWidgetsHandle | null = null;
   private visibilityOpen = false;
   private routeLoaded = false;
+  private restoreLastRoute = !location.hash;
   private readonly releaseViewport: () => void;
 
   constructor(root: HTMLElement, options: WorldAppOptions) {
@@ -190,11 +193,24 @@ class WorldApplication {
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
     root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
-    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.appStage?.assistantContext?.() ?? null,
+    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.widgets?.assistantContext() ?? this.appStage?.assistantContext?.() ?? null,
       focusExisting: () => {
         if (this.view !== 'assistant' || this.assistantMode !== 'chat' || !this.assistantHandle) return false;
         this.main.querySelector<HTMLTextAreaElement>('.sw-assistant-host textarea')?.focus(); return true;
       } });
+    this.widgets = mountMicroWidgets(root, {
+      mount: (host, app, intent, current) => mountAppStage(host, { api: this.api, app, accountId: this.deskAccount, intent,
+        presentation: 'widget', isCurrent: current, ...this.appRuntime(app),
+        onNavigate: () => { /* The widget owns its route independently of the main screen. */ },
+        onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
+        onSettings: value => { if (current()) this.openAppSettings(value); },
+        onModalChange: (modal, open) => { if (open) { if (current()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); },
+      }),
+      dialog: (title, onClose) => this.dialog(title, onClose), notify: text => this.toast(text, true),
+      onLayerChange: () => this.agentOrb?.raise(),
+    });
+    this.main.addEventListener('pointerdown', () => this.widgets?.clearActive(), { signal: this.controller.signal });
+    this.main.addEventListener('focusin', () => this.widgets?.clearActive(), { signal: this.controller.signal });
     this.pwaBanner.setAttribute('aria-live', 'polite'); this.pwaBanner.setAttribute('aria-label', 'Состояние приложения');
     if (options.humanCalls) {
       this.humanCallState = options.humanCalls.snapshot();
@@ -214,7 +230,7 @@ class WorldApplication {
         if (!this.profile && this.deskAccount) void this.refresh(true);
       }
     });
-    this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
+    this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.widgets?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
       if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search') || !this.screenHasUnsavedChanges()) return;
@@ -226,7 +242,7 @@ class WorldApplication {
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
     window.addEventListener('pagehide', () => this.stopIncomingCallPolling(), { signal: this.controller.signal });
     window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); }, { signal: this.controller.signal });
-    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
+    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
@@ -473,7 +489,7 @@ class WorldApplication {
 
   destroy(): void {
     this.stopIncomingCallPolling();
-    this.destroyed = true; this.requestSequence++; this.screenSequence++; this.agentOrb?.dispose(); this.agentOrb = null;
+    this.destroyed = true; this.requestSequence++; this.screenSequence++; this.agentOrb?.dispose(); this.agentOrb = null; this.widgets?.dispose(); this.widgets = null;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
     this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
@@ -566,7 +582,9 @@ class WorldApplication {
   private transitionAccount(accountId: string | null): boolean {
     const next = typeof accountId === 'string' && accountId.trim() ? accountId : '';
     if (next === this.deskAccount) return false;
+    const previousAccount = this.deskAccount;
     this.deskAccount = next; this.accountGeneration++; this.homeRequest++; this.agentOrb?.setAccount(next);
+    this.widgets?.setAccount(next);
     this.fieldOutbox?.dispose(); this.fieldOutbox = null;
     this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
     this.profile = null; this.communities = []; this.apps = []; this.devices = []; this.homeNotes = null;
@@ -574,6 +592,10 @@ class WorldApplication {
     this.homeState.slots.clear(); this.homeState.scroll = 0; this.homeState.fieldX = 0; this.homeState.fieldY = 0;
     this.homeState.communityId = null; this.homeState.focusId = null; this.homeState.focusControl = null; this.homeState.lens = 'all';
     this.desk = next ? loadDeskPreferences(next) : { favorites: [], recent: [] };
+    if (next && (this.restoreLastRoute || previousAccount) && this.desk.lastRoute) {
+      this.activeRoute = '#' + this.desk.lastRoute; history.replaceState({ soty: true }, '', this.activeRoute);
+    }
+    if (next) this.restoreLastRoute = false;
     this.homeState.pinned = new Set(this.desk.pinnedApps ?? []);
     this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
     this.homeQuery = ''; this.homeFilter = 'all'; this.discoveryApps.clear();
@@ -781,7 +803,9 @@ class WorldApplication {
   }
 
   private writeRoute(route: string): void {
+    this.widgets?.clearActive();
     const next = `#${route}`; if (location.hash !== next) history.pushState({ soty: true }, '', next); this.activeRoute = next;
+    this.desk.lastRoute = route; this.saveDesk(false, true);
   }
 
   private discoveryRoute(): string {
@@ -800,6 +824,7 @@ class WorldApplication {
 
   private async openRoute(): Promise<boolean> {
     if (this.destroyed || (!this.profile && !this.deskAccount)) return false;
+    this.widgets?.clearActive();
     if (this.appPlacementDialog?.element.open && this.appPlacementRouteClose) {
       if (location.hash !== this.activeRoute) {
         const accountCurrent = this.accountTask(), sequence = this.screenSequence;
@@ -903,7 +928,7 @@ class WorldApplication {
         // Typing replaces its own route; choosing the other side creates one history step.
         if (location.hash.split('?')[0] !== next.split('?')[0]) history.pushState({ soty: true }, '', next);
         else history.replaceState({ soty: true }, '', next);
-        this.activeRoute = next;
+        this.activeRoute = next; this.widgets?.clearActive(); this.desk.lastRoute = next.slice(1); this.saveDesk(false, true);
         const context = this.header.querySelector('.sx-header-context'); if (context) context.textContent = mode === 'mine' ? 'Моё поле' : 'Поиск';
       },
       onOpen: (item, record) => this.afterNoteSaved(() => {
@@ -1730,7 +1755,7 @@ class WorldApplication {
     dialog.body.append(body);
   }
 
-  private saveDesk(selectedSpace = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace }); }
+  private saveDesk(selectedSpace = false, selectedRoute = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace, selectedRoute }); }
   private remember(route: string, title: string, symbol: string): void { this.desk.recent = [{ route, title: title.slice(0, 100), symbol }, ...this.desk.recent.filter(item => item.route !== route)].slice(0, 6); this.saveDesk(); }
   private searchCount(totals: WorldSearch['totals']): string { return `${totals.communitiesExact === false ? `${totals.communities}+ сообществ` : nounCount(totals.communities, 'сообщество', 'сообщества', 'сообществ')} · ${totals.peopleExact === false ? `${totals.people}+ человек` : nounCount(totals.people, 'человек', 'человека', 'человек')}`; }
 
@@ -1792,7 +1817,7 @@ class WorldApplication {
     const sequence = this.screenSequence, accountId = this.profile?.profileId || this.deskAccount; if (!accountId) return;
     void import('./notes').then(({ mountNotes }) => {
       if (this.destroyed || sequence !== this.screenSequence || !host.isConnected) return;
-      this.notesHandle = mountNotes(host, { api: this.api, accountId, projectId: 'soty', initialNoteId: noteId, openLegacy: () => this.runHook(() => this.options.openLegacy('notes')), onOpenNote: (id: string, title?: string) => { this.activeRoute = `#notes/${id}`; history.replaceState({ soty: true }, '', this.activeRoute); if (id !== 'new') this.remember(`notes/${id}`, title || 'Записка', 'list'); } });
+      this.notesHandle = mountNotes(host, { api: this.api, accountId, projectId: 'soty', initialNoteId: noteId, openLegacy: () => this.runHook(() => this.options.openLegacy('notes')), onOpenNote: (id: string, title?: string) => { this.activeRoute = `#notes/${id}`; history.replaceState({ soty: true }, '', this.activeRoute); this.desk.lastRoute = `notes/${id}`; this.saveDesk(false, true); if (id !== 'new') this.remember(`notes/${id}`, title || 'Записка', 'list'); } });
     }).catch(error => { if (host.isConnected) host.replaceChildren(emptyState('Не удалось открыть записки', errorText(error), button('Повторить', 'refresh', '', () => this.renderNotes(noteId)))); });
   }
 
@@ -1922,20 +1947,10 @@ class WorldApplication {
     const sequence = this.screenSequence, accountId = this.deskAccount, accountGeneration = this.accountGeneration;
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
-      request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
-        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?:AppLaunchBinding;runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
-          const cleanup=this.options.appSlotCleanup?.(result);return{url:result.launchUrl,entry:result.entry,
-            ...(result.runtimeProfile?{runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle}:{}),
-            ...(result.scopedSource?{scopedSource:result.scopedSource}:{}),
-            ...(result.launchBinding===undefined?{}:{launchBinding:result.launchBinding}),
-            ...(cleanup?{scopedCleanup:cleanup}:{})};}),
-      renew:this.options.openApp?undefined:parameters=>this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown}>('apps.scoped.renew',{...parameters}).then(result=>({
-        url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
-        scopedSlotExpiresAt:result.scopedSlotExpiresAt,scopedRenewalRequestId:result.scopedRenewalRequestId,scopedSource:result.scopedSource,scopedCleanup:this.options.appSlotCleanup?.(result)??undefined,
-      })),
+      ...this.appRuntime(app),
       onNavigate: (next, navigation) => {
         if (!current()) return;
-        if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; }
+        if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; this.desk.lastRoute = next.route; this.saveDesk(false, true); }
         else this.writeRoute(next.route);
       },
       onBack: () => this.afterNoteSaved(() => {
@@ -1956,6 +1971,7 @@ class WorldApplication {
         this.unifiedFieldView.mineContext = contextId; this.unifiedFieldView.mineFit = 'context'; this.unifiedFieldView.mineSelection = '';
         this.desk.lastSpace = contextId; this.saveDesk(true);
       }); },
+      onWidget: (value, next) => { if (current()) this.widgets?.pin(value, next); },
       onCommunity: id => this.afterNoteSaved(() => { if (current()) void this.openGroup(id, 'chat'); }),
       onRemember: (next, value) => { if (current()) this.remember(next.route, value.name, 'grid'); },
     });
@@ -1975,6 +1991,21 @@ class WorldApplication {
       const found = apps.find(value => value.appId === launchIntent.target.appId);
       if (found) { app = found; stage.updateApp(found); }
     }).catch(() => { /* Optional names never change the exact admitted entry. */ });
+  }
+  private appRuntime(app: WorldAppRecord): Pick<AppStageOptions, 'request' | 'renew'> {
+    return {
+      request: parameters => this.options.openApp ? this.options.openApp(app, parameters)
+        : this.api.request<{ launchUrl: string; entry: AppResolvedEntry; launchBinding?:AppLaunchBinding;runtimeProfile?:string; scopedCloseHandle?:string;scopedSource?:{id:string;version:number;digest:string} }>('apps.launch', { ...parameters }).then(result => {
+          const cleanup = this.options.appSlotCleanup?.(result); return { url: result.launchUrl, entry: result.entry,
+            ...(result.runtimeProfile ? { runtimeProfile: result.runtimeProfile, scopedCloseHandle: result.scopedCloseHandle } : {}),
+            ...(result.scopedSource ? { scopedSource: result.scopedSource } : {}),
+            ...(result.launchBinding === undefined ? {} : { launchBinding: result.launchBinding }),
+            ...(cleanup ? { scopedCleanup: cleanup } : {}) }; }),
+      renew: this.options.openApp ? undefined : parameters => this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown}>('apps.scoped.renew',{...parameters}).then(result=>({
+        url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
+        scopedSlotExpiresAt:result.scopedSlotExpiresAt,scopedRenewalRequestId:result.scopedRenewalRequestId,scopedSource:result.scopedSource,scopedCleanup:this.options.appSlotCleanup?.(result)??undefined,
+      })),
+    };
   }
   private openAddApp(communityId?: string, selectedDevice?: string): void {
     const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;

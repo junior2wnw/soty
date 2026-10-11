@@ -1,6 +1,7 @@
 import { button, el, iconButton, textInput } from './dom';
 import { icon } from './icons';
 import { type WorldDialog } from './dialogs';
+import { parseAppLaunchRoute } from './app-launch.mjs';
 
 export type CapabilityId = 'notes' | 'apps' | 'devices' | 'agent' | 'communities' | 'contacts' | 'files' | 'chess' | 'terminal' | 'internet' | 'legacy-notes' | 'appearance';
 export interface Capability { id: CapabilityId; title: string; detail: string; symbol: string; color: string; category: 'Дела' | 'Общение' | 'Инструменты'; }
@@ -19,27 +20,45 @@ export const capabilities: readonly Capability[] = [
   { id: 'appearance', title: 'Оформление', detail: 'Тема, яркость и движение', symbol: 'settings', color: 'sage', category: 'Инструменты' },
 ];
 export interface RecentAction { route: string; title: string; symbol: string; }
-export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; lastSpace?: string; }
+export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; lastSpace?: string; lastRoute?: string; }
 const defaults: CapabilityId[] = ['notes', 'apps', 'devices', 'agent'];
 const deskKey = (accountId: string): string => `soty.desk.v1:${encodeURIComponent(accountId)}`;
 // Context IDs are opaque field identities, not routes or filenames.
 const isSpaceId = (value: unknown): value is string => typeof value === 'string' && value.length > 0
   && value.length <= 128 && value === value.trim() && !/[\u0000-\u001f\u007f-\u009f\p{Surrogate}]/u.test(value);
+export function normalizeDeskRoute(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value.length > 16384 || /[\u0000-\u001f\u007f\p{Surrogate}]/u.test(value)) return;
+  try {
+    if (/^(app|launch)\//u.test(value)) return parseAppLaunchRoute(value)?.route;
+    if (/^(?:notes|messages)(?:\/[A-Za-z0-9_-]{3,160})?$/u.test(value)
+      || /^community\/[A-Za-z0-9_-]{3,160}\/(?:about|chat|apps)$/u.test(value)
+      || /^(?:library|access|assistant(?:\/(?:chat|create))?)$/u.test(value)) return value;
+    const at = value.indexOf('?'), route = at < 0 ? value : value.slice(0, at), query = at < 0 ? '' : value.slice(at + 1);
+    if (route !== 'mine' && route !== 'world') return;
+    const params = new URLSearchParams(query);
+    if ([...params.keys()].some(key => !['q', 'kind'].includes(key) || params.getAll(key).length !== 1)
+      || (params.get('q')?.length ?? 0) > 100
+      || params.has('kind') && !['people', 'communities', 'app', 'device'].includes(params.get('kind')!)) return;
+    return `${route}${params.size ? '?' + params.toString() : ''}`;
+  } catch { return; }
+}
 export function loadDeskPreferences(accountId: string): DeskPreferences {
   try {
     const value = JSON.parse(localStorage.getItem(deskKey(accountId)) ?? '{}');
     return { favorites: Array.isArray(value.favorites) ? [...new Set<CapabilityId>(value.favorites.filter((id: unknown) => capabilities.some(item => item.id === id)))].slice(0, 8) : [...defaults],
       ...(isSpaceId(value.lastSpace) ? { lastSpace: value.lastSpace } : {}),
+      ...(normalizeDeskRoute(value.lastRoute) ? { lastRoute: normalizeDeskRoute(value.lastRoute)! } : {}),
       pinnedApps: Array.isArray(value.pinnedApps) ? [...new Set<string>(value.pinnedApps.filter((id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(id)))].slice(0, 200) : [],
       recent: Array.isArray(value.recent) ? value.recent.filter((item: RecentAction) => item && typeof item.route === 'string' && /^(?:notes|app|community)\/[A-Za-z0-9_-]{3,160}(?:\/[A-Za-z0-9_-]{3,160})?$/.test(item.route) && typeof item.title === 'string' && typeof item.symbol === 'string').slice(0, 6).map((item: RecentAction) => ({ route: item.route, title: item.title.slice(0, 100), symbol: item.symbol.slice(0, 20) })) : [] };
   } catch { return { favorites: [...defaults], recent: [] }; }
 }
-export function saveDeskPreferences(accountId: string, value: DeskPreferences, options: { selectedSpace?: boolean } = {}): void {
+export function saveDeskPreferences(accountId: string, value: DeskPreferences, options: { selectedSpace?: boolean; selectedRoute?: boolean } = {}): void {
   try {
     // An unrelated write in an older tab must not undo a newer space choice.
     const lastSpace = options.selectedSpace ? value.lastSpace : loadDeskPreferences(accountId).lastSpace;
-    const { lastSpace: _previousSpace, ...other } = value;
-    localStorage.setItem(deskKey(accountId), JSON.stringify({ ...other, ...(isSpaceId(lastSpace) ? { lastSpace } : {}) }));
+    const lastRoute = normalizeDeskRoute(options.selectedRoute ? value.lastRoute : loadDeskPreferences(accountId).lastRoute);
+    const { lastSpace: _previousSpace, lastRoute: _previousRoute, ...other } = value;
+    localStorage.setItem(deskKey(accountId), JSON.stringify({ ...other, ...(isSpaceId(lastSpace) ? { lastSpace } : {}), ...(lastRoute ? { lastRoute } : {}) }));
   } catch { /* Favorites are optional; core data is saved independently. */ }
 }
 

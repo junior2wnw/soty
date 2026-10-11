@@ -21,6 +21,7 @@ import {captureSourcePin,matchesScopedCaptureContext} from './app-project-captur
 import {createScopedSlotRenewal,attachScopedRenewalLoads,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
+  presentation?: 'widget';
   nativeVoice?: { client:any; mount:any };
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
@@ -32,6 +33,7 @@ export interface AppStageOptions {
   onModalChange?(modal: HTMLDialogElement, open: boolean): void;
   onSettings(app: WorldAppRecord, onUpdated: (app: WorldAppRecord) => void): void;
   onPlaceInField?(app: WorldAppRecord): void;
+  onWidget?(app: WorldAppRecord, intent: AppLaunchIntent): void;
   onCommunity?(communityId: string): void;
   onRemember?(intent: AppLaunchIntent, app: WorldAppRecord): void;
 }
@@ -71,9 +73,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const matches = (next: AppLaunchIntent): boolean => sameAppLaunchLocation(initial, next, selectedEntry);
   const current = (): boolean => {
     if (disposed || !options.isCurrent()) return false;
+    if (options.presentation === 'widget') return true;
     try { const next = parseAppLaunchRoute(view.location.hash); return !!next && matches(next); } catch { return false; }
   };
   const screen = el('section', 'sa-stage'); screen.setAttribute('aria-label', 'Приложение'); screen.dataset.pwaIgnore = '';
+  if (options.presentation === 'widget') screen.classList.add('sa-widget-stage');
   const header = el('header', 'sa-toolbar'), title = el('div', 'sa-title'), name = el('h2', '', app.name);
   name.tabIndex = -1; const subtitle = el('p'); title.append(name, subtitle);
   const workspace = el('div', 'sa-workspace'), runtime = el('div', 'sa-runtime'), panel = el('aside', 'sa-discussion');
@@ -98,6 +102,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       .catch(() => showMessage('Не удалось открыть поле. Попробуйте ещё раз.'));
   });
   field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
+  const widget = button('Закрепить виджет', 'pin', 'sw-button-quiet', () => {
+    if (!current() || !selectedEntry) return;
+    closeMore(); options.onWidget?.(app, parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
+      domainId: selectedEntry.domainId, path: selectedEntry.path }))!);
+  });
+  widget.dataset.stageControl = 'widget'; widget.hidden = !options.onWidget; widget.disabled = true;
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
@@ -162,7 +172,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
-  moreBody.append(publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  moreBody.append(widget, publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
   header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, shellUrl: view.location.href,
@@ -263,6 +273,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!entry || selectedEntry || !current()) return;
     selectedEntry = entry;
     field.disabled = false;
+    widget.disabled = false;
     const pinned = routeWith(intent.presentation); options.onNavigate(pinned, { replace: true }); intent = pinned;
     bookmark.hidden = false; savedHost.hidden = false;
     saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current, asBookmark: true,

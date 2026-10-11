@@ -18,7 +18,7 @@ export async function createOrdinaryAppServer(options) {
   check(value.allowLinkedLogin===undefined||typeof value.allowLinkedLogin==='boolean','ordinary_native_configuration_invalid',503);
   const label = value.appLabel ?? 'Моё приложение'; check(typeof label === 'string' && label.trim().length > 0 && label.length <= 160 && label.isWellFormed());
   const store = createOrdinaryAppStore({ databasePath: value.databasePath, realmId: value.realmId, key: value.cipherKey, keyId: value.keyId,
-    initialize: value.initialize === true, format:processing?3:value.profile.sourceProfile.version===2?2:1,
+    initialize: value.initialize === true, format:processing?3:[2,3].includes(value.profile.sourceProfile.version)?2:1,
     allowLoginProofMigration:value.allowLoginProofMigration===true,allowFeedbackJobsMigration:value.allowFeedbackJobsMigration===true, ...(value.clock ? { clock: value.clock } : {}) });
   try {
     if (value.newResource) {

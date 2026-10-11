@@ -57,7 +57,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     const port=await freePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
     const appId=created.app.id,embedded='https://'+appId+'.localhost:'+appTlsPort,native='http://localhost:'+port;
     const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:['ordinary_installed_link_123456789012',claim.hostDeviceId,claim.connectorId].join('|'),port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'};target.digest=runtimeTargetDigest(target);
-    const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'ordinary_installed_link_123456789012',hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId},target:{revision:2,digest:target.digest},sourceProfile:STANDARD_SELECTED_SOURCE_V2,
+    const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'ordinary_installed_link_123456789012',hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId},target:{revision:2,digest:target.digest},sourceProfile:options.sourceProfile??STANDARD_SELECTED_SOURCE_V2,
       resource:{registryId:'soty',environmentId:'production',tenantId:owner.account.accountId,appId,resourceId:'ordinary:'+realmId,selection:{kind:'soty.resource.v1',nativeId:'selected',incarnationId:'one'}},
       issuer:origin+'/human-identity',clientId:'ordinary-'+realmId,embedOrigin:embedded,nativeOrigin:native,parentOrigin:origin};
     realms.push({realmId,index,port,appId,embedded,native,target,profile,key:randomBytes(32),cipherKey:randomBytes(32),clientSecret:random(),instance:null,databasePath:join(directory,realmId+'.sqlite')});
@@ -66,7 +66,8 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   const jwk=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({format:'jwk'});Object.assign(jwk,{kid:'ordinary-fixture',use:'sig',alg:'RS256'});
   const humanIdentity={enabled:true,issuer:origin+'/human-identity',registryId:'soty',environmentId:'production',clients:realms.map(realm=>({id:realm.profile.clientId,label:'Synthetic '+realm.realmId,
     redirectUri:realm.embedded+'/api/embed/callback',clientSecret:realm.clientSecret})),jwks:{keys:[jwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'ordinary-fixture'};
-  const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:realms.map(realm=>realm.profile)};
+  const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:realms.map(realm=>realm.profile),
+    ...(options.externalApplications?{externalApplications:options.externalApplications(realms)}:{})};
   root=createHttpApp(dist,activeOptions);
   for(const realm of realms){realm.options={profile:realm.profile,transportKey:realm.key,connectorPort,rp:{issuer:realm.profile.issuer,clientId:realm.profile.clientId,clientSecret:realm.clientSecret,redirectUri:realm.embedded+'/api/embed/callback'},
     databasePath:realm.databasePath,realmId:realm.realmId,cipherKey:realm.cipherKey,keyId:'synthetic-'+realm.realmId,appLabel:'Synthetic '+realm.realmId};

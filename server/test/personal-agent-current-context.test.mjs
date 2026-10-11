@@ -5,6 +5,7 @@ import { createConnectService, digestArgs } from '../../modules/connect/server/i
 import { createCapabilitiesService } from '../../modules/capabilities/server/index.mjs';
 import { createNotesService } from '../../modules/notes/server/index.mjs';
 import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
+import { STANDARD_SELECTED_SOURCE_V3 } from '../../modules/source-app/server/standard-profile.mjs';
 import { createCurrentContextSourceApplication } from '../current-context-source.js';
 import { captureExternalApplications, composeExternalApplications } from '../external-applications.js';
 import { createPersonalAgentComposition } from '../personal-agent-composition.js';
@@ -20,9 +21,11 @@ const good = value => { assert.equal(value.ok, true, value.error?.code); return 
 function identity() { const key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   return { key: key.privateKey, publicJwk: key.publicKey.export({ format: 'jwk' }), encryptionPublicJwk: key.publicKey.export({ format: 'jwk' }) }; }
 
-async function fixture(t, { installed = true, grant = true, role = 'viewer', metadata = true } = {}) {
+async function fixture(t, { installed = true, grant = true, role = 'viewer', metadata = true, standard = false } = {}) {
+  const selectedScope = standard ? { ...scope, sourceProfile: STANDARD_SELECTED_SOURCE_V3,
+    resource: { ...scope.resource, selection: { ...scope.resource.selection, kind: 'soty.resource.v1' } } } : scope;
   let connect, capabilities, personal, owner, credential, grantId, heldModel, heldNative;
-  const receipts = new Map(), modelBodies = [], nativeReads = [], state = { nativeAllowed: true, revision: 7, ready: true, closed: false, expiresAt: Date.now() + 300000, project: 'fixture_project' };
+  const receipts = new Map(), modelBodies = [], nativeReads = [], state = { nativeAllowed: true, title: 'Bounded selected project', revision: 7, ready: true, closed: false, expiresAt: Date.now() + 300000, project: 'fixture_project' };
   // Synthetic Native transport only. Signed Connect, Source credential/grant,
   // readonly coordinator, adapter, JSON, runtime, Notes and browser are actual.
   const current = (actor, selectedHandle) => {
@@ -35,18 +38,22 @@ async function fixture(t, { installed = true, grant = true, role = 'viewer', met
     withScopedContextSourceAuthority({ owner: actor, scope: selectedScope, handle: selectedHandle }, callback) {
       current(actor, selectedHandle); assert.equal(selectedScope.appId, appId); return callback({ ...scope, expiresAt: state.expiresAt });
     },
-    async callScopedContextSource({ scope: selectedScope, handle: selectedHandle, signal, withCurrentOwner }) {
-      assert.deepEqual(selectedScope, scope); withCurrentOwner(actor => current(actor, selectedHandle));
-      nativeReads.push('/api/embed/context');
+    async callScopedContextSource({ scope: requestedScope, handle: selectedHandle, signal, withCurrentOwner }) {
+      assert.deepEqual(requestedScope, selectedScope);
+      withCurrentOwner(actor => current(actor, selectedHandle));
+      nativeReads.push(standard ? '/api/embed/query' : '/api/embed/context');
       if (heldNative) { const hold = heldNative; heldNative = null; hold.entered.resolve(); await hold.release.promise; }
       withCurrentOwner(actor => current(actor, selectedHandle)); assert.equal(signal.aborted, false);
       if (!state.nativeAllowed) return { status: 403, data: { error: 'native_access_denied' } };
+      if (standard) return { status: 200, data: { ok: true, data: { schema: 'soty.current-context.v1',
+        selection: state.nativeSelection ?? { ...selectedScope.resource.selection, nativeId: state.project }, role,
+        ...(metadata ? { title: state.title, revision: state.revision } : {}) } } };
       return { status: 200, data: { schema: 'hive.selected-context.v1', version: 1, projectId: state.project,
         incarnationId: scope.resource.selection.incarnationId, ...(metadata ? { title: 'Bounded selected project', revision: state.revision } : {}),
         access: { role, canRead: true, canEdit: role === 'owner' }, account: { id: 'NATIVE_PRIVATE_ACCOUNT' }, privateExtra: 'NATIVE_PRIVATE_CONTENT' } };
     }
   };
-  const entries = captureExternalApplications([createCurrentContextSourceApplication(scope)]);
+  const entries = captureExternalApplications([createCurrentContextSourceApplication(selectedScope)]);
   const notes = createNotesService({ databasePath: ':memory:', projectId: 'soty' });
   capabilities = createCapabilitiesService({ databasePath: ':memory:', projectId: 'soty', documentation: [],
     actorActive: actor => connect.isActorActive(actor), catalog: entries.map(row => row.catalog),
@@ -160,5 +167,38 @@ test('closing the current selection during post-model Native verification denies
   const f = await fixture(t), model = f.holdModel(), pending = f.turn(), rejected = assert.rejects(pending);
   await model.entered.promise; const native = f.holdNative(); model.release.resolve();
   await native.entered.promise; f.state.closed = true; native.release.resolve(); await rejected;
+  assert.equal(f.modelBodies.length, 1); assert.equal((await f.notes()).length, 0); assert.equal(f.ui.view().answer, undefined);
+});
+
+test('standard3 uses the same signed agent/runtime projection without Native identifiers', async t => {
+  const f = await fixture(t, { standard: true, role: 'editor' }); await f.turn();
+  assert.equal(f.ui.view().phase, 'complete'); assert.equal(f.modelBodies.length, 2);
+  assert.deepEqual(f.nativeReads, ['/api/embed/query', '/api/embed/query', '/api/embed/query']);
+  assert.deepEqual(f.result().evidence[0].data, { title: 'Bounded selected project', role: 'editor', revision: 7 });
+  for (const value of [handle, 'fixture_project', 'fixture_incarnation', 'soty.current_context']) {
+    assert.equal(JSON.stringify(f.modelBodies).includes(value), false); assert.equal(JSON.stringify(f.result()).includes(value), false);
+  }
+});
+
+for (const [label, options, damage] of [
+  ['incomplete metadata', { metadata: false }, () => {}], ['missing installation', { installed: false }, () => {}],
+  ['missing grant', { grant: false }, () => {}], ['unready', {}, f => { f.state.ready = false; }],
+  ['expired', {}, f => { f.state.expiresAt = 0; }], ['closed', {}, f => { f.state.closed = true; }],
+  ['switched', {}, f => { f.state.project = 'other'; }],
+  ['wrong Native selection', {}, f => { f.state.nativeSelection = { ...scope.resource.selection, kind: 'soty.resource.v1', nativeId: 'other' }; }],
+  ['unsupported role', { role: 'admin' }, () => {}],
+]) test(`standard3 ${label} denies before model`, async t => {
+  const f = await fixture(t, { standard: true, ...options }); damage(f); await assert.rejects(f.turn());
+  assert.equal(f.modelBodies.length, 0); assert.equal((await f.notes()).length, 0);
+});
+
+for (const change of ['Native revoke', 'metadata revision', 'metadata title', 'close']) test(`standard3 ${change} during model denies its late result`, async t => {
+  const f = await fixture(t, { standard: true }), hold = f.holdModel(), pending = f.turn(), rejected = assert.rejects(pending);
+  await hold.entered.promise;
+  if (change === 'Native revoke') f.state.nativeAllowed = false;
+  else if (change === 'close') f.state.closed = true;
+  else if (change === 'metadata title') f.state.title = 'Different title';
+  else f.state.revision++;
+  hold.release.resolve(); await rejected;
   assert.equal(f.modelBodies.length, 1); assert.equal((await f.notes()).length, 0); assert.equal(f.ui.view().answer, undefined);
 });

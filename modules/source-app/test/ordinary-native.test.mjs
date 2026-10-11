@@ -33,6 +33,24 @@ async function fixture(t, { realm = 'board', beforeCommit, emptyGuest = false } 
     restart() { runtime.close(); store.close(); store = createOrdinaryAppStore({ ...options, initialize: false }); createRuntime(); } };
 }
 
+test('current context projects a bounded display title without changing Native data or its ACL', async t => {
+  const f = await fixture(t), proof = await f.legacy('participant');
+  const read = () => f.runtime.call(proof, 'read', { requestId: 'ordinary-context-title-0001', input: { operation: 'soty.current_context' } });
+  for (const [stored, display] of [
+    [' \nМой\tпроект\u007f ', 'Мой проект'],
+    [' \n' + 'A'.repeat(237) + '😀😀\n tail  ', 'A'.repeat(237) + '😀'],
+    ['\u0001\t', 'Моё приложение'],
+  ]) {
+    f.store.db.prepare('UPDATE native_resources SET title=? WHERE id=?').run(stored, 'selected');
+    const result = await read();
+    assert.equal(result.title, display); assert.ok(result.title.length <= 240 && result.title.isWellFormed());
+    assert.equal(result.role, 'editor'); assert.equal(result.revision, 1);
+    assert.equal(f.store.db.prepare('SELECT title FROM native_resources WHERE id=?').get('selected').title, stored);
+  }
+  f.store.revokeMembership('selected', 'native-participant');
+  await assert.rejects(read, error => error.code === 'ordinary_native_access_denied');
+});
+
 test('sealed token expiry stays separate from the shortened Source deadline; fresh expiry and revoke still deny', async t => {
   const f = await fixture(t), originalEnd = Date.now() + 300000, tokenEnd = originalEnd + 300000, sourceEnd = Date.now() + 120000;
   for (const legacy of [false, true]) {
