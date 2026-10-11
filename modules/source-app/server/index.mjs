@@ -8,3 +8,4 @@ export { SOURCE_FEEDBACK_LIMITS } from '../shared/feedback-wire.mjs';
 export { createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE } from '../../source-rp/server/index.mjs';
 export {createFeedbackProcessorEngine,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './feedback-job-contract.mjs';
 export {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
+export { createSqliteSourceStorage } from './sqlite-source-storage.mjs';
