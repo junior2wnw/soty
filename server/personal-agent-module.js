@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
-import { createGlmProvider } from '../modules/personal-agent/provider/index.mjs';
+import { createGlmProvider, providerFailureCode } from '../modules/personal-agent/provider/index.mjs';
 import { boundedPolicy, canonical, fields, freeze, identifier, string } from '../modules/personal-agent/provider/validation.mjs';
 import { agentError, agentErrorCode, isPersonalAgentTransport } from './personal-agent-transport.js';
 
@@ -121,7 +121,11 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
           policy: { ...modelPolicy, ...(options.maxTokens !== undefined ? { maxOutputTokens: Math.min(modelPolicy.maxOutputTokens, options.maxTokens) } : {}) } });
         let result;
         try { result = await activeProvider.complete({ requestId, messages, signal }); }
-        catch { assertCurrent(); throw agentError('agent_model_unknown'); }
+        catch (error) {
+          assertCurrent();
+          try { console.error(JSON.stringify({ schema: 'soty.personal-agent-provider-failure.v1', code: providerFailureCode(error) })); } catch {}
+          throw agentError('agent_model_unknown');
+        }
         finally { activeProvider.close(); activeProvider = null; }
         assertCurrent();
         const receipt = await bound.account(requestId, result, signal); assertCurrent(); turn.receipts.push(receipt);

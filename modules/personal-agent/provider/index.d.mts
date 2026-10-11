@@ -42,6 +42,7 @@ export type Accounting = Readonly<{
 export class ProviderError extends Error {
   readonly code: string; readonly accounting?: Accounting; constructor(code: string, accounting?: Accounting);
 }
+export function providerFailureCode(error: unknown): string;
 export function createGlmProvider(options: {
   transport(request: ProviderRequest): Response | Promise<Response>;
   policy?: Partial<ProviderPolicy>; tools?: readonly Tool[];

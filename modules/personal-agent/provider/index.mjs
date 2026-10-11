@@ -1,6 +1,7 @@
 import { GLM_MODEL, ProviderError, check, boundedPolicy, freeze, identifier } from './validation.mjs';
 import { capturedTools, captureRequest } from './request.mjs';
 import { createAssembler, createSseDecoder } from './assembler.mjs';
+import { types } from 'node:util';
 export { GLM_MODEL, ProviderError, HARD_LIMITS } from './validation.mjs';
 
 const SAFE_CODES = new Set(['provider_invalid_input', 'provider_invalid_json', 'provider_invalid_chunk', 'provider_output_limit',
@@ -11,6 +12,14 @@ const SAFE_CODES = new Set(['provider_invalid_input', 'provider_invalid_json', '
   'provider_finish_changed', 'provider_output_incomplete', 'provider_stream_incomplete', 'provider_empty_response',
   'provider_observer_failed', 'provider_event_limit', 'provider_event_count_limit', 'provider_invalid_stream', 'provider_stream_limit', 'provider_invalid_utf8',
   'provider_cancelled', 'provider_timeout', 'provider_closed', 'provider_transport_failed', 'provider_http_failed', 'provider_body_failed']);
+// A closed code projection only. Do not inspect raw error text, cause, accounting or getters.
+export function providerFailureCode(error) {
+  try {
+    if (types.isProxy(error) || !types.isNativeError(error) || Object.getPrototypeOf(error) !== ProviderError.prototype) return 'provider_transport_failed';
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+    return descriptor && Object.hasOwn(descriptor, 'value') && SAFE_CODES.has(descriptor.value) ? descriptor.value : 'provider_transport_failed';
+  } catch { return 'provider_transport_failed'; }
+}
 function safeResponseId(value) {
   if (value === null || value === undefined) return null;
   try {
@@ -85,8 +94,7 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
     work.then(() => active.delete(controller), () => active.delete(controller));
     try { return await Promise.race([work, aborted]); }
     catch (error) {
-      const code = error instanceof ProviderError && SAFE_CODES.has(error.code) ? error.code : 'provider_transport_failed';
-      throw new ProviderError(code, accounting());
+      throw new ProviderError(providerFailureCode(error), accounting());
     } finally { clearTimeout(timer); signal.removeEventListener('abort', abortListener); }
   }
   function close() { if (!closed) { closed = true; for (const controller of active) controller.abort('closed'); } }
