@@ -121,6 +121,29 @@ test('signed apps directory unions current grants and explicit public listing; u
   await assert.rejects(f.field(f.member, 'apps.directory.search', { expectedAccountId: f.owner.account.accountId }), code('authentication_required'));
 });
 
+test('ordinary field cards use an enabled named entry while explicit legacy and retired entries stay exact', { timeout: 20000 }, async t => {
+  const f = await environment(t), app = await f.create('Общий вход', { accountIds: [f.member.account.accountId] });
+  const legacy = (await f.field(f.owner, 'apps.directory.search', { scope: 'mine' })).apps.find(item => item.id === app.id).entry;
+  const before = await f.call(f.owner, 'apps.inspect', { appId: app.id });
+  await f.call(f.owner, 'apps.domains.claim', { appId: app.id, slug: 'inactive-first', requestId: 'inactive_named', expectedDomainsRevision: before.addresses.revision });
+  assert.deepEqual((await f.field(f.owner, 'apps.directory.resolve', { appIds: [app.id] })).items[0].app.entry, legacy);
+  const named = await f.publish(app.id, false);
+  for (const actor of [f.owner, f.member]) {
+    const mine = (await f.field(actor, 'apps.directory.search', { scope: 'mine' })).apps.find(item => item.id === app.id);
+    assert.equal(mine.entry.domainId, named);
+    const resolved = (await f.field(actor, 'apps.directory.resolve', { appIds: [app.id] })).items[0];
+    assert.equal(resolved.available, true); assert.deepEqual(resolved.app.entry, mine.entry);
+  }
+  assert.equal((await f.field(f.outsider, 'apps.directory.search')).apps.some(item => item.id === app.id), false);
+  const explicit = await f.call(f.owner, 'apps.entry.get', { appId: app.id, domainId: legacy.domainId, path: '/?draft=kept' });
+  assert.equal(explicit.entry.domainId, legacy.domainId); assert.equal(explicit.entry.origin, legacy.origin); assert.equal(explicit.entry.path, '/?draft=kept');
+  const current = await f.call(f.owner, 'apps.inspect', { appId: app.id });
+  await f.call(f.owner, 'apps.domains.retire', { appId: app.id, domainId: named, expectedDomainsRevision: current.addresses.revision, requestId: 'retire_named_entry' });
+  const fallback = (await f.field(f.owner, 'apps.directory.resolve', { appIds: [app.id] })).items[0].app.entry;
+  assert.deepEqual(fallback, legacy);
+  await assert.rejects(f.call(f.owner, 'apps.entry.get', { appId: app.id, domainId: named }), code('app_unavailable'));
+});
+
 test('signed directory cursors preserve keyset pagination while names change and reject account/scope switching', { timeout: 20000 }, async t => {
   const f = await environment(t);
   const records = [];

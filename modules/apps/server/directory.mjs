@@ -35,7 +35,16 @@ export function createAppDirectory({ db, assertActor, withAuthorityFence, active
     const granted = canUse(actor, app);
     let entry, access;
     if (visibility !== 'public' && granted) {
-      entry = resolveEntry({ actor, appId: app.id });
+      // A field card names the application, not a saved deep link. Prefer its
+      // enabled named address, as the owner's Apps list already does. Explicit
+      // bookmarks continue to resolve their original domain without fallback.
+      const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
+        JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
+        JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+        WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
+        ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
+      if (address) entry = resolveEntry({ actor, appId: app.id, domainId: address.id });
+      entry ??= resolveEntry({ actor, appId: app.id });
       if (entry) access = own ? 'owner' : 'granted';
     }
     if (!entry && visibility !== 'mine') {
