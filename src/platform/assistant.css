@@ -36,6 +36,7 @@
 .sw-assistant-question { background: var(--sw-surface-hover); border-radius: 14px; padding: 15px 18px; }
 .sw-assistant-question p { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; }
 .sw-assistant-answer pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 14px; max-height: 60dvh; overflow: auto; }
+.sw-assistant-answer > p:not(.sw-muted) { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
 .sw-assistant-answer-notes { flex-wrap: wrap; gap: 8px; }
 .sw-assistant-sources { min-width: 0; margin-top: 10px; border-top: 1px solid var(--sw-line); }
 .sw-assistant-sources summary { min-height: 44px; align-content: center; width: fit-content; max-width: 100%; cursor: pointer; color: var(--sw-muted); font-size: 13px; }

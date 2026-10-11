@@ -6,6 +6,7 @@ import { createAssistantState, type AssistantTarget } from './assistant-state.mj
 import { deviceKey as keyOf, resolveDeviceKey } from './device-key.mjs';
 import { createPersonalAgentConversation } from './personal-agent-client';
 import { createAssistantAnswerNote } from './assistant-answer-note';
+import { copyVisibleText } from './copy-visible-text';
 import { createDraftStore } from '../../modules/notes/browser/state.mjs';
 import './assistant.css';
 
@@ -208,6 +209,12 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
         const note = answerNote ??= createAssistantAnswerNote({ accountId, answer: state.answer, api: { request },
           store: createDraftStore(accountId, 'soty'), isCurrent: current });
         const noteActions = el('div', 'sw-row sw-assistant-answer-notes'), noteStatus = el('p', 'sw-muted'); noteStatus.setAttribute('role', 'status');
+        const copyStatus = el('p', 'sw-muted'); copyStatus.setAttribute('role', 'status');
+        const copyAnswer = button('Скопировать ответ', 'copy', 'sw-button-quiet', () => {
+          void copyVisibleText({ text: state.answer!, write: navigator.clipboard ? value => navigator.clipboard.writeText(value) : undefined,
+            isCurrent: () => !disposed && mountCurrent() && response.isConnected && mode === 'personal' && conversation().view().answer === state.answer,
+            onStatus: message => { copyStatus.textContent = message; }, success: 'Ответ скопирован.', failure: 'Не удалось скопировать. Выделите текст ответа.' });
+        });
         const saveNote = button('Сохранить в Записки', 'note', 'sw-button-quiet', () => {
           const saving = note.save(); renderNote();
           void saving.catch(() => {}).finally(() => { if (!disposed && response.isConnected) renderNote(); });
@@ -227,7 +234,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
             : saved.phase === 'local-error' ? 'Не удалось сохранить черновик на устройстве. Ответ остаётся здесь; попробуйте ещё раз.'
               : saved.phase === 'unavailable' ? 'Не удалось проверить аккаунт. Ответ остаётся здесь; попробуйте ещё раз.' : '';
         }
-        renderNote(); noteActions.append(saveNote, openNote); response.append(noteActions, noteStatus);
+        renderNote(); noteActions.append(copyAnswer, saveNote, openNote); response.append(noteActions, copyStatus, noteStatus);
         if (state.sources.length) {
           const disclosure = el('details', 'sw-assistant-sources');
           disclosure.append(el('summary', '', `Источники (${state.sources.length})`));

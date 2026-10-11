@@ -7,6 +7,7 @@ const cellsPath = cellIcon.cells.map(cell => `<polygon points="${hexPolygonPoint
 const paths: Record<string, string> = {
   app: '<path d="m12 2 9 5v10l-9 5-9-5V7ZM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/>',
   note: '<path d="M5 3h14v18H5ZM8 7h8M8 11h8M8 15h5"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
   brush: '<path d="m14 3 7 7-9 9-6-6ZM14 3l-3 3M21 10l-3 3M6 13c-4 1-1 5-4 8 5 1 9-1 10-2"/>',
   chess: '<path d="M5 21h14M6 18h12l-1-6 2-3-3-6-5-2 1 4-6 5 1 3 4-1-2 6M15 7h.01"/>',
   bars: '<path d="M5 10v10M12 4v16M19 7v13"/>',
