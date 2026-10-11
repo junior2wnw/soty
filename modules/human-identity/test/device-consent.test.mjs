@@ -100,6 +100,7 @@ test('consent admission off reads Human3, preserves normal24h, and makes continu
 });
 
 test('host family limits admit nine independently registered RPs without changing finite TTLs or grants', { timeout: 30000 }, async t => {
+  clock(t);
   let denial;
   const f = await environment(t, { rpsCount: 9, serviceDecorator: service => ({ ...service, sdk: { ...service.sdk, upsert(input) {
     try { return service.sdk.upsert(input); } catch (error) { if (input.model === 'Grant') denial = error.code; throw error; }
