@@ -56,6 +56,22 @@ test('v2 eligibility and operational admission off are measured without changing
   }
 });
 
+test('remembered-consent readiness measures only admission and client eligibility; normal-login pins remain exact', () => {
+  const config = { ...options(), renewal: { admissionEnabled: true, clientIds: ['app.alpha'] } };
+  const normal = capture(profile(config));
+  const on = capture(profile({ ...config, deviceConsent: { admissionEnabled: true, clientIds: ['app.alpha'] } }));
+  const off = capture(profile({ ...config, deviceConsent: { admissionEnabled: false, clientIds: ['app.alpha'] } }));
+  assert.deepEqual({ ...on.human, deviceConsent: undefined }, { ...normal.human, deviceConsent: undefined });
+  assert.equal(on.human.deviceConsent.admissionEnabled, true); assert.equal(off.human.deviceConsent.admissionEnabled, false);
+  assert.equal(on.human.deviceConsent.eligibleClientCount, 1);
+  assert.deepEqual({ ...on.human.deviceConsent, admissionEnabled: false }, off.human.deviceConsent);
+  assert.equal(Object.isFrozen(on.human.deviceConsent), true);
+  for (const secret of [config.clients[0].clientSecret, config.cookieKeys[0], privateJwk.d, config.artifactKeyId])
+    assert.equal(JSON.stringify(on).includes(secret), false);
+  for (const deviceConsent of [{ ...on.human.deviceConsent, consentHash: 'private' }, { ...on.human.deviceConsent, eligibleClientCount: 2 }])
+    assert.throws(() => validateUniversalPreparedness({ ...on, human: { ...on.human, deviceConsent } }));
+});
+
 test('actual reviews service produces immutable scoped host measurement without exposing bindings or following input mutation', () => {
   const providerRef = { id: 'reviews:povedai', version: 1, digest: '1'.repeat(64) }, subjectRef = { id: 'subject:alpha', version: 1, digest: '2'.repeat(64) };
   const configuration = { providers: [{ ...providerRef, origin: 'https://reviews.fixture.invalid' }], bindings: [{

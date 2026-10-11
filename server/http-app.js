@@ -28,6 +28,7 @@ import { createReviewsService } from '../modules/reviews/server/index.mjs';
 import { createManagedRootReviews } from '../modules/reviews/server/managed-root.mjs';
 import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
 import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
+import { validateHumanIdentityRenewalLimits } from './universal-configuration.js';
 import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispatch.mjs';
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
@@ -61,10 +62,12 @@ export function createHttpApp(distDir, options = {}) {
   }
 }
 
-function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
+function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice } = {}, nativeSources) {
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
+  if (typeof humanIdentityDeviceConsentMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
+  humanIdentityRenewalLimits = validateHumanIdentityRenewalLimits(humanIdentityRenewalLimits);
   if(typeof allowScopedEmbedMigration!=='boolean'||typeof allowSelectedResourceMigration!=='boolean'||typeof scopedEmbedRegistryConfigured!=='boolean'||!Array.isArray(scopedEmbedProfiles)||scopedEmbedProfiles.length>64)throw new AccessError('universal_configuration_invalid');
   const universalEnabled = universalAppsEnabled && !forcedLegacyMode;
   allowScopedEmbedMigration = universalEnabled && allowScopedEmbedMigration;
@@ -229,7 +232,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       profile: humanProfile, actorActive: actor => connect?.isActorActive(actor) === true,
       withAuthorityFence: action => connect.withAuthorityFence(action),
       withSubjectAuthorityFence: (actor, action) => connect.withActorAuthorityFence(actor, action),
-      readProfile: () => ({}), allowRenewalMigration: humanIdentityRenewalMigration });
+      readProfile: () => ({}), allowRenewalMigration: humanIdentityRenewalMigration,
+      allowDeviceConsentMigration: humanIdentityDeviceConsentMigration, renewalLimits: humanIdentityRenewalLimits });
   }
   catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;

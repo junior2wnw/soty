@@ -11,6 +11,7 @@ import { createHumanIdentityHostProfile } from '../../modules/human-identity/pro
 import { selectedClientRedirect } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
 import { loadPersonalAgentConfiguration } from '../../server/personal-agent-configuration.js';
+import { validateHumanIdentityRenewalLimits } from '../../server/universal-configuration.js';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
   captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
@@ -25,7 +26,8 @@ const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
   operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
   personalAgent: 'SOTY_PERSONAL_AGENT_ENABLED', personalAgentFile: 'SOTY_PERSONAL_AGENT_CONFIG_FILE',
-  selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION', selectedResourceMigration: 'SOTY_SELECTED_RESOURCE_MIGRATION' });
+  selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION', selectedResourceMigration: 'SOTY_SELECTED_RESOURCE_MIGRATION',
+  humanDeviceConsentMigration: 'SOTY_HUMAN_DEVICE_CONSENT_MIGRATION' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
 const fail = (code = 'universal_policy_invalid') => { throw new SafeError(code); };
 const check = (value, code) => { if (!value) fail(code); };
@@ -198,12 +200,14 @@ function humanPreparation(profile) {
   return captureHumanPreparedness(profile);
 }
 function validateHuman(value, issuer, context) {
-  closed(value, ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'], ['renewal']);
+  closed(value, ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'], ['renewal', 'deviceConsent', 'renewalLimits']);
   check(typeof value.artifactKey === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.artifactKey), 'universal_policy_human_invalid');
   const artifactKey = Buffer.from(value.artifactKey, 'base64url');
   try {
     check(artifactKey.length === 32 && artifactKey.toString('base64url') === value.artifactKey, 'universal_policy_human_invalid');
-    const profile = createHumanIdentityHostProfile({ enabled: true, issuer, registryId: 'soty', environmentId: 'production', ...value, artifactKey }, context);
+    const { renewalLimits, ...profileValue } = value;
+    validateHumanIdentityRenewalLimits(renewalLimits);
+    const profile = createHumanIdentityHostProfile({ enabled: true, issuer, registryId: 'soty', environmentId: 'production', ...profileValue, artifactKey }, context);
     check(profile.secure && profile.publicClients.every(client => client.redirectUri.startsWith('https:')), 'universal_policy_human_invalid');
     return humanPreparation(profile);
   } catch { fail('universal_policy_human_invalid'); } finally { artifactKey.fill(0); }
@@ -233,7 +237,8 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
     context = await filesystemContext(options);
     let human = { configured: false }, reviews = validateReviews({ providers: [], bindings: [] });
     if (plan.human !== null) {
-      closed(plan.human, ['issuer', 'source']); exactPath(plan.human.source);
+      closed(plan.human, ['issuer', 'source'], ['deviceConsentMigrationConfigured']); exactPath(plan.human.source);
+      check(plan.human.deviceConsentMigrationConfigured === undefined || typeof plan.human.deviceConsentMigrationConfigured === 'boolean');
       check(typeof plan.human.issuer === 'string' && plan.human.issuer.length <= 1024);
       const file = await readBounded(plan.human.source, 'private', context); file.target = humanPrivateTarget; files.push(file);
       human = validateHuman(parse(file.bytes), plan.human.issuer, context);
@@ -287,6 +292,8 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       { name: settings.personalAgent, value: personalAgent ? '1' : '0' },
       ...(personalAgent ? [{ name: settings.personalAgentFile, value: personalAgentPrivateTarget }] : []),
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
+      ...(plan.human?.deviceConsentMigrationConfigured !== undefined ? [{ name: settings.humanDeviceConsentMigration,
+        value: plan.human.deviceConsentMigrationConfigured ? '1' : '0' }] : []),
       ...(plan.reviews ? [{ name: settings.reviews, value: reviewsTarget }] : []),
       ...(selected ? [{ name: settings.selected, value: selectedTarget },
         { name: settings.selectedMigration, value: selected.migrationConfigured ? '1' : '0' },
@@ -441,10 +448,14 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');
     check(candidateImage.Config.Labels[universalModeLabel] === (receipt.phase === 'legacy-baseline' ? '1' : '0'), 'universal_policy_image_mode_mismatch');
     if (receipt.human.renewal) check(candidate.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
+    const needsDeviceConsentReader = Boolean(receipt.human.deviceConsent || receipt.environment.some(value =>
+      value.name === settings.humanDeviceConsentMigration && value.value === '1'));
+    if (needsDeviceConsentReader) check(candidate.humanIdentity.includes(3), 'universal_policy_reader_baseline_required');
     if (receipt.phase === 'features') check(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version === 5
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === '1', 'universal_policy_reader_baseline_required');
     if (receipt.phase === 'features' && receipt.human.renewal) check(original.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
+    if (receipt.phase === 'features' && needsDeviceConsentReader) check(original.humanIdentity.includes(3), 'universal_policy_reader_baseline_required');
     if (receipt.selected) {
       const version = Object.hasOwn(receipt.selected, 'resourceMigrationConfigured') ? 8 : 7;
       check(candidate.apps.includes(version) && (receipt.phase !== 'features' || original.apps.includes(version)), 'universal_policy_reader_baseline_required');

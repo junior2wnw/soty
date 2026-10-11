@@ -26,9 +26,9 @@ function issuer(value) {
     && (url.protocol === 'https:' || url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)));
 }
 function humanWire(value) {
-  record(value, ['configured'], ['issuer', 'profile', 'protocolDigest', 'clientsDigest', 'clientCount', 'signingPublicKeysDigest', 'renewal']);
+  record(value, ['configured'], ['issuer', 'profile', 'protocolDigest', 'clientsDigest', 'clientCount', 'signingPublicKeysDigest', 'renewal', 'deviceConsent']);
   if (value.configured === false) { record(value, ['configured']); return { configured: false }; }
-  record(value, ['configured', 'issuer', 'profile', 'protocolDigest', 'clientsDigest', 'clientCount', 'signingPublicKeysDigest'], ['renewal']);
+  record(value, ['configured', 'issuer', 'profile', 'protocolDigest', 'clientsDigest', 'clientCount', 'signingPublicKeysDigest'], ['renewal', 'deviceConsent']);
   check(value.configured === true && value.profile === HUMAN_IDENTITY_PROFILE && hex(value.protocolDigest) && hex(value.clientsDigest)
     && hex(value.signingPublicKeysDigest) && number(value.clientCount, 64) && value.clientCount >= 1); issuer(value.issuer);
   const result = Object.fromEntries(['configured', 'issuer', 'profile', 'protocolDigest', 'clientsDigest', 'clientCount', 'signingPublicKeysDigest'].map(key => [key, value[key]]));
@@ -38,6 +38,12 @@ function humanWire(value) {
       && value.renewal.maximumSessionSeconds === HUMAN_RENEWAL_LIMITS.sessionSeconds && hex(value.renewal.eligibleClientsDigest)
       && number(value.renewal.eligibleClientCount, value.clientCount));
     result.renewal = { ...value.renewal };
+  }
+  if (value.deviceConsent !== undefined) {
+    record(value.deviceConsent, ['admissionEnabled', 'eligibleClientsDigest', 'eligibleClientCount']);
+    check(result.renewal && typeof value.deviceConsent.admissionEnabled === 'boolean' && hex(value.deviceConsent.eligibleClientsDigest)
+      && number(value.deviceConsent.eligibleClientCount, result.renewal.eligibleClientCount));
+    result.deviceConsent = { ...value.deviceConsent };
   }
   return result;
 }
@@ -104,6 +110,13 @@ export function captureHumanPreparedness(profile) {
       const eligible = clients.filter(client => { const allowed = profile.renewalAllowed(client.id); check(typeof allowed === 'boolean'); return allowed; }).map(client => client.id).sort();
       result.renewal = { profile: HUMAN_RENEWAL_PROFILE, admissionEnabled: profile.renewalAdmissionEnabled,
         maximumSessionSeconds: HUMAN_RENEWAL_LIMITS.sessionSeconds, eligibleClientsDigest: hash(eligible), eligibleClientCount: eligible.length };
+    }
+    if (profile.deviceConsentAdmissionEnabled !== undefined) {
+      check(typeof profile.deviceConsentAdmissionEnabled === 'boolean' && typeof profile.deviceConsentAllowed === 'function'
+        && profile.deviceConsentAllowed.constructor?.name !== 'AsyncFunction');
+      const eligible = clients.filter(client => { const allowed = profile.deviceConsentAllowed(client.id); check(typeof allowed === 'boolean'); return allowed; }).map(client => client.id).sort();
+      result.deviceConsent = { admissionEnabled: profile.deviceConsentAdmissionEnabled,
+        eligibleClientsDigest: hash(eligible), eligibleClientCount: eligible.length };
     }
     return freezeDeep(humanWire(result));
   } catch { throw new UniversalPreparednessError(); }

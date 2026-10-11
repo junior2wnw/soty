@@ -76,6 +76,42 @@ function runtime(f, app, profile) {
     reviewsConfiguration: f.reviews });
 }
 
+test('remembered consent requires an actual reader3 fallback and explicit host migration before starting', async t => {
+  const f = await fixture(t);
+  f.human.renewal = { admissionEnabled: true, clientIds: [f.human.clients[0].id] };
+  f.human.deviceConsent = { admissionEnabled: true, clientIds: [f.human.clients[0].id] };
+  f.human.renewalLimits = { activeFamilies: 256, familiesPerAccount: 64 };
+  await writeFile(f.humanSource, JSON.stringify(f.human), { mode: 0o600 });
+  const plan = { ...f.plan, human: { ...f.plan.human, deviceConsentMigrationConfigured: true } };
+  const handle = await prepared(t, f, plan), receipt = publicUniversalPolicy(handle);
+  assert.equal(receipt.human.deviceConsent.admissionEnabled, true);
+  assert.equal(receipt.human.deviceConsent.eligibleClientCount, 1);
+  assert.equal(Object.hasOwn(receipt.human, 'renewalLimits'), false);
+  assert.equal(receipt.environment.find(value => value.name === 'SOTY_HUMAN_DEVICE_CONSENT_MIGRATION').value, '1');
+  const v2 = JSON.parse(currentStorageReaders); v2.readers.humanIdentity = [1, 2];
+  for (const side of ['candidate', 'original']) assert.throws(() => assertUniversalImagePrerequisites(handle, {
+    candidateImage: image('0', side === 'candidate' ? JSON.stringify(v2) : currentStorageReaders),
+    originalImage: image('1', side === 'original' ? JSON.stringify(v2) : currentStorageReaders, 'b'),
+  }), failCode('universal_policy_reader_baseline_required'));
+  assert.equal(assertUniversalImagePrerequisites(handle, { candidateImage: image('0'), originalImage: image('1', currentStorageReaders, 'b') }).phase, 'features');
+  const loaded = loadUniversalConfiguration({ SOTY_HUMAN_IDENTITY_ENABLED: '1', SOTY_HUMAN_IDENTITY_ISSUER: issuer,
+    SOTY_HUMAN_IDENTITY_KEYS_FILE: f.humanSource, SOTY_HUMAN_DEVICE_CONSENT_MIGRATION: '1' });
+  const profile = createHumanIdentityHostProfile(loaded.humanIdentity, { shellOrigins: [origin] });
+  assert.deepEqual(captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: profile, humanHttpEnabled: true, reviewsConfiguration: f.reviews }).human, receipt.human);
+  for (const secret of [f.human.artifactKey, f.human.cookieKeys[0], f.human.clients[0].clientSecret, secretKey.d])
+    assert.equal(JSON.stringify(receipt).includes(secret), false);
+  await assertUniversalPolicyCurrent(handle);
+  delete f.human.deviceConsent;
+  await writeFile(f.humanSource, JSON.stringify(f.human), { mode: 0o600 });
+  const migrationOnly = await prepared(t, f, plan);
+  assert.equal(publicUniversalPolicy(migrationOnly).human.deviceConsent, undefined);
+  for (const side of ['candidate', 'original']) assert.throws(() => assertUniversalImagePrerequisites(migrationOnly, {
+    candidateImage: image('0', side === 'candidate' ? JSON.stringify(v2) : currentStorageReaders),
+    originalImage: image('1', side === 'original' ? JSON.stringify(v2) : currentStorageReaders, 'b'),
+  }), failCode('universal_policy_reader_baseline_required'));
+});
+
 test('approved private/public files produce only nonsecret receipt; opaque handle cannot be reconstructed', async t => {
   const f = await fixture(t), handle = await prepared(t, f), receipt = publicUniversalPolicy(handle);
   assert.equal(receipt.human.configured, true); assert.equal(receipt.human.clientCount, 1); assert.equal(receipt.reviews.bindingCount, 1);

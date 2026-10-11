@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join, dirname, resolve, basename } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadUniversalConfiguration } from '../universal-configuration.js';
+import { loadUniversalConfiguration, validateHumanIdentityRenewalLimits } from '../universal-configuration.js';
 const issuer = 'https://soty.fixture.invalid/human-identity';
 const fails = error => error.code === 'universal_configuration_invalid' && error.message === 'universal_configuration_invalid' && !error.cause;
 function fixture(t) {
@@ -40,4 +40,28 @@ test('malformed files and hidden configuration fields fail with one safe error',
   assert.throws(() => loadUniversalConfiguration({ ...env, SOTY_HUMAN_IDENTITY_KEYS_FILE: 'relative.json' }), fails);
   writeFileSync(filename, JSON.stringify({ providers: [], bindings: [] }));
   assert.deepEqual(loadUniversalConfiguration({ SOTY_REVIEWS_BINDINGS_FILE: filename }), { reviewsConfiguration: { providers: [], bindings: [] } });
+});
+
+test('remembered device consent and capacity are separate trusted host options; migration remains explicit', t => {
+  const filename = fixture(t), env = { SOTY_HUMAN_IDENTITY_ENABLED: '1', SOTY_HUMAN_IDENTITY_ISSUER: issuer, SOTY_HUMAN_IDENTITY_KEYS_FILE: filename };
+  const configuration = { clients: [], jwks: { keys: [] }, cookieKeys: [], artifactKey: randomBytes(32).toString('base64url'), artifactKeyId: 'fixture',
+    renewal: { admissionEnabled: true, clientIds: [] }, deviceConsent: { admissionEnabled: true, clientIds: [] },
+    renewalLimits: { activeFamilies: 256, familiesPerAccount: 64 } };
+  writeFileSync(filename, JSON.stringify(configuration), { mode: 0o600 });
+  const loaded = loadUniversalConfiguration(env);
+  assert.deepEqual(loaded.humanIdentity.deviceConsent, configuration.deviceConsent);
+  assert.equal(Object.hasOwn(loaded.humanIdentity, 'renewalLimits'), false);
+  assert.deepEqual(loaded.humanIdentityRenewalLimits, configuration.renewalLimits);
+  assert.equal(Object.isFrozen(loaded.humanIdentityRenewalLimits), true);
+  assert.equal(loaded.humanIdentityDeviceConsentMigration, undefined);
+  assert.equal(loadUniversalConfiguration({ ...env, SOTY_HUMAN_DEVICE_CONSENT_MIGRATION: '1' }).humanIdentityDeviceConsentMigration, true);
+  for (const input of [{ ...env, SOTY_HUMAN_DEVICE_CONSENT_MIGRATION: 'true' }, { SOTY_HUMAN_DEVICE_CONSENT_MIGRATION: '1' }])
+    assert.throws(() => loadUniversalConfiguration(input), fails);
+  for (const renewalLimits of [{ activeFamilies: 4097, familiesPerAccount: 1 }, { activeFamilies: 2, familiesPerAccount: 3 },
+    { activeFamilies: 1, familiesPerAccount: 0 }, { activeFamilies: 1, familiesPerAccount: 1, clientId: 'untrusted' }]) {
+    writeFileSync(filename, JSON.stringify({ ...configuration, renewalLimits })); assert.throws(() => loadUniversalConfiguration(env), fails);
+  }
+  let called = false;
+  assert.throws(() => validateHumanIdentityRenewalLimits({ get activeFamilies() { called = true; return 256; }, familiesPerAccount: 64 }), fails);
+  assert.equal(called, false);
 });

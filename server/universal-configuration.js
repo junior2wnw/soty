@@ -6,6 +6,16 @@ import { forcedLegacyMode } from './universal-mode.js';
 const invalid = () => { throw Object.assign(new Error('universal_configuration_invalid'), { code: 'universal_configuration_invalid' }); };
 const check = value => { if (!value) invalid(); };
 const field = (env, name) => { const value = env[name]; check(value === undefined || typeof value === 'string'); return value ?? ''; };
+export function validateHumanIdentityRenewalLimits(value) {
+  if (value === undefined) return undefined;
+  check(value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value)));
+  const properties = Object.getOwnPropertyDescriptors(value);
+  check(Reflect.ownKeys(properties).length === 2 && ['activeFamilies', 'familiesPerAccount'].every(name => properties[name]?.enumerable && 'value' in properties[name]));
+  const activeFamilies = properties.activeFamilies.value, familiesPerAccount = properties.familiesPerAccount.value;
+  check(Number.isSafeInteger(activeFamilies) && activeFamilies >= 1 && activeFamilies <= 4096
+    && Number.isSafeInteger(familiesPerAccount) && familiesPerAccount >= 1 && familiesPerAccount <= activeFamilies);
+  return Object.freeze({ activeFamilies, familiesPerAccount });
+}
 function fileValue(filename, maximum) {
   check(path.isAbsolute(filename) && filename.length <= 4096 && !filename.includes('\0'));
   let fd;
@@ -23,11 +33,13 @@ function fileValue(filename, maximum) {
 }
 function humanSecrets(filename) {
   const value = fileValue(filename, 65536), names = ['clients', 'jwks', 'cookieKeys', 'artifactKey', 'artifactKeyId'];
-  check(names.every(name => Object.hasOwn(value, name)) && Object.keys(value).every(name => names.includes(name) || name === 'renewal'));
+  check(names.every(name => Object.hasOwn(value, name)) && Object.keys(value).every(name => names.includes(name) || ['renewal', 'deviceConsent', 'renewalLimits'].includes(name)));
   check(typeof value.artifactKey === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.artifactKey));
   const key = Buffer.from(value.artifactKey, 'base64url'); check(key.length === 32 && key.toString('base64url') === value.artifactKey);
-  return { clients: value.clients, jwks: value.jwks, cookieKeys: value.cookieKeys, artifactKey: key, artifactKeyId: value.artifactKeyId,
-    ...(Object.hasOwn(value, 'renewal') ? { renewal: value.renewal } : {}) };
+  return { profile: { clients: value.clients, jwks: value.jwks, cookieKeys: value.cookieKeys, artifactKey: key, artifactKeyId: value.artifactKeyId,
+    ...(Object.hasOwn(value, 'renewal') ? { renewal: value.renewal } : {}),
+    ...(Object.hasOwn(value, 'deviceConsent') ? { deviceConsent: value.deviceConsent } : {}) },
+    renewalLimits: validateHumanIdentityRenewalLimits(value.renewalLimits) };
 }
 
 /** Private process-entry inputs only. No environment enumeration, automatic
@@ -39,6 +51,9 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
     const flag = field(env, 'SOTY_HUMAN_IDENTITY_ENABLED'); check(['', '0', '1'].includes(flag));
     const issuer = field(env, 'SOTY_HUMAN_IDENTITY_ISSUER'), filename = field(env, 'SOTY_HUMAN_IDENTITY_KEYS_FILE');
     check(issuer.length <= 1024 && (flag !== '1' || issuer && filename) && (issuer || !filename));
+    const deviceConsentMigration = field(env, 'SOTY_HUMAN_DEVICE_CONSENT_MIGRATION');
+    check(['', '0', '1'].includes(deviceConsentMigration) && (deviceConsentMigration !== '1' || flag === '1'));
+    const human = flag === '1' ? humanSecrets(filename) : undefined;
     const reviews = field(env, 'SOTY_REVIEWS_BINDINGS_FILE');
     const selectedFile=field(env,'SOTY_SELECTED_EMBED_REGISTRY_FILE'),selectedMigration=field(env,'SOTY_SELECTED_EMBED_MIGRATION');
     const selectedResourceMigration=field(env,'SOTY_SELECTED_RESOURCE_MIGRATION');
@@ -49,7 +64,9 @@ export function loadUniversalConfiguration(env = process.env, { legacyMode = for
       &&Object.keys(selected).every(key=>['schema','profiles'].includes(key)));}
     return {
       ...(issuer ? { humanIdentity: { enabled: flag === '1', issuer, registryId: 'soty', environmentId: 'production',
-        ...(flag === '1' ? humanSecrets(filename) : {}) } } : {}),
+        ...(human ? human.profile : {}) } } : {}),
+      ...(human?.renewalLimits ? { humanIdentityRenewalLimits: human.renewalLimits } : {}),
+      ...(deviceConsentMigration === '1' ? { humanIdentityDeviceConsentMigration: true } : {}),
       ...(reviews ? { reviewsConfiguration: fileValue(reviews, 65536) } : {}),
       ...(selected?{scopedEmbedProfiles:selected.profiles,scopedEmbedRegistryConfigured:true}:{}),
       ...(selectedMigration==='1'?{allowScopedEmbedMigration:true}:{}),

@@ -358,6 +358,15 @@ const humanRenewalLayout = {
     human_identity_grant_bindings: universalLayouts.humanIdentity.projections.human_identity_grant_bindings + ',stay_in_app_seconds,session_expires_at',
   },
 };
+const humanDeviceConsentLayout = {
+  ...humanRenewalLayout, lineage: 'soty.human-identity.sqlite.v3', objects: 38,
+  digest: 'b3fa2360e7db5e44af0fb7f0716ecbb9c6e43793a9771574a73db30c01a3afb9',
+  projections: {
+    ...humanRenewalLayout.projections,
+    human_identity_decisions: humanRenewalLayout.projections.human_identity_decisions + ',consent_hash,consent_revision',
+    human_identity_device_consents: 'consent_hash,account_id,device_id,client_id,profile_digest,client_generation,redirect_uri,scopes,revision,created_at,updated_at,revoked_at,remembered_interaction_hash',
+  },
+};
 
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
@@ -675,8 +684,9 @@ async function readUniversalFormat(dataDir, kind) {
   if (!filename) return { format: 'empty', metadata: null };
   return inspectDatabase(filename, db => {
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version !== 1 && !(kind === 'humanIdentity' && version === 2)) fail('storage_format_unknown');
-    const layout = kind === 'humanIdentity' && version === 2 ? humanRenewalLayout : expected;
+    if (version !== 1 && !(kind === 'humanIdentity' && [2, 3].includes(version))) fail('storage_format_unknown');
+    const layout = kind === 'humanIdentity' && version === 3 ? humanDeviceConsentLayout
+      : kind === 'humanIdentity' && version === 2 ? humanRenewalLayout : expected;
     recognizeUniversalLayout(db, layout);
     return { format: version, metadata: universalMetadata(db, layout) };
   });
