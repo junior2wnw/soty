@@ -18,7 +18,7 @@ import './project-feedback-picker.css';
 import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
 import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
 import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
-import {createScopedSlotRenewal,attachScopedRenewalLoads,type ScopedRenewReply} from './app-scoped-renewal.mjs';
+import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
   presentation?: 'widget';
@@ -184,11 +184,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const readCapturePeer=():ProjectCapturePeer|null=>{
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source),frame=runtime.querySelector('iframe');
-    return current()&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
+    return current()&&!runtimePending&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
       ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
         appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
   };
   let renewalFrame:HTMLIFrameElement|null=null;
+  let lastRuntimeLaunchAt=0;
   const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:()=>{
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
   },readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
@@ -206,7 +207,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         finish(data.ready?'ready':data.unknown===true?'unknown':'login_required');};
       view.addEventListener('message',receive);controller.signal.addEventListener('abort',cancel,{once:true});
       const timeout=setTimeout(()=>finish('unknown'),12000);hidden.src=reply.url;screen.append(hidden);
-    });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;return true;},
+    });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;lastRuntimeLaunchAt=Date.now();return true;},
     onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.');
       else if(state==='login_required')showMessage('Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
       else if(state==='ready')showMessage('');},
@@ -216,7 +217,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
     onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
-    async preparePeer(signal){if(signal.aborted||!current())return false;return options.renew?renewal.ensure(190000):true;},
+    async preparePeer(signal){if(signal.aborted||!current()||runtimePending)return false;
+      const ready=options.renew?await renewal.ensure(190000):true;return ready&&!signal.aborted&&current()&&!runtimePending;},
     async assertPeer(peer,signal){
       const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);
       if(signal.aborted||!current()||!binding||!source||peer.slot!==binding.slot)return false;
@@ -232,6 +234,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     recover: stillCurrent => launchRuntime(true, stillCurrent),
     onFailure: () => { if (current()) { showMessage('Не удалось восстановить вход. Откройте приложение заново.'); recoveryRetry.hidden = false; } },
   });
+  const detachRootWake=attachRootSsoWakeRecovery({view,signal:controller.signal,
+    current:()=>current()&&!runtimePending&&!projectCapture.isCapturing(),readBinding:()=>{
+      const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
+    },lastLaunchAt:()=>lastRuntimeLaunchAt,recover:()=>launchRuntime(true,()=>!projectCapture.isCapturing())});
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
     // was actually admitted. A named route always keeps its exact domain ID.
@@ -306,6 +312,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
       if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+options.nativeVoice.mount.frameOrigin+'; autoplay '+options.nativeVoice.mount.frameOrigin;
       frameGeneration++;
+      lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
       runtime.replaceChildren(frame);
     } catch (reason) {
@@ -404,6 +411,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

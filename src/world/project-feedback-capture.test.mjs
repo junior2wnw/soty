@@ -57,6 +57,16 @@ test('pre-picker preparation cannot retarget the source window/account even befo
   assert.equal((await f.deliver().next).code,'capture_context_changed');assert.equal(f.counts().captureCalls,0);
 });
 
+test('capture busy covers preparation, recording and disposal so a wake cannot replace the frame',async t=>{
+  let prepare,record,begun;const prepared=new Promise(done=>{prepare=done;}),recorded=new Promise(done=>{record=done;}),
+    started=new Promise(done=>{begun=done;});
+  const f=fixture(t,{async preparePeer(){await prepared;return true;},async capture(){begun();await recorded;return payload();}});
+  assert.equal(f.handle.isCapturing(),false);const reply=f.deliver();assert.equal(f.handle.isCapturing(),true);
+  prepare();await started;assert.equal(f.handle.isCapturing(),true);record();await reply.next;
+  assert.equal(f.handle.isCapturing(),false);const cancelled=f.deliver(request('second'));assert.equal(f.handle.isCapturing(),true);
+  f.handle.dispose();assert.equal(f.handle.isCapturing(),false);assert.equal((await cancelled.next).code,'capture_context_changed');
+});
+
 test('foreign window/origin/source/profile and actor/slot fields are denied before Root capture', async t => {
   const f = fixture(t);
   f.deliver(request(), { source: {} }); f.deliver(request(), { origin: 'https://foreign.example' });

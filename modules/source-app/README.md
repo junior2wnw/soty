@@ -360,3 +360,38 @@ The final prerelease workspace v1 pin adds `context.instanceBinding` and is
 `c1d52ca7865dfebf6ff05ee12f37e6d9d14e95b78928a5dee8f7defa331ddd99`.
 The earlier capacity-only `5306895df6e3f8b1bd1e2117c2a76f8a343dd3da4f18b7f8cb9a015a455c6a1c`
 is rejected without an alias. Source1/2/3 pins are unchanged.
+
+### Root-authenticated workspace2
+
+`STANDARD_ROOT_WORKSPACE_SOURCE` is a separate explicit workspace@2 profile
+(`4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833`).
+Workspace@1 above remains the RP/OIDC profile. Workspace2 accepts no `rp` or
+`rpSessions` configuration and creates no OIDC interaction or refresh family.
+
+Every current-authority read additionally verifies Root RS256 JWS through the
+fixed issuer `/jwks`, using maintained JOSE from the existing openid-client
+dependency. The dedicated audience/type, original random Source challenge,
+full context digest and at-most-10-second expiry must match. Connector MAC is
+still required but cannot replace Root's signature. No caller-provided key URL
+or JWK is accepted. `readVerifiedRootContext(proof, profile.digest)` exposes
+only the original deep-frozen SDK-branded context while its witness is valid;
+a copied JSON object is never this private proof.
+
+Native implements `captureRoot(binding, verifiedRootContext)` and synchronous
+`commitRootSession(proof,binding)`. The latter runs inside the same transaction
+as `storage.createRootSession(record,finalNativeLink)`, returning the existing
+Native `{nativeSessionHash,principalId,resourceId}` tuple. Native owns identity
+linking, account creation, revocation, ACL and final checks. A replay must still
+run the final fence and return the original anchor. The shared SQLite helper
+then returns the original Source `idHash`; BFF rereads its sealed random
+`cookieToken` and checks its hash. This is not a browser account selector.
+
+Session-continue may acquire a short `rootWitness:true` session only under that
+fresh Root reference, account/device/app/profile/instance and Native predicate.
+Its deadline is at most Root expiry and 300 seconds. A different fresh Root
+reference acquires a new finite session; old rows/deadlines are not extended.
+`renewable:true` here means a new authenticated Root acquisition, not an RT
+family. Explicitly closed Root authority, revoked Source rows and foreign
+cookies do not revive. Native durable UI preferences remain separate from all
+session authority. This protocol alone does not promise automatic browser
+return after 24 hours or independent main tabs.

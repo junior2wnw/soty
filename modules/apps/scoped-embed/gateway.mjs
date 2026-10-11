@@ -2,12 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { createScopedEmbedAuthority } from './authority.mjs';
 import { capture, closed, hash, need, SCOPED_EMBED_LIMITS } from './profile.mjs';
 import {sourceContinuationAck} from './source-continuation.mjs';
+import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 
 const nonce = () => randomBytes(32).toString('base64url');
 const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
-export function createScopedGateway({ admissions, withAppAuthority, withHumanSubjectAuthority, clock = Date.now, onClose = () => {} }) {
+export function createScopedGateway({ admissions, withAppAuthority, withHumanSubjectAuthority, signSourceAuthority, clock = Date.now, onClose = () => {} }) {
   const authority = createScopedEmbedAuthority({ profiles: admissions.profiles(), withAppAuthority, withHumanSubjectAuthority, clock });
   const records = new Map(), handles = new Map(), closedHandles = new Map(), authStates = new Map(), completions = new Map(), attempts=new Map();
   function sweep() {
@@ -55,6 +56,20 @@ export function createScopedGateway({ admissions, withAppAuthority, withHumanSub
       const captured=capture(reference), record=records.get(captured.id);
       need(record && hash(captured)===hash(record.context.reference),'app_scoped_context_closed',403);
       return current(record,connector);
+    },
+    async readWitness(reference, connector, sourceChallenge) {
+      need(opaque(sourceChallenge), 'app_scoped_challenge_invalid', 403);
+      const captured = capture(reference), record = records.get(captured.id);
+      need(record && hash(captured) === hash(record.context.reference), 'app_scoped_context_closed', 403);
+      const context = current(record, connector);
+      need(isRootSignedWorkspaceSource(context.sourceProfile) && typeof signSourceAuthority === 'function',
+        'app_scoped_identity_witness_unavailable', 503);
+      // No SQL or private actor fence spans an await. A signature is not released
+      // unless the same original actor, Human generation and Apps slot survive.
+      const identityWitness = await signSourceAuthority({ context, sourceChallenge });
+      need(hash(current(record, connector)) === hash(context), 'app_scoped_context_changed', 403);
+      need(typeof identityWitness === 'string' && identityWitness.length <= 8192, 'app_scoped_identity_witness_invalid', 503);
+      return { context, identityWitness };
     },
     context(record) { return current(record); },
     sourceContext(record){current(record);const state=record.sourceSession;

@@ -6,6 +6,8 @@ const appId = `app-${'a'.repeat(32)}`, domainId = `dom_${'b'.repeat(32)}`;
 const shellUrl = 'https://soty.example/#mine';
 const boot = (token = 'A') => `https://demo.apps.example/_soty/boot?path=%2Freader%3Fpage%3D2#${token.repeat(43)}`;
 const target = Object.freeze({ appId, domainId, path: '/reader?page=2' });
+const scopedReply=()=>({url:boot(),runtimeProfile:'soty.selected-human-embed.v2',scopedCloseHandle:'C'.repeat(43),
+  scopedSource:{id:'soty.standard-workspace',version:2,digest:'4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833'}});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const popup = () => ({ opener: {}, closed: false, visits: [], location: { replace(url) { this.owner.visits.push(url); } }, close() { this.closed = true; } });
 function makePopup() { const value = popup(); value.location.owner = value; return value; }
@@ -19,6 +21,31 @@ function fixture(request) {
   });
   return { state, calls, launcher };
 }
+
+test('automatic scoped wake retains the approved Source and location without a relay binding',async()=>{
+  const f=fixture(async()=>scopedReply());await f.launcher.launch();const old=f.launcher.scopedCapture();
+  assert.equal(f.launcher.binding(),null);assert.equal(await f.launcher.launch({requireSameBinding:true}),boot());
+  assert.deepEqual(f.launcher.scopedCapture().source,old.source);assert.notEqual(f.launcher.scopedCapture().slot,old.slot);
+  assert.deepEqual(f.calls[1],f.calls[0]);f.launcher.dispose();
+});
+
+test('automatic wake denies a replaced Source pin or runtime and abandons only the new slot',async()=>{
+  for(const changed of [{scopedSource:{...scopedReply().scopedSource,digest:'f'.repeat(64)}},{runtimeProfile:'soty.selected-human-embed.v1'}]){
+    let calls=0,closed=0;const f=fixture(async()=>++calls===1?scopedReply():{...scopedReply(),...changed,scopedCleanup:async()=>{closed++;}});
+    await f.launcher.launch();const old=f.launcher.scopedCapture();
+    await assert.rejects(f.launcher.launch({requireSameBinding:true}),{code:'app_launch_source_changed'});
+    assert.equal(f.launcher.scopedCapture().slot,old.slot);assert.equal(closed,1);f.launcher.dispose();
+  }
+});
+
+test('a late wake reply cannot replace a newer scoped launch',async()=>{
+  const held=deferred();let calls=0,closed=0;
+  const f=fixture(async()=>++calls===2?held.promise:scopedReply());await f.launcher.launch();
+  const late=f.launcher.launch({requireSameBinding:true});await f.launcher.launch({requireSameBinding:true});
+  const current=f.launcher.scopedCapture();held.resolve({...scopedReply(),scopedCleanup:async()=>{closed++;}});
+  await assert.rejects(late,{code:'app_launch_source_changed'});assert.equal(f.launcher.scopedCapture().slot,current.slot);
+  assert.equal(closed,1);f.launcher.dispose();
+});
 
 test('named deep link round-trips its exact target, Unicode and query without treating them as return URLs', () => {
   const path = '/папка/файл?filter=a%2Fb&title=Привет%20мир&back=https%3A%2F%2Fother.example';

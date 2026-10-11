@@ -39,7 +39,7 @@ async function upstream(t, handler) {
   t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(done => server.close(done)); });
   return { port: server.address().port, seen, server };
 }
-async function fixture(t, { mode = 2, runtimeDeps = {}, blockedPorts = [], ready } = {}) {
+async function fixture(t, { mode = 2, runtimeDeps = {}, blockedPorts = [], ready, scopedFactory } = {}) {
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await once(wss, 'listening');
   const channelId = nonce(), frames = [], peers = []; let peer;
   wss.on('connection', socket => {
@@ -52,7 +52,7 @@ async function fixture(t, { mode = 2, runtimeDeps = {}, blockedPorts = [], ready
     });
   });
   const runtime = createLocalAppsRuntime({ ...deps, ...runtimeDeps }, { serverUrl: `http://127.0.0.1:${wss.address().port}`,
-    identity, token: 'synthetic-test-token', blockedPorts });
+    identity, token: 'synthetic-test-token', blockedPorts, scopedFactory });
   t.after(async () => { runtime.stop(); for (const socket of peers) socket.terminate(); await new Promise(done => wss.close(done)); });
   runtime.start();
   await until(() => frames.some(frame => frame.type === 'auth'));
@@ -411,4 +411,22 @@ test('standalone proposal probe keeps boolean API while fixing Unicode and fragm
   assert.equal(app.seen[0].url, '/%D1%81%D1%82%D1%80%D0%B0%D0%BD%D0%B8%D1%86%D0%B0?tag=%2B');
   assert.equal(await probeLocalApp(deps, { port: app.port, entryPath: '/_soty/session' }), false);
   assert.equal(app.seen.length, 1);
+});
+
+test('installed channel carries Source challenge unchanged, preserves legacy shape and discards closed-channel pending proof', async t => {
+  let read;
+  const f = await fixture(t, { scopedFactory: { profiles: [], connect(value) { read = value; }, disconnected() {} } });
+  const reference = { id: nonce(), version: 1, digest: 'a'.repeat(64) }, sourceChallenge = nonce(), context = { reference };
+  const pending = read({ reference, sourceChallenge });
+  const frame = await until(() => f.frames.find(value => value.type === 'scoped-authority-request'));
+  assert.equal(frame.sourceChallenge, sourceChallenge); assert.notEqual(frame.nonce, sourceChallenge);
+  f.control('scoped-authority-result', { nonce: frame.nonce, ok: true, context, identityWitness: 'synthetic-envelope' });
+  assert.deepEqual(await pending, { context, identityWitness: 'synthetic-envelope' });
+  const legacy = read({ reference });
+  const next = await until(() => f.frames.find(value => value.type === 'scoped-authority-request' && value.nonce !== frame.nonce));
+  assert.equal(Object.hasOwn(next, 'sourceChallenge'), false);
+  f.control('scoped-authority-result', { nonce: next.nonce, ok: true, context }); assert.deepEqual(await legacy, context);
+  assert.throws(() => read({ reference, sourceChallenge: 'caller-subject' }), { code: 'apps_bad_frame' });
+  const abandoned = read({ reference, sourceChallenge: nonce() }), denied = assert.rejects(abandoned, { code: 'apps_connector_offline' });
+  f.runtime.stop(); await denied;
 });

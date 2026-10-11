@@ -55,13 +55,23 @@ export const STANDARD_WORKSPACE_CONTRACT = deepFreeze({ ...STANDARD_SOURCE_CONTR
     readOperation: 'soty.current_context', uiOperation: 'soty.context.select', maxLeaseMs: 300000, slotCapacity: 'host-configured', instanceBinding: 'optional-root-account-device-app-profile-main-or-widget',
     receipt: 'soty.context-after.v1', projection: 'soty.workspace-receipt.v1', witness: 'soty.workspace-context-witness.v1' } });
 export const STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: 'soty.standard-workspace', version: 1, digest: digest(STANDARD_WORKSPACE_CONTRACT) });
-export const isWorkspaceSource = pin => pin?.id === STANDARD_WORKSPACE_SOURCE.id && pin.version === 1 && pin.digest === STANDARD_WORKSPACE_SOURCE.digest;
+/** Explicit opt-in: authenticated Root use, short Source sessions and Native ACL.
+ * Workspace1 keeps its original RP/OIDC/finite-family behavior. */
+export const STANDARD_ROOT_WORKSPACE_CONTRACT = deepFreeze({ ...STANDARD_WORKSPACE_CONTRACT,
+  auth: { schema: 'soty.root-workspace-auth.v1', cookies: ['soty_rp_session'], basicSeconds: 300,
+    proof: 'root-signed-current-context.v1', audience: 'urn:soty:source-authority',
+    witnessType: 'soty-source-authority+jwt', witnessMaxSeconds: 10,
+    session: 'fresh-reference-short-native-anchor', feedbackPermission: 'explicit-current-native-report' } });
+export const STANDARD_ROOT_WORKSPACE_SOURCE = deepFreeze({ id: 'soty.standard-workspace', version: 2, digest: digest(STANDARD_ROOT_WORKSPACE_CONTRACT) });
+export const isRootSignedWorkspaceSource = pin => pin?.id === STANDARD_ROOT_WORKSPACE_SOURCE.id && pin.version === 2 && pin.digest === STANDARD_ROOT_WORKSPACE_SOURCE.digest;
+export const isWorkspaceSource = pin => pin?.id === STANDARD_WORKSPACE_SOURCE.id && pin.version === 1 && pin.digest === STANDARD_WORKSPACE_SOURCE.digest || isRootSignedWorkspaceSource(pin);
 
 /** A constructor selects one compiled contract, never an author byte limit. */
 export function standardSourceContract(input = STANDARD_SELECTED_SOURCE) {
   const pin = fields(input, ['id', 'version', 'digest']);
   for (const [approved, contract] of [[STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT],
-    [STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2], [STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3], [STANDARD_WORKSPACE_SOURCE, STANDARD_WORKSPACE_CONTRACT]]) {
+    [STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2], [STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3], [STANDARD_WORKSPACE_SOURCE, STANDARD_WORKSPACE_CONTRACT],
+    [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_CONTRACT]]) {
     if (pin.id === approved.id && pin.version === approved.version && pin.digest === approved.digest) return contract;
   }
   check(false, 'source_app_profile_invalid', 503);

@@ -26,13 +26,14 @@ function html(text) { return String(text).replaceAll('&', '&amp;').replaceAll('<
  * Native domain hooks are mandatory. This module never stores Root credentials
  * or turns an OIDC identity into a Native permission on its own. */
 export function createSourceAppBff(options) {
-  const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native', 'rp'],
-    ['clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled', 'workspaceCapacity']);
+  const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native'],
+    ['rp', 'clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled', 'workspaceCapacity']);
   const profile = selectedResourceProfile(value.profile), clock = value.clock ?? Date.now;
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
   const INTENT = 'soty_native_intent_' + profile.appId.slice(4), CSRF = 'soty_native_csrf_' + profile.appId.slice(4);
   const contract = standardSourceContract(profile.sourceProfile);
+  const rootSigned = contract.auth.proof === 'root-signed-current-context.v1';
   const embedOidc = contract.auth.callbackOrigin === 'approved-embed-https';
   check(profile.resource.selection.kind === contract.kind, 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
@@ -42,11 +43,12 @@ export function createSourceAppBff(options) {
   check(Object.values(labels).every(label => typeof label === 'string' && label.isWellFormed() && label.trim().length > 0 && label.length <= 160
     && !/[\u0000-\u001f\u007f]/u.test(label)), 'source_app_configuration_invalid', 503);
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
-    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession', 'findRenewableSession']);
+    'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['createRootSession', 'rebindSession', 'findRenewableSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
   const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock, workspaceCapacity: value.workspaceCapacity });
-  const protocol = createSourceRpProtocol(value.rp, { clock });
-  check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
+  const protocol = rootSigned ? null : createSourceRpProtocol(value.rp, { clock });
+  if (rootSigned) check(value.rp === undefined && value.rpSessions === undefined && typeof store.createRootSession === 'function', 'source_app_profile_invalid', 503);
+  else check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
     && value.rp.redirectUri === (embedOidc ? profile.embedOrigin + '/api/embed/callback' : profile.nativeOrigin + '/soty/callback'), 'source_app_profile_invalid', 503);
   const verifier = createResourceSourceProofVerifier({ profile, key: value.transportKey, consumeNonce: store.consumeNonce, clock });
   const readAuthority = createSourceAuthorityClient({ profile, key: value.transportKey, connectorPort: value.connectorPort, clock });
@@ -66,7 +68,8 @@ export function createSourceAppBff(options) {
     } finally { open = false; }
   }
   async function postCommit(context, authority) {
-    try { await freshRoot(context); await native.assertCurrent(authority); await freshRoot(context); }
+    try { await freshRoot(context); await native.assertCurrent(authority); await freshRoot(context);
+      if (rootSigned) await native.assertCurrent(authority); }
     catch { throw new SourceAppError('source_app_effect_unknown', 503); }
   }
   async function freshRoot(context) {
@@ -81,7 +84,7 @@ export function createSourceAppBff(options) {
       ...(contract.kind === 'soty.workspace.v1' ? { rootReferenceDigest: digest(context.reference), rootExpiresAt: context.expiresAt, ...(context.instanceId === undefined ? {} : { instanceId: context.instanceId }) } : {}) });
   }
   async function proveSession(session, context, operation, hostOptions) {
-    await freshRoot(context);
+    const verified = await freshRoot(context);
     check(session && session.active === true && session.semanticDigest === semanticDigest && session.expiresAt > clock()
       && session.identity.issuer === profile.issuer && session.identity.subject === context.humanPrincipal.subject
       && digest(session.rootPrincipal) === digest(context.rootPrincipal), 'authentication_required', 401);
@@ -89,6 +92,13 @@ export function createSourceAppBff(options) {
     // Basic is bound to the original Root slot. It cannot silently become a
     // new-slot/resume authority merely because actor/resource strings match.
     if (!session.rpMarker) check(session.rootReferenceDigest === digest(context.reference), 'authentication_required', 401);
+    if (rootSigned) {
+      check(session.rootWitness === true && session.rpMarker === undefined && session.expiresAt <= context.expiresAt, 'authentication_required', 401);
+      const authority = await native.captureRoot(binding(context, session.identity, operation, session.idHash), verified);
+      await native.assertCurrent(authority); await freshRoot(context); await native.assertCurrent(authority);
+      return { session, authority, proof: { issuer: profile.issuer, sub: session.identity.subject,
+        expiresAt: session.expiresAt, sessionExpiresAt: session.expiresAt } };
+    }
     let proof;
     if (session.rpMarker) {
       check(value.rpSessions && typeof value.rpSessions.currentProof === 'function', 'source_app_long_session_not_ready', 503);
@@ -127,6 +137,37 @@ export function createSourceAppBff(options) {
     return proveSession(await store.readSession(digest(token)), context, operation, hostOptions);
   }
   async function continueSession(req, context) {
+    if (rootSigned) {
+      const token = cookie(req, COOKIE);
+      if (token) {
+        const previous = await store.readSession(digest(token));
+        // A removed short row is only a cache miss; every new acquisition still
+        // requires independent fresh Root authority and the final Native fence.
+        if (previous) {
+          check(previous.rootWitness === true && previous.active === true && previous.semanticDigest === semanticDigest
+            && previous.identity.issuer === profile.issuer && previous.identity.subject === context.humanPrincipal.subject
+            && digest(previous.rootPrincipal) === digest(context.rootPrincipal) && previous.instanceId === context.instanceId,
+            'authentication_required', 401);
+          if (previous.rootReferenceDigest === digest(context.reference)) return proveSession(previous, context, 'continue');
+        }
+        // A fresh verified Root reference may acquire a NEW short session.
+        // The old deadline, revocation state and row are never extended.
+      }
+      const verified = await freshRoot(context), sessionToken = nonce();
+      const identity = { issuer: profile.issuer, subject: context.humanPrincipal.subject };
+      const record = deepFreeze({ idHash: digest(sessionToken), cookieToken: sessionToken, rootWitness: true,
+        identity, rootPrincipal: context.rootPrincipal, rootReferenceDigest: digest(context.reference), semanticDigest,
+        ...(context.instanceId === undefined ? {} : { instanceId: context.instanceId }), active: true,
+        createdAt: clock(), expiresAt: Math.min(context.expiresAt, clock() + 300000) });
+      const authority = await native.captureRoot(binding(context, identity, 'root-session', record.idHash), verified);
+      await native.assertCurrent(authority); await freshRoot(context);
+      const result = await storageCommit(store.createRootSession, [record], () => native.commitRootSession(authority));
+      fields(result, ['idHash']); check(typeof result.idHash === 'string' && /^[a-f0-9]{64}$/u.test(result.idHash), 'source_app_commit_unknown', 503);
+      await postCommit(context, authority);
+      const session = await store.readSession(result.idHash);
+      check(session?.idHash === result.idHash && opaque(session.cookieToken) && digest(session.cookieToken) === result.idHash, 'source_app_commit_unknown', 503);
+      return { ...await proveSession(session, context, 'continue'), resumedCookie: session.cookieToken };
+    }
     const hostOptions = { minimumAccessRemainingMs: 190000 };
     if (cookie(req, COOKIE)) return currentSession(req, context, 'continue', hostOptions);
     check(typeof store.findRenewableSession === 'function' && typeof store.rebindSession === 'function'
@@ -189,6 +230,7 @@ export function createSourceAppBff(options) {
   }
   function parse(bytes) { try { return jsonCopy(parseSourceJson(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)), { bytes: 1500000 }); } catch (error) { if (error instanceof SourceAppError) throw error; throw new SourceAppError('source_app_input_invalid'); } }
   async function nativeRoute(req, res, url) {
+    check(!rootSigned, 'source_app_route_unavailable', 404);
     check(req.headers.host === new URL(profile.nativeOrigin).host, 'source_app_origin_denied', 403);
     if (['GET', 'HEAD'].includes(req.method)) sourceBodyHeaders(req, 0);
     if (url.pathname === '/soty/connect') {
@@ -293,6 +335,7 @@ export function createSourceAppBff(options) {
     }
     const bytes = ['GET', 'HEAD'].includes(req.method) ? Buffer.alloc(0) : await body(req, route.requestBytes);
     const context = await verifier.verify(req, { body: bytes }); await freshRoot(context);
+    if (rootSigned) check(!['/api/embed/login', '/api/embed/callback', '/api/embed/complete-link'].includes(url.pathname), 'source_app_route_unavailable', 404);
     if (!['GET', 'HEAD'].includes(req.method)) check(req.headers.origin === profile.embedOrigin, 'source_app_origin_denied', 403);
     const input = bytes.length ? parse(bytes) : {};
     if (url.pathname === '/api/embed/login') {
@@ -364,7 +407,7 @@ export function createSourceAppBff(options) {
     if (url.pathname === '/api/embed/session-continue') {
       const args = fields(input, ['requestId']); check(requestId(args.requestId));
       const current = await continueSession(req, context);
-      const reply = headers => send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: Boolean(current.session.rpMarker),
+      const reply = headers => send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: rootSigned || Boolean(current.session.rpMarker),
         sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt),
         // This is the usable Basic access bound. A raw AT may outlive the
         // original Source session or Root slot; the ACK must not widen either.
@@ -387,7 +430,8 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, operation);
       const data = await native.call(current.authority, operation, args);
       if (operation === 'execute') await postCommit(context, current.authority);
-      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context); }
+      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+        if (rootSigned) await native.assertCurrent(current.authority); }
       send(res, 200, { ok: true, data }); return;
     }
     const feedbackOperation = new Map([
@@ -400,7 +444,8 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, 'feedback.' + feedbackOperation);
       const data = await native.feedback(current.authority, feedbackOperation, args);
       if (['submit', 'reply', 'status', 'accept'].includes(feedbackOperation)) await postCommit(context, current.authority);
-      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context); }
+      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+        if (rootSigned) await native.assertCurrent(current.authority); }
       let output;
       try { output = feedbackOutput(feedbackOperation, data); }
       catch { throw new SourceAppError(['submit', 'reply', 'status', 'accept'].includes(feedbackOperation) ? 'source_app_effect_unknown' : 'source_app_response_invalid', 503); }

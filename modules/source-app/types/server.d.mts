@@ -16,6 +16,10 @@ export interface NativeBinding {identity:{issuer:string;subject:string};rootPrin
 export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
   capture(binding:Readonly<NativeBinding>,nativeBrowserRequest?:IncomingMessage):Promise<Proof>;
+  /** Workspace2 only: original SDK-branded, unexpired Root context, never JSON identity. */
+  captureRoot?:(binding:Readonly<NativeBinding>,verifiedRootContext:object)=>Promise<Proof>;
+  /** Called synchronously under withCurrent INSIDE Source session SQL transaction. */
+  commitRootSession?:(proof:Proof,binding:Readonly<NativeBinding>)=>{nativeSessionHash:string;principalId:string;resourceId:string};
   /** Fresh authoritative Source SQL check outside transaction locks; returns
    * no rows/permission DTO. Required by an async-SQL Native implementation. */
   assertCurrent?:(proof:Proof,binding:Readonly<NativeBinding>)=>Promise<void>;
@@ -40,6 +44,8 @@ export function isSourceNativeCommitPort(value:unknown):value is NativeCommitPor
 /** Source implements durable encrypted storage. Identity/session writes call
  * the supplied final callback once synchronously INSIDE the Native transaction. */
 export interface SourceStoragePort {
+  /** Workspace2 only. Same Native transaction; replay still calls the final fence. */
+  createRootSession?(record:unknown,finalNativeLink:()=>unknown):Promise<{idHash:string}>;
   consumeNonce(nonce:string,expiresAt:number):Promise<boolean>;createInteraction(record:unknown):Promise<void>;getInteraction(hash:string):Promise<any>;
   claimInteraction(hash:string,revision:number,privatePkce:unknown,finalRememberNative?:()=>unknown):Promise<boolean>;claimCallback(hash:string,revision:number):Promise<boolean>;
   completeInteraction(record:unknown,finalNativeLink:()=>unknown):Promise<boolean>;
@@ -72,7 +78,7 @@ export interface SourceAppRenewalPort {
 export interface SourceAppLegacyRpPort {
   currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>;
 }
-export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp:SourceRpProfile;
+export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp?:SourceRpProfile;
   /** Host-only, workspace profile only: default128, integer1..65536. No permission or lease extension. */
   workspaceCapacity?:{maxSlots?:number};
   clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:SourceAppRenewalPort|SourceAppLegacyRpPort}):{
@@ -87,5 +93,14 @@ export const STANDARD_SELECTED_SOURCE_V3:Readonly<{id:'soty.standard-resource';v
 export const STANDARD_SOURCE_CONTRACT_3:Readonly<unknown>;
 export const STANDARD_WORKSPACE_SOURCE:Readonly<{id:'soty.standard-workspace';version:1;digest:string}>;
 export const STANDARD_WORKSPACE_CONTRACT:Readonly<unknown>;
+export const STANDARD_ROOT_WORKSPACE_SOURCE:Readonly<{id:'soty.standard-workspace';version:2;digest:string}>;
+export const STANDARD_ROOT_WORKSPACE_CONTRACT:Readonly<unknown>;
+export interface VerifiedRootContext {readonly profileDigest:string;readonly expiresAt:number;readonly instanceId?:string;
+  readonly reference:Readonly<{id:string;version:number;digest:string}>;readonly rootPrincipal:Readonly<{accountId:string;deviceId:string}>;
+  readonly humanPrincipal:Readonly<{issuer:string;subject:string;clientId:string;clientProfileDigest:string;clientGeneration:number}>;
+  readonly resource:SourceProfile['resource'];readonly sourceProfile:SourceProfile['sourceProfile'];readonly appId:string;}
+export function isVerifiedRootContext(proof:unknown):proof is VerifiedRootContext;
+/** Rejects copied JSON, wrong profile and expired JWT; returns original frozen context. */
+export function readVerifiedRootContext(proof:unknown,profileDigest:string):VerifiedRootContext;
 export {SOURCE_FEEDBACK_LIMITS} from './browser.mjs';
 export {createFeedbackProcessorEngine,createFeedbackJobEnforcer,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './processing.mjs';

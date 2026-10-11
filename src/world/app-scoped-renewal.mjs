@@ -2,6 +2,35 @@
  * private installed-channel Source ACK in fresh signed server context. */
 import { isScopedRuntimeProfile } from './app-launch.mjs';
 
+// Only the approved Root identity contract may acquire a new finite session.
+// RP profiles retain their original absolute family deadline.
+export const isRootSsoWorkspacePin = value => value?.id === 'soty.standard-workspace' && value.version === 2
+  && value.digest === '4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833';
+
+/** Returning to a mounted app asks Root for a fresh signed launch. This never
+ * revives a closed stage or treats an expired session as authorization. */
+export function attachRootSsoWakeRecovery({ view, document = view.document, signal, current,
+  readBinding, lastLaunchAt, recover, clock = Date.now, onFailure = () => {} }) {
+  let disposed = false, pending = false;
+  const eligible = () => !disposed && !signal.aborted && document.visibilityState === 'visible'
+    && current() && isRootSsoWorkspacePin(readBinding()?.source) && clock() - lastLaunchAt() >= 180000;
+  const wake = () => {
+    if (pending || !eligible()) return;
+    const slot = readBinding()?.slot;
+    pending = true;
+    void Promise.resolve().then(() => {
+      if (eligible() && readBinding()?.slot === slot) return recover();
+    }).catch(onFailure).finally(() => { pending = false; });
+  };
+  document.addEventListener('visibilitychange', wake, { signal });
+  view.addEventListener('focus', wake, { signal });
+  return () => {
+    disposed = true;
+    document.removeEventListener('visibilitychange', wake);
+    view.removeEventListener('focus', wake);
+  };
+}
+
 /** Stage lifecycle only. The profile comes from the validated launcher, never
  * author metadata; tick/probe still require fresh private server/Source ACK. */
 export function attachScopedRenewalLoads({runtime,view,signal,current,profile,renewal,onTickFailure=()=>{}}) {
@@ -40,7 +69,8 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     && context.scopedSource.version === binding.source.version && context.scopedSource.digest === binding.source.digest;
   const sourceReady = (context, binding) => sameSource(context, binding) && context.sourceSession?.ready === true
     && context.sourceSession.renewable === true && Number.isSafeInteger(context.sourceSession.sessionExpiresAt)
-    && context.sourceSession.sessionExpiresAt > clock();
+    && context.sourceSession.sessionExpiresAt > clock()
+    && (!isRootSsoWorkspacePin(binding.source) || context.sourceSession.sessionExpiresAt <= context.expiresAt);
   const bindingPin = (context, binding) => JSON.stringify([binding.handle, binding.source.id, binding.source.version,
     binding.source.digest, context.target?.revision ?? null, context.target?.digest ?? null]);
   // The original slot is server-bound to account/device/generation/resource.
@@ -51,7 +81,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     const pin = bindingPin(context, binding);
     if (witness && (witness.slot !== binding.slot || witness.pin !== pin)) { witness = null; return false; }
     if (sourceReady(context, binding)) {
-      if (witness && witness.until !== context.sourceSession.sessionExpiresAt) { witness = null; return false; }
+      if (witness && witness.until !== context.sourceSession.sessionExpiresAt && !isRootSsoWorkspacePin(binding.source)) { witness = null; return false; }
       witness = { slot: binding.slot, pin, source: Object.freeze({ ...binding.source }), until: context.sourceSession.sessionExpiresAt };
     } else if (context.sourceSession !== undefined && context.sourceSession !== null) witness = null;
     return witness?.slot === binding.slot && witness.pin === pin && witness.until > clock();
@@ -86,7 +116,8 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
         const context = await read(reply.handle);
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
-        if (!sourceReady(context, action.binding) || context.sourceSession.sessionExpiresAt !== action.sessionExpiresAt) {
+        if (!sourceReady(context, action.binding) || (!isRootSsoWorkspacePin(action.binding.source)
+          && context.sourceSession.sessionExpiresAt !== action.sessionExpiresAt)) {
           if (hinted === 'unknown' && context.sourceSession?.ready !== false && context.sourceSession?.renewable !== false) {
             state('unknown'); action.reply = null; action.cleanup = reply.cleanup; return false;
           }

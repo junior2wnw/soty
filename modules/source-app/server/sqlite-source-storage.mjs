@@ -13,6 +13,28 @@ export function createSqliteSourceStorage(options) {
   function session(row) { if (!row) return null; const payload = decrypt('Session', row.id_hash, 0, row.cipher, row.key_id);
     return { ...payload, active: row.active === 1, expiresAt: row.expires_at }; }
   return Object.freeze({
+    async createRootSession(record, finalNativeLink) {
+      return tx(() => {
+        check(record.rootWitness === true && record.expiresAt > clock() && record.expiresAt <= clock() + 300000,
+          'source_root_session_invalid', 403);
+        const native = syncResult(finalNativeLink());
+        check(native && typeof native.principalId === 'string' && typeof native.nativeSessionHash === 'string' && typeof native.resourceId === 'string', 'ordinary_source_native_link_required', 403);
+        const prior = db.prepare('SELECT * FROM source_sessions WHERE native_session_hash=? AND principal_id=? AND resource_id=? AND active=1 AND expires_at>? LIMIT 2')
+          .all(native.nativeSessionHash, native.principalId, native.resourceId, clock());
+        check(prior.length <= 1, 'source_root_session_conflict', 409);
+        if (prior.length) {
+          const value = session(prior[0]);
+          check(value.rootWitness === true && value.rootReferenceDigest === record.rootReferenceDigest
+            && value.instanceId === record.instanceId && value.semanticDigest === record.semanticDigest,
+            'source_root_session_conflict', 409);
+          return { idHash: value.idHash };
+        }
+        const cipher = encrypt('Session', record.idHash, 0, record);
+        db.prepare('INSERT INTO source_sessions VALUES(?,?,?,?,?,?,?,?)').run(record.idHash, native.nativeSessionHash, native.principalId, native.resourceId,
+          1, record.expiresAt, cipher, keyId);
+        return { idHash: record.idHash };
+      });
+    },
     async consumeNonce(input, expiresAt) {
       return tx(() => { db.prepare('DELETE FROM source_nonces WHERE expires_at<=?').run(clock());
         if (db.prepare('SELECT count(*) AS n FROM source_nonces').get().n >= 4096) return false;

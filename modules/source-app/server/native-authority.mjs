@@ -2,15 +2,16 @@ import { check, fields, syncResult, deepFreeze, jsonCopy, SourceAppError } from 
 import { standardSourceContract } from './standard-profile.mjs';
 import { createWorkspaceContextAuthority, workspaceMutationRef, contextAfter, workspaceReceipt } from './workspace-context.mjs';
 import { digest } from './wire.mjs';
+import { isVerifiedRootContext } from '../../apps/scoped-embed/source-authority-client.mjs';
 
 const approved = new WeakSet();
 const approvedCommits = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
-  const value = fields(options, ['capture', 'withCurrent'], ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback', 'currentContext', 'selectContext']);
+  const value = fields(options, ['capture', 'withCurrent'], ['assertCurrent', 'captureRoot', 'commitRootSession', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback', 'currentContext', 'selectContext']);
   check(typeof value.capture === 'function' && typeof value.withCurrent === 'function' && value.withCurrent.constructor?.name !== 'AsyncFunction');
-  for (const key of ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
+  for (const key of ['assertCurrent', 'captureRoot', 'commitRootSession', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
     check(value[key] === undefined || typeof value[key] === 'function');
   for (const key of ['currentContext', 'selectContext']) check(value[key] === undefined || typeof value[key] === 'function' && value[key].constructor?.name !== 'AsyncFunction');
   if (value.feedback !== undefined) {
@@ -40,6 +41,7 @@ export function createNativeAuthorityRuntime(port, options = {}) {
   function withCurrent(proof, action) {
     const captured = proofs.get(proof);
     check(!closed && captured && !fencing && typeof action === 'function', 'source_app_authority_invalid', 503);
+    if (captured.verifiedRoot) check(isVerifiedRootContext(captured.verifiedRoot), 'source_root_witness_invalid', 403);
     let live = true, entered = false, poisoned = false, result;
     fencing = true;
     const callback = () => {
@@ -50,6 +52,7 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     try {
       const returned = syncResult(port.withCurrent(captured.native, captured.binding, callback));
       check(entered && !poisoned && returned === result, 'source_app_authority_invalid', 503);
+      if (captured.verifiedRoot) check(isVerifiedRootContext(captured.verifiedRoot), 'source_root_witness_invalid', 403);
       return result;
     } finally { live = false; fencing = false; }
   }
@@ -59,9 +62,11 @@ export function createNativeAuthorityRuntime(port, options = {}) {
   async function assertCurrent(proof) {
     const captured = proofs.get(proof);
     check(!closed && captured && !fencing, 'source_app_authority_invalid', 503);
+    if (captured.verifiedRoot) check(isVerifiedRootContext(captured.verifiedRoot), 'source_root_witness_invalid', 403);
     if (port.assertCurrent === undefined) { withCurrent(proof, () => true); return; }
     const result = await port.assertCurrent(captured.native, captured.binding);
     check(!closed && !fencing && proofs.get(proof) === captured && result === undefined, 'source_app_authority_invalid', 503);
+    if (captured.verifiedRoot) check(isVerifiedRootContext(captured.verifiedRoot), 'source_root_witness_invalid', 403);
   }
   function operationCommit(proof, context) {
     let open = true, used = false, entered = false, poisoned = false, inAction = false;
@@ -101,6 +106,24 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     } finally { final?.seal(); }
   }
   return Object.freeze({
+    async captureRoot(binding, verifiedRootContext) {
+      check(!closed && contract.auth.proof === 'root-signed-current-context.v1' && isVerifiedRootContext(verifiedRootContext)
+        && typeof port.captureRoot === 'function', 'source_root_witness_invalid', 403);
+      const selected = deepFreeze(jsonCopy(binding)), context = verifiedRootContext;
+      check(digest(selected.rootPrincipal) === digest(context.rootPrincipal) && digest(selected.resource) === digest(context.resource)
+        && selected.identity.issuer === context.humanPrincipal.issuer && selected.identity.subject === context.humanPrincipal.subject
+        && selected.rootReferenceDigest === digest(context.reference) && selected.instanceId === context.instanceId
+        && selected.rootExpiresAt === context.expiresAt, 'source_root_witness_invalid', 403);
+      const native = await port.captureRoot(selected, context);
+      check(!closed && native && typeof native === 'object' && isVerifiedRootContext(context), 'source_root_witness_invalid', 403);
+      const proof = Object.freeze(Object.create(null)); proofs.set(proof, { native, binding: selected, verifiedRoot: context });
+      await assertCurrent(proof); return proof;
+    },
+    commitRootSession(proof) {
+      const captured = proofs.get(proof);
+      check(captured?.verifiedRoot && contract.auth.proof === 'root-signed-current-context.v1' && typeof port.commitRootSession === 'function', 'source_app_native_link_required', 403);
+      return withCurrent(proof, () => syncResult(port.commitRootSession(captured.native, captured.binding)));
+    },
     async capture(binding, nativeRequest) {
       check(!closed, 'source_app_closed', 503);
       const selected = deepFreeze(jsonCopy(binding));

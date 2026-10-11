@@ -57,6 +57,16 @@ GC срабатывает перед новыми allocation; отдельный
 
 Reader manifest/format v5 включает семь stores и сохраняет чтение v3/v4. Старый v3/v4 image не запускается после появления identity store. Независимый probe проверяет frozen exact normalized DDL, indexes, conditional GC guards и metadata, не читая encrypted artifacts или квитанции. Snapshot сохраняет DB/WAL всех новых stores, ограничен 192MiB и не копирует ключ конфигурации. Candidate и fallback должны иметь v5 reader; отключённый fallback сохраняет stores без входов/записей U2. Для Linux release также нужны build, browser flow и release storage gates.
 
+## Приватное подтверждение Root для workspace@2
+
+`createSourceAuthoritySigner` использует существующий RSA key ring issuer и опубликованный `/human-identity/jwks`; новых ключей, OIDC Grant, refresh family или таблиц нет. Существующий зарегистрированный Native `clientId` подходит: `withSubjectAuthority` по-прежнему проверяет его текущие profile digest/generation и исходный подписанный Connect actor. Отдельный Source callback этому режиму не нужен. Source1/2/3 и `soty.standard-workspace@1` сохраняют прежнюю RP/OIDC-семантику; новая подпись обязательна только для явного `soty.standard-workspace@2`.
+
+Через прежний приватный `/apps/scoped/authority` исходный Source nonce передаётся до Root как `sourceChallenge`. Ответ содержит compact JWS `identityWitness` с `alg:RS256`, `typ:soty-source-authority+jwt`, отдельной `aud:urn:soty:source-authority` и закрытыми claims `iss,sub,iat,exp,sourceChallenge,contextDigest`. Digest покрывает полный текущий серверный context, включая account/device, app/profile, namespace, reference, instance и Human client generation. `exp` ограничен десятью секундами и сроком Root context. Connector MAC остаётся проверкой транспорта и не заменяет независимую подпись issuer.
+
+Асинхронная подпись выполняется вне SQLite/actor fence. Перед отправкой Root повторно проверяет тот же исходный actor, Human client, Apps admission/reference и действующий connector channel; одновременно допускаются 32 запроса подписи на канал, как в существующем лимите pending authority reads коннектора. Source проверяет фиксированные issuer/JWKS, type/audience, исходный challenge и весь context. Подтверждение не является Native role, bearer для обычных Native routes или OIDC token. Native по-прежнему проверяет свой immutable identity link, ACL и транзакционную границу эффекта. Отзыв или закрытие во время ожидания не выпускает новый proof; автономная проверка уже выпущенной подписи ограничена её коротким сроком, не обещает распределённого мгновенного отзыва.
+
+Проверка Root-части: `node --test modules/apps/test/root-identity-witness.test.mjs modules/apps/test/source-authority-client.test.mjs modules/apps/test/connector-binding.test.mjs`. Это локальные RSA/SQLite/HTTP/WS проверки; они сами по себе не подтверждают Native SSO или live внедрение.
+
 ## Проверка
 
 Из корня checkout на Node >=24.15 (проверено 24.19):

@@ -27,7 +27,7 @@ import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
 import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
-import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource, isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { hash as scopedHash, capture as scopedCapture, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
 
@@ -41,13 +41,16 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
   assertApps(typeof namedCanonical === 'boolean', 'apps_named_canonical_configuration_invalid', 500);
   assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
+  assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
+  assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
+    'app_scoped_identity_witness_unavailable',503);
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -85,7 +88,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
     appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry,requireScopedTarget:target=>scopedAdmissions.require(target) });
     if(scopedEmbedProfiles.length && typeof withHumanSubjectAuthority==='function') scopedGateway=createScopedGateway({
-      admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,clock:now,
+      admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,signSourceAuthority,clock:now,
       onClose(record) {
         for(const [key,session] of bootCandidates)if(session.scopedRecord===record){bootCandidates.delete(key);if(session.promotion?.state==='pending')sessions.delete(session.sessionKey);}
         // Closing an old slot after a successful cutover must not retire its
@@ -1205,7 +1208,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             previous.ws.terminate();
           }
           channel = { ws, key, identity: Object.freeze(identity), bindingVersion, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
-            auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
+            authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
           assertApps(send(channel, { type: 'ready', schema: CHANNEL_SCHEMA, ...(bindingVersion === 2 ? { bindingVersion, channelId: channel.channelId } : {}) }), 'app_offline', 503);
@@ -1215,12 +1218,29 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         assertApps(frame.type !== 'auth', 'app_auth_repeated');
         if(frame.type==='scoped-authority-request') {
           assertApps(channel.bindingVersion===2 && frame.channelId===channel.channelId && /^[A-Za-z0-9_-]{43}$/.test(frame.nonce||'')
-            && Object.keys(frame).every(key=>['type','channelId','nonce','reference'].includes(key)), 'app_bad_frame');
+            && Object.keys(frame).every(key=>['type','channelId','nonce','reference','sourceChallenge'].includes(key))
+            && (frame.sourceChallenge===undefined || /^[A-Za-z0-9_-]{43}$/.test(frame.sourceChallenge)), 'app_bad_frame');
+          let signingChannel;
           try {
             assertApps(scopedGateway,'app_scoped_admission_required',503);
-            const context=scopedGateway.read(frame.reference,channel.identity);
-            send(channel,{type:'scoped-authority-result',channelId:channel.channelId,nonce:frame.nonce,ok:true,context});
+            const boundChannel=channel, identity=channel.identity;
+            if(frame.sourceChallenge!==undefined) {
+              // Match the installed connector's 32 pending authority reads;
+              // several widgets share this channel. No queue or new setting.
+              assertApps(boundChannel.authorityWitnesses<LIMITS.streams,'app_scoped_authority_busy',503);
+              boundChannel.authorityWitnesses++;signingChannel=boundChannel;
+            }
+            const result=frame.sourceChallenge===undefined ? {context:scopedGateway.read(frame.reference,identity)}
+              : await scopedGateway.readWitness(frame.reference,identity,frame.sourceChallenge);
+            if(frame.sourceChallenge!==undefined) {
+              assertApps(channel===boundChannel && channels.get(boundChannel.key)===boundChannel && boundChannel.ws.readyState===1
+                && await authenticateConnector(boundChannel.auth),'app_scoped_authority_unavailable',403);
+              assertApps(channel===boundChannel && channels.get(boundChannel.key)===boundChannel && boundChannel.ws.readyState===1
+                && scopedHash(scopedGateway.read(frame.reference,identity))===scopedHash(result.context),'app_scoped_authority_unavailable',403);
+            }
+            send(boundChannel,{type:'scoped-authority-result',channelId:boundChannel.channelId,nonce:frame.nonce,ok:true,...result});
           } catch(error) {send(channel,{type:'scoped-authority-result',channelId:channel.channelId,nonce:frame.nonce,ok:false,status:error.status===403||error.status===401?403:503,code:'app_scoped_authority_unavailable'});}
+          finally {if(signingChannel)signingChannel.authorityWitnesses--;}
           return;
         }
         if (runtimeBindings.handleFrame(channel, frame)) return;

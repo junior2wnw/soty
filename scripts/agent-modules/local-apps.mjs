@@ -290,10 +290,10 @@ export function createLocalAppsRuntime(deps, options = {}) {
     }
     localAppsCheck(connected(context), 'apps_not_authenticated');
     if(frame.type==='scoped-authority-result') {
-      channelFrame(context,frame,['nonce','ok','context','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
+      channelFrame(context,frame,['nonce','ok','context','identityWitness','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
       const pending=context.authorityRequests.get(frame.nonce);if(!pending)return;
       context.authorityRequests.delete(frame.nonce);clearTimeout(pending.timer);
-      if(frame.ok===true)pending.resolve(frame.context);else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
+      if(frame.ok===true)pending.resolve(pending.sourceChallenge===undefined?frame.context:{context:frame.context,identityWitness:frame.identityWitness});else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
     }
     if(frame.type==='scoped-context-closed') {channelFrame(context,frame,['appId','reference']);localAppsCheck(localAppsId(frame.appId),'apps_bad_frame');scoped?.forget(frame.reference);return;}
     if (frame.type === 'claim-ready') {
@@ -341,11 +341,13 @@ export function createLocalAppsRuntime(deps, options = {}) {
   }
   function readScopedAuthority(context,request) {
     localAppsCheck(connected(context)&&context.version===2&&context.authorityRequests.size<32,'scoped_embed_channel_required');
+    localAppsCheck(request.sourceChallenge===undefined || localAppsNonce(request.sourceChallenge),'apps_bad_frame');
     const nonce=deps.randomSecret();
     return new Promise((resolve,reject)=>{
-      const pending={resolve,reject};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
+      const pending={resolve,reject,sourceChallenge:request.sourceChallenge};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
       context.authorityRequests.set(nonce,pending);
-      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference})){
+      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference,
+        ...(request.sourceChallenge===undefined?{}:{sourceChallenge:request.sourceChallenge})})){
         context.authorityRequests.delete(nonce);clearTimeout(pending.timer);reject(localAppsFail('scoped_embed_channel_required'));
       }
     });

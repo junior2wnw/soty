@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { createLocalScopedEmbedBroker } from './local-broker.mjs';
 import { capture, closed, hash, need, SCOPED_EMBED_LIMITS } from './profile.mjs';
 import { requireEmbedAdapter } from './profile-dispatch.mjs';
+import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 
 const mac=(key,text)=>createHmac('sha256',key).update(text).digest('base64url');
 const secret=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{43}$/.test(value);
@@ -57,9 +58,13 @@ export function createConnectorScopedFactory({ entries = [], clock = Date.now } 
       need(approvedItem&&equal(request.headers['x-soty-source-mac'],mac(approvedItem.key,'authority\0'+text)),'scoped_embed_ipc_invalid',403);
       for(const [id,expires]of ipcNonces)if(expires<=clock())ipcNonces.delete(id);
       need(!ipcNonces.has(value.nonce)&&ipcNonces.size<4096,'scoped_embed_ipc_replayed',403);ipcNonces.set(value.nonce,value.expiresAt);
-      const context=await rootRead({reference:value.reference,connector:approvedItem.profile.connector});
+      const signed=isRootSignedWorkspaceSource(approvedItem.profile.sourceProfile);
+      const result=await rootRead({reference:value.reference,connector:approvedItem.profile.connector,
+        ...(signed?{sourceChallenge:value.nonce}:{})});
+      const context=signed?result.context:result;
       need(context.profileDigest===approvedItem.profile.digest,'scoped_embed_ipc_mismatch',403);
-      const body=JSON.stringify({nonce:value.nonce,context});need(Buffer.byteLength(body)<=16384,'scoped_embed_ipc_limit',502);
+      if(signed)need(typeof result.identityWitness==='string'&&result.identityWitness.length<=8192,'scoped_embed_ipc_mismatch',403);
+      const body=JSON.stringify({nonce:value.nonce,context,...(signed?{identityWitness:result.identityWitness}:{})});need(Buffer.byteLength(body)<=16384,'scoped_embed_ipc_limit',502);
       response.writeHead(200,{'content-type':'application/json','cache-control':'no-store','x-soty-source-mac':mac(approvedItem.key,'authority-result\0'+body)});
       response.end(body);
     },

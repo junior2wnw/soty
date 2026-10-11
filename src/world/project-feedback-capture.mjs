@@ -114,7 +114,7 @@ export function mountProjectCaptureBridge({ view, readPeer, assertPeer, capture,
     operation.catch(() => {});
   };
   view.addEventListener('message', listener);
-  return Object.freeze({ dispose() {
+  return Object.freeze({ isCapturing: () => !disposed && outstanding !== null, dispose() {
     if (disposed) return; disposed = true; view.removeEventListener('message', listener);
     if (outstanding) {
       outstanding.fail('capture_context_changed');

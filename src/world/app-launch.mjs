@@ -164,7 +164,8 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     selected = entry;
   }
   async function issue(initial,external=false,requireSameBinding=false) {
-    requireValue(!requireSameBinding||!!originalBinding,'app_launch_binding_required');
+    const scopedBefore=requireSameBinding&&!originalBinding?scoped:null;
+    requireValue(!requireSameBinding||!!originalBinding||!!scopedBefore?.source,'app_launch_binding_required');
     const args = parameters(), intended = { appId: args.appId,
       ...(args.domainId === undefined ? {} : { domainId: args.domainId }), ...(args.path === undefined ? {} : { path: args.path }) };
     let received = false,binding=null;
@@ -179,7 +180,10 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       }
       if (!current()) {abandon(binding);return null;}
       const provenance=result?.launchBinding===undefined?null:validateAppLaunchBinding(result.launchBinding);
-      requireValue(!requireSameBinding||sameAppLaunchBinding(originalBinding,provenance),'app_launch_source_changed');
+      requireValue(!requireSameBinding||(scopedBefore
+        ?scoped===scopedBefore&&binding?.profile===scopedBefore.profile&&binding.source
+          &&['id','version','digest'].every(key=>binding.source[key]===scopedBefore.source[key])
+        :sameAppLaunchBinding(originalBinding,provenance)),'app_launch_source_changed');
       const url = validateAppLaunchUrl(result?.url, shellUrl);
       capture(result?.entry, intended, url);
       if(!bindingPinned&&!external){originalBinding=provenance;bindingPinned=true;}

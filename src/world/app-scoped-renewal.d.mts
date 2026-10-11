@@ -1,5 +1,8 @@
 export interface ScopedRenewBinding {handle:string;source:{id:string;version:number;digest:string};slot:object}
 export interface ScopedRenewReply {url:string;handle:string;requestId:string;source:{id:string;version:number;digest:string};expiresAt:number;cleanup?:()=>Promise<void>;slot:object}
+export function isRootSsoWorkspacePin(value:unknown):boolean;
+export function attachRootSsoWakeRecovery(options:{view:Window;document?:Document;signal:AbortSignal;current():boolean;
+  readBinding():ScopedRenewBinding|null;lastLaunchAt():number;recover():Promise<void>;clock?:()=>number;onFailure?(error:unknown):void}):()=>void;
 export function attachScopedRenewalLoads(options:{runtime:HTMLElement;view:Window;signal:AbortSignal;current():boolean;
   profile():unknown;renewal:{probe():Promise<unknown>;tick():Promise<unknown>};onTickFailure?():void}):()=>void;
 export function createScopedSlotRenewal(options:{readBinding():ScopedRenewBinding|null;readContext(handle:string):Promise<any>;
