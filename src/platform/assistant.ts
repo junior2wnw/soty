@@ -150,7 +150,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       if (state.phase === 'running') status.textContent = 'Помощник работает…';
       else if (state.phase === 'cancel_requested') status.textContent = 'Остановка запрошена · удалённое завершение не подтверждено';
       else if (state.phase === 'unknown') status.textContent = 'Подтверждение не получено · отправка не повторяется';
-      else if (state.phase === 'complete') status.textContent = 'Ответ подтверждён';
+      else if (state.phase === 'complete') status.textContent = 'Ответ получен';
       notice.hidden = personalReady;
       if (!personalReady) notice.replaceChildren(el('span', '', 'Личный помощник пока не подключён. Можно работать на подключённом компьютере.'),
         button('На компьютере', 'laptop', 'sw-button-quiet', () => chooseMode('device')));
