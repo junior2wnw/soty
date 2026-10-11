@@ -205,6 +205,8 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     if (mode === 'personal') {
       const state = conversation().view();
       if (state.answer) {
+        pane.dataset.mode = 'conversation';
+        positionThread();
         const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer));
         const note = answerNote ??= createAssistantAnswerNote({ accountId, answer: state.answer, api: { request },
           store: createDraftStore(accountId, 'soty'), isCurrent: current });
