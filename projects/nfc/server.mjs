@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, extname, relative, isAbsolute } from 'node:path';
 
 const root = fileURLToPath(new URL('./dist/', import.meta.url));
+const { version } = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json' };
 export function createNfcServer() {
   return createServer(async (req, res) => {
@@ -12,7 +13,7 @@ export function createNfcServer() {
     if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return; }
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (url.pathname === '/health') { res.writeHead(200, { 'Content-Type': types['.json'] }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ ok: true, app: 'soty-nfc', version: '1.0.0' })); return; }
+      if (url.pathname === '/health') { res.writeHead(200, { 'Content-Type': types['.json'] }); res.end(req.method === 'HEAD' ? '' : JSON.stringify({ ok: true, app: 'soty-nfc', version })); return; }
       const pathname = decodeURIComponent(url.pathname);
       if (pathname.includes('\\') || pathname.includes('\0')) throw new Error('invalid_path');
       const file = resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));

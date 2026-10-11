@@ -10,6 +10,9 @@ export const recordTypes = Object.freeze([
   { id: 'location', title: 'Место', detail: 'Координаты для карты', icon: 'pin', defaults: { latitude: '', longitude: '' } },
   { id: 'json', title: 'JSON', detail: 'Данные для своего приложения', icon: 'code', defaults: { json: '' } },
   { id: 'binary', title: 'Свои данные', detail: 'MIME-тип и байты в HEX', icon: 'chip', defaults: { mediaType: 'application/octet-stream', hex: '' } },
+  { id: 'app', title: 'Android-приложение', detail: 'Пакет приложения для Android', icon: 'phone', defaults: { package: '' } },
+  { id: 'poster', title: 'Ссылка с описанием', detail: 'NDEF Smart Poster', icon: 'link', defaults: { url: '', title: '' } },
+  { id: 'external', title: 'Внешний тип', detail: 'Собственная запись NDEF', icon: 'code', defaults: { type: '', text: '' } },
 ]);
 const fail = message => { throw new Error(message); };
 const required = (value, label) => typeof value === 'string' && value.trim() ? value.trim() : fail('Заполните поле «' + label + '».');
@@ -22,6 +25,11 @@ export function normalUrl(value) {
   let url; try { url = new URL(text); } catch { return fail('Проверьте ссылку. Например: https://example.com'); }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return fail('Используйте ссылку http или https без логина и пароля.');
   return url.href;
+}
+export function locationUrl(values) {
+  const latitude = Number(required(values.latitude, 'Широта')), longitude = Number(required(values.longitude, 'Долгота'));
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return fail('Широта: от −90 до 90. Долгота: от −180 до 180.');
+  return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(latitude + ',' + longitude);
 }
 const cardText = value => String(value || '').replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
 function tlv(type, bytes) { const result = new Uint8Array(4 + bytes.length); new DataView(result.buffer).setUint16(0, type); new DataView(result.buffer).setUint16(2, bytes.length); result.set(bytes, 4); return result; }
@@ -48,10 +56,17 @@ export function compileRecord(record) {
     case 'phone': return { recordType: 'url', data: 'tel:' + phone(v.phone) };
     case 'email': return { recordType: 'url', data: 'mailto:' + encodeURIComponent(email(required(v.email, 'Кому'))).replace(/%40/gi, '@') + '?' + new URLSearchParams({ subject: v.subject || '', body: v.body || '' }).toString().replace(/\+/g, '%20') };
     case 'sms': return { recordType: 'url', data: 'sms:' + phone(v.phone) + '?body=' + encodeURIComponent(v.body || '') };
-    case 'location': {
-      const latitude = Number(required(v.latitude, 'Широта')), longitude = Number(required(v.longitude, 'Долгота'));
-      if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return fail('Широта: от −90 до 90. Долгота: от −180 до 180.');
-      return { recordType: 'url', data: 'geo:' + latitude + ',' + longitude };
+    case 'location': return { recordType: 'url', data: locationUrl(v) };
+    case 'app': {
+      const name = required(v.package, 'Пакет приложения');
+      if (name.length > 255 || !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/i.test(name)) return fail('Укажите пакет, например org.telegram.messenger.');
+      return { recordType: 'android.com:pkg', data: encoder.encode(name) };
+    }
+    case 'poster': return { recordType: 'smart-poster', data: { records: [{ recordType: 'url', data: normalUrl(v.url) }, ...(v.title.trim() ? [{ recordType: 'text', lang: 'ru', data: v.title }] : [])] } };
+    case 'external': {
+      const type = required(v.type, 'Внешний тип').toLowerCase();
+      if (type.length > 255 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:[a-z0-9][a-z0-9_.:-]*$/.test(type)) return fail('Укажите тип в формате example.com:name.');
+      return { recordType: type, data: encoder.encode(untrimmed(v.text, 'Данные')) };
     }
     case 'contact': {
       const name = required(v.name, 'Имя');
@@ -91,7 +106,8 @@ export function estimateBytes(message) {
     else if (type === 'empty') { payload = 0; typeBytes = 0; }
     else if (type === 'absolute-url') { payload = 0; typeBytes = bytes; }
     else if (type === 'unknown') typeBytes = 0;
-    else typeBytes = encoder.encode(type).length;
+    else if (type === 'smart-poster') typeBytes = 2;
+    else typeBytes = encoder.encode(type.startsWith(':') ? type.slice(1) : type).length;
     const id = encoder.encode(record.id || '').length;
     return sum + 3 + (payload > 255 ? 3 : 0) + typeBytes + payload + (id ? 1 + id : 0);
   }, 0);
@@ -111,26 +127,48 @@ export function byteView(data) {
 }
 export const toBase64 = bytes => { let text = ''; for (const byte of bytes) text += String.fromCharCode(byte); return btoa(text); };
 export function fromBase64(text) {
-  if (typeof text !== 'string' || text.length > 32_768 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) return fail('Некорректные данные записи.');
+  if (typeof text !== 'string' || text.length > 131_072 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) return fail('Некорректные данные записи.');
   return Uint8Array.from(atob(text), ch => ch.charCodeAt(0));
 }
-export function snapshotRecord(record, depth = 0) {
-  if (depth > 8) return fail('Запись содержит слишком много вложенных уровней.');
+export function snapshotRecord(record, depth = 0, budget = { records: 0, bytes: 0 }) {
+  if (depth > 8 || ++budget.records > 256) return fail('Запись содержит слишком много вложенных уровней или записей.');
   const result = { recordType: record.recordType, id: record.id || '' };
+  const addBytes = bytes => {
+    budget.bytes += bytes.length;
+    if (budget.bytes > 65_536) return fail('NDEF-содержимое превышает 64 КБ.');
+    result.byteLength = bytes.length; result.base64 = toBase64(bytes);
+  };
+  if (['text', 'url', 'absolute-url'].includes(record.recordType)) {
+    const bytes = typeof record.data === 'string' ? encoder.encode(record.data) : byteView(record.data);
+    addBytes(bytes);
+  }
   if (record.recordType === 'text') { result.lang = record.lang || 'ru'; result.encoding = record.encoding || 'utf-8'; result.text = typeof record.data === 'string' ? record.data : new TextDecoder(result.encoding).decode(byteView(record.data)); }
   else if (['url', 'absolute-url'].includes(record.recordType)) result.text = typeof record.data === 'string' ? record.data : new TextDecoder().decode(byteView(record.data));
   else {
     if (record.mediaType) result.mediaType = record.mediaType;
-    const nested = typeof record.toRecords === 'function' ? record.toRecords() : record.data?.records;
-    if (nested?.length) result.records = [...nested].map(item => snapshotRecord(item, depth + 1));
-    else result.base64 = toBase64(byteView(record.data));
+    let nested = record.data?.records;
+    // Web NFC throws NotSupportedError for MIME/unknown/local types, and an
+    // external record such as an Android package need not contain NDEF at all.
+    if (typeof record.toRecords === 'function' && (record.recordType === 'smart-poster' || /^[^:]+:.+/.test(record.recordType))) {
+      if (byteView(record.data).length > 65_536) return fail('NDEF-содержимое превышает 64 КБ.');
+      try { nested = record.toRecords(); } catch { nested = null; }
+    }
+    if (nested?.length) {
+      if (nested.length > 128) return fail('Слишком много вложенных записей.');
+      result.records = [...nested].map(item => snapshotRecord(item, depth + 1, budget));
+    } else addBytes(byteView(record.data));
   }
   return result;
+}
+export function snapshotMessage(message) {
+  const records = [...message.records], budget = { records: 0, bytes: 0 };
+  if (records.length > 128) return fail('Метка содержит больше 128 записей.');
+  return records.map(record => snapshotRecord(record, 0, budget));
 }
 export function restoreRecord(snapshot, depth = 0) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || depth > 8) return fail('Некорректная запись в шаблоне.');
   const type = snapshot.recordType;
-  if (typeof type !== 'string' || !(['text', 'url', 'absolute-url', 'mime', 'empty', 'unknown', 'smart-poster'].includes(type) || /^[a-z0-9.-]+:[a-z0-9_.:-]+$/i.test(type))) return fail('Неподдерживаемый тип записи в шаблоне.');
+  if (typeof type !== 'string' || !(['text', 'url', 'absolute-url', 'mime', 'empty', 'unknown', 'smart-poster'].includes(type) || /^[a-z0-9.-]+:[a-z0-9_.:-]+$/i.test(type) || (depth > 0 && /^:[a-z0-9][a-z0-9._-]*$/i.test(type)))) return fail('Неподдерживаемый тип записи в шаблоне.');
   const record = { recordType: type };
   if (snapshot.id) { if (typeof snapshot.id !== 'string' || snapshot.id.length > 255) return fail('Некорректный идентификатор записи.'); record.id = snapshot.id; }
   if (type === 'text') {
@@ -151,12 +189,15 @@ export function restoreRecord(snapshot, depth = 0) {
   } else record.data = fromBase64(snapshot.base64 || '');
   return record;
 }
-export const messageSignature = message => JSON.stringify([...message.records].map(record => {
-  const value = snapshotRecord(record); delete value.encoding;
+function signatureRecord(value) {
+  value = { ...value }; delete value.encoding; delete value.byteLength;
+  if (['text', 'url', 'absolute-url'].includes(value.recordType)) delete value.base64;
   if (['url', 'absolute-url'].includes(value.recordType)) { try { value.text = new URL(value.text).href; } catch { /* A readable nonstandard URI stays literal. */ } }
   if (value.mediaType) value.mediaType = value.mediaType.toLowerCase();
+  if (value.records) value.records = value.records.map(signatureRecord);
   return value;
-}));
+}
+export const messageSignature = message => JSON.stringify(snapshotMessage(message).map(signatureRecord));
 export function validateDraft(value) {
   if (!value || value.schema !== 'soty.nfc-template.v1' || !Array.isArray(value.records) || value.records.length < 1 || value.records.length > 16) return fail('Это не шаблон NFC из «Сот».');
   if (typeof value.name !== 'string' || value.name.length > 80) return fail('Проверьте название шаблона.');
@@ -164,7 +205,7 @@ export function validateDraft(value) {
     if (!record || typeof record !== 'object') return fail('Некорректная запись.');
     if (record.kind === 'raw') { restoreRecord(record.snapshot); return { key: crypto.randomUUID(), kind: 'raw', snapshot: record.snapshot }; }
     const type = recordTypes.find(type => type.id === record.kind); if (!type || !record.values || typeof record.values !== 'object' || Array.isArray(record.values)) return fail('Неизвестный тип записи.');
-    const values = { ...type.defaults }; for (const key of Object.keys(values)) { if (typeof record.values[key] !== 'string' || record.values[key].length > 16_384) return fail('Некорректное поле шаблона.'); values[key] = record.values[key]; }
+    const values = { ...type.defaults }; for (const key of Object.keys(values)) { if (typeof record.values[key] !== 'string' || record.values[key].length > (key === 'hex' ? 32_768 : 16_384)) return fail('Некорректное поле шаблона.'); values[key] = record.values[key]; }
     return { key: crypto.randomUUID(), kind: type.id, values };
   });
   const result = { schema: value.schema, name: value.name, records }; compileDraft(result); return result;

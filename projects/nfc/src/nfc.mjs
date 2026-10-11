@@ -1,4 +1,4 @@
-import { messageSignature, snapshotRecord } from './records.mjs';
+import { messageSignature, snapshotMessage } from './records.mjs';
 
 export function nfcAvailability({ secure = true, embedded = false, Reader, userAgent = '' } = {}) {
   if (embedded) return { supported: false, reason: 'embedded', title: 'Откройте для работы с NFC', detail: 'Телефон получает доступ к меткам, когда приложение открыто отдельным окном.' };
@@ -31,7 +31,7 @@ export function nfcFailure(error, { action = 'read', overwrite = false, permissi
   if (action === 'write' && permission === 'granted') return { ...failure, title: 'Запись запрещена', message: 'Проверьте защиту метки. Для записи нужна перезаписываемая NDEF-метка.' };
   return { ...failure, title: 'Нужен доступ к NFC' };
 }
-export function createNfcController({ Reader, onState = () => {}, getPermission = () => 'unknown', timeoutMs = 45_000, verifyMs = 12_000 } = {}) {
+export function createNfcController({ Reader, onState = () => {}, getPermission = () => 'unknown', timeoutMs = 45_000, verifyMs = 12_000, watchMs = 300_000, now = () => Date.now() } = {}) {
   let active = null;
   const state = (phase, extra = {}) => onState({ phase, ...extra });
   function cancel(reason = 'cancelled') { if (active) { active.reason = reason; active.controller.abort(); } }
@@ -41,12 +41,15 @@ export function createNfcController({ Reader, onState = () => {}, getPermission 
     const operation = { controller: new AbortController(), reader: new Reader(), reason: '', written: false };
     active = operation; return operation;
   }
+  function capture(event) {
+    return { serialNumber: event.serialNumber || '', records: snapshotMessage(event.message), message: event.message };
+  }
   function scan(operation, duration) {
     const { reader, controller } = operation;
     return new Promise((resolve, reject) => {
       let done = false;
       const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); reader.removeEventListener('reading', reading); reader.removeEventListener('readingerror', readingError); controller.signal.removeEventListener('abort', abort); fn(value); };
-      const reading = event => { try { finish(resolve, { serialNumber: event.serialNumber || '', records: [...event.message.records].map(item => snapshotRecord(item)), message: event.message }); } catch (error) { finish(reject, error); } };
+      const reading = event => { try { finish(resolve, capture(event)); } catch (error) { finish(reject, error); } };
       const readingError = () => state(operation.written ? 'verifying' : 'scanning', { hint: 'Эта метка не читается. Попробуйте повернуть её или использовать NDEF-метку.' });
       const abort = () => finish(reject, new DOMException('Aborted', operation.reason === 'timeout' ? 'TimeoutError' : 'AbortError'));
       const timer = setTimeout(() => { operation.reason = 'timeout'; controller.abort(); }, duration);
@@ -61,6 +64,39 @@ export function createNfcController({ Reader, onState = () => {}, getPermission 
     const operation = begin(); state('scanning');
     try { const result = await scan(operation, timeoutMs); state('read', { result }); return result; }
     catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', { ...nfcFailure(error, { permission: getPermission() }), message: operation.reason === 'hidden' ? 'Чтение остановлено: приложение было свёрнуто.' : nfcError(error) }); throw error; }
+    finally { release(operation); }
+  }
+  async function watch() {
+    const operation = begin(); state('watch-starting');
+    let count = 0, lastKey = '', lastAt = -Infinity, lastHint = '';
+    try {
+      return await new Promise((resolve, reject) => {
+        const { reader, controller } = operation;
+        let done = false;
+        const finish = (fn, value) => {
+          if (done) return; done = true; clearTimeout(timer);
+          reader.removeEventListener('reading', reading); reader.removeEventListener('readingerror', readingError); controller.signal.removeEventListener('abort', abort); fn(value);
+        };
+        const reading = event => {
+          try {
+            const result = capture(event), key = result.serialNumber + ':' + messageSignature(event.message), at = now();
+            if (key === lastKey && at - lastAt >= 0 && at - lastAt < 1500) return;
+            lastKey = key; lastAt = at; count++; lastHint = '';
+            state('watch-read', { result, count });
+          } catch { state('watching', { count, hint: 'Эти данные не удалось разобрать. Попробуйте другую метку.' }); }
+        };
+        const readingError = () => { lastHint = 'Метка не читается. Поверните её или попробуйте NDEF-метку.'; state('watching', { count, hint: lastHint }); };
+        const abort = () => {
+          state('watch-stopped', { count, message: operation.reason === 'hidden' ? 'Чтение остановлено: приложение было свёрнуто.' : operation.reason === 'timeout' ? 'Чтение остановлено через 5 минут. Можно начать снова.' : 'Чтение остановлено.' });
+          finish(resolve, { count });
+        };
+        const timer = setTimeout(() => { operation.reason = 'timeout'; controller.abort(); }, watchMs);
+        reader.addEventListener('reading', reading); reader.addEventListener('readingerror', readingError); controller.signal.addEventListener('abort', abort, { once: true });
+        if (controller.signal.aborted) { abort(); return; }
+        try { Promise.resolve(reader.scan({ signal: controller.signal })).then(() => { if (!done) state('watching', { count, ...(lastHint ? { hint: lastHint } : {}) }); }, error => finish(reject, error)); }
+        catch (error) { finish(reject, error); }
+      });
+    } catch (error) { state('error', nfcFailure(error, { permission: getPermission() })); throw error; }
     finally { release(operation); }
   }
   async function write(message, { overwrite = false } = {}) {
@@ -91,5 +127,5 @@ export function createNfcController({ Reader, onState = () => {}, getPermission 
     catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', nfcFailure(error, { action: 'lock', permission: getPermission() })); throw error; }
     finally { clearTimeout(timer); release(operation); }
   }
-  return { read, write, lock, cancel, get busy() { return active !== null; } };
+  return { read, watch, write, lock, cancel, get busy() { return active !== null; } };
 }

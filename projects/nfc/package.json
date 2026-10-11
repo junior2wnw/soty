@@ -1,6 +1,6 @@
 {
   "name": "soty-nfc",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,13 @@
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": { "qrcode": "1.5.4" },
-  "devDependencies": { "vite": "7.3.2" },
-  "engines": { "node": ">=22.12.0" }
+  "dependencies": {
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "vite": "7.3.2"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

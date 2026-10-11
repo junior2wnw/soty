@@ -4,6 +4,9 @@ import { recordTypes, makeRecord, compileDraft, estimateBytes, estimateTagBytes,
 import { createNfcController, nfcAvailability } from './nfc.mjs';
 import { loadLocal, loadTemplates, restoreLocalDraft, saveLocal, saveTemplates, recoveryFile, templateLimit, storageKeys, templateFile, draftLink, parseDraftLink } from './storage.mjs';
 import { readableRecord } from './readable.mjs';
+import { analyzeTag, tagReport, importTagReport, copyTagDraft, recordBytes, recordDescription } from './diagnostics.mjs';
+import { diagnosticCard, diagnosticDetails } from './diagnostics-view.mjs';
+import { createBatch } from './batch.mjs';
 
 const paths = {
   link: '<path d="m10 13 4-4m-6 8-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2-1 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
@@ -52,6 +55,8 @@ if (location.hash.startsWith('#draft=')) {
   history.replaceState(null, '', location.pathname + location.search);
 }
 let templates = loadTemplates(storage), selected = 0, view = 'write', capacity = 0, lastRead = null, operation = { phase: 'idle' }, compiled = null, pendingWrite = null, nfcPermission = 'unknown';
+let readMany = false, readingCount = 0, pendingBatch = null, batch = null;
+const readHistory = [];
 // Observe permission without delaying write() beyond the user's click.
 if (availability.supported && navigator.permissions?.query) {
   navigator.permissions.query({ name: 'nfc' }).then(status => {
@@ -71,7 +76,7 @@ header.append(brand, headerActions);
 const nav = el('nav', 'tabs'); nav.setAttribute('aria-label', 'Работа с NFC');
 nav.hidden = embedded;
 for (const [id, label, symbol] of [['write', 'Записать', 'write'], ['read', 'Считать', 'nfc'], ['templates', 'Мои', 'templates']]) {
-  const target = button(label, symbol, 'tab', () => { if (controller.busy) { toast('Сначала завершите или остановите текущую операцию.'); return; } view = id; render(); });
+  const target = button(label, symbol, 'tab', () => { if (controller.busy) { toast('Сначала завершите или остановите текущую операцию.'); return; } if (view === 'batch' && batch) batch.active = false; view = id; render(); });
   target.dataset.view = id; nav.append(target);
 }
 const content = el('main', 'content'); content.id = 'main'; content.tabIndex = -1;
@@ -79,7 +84,17 @@ const footer = el('footer', 'footer'); const compatibility = button(availability
 const toastNode = el('div', 'toast'); toastNode.setAttribute('role', 'status'); toastNode.hidden = true;
 root.append(header, content, footer, nav, toastNode);
 const operationDialog = el('dialog', 'operation-screen'); operationDialog.setAttribute('aria-labelledby', 'operation-title'); operationDialog.setAttribute('aria-describedby', 'operation-hint'); operationDialog.addEventListener('cancel', event => { if (controller.busy) { event.preventDefault(); controller.cancel(); } }); document.body.append(operationDialog);
-const controller = createNfcController({ Reader: window.NDEFReader, getPermission: () => nfcPermission, onState: next => { operation = next; updateOperation(); if (next.phase === 'read') { lastRead = next.result; if (view === 'read') renderReadResult(); } } });
+const controller = createNfcController({ Reader: window.NDEFReader, getPermission: () => nfcPermission, onState: next => {
+  operation = next;
+  if (['read', 'watch-read', 'verified'].includes(next.phase)) {
+    lastRead = { records: next.result.records, serialNumber: next.result.serialNumber, origin: 'tag', capturedAt: new Date().toISOString() };
+    readHistory.unshift(lastRead); if (readHistory.length > 10) readHistory.pop();
+    if (next.phase === 'watch-read') readingCount = next.count;
+    if (view === 'read') render();
+  }
+  updateOperation();
+} });
+const watching = () => ['watch-starting', 'watching', 'watch-read'].includes(operation.phase);
 function draftStatus() { const note = document.querySelector('[data-draft-status]'); if (note) { note.hidden = storageReady; note.textContent = storageReady ? '' : 'Черновик не сохранился. Скачайте его в меню.'; } }
 function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); draftStatus(); }
 function toast(text) { clearTimeout(noticeTimer); toastNode.textContent = text; toastNode.hidden = false; noticeTimer = setTimeout(() => { toastNode.hidden = true; }, 4500); }
@@ -95,9 +110,9 @@ function confirm(title, text, label, action, dangerous = false) {
   row.append(button('Отмена', undefined, 'button', () => dialog.close()), button(label, dangerous ? 'trash' : 'check', 'button ' + (dangerous ? 'button-danger' : 'button-primary'), () => { dialog.close(); action(); })); body.append(row);
 }
 function render() {
-  nav.querySelectorAll('button').forEach(node => { node.setAttribute('aria-current', node.dataset.view === view ? 'page' : 'false'); });
+  nav.querySelectorAll('button').forEach(node => { node.setAttribute('aria-current', node.dataset.view === (view === 'batch' ? 'write' : view) ? 'page' : 'false'); });
   content.replaceChildren(); operation = controller.busy ? operation : { phase: 'idle' };
-  if (view === 'write') renderWrite(); else if (view === 'read') renderRead(); else renderTemplates();
+  if (view === 'write') renderWrite(); else if (view === 'read') renderRead(); else if (view === 'batch') renderBatch(); else renderTemplates();
 }
 function addRecord(kind) {
   if (draft.records.length >= 16) { toast('На одной метке может быть до 16 записей.'); return; }
@@ -125,6 +140,9 @@ const fieldDefinitions = {
   location: [['latitude', 'Широта', '55.751244'], ['longitude', 'Долгота', '37.618423']],
   json: [['json', 'JSON', '{"name":"Моя метка"}', 'textarea']],
   binary: [['mediaType', 'MIME-тип', 'application/octet-stream'], ['hex', 'Байты в HEX', '01 02 0A FF', 'textarea']],
+  app: [['package', 'Пакет приложения', 'org.telegram.messenger']],
+  poster: [['url', 'Ссылка', 'https://example.com', 'url'], ['title', 'Описание', 'Необязательно']],
+  external: [['type', 'Внешний тип', 'example.com:name'], ['text', 'Данные', 'Текст записи', 'textarea']],
 };
 function editor(record) {
   const host = el('div', 'editor-fields'); host.dataset.kind = record.kind;
@@ -134,7 +152,7 @@ function editor(record) {
     const field = el('label', 'field'), label = el('span', 'field-label', title); const input = el(inputType === 'textarea' ? 'textarea' : inputType === 'select' ? 'select' : 'input', 'input');
     input.name = key; input.value = record.values[key]; input.setAttribute('aria-label', title); input.autocomplete = 'off';
     if (inputType === 'select') { for (const [value, title] of [['wpa2', 'WPA2 — с паролем'], ['open', 'Открытая — без пароля']]) { const option = el('option', '', title); option.value = value; option.selected = record.values[key] === value; input.append(option); } }
-    else { input.placeholder = placeholder || ''; input.maxLength = key === 'ssid' ? 64 : record.kind === 'text' || inputType === 'textarea' ? 16_384 : 2048; if (input.tagName === 'INPUT') input.type = inputType === 'url' ? 'text' : inputType || 'text'; else input.rows = ['text', 'json', 'binary'].includes(record.kind) ? 4 : 3; }
+    else { input.placeholder = placeholder || ''; input.maxLength = key === 'ssid' ? 64 : key === 'hex' ? 32_768 : record.kind === 'text' || inputType === 'textarea' ? 16_384 : 2048; if (input.tagName === 'INPUT') input.type = inputType === 'url' ? 'text' : inputType || 'text'; else input.rows = ['text', 'json', 'binary'].includes(record.kind) ? 4 : 3; }
     input.addEventListener('input', () => { record.values[key] = input.value; showValidation = true; persist(); updatePreview(); });
     if (inputType === 'select') input.addEventListener('change', () => { record.values[key] = input.value; persist(); render(); });
     field.append(label, input);
@@ -144,6 +162,7 @@ function editor(record) {
   if (record.kind === 'wifi') host.append(el('p', 'field-hint', 'Пароль сможет прочитать каждый с доступом к метке.'));
   if (record.kind === 'binary' || record.kind === 'json') host.append(el('p', 'field-hint', 'Для приложений, которые знают этот формат.'));
   if (record.kind === 'location') host.append(el('p', 'field-hint', 'Координаты с десятичной точкой.'));
+  if (record.kind === 'binary') host.append(button('Выбрать файл', 'upload', 'button', () => importPayload(record)));
   return host;
 }
 function hasContent(record) {
@@ -175,7 +194,7 @@ function typeGrid(host, select) {
   grid.append(button('Ещё', 'more', 'type-choice', () => chooseRecord(true))); host.append(grid);
 }
 function mainAction(read = false) {
-  if (availability.supported) return { label: read ? 'Считать' : 'Записать', symbol: 'nfc', action: read ? () => void controller.read().catch(() => {}) : () => void writeDraft() };
+  if (availability.supported) return { label: read ? watching() ? 'Остановить чтение' : lastRead ? 'Считать другую' : 'Считать' : 'Записать', symbol: watching() && read ? 'close' : 'nfc', action: read ? readAction : () => void writeDraft() };
   if (embedded) return { label: 'Открыть приложение', symbol: 'external', action: openSeparately };
   return { label: 'На телефон', symbol: 'phone', action: () => void share() };
 }
@@ -240,12 +259,16 @@ function actionsMenu() {
     ['Память метки', 'settings', settings],
     ['Скачать файл', 'download', () => { try { compileDraft(draft); download(draft); } catch (error) { toast(error.message); } }],
     ['Открыть файл', 'upload', importTemplate],
+    ['Диагностика NFC', 'chip', () => { view = 'read'; render(); if (lastRead) showDiagnostics(lastRead); }],
+    ['Открыть отчёт', 'upload', importReport],
+    ['Записать несколько меток', 'copy', startBatch],
     ['Как работает NFC', 'help', help],
   ];
   let transferable = false;
   if (embedded) { try { compileDraft(draft); transferable = true; } catch { /* Existing embedded drafts can still be exported when valid. */ } }
   const visible = embedded ? items.filter(([label]) => ['На телефон', 'Как работает NFC'].includes(label) || (label === 'Скачать файл' && transferable)) : items;
   for (const [label, symbol, action] of visible) body.append(button(label, symbol, 'menu-item', () => { dialog.close(); action(); }));
+  if (batch && !embedded) body.append(button('Отчёт последней серии', 'download', 'menu-item', () => { dialog.close(); exportBatch(batch); }));
   const recovery = recoveryFile(storage);
   if (recovery) body.append(button('Скачать сохранённые исходные данные', 'download', 'menu-item', () => {
     dialog.close(); confirm('Скачать исходные данные?', 'В файле могут быть пароли и содержимое прежних меток. Храните его у себя.', 'Скачать', () => downloadFile(recovery, 'nfc-recovery.json'));
@@ -269,6 +292,9 @@ function previewLabel(record) {
     location: { title: 'Откроет место на карте', detail: v.latitude && v.longitude ? v.latitude + ', ' + v.longitude : 'Координаты места' },
     json: { title: 'Передаст данные приложению', detail: v.json || 'Ваш объект JSON' },
     binary: { title: 'Сохранит ваши байты', detail: v.mediaType || 'Данные своего формата' },
+    app: { title: 'Откроет Android-приложение', detail: v.package || 'Пакет приложения' },
+    poster: { title: 'Ссылка с описанием', detail: v.title || v.url || 'Адрес и подпись' },
+    external: { title: 'Внешний тип NDEF', detail: v.type || 'example.com:name' },
   })[record.kind];
 }
 function updatePreview() {
@@ -293,8 +319,19 @@ function updatePreview() {
 }
 function updateOperation() {
   const phase = operation.phase, busy = ['scanning', 'writing', 'verifying', 'locking'].includes(phase);
-  const write = document.querySelector('[data-write]'); if (write) write.disabled = busy;
+  const write = document.querySelector('[data-write]'); if (write) write.disabled = busy || watching() || (write.hasAttribute('data-batch-write') && batch?.tracker.full);
   const read = document.querySelector('[data-read]'); if (read) read.disabled = busy;
+  const modeCheck = document.querySelector('[data-read-many]'); if (modeCheck) modeCheck.disabled = busy || watching();
+  if (read && availability.supported) {
+    const action = mainAction(true); read.setAttribute('aria-label', action.label); read.querySelector('span').textContent = action.label;
+    read.querySelector('svg')?.replaceWith(icon(action.symbol));
+  }
+  const watchStatus = document.querySelector('[data-watch-status]');
+  if (watchStatus) { watchStatus.hidden = !watching(); watchStatus.textContent = operation.hint || (operation.phase === 'watch-starting' ? 'Подключаем NFC…' : readingCount ? 'Прочитано: ' + readingCount : 'Поднесите метку'); }
+  if (['watch-starting', 'watching', 'watch-read', 'watch-stopped'].includes(phase)) {
+    if (operationDialog.open) operationDialog.close();
+    if (phase === 'watch-stopped') toast(operation.message); return;
+  }
   if (['idle', 'read', 'cancelled'].includes(phase)) {
     if (operationDialog.open) operationDialog.close();
     if (phase === 'cancelled') toast(operation.message || 'Остановлено'); return;
@@ -309,8 +346,9 @@ function updateOperation() {
   hint.id = 'operation-hint';
   const actions = el('div', 'operation-actions');
   if (phase === 'error' && operation.canOverwrite && pendingWrite) {
-    actions.append(button('Перезаписать метку', 'write', 'button button-primary button-wide operation-action', () => requestOverwrite(pendingWrite)));
+    actions.append(button('Перезаписать метку', 'write', 'button button-primary button-wide operation-action', () => requestOverwrite(pendingWrite, pendingBatch)));
   }
+  if (['verified', 'written'].includes(phase) && pendingBatch?.active && !pendingBatch.tracker.full) actions.append(button('Следующая метка', 'nfc', 'button button-primary button-wide operation-action', () => { operationDialog.close(); void runBatch(pendingBatch); }));
   const action = button(busy ? 'Отмена' : phase === 'error' ? 'Закрыть' : 'Готово', undefined, 'button button-wide operation-action', () => { if (busy) controller.cancel(); else operationDialog.close(); });
   actions.append(action);
   operationDialog.append(signal, title, hint, actions);
@@ -321,10 +359,17 @@ async function writeDraft() {
   showValidation = true; updatePreview();
   if (!compiled) { document.querySelector('.editor-fields .input')?.focus(); return; }
   if (!availability.supported) return; persist();
-  pendingWrite = compiled;
-  try { await controller.write(pendingWrite, { overwrite: false }); } catch { /* Controller exposes the actual outcome. */ }
+  await performWrite(compiled);
 }
-function requestOverwrite(message) {
+async function performWrite(message, { overwrite = false, session = null } = {}) {
+  pendingWrite = message; pendingBatch = session;
+  try {
+    const result = await controller.write(message, { overwrite });
+    if (session) { session.tracker.add(result); if (view === 'batch' && batch === session) renderBatchStatus(); updateOperation(); }
+    return result;
+  } catch { return null; /* Controller exposes the actual outcome. */ }
+}
+function requestOverwrite(message, session = null) {
   if (controller.busy || !availability.supported) return;
   if (!message) {
     showValidation = true; updatePreview();
@@ -337,51 +382,182 @@ function requestOverwrite(message) {
   body.append(el('p', 'muted', 'Прежнее содержимое исчезнет. Новые данные:'), tagVisual(recordTypes.find(type => type.id === draft.records[0].kind)?.icon || 'chip', previewLabel(draft.records[0]).detail));
   const row = el('div', 'action-row');
   row.append(button('Отмена', undefined, 'button', () => dialog.close()), button('Заменить и записать', 'write', 'button button-primary', () => {
-    dialog.close(); pendingWrite = message; persist();
+    dialog.close(); persist();
     // Start directly in this confirmation click: Web NFC requires a user gesture.
-    void controller.write(message, { overwrite: true }).catch(() => {});
+    void performWrite(message, { overwrite: true, session });
   }));
   body.append(row);
 }
 function renderRead() {
-  const card = el('section', 'read-card'); card.append(tagVisual('nfc'), el('h1', 'stage-title', 'Считать метку'));
-  const action = mainAction(true), read = button(action.label, action.symbol, 'button button-primary button-wide primary-action', action.action); read.dataset.read = '';
-  card.append(read); content.append(card); const results = el('section', 'read-results'); results.dataset.readResults = ''; content.append(results); renderReadResult();
+  const card = el('section', lastRead ? 'read-bar' : 'read-card');
+  if (!lastRead) card.append(tagVisual('nfc'));
+  card.append(el('h1', 'stage-title', lastRead?.origin === 'file' ? 'Отчёт из файла' : lastRead ? 'Метка' : 'Считать метку'));
+  const action = mainAction(true), read = button(action.label, action.symbol, 'button button-primary ' + (lastRead ? '' : 'button-wide primary-action'), action.action); read.dataset.read = '';
+  card.append(read); content.append(card);
+  if (availability.supported) {
+    const modes = el('div', 'read-modes'), label = el('label', 'check-row'), check = el('input'); check.type = 'checkbox'; check.checked = readMany; check.disabled = controller.busy; check.dataset.readMany = '';
+    check.addEventListener('change', () => { readMany = check.checked; }); label.append(check, el('span', '', 'Читать несколько меток'));
+    const status = el('span', 'watch-status'); status.dataset.watchStatus = ''; status.setAttribute('role', 'status'); status.hidden = !watching(); modes.append(label, status); content.append(modes);
+  }
+  if (!lastRead) content.append(button('Открыть отчёт из файла', 'upload', 'text-button report-import', importReport));
+  const results = el('section', 'read-results'); results.dataset.readResults = ''; content.append(results); renderReadResult();
+}
+function readAction() {
+  if (watching()) { controller.cancel(); return; }
+  if (controller.busy) return;
+  readingCount = 0;
+  void (readMany ? controller.watch() : controller.read()).catch(() => {});
 }
 function snapshotCard(snapshot) {
   const card = el('article', 'read-record'), header = el('div', 'read-record-head');
   const label = ({ text: 'Текст', url: 'Ссылка', 'absolute-url': 'Ссылка', mime: snapshot.mediaType === 'application/vnd.wfa.wsc' ? 'Wi-Fi · конфигурация сети' : snapshot.mediaType?.includes('vcard') ? 'Контакт' : 'Данные', empty: 'Пустая запись', 'smart-poster': 'Ссылка с описанием' })[snapshot.recordType] || 'Свои данные';
   header.append(icon(snapshot.recordType === 'url' ? 'link' : 'chip'), el('strong', '', label)); card.append(header);
+  const info = recordDescription(snapshot); header.append(el('span', 'record-format', info.label));
+  if (snapshot.redacted) { card.append(el('p', 'muted small', 'Содержимое не включено в отчёт.')); return card; }
   const interpreted = readableRecord(snapshot);
   if (interpreted) {
     const list = el('dl', 'read-fields');
     for (const [name, value] of interpreted.fields) list.append(el('dt', '', name), el('dd', '', value.slice(0, 4096)));
     card.append(list);
     if (interpreted.password) { const password = el('p', 'read-value'); password.hidden = true; const reveal = button('Показать пароль Wi-Fi', 'lock', 'text-button', () => { password.hidden = !password.hidden; password.textContent = password.hidden ? '' : interpreted.password; const label = password.hidden ? 'Показать пароль Wi-Fi' : 'Скрыть пароль Wi-Fi'; reveal.querySelector('span').textContent = label; reveal.setAttribute('aria-label', label); }); card.append(reveal, password); }
-    const raw = el('details', 'byte-details'); raw.append(el('summary', '', 'Исходные данные'), el('pre', '', [...fromBase64(snapshot.base64).subarray(0, 512)].map(byte => byte.toString(16).padStart(2, '0')).join(' '))); card.append(raw);
   }
   else if (snapshot.text) card.append(el('p', 'read-value', snapshot.text.slice(0, 4096)));
   else if (snapshot.base64) {
     const bytes = fromBase64(snapshot.base64); card.append(el('p', 'muted small', (snapshot.mediaType || snapshot.recordType) + ' · ' + bytes.length + ' Б'));
     if (snapshot.mediaType?.startsWith('text/') || snapshot.mediaType === 'application/json') card.append(el('pre', 'read-value', new TextDecoder().decode(bytes).slice(0, 4096)));
-    else { const details = el('details', 'byte-details'); details.append(el('summary', '', 'Посмотреть байты'), el('pre', '', [...bytes.subarray(0, 512)].map(byte => byte.toString(16).padStart(2, '0')).join(' ') + (bytes.length > 512 ? ' …' : ''))); card.append(details); }
   }
-  if (snapshot.records) for (const child of snapshot.records) card.append(snapshotCard(child));
+  if (snapshot.records) {
+    const nested = el('details', 'nested-records'); nested.append(el('summary', '', 'Вложенные записи · ' + snapshot.records.length));
+    nested.addEventListener('toggle', () => { if (nested.open && nested.children.length === 1) for (const child of snapshot.records) nested.append(snapshotCard(child)); });
+    card.append(nested);
+  }
   if (snapshot.recordType === 'url' && /^https?:\/\//i.test(snapshot.text || '')) {
     try { const url = new URL(snapshot.text); if (!url.username && !url.password) { const link = el('a', 'text-button', 'Открыть ссылку'); link.href = url.href; link.rel = 'noopener noreferrer'; card.append(link); } } catch { /* Never launch malformed input. */ }
+  }
+  if (!snapshot.records && recordBytes(snapshot).length) {
+    const tools = el('div', 'record-tools');
+    tools.append(button('Скачать данные', 'download', 'text-button', () => downloadBytes(recordBytes(snapshot), 'nfc-record.bin')));
+    const bytes = el('details', 'byte-details'); bytes.append(el('summary', '', 'Байты из Web NFC'), el('pre', '', [...recordBytes(snapshot).subarray(0, 512)].map(byte => byte.toString(16).padStart(2, '0')).join(' ') + (recordBytes(snapshot).length > 512 ? ' …' : '')));
+    card.append(tools, bytes);
   }
   return card;
 }
 function renderReadResult() {
   const results = document.querySelector('[data-read-results]'); if (!results || !lastRead) return; results.replaceChildren();
+  const result = lastRead, ui = { el, icon, button };
+  results.append(diagnosticCard(result, ui, { details: () => showDiagnostics(result), export: () => exportReport(result), repair: prepareLink }));
   const heading = el('div', 'section-head'); heading.append(el('h2', '', 'Содержимое метки'), el('span', 'count-label', recordCount(lastRead.records.length))); results.append(heading);
   if (lastRead.serialNumber) results.append(el('p', 'muted small', 'Номер из NFC: ' + lastRead.serialNumber));
   if (!lastRead.records.length) results.append(el('p', 'muted', 'NDEF-содержимого нет.'));
   for (const record of lastRead.records) results.append(snapshotCard(record));
-  if (lastRead.records.length) results.append(button('Использовать для записи', 'copy', 'button', () => {
-    const replace = () => { const value = { schema: draft.schema, name: 'Скопированная метка', records: lastRead.records.map(snapshot => ({ key: crypto.randomUUID(), kind: 'raw', snapshot })) }; try { compileDraft(value); draft = value; selected = 0; view = 'write'; stage = 'edit'; persist(); render(); } catch (error) { toast(error.message); } };
+  let copy = null; try { const value = copyTagDraft(result); compileDraft(value); copy = value; } catch { /* Metadata reports and unsupported records remain readable. */ }
+  if (copy) results.append(button('Использовать для записи', 'copy', 'button', () => {
+    if (watching()) controller.cancel();
+    const replace = () => { draft = copy; selected = 0; view = 'write'; stage = 'edit'; persist(); render(); };
     confirm('Использовать содержимое метки?', 'Текущий черновик будет заменён. Сначала сохраните его как шаблон, если он вам нужен.', 'Использовать', replace);
   }));
+  if (readHistory.length > 1) {
+    const history = el('details', 'read-history'); history.append(el('summary', '', 'Последние чтения · ' + readHistory.length));
+    for (const [index, item] of readHistory.entries()) {
+      let title = item.records[0] ? recordDescription(item.records[0]).label : 'Метка';
+      try { if (item.records[0]?.recordType === 'url') title = new URL(item.records[0].text).hostname || title; } catch { /* Unusual URI stays a type label. */ }
+      history.append(button((index + 1) + '. ' + title.slice(0, 70), 'read', 'history-item', () => { if (watching()) controller.cancel(); lastRead = item; render(); }));
+    }
+    results.append(history);
+  }
+}
+function showDiagnostics(result) {
+  if (watching()) controller.cancel();
+  const { body } = modal('Диагностика метки');
+  body.append(diagnosticDetails(result, { el }));
+  const steps = el('details', 'iphone-guide'); steps.append(el('summary', '', 'iPhone не реагирует'));
+  const list = el('ol', 'help-steps');
+  for (const text of ['Включите экран iPhone. После перезапуска сначала разблокируйте его; закройте камеру и Wallet.', 'Приложите метку к верхней части iPhone. После чтения появится баннер — нажмите на него.', 'Если реакции нет, проверьте эту же метку в NFC-приложении iPhone. Чтение в приложении отличит проблему фонового распознавания от проблемы совместимости или антенны.', 'Тип чипа и настройки памяти нужно проверить отдельным NFC-ридером: PWA этих данных не получает. NTAG213/215/216 используют стандарт NFC Forum Type 2; совместимость конкретной метки здесь не подтверждается.']) list.append(el('li', '', text));
+  steps.append(list); body.append(steps, button('Скачать отчёт', 'download', 'button', () => exportReport(result)));
+}
+function prepareLink(url) {
+  if (watching()) controller.cancel();
+  const record = makeRecord('url'); record.values.url = url;
+  const value = { schema: draft.schema, name: 'Ссылка для телефона', records: [record] };
+  acceptDraft(value);
+}
+function exportReport(result) {
+  if (watching()) controller.cancel();
+  const { dialog, body } = modal('Отчёт о метке');
+  body.append(el('p', 'muted small', 'По умолчанию — типы и размеры записей. Содержимое и номер метки не включены. Файл создаётся на этом устройстве.'));
+  const payload = el('input'), identifiers = el('input'); payload.type = identifiers.type = 'checkbox';
+  for (const [input, text] of [[payload, 'Включить содержимое'], [identifiers, 'Включить номер метки и ID записей']]) { const row = el('label', 'check-row'); row.append(input, el('span', '', text)); body.append(row); }
+  const note = el('p', 'validation'); note.setAttribute('role', 'status'); note.hidden = true;
+  payload.addEventListener('change', () => { note.hidden = !payload.checked; note.textContent = payload.checked ? 'В файл попадут ссылки, контакты и пароли, если они есть на метке.' : ''; });
+  body.append(note, button('Скачать JSON', 'download', 'button button-primary button-wide', () => {
+    try { downloadFile(tagReport(result, { includePayload: payload.checked, includeIdentifiers: identifiers.checked }), 'nfc-report.json'); dialog.close(); } catch (error) { note.hidden = false; note.textContent = error.message; }
+  }));
+}
+function importReport() {
+  const input = el('input'); input.type = 'file'; input.accept = '.json,application/json';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0]; if (!file) return;
+    try {
+      if (file.size > 400_000) throw new Error('Выберите отчёт до 400 КБ.');
+      const result = importTagReport(JSON.parse(await file.text()));
+      if (controller.busy) throw new Error('Сначала остановите чтение NFC.');
+      lastRead = result; view = 'read'; render(); toast('Отчёт открыт. Это данные из файла, а не новое чтение метки.');
+    } catch (error) { toast(error.message || 'Не удалось открыть отчёт.'); }
+  }); input.click();
+}
+function importPayload(record) {
+  const original = JSON.stringify(record.values), input = el('input'); input.type = 'file';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0]; if (!file) return;
+    try {
+      if (file.size > 16_000) throw new Error('Для NFC выберите файл до 16 КБ. Реальная метка может вмещать меньше.');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const values = { mediaType: /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(file.type) ? file.type : 'application/octet-stream', hex: [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('') };
+      const apply = () => {
+        if (!draft.records.includes(record) || JSON.stringify(record.values) !== original) { toast('Черновик изменился. Выберите файл снова.'); return; }
+        record.values = values; persist(); render();
+      };
+      if (record.values.hex.trim()) confirm('Заменить данные файлом?', file.name + ' · ' + bytes.length + ' Б. Файл останется на этом устройстве.', 'Использовать файл', apply); else apply();
+    } catch (error) { toast(error.message || 'Не удалось прочитать файл.'); }
+  }); input.click();
+}
+function startBatch() {
+  showValidation = true; updatePreview();
+  try { compiled = compileDraft(draft); if (capacity && estimateTagBytes(compiled) > capacity) throw new Error('Данные превышают выбранную память метки.'); } catch (error) { toast(error.message); return; }
+  const message = compiled, label = previewLabel(draft.records[0]).detail, { dialog, body } = modal('Одна запись. Несколько меток.');
+  body.classList.add('overwrite-confirm'); body.append(tagVisual('copy', label), el('p', 'muted small', recordCount(message.records.length) + ' · ≈ ' + estimateTagBytes(message) + ' Б'));
+  body.append(el('p', 'muted', 'Каждая следующая запись запускается вашей кнопкой. Держите одну метку до результата, затем уберите её.'));
+  const begin = overwrite => {
+    batch = { message, overwrite, active: true, tracker: createBatch(), label };
+    view = 'batch'; render();
+  };
+  body.append(button('Записывать пустые метки', 'nfc', 'button button-primary button-wide', () => { dialog.close(); begin(false); }), button('С заменой прежних данных', 'write', 'button button-wide', () => {
+    dialog.close(); confirm('Перезаписывать метки в серии?', 'Прежнее содержимое каждой метки исчезнет. Запись начинается только по кнопке и проверяется чтением.', 'Начать серию', () => begin(true));
+  }));
+}
+function renderBatch() {
+  if (!batch) { view = 'write'; render(); return; }
+  const card = el('section', 'batch-card'); card.append(tagVisual('copy', batch.label), el('h1', 'stage-title', 'Серия меток'));
+  const stats = el('div', 'batch-stats'); stats.dataset.batchStats = ''; stats.setAttribute('role', 'status'); card.append(stats);
+  const write = button(availability.supported ? 'Записать следующую' : 'На телефон', availability.supported ? 'nfc' : 'phone', 'button button-primary button-wide primary-action', () => { if (availability.supported) void runBatch(batch); else void share(); }); write.dataset.write = ''; write.dataset.batchWrite = ''; card.append(write);
+  card.append(el('p', 'muted small', batch.overwrite ? 'В этой серии прежние данные заменяются.' : 'В этой серии защищаем прежние данные.'), button('Закончить серию', 'check', 'text-button', () => { if (controller.busy) controller.cancel(); batch.active = false; view = 'write'; render(); exportBatch(batch); }));
+  content.append(card); renderBatchStatus();
+}
+function renderBatchStatus() {
+  const stats = document.querySelector('[data-batch-stats]'); if (!stats || !batch) return;
+  stats.replaceChildren();
+  for (const [label, count] of [['Проверенных номеров', batch.tracker.counts.verified], ['Без проверки', batch.tracker.counts.unverified], ['Повторов', batch.tracker.counts.repeats], ['Без номера', batch.tracker.counts.withoutSerial]]) {
+    const item = el('div'); item.append(el('strong', '', String(count)), el('span', '', label)); stats.append(item);
+  }
+  const write = document.querySelector('[data-batch-write]'); if (write) write.disabled = controller.busy || batch.tracker.full;
+}
+async function runBatch(session) {
+  if (!session?.active || controller.busy || session.tracker.full) return;
+  await performWrite(session.message, { overwrite: session.overwrite, session });
+}
+function exportBatch(session) {
+  const { body } = modal('Результат серии'); body.append(el('p', 'muted small', 'Отчёт содержит счётчики. Номера и содержимое меток в него не входят. Метки без номера и повторные чтения считаются отдельно.'));
+  body.append(button('Скачать отчёт серии', 'download', 'button button-primary button-wide', () => downloadFile(session.tracker.report(), 'nfc-batch.json')));
 }
 function saveTemplate() {
   try { compileDraft(draft); } catch (error) { toast(error.message); return; }
@@ -400,7 +576,10 @@ function download(draftValue) {
   downloadFile(templateFile(draftValue), 'nfc-template.json');
 }
 function downloadFile(value, name) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob);
+  downloadBytes(new TextEncoder().encode(JSON.stringify(value, null, 2)), name, 'application/json');
+}
+function downloadBytes(bytes, name, type = 'application/octet-stream') {
+  const blob = new Blob([bytes], { type }), url = URL.createObjectURL(blob);
   const link = el('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 function importTemplate() {

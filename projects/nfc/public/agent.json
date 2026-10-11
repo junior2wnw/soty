@@ -1,6 +1,7 @@
 {
   "schema": "soty.nfc-agent.v1",
   "name": "Метки",
+  "version": "1.1.0",
   "origin": "https://nfc.xn--n1afe0b.online",
   "templateSchema": "soty.nfc-template.v1",
   "maxRecords": 16,
@@ -14,10 +15,20 @@
     "sms": ["phone", "body"],
     "location": ["latitude", "longitude"],
     "json": ["json"],
-    "binary": ["mediaType", "hex"]
+    "binary": ["mediaType", "hex"],
+    "app": ["package"],
+    "poster": ["url", "title"],
+    "external": ["type", "text"]
   },
   "example": { "schema": "soty.nfc-template.v1", "name": "Соты", "records": [{ "kind": "url", "values": { "url": "https://соты.online" } }] },
   "handoff": "Create a UTF-8 JSON template with string field values. The user opens it via Действия → Открыть файл, reviews it, then presses Записать on Android Chrome with NFC. The browser requires the user's gesture and NFC permission. There is no remote tag-writing API.",
   "wifiSecurity": ["wpa2", "open"],
+  "reportSchema": "soty.nfc-report.v1",
+  "batchSchema": "soty.nfc-batch.v1",
+  "features": ["NDEF diagnostics", "iPhone URI format check", "continuous read", "manual batch write with read-back", "report import/export", "MIME file import", "API payload download", "copy NDEF records", "confirmed overwrite", "empty NDEF message", "makeReadOnly when supported"],
+  "reportPrivacy": "Report exports omit record payloads, tag serial and record IDs by default. The user may explicitly include them. Imported reports are labelled as files and never presented as a new physical scan. Hardware declarations in report files are ignored.",
+  "hardwareLimits": { "chipModel": "not exposed by Web NFC", "technology": "not exposed by Web NFC", "capacity": "not exposed by Web NFC", "writeProtection": "not exposed by Web NFC", "rawMemory": false, "lowLevelCommands": false, "cardEmulation": false },
+  "reportLimits": { "fileBytes": 400000, "topLevelRecords": 128, "totalRecords": 256, "nesting": 8, "payloadBytes": 65536 },
+  "locationFormat": "HTTPS Google Maps link for Android and iPhone background URL opening; legacy raw geo records are preserved",
   "privacy": "Tag data and imported templates stay on the user's device. Do not include credentials in example templates or URLs."
 }

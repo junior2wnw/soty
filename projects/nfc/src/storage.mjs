@@ -12,7 +12,7 @@ export function restoreLocalDraft(value) {
     if (!record?.values || typeof record.values !== 'object' || Array.isArray(record.values)) throw new Error('invalid_draft');
     for (const key of Object.keys(fresh.values)) {
       const field = record.values[key];
-      if (typeof field !== 'string' || field.length > 16_384) throw new Error('invalid_draft');
+      if (typeof field !== 'string' || field.length > (key === 'hex' ? 32_768 : 16_384)) throw new Error('invalid_draft');
       fresh.values[key] = field;
     }
     return fresh;

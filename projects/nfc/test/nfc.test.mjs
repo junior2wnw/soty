@@ -99,3 +99,24 @@ test('a failed overwrite does not repeat or report any completed write', async (
   assert.equal(f.controller.busy, false); assert.equal(f.readers[0].options.signal.aborted, true);
   assert.equal(f.states.some(state => ['written', 'verified', 'verifying'].includes(state.phase)), false);
 });
+test('continuous reading filters immediate repeats, permits another tag and stops all listeners', async () => {
+  let time = 100;
+  const f = fixture({ waitRead: true }, { now: () => time, watchMs: 1000 });
+  const pending = f.controller.watch(); await Promise.resolve();
+  const send = serialNumber => { const event = new Event('reading'); event.message = message; event.serialNumber = serialNumber; f.readers[0].dispatchEvent(event); };
+  send('aa'); send('aa'); send('bb'); time = 2000; send('bb');
+  assert.equal(f.states.filter(state => state.phase === 'watch-read').length, 3);
+  assert.equal(f.controller.busy, true); await assert.rejects(f.controller.write(message), { name: 'InvalidStateError' });
+  f.controller.cancel('hidden'); assert.equal((await pending).count, 3); assert.equal(f.controller.busy, false);
+  assert.match(f.states.at(-1).message, /свёрнуто/); assert.equal(f.readers[0].scanOptions.signal.aborted, true);
+  const count = f.states.length; send('cc'); assert.equal(f.states.length, count);
+});
+test('continuous scan failures release the reader; read errors do not terminate a live session', async () => {
+  const denied = fixture({ scanError: new DOMException('Denied', 'NotAllowedError') });
+  await assert.rejects(denied.controller.watch(), { name: 'NotAllowedError' }); assert.equal(denied.controller.busy, false);
+  const f = fixture({ waitRead: true }, { watchMs: 10 });
+  const pending = f.controller.watch(); await Promise.resolve(); f.readers[0].dispatchEvent(new Event('readingerror'));
+  assert.equal(f.controller.busy, true);
+  const result = await pending; assert.equal(result.count, 0); assert.equal(f.controller.busy, false);
+  assert.equal(f.states.some(state => state.phase === 'watching' && state.hint), true);
+});
