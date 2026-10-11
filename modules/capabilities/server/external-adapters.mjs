@@ -286,9 +286,15 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
       // the caller never receives it without this fresh original read check.
       return { reused: accepted.reused, ...get({ actor: captured.actor, invocationId }) };
     },
-    async reconcile({ reference, invocationId }) {
+    async reconcile({ reference, invocationId, expectedInput }) {
       const value = binding(reference);
       assert(!value.readonly, 'readonly_query_api_required');
+      // Optional installed-host fence for an ORIGINAL selected-window receipt.
+      // No private dispatch input/digest is returned or accepted by HTTP/MCP.
+      if (expectedInput !== undefined) {
+        const captured = data(expectedInput);
+        assert(invocations.matchesGenericInput({ invocationId, reference: value.contract, input: captured }), 'external_proof_mismatch');
+      }
       return run(value, identifier(invocationId), false);
     },
     get,

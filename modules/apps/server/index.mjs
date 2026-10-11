@@ -26,9 +26,9 @@ import { createAppAuthorityPort } from './authority-port.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
-import { selectedNativeHandoff } from '../scoped-embed/resource-route-adapters.mjs';
+import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
 import { STANDARD_SELECTED_SOURCE_V3 } from '../../source-app/server/standard-profile.mjs';
-import { hash as scopedHash, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
+import { hash as scopedHash, capture as scopedCapture, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
@@ -974,9 +974,36 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   async function callScopedContextSource({scope,handle,requestId,signal,withCurrentOwner}) {
     const standard=scope.resource?.selection?.kind==='soty.resource.v1'&&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3);
     assertApps(!standard||typeof requestId==='string'&&/^[A-Za-z0-9_.:-]{16,128}$/u.test(requestId),'context_source_denied',403);
-    const path=standard?'/api/embed/query':'/api/embed/context',method=standard?'POST':'GET',deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
+    const path=standard?'/api/embed/query':'/api/embed/context',method=standard?'POST':'GET';
     // Fixed read operation, never a caller/model-selected URL, method or payload.
     const body=standard?Buffer.from(JSON.stringify({requestId,input:{operation:'soty.current_context'}})):null;
+    return callSelectedSource({scope,handle,path,method,body,kind:'read',signal,withCurrentOwner,contextRead:true});
+  }
+  /** Host-only Native port. Three existing routes, the ORIGINAL selected
+   * handle/cookie/connector slot and the existing finite stream budget only. */
+  async function callScopedNativeSource({scope,handle,path,requestId,input,signal,withCurrentOwner}) {
+    const standard=scope.resource?.selection?.kind==='soty.resource.v1'
+      &&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3)
+      &&['/api/embed/query','/api/embed/invoke','/api/embed/receipt'].includes(path);
+    const hive=scope.resource?.selection?.kind==='hive.project.v1'
+      &&[HIVE_SELECTED_SOURCE,HIVE_SELECTED_KERNEL_SOURCE].some(pin=>scopedHash(scope.sourceProfile)===scopedHash(pin))
+      &&['/api/embed/project','/api/embed/operations','/api/embed/changes'].includes(path);
+    assertApps((standard||hive)&&typeof requestId==='string'&&/^[A-Za-z0-9_.:-]{16,128}$/u.test(requestId),'context_source_denied',403);
+    const data=scopedCapture(input);let method='POST',body,kind='read';
+    if(standard){body=Buffer.from(JSON.stringify({requestId,input:data}));kind=path==='/api/embed/invoke'?'write':'read';}
+    else if(path==='/api/embed/operations'){
+      assertApps(Object.keys(data).sort().join(',')==='expectedRevision,operations'&&Number.isSafeInteger(data.expectedRevision)&&data.expectedRevision>=1,'context_source_denied',403);
+      body=Buffer.from(JSON.stringify({schema:'hive.operations',version:2,requestId,...data}));kind='write';
+    }else{
+      method='GET';body=null;
+      assertApps(path==='/api/embed/project'?Object.keys(data).length===0:Object.keys(data).join(',')==='after'
+        &&Number.isSafeInteger(data.after)&&data.after>=0,'context_source_denied',403);
+      if(path==='/api/embed/changes')path+='?after='+data.after+'&limit=1';
+    }
+    return callSelectedSource({scope,handle,path,method,body,kind,signal,withCurrentOwner,contextRead:false});
+  }
+  async function callSelectedSource({scope,handle,path,method,body,kind,signal,withCurrentOwner,contextRead}) {
+    const deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
     assertApps(typeof withCurrentOwner==='function'
       &&signal instanceof AbortSignal&&!signal.aborted,'context_source_denied',403);
     assertApps(contextSourceCalls.size<SCOPED_EMBED_LIMITS.inflight,'context_source_capacity',429);
@@ -990,13 +1017,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     });
     assertApps(current()===true,'context_source_denied',403);
     const route=embedRoute(held.record.profile,method,path);
-    assertApps(route.kind==='read'&&(body?body.length<=route.requestBytes:route.requestBytes===0)&&route.responseBytes<=65536,'context_source_route_denied',403);
+    assertApps(route.kind===kind&&(body?body.length<=route.requestBytes:route.requestBytes===0),'context_source_route_denied',403);
     let timer,settled=false,finish,fail,status,headersSent=false,bytes=0;
     const parts=[],headers=new Map();
     const response=new Promise((yes,no)=>{finish=yes;fail=no;});
     const sink=new Writable({write(chunk,_encoding,next){
       bytes+=chunk.length;
-      if(bytes>route.responseBytes){next(new AppsError('context_source_response_bound',502));return;}
+      if(bytes>Math.min(route.responseBytes,65536)){next(new AppsError('context_source_response_bound',502));return;}
       parts.push(Buffer.from(chunk));next();
     }});
     sink.setHeader=(name,value)=>{assertApps(!headersSent,'context_source_response_changed',502);headers.set(name.toLowerCase(),value);};
@@ -1017,7 +1044,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     timer=setTimeout(abort,Math.max(1,deadline-performance.now()));timer.unref?.();
     try{
       assertApps(current()===true&&!signal.aborted,'context_source_denied',403);
-      const req={method,url:path,headers:{origin:held.record.profile.embedOrigin,accept:'application/json; profile="urn:soty:current-context:v1"',
+      const req={method,url:path,headers:{origin:held.record.profile.embedOrigin,accept:contextRead?'application/json; profile="urn:soty:current-context:v1"':'application/json',
         ...(body?{'content-type':'application/json'}:{})}};
       stream=openStream({id:scope.appId},held.session,{kind:'http',req,res:sink});
       assertApps(stream.channel===held.channel&&stream.runtimeBinding===held.runtimeBinding&&stream.scopedRecord===held.record,'context_source_scope_changed',403);
@@ -1305,7 +1332,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return hostClassifier.allowsTlsDomain(domain);
   }
   return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
-    withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,
+    withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     withAppAuthority: appAuthority,
     withReviewedAppAuthority(request, callback) {
       return appAuthority({ ...request, mode: 'owner' }, ({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants }) =>

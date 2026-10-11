@@ -4,6 +4,8 @@ export type RuntimeAdapterContract<Role extends string, Capability extends strin
   id: string;
   roles: readonly Role[];
   capabilities: readonly Capability[];
+  /** Installed host code only; exact action==capability, never model/config JSON. */
+  effectCapabilities?: readonly Capability[];
   applicability: string;
   systemContext: (terminalToolName: string) => string;
   isActionHrefAllowed: (href: string) => boolean;
@@ -153,9 +155,10 @@ export function runtimeConversation(history: readonly string[]): RuntimeMessage[
   });
 }
 
-export function authorizeRuntimeAction<Capability extends string>(action: string, capability: string | undefined, allowedCapabilities: readonly Capability[]) {
+export function authorizeRuntimeAction<Capability extends string>(action: string, capability: string | undefined, allowedCapabilities: readonly Capability[], effectCapabilities: readonly Capability[] = []) {
   const forbidden = /(?:book(?:ing)?|reserv|payment|pay|crm|send|delete|remove|pii|transfer|submit|publish|write|create|update|брон|оплат|отправ|удал|передач|публикац|созда|измен)/iu;
-  if (forbidden.test(action) || !capability || !allowedCapabilities.includes(capability as Capability)) {
+  const installedEffect = action === capability && effectCapabilities.includes(capability as Capability);
+  if (forbidden.test(action) && !installedEffect || !capability || !allowedCapabilities.includes(capability as Capability)) {
     return { allowed: false as const, handoff: { action, preview: true as const, requiresHumanSubmit: true as const } };
   }
   return { allowed: true as const };
@@ -374,7 +377,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
     }
     const tool = options.tools[call.function.name];
     if (!tool) throw new Error("provider-tool-unknown");
-    const authorization = authorizeRuntimeAction(call.function.name, tool.capability, options.adapter.capabilities);
+    const authorization = authorizeRuntimeAction(call.function.name, tool.capability, options.adapter.capabilities, options.adapter.effectCapabilities);
     if (!authorization.allowed) throw new Error("tool-not-authorized");
     let args: unknown;
     try { args = JSON.parse(call.function.arguments); } catch { throw new Error("tool-arguments-invalid"); }

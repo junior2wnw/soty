@@ -1,0 +1,32 @@
+{
+  "schema": "soty.personal-selected-native-local-gates.v1",
+  "rootBase": "046fec493b48f5ce4f29ffb2511f234830c1b901",
+  "hiveSource": "dc5e734e4ce7fd44103ca0ae3755211284543334",
+  "node": "24.19.0",
+  "focused": { "tests": 180, "pass": 180, "fail": 0, "skipped": 0 },
+  "actualNativeActions": { "tests": 4, "pass": 4, "fail": 0, "skipped": 0 },
+  "typecheck": true,
+  "ordinaryNativeSql": true,
+  "hiveNativeSql": true,
+  "installedHttpWs": true,
+  "originalReceiptAfterUnknown": true,
+  "unknownInvokeCount": 1,
+  "twoWindowsIsolated": true,
+  "revokeAndLateAck": true,
+  "hiveOriginalRevisionNotLatestReplay": true,
+  "hiveNativeTrackedChanges": 0,
+  "modelAndBilling": "synthetic-local-callbacks",
+  "legacyBaselineReplay": {
+    "revision": "046fec493b48f5ce4f29ffb2511f234830c1b901",
+    "tests": 28,
+    "pass": 2,
+    "fail": 26,
+    "skipped": 0,
+    "categories": ["maintained-planner-renewal-package-absent", "legacy-oauth-consent-http400"],
+    "wholeCiAccepted": false
+  },
+  "deployed": false,
+  "naturalBrowserAccepted": false,
+  "paidModelCalls": 0,
+  "productionChanged": false
+}

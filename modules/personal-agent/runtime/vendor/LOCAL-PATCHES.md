@@ -51,3 +51,23 @@ synthetic model/receipt IO. Two old-schema failures, schema-guided draft and
 sourced-fact success, and invalid claims/evidence rejection are covered without
 paid calls. The strict JSON, accounting, authorization and replay boundaries are
 unchanged. The donor pin records this local patch; deployment is separate.
+
+## installed-exact-effect-capability
+
+The portable runtime still defaults to denying effect names. An optional
+`effectCapabilities` list comes only from the installed host adapter. Admission
+requires an exact action name equal to its capability, membership in this
+explicit effect list, and membership in the ordinary capability allowlist.
+Soty supplies only `source_write_1`, when its selected-window tool exists.
+This does not issue a grant, choose a window or authorize a Native effect.
+The existing Root capability ledger, original selected handle and Native ACL
+remain independently necessary. No provider JSON/configuration can extend the
+list, and the existing one-tool + terminal cycle and retry rules stay unchanged.
+
+Verification: `server/test/selected-native-source.test.mjs` checks default denial,
+missing ordinary capability, and a mismatched action name. The ordinary Native
+and HIVE integration tests exercise the signed runtime through real installed
+HTTP/WS and Native SQL with synthetic model/billing callbacks. They perform no
+paid provider call. Source receipts are independently read; an unknown result
+uses the original opaque invocation ID and exact selected input for a readonly
+reconciliation, without another Native mutation.

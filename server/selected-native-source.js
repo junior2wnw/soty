@@ -1,0 +1,139 @@
+import { types } from 'node:util';
+import { createTrustedReadonlyQueryAdapter, captureQueryData } from '../modules/capabilities/server/readonly-queries.mjs';
+import { EXTERNAL_ADAPTER_PROFILE } from '../modules/capabilities/server/external-adapters.mjs';
+import { canonicalHash, freezeDeep, AccessError } from '../modules/capabilities/server/validation.mjs';
+import { createCatalog } from '../modules/capabilities/server/catalog.mjs';
+import { selectedResource } from '../modules/apps/scoped-embed/resource-profile.mjs';
+import { STANDARD_SELECTED_SOURCE_V3 } from '../modules/source-app/server/standard-profile.mjs';
+import { HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../modules/apps/scoped-embed/resource-route-adapters.mjs';
+
+const installed = new WeakMap();
+const need = value => { if (!value) throw new AccessError('selected_native_source_denied'); };
+const fields = (value, required, optional = []) => need(value && !Array.isArray(value)
+  && typeof value === 'object' && Object.keys(value).every(key => [...required, ...optional].includes(key))
+  && required.every(key => Object.hasOwn(value, key)));
+const same = (a, b) => canonicalHash(a) === canonicalHash(b);
+const isHandle = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value);
+export const selectedNativeBindingId = appId => `app.${appId}:selected-native`;
+export function isSelectedNativeContract(contract) {
+  return contract?.binding?.id === selectedNativeBindingId(contract.appId) && contract.binding.version === 1
+    && Object.keys(contract.inputSchema?.properties ?? {}).sort().join(',') === 'handle,input';
+}
+
+/** Operator CODE supplies a bounded Native schema and, for effects, a typed
+ * projection of an independently read Native receipt. A descriptor alone
+ * grants no rights, selects no window and runs no adapter code. */
+export function createSelectedNativeSourceApplication(raw) {
+  need(raw && typeof raw === 'object' && !types.isProxy(raw) && !Array.isArray(raw)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(raw)));
+  const descriptors = Object.getOwnPropertyDescriptors(raw), names = ['scope', 'catalog', 'projectReceipt', 'guidance'];
+  need(Reflect.ownKeys(descriptors).every(key => typeof key === 'string' && names.includes(key)
+    && Object.hasOwn(descriptors[key], 'value')) && ['scope', 'catalog'].every(key => Object.hasOwn(descriptors, key)));
+  const rawScope = descriptors.scope.value, rawCatalog = descriptors.catalog.value,
+    projectReceipt = descriptors.projectReceipt?.value, guidance = descriptors.guidance?.value;
+  const scope = captureQueryData(rawScope), catalog = captureQueryData(rawCatalog);
+  fields(scope, ['appId', 'target', 'sourceProfile', 'resource']); fields(scope.target, ['revision', 'digest']);
+  need(/^app-[a-f0-9]{32}$/u.test(scope.appId) && Number.isSafeInteger(scope.target.revision) && scope.target.revision > 0
+    && /^[a-f0-9]{64}$/u.test(scope.target.digest));
+  selectedResource(scope.resource); need(scope.resource.appId === scope.appId);
+  const standard = scope.resource.selection.kind === 'soty.resource.v1' && same(scope.sourceProfile, STANDARD_SELECTED_SOURCE_V3),
+    hive = scope.resource.selection.kind === 'hive.project.v1' && [HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE].some(pin => same(scope.sourceProfile, pin));
+  need(standard || hive);
+  fields(catalog, ['capabilityId', 'version', 'appId', 'title', 'description', 'visibility', 'executionEnabled', 'inputSchema', 'outputSchema', 'resources', 'effects', 'recipients']);
+  need(catalog.appId === scope.appId && catalog.inputSchema.type === 'object' && Array.isArray(catalog.effects));
+  const effectful = catalog.effects.length > 0;
+  need(effectful ? typeof projectReceipt === 'function' && !types.isProxy(projectReceipt)
+    && !types.isAsyncFunction(projectReceipt) && !types.isGeneratorFunction(projectReceipt) : projectReceipt === undefined);
+  freezeDeep(scope); freezeDeep(catalog);
+  const sourceBinding = { id: selectedNativeBindingId(scope.appId), version: 1,
+    digest: canonicalHash({ schema: 'soty.selected-native-source.v1', scope, catalog }) };
+  const wrapped = freezeDeep({ ...catalog, inputSchema: { type: 'object', additionalProperties: false, required: ['handle', 'input'],
+    properties: { handle: { type: 'string', minLength: 43, maxLength: 43 }, input: catalog.inputSchema } },
+    executionBinding: { kind: 'registered', handler: catalog.capabilityId, version: 1, binding: sourceBinding } });
+  const registry = createCatalog([wrapped]), entry = registry.get(catalog.capabilityId, catalog.version);
+  let host;
+  // The existing composition holds original Root/App authority. Native current
+  // authority is checked by the original handle before and after EACH HTTP call.
+  const withAuthority = (_request, callback) => { need(host && typeof callback === 'function'); return callback(); };
+  installed.set(withAuthority, { scope, bind(value) { need(!host); host = value; } });
+  function input(raw) {
+    const value = captureQueryData(raw); fields(value, ['handle', 'input']); need(isHandle(value.handle));
+    registry.validateInput(entry, value); return value;
+  }
+  async function call(request, path, data, signal) {
+    need(host && signal instanceof AbortSignal && !signal.aborted);
+    const captured = input(request.input), response = await host.apps().callScopedNativeSource({ scope,
+      handle: captured.handle, path, requestId: request.requestId, input: data, signal,
+      withCurrentOwner: callback => host.withOwner(request, callback) });
+    need(!signal.aborted && response.status === 200);
+    const envelope = captureQueryData(response.data);
+    if (hive) return envelope;
+    fields(envelope, ['ok', 'data']); need(envelope.ok === true); return captureQueryData(envelope.data);
+  }
+  function hiveOperation(value) {
+    fields(value, ['operation', 'expectedRevision', 'id', 'title']);
+    need(value.operation === 'hive.cell.title' && Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 1
+      && typeof value.id === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value.id)
+      && typeof value.title === 'string' && value.title.trim() && value.title.length <= 240);
+    return [{ op: 'object.update', id: value.id, patch: { title: value.title } }];
+  }
+  const adapter = effectful ? Object.freeze({ profile: EXTERNAL_ADAPTER_PROFILE, withAuthority,
+    async execute(request, signal) { const data = input(request.input); need(request.inputDigest === canonicalHash(data));
+      if (hive) await call(request, '/api/embed/operations', { expectedRevision: data.input.expectedRevision, operations: hiveOperation(data.input) }, signal);
+      else await call(request, '/api/embed/invoke', data.input, signal); },
+    async readProof(request, signal) {
+      const data = input(request.input), base = { requestId: request.requestId, inputDigest: request.inputDigest };
+      need(request.inputDigest === canonicalHash(data));
+      let proof; try {
+        if (hive) {
+          const operations = hiveOperation(data.input), changes = await call(request, '/api/embed/changes', { after: data.input.expectedRevision }, signal);
+          fields(changes, ['projectId', 'changes']); need(changes.projectId === scope.resource.selection.nativeId && Array.isArray(changes.changes) && changes.changes.length <= 1);
+          const change = changes.changes[0];
+          if (!change) return { ...base, outcome: 'not_applied' };
+          fields(change, ['revision', 'requestId', 'actor', 'operations', 'createdAt']);
+          if (change.requestId !== request.requestId) return { ...base, outcome: 'unknown' };
+          need(change.revision === data.input.expectedRevision + 1 && same(change.operations, operations));
+          // Never use POST's latest/replayed revision as this request's receipt.
+          proof = { requestId: request.requestId, inputDigest: canonicalHash(data.input), outcome: 'committed',
+            receipt: { projectId: changes.projectId, revision: change.revision, operations: change.operations } };
+        } else proof = await call(request, '/api/embed/receipt', { inputDigest: canonicalHash(data.input) }, signal);
+      }
+      catch { return { ...base, outcome: 'unknown' }; }
+      fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data']);
+      need(proof.requestId === request.requestId && proof.inputDigest === canonicalHash(data.input)
+        && ['committed', 'not_applied', 'unknown'].includes(proof.outcome));
+      if (proof.outcome !== 'committed') return { ...base, outcome: proof.outcome };
+      const projection = projectReceipt(proof, data.input);
+      if (types.isPromise(projection)) { void Promise.prototype.then.call(projection, () => {}, () => {}); need(false); }
+      const output = captureQueryData(projection); fields(output, ['effects', 'receipt']);
+      // Core validates declared effects, artifacts, their exact correspondence
+      // and current grant before spending the original durable reservation.
+      return { ...base, outcome: 'committed', ...output };
+    } }) : createTrustedReadonlyQueryAdapter({ withAuthority,
+      async query(request, signal, current) {
+        const data = input(request.input); need(current() === true);
+        let result;
+        if (hive) {
+          fields(data.input, ['operation']); need(data.input.operation === 'hive.cells.list');
+          const stored = await call(request, '/api/embed/project', {}, signal), project = stored.project;
+          need(project?.id === scope.resource.selection.nativeId && project.schema === 'hive.document' && project.version === 2
+            && Number.isSafeInteger(stored.revision) && stored.revision >= 1 && typeof project.title === 'string'
+            && project.core?.objects && typeof project.core.objects === 'object' && !Array.isArray(project.core.objects));
+          const cells = Object.values(project.core.objects).map(item => {
+            need(typeof item?.id === 'string' && typeof item.title === 'string'); return { id: item.id, title: item.title };
+          }).sort((a, b) => a.id.localeCompare(b.id));
+          need(cells.length <= 100); result = { title: project.title, revision: stored.revision, cells };
+        } else result = await call(request, '/api/embed/query', data.input, signal);
+        need(current() === true); registry.validateOutput(entry, result); return result;
+      } });
+  return Object.freeze({ appId: scope.appId, target: scope.target, catalog: wrapped, adapter,
+    ...(guidance === undefined ? {} : { guidance: captureQueryData(guidance) }) });
+}
+
+export function bindSelectedNativeSourceAdapter(adapter, { appId, target, withOwner, apps }) {
+  const field = Object.getOwnPropertyDescriptor(adapter, 'withAuthority');
+  const port = field && Object.hasOwn(field, 'value') ? installed.get(field.value) : undefined;
+  if (!port) return false;
+  need(port.scope.appId === appId && same(port.scope.target, target) && typeof withOwner === 'function' && typeof apps === 'function');
+  port.bind(Object.freeze({ withOwner, apps })); return true;
+}

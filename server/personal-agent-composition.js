@@ -4,6 +4,7 @@ import { runBoundedRuntimeTurn, createIsolatedContextStore } from '../modules/pe
 import { fields, identifier, canonical, freeze } from '../modules/personal-agent/provider/validation.mjs';
 import { captureQueryData } from '../modules/capabilities/server/readonly-queries.mjs';
 import { currentContextCapability } from './current-context-source.js';
+import { isSelectedNativeContract } from './selected-native-source.js';
 import { createPersonalAgentModule } from './personal-agent-module.js';
 import { createPersonalAgentTransport, agentError } from './personal-agent-transport.js';
 import { createNotesConversationStore } from './personal-agent-history.js';
@@ -63,11 +64,12 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       apps.withScopedContextSourceAuthority({ owner: actor, scope: { appId: selection.appId }, handle: selection.handle }, context => {
         if (selectedScope) need(canonical(context) === canonical(selectedScope), 'agent_source_denied');
         else selectedScope = context;
+        return true;
       });
     };
     const keyFor = reference => `${reference.capabilityId}@${reference.version}`;
     const admitted = new Map(references.map(reference => [keyFor(reference), reference]));
-    const selected = new Map(), readKeys = new Map(), prefix = randomUUID();
+    const selected = new Map(), readKeys = new Map(), writeKeys = new Map(), prefix = randomUUID();
     const pinned = value => {
       simple(value, ['capabilityId', 'version', 'digest']);
       const reference = admitted.get(keyFor(value));
@@ -89,7 +91,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied')));
       // Existing Connect/Apps/Native fences remain outside the current actor fence.
       const contract = getServices().capabilities.external?.getContract({ actor: delegated, reference });
-      need(contract && contract.effects.length === 0 && contract.executionEnabled === true, 'agent_source_denied');
+      need(contract && (contract.effects.length === 0 || selection && contract.appId === selection.appId
+        && isSelectedNativeContract(contract)) && contract.executionEnabled === true, 'agent_source_denied');
       current(actor, () => true); return contract;
     };
     const assertCurrent = () => {
@@ -120,7 +123,9 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           const page = service.search({ actor: delegated, query, limit: 20, ...(cursor ? { cursor } : {}) });
           for (const item of page.items) {
             const own = admitted.get(keyFor(item.reference));
-            if (!own || own.digest !== item.reference.digest || item.effects.length || item.executionEnabled !== true) continue;
+            if (!own || own.digest !== item.reference.digest || item.executionEnabled !== true) continue;
+            if (item.effects.length && (!selection || item.appId !== selection.appId
+              || !isSelectedNativeContract(service.getContract({ actor: delegated, reference: own })))) continue;
             items.set(keyFor(own), { item, delegated, reference: own });
           }
           cursor = page.cursor;
@@ -203,7 +208,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     }
     if (references.length) {
       tools.source_catalog = { capability: 'source_catalog',
-        description: 'Discover current permitted readonly Native Source contracts. Metadata is unprobed availability and grants no rights.',
+        description: 'Discover current permitted Native Source contracts. Selected actions expose their Native schema; metadata is unprobed availability and grants no rights.',
         inputSchema: schema({ query: { type: 'string', maxLength: 200 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }),
         validate: input => validate(input, [], ['query', 'limit']) && (input.query === undefined || typeof input.query === 'string'
           && input.query.isWellFormed() && input.query.length <= 200) && (input.limit === undefined || Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 20),
@@ -220,7 +225,10 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             sourceDetail(retained.reference, retained.delegated); selected.set(keyFor(retained.reference), retained);
           }
           assertCurrent(); need(!signal.aborted, 'agent_cancelled');
-          return evidence('Разрешённые источники', { items: chosen.map(value => value.item), hasMore: ordered.length > chosen.length, availability: 'unprobed' });
+          return evidence('Разрешённые источники', { items: chosen.map(value => {
+            const detail = sourceDetail(value.reference, value.delegated);
+            return isSelectedNativeContract(detail) ? { ...value.item, inputSchema: detail.inputSchema.properties.input } : value.item;
+          }), hasMore: ordered.length > chosen.length, availability: 'unprobed' });
         } };
       tools.source_read_1 = { capability: 'source_read_1',
         description: 'Read one exact reference or UNIQUE authorized catalogue query through current Root/Apps/Native grants. Ambiguous queries never read. Omission selects only a sole installed Source.',
@@ -242,12 +250,15 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           need(selected.has(key) || selected.size < 8, 'agent_capacity');
           const delegated = selected.get(key)?.delegated ?? matches?.[0].delegated ?? sourceActor(reference),
             detail = sourceDetail(reference, delegated), data = captureQueryData(input.input ?? {});
+          need(detail.effects.length === 0, 'agent_source_denied');
+          const scopedInput = isSelectedNativeContract(detail) ? (need(selection && detail.appId === selection.appId, 'agent_source_denied'),
+            { handle: selection.handle, input: data }) : data;
           const keys = readKeys.get(key) ?? new Map(), digest = createHash('sha256').update(canonical(data, 65536)).digest('hex');
           if (!keys.has(digest)) { need(keys.size < 8, 'agent_capacity'); keys.set(digest, `agent_read_${prefix}_${createHash('sha256').update(key).digest('hex').slice(0, 16)}_${digest.slice(0, 32)}`); }
           readKeys.set(key, keys);
           const service = current(actor, services => services.capabilities.external);
           // The original coordinator owns validation/current Native predicates, durable dispatch CAS and receipt.
-          const result = await service.query({ actor: delegated, reference, idempotencyKey: keys.get(digest), input: data });
+          const result = await service.query({ actor: delegated, reference, idempotencyKey: keys.get(digest), input: scopedInput });
           sourceDetail(reference, delegated); assertCurrent(); need(!signal.aborted, 'agent_cancelled');
           need(result.resultUnavailable === false && result.invocation.status === 'succeeded', 'agent_source_unavailable');
           selected.set(key, { reference, delegated }); return evidence(detail.title, result.result);
@@ -263,6 +274,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       need(detail.appId === selection.appId, 'agent_source_denied');
       selected.set(keyFor(reference), { reference, delegated });
       let readSequence = 0;
+      let acceptCommittedRevision;
       const readCurrent = async readSignal => {
         assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
         const result = await getServices().capabilities.external.query({ actor: delegated, reference,
@@ -275,7 +287,80 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           && ['owner', 'editor', 'viewer', 'reader'].includes(data.role) && Number.isSafeInteger(data.revision) && data.revision >= 1, 'agent_source_denied');
         return data;
       };
-      const data = await readCurrent(signal);
+      if (selection) {
+        const writeInput = input => {
+          try { if (!validate(input, ['reference', 'input'])) return false; pinned(input.reference); captureQueryData(input.input); return true; }
+          catch { return false; }
+        };
+        const writeArgs = { ...schema({ reference: { type: 'object', additionalProperties: false, properties: {
+          capabilityId: { type: 'string', maxLength: 160 }, version: { type: 'integer', minimum: 1, maximum: 1000000 },
+          digest: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['capabilityId', 'version', 'digest'] }, input: { type: 'object' } }),
+          required: ['reference', 'input'] };
+        const selectedWrite = input => {
+          assertCurrent(); const reference = pinned(input.reference), key = keyFor(reference);
+          need(selected.has(key) || selected.size < 8, 'agent_capacity');
+          const delegated = selected.get(key)?.delegated ?? sourceActor(reference), detail = sourceDetail(reference, delegated);
+          need(detail.appId === selection.appId && detail.effects.length > 0 && isSelectedNativeContract(detail), 'agent_source_denied');
+          const data = captureQueryData(input.input), digest = createHash('sha256').update(canonical({ key, data }, 65536)).digest('hex');
+          selected.set(key, { reference, delegated });
+          return { reference, delegated, detail, digest, input: { handle: selection.handle, input: data } };
+        };
+        const writeResult = (value, result) => {
+          sourceDetail(value.reference, value.delegated); assertCurrent();
+          return evidence(value.detail.title, { status: result.invocation.status, effectState: result.invocation.effectState,
+            invocationId: result.invocation.invocationId,
+            completionVerified: result.invocation.status === 'succeeded' && result.invocation.effectState === 'committed',
+            effects: result.invocation.effects, ...(result.invocation.receipt ? { receipt: result.invocation.receipt } : {}) });
+        };
+        tools.source_write_1 = { capability: 'source_write_1',
+          description: 'Apply an explicitly granted Native contract to the EXACT currently selected window. Discover its schema first. An unknown result is not completion: check source_receipt_1 with the same reference/input; never repeat an unknown write.',
+          inputSchema: writeArgs, validate: writeInput,
+          async execute(input, toolSignal) {
+            need(!toolSignal.aborted, 'agent_cancelled'); const value = selectedWrite(input), service = getServices().capabilities.external;
+            const prior = writeKeys.get(value.digest);
+            if (prior) {
+              await service.reconcile({ reference: value.reference, invocationId: prior.invocationId, expectedInput: value.input });
+              need(!toolSignal.aborted, 'agent_cancelled');
+              return writeResult(value, service.get({ actor: value.delegated, invocationId: prior.invocationId }));
+            }
+            need(writeKeys.size < 8, 'agent_capacity');
+            const idempotencyKey = `agent_write_${prefix}_${value.digest.slice(0, 32)}`;
+            const admitted = service.admit({ actor: value.delegated, reference: value.reference, idempotencyKey, input: value.input });
+            writeKeys.set(value.digest, { invocationId: admitted.invocation.invocationId });
+            assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled');
+            const result = await service.invoke({ actor: value.delegated, reference: value.reference, idempotencyKey, input: value.input });
+            need(!toolSignal.aborted, 'agent_cancelled');
+            await acceptCommittedRevision(value, result, toolSignal);
+            return writeResult(value, result);
+          } };
+        tools.source_receipt_1 = { capability: 'source_receipt_1',
+          description: 'Read/reconcile an ORIGINAL Native write receipt by its invocationId and the same reference/input. This never invokes a new mutation or switches to another ready window.',
+          inputSchema: { ...writeArgs, properties: { ...writeArgs.properties, invocationId: { type: 'string', minLength: 3, maxLength: 160 } },
+            required: [...writeArgs.required, 'invocationId'] },
+          validate: input => validate(input, ['reference', 'input', 'invocationId']) && writeInput({ reference: input.reference, input: input.input })
+            && typeof input.invocationId === 'string' && /^[A-Za-z0-9_.:-]{3,160}$/u.test(input.invocationId),
+          async execute(input, toolSignal) {
+            need(!toolSignal.aborted, 'agent_cancelled'); const value = selectedWrite(input), service = getServices().capabilities.external;
+            const prior = service.get({ actor: value.delegated, invocationId: input.invocationId });
+            need(prior.invocation.capabilityId === value.reference.capabilityId && prior.invocation.version === value.reference.version, 'agent_source_denied');
+            await service.reconcile({ reference: value.reference, invocationId: input.invocationId, expectedInput: value.input });
+            need(!toolSignal.aborted, 'agent_cancelled'); return writeResult(value, service.get({ actor: value.delegated, invocationId: input.invocationId }));
+          } };
+      }
+      let data = await readCurrent(signal);
+      acceptCommittedRevision = async (value, result, readSignal) => {
+        if (selectedScope.resource.selection.kind !== 'hive.project.v1' || result.invocation.status !== 'succeeded'
+          || result.invocation.effectState !== 'committed') return;
+        const artifact = result.invocation.receipt?.artifacts.find(item => item.type === 'hive-project'
+          && item.id === selectedScope.resource.selection.nativeId);
+        need(value.input.input.operation === 'hive.cell.title' && value.input.input.expectedRevision === data.revision
+          && artifact?.revision === data.revision + 1, 'agent_source_denied');
+        const fresh = await readCurrent(readSignal);
+        need(fresh.title === data.title && fresh.role === data.role && fresh.revision === artifact.revision, 'agent_source_denied');
+        // Only this independently proven Native COMMIT advances the turn-local
+        // revision. Original handle/principal/scope/source pins stay immutable.
+        data = fresh;
+      };
       // Fresh Native read after each accounted model round, before its tool or
       // terminal answer. This observes current permission; it is not a cross-service transaction.
       verifyCurrent = async readSignal => need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
@@ -291,6 +376,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
   const runtime = { runTurn: runBoundedRuntimeTurn, createContextStore: createIsolatedContextStore,
     outputProfile: 'host-enforced-terminal.v1', adapterFor: ({ tools }) => ({ id: 'soty-personal-agent', roles: ['human'],
       capabilities: [...new Set(Object.values(tools).map(tool => tool.capability))], applicability: 'Текущий пользователь и разрешённые источники',
+      effectCapabilities: tools.source_write_1 ? ['source_write_1'] : [],
       systemContext: terminal => `Помогай текущему пользователю. Читай только предложенные инструменты. Заверши реальным вызовом ${terminal}; факты подтверждай выбранными источниками.`,
       isActionHrefAllowed: () => false }) };
   const module = createPersonalAgentModule({ getConnect, runtime: enabled && sourceBound ? runtime : undefined, transport, toolsForActor,

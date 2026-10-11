@@ -160,7 +160,7 @@ test('portable generic runtime has an explicit bounded-budget local patch and ve
   assert.equal(pin.upstreamRevision, '23717ad30878c9ad7a8d9d614bbd8384004763c9');
   assert.equal(pin.sourceUnmodified, false);
   assert.equal(pin.upstreamSha256, '502a90932e44fd6ff7b355e67e048044600321af9e007975936b29bcc234c5f9');
-  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability']);
+  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability', 'installed-exact-effect-capability']);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256); assert.equal(bytes.length, pin.bytes);
   const runtime = await import(new URL('agent-runtime-core.ts', root)); assert.equal(typeof runtime.runBoundedRuntimeTurn, 'function');
 });

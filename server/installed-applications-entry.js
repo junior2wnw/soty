@@ -8,6 +8,8 @@ import { loadInstalledExistingApplications } from './installed-existing-applicat
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
 import { createTavyshNativeDeviceBroker } from './tavysh-native-device-broker.js';
 import { createCurrentContextSourceApplication } from './current-context-source.js';
+import { createSelectedNativeSourceApplication } from './selected-native-source.js';
+import { createSelectedHiveSourceApplications } from './selected-hive-source.js';
 import { createTavyshDeviceStatusAdapter } from './tavysh-device-read-adapter.js';
 
 const invalid = () => { throw new AccessError('installed_applications_entry_invalid'); };
@@ -99,7 +101,7 @@ export async function loadInstalledApplicationsEntry(env = process.env) {
     const factory = Object.getOwnPropertyDescriptor(module, 'default')?.value;
     need(typeof factory === 'function' && !types.isProxy(factory));
     const api = Object.freeze({ loadInstalledExistingApplications, createTavyshNativeDeviceBroker,
-      createTavyshDeviceStatusAdapter, createCurrentContextSourceApplication, ownClose });
+      createTavyshDeviceStatusAdapter, createCurrentContextSourceApplication, createSelectedNativeSourceApplication, createSelectedHiveSourceApplications, ownClose });
     const produced = factory(api);
     need(!types.isProxy(produced));
     const result = fields(types.isPromise(produced) ? await produced : produced, ['httpOptions', 'sourceReferences', 'close'], ['sourceCredentialFor']);

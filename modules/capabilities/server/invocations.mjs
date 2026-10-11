@@ -376,6 +376,13 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     // composing adapter must recheck the original grant and its current source
     // binding before sending, and only a read-only source proof can settle it.
     // Never expose input/authorization/internalRequestId over an HTTP/MCP API.
+    matchesGenericInput({ invocationId, reference, input }) {
+      return atomic(() => {
+        const value = row(invocationId); check(value, 'invocation_not_found'); native.assertGeneric(value.id); assertGenericRead(value);
+        return value.capability_id === reference.capabilityId && value.capability_version === reference.version
+          && value.capability_digest === reference.digest && canonicalHash(JSON.parse(value.input_json)) === canonicalHash(input);
+      });
+    },
     inspectDispatch({ invocationId } = {}) {
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found'); native.assertGeneric(value.id); assertGenericRead(value);
