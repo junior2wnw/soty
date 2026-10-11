@@ -128,6 +128,25 @@ for (const [label, options] of [
   const retry = await f.turn(f.alice);
   assert.equal(retry.error.code, 'agent_reconcile_required'); assert.equal(f.providerCalls.length, 1);
 });
+test('pending accounting blocks the real offered list_my_apps tool before any app read or Notes write', async t => {
+  const f = await fixture(t, { missingUsage: true, receiptStatus: 'usage_pending' });
+  const host = await f.ownedHost(f.alice); await f.register(f.alice, host, 'Owned application behind accounting gate');
+  const barrier = f.holdNextProvider(), pending = f.turn(f.alice);
+  try {
+    await entered(barrier, pending);
+    assert.equal(f.providerCalls.length, 1); assert.equal(f.providerCalls[0].tools.includes('list_my_apps'), true);
+    assert.equal(f.appReads.length, 0); barrier.release.resolve();
+    const result = await pending;
+    assert.equal(result.ok, false); assert.equal(result.error.code, 'agent_accounting_unknown');
+    assert.equal(Object.hasOwn(result, 'answer'), false); assert.equal(Object.hasOwn(result, 'accounting'), false);
+    assert.equal(f.appReads.length, 0); assert.equal(f.rowsSeen.length, 0);
+    const notes = good(await f.rpc(f.alice, 'notes.list', { expectedAccountId: f.alice.account.accountId }));
+    assert.equal(notes.notes.length, 0);
+    const retry = await f.turn(f.alice);
+    assert.equal(retry.error.code, 'agent_reconcile_required'); assert.equal(f.providerCalls.length, 1);
+  } finally { barrier.release.resolve(); }
+});
+
 test('current signed account receives only its Apps projection through an accounted finish', async t => {
   const f = await fixture(t), a = await f.ownedHost(f.alice), b = await f.ownedHost(f.bob);
   const own = await f.register(f.alice, a, 'Own application'), foreign = await f.register(f.bob, b, 'Other private application');
