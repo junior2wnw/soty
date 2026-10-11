@@ -231,3 +231,25 @@ test('actual orb context never falls back to main A while focused widget B is pe
   f.stages[0].host.parent.dispatchEvent(new Event('focusin')); ready = true;
   assert.equal(readContext(), widgetB);
 });
+
+
+test('keyboard focus raises an overlapped widget while preserving its control, iframe and stage', async t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  f.control.pin({ appId: 'app-22222222222222222222222222222222', name: 'Other' },
+    launch.parseAppLaunchRoute('app/app-22222222222222222222222222222222'));
+  f.remote(state => { for (const item of state.widgets) { item.x = .4; item.y = .2; } }); await tick();
+  const back = f.stages[0], front = f.stages[1], node = back.host.parent, frontNode = front.host.parent;
+  const layer = node.parent, children = [...layer.children], frame = f.el('iframe'); back.host.append(frame);
+  const context = { appId: 'focused-back-widget' }; back.assistantContext = () => context;
+  const grip = node.children[0].children[0];
+  assert.deepEqual(node.getBoundingClientRect(), frontNode.getBoundingClientRect());
+  assert.ok(Number(node.style.zIndex) < Number(frontNode.style.zIndex));
+  grip.focus(); node.dispatchEvent(new Event('focusin'));
+  assert.ok(Number(node.style.zIndex) > Number(frontNode.style.zIndex), 'keyboard-selected widget must be visible above the overlap');
+  assert.equal(f.doc.activeElement, grip); assert.equal(f.control.assistantContext(), context);
+  assert.equal(f.read().widgets.at(-1).id, widget.id);
+  assert.equal(f.stages.length, 2); assert.equal(back.disposed, false); assert.equal(front.disposed, false);
+  assert.equal(back.current(), true); assert.equal(front.current(), true);
+  assert.equal(frame.parent, back.host); assert.equal(back.host.parent, node); assert.equal(node.parent, layer);
+  assert.deepEqual(layer.children, children);
+});

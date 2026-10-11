@@ -104,7 +104,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     const current = (): boolean => !disposed && account === owner && generation === epoch && mounted.get(widget.id) === row
       && !state.hidden && state.widgets.some(item => item.id === widget.id && item.visible);
     node.addEventListener('pointerdown', () => bringToFront(widget.id), { signal: local.signal });
-    node.addEventListener('focusin', () => { active = widget.id; }, { signal: local.signal });
+    node.addEventListener('focusin', () => bringToFront(widget.id), { signal: local.signal });
     let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; kind: 'move' | 'size'; moved: boolean } | null = null;
     const bindDrag = (handle: HTMLElement, kind: 'move' | 'size'): void => {
       handle.addEventListener('pointerdown', event => {
