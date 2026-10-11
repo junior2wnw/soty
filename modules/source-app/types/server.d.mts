@@ -2,11 +2,17 @@ import type {IncomingMessage, ServerResponse} from 'node:http';
 import type {SourceRpProfile, SourceRpMarker, SourceRpCurrentProof} from './source-rp.d.mts';
 export {createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE} from './source-rp.mjs';
 export interface SourceProfile {schema:'soty.selected-human-embed.v2';appId:string;connector:{linkId:string;hostDeviceId:string;connectorId:string};target:{revision:number;digest:string};
-  sourceProfile:{id:string;version:number;digest:string};resource:{registryId:string;environmentId:string;tenantId:string;appId:string;resourceId:string;selection:{kind:'soty.resource.v1';nativeId:string;incarnationId:string}};
+  sourceProfile:{id:string;version:number;digest:string};resource:{registryId:string;environmentId:string;tenantId:string;appId:string;resourceId:string;selection:{kind:'soty.resource.v1'|'soty.workspace.v1';nativeId:string;incarnationId:string}};
   issuer:string;clientId:string;embedOrigin:string;nativeOrigin:string;parentOrigin:string}
 declare const nativePortBrand:unique symbol, commitPortBrand:unique symbol;
-export interface NativeCommitPort {readonly [commitPortBrand]:true;/** Call once synchronously INSIDE the Native transaction. */commit<T>(action:()=>T):T}
-export interface NativeBinding {identity:{issuer:string;subject:string};rootPrincipal:{accountId:string;deviceId:string};humanPrincipal:unknown;resource:SourceProfile['resource'];semanticDigest:string;operation:string;sessionIdHash?:string}
+export interface NativeContextMetadata {title:string;role:'owner'|'editor'|'viewer'|'reader';revision:number}
+export interface NativeContextAfter extends NativeContextMetadata {schema:'soty.context-after.v1';mutationRef:string;generation:number}
+export interface NativeWorkspaceReceipt {schema:'soty.workspace-receipt.v1';
+  effects:{kind:'created'|'updated'|'deleted'|'published'|'sent'|'charged';resourceType:string;resourceId:string;revision?:number}[];
+  receipt:{verificationMethod:'domain_read';artifacts:{type:string;id:string;revision?:number}[]}}
+export interface NativeCommitPort {readonly [commitPortBrand]:true;/** Call once synchronously INSIDE the Native transaction. */commit<T>(action:()=>T):T;
+  /** Workspace only: inside commit(action), after the effect; persist with the original receipt. */contextAfter?():Readonly<NativeContextAfter>}
+export interface NativeBinding {identity:{issuer:string;subject:string};rootPrincipal:{accountId:string;deviceId:string};humanPrincipal:unknown;resource:SourceProfile['resource'];semanticDigest:string;operation:string;sessionIdHash?:string;rootReferenceDigest?:string;rootExpiresAt?:number}
 export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
   capture(binding:Readonly<NativeBinding>,nativeBrowserRequest?:IncomingMessage):Promise<Proof>;
@@ -15,6 +21,10 @@ export interface NativeHooks<Proof=unknown> {
   assertCurrent?:(proof:Proof,binding:Readonly<NativeBinding>)=>Promise<void>;
   /** Synchronous final checkpoint inside the actual Native transaction. */
   withCurrent<T>(proof:Proof,binding:Readonly<NativeBinding>,action:()=>T):T;
+  /** Workspace only. Private child/incarnation key; current Native ACL under withCurrent. */
+  currentContext?:(proof:Proof,binding:Readonly<NativeBinding>)=>NativeContextMetadata&{key:string;generation:number;expiresAt:number};
+  /** UI locator, not authority. Validate own ordering/ACL; update only this proof and Native slot. */
+  selectContext?:(proof:Proof,binding:Readonly<NativeBinding>,locator:Readonly<{nativeId:string;generation:number}>)=>void;
   rememberLogin?:(proof:Proof,binding:Readonly<NativeBinding>,intent:{interactionIdHash:string;expiresAt:number})=>{idHash:string;version:1;bindingDigest:string};
   recoverLogin?:(binding:Readonly<NativeBinding>,marker:{idHash:string;version:1;bindingDigest:string},intent:{interactionIdHash:string;expiresAt:number})=>Promise<Proof>;
   linkVerifiedIdentity?:(proof:Proof,binding:Readonly<NativeBinding>,identity:{issuer:string;subject:string})=>unknown;
@@ -57,5 +67,9 @@ export const STANDARD_SELECTED_SOURCE:Readonly<{id:'soty.standard-resource';vers
 export const STANDARD_SOURCE_CONTRACT:Readonly<unknown>;
 export const STANDARD_SELECTED_SOURCE_V2:Readonly<{id:'soty.standard-resource';version:2;digest:string}>;
 export const STANDARD_SOURCE_CONTRACT_2:Readonly<unknown>;
+export const STANDARD_SELECTED_SOURCE_V3:Readonly<{id:'soty.standard-resource';version:3;digest:string}>;
+export const STANDARD_SOURCE_CONTRACT_3:Readonly<unknown>;
+export const STANDARD_WORKSPACE_SOURCE:Readonly<{id:'soty.standard-workspace';version:1;digest:string}>;
+export const STANDARD_WORKSPACE_CONTRACT:Readonly<unknown>;
 export {SOURCE_FEEDBACK_LIMITS} from './browser.mjs';
 export {createFeedbackProcessorEngine,createFeedbackJobEnforcer,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './processing.mjs';

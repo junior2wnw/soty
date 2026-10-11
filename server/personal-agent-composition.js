@@ -5,6 +5,9 @@ import { fields, identifier, canonical, freeze } from '../modules/personal-agent
 import { captureQueryData } from '../modules/capabilities/server/readonly-queries.mjs';
 import { currentContextCapability } from './current-context-source.js';
 import { isSelectedNativeContract } from './selected-native-source.js';
+import { workspaceContext, workspaceMutationRef, workspaceWitness, contextMetadata } from '../modules/source-app/server/workspace-context.mjs';
+import { digest as sourceDigest } from '../modules/source-app/server/wire.mjs';
+import { nativeInvocationRequestId } from '../modules/capabilities/server/invocations.mjs';
 import { createPersonalAgentModule } from './personal-agent-module.js';
 import { createPersonalAgentTransport, agentError } from './personal-agent-transport.js';
 import { createNotesConversationStore } from './personal-agent-history.js';
@@ -57,7 +60,9 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     return getConnect().withActorAuthorityFence(actor, () => callback(getServices()));
   };
   const toolsForActor = async ({ actor, scope, turnId, selection, signal }) => {
-    let selectedScope, verifyCurrent;
+    let selectedScope, verifyCurrent, selectedChildContext;
+    const nativeInput = data => ({ handle: selection.handle, input: data,
+      ...(selectedChildContext ? { contextRef: selectedChildContext.ref } : {}) });
     const currentSelection = () => {
       if (!selection) return;
       const apps = getServices().apps; need(typeof apps?.withScopedContextSourceAuthority === 'function', 'agent_source_unavailable');
@@ -252,7 +257,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             detail = sourceDetail(reference, delegated), data = captureQueryData(input.input ?? {});
           need(detail.effects.length === 0, 'agent_source_denied');
           const scopedInput = isSelectedNativeContract(detail) ? (need(selection && detail.appId === selection.appId, 'agent_source_denied'),
-            { handle: selection.handle, input: data }) : data;
+            nativeInput(data)) : data;
           const keys = readKeys.get(key) ?? new Map(), digest = createHash('sha256').update(canonical(data, 65536)).digest('hex');
           if (!keys.has(digest)) { need(keys.size < 8, 'agent_capacity'); keys.set(digest, `agent_read_${prefix}_${createHash('sha256').update(key).digest('hex').slice(0, 16)}_${digest.slice(0, 32)}`); }
           readKeys.set(key, keys);
@@ -282,9 +287,12 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
         need(result.resultUnavailable === false && result.invocation.status === 'succeeded', 'agent_source_unavailable');
         const data = captureQueryData(result.result);
-        simple(data, ['title', 'role', 'revision']);
+        simple(data, ['title', 'role', 'revision'], selectedScope.resource.selection.kind === 'soty.workspace.v1' ? ['context'] : []);
         need(typeof data.title === 'string' && data.title.trim() && data.title.length <= 240
           && ['owner', 'editor', 'viewer', 'reader'].includes(data.role) && Number.isSafeInteger(data.revision) && data.revision >= 1, 'agent_source_denied');
+        if (selectedScope.resource.selection.kind === 'soty.workspace.v1') {
+          workspaceContext(data.context); need(data.context.expiresAt > Date.now(), 'agent_source_denied');
+        }
         return data;
       };
       if (selection) {
@@ -303,7 +311,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           need(detail.appId === selection.appId && detail.effects.length > 0 && isSelectedNativeContract(detail), 'agent_source_denied');
           const data = captureQueryData(input.input), digest = createHash('sha256').update(canonical({ key, data }, 65536)).digest('hex');
           selected.set(key, { reference, delegated });
-          return { reference, delegated, detail, digest, input: { handle: selection.handle, input: data } };
+          return { reference, delegated, detail, digest, input: nativeInput(data) };
         };
         const writeResult = (value, result) => {
           sourceDetail(value.reference, value.delegated); assertCurrent();
@@ -321,7 +329,9 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             if (prior) {
               await service.reconcile({ reference: value.reference, invocationId: prior.invocationId, expectedInput: value.input });
               need(!toolSignal.aborted, 'agent_cancelled');
-              return writeResult(value, service.get({ actor: value.delegated, invocationId: prior.invocationId }));
+              const result = service.get({ actor: value.delegated, invocationId: prior.invocationId });
+              if (selectedChildContext) await acceptCommittedRevision(value, result, toolSignal);
+              return writeResult(value, result);
             }
             need(writeKeys.size < 8, 'agent_capacity');
             const idempotencyKey = `agent_write_${prefix}_${value.digest.slice(0, 32)}`;
@@ -344,11 +354,25 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             const prior = service.get({ actor: value.delegated, invocationId: input.invocationId });
             need(prior.invocation.capabilityId === value.reference.capabilityId && prior.invocation.version === value.reference.version, 'agent_source_denied');
             await service.reconcile({ reference: value.reference, invocationId: input.invocationId, expectedInput: value.input });
-            need(!toolSignal.aborted, 'agent_cancelled'); return writeResult(value, service.get({ actor: value.delegated, invocationId: input.invocationId }));
+            need(!toolSignal.aborted, 'agent_cancelled'); const result = service.get({ actor: value.delegated, invocationId: input.invocationId });
+            if (selectedChildContext) await acceptCommittedRevision(value, result, toolSignal); return writeResult(value, result);
           } };
       }
       let data = await readCurrent(signal);
+      selectedChildContext = data.context;
       acceptCommittedRevision = async (value, result, readSignal) => {
+        if (selectedChildContext && result.invocation.status === 'succeeded' && result.invocation.effectState === 'committed') {
+          const fresh = await readCurrent(readSignal);
+          need(fresh.context.ref === selectedChildContext.ref && fresh.context.generation === selectedChildContext.generation
+            && result.invocation.receipt?.verificationMethod === 'domain_read', 'agent_source_denied');
+          const requestId = nativeInvocationRequestId(result.invocation.invocationId), inputDigest = sourceDigest(value.input.input);
+          const after = { schema: 'soty.context-after.v1', mutationRef: workspaceMutationRef(requestId, inputDigest, selectedChildContext.ref),
+            generation: selectedChildContext.generation, ...contextMetadata({ title: fresh.title, role: fresh.role, revision: fresh.revision }) };
+          const scope = { appId: selection.appId, target: selectedScope.target, sourceProfile: selectedScope.sourceProfile, resource: selectedScope.resource };
+          const artifacts = result.invocation.receipt.artifacts;
+          need(artifacts.length > 0 && artifacts.every(artifact => artifact.sha256 === workspaceWitness({ after, artifact, requestId, inputDigest, scope })), 'agent_source_denied');
+          data = fresh; return;
+        }
         if (selectedScope.resource.selection.kind !== 'hive.project.v1' || result.invocation.status !== 'succeeded'
           || result.invocation.effectState !== 'committed') return;
         const artifact = result.invocation.receipt?.artifacts.find(item => item.type === 'hive-project'
@@ -366,7 +390,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       verifyCurrent = async readSignal => need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
       tools.current_context = { capability: 'current_context', description: 'Read the verified title, role and revision of the current selected app project. Metadata only; no canvas contents or write permission.',
         inputSchema: schema({}), validate: input => validate(input, []), execute(_input, toolSignal) {
-          assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled'); return evidence('Текущий проект', data);
+          assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled'); return evidence('Текущий проект', { title: data.title, role: data.role, revision: data.revision });
         } };
       if (selectedScope.resource.selection.kind === 'hive.project.v1' && ['owner', 'editor'].includes(data.role)) {
         // These aliases do not introduce an executor. Only current, explicitly

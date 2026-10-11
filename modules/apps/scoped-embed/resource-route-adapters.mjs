@@ -1,6 +1,6 @@
 import { capture, hash, need } from './profile.mjs';
 import { selectedResourceProfile } from './resource-profile.mjs';
-import { STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT_2, STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_3, STANDARD_SELECTED_SOURCE_V3 } from '../../source-app/server/standard-profile.mjs';
+import { STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT_2, STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_3, STANDARD_SELECTED_SOURCE_V3, STANDARD_WORKSPACE_CONTRACT, STANDARD_WORKSPACE_SOURCE, isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 export { STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2, STANDARD_SELECTED_SOURCE_V3 };
 
 // This is host code, not author-supplied routes. Future reviewed Source adapters
@@ -52,6 +52,8 @@ adapters.set(STANDARD_SELECTED_SOURCE_V2.id + ':2:' + STANDARD_SELECTED_SOURCE_V
   Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V2, kind: STANDARD_SOURCE_CONTRACT_2.kind, contract: STANDARD_SOURCE_CONTRACT_2 }));
 adapters.set(STANDARD_SELECTED_SOURCE_V3.id + ':3:' + STANDARD_SELECTED_SOURCE_V3.digest,
   Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V3, kind: STANDARD_SOURCE_CONTRACT_3.kind, contract: STANDARD_SOURCE_CONTRACT_3 }));
+adapters.set(STANDARD_WORKSPACE_SOURCE.id + ':1:' + STANDARD_WORKSPACE_SOURCE.digest,
+  Object.freeze({ pin: STANDARD_WORKSPACE_SOURCE, kind: STANDARD_WORKSPACE_CONTRACT.kind, contract: STANDARD_WORKSPACE_CONTRACT }));
 export function selectedRouteAdapter(input) {
   const profile = selectedResourceProfile(input);
   const pin = profile.sourceProfile, adapter = adapters.get(pin.id + ':' + pin.version + ':' + pin.digest);
@@ -104,7 +106,7 @@ export function selectedRoute(input, method, path) {
   }
   // Reuse only the already compiled standard2/3 asset declaration. The old
   // standard1 admission behaviour remains frozen; no author-selected routes.
-  if(adapter.pin.id===STANDARD_SELECTED_SOURCE_V2.id&&[2,3].includes(adapter.pin.version)
+  if((adapter.pin.id===STANDARD_SELECTED_SOURCE_V2.id&&[2,3].includes(adapter.pin.version)||isWorkspaceSource(adapter.pin))
     &&['GET','HEAD'].includes(method)&&!url.search&&url.pathname.startsWith(adapter.contract.assets.path)){
     const leaf=url.pathname.slice(adapter.contract.assets.path.length),match=/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}\.([a-z0-9]+)$/u.exec(leaf);
     if(match&&adapter.contract.assets.extensions.includes(match[1]))return Object.freeze({kind:'public-ui',requestBytes:0,

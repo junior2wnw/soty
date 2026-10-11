@@ -5,12 +5,16 @@ import { fields, check } from '../../server/wire.mjs';
 import { createOrdinaryAppStore } from './store.mjs';
 import { createOrdinaryAppNativePort } from './native.mjs';
 import { createOrdinaryFeedbackJobs } from './feedback-jobs.mjs';
+import { isWorkspaceSource } from '../../server/standard-profile.mjs';
+import { createOrdinaryWorkspacePort } from './workspace-native.mjs';
 
 /** Runnable new Source, configured by its own trusted host. Private config is
  * supplied by approved deployment; no request/HTML author config is loaded. */
 export async function createOrdinaryAppServer(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'rp', 'databasePath', 'realmId', 'cipherKey', 'keyId'],
-    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'allowLinkedLogin', 'listen', 'clock', 'allowLoginProofMigration','allowFeedbackJobsMigration','feedbackProcessing']);
+    ['initialize', 'newResource', 'appLabel', 'allowEmptyGuest', 'allowLinkedLogin', 'listen', 'clock', 'allowLoginProofMigration','allowFeedbackJobsMigration','feedbackProcessing', 'workspace']);
+  const workspaceMode = isWorkspaceSource(value.profile.sourceProfile);
+  check(workspaceMode === (value.workspace !== undefined), 'ordinary_workspace_configuration_invalid', 503);
   const listener=value.listen===undefined?null:fields(value.listen,['host','port']);
   check(listener===null||['127.0.0.1','::1'].includes(listener.host)&&Number.isSafeInteger(listener.port)&&listener.port>=1024&&listener.port<=65535,
     'ordinary_source_listener_invalid',503);
@@ -18,7 +22,7 @@ export async function createOrdinaryAppServer(options) {
   check(value.allowLinkedLogin===undefined||typeof value.allowLinkedLogin==='boolean','ordinary_native_configuration_invalid',503);
   const label = value.appLabel ?? 'Моё приложение'; check(typeof label === 'string' && label.trim().length > 0 && label.length <= 160 && label.isWellFormed());
   const store = createOrdinaryAppStore({ databasePath: value.databasePath, realmId: value.realmId, key: value.cipherKey, keyId: value.keyId,
-    initialize: value.initialize === true, format:processing?3:[2,3].includes(value.profile.sourceProfile.version)?2:1,
+    initialize: value.initialize === true, format:processing?3:workspaceMode||[2,3].includes(value.profile.sourceProfile.version)?2:1,
     allowLoginProofMigration:value.allowLoginProofMigration===true,allowFeedbackJobsMigration:value.allowFeedbackJobsMigration===true, ...(value.clock ? { clock: value.clock } : {}) });
   try {
     if (value.newResource) {
@@ -35,7 +39,8 @@ export async function createOrdinaryAppServer(options) {
     const native = createOrdinaryAppNativePort({ store, resourceId: value.profile.resource.selection.nativeId,
       incarnationId: value.profile.resource.selection.incarnationId, allowEmptyGuest: value.allowEmptyGuest === true,allowLinkedLogin:value.allowLinkedLogin===true,
       ...(jobs?{feedbackJobs:jobs}:{}) });
-    bff = createSourceAppBff({ profile: value.profile, transportKey: value.transportKey, connectorPort: value.connectorPort, rp: value.rp, storage: store.storage, native,
+    const workspace = workspaceMode ? createOrdinaryWorkspacePort({ base: native, store, ...fields(value.workspace, ['children', 'initialChild'], ['creation']) }) : null;
+    bff = createSourceAppBff({ profile: value.profile, transportKey: value.transportKey, connectorPort: value.connectorPort, rp: value.rp, storage: store.storage, native: workspace?.port ?? native,
       allowCreateEmptyGuest: value.allowEmptyGuest === true, processingProofEnabled:processing!==null,
       ui: { appLabel: label, resourceLabel: 'Выбранный проект' }, ...(value.clock ? { clock: value.clock } : {}) });
     const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');

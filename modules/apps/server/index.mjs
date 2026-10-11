@@ -27,7 +27,7 @@ import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
 import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
-import { STANDARD_SELECTED_SOURCE_V3 } from '../../source-app/server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { hash as scopedHash, capture as scopedCapture, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
 
@@ -991,7 +991,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return result;
   }
   async function callScopedContextSource({scope,handle,requestId,signal,withCurrentOwner}) {
-    const standard=scope.resource?.selection?.kind==='soty.resource.v1'&&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3);
+    const standard=scope.resource?.selection?.kind==='soty.resource.v1'&&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3)
+      ||scope.resource?.selection?.kind==='soty.workspace.v1'&&isWorkspaceSource(scope.sourceProfile);
     assertApps(!standard||typeof requestId==='string'&&/^[A-Za-z0-9_.:-]{16,128}$/u.test(requestId),'context_source_denied',403);
     const path=standard?'/api/embed/query':'/api/embed/context',method=standard?'POST':'GET';
     // Fixed read operation, never a caller/model-selected URL, method or payload.
@@ -1000,16 +1001,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   /** Host-only Native port. Three existing routes, the ORIGINAL selected
    * handle/cookie/connector slot and the existing finite stream budget only. */
-  async function callScopedNativeSource({scope,handle,path,requestId,input,signal,withCurrentOwner}) {
-    const standard=scope.resource?.selection?.kind==='soty.resource.v1'
-      &&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3)
+  async function callScopedNativeSource({scope,handle,path,requestId,input,contextRef,signal,withCurrentOwner}) {
+    const workspace=scope.resource?.selection?.kind==='soty.workspace.v1'&&isWorkspaceSource(scope.sourceProfile);
+    const standard=(scope.resource?.selection?.kind==='soty.resource.v1'
+      &&scopedHash(scope.sourceProfile)===scopedHash(STANDARD_SELECTED_SOURCE_V3)||workspace)
       &&['/api/embed/query','/api/embed/invoke','/api/embed/receipt'].includes(path);
     const hive=scope.resource?.selection?.kind==='hive.project.v1'
       &&[HIVE_SELECTED_SOURCE,HIVE_SELECTED_KERNEL_SOURCE].some(pin=>scopedHash(scope.sourceProfile)===scopedHash(pin))
       &&['/api/embed/project','/api/embed/operations','/api/embed/changes'].includes(path);
     assertApps((standard||hive)&&typeof requestId==='string'&&/^[A-Za-z0-9_.:-]{16,128}$/u.test(requestId),'context_source_denied',403);
     const data=scopedCapture(input);let method='POST',body,kind='read';
-    if(standard){body=Buffer.from(JSON.stringify({requestId,input:data}));kind=path==='/api/embed/invoke'?'write':'read';}
+    assertApps(workspace?/^[A-Za-z0-9_-]{43}$/u.test(contextRef):contextRef===undefined,'context_source_denied',403);
+    if(standard){body=Buffer.from(JSON.stringify({requestId,input:data,...(workspace?{contextRef}:{})}));kind=path==='/api/embed/invoke'?'write':'read';}
     else if(path==='/api/embed/operations'){
       assertApps(Object.keys(data).sort().join(',')==='expectedRevision,operations'&&Number.isSafeInteger(data.expectedRevision)&&data.expectedRevision>=1,'context_source_denied',403);
       body=Buffer.from(JSON.stringify({schema:'hive.operations',version:2,requestId,...data}));kind='write';

@@ -48,11 +48,20 @@ export const STANDARD_SOURCE_CONTRACT_3 = deepFreeze({ ...STANDARD_SOURCE_CONTRA
 });
 export const STANDARD_SELECTED_SOURCE_V3 = deepFreeze({ id: 'soty.standard-resource', version: 3, digest: digest(STANDARD_SOURCE_CONTRACT_3) });
 
+// A distinct consent/authority anchor, not a widening of any resource1 grant.
+// The HTTP, RP, assets and budgets are exactly the maintained Source3 transport.
+export const STANDARD_WORKSPACE_CONTRACT = deepFreeze({ ...STANDARD_SOURCE_CONTRACT_3, kind: 'soty.workspace.v1',
+  context: { schema: 'soty.current-context.v2', authority: 'application-namespace-and-current-child-native-acl',
+    readOperation: 'soty.current_context', uiOperation: 'soty.context.select', maxLeaseMs: 300000, maxSlots: 128,
+    receipt: 'soty.context-after.v1', projection: 'soty.workspace-receipt.v1', witness: 'soty.workspace-context-witness.v1' } });
+export const STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: 'soty.standard-workspace', version: 1, digest: digest(STANDARD_WORKSPACE_CONTRACT) });
+export const isWorkspaceSource = pin => pin?.id === STANDARD_WORKSPACE_SOURCE.id && pin.version === 1 && pin.digest === STANDARD_WORKSPACE_SOURCE.digest;
+
 /** A constructor selects one compiled contract, never an author byte limit. */
 export function standardSourceContract(input = STANDARD_SELECTED_SOURCE) {
   const pin = fields(input, ['id', 'version', 'digest']);
   for (const [approved, contract] of [[STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT],
-    [STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2], [STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3]]) {
+    [STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2], [STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3], [STANDARD_WORKSPACE_SOURCE, STANDARD_WORKSPACE_CONTRACT]]) {
     if (pin.id === approved.id && pin.version === approved.version && pin.digest === approved.digest) return contract;
   }
   check(false, 'source_app_profile_invalid', 503);
