@@ -354,7 +354,10 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       throw lastError;
     };
     const offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools, [PORTABLE_TERMINAL_TOOL_NAME]: PORTABLE_TERMINAL_TOOL };
-    const routedResponse = await callProvider(messages, offeredTools, { parallelToolCalls: false, maxTokens: 384 });
+    // Both phases can emit a complete finish_answer envelope, including a draft.
+    // The host still applies its smaller model-policy cap to this finite budget.
+    const answerMaxTokens = 2048;
+    const routedResponse = await callProvider(messages, offeredTools, { parallelToolCalls: false, maxTokens: answerMaxTokens });
     const routed = portableProviderMessage(routedResponse);
     const calls = routed.tool_calls ?? [];
     if (calls.length !== 1) throw new Error("provider-tool-count-invalid");
@@ -378,7 +381,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       { role: "assistant", content: routed.content ?? null, tool_calls: calls },
       { role: "tool", tool_call_id: call.id, content: JSON.stringify(rawResult) },
     ];
-    const terminalResponse = await callProvider(terminalMessages, { [PORTABLE_TERMINAL_TOOL_NAME]: PORTABLE_TERMINAL_TOOL }, { toolChoice: PORTABLE_TERMINAL_TOOL_NAME, parallelToolCalls: false, maxTokens: 640 });
+    const terminalResponse = await callProvider(terminalMessages, { [PORTABLE_TERMINAL_TOOL_NAME]: PORTABLE_TERMINAL_TOOL }, { toolChoice: PORTABLE_TERMINAL_TOOL_NAME, parallelToolCalls: false, maxTokens: answerMaxTokens });
     const final = validatePortableTerminal(terminalResponse, options.adapter, output);
     remember(final.answer);
     return { status: "complete", answer: final.answer, contextId: context.id, evidence: output.evidence.filter((item) => final.selectedEvidenceIds.includes(item.id)), claims: final.claims, cards: final.cards, actions: final.actions, telemetry: { correlationId, reasonClass: "ok" } };

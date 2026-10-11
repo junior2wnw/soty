@@ -34,7 +34,7 @@ async function sharedBrowser(t, f) {
     mergeProfile(other) { local = { ...local, installations: [...local.installations, ...other.snapshot().installations], localRevision: local.localRevision + 1 }; } };
 }
 
-async function fixture(t, { enabled = true } = {}) {
+async function fixture(t, { enabled = true, finishAnswer, policy } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-agent-http-owned-')), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Owned agent fixture</title>');
   const tenant = 'synthetic_billing', keyRef = Object.freeze({}), receipts = new Map(), calls = [], holds = [];
@@ -46,7 +46,7 @@ async function fixture(t, { enabled = true } = {}) {
   const origin = `http://127.0.0.1:${server.address().port}`;
   // Synthetic billing ports test mounting, not the real commerce reserve/finish implementation.
   // The separately mandatory, explicit integration-test proves the unchanged actual commerce gateway.
-  const configuration = { enabled, gateway: { gatewayOrigin: 'https://fixture-commerce.invalid', billingTenant: tenant, keyRef,
+  const configuration = { enabled, ...(policy ? { policy } : {}), gateway: { gatewayOrigin: 'https://fixture-commerce.invalid', billingTenant: tenant, keyRef,
     authorizeActor: () => allowed, resolveCredential: async ref => ({ keyRef: ref, tenantId: tenant, bearer: 'synthetic-only-fixture-accounted-key' }),
     readReceipt: async ({ requestId, billingTenant, keyRef: ref }) => { assert.equal(billingTenant, tenant); assert.equal(ref, keyRef);
       const request = receipts.get(requestId); if (request?.status === 'completed') settledReceiptReads++;
@@ -66,13 +66,21 @@ async function fixture(t, { enabled = true } = {}) {
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; args = { answer: 'Источник проверен', selectedEvidenceIds: evidence.map(item => item.id),
         claims: [{ kind: 'fact', statement: 'Источник доступен текущему пользователю', evidenceIds: evidence.map(item => item.id),
           freshness: 'current', confidence: 'high', applicability: 'Текущий пользователь и разрешённые источники' }] }; }
+      const terminal = name === 'finish_answer' && finishAnswer;
+      if (terminal) args.answer = finishAnswer.answer;
+      // Synthetic usage is declared by this fixture, not measured by a GLM tokenizer.
+      const requestedTokens = terminal ? finishAnswer.completionTokens : 2;
+      const truncated = terminal && (finishAnswer.forceLength || requestedTokens > body.max_tokens);
+      const completionTokens = Math.min(requestedTokens, body.max_tokens);
+      const argumentsJson = JSON.stringify(args);
+      const wireArguments = truncated && !finishAnswer.keepCompleteJson ? argumentsJson.slice(0, -1) : argumentsJson;
       const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
-        input_tokens: 3, output_tokens: 2, charge_urub: '7' });
+        input_tokens: 3, output_tokens: completionTokens, charge_urub: '7' });
       if (lost) throw new Error('private_fixture_payload_must_not_escape');
       const packet = `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: { tool_calls: [{ index: 0,
-        id: 'call_owned', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: null }] })}\n\n`
-        + `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
-          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } })}\n\n` + 'data: [DONE]\n\n';
+        id: 'call_owned', type: 'function', function: { name, arguments: wireArguments } }] }, finish_reason: null }] })}\n\n`
+        + `data: ${JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, delta: {}, finish_reason: truncated ? 'length' : 'tool_calls' }],
+          usage: { prompt_tokens: 3, completion_tokens: completionTokens, total_tokens: 3 + completionTokens } })}\n\n` + 'data: [DONE]\n\n';
       return new Response(packet, { status: 200, headers: { 'content-type': 'text/event-stream', 'x-soty-request-id': id } });
     } } };
   const base = { dataDir: join(directory, 'data'), connectOrigins: [origin], appOriginTemplate: `http://{appId}.localhost:${server.address().port}`,
@@ -133,13 +141,59 @@ async function historyNote(f, actor, accountId) {
   const value = await f.call(actor, 'notes.get', { expectedAccountId: accountId, noteId: metadata.noteId }); assert.equal(value.ok, true); return value.note;
 }
 
-test('portable generic runtime is an unchanged qualified source, with no absolute donor import', async () => {
+test('portable generic runtime has an explicit bounded-budget local patch and verified source pin', async () => {
   const root = new URL('../../modules/personal-agent/runtime/vendor/', import.meta.url), pin = JSON.parse(await readFile(new URL('UPSTREAM.json', root))),
     bytes = await readFile(new URL('agent-runtime-core.ts', root));
   assert.equal(pin.upstreamRevision, '23717ad30878c9ad7a8d9d614bbd8384004763c9');
+  assert.equal(pin.sourceUnmodified, false);
+  assert.equal(pin.upstreamSha256, '502a90932e44fd6ff7b355e67e048044600321af9e007975936b29bcc234c5f9');
+  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048']);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256); assert.equal(bytes.length, pin.bytes);
   const runtime = await import(new URL('agent-runtime-core.ts', root)); assert.equal(typeof runtime.runBoundedRuntimeTurn, 'function');
 });
+
+const longDraft = Array.from({ length: 28 }, (_, index) => `${index + 1}. Предлагаю проверить доступность обращения, уточнить ожидаемый результат и согласовать следующий шаг с владельцем.`).join('\n');
+
+for (const prompt of ['Draft a reply', 'Read my notes']) {
+  test(`signed HTTP completes and persists a long finish_answer with bounded output: ${prompt}`, async t => {
+    const f = await fixture(t, { finishAnswer: { answer: longDraft, completionTokens: 1100 } });
+    const result = await f.turn(f.alice, 'long_draft_001', prompt);
+    assert.equal(result.ok, true, result.error?.code); assert.equal(result.answer, longDraft);
+    assert.equal(f.calls.length, prompt === 'Read my notes' ? 2 : 1);
+    assert.ok(f.calls.every(call => call.body.max_tokens === 2048));
+    assert.equal(result.accounting.at(-1).usage.completionTokens, 1100);
+    const history = JSON.parse((await historyNote(f, f.alice, f.a.accountId)).body).history.map(JSON.parse);
+    assert.deepEqual(history, [{ role: 'user', content: prompt }, { role: 'assistant', content: longDraft }]);
+    assert.equal((await f.turn(f.alice, 'long_draft_001', prompt)).error.code, 'agent_reconcile_required');
+    assert.equal(f.calls.length, prompt === 'Read my notes' ? 2 : 1);
+  });
+}
+
+for (const maxOutputTokens of [768, 4096]) {
+  test(`signed HTTP retains host policy and runtime caps: ${maxOutputTokens}`, async t => {
+    const f = await fixture(t, { policy: { maxOutputTokens } });
+    assert.equal((await f.turn(f.alice, 'budget_caps_001', 'Read my notes')).ok, true);
+    assert.equal(f.calls.length, 2);
+    assert.ok(f.calls.every(call => call.body.max_tokens === Math.min(2048, maxOutputTokens)));
+  });
+}
+
+for (const prompt of ['Draft a reply', 'Read my notes']) {
+  for (const keepCompleteJson of [false, true]) {
+    test(`signed HTTP length finish fails closed without retry or history: ${prompt}, complete JSON ${keepCompleteJson}`, async t => {
+      const f = await fixture(t, { finishAnswer: { answer: longDraft, completionTokens: 1100, forceLength: true, keepCompleteJson } });
+      const result = await f.turn(f.alice, 'length_draft_001', prompt);
+      assert.equal(result.ok, false); assert.equal(result.error.code, 'agent_model_unknown');
+      assert.equal(result.answer, undefined);
+      const count = prompt === 'Read my notes' ? 2 : 1;
+      assert.equal(f.calls.length, count, 'length failure must not trigger another model call');
+      const notes = await f.call(f.alice, 'notes.list', { expectedAccountId: f.a.accountId });
+      assert.equal(notes.ok, true); assert.equal(notes.notes.length, 0, 'neither half of the failed pair is saved');
+      assert.equal((await f.turn(f.alice, 'length_draft_001', prompt)).error.code, 'agent_reconcile_required');
+      assert.equal(f.calls.length, count);
+    });
+  }
+}
 
 test('actual Root HTTP mounts default-off signed operations and preserves legacy device operations/status', async t => {
   const f = await fixture(t, { enabled: false }); const status = await fetch(f.origin + '/api/apps/capabilities').then(value => value.json());
