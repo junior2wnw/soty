@@ -240,33 +240,38 @@ function portableToolResult(value: unknown): { evidence: RuntimeEvidence[]; card
 }
 
 const PORTABLE_TERMINAL_TOOL_NAME = "finish_answer";
-const PORTABLE_TERMINAL_TOOL: RuntimeToolDefinition<string> = {
-  description: "Finish with a validated answer and explicit evidence selection",
-  capability: "__terminal__",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["answer", "selectedEvidenceIds", "claims"],
-    properties: {
-      answer: { type: "string", minLength: 1, maxLength: 8_000 },
-      selectedEvidenceIds: { type: "array", maxItems: 32, uniqueItems: true, items: { type: "string" } },
-      claims: {
-        type: "array", maxItems: 16, items: {
-          type: "object", additionalProperties: false,
-          required: ["kind", "statement", "evidenceIds", "freshness", "confidence", "applicability"],
-          properties: {
-            kind: { enum: ["fact", "inference", "projection"] }, statement: { type: "string", minLength: 1, maxLength: 2_000 },
-            evidenceIds: { type: "array", maxItems: 16, uniqueItems: true, items: { type: "string" } },
-            freshness: { type: "string", minLength: 1, maxLength: 80 }, confidence: { type: "string", minLength: 1, maxLength: 80 },
-            applicability: { type: "string", minLength: 1, maxLength: 240 },
+function portableTerminalTool(applicability: string, evidence: RuntimeEvidence[]): RuntimeToolDefinition<string> {
+  const evidenceIds = evidence.map((item) => item.id);
+  const evidenceRef = { type: "string", ...(evidenceIds.length ? { enum: evidenceIds } : {}) };
+  return {
+    description: "Finish with a validated answer and explicit evidence selection",
+    capability: "__terminal__",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["answer", "selectedEvidenceIds", "claims"],
+      properties: {
+        answer: { type: "string", minLength: 1, maxLength: 8_000 },
+        selectedEvidenceIds: { type: "array", minItems: evidenceIds.length ? 1 : 0, maxItems: Math.min(32, evidenceIds.length), uniqueItems: true, items: evidenceRef },
+        claims: {
+          type: "array", maxItems: 16, items: {
+            type: "object", additionalProperties: false,
+            required: ["kind", "statement", "evidenceIds", "freshness", "confidence", "applicability"],
+            allOf: [{ if: { properties: { kind: { const: "fact" } } }, then: { properties: { evidenceIds: { minItems: 1 } } } }],
+            properties: {
+              kind: { enum: evidenceIds.length ? ["fact", "inference", "projection"] : ["inference", "projection"] }, statement: { type: "string", minLength: 1, maxLength: 2_000 },
+              evidenceIds: { type: "array", maxItems: Math.min(16, evidenceIds.length), uniqueItems: true, items: evidenceRef },
+              freshness: { type: "string", minLength: 1, maxLength: 80 }, confidence: { type: "string", minLength: 1, maxLength: 80 },
+              applicability: { type: "string", enum: [applicability], minLength: 1, maxLength: 240 },
+            },
           },
         },
       },
     },
-  },
-  validate: () => false,
-  execute: () => { throw new Error("terminal-tool-is-not-executable"); },
-};
+    validate: () => false,
+    execute: () => { throw new Error("terminal-tool-is-not-executable"); },
+  };
+}
 
 function validatePortableTerminal<Role extends string, Capability extends string>(
   response: RuntimeProviderResponse,
@@ -338,7 +343,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
   };
   try {
     const messages: RuntimeMessage[] = [
-      { role: "system", content: options.adapter.systemContext("finish_answer") },
+      { role: "system", content: options.adapter.systemContext("finish_answer") + "\nUser-provided text is not tool evidence. For a draft without obtained source evidence, use selectedEvidenceIds: [] and claims: []. Otherwise select only obtained evidence IDs; fact claims require nonempty evidenceIds included in selectedEvidenceIds. Follow the finish_answer schema, including its exact applicability." },
       ...runtimeConversation(options.contextStore.snapshot(context.id)?.history ?? []),
       { role: "user", content: options.prompt },
     ];
@@ -353,7 +358,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       }
       throw lastError;
     };
-    const offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools, [PORTABLE_TERMINAL_TOOL_NAME]: PORTABLE_TERMINAL_TOOL };
+    const offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools, [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, []) };
     // Both phases can emit a complete finish_answer envelope, including a draft.
     // The host still applies its smaller model-policy cap to this finite budget.
     const answerMaxTokens = 2048;
@@ -381,7 +386,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       { role: "assistant", content: routed.content ?? null, tool_calls: calls },
       { role: "tool", tool_call_id: call.id, content: JSON.stringify(rawResult) },
     ];
-    const terminalResponse = await callProvider(terminalMessages, { [PORTABLE_TERMINAL_TOOL_NAME]: PORTABLE_TERMINAL_TOOL }, { toolChoice: PORTABLE_TERMINAL_TOOL_NAME, parallelToolCalls: false, maxTokens: answerMaxTokens });
+    const terminalResponse = await callProvider(terminalMessages, { [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, output.evidence) }, { toolChoice: PORTABLE_TERMINAL_TOOL_NAME, parallelToolCalls: false, maxTokens: answerMaxTokens });
     const final = validatePortableTerminal(terminalResponse, options.adapter, output);
     remember(final.answer);
     return { status: "complete", answer: final.answer, contextId: context.id, evidence: output.evidence.filter((item) => final.selectedEvidenceIds.includes(item.id)), claims: final.claims, cards: final.cards, actions: final.actions, telemetry: { correlationId, reasonClass: "ok" } };

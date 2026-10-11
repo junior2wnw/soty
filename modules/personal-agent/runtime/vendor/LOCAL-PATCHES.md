@@ -32,3 +32,22 @@ The historical production `agent_model_unknown` failures remain unclassified
 by this patch; a small budget is a demonstrated local failure mechanism, not
 proof of the historical provider error code. No donor repository, deployed
 runtime, configuration or paid model call is changed here.
+
+## terminal-schema-current-evidence-and-applicability
+
+Build each advertised `finish_answer` schema from the current adapter scope and
+already obtained tool evidence. Applicability is an exact enum; evidence IDs are
+limited to those obtained in this turn. Without source evidence, only inference
+and projection claims are offered; source-free facts remain invalid. The system
+instruction recommends empty claims and selections for drafts from user text.
+After a tool result, fact claims require nonempty evidence references and the
+instruction requires those references to be selected. Generic source-free
+inference/projection behavior and the complete existing terminal validator stay
+unchanged; no invalid response is repaired or silently promoted to a fact.
+
+Verification: `server/test/personal-agent-apps.test.mjs` exercises actual signed
+Connect, composition, JSON provider, runtime, Notes and browser conversation with
+synthetic model/receipt IO. Two old-schema failures, schema-guided draft and
+sourced-fact success, and invalid claims/evidence rejection are covered without
+paid calls. The strict JSON, accounting, authorization and replay boundaries are
+unchanged. The donor pin records this local patch; deployment is separate.

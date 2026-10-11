@@ -7,6 +7,7 @@ import { createConnectService, digestArgs } from '../../modules/connect/server/i
 import { createNotesService } from '../../modules/notes/server/index.mjs';
 import { createPersonalAgentComposition } from '../personal-agent-composition.js';
 import { GLM_MODEL } from '../../modules/personal-agent/provider/index.mjs';
+import { createPersonalAgentConversation } from '../../src/platform/personal-agent-client.ts';
 import { CHANNEL_SCHEMA } from '../../modules/apps/server/protocol.mjs';
 
 // Only the WebSocket IO constructor is an in-memory port. Apps schema,
@@ -48,7 +49,7 @@ class MemorySocket extends EventEmitter {
 }
 
 async function fixture(t, { enabled = true, sourceReferences = [], sourceCredentialFor,
-  missingUsage = false, receiptStatus = 'completed', receiptOutputTokens = 2 } = {}) {
+  providerReply, missingUsage = false, receiptStatus = 'completed', receiptOutputTokens = 2 } = {}) {
   let connect, personal, rawApps, selectedInput = {}, selectedTool = 'list_my_apps', hold = null;
   const providerCalls = [], appReads = [], receipts = new Map(), rowsSeen = [], auth = new Map();
   const notes = createNotesService({ databasePath: ':memory:', projectId: 'soty' });
@@ -69,6 +70,7 @@ async function fixture(t, { enabled = true, sourceReferences = [], sourceCredent
       const last = body.messages.at(-1); let name = selectedTool, args = selectedInput;
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; name = 'finish_answer'; args = {
         answer: 'Текущая разрешённая проекция проверена.', selectedEvidenceIds: evidence.map(item => item.id), claims: [] }; }
+      if (providerReply) ({ name, args } = providerReply(body, { name, args }));
       const id = randomUUID(); receipts.set(id, { id, status: receiptStatus, model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
         input_tokens: missingUsage ? null : 3, output_tokens: missingUsage ? null : receiptOutputTokens, charge_urub: '0' });
       assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false);
@@ -222,4 +224,105 @@ test('default disabled and missing Source credential preserve admission without 
   const source = await fixture(t, { sourceReferences: [{ capabilityId: 'fixture.current.source', version: 1, digest: 'a'.repeat(64) }] });
   assert.equal(source.personal.status().configured, false); assert.equal((await source.turn(source.alice)).ok, false);
   assert.equal(source.appReads.length, 0); assert.equal(source.providerCalls.length, 0);
+});
+
+// Real signed Connect/composition/runtime/Notes and browser boundary; only paid IO is synthetic.
+async function browserTurn(f) {
+  const storage = new Map(), accountId = f.alice.account.accountId; let result;
+  const ui = createPersonalAgentConversation({ accountId, idFactory: () => 'terminal_browser_turn_0001',
+    storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    client: { getLocalState: async () => ({ accountId }), extension: async (op, args) => {
+      result = await f.rpc(f.alice, op, args);
+      if (!result.ok) throw Object.assign(new Error(result.error.code), { code: result.error.code });
+      return result;
+    } } });
+  let error; try { await ui.turn('Draft from my supplied text'); } catch (caught) { error = caught; }
+  const notes = good(await f.rpc(f.alice, 'notes.list', { expectedAccountId: accountId })).notes;
+  return { ui, result, error, notes };
+}
+const terminalSchema = body => body.tools.find(tool => tool.function.name === 'finish_answer').function.parameters;
+const claim = (applicability, evidenceIds = [], kind = 'inference') => ({ kind, statement: 'Synthetic assertion',
+  evidenceIds, freshness: 'current', confidence: 'bounded', applicability });
+
+test('terminal advertises the exact applicability required by the existing runtime', async t => {
+  let advertised;
+  const f = await fixture(t, { providerReply: (body, reply) => {
+    advertised = terminalSchema(body).properties.claims.items.properties.applicability;
+    return reply;
+  } });
+  f.input({ answer: 'Draft', selectedEvidenceIds: [], claims: [] }, 'finish_answer');
+  good(await f.turn(f.alice));
+  assert.deepEqual(advertised.enum, ['Текущий пользователь и разрешённые источники']);
+});
+
+test('terminal does not advertise a source-free fact and guides owner drafts to empty claims', async t => {
+  let schema, instruction;
+  const f = await fixture(t, { providerReply: (body, reply) => {
+    schema = terminalSchema(body); instruction = body.messages[0].content; return reply;
+  } });
+  f.input({ answer: 'Draft', selectedEvidenceIds: [], claims: [] }, 'finish_answer');
+  good(await f.turn(f.alice));
+  assert.equal(schema.properties.claims.items.properties.kind.enum.includes('fact'), false);
+  assert.equal(schema.properties.selectedEvidenceIds.maxItems, 0);
+  assert.match(instruction, /User-provided text is not tool evidence/);
+  assert.match(instruction, /claims: \[\]/);
+});
+
+for (const sourced of [false, true]) test('schema-guided ' + (sourced ? 'sourced fact' : 'owner draft') + ' reaches browser answer and one Note', async t => {
+  const f = await fixture(t, { providerReply: (body, reply) => {
+    if (sourced && body.messages.at(-1).role !== 'tool') return reply;
+    const schema = terminalSchema(body), properties = schema.properties.claims.items.properties;
+    assert.equal(properties.applicability.enum.length, 1);
+    const ids = schema.properties.selectedEvidenceIds.items.enum ?? [];
+    assert.equal(ids.length > 0, sourced);
+    const args = { answer: sourced ? 'Source-backed answer' : 'Owner draft', selectedEvidenceIds: ids,
+      claims: sourced ? [claim(properties.applicability.enum[0], ids, 'fact')] : [] };
+    if (sourced) {
+      assert.equal(schema.properties.selectedEvidenceIds.minItems, 1);
+      assert.equal(properties.kind.enum.includes('fact'), true);
+      assert.deepEqual(properties.evidenceIds.items.enum, ids);
+      assert.equal(schema.properties.claims.items.allOf[0].then.properties.evidenceIds.minItems, 1);
+    }
+    return { name: 'finish_answer', args };
+  } });
+  const { ui, result, error, notes } = await browserTurn(f);
+  assert.equal(error, undefined); assert.equal(result.status, 'complete'); assert.equal(ui.view().phase, 'complete');
+  assert.equal(ui.view().unconfirmed, 0); assert.equal(ui.view().answer, sourced ? 'Source-backed answer' : 'Owner draft');
+  assert.equal(notes.length, 1); assert.equal(f.providerCalls.length, sourced ? 2 : 1);
+  assert.equal(result.accounting.length, sourced ? 2 : 1); assert.equal(ui.view().sources.length, sourced ? 1 : 0);
+});
+
+for (const [label, makeArgs, sourced] of [
+  ['hidden applicability mismatch', () => ({ answer: 'Invalid', selectedEvidenceIds: [], claims: [claim('other scope')] }), false],
+  ['fact without obtained evidence', () => ({ answer: 'Invalid', selectedEvidenceIds: [], claims: [claim('Текущий пользователь и разрешённые источники', [], 'fact')] }), false],
+  ['invented selected evidence', () => ({ answer: 'Invalid', selectedEvidenceIds: ['unknown'], claims: [] }), false],
+  ['invented claim evidence', () => ({ answer: 'Invalid', selectedEvidenceIds: [], claims: [claim('Текущий пользователь и разрешённые источники', ['unknown'])] }), false],
+  ['unselected claim evidence', ids => ({ answer: 'Invalid', selectedEvidenceIds: [], claims: [claim('Текущий пользователь и разрешённые источники', ids, 'fact')] }), true],
+  ['source-backed fact with empty refs', ids => ({ answer: 'Invalid', selectedEvidenceIds: ids, claims: [claim('Текущий пользователь и разрешённые источники', [], 'fact')] }), true],
+]) test('unchanged terminal validation rejects ' + label + ' without answer, Notes or resend', async t => {
+  const f = await fixture(t, { providerReply: (body, reply) => {
+    if (sourced && body.messages.at(-1).role !== 'tool') return reply;
+    const ids = body.messages.at(-1).role === 'tool' ? JSON.parse(body.messages.at(-1).content).evidence.map(item => item.id) : [];
+    return { name: 'finish_answer', args: makeArgs(ids) };
+  } });
+  const { ui, result, error, notes } = await browserTurn(f);
+  assert.equal(result.ok, false); assert.equal(error.code, 'agent_unavailable'); assert.equal(ui.view().phase, 'unknown');
+  assert.equal(ui.view().answer, undefined); assert.equal(ui.view().unconfirmed, 1); assert.equal(notes.length, 0);
+  const calls = f.providerCalls.length;
+  await assert.rejects(ui.turn('Must not resend'), { code: 'agent_reconcile_required' });
+  const replay = await f.rpc(f.alice, 'agent.turn', { requestId: 'terminal_browser_turn_0001', prompt: 'Draft from my supplied text' });
+  assert.equal(replay.error.code, 'agent_reconcile_required'); assert.equal(f.providerCalls.length, calls);
+});
+
+test('generic source-free inference remains permitted under the advertised exact scope', async t => {
+  const f = await fixture(t, { providerReply: body => {
+    const properties = terminalSchema(body).properties.claims.items.properties;
+    assert.equal(properties.kind.enum.includes('inference'), true);
+    assert.equal(properties.kind.enum.includes('projection'), true);
+    assert.equal(properties.evidenceIds.maxItems, 0);
+    return { name: 'finish_answer', args: { answer: 'Bounded inference', selectedEvidenceIds: [],
+      claims: [claim(properties.applicability.enum[0])] } };
+  } });
+  const { ui, error, notes } = await browserTurn(f);
+  assert.equal(error, undefined); assert.equal(ui.view().phase, 'complete'); assert.equal(notes.length, 1);
 });
