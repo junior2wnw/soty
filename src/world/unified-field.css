@@ -58,10 +58,11 @@
 .uf-contour path { filter: drop-shadow(0 0 18px color-mix(in srgb,var(--uf-accent,var(--sw-honey)) 12%,transparent)); }
 .uf-node { position: absolute; box-sizing: border-box; display: block; padding: 0; border: 0; background: transparent; color: var(--sw-ink); overflow: visible; cursor: pointer; text-align: center; touch-action: none; }
 .uf-node.is-moving { opacity: .55; }
-.uf-inspect { position: absolute; z-index: 7; display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; border: 1px solid var(--sw-line); border-radius: 50%; background: var(--sw-surface); color: var(--sw-ink); transform: scale(var(--uf-label-scale)); transform-origin: center; cursor: pointer; opacity: 0; pointer-events: none; }
+.uf-inspect { position: absolute; z-index: 7; display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; border: 1px solid var(--sw-line); border-radius: 50%; background: var(--sw-surface); color: var(--sw-ink); transform: scale(var(--uf-label-scale)); transform-origin: center; cursor: pointer; opacity: 0; pointer-events: auto; }
 .uf-inspect>.sw-icon { width: 22px; height: 22px; }
 .uf-node:hover+.uf-inspect,.uf-inspect:hover,.uf-inspect:focus-visible,.uf-inspect.is-selected { opacity: 1; pointer-events: auto; }
 .uf-inspect:hover,.uf-inspect:focus-visible { background: var(--sw-surface-hover); outline: 3px solid var(--sw-focus); outline-offset: 2px; }
+@media (hover: none) { .uf-inspect { opacity: 1; } }
 .uf-context-title.is-icon-only { width: 44px; min-width: 44px; max-width: 44px; min-height: 44px; padding: 8px; gap: 0; }
 .uf-context-title.is-icon-only .uf-context-name { display: none; }
 .uf-context-title.is-icon-only>.sw-icon { width: 26px; height: 26px; }
