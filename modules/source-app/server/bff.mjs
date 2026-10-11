@@ -34,7 +34,7 @@ export function createSourceAppBff(options) {
   const INTENT = 'soty_native_intent_' + profile.appId.slice(4), CSRF = 'soty_native_csrf_' + profile.appId.slice(4);
   const contract = standardSourceContract(profile.sourceProfile);
   const embedOidc = contract.auth.callbackOrigin === 'approved-embed-https';
-  check(profile.resource.selection.kind === 'soty.resource.v1', 'source_app_profile_invalid', 503);
+  check(profile.resource.selection.kind === contract.kind, 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
   check(value.processingProofEnabled===undefined||typeof value.processingProofEnabled==='boolean');
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
@@ -44,7 +44,7 @@ export function createSourceAppBff(options) {
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
     'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['rebindSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
-  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile });
+  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock });
   const protocol = createSourceRpProtocol(value.rp, { clock });
   check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
     && value.rp.redirectUri === (embedOidc ? profile.embedOrigin + '/api/embed/callback' : profile.nativeOrigin + '/soty/callback'), 'source_app_profile_invalid', 503);
@@ -77,7 +77,8 @@ export function createSourceAppBff(options) {
   function binding(context, identity, operation, sessionIdHash) {
     return deepFreeze({ identity: { issuer: identity.issuer, subject: identity.subject ?? identity.sub },
       rootPrincipal: context.rootPrincipal, humanPrincipal: context.humanPrincipal, resource: profile.resource,
-      semanticDigest, operation, ...(sessionIdHash ? { sessionIdHash } : {}) });
+      semanticDigest, operation, ...(sessionIdHash ? { sessionIdHash } : {}),
+      ...(contract.kind === 'soty.workspace.v1' ? { rootReferenceDigest: digest(context.reference), rootExpiresAt: context.expiresAt } : {}) });
   }
   async function proveSession(session, context, operation, hostOptions) {
     await freshRoot(context);
@@ -177,6 +178,7 @@ export function createSourceAppBff(options) {
       check(interaction.phase === 'pending', 'source_app_intent_unavailable', 401);
       const csrf = nonce();
       page(res, 'Подключить «' + labels.appLabel + '»', '<p>Вход Сот подтвердит человека. Приложение отдельно проверит доступ к выбранному ресурсу.</p>'
+        + (contract.kind === 'soty.workspace.v1' ? '<p>Подключается пространство приложения и его доступные вам проекты. Текущий проект выбирается в приложении. Каждое чтение и действие отдельно проверяет ваши действующие права на пространство и этот проект.</p>' : '')
         + (value.allowCreateEmptyGuest === true ? '<p>Для нового пустого проекта приложение создаст отдельный профиль после подтверждения входа. Доступ к существующим данным не добавляется.</p>' : '')
         + '<form method="post" action="/soty/authorize"><input type="hidden" name="intent" value="' + html(url.searchParams.get('intent')) + '">'
         + '<input type="hidden" name="csrf" value="' + csrf + '"><input type="hidden" name="scope" value="' + semanticDigest + '">'
@@ -347,7 +349,7 @@ export function createSourceAppBff(options) {
     }
     const operation = url.pathname === '/api/embed/query' ? 'read' : url.pathname === '/api/embed/invoke' ? 'execute' : url.pathname === '/api/embed/receipt' ? 'readProof' : null;
     if (operation) {
-      const args = fields(input, ['requestId', 'input'], ['reference']); check(requestId(args.requestId));
+      const args = fields(input, ['requestId', 'input'], ['reference', ...(contract.kind === 'soty.workspace.v1' ? ['contextRef'] : [])]); check(requestId(args.requestId));
       const current = await currentSession(req, context, operation);
       const data = await native.call(current.authority, operation, args);
       if (operation === 'execute') await postCommit(context, current.authority);

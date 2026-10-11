@@ -230,3 +230,69 @@ iframe; Root «Обновить приложение» создаёт новый
 recovery. Long session, Source account switch UX, remote deployment, ASR/OCR,
 agent queue и managed reviews здесь не внедрены. Точные evidence и команды —
 `docs/implementation/source-app-standard2-acceptance.md` в Root checkout.
+
+## Текущий проект внутри приложения
+
+`STANDARD_WORKSPACE_SOURCE` (`soty.standard-workspace@1`) — отдельный opt-in
+на существующем Source3 transport. Anchor `soty.workspace.v1` обозначает
+стабильный namespace **установленного приложения**, не личный проект автора.
+Один app/profile обслуживает разных Root людей; Native определяет доступные
+каждому проекты. Старые `soty.resource.v1` и HIVE fixed profiles не расширяются.
+Catalog resource и recipient — `workspace:<appId>:<resourceId>`; новый grant
+должен явно разрешать этот scope. Descriptor/tool schema не создаёт grants.
+
+Автор переиспользует `createSourceAppBff` и `createSourceNativeAuthorityPort`:
+
+1. Синхронный `currentContext(proof,binding)` внутри `withCurrent` возвращает
+   `{key,generation,expiresAt,title,role,revision}` из текущих Native данных.
+   `key` включает child/incarnation и остаётся приватным. Native проверяет
+   account, namespace, текущий проект и его ACL при capture, чтении и COMMIT.
+2. UI сообщает выбор через прежний `POST /api/embed/query`:
+   `{requestId,input:{operation:'soty.context.select',nativeId,generation}}`.
+   Это ограниченный locator, не разрешение. `selectContext` проверяет Native
+   ACL и порядок UI, увеличивает собственную generation и обновляет только
+   private proof этого запроса. Остальные поздние proof остаются прежними.
+   Root agent adapter запрещает эту operation даже в широком author schema.
+3. `soty.current_context` возвращает версию `soty.current-context.v2` с тем же
+   anchor и `{context:{ref,generation,expiresAt},title,role,revision}`.
+   Root хранит ref вне model; существующие query/invoke/receipt передают его
+   отдельным `contextRef`. Native проверяет его до/после вызова и в COMMIT.
+
+Ref связан с исходным Root slot, Source session, человеком, устройством и
+namespace; срок не превышает пяти минут, Root и Native lease. Переключение,
+ABA, revoke, close или expiry не позволяют использовать старый ref. Один BFF
+держит максимум 128 актуальных leases в RAM: истёкшие удаляются, переполнение
+отказывается создавать новый lease, не вытесняя действующий. Это ограничение
+параллельных контекстов, не обещание неограниченной ёмкости приложения.
+
+После эффекта Native вызывает `final.contextAfter()` **внутри** исходного
+`final.commit(action)` и сохраняет результат в той же SQL-транзакции вместе
+с исходной durable receipt. Закрытый объект содержит schema
+`soty.context-after.v1`, mutationRef, generation и title/role/revision.
+mutationRef связывает exact Native requestId, digest inner input и contextRef.
+`readProof` возвращает original requestId/inputDigest/outcome/contextAfter и
+`workspaceReceipt:{schema:'soty.workspace-receipt.v1',effects,receipt}` из той же
+durable записи. `receipt` содержит только verificationMethod=`domain_read` и
+artifacts. Root использует один стандартный projector; автор добавляет schema
+и descriptor data, а не функцию `projectReceipt` в Root. Core проверяет declared
+effects, точное соответствие effects/artifacts и действующие resources/recipients.
+Legacy custom projector остаётся прежним; workspace его не принимает.
+Новая revision принимается Root лишь после `succeeded + committed` и свежего
+чтения того же private ref/generation/slot/actor/ACL. Unknown не повторяет write.
+
+Только workspace `domain_read` receipt использует artifact.sha256 как hash
+канонического `{schema:'soty.workspace-context-witness.v1',contextAfter,
+artifactIdentity,requestId,inputDigest,sourceBinding}`. artifactIdentity —
+type/id/optional revision; sourceBinding — appId/target/sourceProfile/resource.
+Смысл старого `artifact_hash` не меняется. Модель не задаёт ref, generation,
+mutationRef, witness или committed outcome. После рестарта RAM ref недействителен;
+Native данные и original receipt остаются, unknown с устаревшим ref остаётся
+неразрешённым, а не отправляется повторно.
+
+`examples/ordinary-app/workspace-native.mjs` — реальный SQLite пример этих hooks.
+`workspace-current-context-installed.test.mjs` проверяет два приложения/два
+проекта и двух Root людей через настоящий local OIDC/HTTP/WS/SQL и agent executor.
+Provider/accounting синтетические; жесты UI задаёт HTTP fixture. Это не browser
+acceptance и не готовая HIVE интеграция: ordinary example UI/feedback остаются
+fixed-resource; HIVE ещё должен подключить собственные account/storage/current
+UI hooks и тот же SQL COMMIT fence. Новых служб и per-project Root сборок нет.

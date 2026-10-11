@@ -6,6 +6,9 @@ const EFFECT_STATES = new Set(['none', 'committed', 'partial', 'unknown']);
 const VERIFICATIONS = new Set(['domain_read', 'artifact_hash', 'test', 'handler_assertion', 'unverified']);
 const AUTHORIZATION_DENIALS = new Set(['authorization_required', 'access_denied', 'capability_disabled', 'capability_changed', 'not_found', 'invocation_dispatch_denied']);
 const DEFAULT_LIMITS = Object.freeze({ inputBytes: 262144, metadataBytes: 32768, pageSize: 50 });
+// The existing deterministic Native dispatch ID; exposing this pure mapping
+// grants no dispatch/history authority. Keep producers and receipt verifiers identical.
+export const nativeInvocationRequestId = (id, canonicalHash = hash) => `cap_${canonicalHash(identifier(id))}`;
 
 export class InvocationError extends Error {
   constructor(code) { super(code); this.name = 'InvocationError'; this.code = code; }
@@ -156,7 +159,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   function insertAuthorized({ authorized, capabilityId, version, inputJson, targetJson, requestKey, requestDigest }) {
     check(db.isTransaction, 'invocation_transaction_required');
     const id = identifier(newId('inv')); const timestamp = now();
-    const internalRequestId = `cap_${canonicalHash(id)}`;
+    const internalRequestId = nativeInvocationRequestId(id, canonicalHash);
     const reservation = reserveBudget({ authorization: authorized, invocationId: id, attemptId: 'admission', charges: authorized.charges });
     check(reservation && typeof reservation.then !== 'function', 'invocation_budget_required');
     const reservationId = identifier(reservation.reservationId);

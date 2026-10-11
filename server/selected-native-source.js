@@ -4,7 +4,8 @@ import { EXTERNAL_ADAPTER_PROFILE } from '../modules/capabilities/server/externa
 import { canonicalHash, freezeDeep, AccessError } from '../modules/capabilities/server/validation.mjs';
 import { createCatalog } from '../modules/capabilities/server/catalog.mjs';
 import { selectedResource } from '../modules/apps/scoped-embed/resource-profile.mjs';
-import { STANDARD_SELECTED_SOURCE_V3 } from '../modules/source-app/server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource } from '../modules/source-app/server/standard-profile.mjs';
+import { contextAfter, workspaceMutationRef, workspaceWitness, workspaceReceipt } from '../modules/source-app/server/workspace-context.mjs';
 import { HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../modules/apps/scoped-embed/resource-route-adapters.mjs';
 
 const installed = new WeakMap();
@@ -16,8 +17,9 @@ const same = (a, b) => canonicalHash(a) === canonicalHash(b);
 const isHandle = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value);
 export const selectedNativeBindingId = appId => `app.${appId}:selected-native`;
 export function isSelectedNativeContract(contract) {
-  return contract?.binding?.id === selectedNativeBindingId(contract.appId) && contract.binding.version === 1
-    && Object.keys(contract.inputSchema?.properties ?? {}).sort().join(',') === 'handle,input';
+  return contract?.binding?.id === selectedNativeBindingId(contract.appId)
+    && (contract.binding.version === 1 && Object.keys(contract.inputSchema?.properties ?? {}).sort().join(',') === 'handle,input'
+      || contract.binding.version === 2 && Object.keys(contract.inputSchema?.properties ?? {}).sort().join(',') === 'contextRef,handle,input');
 }
 
 /** Operator CODE supplies a bounded Native schema and, for effects, a typed
@@ -36,19 +38,23 @@ export function createSelectedNativeSourceApplication(raw) {
   need(/^app-[a-f0-9]{32}$/u.test(scope.appId) && Number.isSafeInteger(scope.target.revision) && scope.target.revision > 0
     && /^[a-f0-9]{64}$/u.test(scope.target.digest));
   selectedResource(scope.resource); need(scope.resource.appId === scope.appId);
-  const standard = scope.resource.selection.kind === 'soty.resource.v1' && same(scope.sourceProfile, STANDARD_SELECTED_SOURCE_V3),
+  const workspace = scope.resource.selection.kind === 'soty.workspace.v1' && isWorkspaceSource(scope.sourceProfile);
+  const standard = workspace || scope.resource.selection.kind === 'soty.resource.v1' && same(scope.sourceProfile, STANDARD_SELECTED_SOURCE_V3),
     hive = scope.resource.selection.kind === 'hive.project.v1' && [HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE].some(pin => same(scope.sourceProfile, pin));
   need(standard || hive);
   fields(catalog, ['capabilityId', 'version', 'appId', 'title', 'description', 'visibility', 'executionEnabled', 'inputSchema', 'outputSchema', 'resources', 'effects', 'recipients']);
   need(catalog.appId === scope.appId && catalog.inputSchema.type === 'object' && Array.isArray(catalog.effects));
+  if (workspace) need(same(catalog.resources, [`workspace:${scope.appId}:${scope.resource.resourceId}`])
+    && same(catalog.recipients, catalog.resources));
   const effectful = catalog.effects.length > 0;
-  need(effectful ? typeof projectReceipt === 'function' && !types.isProxy(projectReceipt)
+  need(effectful && !workspace ? typeof projectReceipt === 'function' && !types.isProxy(projectReceipt)
     && !types.isAsyncFunction(projectReceipt) && !types.isGeneratorFunction(projectReceipt) : projectReceipt === undefined);
   freezeDeep(scope); freezeDeep(catalog);
-  const sourceBinding = { id: selectedNativeBindingId(scope.appId), version: 1,
+  const sourceBinding = { id: selectedNativeBindingId(scope.appId), version: workspace ? 2 : 1,
     digest: canonicalHash({ schema: 'soty.selected-native-source.v1', scope, catalog }) };
-  const wrapped = freezeDeep({ ...catalog, inputSchema: { type: 'object', additionalProperties: false, required: ['handle', 'input'],
-    properties: { handle: { type: 'string', minLength: 43, maxLength: 43 }, input: catalog.inputSchema } },
+  const wrapped = freezeDeep({ ...catalog, inputSchema: { type: 'object', additionalProperties: false, required: ['handle', 'input', ...(workspace ? ['contextRef'] : [])],
+    properties: { handle: { type: 'string', minLength: 43, maxLength: 43 }, input: catalog.inputSchema,
+      ...(workspace ? { contextRef: { type: 'string', minLength: 43, maxLength: 43 } } : {}) } },
     executionBinding: { kind: 'registered', handler: catalog.capabilityId, version: 1, binding: sourceBinding } });
   const registry = createCatalog([wrapped]), entry = registry.get(catalog.capabilityId, catalog.version);
   let host;
@@ -57,13 +63,16 @@ export function createSelectedNativeSourceApplication(raw) {
   const withAuthority = (_request, callback) => { need(host && typeof callback === 'function'); return callback(); };
   installed.set(withAuthority, { scope, bind(value) { need(!host); host = value; } });
   function input(raw) {
-    const value = captureQueryData(raw); fields(value, ['handle', 'input']); need(isHandle(value.handle));
+    const value = captureQueryData(raw); fields(value, ['handle', 'input', ...(workspace ? ['contextRef'] : [])]);
+    need(isHandle(value.handle) && (!workspace || isHandle(value.contextRef)));
+    need(!workspace || value.input.operation !== 'soty.context.select');
     registry.validateInput(entry, value); return value;
   }
   async function call(request, path, data, signal) {
     need(host && signal instanceof AbortSignal && !signal.aborted);
     const captured = input(request.input), response = await host.apps().callScopedNativeSource({ scope,
       handle: captured.handle, path, requestId: request.requestId, input: data, signal,
+      ...(workspace ? { contextRef: captured.contextRef } : {}),
       withCurrentOwner: callback => host.withOwner(request, callback) });
     need(!signal.aborted && response.status === 200);
     const envelope = captureQueryData(response.data);
@@ -108,13 +117,20 @@ export function createSelectedNativeSourceApplication(raw) {
         } else proof = await call(request, '/api/embed/receipt', { inputDigest: canonicalHash(data.input) }, signal);
       }
       catch { return { ...base, outcome: 'unknown' }; }
-      fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data']);
+      fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data', ...(workspace ? ['contextAfter', 'workspaceReceipt'] : [])]);
       need(proof.requestId === request.requestId && proof.inputDigest === canonicalHash(data.input)
         && ['committed', 'not_applied', 'unknown'].includes(proof.outcome));
       if (proof.outcome !== 'committed') return { ...base, outcome: proof.outcome };
-      const projection = projectReceipt(proof, data.input);
+      const projection = workspace ? workspaceReceipt(proof.workspaceReceipt) : projectReceipt(proof, data.input);
       if (types.isPromise(projection)) { void Promise.prototype.then.call(projection, () => {}, () => {}); need(false); }
-      const output = captureQueryData(projection); fields(output, ['effects', 'receipt']);
+      let output = captureQueryData(projection); fields(output, ['effects', 'receipt']);
+      if (workspace) {
+        const after = contextAfter(proof.contextAfter);
+        need(after.mutationRef === workspaceMutationRef(request.requestId, proof.inputDigest, data.contextRef)
+          && output.receipt.verificationMethod === 'domain_read' && output.receipt.artifacts.length > 0);
+        output = { ...output, receipt: { ...output.receipt, artifacts: output.receipt.artifacts.map(artifact => ({ ...artifact,
+          sha256: workspaceWitness({ after, artifact, requestId: request.requestId, inputDigest: proof.inputDigest, scope }) })) } };
+      }
       // Core validates declared effects, artifacts, their exact correspondence
       // and current grant before spending the original durable reservation.
       return { ...base, outcome: 'committed', ...output };

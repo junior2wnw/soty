@@ -1,15 +1,18 @@
 import { check, fields, syncResult, deepFreeze, jsonCopy, SourceAppError } from './wire.mjs';
 import { standardSourceContract } from './standard-profile.mjs';
+import { createWorkspaceContextAuthority, workspaceMutationRef, contextAfter, workspaceReceipt } from './workspace-context.mjs';
+import { digest } from './wire.mjs';
 
 const approved = new WeakSet();
 const approvedCommits = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
-  const value = fields(options, ['capture', 'withCurrent'], ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback']);
+  const value = fields(options, ['capture', 'withCurrent'], ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof', 'feedback', 'currentContext', 'selectContext']);
   check(typeof value.capture === 'function' && typeof value.withCurrent === 'function' && value.withCurrent.constructor?.name !== 'AsyncFunction');
   for (const key of ['assertCurrent', 'rememberLogin', 'recoverLogin', 'linkVerifiedIdentity', 'createEmptyGuest', 'read', 'execute', 'readProof'])
     check(value[key] === undefined || typeof value[key] === 'function');
+  for (const key of ['currentContext', 'selectContext']) check(value[key] === undefined || typeof value[key] === 'function' && value[key].constructor?.name !== 'AsyncFunction');
   if (value.feedback !== undefined) {
     const feedback = fields(value.feedback, ['context', 'list', 'get', 'submit'], ['reply', 'status', 'accept']);
     Object.values(feedback).forEach(method => check(typeof method === 'function')); value.feedback = Object.freeze(feedback);
@@ -26,8 +29,10 @@ export function isSourceNativeCommitPort(value) { return !!value && approvedComm
  * Exactly one synchronous final Native fence also runs inside Source commits. */
 export function createNativeAuthorityRuntime(port, options = {}) {
   check(isSourceNativeAuthorityPort(port), 'source_app_native_authority_required', 503);
-  const selected = fields(options, [], ['sourceProfile']);
+  const selected = fields(options, [], ['sourceProfile', 'clock']);
   const contract = standardSourceContract(selected.sourceProfile);
+  const workspace = contract.kind === 'soty.workspace.v1' ? createWorkspaceContextAuthority({ clock: selected.clock }) : null;
+  check(!workspace || typeof port.currentContext === 'function', 'source_workspace_context_required', 503);
   const feedbackGetBytes = contract.rules.find(row => row.path === '/api/embed/feedback/ticket').responseBytes;
   const proofs = new WeakMap(); let closed = false, fencing = false;
   function withCurrent(proof, action) {
@@ -56,27 +61,34 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     const result = await port.assertCurrent(captured.native, captured.binding);
     check(!closed && !fencing && proofs.get(proof) === captured && result === undefined, 'source_app_authority_invalid', 503);
   }
-  function operationCommit(proof) {
-    let open = true, used = false, entered = false, poisoned = false;
-    const capability = Object.freeze({ commit(action) {
+  function operationCommit(proof, context) {
+    let open = true, used = false, entered = false, poisoned = false, inAction = false;
+    const capability = Object.freeze({ ...(context ? { contextAfter() {
+      check(open && inAction && !closed, 'source_app_commit_invalid', 503);
+      const projection = context.check();
+      return deepFreeze({ schema: 'soty.context-after.v1', mutationRef: context.mutationRef, ...projection });
+    } } : {}), commit(action) {
       if (!open || used || closed || typeof action !== 'function') {
         poisoned = true; throw new SourceAppError('source_app_commit_invalid', 503);
       }
       used = true;
-      return withCurrent(proof, () => { entered = true; return syncResult(action()); });
+      return withCurrent(proof, () => { context?.check(); entered = true; inAction = true;
+        try { return syncResult(action()); } finally { inAction = false; } });
     } });
     approvedCommits.add(capability);
     return { capability, seal() { open = false; }, assertUsed() {
       check(used && entered && !poisoned, 'source_app_commit_required', 503);
     }, mayHaveCommitted() { return entered; } };
   }
-  async function invoke(proof, method, input, { mutation = false, bytes = 65536, responseBytes = bytes } = {}) {
+  async function invoke(proof, method, input, { mutation = false, bytes = 65536, responseBytes = bytes, context = null } = {}) {
     const captured = proofs.get(proof); await assertCurrent(proof);
-    const payload = deepFreeze(jsonCopy(input, { bytes })), final = mutation ? operationCommit(proof) : null;
+    if (context) withCurrent(proof, context.check);
+    const payload = deepFreeze(jsonCopy(input, { bytes })), final = mutation ? operationCommit(proof, context) : null;
     try {
       const result = await method(captured.native, captured.binding, payload, final?.capability);
       final?.seal(); final?.assertUsed();
       await assertCurrent(proof);
+      if (context) withCurrent(proof, context.check);
       return deepFreeze(jsonCopy(result, { bytes: responseBytes }));
     } catch (error) {
       // Once a Native action has run, a later denial, invalid response or lost
@@ -125,7 +137,34 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     },
     async call(proof, operation, input) {
       check(['read', 'execute', 'readProof'].includes(operation) && typeof port[operation] === 'function', 'source_app_capability_disabled', 503);
-      return invoke(proof, port[operation], input, { mutation: operation === 'execute' });
+      if (!workspace) return invoke(proof, port[operation], input, { mutation: operation === 'execute' });
+      const captured = proofs.get(proof); await assertCurrent(proof);
+      const nativeProjection = () => syncResult(port.currentContext(captured.native, captured.binding));
+      if (operation === 'read' && input.input?.operation === 'soty.context.select') {
+        const locator = fields(input.input, ['operation', 'nativeId', 'generation']);
+        check(input.contextRef === undefined && typeof port.selectContext === 'function'
+          && typeof locator.nativeId === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(locator.nativeId)
+          && Number.isSafeInteger(locator.generation) && locator.generation >= 1, 'source_workspace_selection_denied', 403);
+        return withCurrent(proof, () => {
+          check(syncResult(port.selectContext(captured.native, captured.binding,
+            Object.freeze({ nativeId: locator.nativeId, generation: locator.generation }))) === undefined);
+          return workspace.read(captured.binding, nativeProjection());
+        });
+      }
+      if (operation === 'read' && input.input?.operation === 'soty.current_context') {
+        fields(input.input, ['operation']); check(input.contextRef === undefined);
+        return withCurrent(proof, () => workspace.read(captured.binding, nativeProjection()));
+      }
+      const { contextRef, ...args } = fields(input, ['requestId', 'input', 'contextRef'], ['reference']);
+      const context = { check: () => workspace.assert(captured.binding, nativeProjection(), contextRef),
+        mutationRef: workspaceMutationRef(args.requestId, operation === 'readProof' ? args.input.inputDigest : digest(args.input), contextRef) };
+      const result = await invoke(proof, port[operation], args, { mutation: operation === 'execute', context });
+      if (operation === 'readProof' && result.outcome === 'committed') {
+        workspaceReceipt(result.workspaceReceipt);
+        const after = contextAfter(result.contextAfter), current = withCurrent(proof, context.check);
+        check(after.mutationRef === context.mutationRef && after.generation === current.generation, 'source_workspace_receipt_denied', 403);
+      }
+      return result;
     },
     async feedback(proof, operation, input = {}) {
       check(['context', 'list', 'get', 'submit', 'reply', 'status', 'accept'].includes(operation)
@@ -133,6 +172,6 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       return invoke(proof, port.feedback[operation], input, { mutation: ['submit', 'reply', 'status', 'accept'].includes(operation),
         bytes: 1500000, responseBytes: operation === 'get' ? feedbackGetBytes : 1500000 });
     },
-    close() { closed = true; },
+    close() { closed = true; workspace?.close(); },
   });
 }
