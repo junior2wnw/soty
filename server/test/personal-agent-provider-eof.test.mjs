@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createGlmProvider } from '../index.mjs';
-import { chunk, finish, wire, request, deferred } from './fixture.mjs';
+import { createGlmProvider } from '../../modules/personal-agent/provider/index.mjs';
+import { chunk, finish, wire, request, deferred } from '../../modules/personal-agent/provider/test/fixture.mjs';
 
 // The Gateway sends DONE before its async attempt observation and HTTP EOF.
 // A close during that gap aborts its pipeline before the successful receipt.
