@@ -48,6 +48,16 @@ export interface SourceStoragePort {
   /** Private constructor-only Long CAS; Basic storage omits this method. */
   rebindSession?(input:{idHash:string;expectedReference:string;context:unknown},finalNativeAssert:()=>unknown):Promise<boolean>;
 }
+/** Host-owned synchronous SQLite connection. The helper creates no schema and
+ * never closes the connection or owns keys. Native callbacks run inside the
+ * supplied transaction, on this same connection. */
+export function createSqliteSourceStorage(options:{
+  database:{prepare(sql:string):{get(...params:any[]):any;all(...params:any[]):any[];run(...params:any[]):{changes:number|bigint}}};
+  current:()=>void;transaction:<T>(action:()=>T)=>T;
+  encrypt:(model:string,id:string,revision:number,input:unknown)=>string;
+  decrypt:(model:string,id:string,revision:number,cipher:string,keyId:string)=>any;
+  clock:()=>number;keyId:string;
+}):SourceStoragePort;
 export interface SourceRpRootFrame {readonly context:unknown;assertRootCurrent():Promise<unknown>}
 export interface SourceAppRenewalPort {
   prepareSession(basic:unknown,identity:{issuer:string;subject:string;accessToken:string;expiresAt:number;refreshToken?:string;nonce?:string},context:unknown,root:SourceRpRootFrame):Promise<unknown>;
