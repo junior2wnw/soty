@@ -1,4 +1,4 @@
-import { normalizeAppSourceTarget, supportedAppSourceProfile } from './app-source-state.mjs';
+import { normalizeAppSourceTarget, supportedAppSourceProfile, appSourceExposureScope } from './app-source-state.mjs';
 
 const appIdPattern = /^app-[a-f0-9]{32}$/u, domainIdPattern = /^dom_[a-f0-9]{32}$/u;
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value);
@@ -32,10 +32,11 @@ function normalize(op, args, includeRequest = false) {
     let exposureAck;
     if (args.launchPolicy === 'anyone') {
       const ack = args.exposureAck;
-      check(ack && typeof ack === 'object' && !Array.isArray(ack) && Object.keys(ack).length === 4 && ack.scope === 'whole-port' && positive(ack.targetRevision)
+      check(ack && typeof ack === 'object' && !Array.isArray(ack) && Object.keys(ack).length === 4
+        && (ack.scope === 'whole-port' || ack.scope === 'authenticated-workspace' && ack.profile === 'soty.selected-human-embed.v2') && positive(ack.targetRevision)
         && (source || ack.targetRevision === args.expectedTargetRevision)
         && typeof ack.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(ack.targetDigest) && supportedAppSourceProfile(ack.profile), 'app_exposure_ack_required');
-      exposureAck = { scope: 'whole-port', targetRevision: ack.targetRevision, targetDigest: ack.targetDigest, profile: ack.profile };
+      exposureAck = { scope: ack.scope, targetRevision: ack.targetRevision, targetDigest: ack.targetDigest, profile: ack.profile };
     } else check(args.exposureAck === undefined || args.exposureAck === null);
     Object.assign(base, { expectedPolicyEpoch: args.expectedPolicyEpoch, expectedTargetRevision: args.expectedTargetRevision,
       launchPolicy: args.launchPolicy, listed: args.listed, ...(source ? { preparationId: args.preparationId } : { activeDomainIds }),
@@ -213,7 +214,7 @@ export function appPublicationArgs(snapshot, draft, accountId) {
   return normalize('apps.publication.update', { appId: snapshot.app.id, expectedAccountId: accountId,
     expectedPolicyEpoch: snapshot.publication.policyEpoch, expectedTargetRevision: snapshot.source.revision,
     launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? (draft.listed ?? snapshot.publication.listed) : false, activeDomainIds,
-    ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: 'whole-port', targetRevision: snapshot.source.revision,
+    ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: appSourceExposureScope(snapshot.source.profile), targetRevision: snapshot.source.revision,
       targetDigest: snapshot.source.digest, profile: snapshot.source.profile } } : {}),
   });
 }

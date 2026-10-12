@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { assertApps, appId, textId } from './protocol.mjs';
-import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE, supportedRuntimeProfile } from './schema.mjs';
+import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE, supportedRuntimeProfile, targetExposureScope, validExposureAck } from './schema.mjs';
 import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
@@ -78,10 +78,11 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     if (args.launchPolicy === 'anyone') {
       assertApps(args.exposureAck && typeof args.exposureAck === 'object' && !Array.isArray(args.exposureAck), 'app_exposure_ack_required');
       exact(args.exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
-      assertApps(args.exposureAck.scope === 'whole-port' && args.exposureAck.targetRevision === targetRevision
+      assertApps(args.exposureAck.targetRevision === targetRevision
         && typeof args.exposureAck.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(args.exposureAck.targetDigest)
-        && args.exposureAck.profile === RUNTIME_PROFILE, 'app_exposure_ack_required');
-      exposureAck = { scope: 'whole-port', targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
+        && (args.exposureAck.scope === 'whole-port' && args.exposureAck.profile === RUNTIME_PROFILE
+          || args.exposureAck.scope === 'authenticated-workspace' && args.exposureAck.profile === 'soty.selected-human-embed.v2'), 'app_exposure_ack_required');
+      exposureAck = { scope: args.exposureAck.scope, targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
     } else assertApps(args.exposureAck === undefined || args.exposureAck === null, 'unexpected_exposure_ack');
     const normalized = { id, requestId, epoch, targetRevision, launchPolicy: args.launchPolicy, listed: args.listed, activeDomainIds, exposureAck };
     return { ...normalized, requestKey: digest(requestId), intentHash: digest(JSON.stringify(['apps.publication.update.v1', id, epoch,
@@ -102,7 +103,11 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       assertApps(policy.policy_epoch === intent.epoch, 'app_publication_revision_conflict', 409);
       assertApps(target.revision === intent.targetRevision, 'app_publication_target_conflict', 409);
       assertApps(app.state === 'enabled', 'app_revoked', 409);
-      if (intent.exposureAck) assertApps(intent.exposureAck.targetDigest === target.digest && intent.exposureAck.profile === target.profile, 'app_exposure_ack_required');
+      if (intent.exposureAck) {
+        const scope = targetExposureScope(db, target);
+        assertApps(scope !== null, 'app_scoped_private_required', 403);
+        assertApps(validExposureAck(intent.exposureAck, target, scope), 'app_exposure_ack_required');
+      }
       for (const id of intent.activeDomainIds) {
         const domain = db.prepare('SELECT app_id,owner_account_id,role,state FROM app_domains WHERE id=?').get(id);
         assertApps(domain && domain.app_id === app.id && domain.owner_account_id === actor.accountId
@@ -201,11 +206,11 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       assertApps(!listed || activeIds(id).length > 0, 'app_publication_domain_required');
       const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, targetRevision);
       assertApps(target, 'apps_registry_corrupt', 500);
-      assertApps(target.profile === RUNTIME_PROFILE || launchPolicy === 'restricted', 'app_scoped_private_required', 403);
+      const scope = launchPolicy === 'anyone' ? targetExposureScope(db, target) : null;
+      assertApps(launchPolicy === 'restricted' || scope !== null, 'app_scoped_private_required', 403);
       if (launchPolicy === 'anyone') {
         exact(exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
-        assertApps(exposureAck.scope === 'whole-port' && exposureAck.targetRevision === targetRevision
-          && exposureAck.targetDigest === target.digest && exposureAck.profile === target.profile, 'app_exposure_ack_required');
+        assertApps(validExposureAck(exposureAck, target, scope), 'app_exposure_ack_required');
       } else assertApps(exposureAck === null || exposureAck === undefined, 'unexpected_exposure_ack');
       const changed = bumpEpoch(id);
       db.prepare(`UPDATE app_publications SET active_target_revision=?,launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)

@@ -163,12 +163,14 @@ test('selected-source public consent and receipts stay profile-bound without bre
     const value = inspection(); value.source.profile = profile;
     const args = appPublicationArgs(value, { ...draft(value), launchPolicy: 'anyone', exposureConfirmed: true }, 'owner');
     assert.equal(args.exposureAck.profile, profile);
+    assert.equal(args.exposureAck.scope, profile.endsWith('v2') ? 'authenticated-workspace' : 'whole-port');
     const state = localState(), pending = await state.prepare({ op: 'apps.publication.update', args });
     const response = { requestId: pending.args.requestId, replayed: false, current: { appId, policyEpoch: 10 },
       receipt: { schema: 'soty.app-publication-receipt.v1', namespace: 'apps.publication.update.v1', appId,
         requestKeyHash: createHash('sha256').update(pending.args.requestId).digest('hex'), policyEpoch: 10, targetRevision: 2,
         targetDigest: value.source.digest, profile, launchPolicy: 'anyone', listed: false, activeDomainIds: [first], exposureAck: args.exposureAck } };
     await assert.rejects(state.acknowledge(pending, { ...response, receipt: { ...response.receipt, profile: 'future-profile' } }), { code: 'app_settings_invalid_receipt' });
+    await assert.rejects(state.acknowledge(pending, { ...response, receipt: { ...response.receipt, exposureAck: { ...args.exposureAck, scope: 'wrong-scope' } } }), { code: 'app_settings_invalid_receipt' });
     const another = profile.endsWith('v2') ? 'soty.selected-human-embed.v1' : 'soty.selected-human-embed.v2';
     await assert.rejects(state.acknowledge(pending, { ...response, receipt: { ...response.receipt, profile: another } }), { code: 'app_settings_invalid_receipt' });
     assert.equal(await state.acknowledge(pending, response), true); assert.equal(state.read().pending, null);

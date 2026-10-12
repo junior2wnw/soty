@@ -1,5 +1,6 @@
 import type { AppInspection, AppSourceDraft, AppSourcePreparation, AppSourceTarget, SettingsPending } from './app-settings.types';
 import type { WorldApi } from './types';
+export function appSourceExposureScope(profile: string): 'whole-port' | 'authenticated-workspace';
 export interface AppSourceIntent {
   op: 'apps.source.promote'; args: Record<string, unknown>; expectedSource: AppSourceTarget;
   /** Synchronous and ephemeral; called inside the settings Web Lock only before a new durable command. */

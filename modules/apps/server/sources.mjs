@@ -179,10 +179,11 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     let exposureAck = null;
     if (args.launchPolicy === 'anyone') {
       exact(args.exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
-      assertApps(args.exposureAck.scope === 'whole-port' && Number.isSafeInteger(args.exposureAck.targetRevision) && args.exposureAck.targetRevision >= 1
+      assertApps(Number.isSafeInteger(args.exposureAck.targetRevision) && args.exposureAck.targetRevision >= 1
         && typeof args.exposureAck.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(args.exposureAck.targetDigest)
-        && args.exposureAck.profile === RUNTIME_PROFILE, 'app_exposure_ack_required');
-      exposureAck = { scope: 'whole-port', targetRevision: args.exposureAck.targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
+        && (args.exposureAck.scope === 'whole-port' && args.exposureAck.profile === RUNTIME_PROFILE
+          || args.exposureAck.scope === 'authenticated-workspace' && args.exposureAck.profile === 'soty.selected-human-embed.v2'), 'app_exposure_ack_required');
+      exposureAck = { scope: args.exposureAck.scope, targetRevision: args.exposureAck.targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
     } else assertApps(args.exposureAck === undefined || args.exposureAck === null, 'unexpected_exposure_ack');
     const normalized = { id, requestId, preparationId, epoch, revision, launchPolicy: args.launchPolicy, listed: args.listed, exposureAck };
     return { ...normalized, requestKey: hash(requestId), intentHash: hash(JSON.stringify(['apps.source.promote.v1', id, preparationId,

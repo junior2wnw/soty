@@ -2,6 +2,8 @@ import { validateAppLaunchPath } from './app-launch.mjs';
 
 const PROFILE = 'soty.relay-restricted.v1';
 export const supportedAppSourceProfile = value => [PROFILE, 'soty.selected-human-embed.v1', 'soty.selected-human-embed.v2'].includes(value);
+// This is the requested consent scope, not evidence of a server admission.
+export const appSourceExposureScope = profile => profile === 'soty.selected-human-embed.v2' ? 'authenticated-workspace' : 'whole-port';
 const PAGE_SIZE = 20;
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value);
 const positive = value => Number.isSafeInteger(value) && value >= 1;
@@ -210,7 +212,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       const expectedSource = clone(prepared.value.target), preparationId = prepared.value.preparationId;
       const args = { appId, expectedAccountId: accountId, preparationId, expectedPolicyEpoch: base.publication.policyEpoch,
         expectedTargetRevision: base.source.revision, launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false,
-        ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: 'whole-port', targetRevision: expectedSource.revision,
+        ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: appSourceExposureScope(expectedSource.profile), targetRevision: expectedSource.revision,
           targetDigest: expectedSource.digest, profile: expectedSource.profile } } : {}) };
       const capturedGeneration = generation, capturedPolicy = draft.launchPolicy;
       return frozen({ op: 'apps.source.promote', args, expectedSource, beforeCreate() {

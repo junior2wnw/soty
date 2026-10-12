@@ -4,6 +4,7 @@ import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-p
 import { createLaunchPath } from './launch-path.mjs';
 import { canonical } from '../scoped-embed/profile.mjs';
 import { approvedEmbedProfile } from '../scoped-embed/profile-dispatch.mjs';
+import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
 export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
@@ -18,6 +19,25 @@ const v3Schema = 'soty.apps-registry.v3';
 const v4Schema = 'soty.apps-registry.v4';
 const v5Schema = 'soty.apps-registry.v5';
 export const RUNTIME_PROFILE = 'soty.relay-restricted.v1';
+// Publication opens an application entry, never the selected Native data. Only
+// the independently signed, per-user workspace contract supports that scope.
+export const workspacePublicEntry = profile => profile?.schema === RESOURCE_RUNTIME_PROFILE
+  && isRootSignedWorkspaceSource(profile.sourceProfile);
+export function targetExposureScope(db, target) {
+  if (target.profile === RUNTIME_PROFILE) return 'whole-port';
+  const row = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.app_id, target.revision);
+  if (!row || row.target_digest !== target.digest) return null;
+  let profile; try { profile = approvedEmbedProfile(JSON.parse(row.approved_pin_json)); } catch { return null; }
+  const { digest, ...pin } = profile;
+  return workspacePublicEntry(profile) && digest === row.profile_digest && canonical(pin) === row.approved_pin_json
+    && profile.appId === target.app_id && profile.schema === target.profile && profile.resource.tenantId === target.owner_account_id
+    && profile.target.revision === target.revision && profile.target.digest === target.digest && target.entry_path === '/embed'
+    && [profile.connector.linkId, profile.connector.hostDeviceId, profile.connector.connectorId].join('|') === target.connector_key
+    ? 'authenticated-workspace' : null;
+}
+export const validExposureAck = (ack, target, scope) => scope !== null && ack && typeof ack === 'object' && !Array.isArray(ack)
+  && Object.keys(ack).sort().join(',') === 'profile,scope,targetDigest,targetRevision' && ack.scope === scope
+  && ack.targetRevision === target.revision && ack.targetDigest === target.digest && ack.profile === target.profile;
 const core = {
   apps_meta: ['key', 'value'],
   app_devices: ['connector_key', 'owner_account_id', 'identity_json', 'name', 'created_at'],
@@ -480,7 +500,10 @@ function validateSourceRows(db, { historical = false } = {}) {
           && profile.target.revision === target.revision && profile.target.digest === target.digest
           && [profile.connector.linkId,profile.connector.hostDeviceId,profile.connector.connectorId].join('|') === target.connector_key
           && target.entry_path === '/embed', 'apps_scoped_admission_corrupt', 500);
-        if (target.revision === policy.active_target_revision) assertApps(policy.launch_policy === 'restricted', 'apps_scoped_public_forbidden', 500);
+        if (target.revision === policy.active_target_revision && policy.launch_policy !== 'restricted') {
+          let ack; try { ack = JSON.parse(policy.exposure_ack_json); } catch { /* Refuse malformed durable admission. */ }
+          assertApps(workspacePublicEntry(profile) && validExposureAck(ack, target, 'authenticated-workspace'), 'apps_scoped_public_forbidden', 500);
+        }
       }
       if (target.revision === 1) {
         initial = true;

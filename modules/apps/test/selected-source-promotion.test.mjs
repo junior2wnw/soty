@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import WebSocket from 'ws';
 import { createAppsService } from '../server/index.mjs';
 import { STANDARD_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
@@ -40,9 +41,16 @@ function fixture(t, version = 8, profileVersion = 2, options = {}) {
   const profile = { schema: target.profile, appId, connector: identity, target: { revision: target.revision, digest: target.digest },
     sourceProfile: options.pin ?? (profileVersion === 2 ? { ...HIVE_SELECTED_SOURCE } : { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) }),
     resource: { registryId: 'soty', tenantId: owner.accountId, appId, environmentId: 'production', resourceId: 'selected',
-      ...(profileVersion === 2 ? { selection: { kind: options.pin ? 'soty.workspace.v1' : 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
-    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test',
+      ...(profileVersion === 2 ? { selection: { kind: options.pin?.id === 'soty.standard-workspace' ? 'soty.workspace.v1' : 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
+    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.publicEntry ? 'https://selected.apps.test' : options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test',
     nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
+  if (options.publicEntry) {
+    const template = 'https://{slug}.apps.test', zone = 'zone_' + createHash('sha256').update(template).digest('hex').slice(0, 32);
+    const alias = 'dom_' + 'b'.repeat(32);
+    db.prepare('INSERT INTO app_domain_zones VALUES(?,?,?,?,?,?,?)').run(zone, 'named', template, 'apps.test', 'https', '', 1);
+    db.prepare("INSERT INTO app_domains VALUES(?,?,?,?,?,?,?,'alias','bound',?,NULL)").run(alias, zone, 'selected.apps.test', 'https://selected.apps.test', 'selected', appId, owner.accountId, 1);
+    db.prepare('INSERT INTO app_publication_domains VALUES(?,?,?)').run(appId, alias, owner.accountId);
+  }
   const admissions = createScopedAdmissionRegistry({ db, profiles: [profile], clock: () => clock });
   const publications = createPublicationRegistry({ db, now: () => clock, assertActor, canUse: actor => actor.accountId === owner.accountId });
   const channel = Object.freeze({ fixture: 'constructor-owned-current-channel' });
@@ -61,7 +69,7 @@ function fixture(t, version = 8, profileVersion = 2, options = {}) {
   const promote = args => sources.execute({ op: 'apps.source.promote', actor: owner, args });
   const rows = () => Object.fromEntries(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all()
     .map(({ name }) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
-  return { db, admissions, target, appId, profile, owner, identity, get, rows, prepare, intent, promote, probeCalls: () => probeCalls,
+  return { db, publications, admissions, target, appId, profile, owner, identity, get, rows, prepare, intent, promote, probeCalls: () => probeCalls,
     reopen() { sources.close(); sources = openSources(); }, revoke() { active = false; }, advance() { clock += 60000; },
     notify(work) { notify = work; }, history() { return sources.execute({ op: 'apps.source.history', actor: owner, args: { appId } }); } };
 }
@@ -133,31 +141,36 @@ test('valid Apps8 preparation still requires current owner and exact target/poli
 test('actual Apps launch maps a saved root path only for admitted workspace2, preserving actor and immutable target', async t => {
   for (const pin of [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE]) await t.test('workspace' + pin.version, async sub => {
     const directory = mkdtempSync(join(tmpdir(), 'soty-saved-entry-')), databasePath = join(directory, 'apps.sqlite');
-    const template = 'https://{appId}.apps.test', f = fixture(sub, 8, 2, { databasePath, template, pin });
-    f.promote(f.intent(await f.prepare())); const before = f.rows();
+    const template = 'https://{appId}.apps.test', f = fixture(sub, 8, 2, { databasePath, template, pin, publicEntry: pin.version === 2 });
+    const prepared = await f.prepare(), intent = f.intent(prepared);
+    if (pin.version === 2) Object.assign(intent, { launchPolicy: 'anyone', listed: true, exposureAck: {
+      scope: 'authenticated-workspace', targetRevision: f.target.revision, targetDigest: f.target.digest, profile: f.target.profile } });
+    f.promote(intent); const before = f.rows();
+    const outsider = Object.freeze({ accountId: 'new-ungranted-person', deviceId: 'new-person-browser' });
+    const actors = [f.owner, outsider]; let humanSubjects = [], forwardedRequests = 0;
     let active = true;
     const service = createAppsService({ databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
       allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile],
       withAuthorityFence: callback => callback(),
-      actorActive: actor => active && actor.accountId === f.owner.accountId && actor.deviceId === f.owner.deviceId,
+      actorActive: actor => active && actors.some(value => value.accountId === actor?.accountId && value.deviceId === actor?.deviceId),
       authenticateConnector: async auth => auth.token === 'synthetic-channel-token' && auth.linkId === f.identity.linkId
         && auth.deviceId === f.identity.hostDeviceId && auth.connectorId === f.identity.connectorId,
       signSourceAuthority: async () => { throw Error('launch_does_not_issue_identity_witness'); },
       withHumanSubjectAuthority: ({ actor, issuer, clientId }, callback) => {
-        assert.equal(actor, f.owner); assert.ok(active); return callback({ issuer, clientId, subject: 'synthetic-subject', clientGeneration: 1, clientProfileDigest: 'c'.repeat(64) }); } });
-    const peers = new Set(), server = createServer(); server.on('connection', socket => { peers.add(socket); socket.once('close', () => peers.delete(socket)); }); server.on('upgrade', (req, socket, head) => { if (!service.handleUpgrade(req, socket, head)) socket.destroy(); });
+        assert.ok(actors.includes(actor)); assert.ok(active); humanSubjects.push(actor.accountId); return callback({ issuer, clientId, subject: 'subject-' + actor.accountId, clientGeneration: 1, clientProfileDigest: 'c'.repeat(64) }); } });
+    const peers = new Set(), server = createServer((req, res) => { if (!service.handleRequest(req, res)) { res.writeHead(404).end(); } }); server.on('connection', socket => { peers.add(socket); socket.once('close', () => peers.delete(socket)); }); server.on('upgrade', (req, socket, head) => { if (!service.handleUpgrade(req, socket, head)) socket.destroy(); });
     await new Promise(done => server.listen(0, '127.0.0.1', done));
     const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/apps/channel`);
     sub.after(async () => { ws.terminate(); service.close(); for (const peer of peers) peer.destroy(); await new Promise(done => server.close(done)); rmSync(directory, { recursive: true, force: true }); });
     ws.on('error', () => {});
     // Actual channel with a controlled connector ACK, not an upstream health assertion.
-    ws.on('message', bytes => { const frame = JSON.parse(bytes);
+    ws.on('message', bytes => { const frame = JSON.parse(bytes); if (frame.type === 'open') forwardedRequests++;
       if (frame.type === 'binding-set') ws.send(JSON.stringify({ type: 'binding-ack', channelId: frame.channelId, syncId: frame.syncId,
         appId: frame.target.appId, revision: frame.target.revision, digest: frame.target.digest, profile: frame.target.profile })); });
     await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
     ws.send(JSON.stringify({ type: 'auth', schema: 'soty.apps-channel.v1', ...f.identity, token: 'synthetic-channel-token',
       capabilities: { targetBindingVersions: [1, 2], runtimeProfiles: ['soty.relay-restricted.v1', f.profile.schema] } }));
-    const call = args => service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main', ...args } });
+    const call = args => service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main', ...(pin.version === 2 ? { domainId: 'dom_' + 'b'.repeat(32) } : {}), ...args } });
     const deadline = Date.now() + 3000; let initial;
     while (!initial) { try { initial = call({ path: '/embed' }); } catch (error) {
       if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
@@ -166,9 +179,61 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       const launched = call({ domainId: initial.entry.domainId, path: '/' });
       assert.deepEqual(launched.entry, initial.entry); assert.equal(launched.entry.path, '/embed');
       assert.deepEqual(launched.scopedSource, pin); assert.equal(new URL(launched.launchUrl).searchParams.get('path'), '/embed');
+      const catalog = service.execute({ op: 'apps.catalog', actor: outsider, args: {} });
+      assert.equal(catalog.apps[0].id, f.appId); assert.equal(catalog.apps[0].entry.path, '/embed');
+      assert.deepEqual(f.rows().local_app_grants, before.local_app_grants, 'no per-user access grant was added');
+      const outside = service.execute({ op: 'apps.launch', actor: outsider, args: { appId: f.appId,
+        domainId: launched.entry.domainId, path: '/', instanceId: 'main' } });
+      assert.deepEqual(outside.scopedSource, pin); assert.notEqual(outside.scopedCloseHandle, launched.scopedCloseHandle);
+      assert.ok(humanSubjects.includes(outsider.accountId));
+      const authority = service.withAppAuthority({ actor: outsider, appId: f.appId, mode: 'participant', domainId: launched.entry.domainId, path: '/embed' }, value => value);
+      assert.equal(authority.accountId, outsider.accountId); assert.equal(authority.ownerId, f.owner.accountId);
+      assert.equal(authority.visibility, 'public'); assert.equal(authority.canManage, false);
+      assert.throws(() => service.execute({ op: 'apps.launch', actor: undefined, args: { appId: f.appId, domainId: launched.entry.domainId } }), { code: 'apps_authentication_required' });
+      for (const path of ['/embed', '/api/embed/query', '/api/embed/feedback/context', '/api/projects']) {
+        const response = await new Promise((done, reject) => {
+          const req = request({ hostname: '127.0.0.1', port: server.address().port, path,
+            headers: { Host: new URL(f.profile.embedOrigin).host } }, res => { res.resume(); res.once('end', () => done(res)); });
+          req.once('error', reject); req.end();
+        });
+        assert.ok([401, 403].includes(response.statusCode), path + ':' + response.statusCode);
+        assert.equal(response.headers['set-cookie'], undefined);
+      }
+      assert.equal(forwardedRequests, 0, 'anonymous requests never reach Native or acquire a Source proof');
+
     } else assert.throws(() => call({ path: '/' }), { code: 'app_scoped_admission_required' });
     for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
     assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');
+  });
+});
+
+
+test('only explicitly admitted Root workspace2 can publish an authenticated entry; restart retains exact ACK and old pins stay private', async t => {
+  for (const pin of [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE, HIVE_SELECTED_SOURCE]) await t.test(pin.id + ':' + pin.version, async sub => {
+    const f = fixture(sub, 8, 2, { pin, publicEntry: true }), prepared = await f.prepare();
+    const args = { ...f.intent(prepared), launchPolicy: 'anyone', listed: true,
+      exposureAck: { scope: 'authenticated-workspace', targetRevision: 2, targetDigest: f.target.digest, profile: f.target.profile } };
+    const before = f.rows();
+    if (pin !== STANDARD_ROOT_WORKSPACE_SOURCE) {
+      assert.throws(() => f.promote(args), { code: 'app_scoped_private_required' });
+      assert.deepEqual(f.rows(), before); return;
+    }
+    for (const exposureAck of [ { ...args.exposureAck, scope: 'whole-port' }, { ...args.exposureAck, targetDigest: 'f'.repeat(64) } ]) {
+      assert.throws(() => f.promote({ ...args, exposureAck }), { code: 'app_exposure_ack_required' }); assert.deepEqual(f.rows(), before);
+    }
+    const accepted = f.promote(args); assert.equal(accepted.current.launchPolicy, 'anyone'); assert.equal(accepted.current.listed, true);
+    assert.deepEqual(accepted.receipt.exposureAck, args.exposureAck); assert.equal(inspectAppsSchema(f.db), 'v8');
+    const committed = f.rows(); f.reopen(); assert.equal(f.promote(args).replayed, true); assert.deepEqual(f.rows(), committed);
+    const update = extra => f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId,
+      requestId: 'workspace-publication-update', expectedPolicyEpoch: accepted.current.policyEpoch, expectedTargetRevision: 2,
+      activeDomainIds: accepted.current.activeDomainIds, launchPolicy: 'anyone', listed: true, exposureAck: args.exposureAck, ...extra } });
+    assert.throws(() => update({ exposureAck: { ...args.exposureAck, scope: 'whole-port' } }), { code: 'app_exposure_ack_required' });
+    assert.deepEqual(f.rows(), committed);
+    assert.deepEqual(update({}).receipt.exposureAck, args.exposureAck);
+    migrateAppsSchema(f.db, { allowScopedEmbedMigration: true, allowSelectedResourceMigration: true });
+    // A durable public row with another scope must fail cold inspection, not open routes.
+    f.db.prepare('UPDATE app_publications SET exposure_ack_json=? WHERE app_id=?').run(JSON.stringify({ ...args.exposureAck, scope: 'whole-port' }), f.appId);
+    assert.throws(() => migrateAppsSchema(f.db, { allowScopedEmbedMigration: true, allowSelectedResourceMigration: true }), { code: 'apps_scoped_public_forbidden' });
   });
 });

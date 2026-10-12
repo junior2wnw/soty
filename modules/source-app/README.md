@@ -404,3 +404,29 @@ before and after reads and inside the final transaction. Construct
 and recreate it after the workspace context changes. Legacy feedback clients
 keep their existing requests. A recovered immutable receipt can precede the
 current ticket revision; it retains its original ticket ID and revision.
+
+
+### Public application, private per-user workspace
+
+Only an exactly admitted `STANDARD_ROOT_WORKSPACE_SOURCE` (workspace@2) may use
+`anyone` + `listed` for its application entry. Owner publication uses the closed
+`exposureAck` scope `authenticated-workspace`, pinned to the exact target
+revision, digest and runtime profile. It opens the maintained `/embed` routes
+to authenticated Root users, not an arbitrary port or Native projects. Relay
+publication keeps its existing `whole-port` acknowledgement. Other selected
+resource and workspace@1 profiles remain restricted.
+
+A signed visitor keeps their own Root account/device and Human subject even
+when application access uses the public basis. The Source witness and Native
+identity linking, current-child ACL and COMMIT checks remain mandatory. An
+anonymous visitor can discover the application but cannot obtain a scoped
+Source session, identity witness or private content. No per-user author grant
+is needed merely to launch the publicly listed app; agent capabilities remain
+separately granted and budgeted.
+
+The Apps8 cold reader validates the exact stored workspace@2 admission and this
+acknowledgement. Older binaries reject an active public selected target. Before
+returning to such a binary, use an explicit owner publication CAS to make the
+selected target restricted/unlisted (or explicitly return to a qualified relay
+target), while the new reader still serves. Keep the live database; do not
+restore an old database snapshot as a rollback shortcut.

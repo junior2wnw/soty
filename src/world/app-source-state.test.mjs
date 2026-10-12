@@ -403,3 +403,22 @@ test('a retry without the exact displayed command is rejected instead of silentl
   await assert.rejects(store.state.pendingForDispatch(), { code: 'app_settings_pending_changed' });
   assert.equal(calls, 0); assert.deepEqual(store.state.read().pending, pending);
 });
+
+
+test('authenticated workspace consent persists the bounded entry scope through lost ACK and reload', async () => {
+  const snapshot = inspection(), selectedProfile = 'soty.selected-human-embed.v2';
+  snapshot.publication.launchPolicy = 'anyone'; snapshot.publication.listed = true;
+  snapshot.source.integrations = [{ profile: selectedProfile, entryPath: '/embed' }];
+  const f = fixture(snapshot); f.source.patch({ profile: selectedProfile, entryPath: '/embed' });
+  await f.prepare(normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key => [key, ({ ...snapshot.source, revision: 5, digest: 'c'.repeat(64), profile: selectedProfile, entryPath: '/embed' })[key]]))));
+  f.source.patch({ exposureConfirmed: true });
+  const intent = f.source.promoteIntent(), store = storeFixture();
+  assert.equal(intent.args.exposureAck.scope, 'authenticated-workspace'); assert.equal(intent.args.listed, true);
+  await assert.rejects(dispatchAppSettingsIntent({ ...intent, state: store.state, isCurrent: () => true,
+    api: { request: async () => { throw Error('lost ACK'); } } }));
+  const recovered = createAppSettingsState(store.options), pending = recovered.read().pending;
+  assert.deepEqual(pending.args.exposureAck, intent.args.exposureAck);
+  await assert.rejects(recovered.acknowledge(pending, { ...receipt(pending), receipt: { ...receipt(pending).receipt,
+    exposureAck: { ...pending.args.exposureAck, scope: 'whole-port' } } }), { code: 'app_settings_invalid_receipt' });
+  assert.equal(await recovered.acknowledge(pending, receipt(pending)), true);
+});

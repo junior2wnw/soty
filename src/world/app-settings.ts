@@ -2,7 +2,7 @@ import './app-settings.css';
 import { button, el, iconButton, labeledField, textInput } from './dom';
 import { errorText } from './dialogs';
 import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateArgs, createAppSettingsDraftState, createAppSettingsState, dispatchAppSettingsIntent } from './app-settings-state.mjs';
-import { createAppSourceState } from './app-source-state.mjs';
+import { createAppSourceState, appSourceExposureScope } from './app-source-state.mjs';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { deviceKey } from '../platform/device-key.mjs';
 import { exportAppDeployment, preferredInspectionEntry } from './app-deployment.mjs';
@@ -576,7 +576,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (state.preparation) {
       const target = state.preparation.target;
       text(sourceCheckedTarget, `${target.deviceName} · порт ${target.port} · ${target.entryPath}`);
-      text(sourceAckText, `Открыть всем весь проект на устройстве «${target.deviceName}», порт ${target.port}, включая его страницы и API.`);
+      text(sourceAckText, appSourceExposureScope(target.profile) === 'authenticated-workspace'
+        ? 'Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.'
+        : `Открыть всем весь проект на устройстве «${target.deviceName}», порт ${target.port}, включая его страницы и API.`);
     }
     sourceAck.hidden = draft.launchPolicy !== 'anyone'; sourceAckInput.checked = draft.exposureConfirmed;
     sourceAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
@@ -690,7 +692,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (policy.value !== draft.launchPolicy) policy.value = draft.launchPolicy; policy.disabled = !snapshot.actions.canPublish;
     publicDetails.hidden = draft.launchPolicy !== 'anyone'; ackInput.checked = draft.exposureConfirmed; ackInput.disabled = !snapshot.actions.canPublish;
     const base = model.base('publication');
-    text(ackText, `Открыть всем весь проект на устройстве «${base.source.deviceName}», порт ${base.source.port}, включая его страницы и API.`);
+    text(ackText, appSourceExposureScope(base.source.profile) === 'authenticated-workspace'
+      ? 'Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.'
+      : `Открыть всем весь проект на устройстве «${base.source.deviceName}», порт ${base.source.port}, включая его страницы и API.`);
     noPublicAliases.hidden = draft.activeDomainIds.length > 0;
     listingInput.checked = draft.listed; listingInput.disabled = !snapshot.actions.canPublish;
     legacyListed.hidden = !snapshot.publication.listed; text(legacyListed, draft.launchPolicy === 'restricted' ? 'Приложение исчезнет из общего списка после сохранения ограниченного доступа.' : 'Приложение опубликовано в общем списке.');
