@@ -34,6 +34,20 @@ function memory() {
   return { async read() { return structuredClone(value ?? null); }, async claim(next) { value ??= structuredClone(next); return structuredClone(value); },
     async compareAndSwap(revision, next) { assert.equal(value.localRevision, revision); value = structuredClone(next); return structuredClone(value); } };
 }
+test('installed operator code can compose the existing OTsov tools without issuing user authority', async t => {
+  const f = await fixture(t), scope = {
+    appId: 'app-' + 'a'.repeat(32), target: { revision: 2, digest: 'b'.repeat(64) },
+    sourceProfile: { id: 'soty.standard-workspace', version: 2, digest: '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9' },
+    resource: { registryId: 'soty', environmentId: 'test', tenantId: 'synthetic-publisher', appId: 'app-' + 'a'.repeat(32),
+      resourceId: 'otsov', selection: { kind: 'soty.workspace.v1', nativeId: 'otsov', incarnationId: 'one' } },
+  };
+  const config = await f.code(`export default async api => ({...await api.loadInstalledExistingApplications({
+    createRegistry: () => api.createSelectedOtsovSourceApplications(${JSON.stringify(scope)}) }), close() {}});`);
+  const installed = await loadInstalledApplicationsEntry(config); t.after(() => installed.close());
+  assert.equal(installed.sourceReferences.length, 3);
+  assert.equal(installed.sourceCredentialFor, undefined, 'registry metadata is not a delegated user credential');
+  assert.deepEqual(installed.httpOptions.externalApplications.map(row => row.catalog.effects), [[], [], ['create']]);
+});
 async function boot(t, f, entryEnv = {}) {
   // The actual current index source is held; only dependency import URLs are
   // adapted in this OWN temporary copy. Its maintained installed-entry callsite
