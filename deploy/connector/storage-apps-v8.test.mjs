@@ -4,6 +4,9 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve, basename } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
+import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
+import { selectedResourceProfile } from '../../modules/apps/scoped-embed/resource-profile.mjs';
 import { migrateAppsSchema } from '../../modules/apps/server/schema.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, currentStorageReaders, storageReaderLabel } from './storage-guard.mjs';
@@ -30,5 +33,43 @@ test('Apps8 probe rejects marker-swapped7 layout and a missing immutable admissi
 test('known marker8 on older table CHECK is rejected instead of being treated as merely future data', async t => {
   const { root, db } = await store(t, 7);
   db.exec("UPDATE apps_meta SET value='soty.apps-registry.v8' WHERE key='schema';PRAGMA user_version=8");
+  await assert.rejects(readStorageFormat(root), { code: 'storage_format_unreadable' });
+});
+
+const canonical = value => Array.isArray(value) ? '[' + value.map(canonical).join(',') + ']'
+  : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}' : JSON.stringify(value);
+const digest = value => createHash('sha256').update(value).digest('hex');
+async function workspaceStore(t, mutate = () => {}) {
+  const { root, db } = await store(t), appId = 'app-' + 'a'.repeat(32), owner = 'owner', key = 'link|host|connector';
+  db.prepare('INSERT INTO app_devices VALUES(?,?,?,?,?)').run(key, owner, '{"linkId":"link","hostDeviceId":"host","connectorId":"connector"}', 'Source', 1);
+  db.prepare('INSERT INTO local_apps VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(appId, owner, key, 'Source', 5350, '/embed', '{"accountIds":[],"communityIds":[]}', 'enabled', 1, 1, 1);
+  const targetDigest = digest(JSON.stringify(['soty.runtime-target.v1', appId, 2, owner, key, 5350, '/embed', 'soty.selected-human-embed.v2']));
+  db.prepare('INSERT INTO app_runtime_targets VALUES(?,?,?,?,?,?,?,?,?)').run(appId, 2, owner, key, 5350, '/embed', 'soty.selected-human-embed.v2', targetDigest, 1);
+  const profile = { schema: 'soty.selected-human-embed.v2', appId, connector: { linkId: 'link', hostDeviceId: 'host', connectorId: 'connector' },
+    target: { revision: 2, digest: targetDigest }, sourceProfile: { ...STANDARD_ROOT_WORKSPACE_SOURCE },
+    resource: { registryId: 'registry', tenantId: owner, appId, environmentId: 'test', resourceId: 'workspace',
+      selection: { kind: 'soty.workspace.v1', nativeId: 'native-workspace', incarnationId: 'incarnation' } },
+    issuer: 'https://shell.example/human-identity', clientId: 'client', embedOrigin: 'https://workspace.example', nativeOrigin: 'https://workspace.example', parentOrigin: 'https://shell.example' };
+  mutate(profile); const bytes = canonical(profile);
+  db.prepare('INSERT INTO app_scoped_embed_admissions VALUES(?,?,?,?,?,?)').run(appId, 2, targetDigest, digest(bytes), bytes, 1);
+  return { root, profile };
+}
+
+test('standalone host reader accepts canonical exact-origin Root workspace2 admission', async t => {
+  const { root, profile } = await workspaceStore(t);
+  assert.equal(selectedResourceProfile(profile).nativeOrigin, profile.embedOrigin);
+  assert.equal((await readStorageFormat(root)).apps, 8);
+});
+
+for (const [name, mutate] of [
+  ['wrong digest', value => { value.sourceProfile.digest = '0'.repeat(64); }],
+  ['workspace1', value => { value.sourceProfile.version = 1; }],
+  ['resource profile', value => { value.sourceProfile.id = 'soty.standard-resource'; }],
+  ['non-workspace kind', value => { value.resource.selection.kind = 'example.project.v1'; }],
+  ['same host other port', value => { value.nativeOrigin = 'https://workspace.example:8443'; }],
+  ['parent equals embed', value => { value.parentOrigin = value.embedOrigin; }],
+]) test(`exact-origin exception refuses ${name} with valid canonical admission hashes`, async t => {
+  const { root, profile } = await workspaceStore(t, mutate);
+  assert.throws(() => selectedResourceProfile(profile));
   await assert.rejects(readStorageFormat(root), { code: 'storage_format_unreadable' });
 });
