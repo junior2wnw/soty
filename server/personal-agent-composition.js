@@ -231,25 +231,36 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           }
           assertCurrent(); need(!signal.aborted, 'agent_cancelled');
           const guidance = current(actor, services => services.capabilities.externalGuidance);
-          let guidanceBytes = 0, guidanceCount = 0;
+          const documents = []; let guidanceCount = 0, guidanceHasMore = false;
           const items = chosen.map(value => {
             const detail = sourceDetail(value.reference, value.delegated);
             const item = isSelectedNativeContract(detail) ? { ...value.item, inputSchema: detail.inputSchema.properties.input } : { ...value.item };
             if (guidance) {
-              const index = guidance.list({ actor: value.delegated, reference: value.reference }), instructions = [];
-              for (const entry of index.items) {
-                if (guidanceCount >= 8) break;
-                const document = guidance.get({ actor: value.delegated, reference: value.reference, guidance: entry.reference });
-                const bytes = Buffer.byteLength(JSON.stringify(document));
-                if (guidanceBytes + bytes > 16384) continue;
-                guidanceBytes += bytes; guidanceCount++; instructions.push(document);
+              const index = guidance.list({ actor: value.delegated, reference: value.reference });
+              if (index.items.length) {
+                const included = index.items.slice(0, 8 - guidanceCount); guidanceCount += included.length;
+                item.guidance = included; item.guidanceHasMore = index.items.length > included.length;
+                guidanceHasMore ||= item.guidanceHasMore;
+                for (const entry of included) documents.push(guidance.get({ actor: value.delegated,
+                  reference: value.reference, guidance: entry.reference }));
               }
-              if (index.items.length) { item.guidance = instructions; item.guidanceHasMore = index.items.length > instructions.length; }
             }
             return item;
           });
+          // The existing runtime sends the complete raw tool message to the model
+          // but retains only evidence/cards/actions. Keep long instructions out of
+          // accumulated evidence so a subsequent business result still fits.
+          const result = evidence('Разрешённые источники', { items, hasMore: ordered.length > chosen.length, availability: 'unprobed' });
+          const applicationGuidance = []; let guidanceBytes = 0;
+          for (const document of documents) {
+            const bytes = Buffer.byteLength(JSON.stringify(document));
+            const next = [...applicationGuidance, document];
+            if (guidanceBytes + bytes > 16384 || Buffer.byteLength(JSON.stringify({ ...result,
+              applicationGuidance: next, applicationGuidanceHasMore: true })) > 64000) { guidanceHasMore = true; continue; }
+            guidanceBytes += bytes; applicationGuidance.push(document);
+          }
           assertCurrent(); need(!signal.aborted, 'agent_cancelled');
-          return evidence('Разрешённые источники', { items, hasMore: ordered.length > chosen.length, availability: 'unprobed' });
+          return documents.length || guidanceHasMore ? { ...result, applicationGuidance, applicationGuidanceHasMore: guidanceHasMore } : result;
         } };
       tools.source_read_1 = { capability: 'source_read_1',
         description: 'Read one exact reference or UNIQUE authorized catalogue query through current Root/Apps/Native grants. Ambiguous queries never read. Omission selects only a sole installed Source.',

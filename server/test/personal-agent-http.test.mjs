@@ -396,8 +396,12 @@ test('personal agent receives app skills as bounded data through the current aut
   assert.equal(result.ok, true, result.error?.code);
   const item = result.evidence[0].data.items[0];
   assert.equal(item.guidance.length, 1); assert.equal(item.guidanceHasMore, false);
-  assert.equal(item.guidance[0].content, content); assert.equal(item.guidance[0].authority, 'application-data');
-  assert.deepEqual(item.guidance[0].contract, source.reference);
+  assert.equal(Object.hasOwn(item.guidance[0], 'content'), false);
+  const message = JSON.parse(f.calls.at(-1).body.messages.at(-1).content);
+  assert.equal(message.applicationGuidance[0].content, content); assert.equal(message.applicationGuidance[0].authority, 'application-data');
+  assert.deepEqual(message.applicationGuidance[0].contract, source.reference);
+  assert.deepEqual(message.applicationGuidance[0].reference, item.guidance[0].reference);
+  assert.equal(JSON.stringify(result).includes(content), false, 'instructions are task context, not duplicated final evidence');
   assert.equal(source.reads(), 0, 'discovery discloses instructions without invoking the application');
   const foreign = await f.turn(f.bob, 'guidance_foreign_1', 'Catalog sources');
   assert.equal(foreign.ok, true); assert.equal(foreign.evidence[0].data.items.length, 0);
@@ -414,7 +418,9 @@ test('large app instructions do not overflow the personal agent catalog budget',
   const result = await source.f.turn(source.f.alice, 'guidance_budget_1', 'Catalog sources');
   assert.equal(result.ok, true, result.error?.code);
   const item = result.evidence[0].data.items[0];
-  assert.deepEqual(item.guidance, []); assert.equal(item.guidanceHasMore, true); assert.equal(source.reads(), 0);
+  assert.equal(item.guidance.length, 1); assert.equal(Object.hasOwn(item.guidance[0], 'content'), false);
+  const message = JSON.parse(source.f.calls.at(-1).body.messages.at(-1).content);
+  assert.deepEqual(message.applicationGuidance, []); assert.equal(message.applicationGuidanceHasMore, true); assert.equal(source.reads(), 0);
 });
 
 test('actual registered Root Source query tool preserves independent Source denial and foreign app isolation', { timeout: 20000 }, async t => {

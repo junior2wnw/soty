@@ -5,13 +5,13 @@ import { runBoundedRuntimeTurn, createIsolatedContextStore } from '../../modules
 const call = (name, args = {}) => ({ choices: [{ message: { tool_calls: [{ id: 'call_' + name,
   function: { name, arguments: JSON.stringify(args) } }] } }] });
 const evidence = id => ({ evidence: [{ id, title: id, observedAt: null, sourceStatus: 'current' }] });
-function fixture(sequence, { discovery = ['source_catalog'], afterCatalog = () => {}, timeoutMs = 1000 } = {}) {
+function fixture(sequence, { discovery = ['source_catalog'], afterCatalog = () => {}, timeoutMs = 1000, results = {} } = {}) {
   const counts = { source_catalog: 0, source_write_1: 0, source_read_1: 0 }, offered = [];
   const adapter = { id: 'test', roles: ['human'], capabilities: Object.keys(counts), effectCapabilities: ['source_write_1'],
     discoveryCapabilities: discovery, applicability: 'own selected source', systemContext: () => '', isActionHrefAllowed: () => false };
   const tools = Object.fromEntries(Object.keys(counts).map(name => [name, { capability: name, description: name,
     inputSchema: { type: 'object' }, validate: input => input && Object.keys(input).length === 0,
-    execute() { counts[name]++; if (name === 'source_catalog') afterCatalog(adapter); return evidence(name); } }]));
+    execute() { counts[name]++; if (name === 'source_catalog') afterCatalog(adapter); return results[name] ?? evidence(name); } }]));
   let calls = 0;
   return { counts, offered, calls: () => calls, run: () => runBoundedRuntimeTurn({ adapter, tools, role: 'human', prompt: 'Use current source',
     contextStore: createIsolatedContextStore({ roles: ['human'] }), timeoutMs,
@@ -28,6 +28,23 @@ test('one catalogue discovery precedes one write and preserves both evidence set
   assert.equal(result.status, 'complete'); assert.deepEqual(result.evidence.map(e => e.id), ['source_catalog', 'source_write_1']);
   assert.equal(f.calls(), 3); assert.deepEqual(f.counts, { source_catalog: 1, source_write_1: 1, source_read_1: 0 });
   assert.ok(!f.offered[1].includes('source_catalog')); assert.deepEqual(f.offered[2], ['finish_answer']);
+});
+test('large skills reach the model without displacing the subsequent business evidence', async () => {
+  const properties = Object.fromEntries(Array.from({ length: 25 }, (_, i) => ['field' + i,
+    { type: 'string', description: 's'.repeat(1400) }]));
+  const catalog = { evidence: [{ id: 'source_catalog', title: 'Catalog', observedAt: null, sourceStatus: 'current',
+    data: { items: [{ inputSchema: { type: 'object', properties }, guidance: [{ reference: 'current_guide', summary: 'Use the project API.' }] }] } }],
+    applicationGuidance: [{ authority: 'application-data', content: 'g'.repeat(15000) }] };
+  const business = { evidence: [{ id: 'source_read_1', title: 'Saved result', observedAt: null, sourceStatus: 'current', data: { text: 'r'.repeat(14000) } }] };
+  const f = fixture(['source_catalog', ({ messages }) => {
+    assert.equal(JSON.parse(messages.at(-1).content).applicationGuidance[0].content.length, 15000);
+    return call('source_read_1');
+  }, 'finish_answer'], { results: { source_catalog: catalog, source_read_1: business } });
+  const result = await f.run();
+  assert.equal(result.status, 'complete'); assert.deepEqual(result.evidence.map(row => row.id), ['source_catalog', 'source_read_1']);
+  assert.equal(Object.hasOwn(result, 'applicationGuidance'), false);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.evidence)) < 64000);
+  assert.equal(f.counts.source_read_1, 1);
 });
 test('a second write, even after discovery, is rejected before execution', async () => {
   const f = fixture(['source_catalog', 'source_write_1', 'source_write_1']);

@@ -22,8 +22,12 @@ There is no per-request or persistent copy of returned private content.
 
 The personal Soty assistant also receives attached instructions in its existing
 `source_catalog` response. It uses the same exact capability and current user
-authority as the HTTP/MCP readers. One catalog includes at most eight documents
-and 16 KiB of guidance; `guidanceHasMore` reports omitted content. Large guides
+authority as the HTTP/MCP readers. Catalog evidence retains the instruction
+index; the raw tool message carries full documents in `applicationGuidance`.
+The existing runner passes those documents to the model without duplicating
+them in accumulated evidence or the final reply. One catalog includes at most
+eight documents and 16 KiB of guidance, within the existing 64,000-byte tool
+result limit; `applicationGuidanceHasMore` reports omitted content. Large guides
 remain accessible through the standard guidance readers. This metadata step
 does not execute an application action or install an additional MCP server.
 
