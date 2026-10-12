@@ -30,6 +30,45 @@ test('trusted JSON profile captures its exact wire body before digest and shares
   await assert.rejects(provider.complete(request({ onText() {} })), { code: 'provider_invalid_input' });
 });
 
+test('serial offered tools bind wire and response without reoffering resolved history', async t => {
+  let sent, validations = 0, returnedName = 'finish_answer';
+  const provider = createGlmProvider({ responseMode: 'json',
+    tools: [tool('read', () => { validations++; return true; }), tool('finish_answer', () => { validations++; return true; })],
+    transport: async packet => { sent = packet; const body = completion();
+      body.choices[0].message.tool_calls[0].function.name = returnedName; return response(body); } });
+  t.after(() => provider.close());
+  const history = [...request().messages,
+    { role: 'assistant', content: null, tool_calls: [{ id: 'prior_read', type: 'function', function: { name: 'read', arguments: '{"path":"safe"}' } }] },
+    { role: 'tool', tool_call_id: 'prior_read', content: '{}' }];
+  const names = ['finish_answer'], input = request({ messages: history, offeredToolNames: names, parallelToolCalls: false });
+  const pending = provider.complete(input); names[0] = 'read';
+  const result = await pending;
+  assert.equal(sent.body.parallel_tool_calls, false); assert.equal(sent.body.tool_choice, 'auto');
+  assert.deepEqual(sent.body.tools.map(value => value.function.name), ['finish_answer']);
+  assert.equal(sent.body.messages[1].tool_calls[0].function.name, 'read');
+  assert.equal(result.message.toolCalls[0].name, 'finish_answer'); assert.equal(validations, 1);
+  const previousBody = { ...sent.body }; delete previousBody.parallel_tool_calls;
+  assert.notEqual(sent.requestDigest, hash(canonical({ schema: 'soty.glm-request.v1', requestId: sent.requestId, body: previousBody })));
+  returnedName = 'read';
+  await assert.rejects(provider.complete(request({ messages: history, offeredToolNames: ['finish_answer'], parallelToolCalls: false })), { code: 'provider_unknown_tool' });
+  assert.equal(validations, 1, 'a known historical tool cannot reach its validator when not offered');
+});
+
+test('offered tool names are a bounded registered subset and serial control is closed', async t => {
+  let dispatches = 0;
+  const provider = createGlmProvider({ responseMode: 'json', tools: [tool()],
+    transport: async () => { dispatches++; return response(completion()); } });
+  t.after(() => provider.close());
+  for (const changes of [{ offeredToolNames: ['unknown'] }, { offeredToolNames: ['read', 'read'] },
+    { offeredToolNames: 'read' }, { offeredToolNames: null }, { offeredToolNames: new Array(13).fill('read') }, { offeredToolNames: [null] },
+    { parallelToolCalls: true }, { parallelToolCalls: 0 }, { tool_choice: 'required' }]) {
+    await assert.rejects(provider.complete(request(changes)), { code: 'provider_invalid_input' });
+  }
+  assert.equal(dispatches, 0);
+  await assert.rejects(provider.complete(request({ offeredToolNames: [] })), { code: 'provider_unknown_tool' });
+  assert.equal(dispatches, 1);
+});
+
 const invalid = [
   ['malformed JSON', () => '{', 'provider_invalid_json'],
   ['duplicate JSON key', () => JSON.stringify(completion()).replace('"model":', '"id":"other","model":'), 'provider_invalid_json'],

@@ -18,9 +18,15 @@ export function capturedTools(value, policy) {
   return result;
 }
 export function captureRequest(value, tools, policy, responseMode = 'sse') {
-  fields(value, ['requestId', 'messages'], ['signal', 'onText']);
+  fields(value, ['requestId', 'messages'], ['signal', 'onText', 'offeredToolNames', 'parallelToolCalls']);
   check(value.signal === undefined || value.signal instanceof AbortSignal);
   check(value.onText === undefined || (typeof value.onText === 'function' && value.onText.constructor?.name !== 'AsyncFunction'));
+  check(value.parallelToolCalls === undefined || value.parallelToolCalls === false);
+  const offered = value.offeredToolNames === undefined ? [...tools.keys()] : value.offeredToolNames;
+  check(Array.isArray(offered) && offered.length <= policy.toolCalls);
+  const offeredToolNames = Array.from(offered);
+  check(offeredToolNames.every(name => typeof name === 'string' && tools.has(name))
+    && new Set(offeredToolNames).size === offeredToolNames.length);
   const requestId = identifier(value.requestId, 160);
   check(Array.isArray(value.messages) && value.messages.length > 0 && value.messages.length <= policy.messages);
   const messages = value.messages.map(item => {
@@ -59,11 +65,14 @@ export function captureRequest(value, tools, policy, responseMode = 'sse') {
     }
   }
   check(pending.size === 0);
-  const wireTools = [...tools.values()].map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
+  // The full registry validates resolved history; only this round's subset is
+  // advertised and accepted in its response. History never reoffers authority.
+  const wireTools = offeredToolNames.map(name => tools.get(name)).map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
   const body = { model: GLM_MODEL, messages, reasoning_effort: 'low', max_tokens: policy.maxOutputTokens, stream: responseMode === 'sse',
     ...(responseMode === 'sse' ? { stream_options: { include_usage: true } } : {}),
+    ...(value.parallelToolCalls === false ? { parallel_tool_calls: false } : {}),
     ...(wireTools.length ? { tools: wireTools, tool_choice: 'auto' } : {}) };
   const serialized = canonical(body, policy.requestBytes, policy.jsonDepth);
   return Object.freeze({ requestId, requestDigest: hash(canonical({ schema: 'soty.glm-request.v1', requestId, body }, policy.requestBytes + 1024, policy.jsonDepth + 1)),
-    body: freeze(body), signal: value.signal, onText: value.onText });
+    body: freeze(body), offeredToolNames: Object.freeze(offeredToolNames), signal: value.signal, onText: value.onText });
 }

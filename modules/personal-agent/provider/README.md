@@ -71,6 +71,15 @@ History supports ordered resolved assistant/tool exchanges; IDs can be reused in
 turns. Unmatched replies/pending calls, unknown tool names, unsafe role fields and reasoning history are
 rejected. Old history is controller-owned previously validated data, not permission to replay a tool.
 
+A trusted host may pass `offeredToolNames` to `complete()`: a unique bounded subset of its registered
+tools. The full registry still validates history, while only this subset appears on the wire and may
+occur in the new response. `parallelToolCalls: false` sends `parallel_tool_calls: false`; true and
+arbitrary model parameters are rejected. These controls participate in the request digest.
+Root uses the current runtime offer, including only `finish_answer` in the terminal phase. It keeps
+the local exactly-one-call check and never discards extra calls or executes parallel effects.
+`tool_choice` remains `auto`, as documented by [Z.AI](https://docs.z.ai/guides/capabilities/function-calling).
+The serial flag is model guidance; an incompatible response still fails closed.
+
 ## Stream completion and provisional text
 
 This v1 profile is **SSE only** when `stream:true`; JSON-success compatibility requires a separate qualified

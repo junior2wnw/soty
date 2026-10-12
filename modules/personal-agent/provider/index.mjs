@@ -77,7 +77,8 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
         check(response.status === 200, 'provider_http_failed');
         const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
         check(contentType === (responseMode === 'json' ? 'application/json' : 'text/event-stream'), 'provider_invalid_stream');
-        const assembler = createAssembler(policy, tools, { assertActive, onText: request.onText, state });
+        const offeredTools = new Map(request.offeredToolNames.map(name => [name, tools.get(name)]));
+        const assembler = createAssembler(policy, offeredTools, { assertActive, onText: request.onText, state });
         const decoder = responseMode === 'json' ? createCompletionDecoder(policy, assembler) : createSseDecoder(policy, assembler);
         // DONE ends SSE content, not the HTTP body. Gateway settlement still owns
         // the stream until EOF; cancelling here can turn a valid answer into ABORT_ERR.

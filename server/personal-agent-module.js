@@ -131,7 +131,8 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         activeProvider = createGlmProvider({ transport: bound.complete, tools: registry, responseMode: 'json',
           policy: { ...modelPolicy, ...(options.maxTokens !== undefined ? { maxOutputTokens: Math.min(modelPolicy.maxOutputTokens, options.maxTokens) } : {}) } });
         let result;
-        try { result = await activeProvider.complete({ requestId, messages, signal }); }
+        try { result = await activeProvider.complete({ requestId, messages, signal,
+          offeredToolNames: Object.keys(offered), parallelToolCalls: options.parallelToolCalls }); }
         catch (error) {
           assertCurrent();
           try { console.error(JSON.stringify({ schema: 'soty.personal-agent-provider-failure.v1', code: providerFailureCode(error) })); } catch {}

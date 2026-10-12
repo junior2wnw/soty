@@ -20,7 +20,7 @@ export type Tool = Readonly<{
 }>;
 export type ProviderRequestBody = Readonly<{
     model: typeof GLM_MODEL; messages: readonly ModelMessage[]; reasoning_effort: 'low'; max_tokens: number;
-    tool_choice?: 'auto'; tools?: readonly Readonly<{ type: 'function'; function: Readonly<{
+    tool_choice?: 'auto'; parallel_tool_calls?: false; tools?: readonly Readonly<{ type: 'function'; function: Readonly<{
       name: string; description: string; parameters: { readonly [key: string]: Json };
     }> }>[];
   } & (
@@ -51,6 +51,7 @@ export function createGlmProvider(options: {
   policy?: Partial<ProviderPolicy>; tools?: readonly Tool[]; responseMode?: 'sse' | 'json';
 }): Readonly<{
   complete(input: { requestId: string; messages: readonly ModelMessage[]; signal?: AbortSignal;
+    offeredToolNames?: readonly string[]; parallelToolCalls?: false;
     onText?: (text: string) => void }): Promise<ProviderResult>;
   close(): void;
 }>;

@@ -34,7 +34,7 @@ async function sharedBrowser(t, f) {
     mergeProfile(other) { local = { ...local, installations: [...local.installations, ...other.snapshot().installations], localRevision: local.localRevision + 1 }; } };
 }
 
-async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost = false } = {}) {
+async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost = false, cachedMultiCall = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-agent-http-owned-')), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Owned agent fixture</title>');
   const tenant = 'synthetic_billing', keyRef = Object.freeze({}), receipts = new Map(), calls = [], holds = [];
@@ -82,8 +82,13 @@ async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost 
         input_tokens: 3, output_tokens: completionTokens, charge_urub: '7' });
       if (lost) throw new Error('private_fixture_payload_must_not_escape');
       assert.equal(body.stream, false); assert.equal(Object.hasOwn(body, 'stream_options'), false); assert.equal(init.headers.Accept, 'application/json');
+      // Only the observed 2026-10-12 cached response structure is reproduced.
+      // Argument values are synthetic; no private cached message enters this fixture.
+      const toolCalls = cachedMultiCall ? ['list_my_apps', 'source_catalog', 'list_my_notes', 'source_read_1'].map((name, index) => ({
+        id: 'cached_shape_' + index, type: 'function', function: { name, arguments: JSON.stringify(index ? { query: 'synthetic' } : {}) },
+      })) : [{ id: 'call_owned', type: 'function', function: { name, arguments: wireArguments } }];
       const packet = JSON.stringify({ id: 'chatcmpl_owned', model: GLM_MODEL, choices: [{ index: 0, message: { role: 'assistant',
-        tool_calls: [{ id: 'call_owned', type: 'function', function: { name, arguments: wireArguments } }] }, finish_reason: truncated ? 'length' : 'tool_calls' }],
+        tool_calls: toolCalls }, finish_reason: truncated ? 'length' : 'tool_calls' }],
         usage: { prompt_tokens: 3, completion_tokens: completionTokens, total_tokens: 3 + completionTokens } });
       const bytes = new TextEncoder().encode(packet), firstEventEnd = Math.floor(bytes.length / 2); let offset = 0;
       const bodyStream = lowEffortHost ? new ReadableStream({ async pull(controller) {
@@ -166,6 +171,33 @@ test('portable generic runtime has an explicit bounded-budget local patch and ve
 });
 
 const longDraft = Array.from({ length: 28 }, (_, index) => `${index + 1}. Предлагаю проверить доступность обращения, уточнить ожидаемый результат и согласовать следующий шаг с владельцем.`).join('\n');
+
+test('signed Root turn advertises only current tools and preserves prior reads for its serial terminal', async t => {
+  const f = await fixture(t), result = await f.turn(f.alice, 'serial_offered_http_001', 'Read my notes');
+  assert.equal(result.ok, true, result.error?.code); assert.equal(f.calls.length, 2);
+  for (const { body } of f.calls) {
+    assert.equal(body.parallel_tool_calls, false); assert.equal(body.tool_choice, 'auto');
+  }
+  assert.ok(f.calls[0].body.tools.some(value => value.function.name === 'list_my_notes'));
+  assert.deepEqual(f.calls[1].body.tools.map(value => value.function.name), ['finish_answer']);
+  assert.ok(f.calls[1].body.messages.some(message => message.role === 'assistant'
+    && message.tool_calls?.some(call => call.function.name === 'list_my_notes')));
+  assert.equal(f.settledReceipts(), 2);
+});
+
+test('observed four-call shape still fails the Root serial guard without executing Source tools or retrying', async t => {
+  const f = await fixture(t, { cachedMultiCall: true }); let credentialReads = 0;
+  await f.restart({ personalAgent: { ...f.configuration, historyEnabled: false,
+    sourceReferences: [{ capabilityId: 'synthetic_source', version: 1, digest: 'a'.repeat(64) }],
+    sourceCredentialFor() { credentialReads++; throw Error('must_not_execute'); } } });
+  const result = await f.turn(f.alice, 'cached_four_calls_001', 'Synthetic general question');
+  assert.equal(result.ok, false); assert.equal(result.error.code, 'agent_output_invalid');
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].body.parallel_tool_calls, false);
+  assert.equal(f.settledReceipts(), 1, 'the complete incompatible response retains its accounted charge');
+  assert.equal(credentialReads, 0);
+  const notes = await f.call(f.alice, 'notes.list', { expectedAccountId: f.a.accountId });
+  assert.equal(notes.ok, true); assert.equal(notes.notes.length, 0);
+});
 
 test('signed HTTP low-only host accepts delayed fragmented finish_answer only after accounted completion', async t => {
   const f = await fixture(t, { lowEffortHost: true, finishAnswer: { answer: longDraft, completionTokens: 1100 } });
@@ -398,7 +430,8 @@ test('nine admitted Source contracts use constant tools and an eight-selection t
   const catalog = await f.turn(f.alice, 'nine_catalog_001', 'Catalog sources'); assert.equal(catalog.ok, true, catalog.error?.code);
   assert.equal(catalog.evidence[0].data.items.length, 8); assert.equal(catalog.evidence[0].data.hasMore, true);
   assert.equal(catalog.evidence[0].data.availability, 'unprobed'); assert.equal(source.reads(), 0);
-  const names = f.calls.at(-1).body.tools.map(value => value.function.name); assert.equal(names.filter(name => name.startsWith('source_')).length, 2);
+  const names = f.calls[0].body.tools.map(value => value.function.name); assert.equal(names.filter(name => name.startsWith('source_')).length, 2);
+  assert.deepEqual(f.calls.at(-1).body.tools.map(value => value.function.name), ['finish_answer']);
   f.setSourceInput({ reference: references[8], input: {} });
   const ninth = await f.turn(f.alice, 'nine_read_001', 'Read source'); assert.equal(ninth.ok, true, ninth.error?.code); assert.equal(source.reads(), 1);
   f.setSourceInput({ reference: { ...references[8], version: '1' }, input: {} });
