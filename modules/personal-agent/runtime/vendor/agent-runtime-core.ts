@@ -6,6 +6,8 @@ export type RuntimeAdapterContract<Role extends string, Capability extends strin
   capabilities: readonly Capability[];
   /** Installed host code only; exact action==capability, never model/config JSON. */
   effectCapabilities?: readonly Capability[];
+  /** Trusted metadata discovery only; one discovery may precede one business action. */
+  discoveryCapabilities?: readonly Capability[];
   applicability: string;
   systemContext: (terminalToolName: string) => string;
   isActionHrefAllowed: (href: string) => boolean;
@@ -350,10 +352,15 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       ...runtimeConversation(options.contextStore.snapshot(context.id)?.history ?? []),
       { role: "user", content: options.prompt },
     ];
+    let providerCalls = 0;
     const callProvider = async (providerMessages: RuntimeMessage[], tools: Record<string, RuntimeToolDefinition<string>>, providerOptions: RuntimeProviderOptions) => {
       let lastError: unknown;
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        try { return await raceAbort(options.provider(providerMessages, controller.signal, tools as Record<string, RuntimeToolDefinition<Capability>>, providerOptions)); }
+        try {
+          if (providerCalls >= 4) throw new Error("provider-round-limit");
+          providerCalls++;
+          return await raceAbort(options.provider(providerMessages, controller.signal, tools as Record<string, RuntimeToolDefinition<Capability>>, providerOptions));
+        }
         catch (error) {
           lastError = error;
           if (attempt >= 2 || controller.signal.aborted || !classifyProviderFailure(error).retryable) throw error;
@@ -361,38 +368,51 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       }
       throw lastError;
     };
-    const offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools, [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, []) };
-    // Both phases can emit a complete finish_answer envelope, including a draft.
-    // The host still applies its smaller model-policy cap to this finite budget.
+    const discovery = new Set(options.adapter.discoveryCapabilities ?? []);
+    if ([...discovery].some(capability => options.adapter.effectCapabilities?.includes(capability)
+      || !options.adapter.capabilities.includes(capability))) throw new Error("discovery-capability-invalid");
+    const isDiscovery = (name: string, tool: RuntimeToolDefinition<string>) => name === tool.capability
+      && discovery.has(tool.capability as Capability);
+    let offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools };
+    let discoveryUsed = false, businessUsed = false;
+    let output: ReturnType<typeof portableToolResult> = { evidence: [], cards: [], actions: [] };
+    // At most discovery -> one business action -> terminal; no executor retry.
     const answerMaxTokens = 2048;
-    const routedResponse = await callProvider(messages, offeredTools, { parallelToolCalls: false, maxTokens: answerMaxTokens });
-    const routed = portableProviderMessage(routedResponse);
-    const calls = routed.tool_calls ?? [];
-    if (calls.length !== 1) throw new Error("provider-tool-count-invalid");
-    const call = calls[0];
-    if (call.function.name === PORTABLE_TERMINAL_TOOL_NAME) {
-      const final = validatePortableTerminal(routedResponse, options.adapter, { evidence: [], cards: [], actions: [] });
-      remember(final.answer);
-      return { status: "complete", answer: final.answer, contextId: context.id, evidence: [], claims: final.claims, cards: [], actions: [], telemetry: { correlationId, reasonClass: "ok" } };
+    for (let phase = 0; phase < 3; phase++) {
+      offeredTools = { ...offeredTools, [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, output.evidence) };
+      const routedResponse = await callProvider(messages, offeredTools, { parallelToolCalls: false, maxTokens: answerMaxTokens,
+        ...(businessUsed ? { toolChoice: PORTABLE_TERMINAL_TOOL_NAME } : {}) });
+      const routed = portableProviderMessage(routedResponse);
+      const calls = routed.tool_calls ?? [];
+      if (calls.length !== 1) throw new Error("provider-tool-count-invalid");
+      const call = calls[0];
+      if (call.function.name === PORTABLE_TERMINAL_TOOL_NAME) {
+        const final = validatePortableTerminal(routedResponse, options.adapter, output);
+        remember(final.answer);
+        return { status: "complete", answer: final.answer, contextId: context.id, evidence: output.evidence.filter(item => final.selectedEvidenceIds.includes(item.id)), claims: final.claims, cards: final.cards, actions: final.actions, telemetry: { correlationId, reasonClass: "ok" } };
+      }
+      const tool = offeredTools[call.function.name];
+      if (!tool) throw new Error("provider-tool-unknown");
+      const authorization = authorizeRuntimeAction(call.function.name, tool.capability, options.adapter.capabilities, options.adapter.effectCapabilities);
+      if (!authorization.allowed) throw new Error("tool-not-authorized");
+      let args: unknown;
+      try { args = JSON.parse(call.function.arguments); } catch { throw new Error("tool-arguments-invalid"); }
+      if (!tool.validate(args)) throw new Error("tool-arguments-invalid");
+      const metadataOnly = isDiscovery(call.function.name, tool);
+      if (businessUsed || metadataOnly && discoveryUsed) throw new Error("tool-action-limit");
+      const rawResult = await raceAbort(Promise.resolve(tool.execute(args, controller.signal)));
+      const next = portableToolResult(rawResult);
+      output = portableToolResult({ evidence: [...output.evidence, ...next.evidence], cards: [...output.cards, ...next.cards], actions: [...output.actions, ...next.actions] });
+      messages.push(
+        { role: "assistant", content: routed.content ?? null, tool_calls: calls },
+        { role: "tool", tool_call_id: call.id, content: JSON.stringify(rawResult) },
+      );
+      if (metadataOnly) {
+        discoveryUsed = true;
+        offeredTools = Object.fromEntries(Object.entries(options.tools).filter(([name, value]) => !isDiscovery(name, value)));
+      } else { businessUsed = true; offeredTools = {}; }
     }
-    const tool = options.tools[call.function.name];
-    if (!tool) throw new Error("provider-tool-unknown");
-    const authorization = authorizeRuntimeAction(call.function.name, tool.capability, options.adapter.capabilities, options.adapter.effectCapabilities);
-    if (!authorization.allowed) throw new Error("tool-not-authorized");
-    let args: unknown;
-    try { args = JSON.parse(call.function.arguments); } catch { throw new Error("tool-arguments-invalid"); }
-    if (!tool.validate(args)) throw new Error("tool-arguments-invalid");
-    const rawResult = await raceAbort(Promise.resolve(tool.execute(args, controller.signal)));
-    const output = portableToolResult(rawResult);
-    const terminalMessages: RuntimeMessage[] = [
-      ...messages,
-      { role: "assistant", content: routed.content ?? null, tool_calls: calls },
-      { role: "tool", tool_call_id: call.id, content: JSON.stringify(rawResult) },
-    ];
-    const terminalResponse = await callProvider(terminalMessages, { [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, output.evidence) }, { toolChoice: PORTABLE_TERMINAL_TOOL_NAME, parallelToolCalls: false, maxTokens: answerMaxTokens });
-    const final = validatePortableTerminal(terminalResponse, options.adapter, output);
-    remember(final.answer);
-    return { status: "complete", answer: final.answer, contextId: context.id, evidence: output.evidence.filter((item) => final.selectedEvidenceIds.includes(item.id)), claims: final.claims, cards: final.cards, actions: final.actions, telemetry: { correlationId, reasonClass: "ok" } };
+    throw new Error("provider-round-limit");
   } finally {
     clearTimeout(timer);
   }

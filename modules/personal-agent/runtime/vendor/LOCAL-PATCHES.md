@@ -71,3 +71,22 @@ HTTP/WS and Native SQL with synthetic model/billing callbacks. They perform no
 paid provider call. Source receipts are independently read; an unknown result
 uses the original opaque invocation ID and exact selected input for a readonly
 reconciliation, without another Native mutation.
+
+## bounded-discovery-before-one-business-action
+
+The installed host identifies `source_catalog` as metadata discovery through
+`discoveryCapabilities`. The neutral runner allows at most one such call before
+one business read or write, followed by the original validated terminal answer.
+Discovery is removed from the next offered tool set; after a business action
+only `finish_answer` remains. Effect capabilities cannot be discovery. Every
+call retains current authorization and exact offered-tool validation. Evidence
+from both steps is bounded and validated together. There are at most three
+successful phases and four total provider attempts, including existing transient
+retries; executors are never retried.
+
+Verification: `server/test/personal-agent-discovery.test.mjs` covers the positive
+sequence, second-write denial, catalogue loops, revoked permission, an invalid
+effect/discovery declaration, cancellation and the total attempt bound.
+`server/integration-test/selected-hive-personal-agent.test.mjs` now discovers the
+actual installed Native schema before its one write and verifies the existing
+Native SQL effect/receipt and revision. Model and accounting IO remain synthetic.

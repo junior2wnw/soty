@@ -165,7 +165,7 @@ test('portable generic runtime has an explicit bounded-budget local patch and ve
   assert.equal(pin.upstreamRevision, '23717ad30878c9ad7a8d9d614bbd8384004763c9');
   assert.equal(pin.sourceUnmodified, false);
   assert.equal(pin.upstreamSha256, '502a90932e44fd6ff7b355e67e048044600321af9e007975936b29bcc234c5f9');
-  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability', 'installed-exact-effect-capability']);
+  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability', 'installed-exact-effect-capability', 'bounded-discovery-before-one-business-action']);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256); assert.equal(bytes.length, pin.bytes);
   const runtime = await import(new URL('agent-runtime-core.ts', root)); assert.equal(typeof runtime.runBoundedRuntimeTurn, 'function');
 });
@@ -431,7 +431,7 @@ test('nine admitted Source contracts use constant tools and an eight-selection t
   assert.equal(catalog.evidence[0].data.items.length, 8); assert.equal(catalog.evidence[0].data.hasMore, true);
   assert.equal(catalog.evidence[0].data.availability, 'unprobed'); assert.equal(source.reads(), 0);
   const names = f.calls[0].body.tools.map(value => value.function.name); assert.equal(names.filter(name => name.startsWith('source_')).length, 2);
-  assert.deepEqual(f.calls.at(-1).body.tools.map(value => value.function.name), ['finish_answer']);
+  assert.deepEqual(f.calls.at(-1).body.tools.map(value => value.function.name), names.filter(name => name !== 'source_catalog'));
   f.setSourceInput({ reference: references[8], input: {} });
   const ninth = await f.turn(f.alice, 'nine_read_001', 'Read source'); assert.equal(ninth.ok, true, ninth.error?.code); assert.equal(source.reads(), 1);
   f.setSourceInput({ reference: { ...references[8], version: '1' }, input: {} });

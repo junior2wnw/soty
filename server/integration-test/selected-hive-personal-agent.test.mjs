@@ -8,7 +8,7 @@ import { captureExternalApplications } from '../external-applications.js';
 import { GLM_MODEL } from '../../modules/personal-agent/provider/validation.mjs';
 import { canonicalHash } from '../../modules/capabilities/server/validation.mjs';
 
-test('actual installed HIVE title patch reaches Native SQL and its exact receipt advances only own revision', { timeout: 180000 }, async t => {
+test('catalog discovery then one installed HIVE title patch reaches Native SQL and its exact receipt advances only own revision', { timeout: 180000 }, async t => {
   let entries, credentials = new Map(), phase = 'read', writeInput, invocationId, selectedReference;
   const keyRef = {}, tenant = 'synthetic_hive_agent', receipts = new Map(), models = [];
   const f = await selectedRootEnvironment(t, { renewal: true, rootBindings(profile) {
@@ -22,15 +22,22 @@ test('actual installed HIVE title patch reaches Native SQL and its exact receipt
         readReceipt: async ({ requestId }) => ({ tenantId: tenant, request: receipts.get(requestId) }),
         fetchImpl: async (_url, init) => {
           const body = JSON.parse(init.body); models.push(body); let name, args;
-          if (body.messages.at(-1).role === 'tool') { name = 'finish_answer'; const evidence = JSON.parse(body.messages.at(-1).content).evidence;
+          const lastTool = body.messages.filter(row => row.role === 'assistant').at(-1)?.tool_calls?.[0]?.function.name;
+          if (phase === 'write' && lastTool === 'source_catalog') {
+            assert.ok(body.tools.some(row => row.function.name === 'source_write_1'));
+            assert.ok(!body.tools.some(row => row.function.name === 'source_catalog'));
+            const discovered = JSON.parse(body.messages.at(-1).content).evidence[0].data.items;
+            assert.ok(discovered.some(row => row.reference.capabilityId === selectedReference.capabilityId && row.inputSchema));
+            name = 'source_write_1'; args = { reference: selectedReference, input: writeInput };
+          } else if (body.messages.at(-1).role === 'tool') { name = 'finish_answer'; const evidence = JSON.parse(body.messages.at(-1).content).evidence;
             args = { answer: 'Verified selected HIVE result', selectedEvidenceIds: evidence.map(row => row.id), claims: [] }; }
           else if (phase === 'read') { name = 'source_read_1'; args = { reference: entries[1].contract, input: { operation: 'hive.cells.list' } }; }
-          else if (phase === 'write') { name = 'source_write_1'; args = { reference: selectedReference, input: writeInput }; }
+          else if (phase === 'write') { name = 'source_catalog'; args = {}; }
           else { name = 'source_receipt_1'; args = { reference: selectedReference, input: writeInput, invocationId }; }
           const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
             input_tokens: 3, output_tokens: 2, charge_urub: '0' });
           return Response.json({ id: 'synthetic_hive_agent', model: GLM_MODEL, choices: [{ index: 0, finish_reason: 'tool_calls',
-            message: { role: 'assistant', tool_calls: [{ id: 'synthetic_call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }],
+            message: { role: 'assistant', tool_calls: [{ id: 'synthetic_call_' + models.length, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }],
             usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }, { headers: { 'x-soty-request-id': id } });
         } } } };
   } });
@@ -54,12 +61,15 @@ test('actual installed HIVE title patch reaches Native SQL and its exact receipt
   selectedReference = entries[2].contract; writeInput = { operation: 'hive.cell.title', expectedRevision: before.revision,
     id: 'old-cell', title: 'Synthetic title from the selected agent' }; phase = 'write';
   const changed = await turn('002'); invocationId = changed.evidence[0].data.invocationId;
+  assert.equal(models.length, 5); assert.deepEqual(models.at(-1).tools.map(row => row.function.name), ['finish_answer']);
   assert.equal(changed.evidence[0].data.completionVerified, true);
   assert.equal(changed.evidence[0].data.receipt.artifacts[0].revision, 2);
   const stored = f.sql(db => { const row = db.prepare('SELECT revision,document_json FROM hive_projects WHERE id=?').get('selected-native');
     return { revision: row.revision, project: JSON.parse(row.document_json), changes: db.prepare('SELECT count(*) AS n FROM hive_changes WHERE project_id=?').get('selected-native').n }; });
   assert.equal(stored.revision, 2); assert.equal(stored.project.core.objects['old-cell'].title, writeInput.title); assert.equal(stored.changes, 2);
   assert.deepEqual(stored.project.core.relations, original.core.relations); assert.deepEqual(stored.project.views, original.views);
+  // This separate receipt turn begins outside the preceding turns' per-principal rate window.
+  f.advance(61000);
   phase = 'receipt'; const recovered = await turn('003'); assert.equal(recovered.evidence[0].data.completionVerified, true);
   assert.equal(f.sql(db => db.prepare('SELECT revision FROM hive_projects WHERE id=?').get('selected-native').revision), 2);
   assert.equal(JSON.stringify(models).includes(handle), false); assert.equal(JSON.stringify(models).includes(f.legacy.account.id), false);

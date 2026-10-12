@@ -213,7 +213,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     }
     if (references.length) {
       tools.source_catalog = { capability: 'source_catalog',
-        description: 'Discover current permitted Native Source contracts. Selected actions expose their Native schema; metadata is unprobed availability and grants no rights.',
+        description: 'Discover current permitted Native Source contracts. First use {} to enumerate permitted contracts and their exact Native schemas for the selected Source. Optional query is a literal AND of whitespace-separated substrings of catalog id, title and description, not a natural-language task. Metadata is unprobed availability and grants no rights.',
         inputSchema: schema({ query: { type: 'string', maxLength: 200 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }),
         validate: input => validate(input, [], ['query', 'limit']) && (input.query === undefined || typeof input.query === 'string'
           && input.query.isWellFormed() && input.query.length <= 200) && (input.limit === undefined || Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 20),
@@ -450,6 +450,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
   };
   const runtime = { runTurn: runBoundedRuntimeTurn, createContextStore: createIsolatedContextStore,
     outputProfile: 'host-enforced-terminal.v1', adapterFor: ({ tools }) => ({ id: 'soty-personal-agent', roles: ['human'],
+      discoveryCapabilities: tools.source_catalog ? ['source_catalog'] : [],
       capabilities: [...new Set(Object.values(tools).map(tool => tool.capability))], applicability: 'Текущий пользователь и разрешённые источники',
       effectCapabilities: ['source_write_1', 'hive_card_create', 'hive_card_update_title'].filter(name => tools[name]),
       systemContext: terminal => `Помогай текущему пользователю. Используй только предложенные инструменты. Заверши реальным вызовом ${terminal}; факты подтверждай выбранными источниками.`,
