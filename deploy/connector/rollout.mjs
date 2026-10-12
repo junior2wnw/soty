@@ -121,13 +121,15 @@ export class Rollout {
     const before=this.original.NetworkSettings?.Networks,after=current.NetworkSettings?.Networks;
     const prior=before?.bridge,next=after?.bridge;
     const empty=value=>value===undefined||value===null||value==='';
-    // Docker clears a generated default-bridge MAC after STOP. Recover only
-    // that observed representation for comparison, never for CREATE or START.
+    // Docker clears a generated default-bridge MAC after STOP. API1.45 may
+    // retain that exact address in both Config objects. Recover only the
+    // observed endpoint representation for comparison, never CREATE or START.
     if(!this.originalStopConfirmed||current.Id!==this.original.Id||current.Image!==this.original.Image
       ||current.State.Running||current.State.Paused||current.State.Status!=='exited'
       ||!['bridge','default'].includes(this.original.HostConfig.NetworkMode)
       ||current.HostConfig.NetworkMode!==this.original.HostConfig.NetworkMode
-      ||!empty(this.original.Config.MacAddress)||!empty(current.Config.MacAddress)
+      ||!((empty(this.original.Config.MacAddress)&&empty(current.Config.MacAddress))
+        ||(this.original.Config.MacAddress===prior?.MacAddress&&current.Config.MacAddress===prior?.MacAddress))
       ||Object.keys(before||{}).length!==1||Object.keys(after||{}).length!==1||!prior||!next
       ||['IPAMConfig','Aliases','Links','DriverOpts'].some(key=>prior[key]!=null||next[key]!=null)
       ||typeof prior.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(prior.MacAddress)

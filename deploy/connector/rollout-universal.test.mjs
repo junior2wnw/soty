@@ -246,6 +246,37 @@ test('universal failed readiness can restore the same original after Docker clea
   assert.equal(f.map.get(f.run.candidate.Id).State.Running,false);
 });
 
+test('API1.45 reflected bridge MAC survives confirmed STOP for features CAS and restoration',async t=>{
+  for(const fail of [false,true]){
+    const f=await activeFeaturesUpdate(t),old=clearBridgeMacOnStop(f,{mode:'default'});
+    old.Config.MacAddress=generatedBridgeMac;
+    await f.run.prepare(f.request);const config=structuredClone(f.run.config),original=structuredClone(f.run.original);
+    if(fail)failBeforeCandidateStart(f);
+    if(fail)await assert.rejects(f.run.promote(),/universal_policy_rollout_mismatch/u);else await f.run.promote();
+    assert.equal(f.run.state.phase,fail?'restored':'committed');
+    assert.deepEqual(f.run.config,config);assert.deepEqual(f.run.original,original);
+    assert.equal(old.Config.MacAddress,generatedBridgeMac);
+    assert.equal(old.NetworkSettings.Networks.bridge.MacAddress,'');
+    assert.equal(f.map.get(f.run.candidate.Id).NetworkSettings.Networks.bridge.MacAddress,generatedBridgeMac);
+    assert.equal(f.events.includes('helper:rollback'),false);
+    assert.equal(f.events.includes('start-old'),fail);assert.equal(f.events.includes('start-candidate'),!fail);
+  }
+});
+
+test('reflected MAC reconciliation rejects modified top address, endpoint, or custom network',async t=>{
+  for(const [name,afterStop] of Object.entries({
+    topChanged:old=>old.Config.MacAddress='02:42:ac:11:00:04',
+    topRemoved:old=>delete old.Config.MacAddress,
+    endpointChanged:old=>old.NetworkSettings.Networks.bridge.MacAddress='02:42:ac:11:00:04',
+    customNetwork:old=>old.HostConfig.NetworkMode='custom',
+  }))await t.test(name,async t=>{
+    const f=await activeFeaturesUpdate(t),old=clearBridgeMacOnStop(f,{afterStop});old.Config.MacAddress=generatedBridgeMac;
+    await f.run.prepare(f.request);await assert.rejects(f.run.promote());
+    assert.equal(f.run.state.phase,'recovery_required');
+    assert.equal(f.events.includes('start-old'),false);assert.equal(f.events.includes('start-candidate'),false);
+  });
+});
+
 test('post-STOP MAC reconciliation still fences configuration and identity drift before either application START',async t=>{
   const changes={
     nonemptyMac:old=>old.NetworkSettings.Networks.bridge.MacAddress='02:42:ac:11:00:04',
@@ -284,7 +315,7 @@ test('cleared MAC cannot be normalized before our STOP, on a candidate, or for c
     await assert.rejects(f.run.promote(),/candidate_configuration_mismatch/u);
     assert.equal(f.events.some(x=>x.startsWith('stop:')),false);
   }
-  const settings=[old=>old.Config.MacAddress=generatedBridgeMac,
+  const settings=[old=>old.Config.MacAddress='02:42:ac:11:00:04',
     old=>old.NetworkSettings.Networks.bridge.IPAMConfig={IPv4Address:'172.17.0.3'},
     old=>old.NetworkSettings.Networks.bridge.Aliases=['configured'],
     old=>old.NetworkSettings.Networks.bridge.Links=['other:configured'],
