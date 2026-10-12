@@ -59,6 +59,19 @@ test('native ingress pins the source, clears only the auth query and preserves a
   assert.equal(text.includes('canonical.example'), false);
   assert.throws(() => nativeIngress({ ...plan, origin: 'https://name.example/{injection}' }));
 });
+
+test('only compiled scoped profiles route Source APIs through Root; ordinary Native routing stays identical', () => {
+  const plan = createReleasePlan({ manifest: manifest(), deployment: deployment(), mode: 'native' });
+  const ordinary = nativeIngress(plan);
+  assert.equal(ordinary.includes('/api/embed/*'), false);
+  for (const profile of ['soty.selected-human-embed.v1', 'soty.selected-human-embed.v2']) {
+    const scoped = nativeIngress({ ...plan, source: { ...plan.source, profile } });
+    assert.match(scoped, /@soty_boot path \/_soty\/\* \/api\/embed\/\*/u);
+    assert.equal(scoped.replace(' /api/embed/*', ''), ordinary);
+  }
+  for (const profile of ['soty.relay-restricted.v1', 'soty.selected-human-embed.v3', 'soty.standard-workspace'])
+    assert.equal(nativeIngress({ ...plan, source: { ...plan.source, profile } }), ordinary);
+});
 test('plans and ingress are stored only in a fresh run directory with an immutable snippet digest', async t => {
   const root = await folder(t), output = join(root, 'run');
   const plan = createReleasePlan({ manifest: manifest(), deployment: deployment(), mode: 'native' });

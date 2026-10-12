@@ -76,7 +76,22 @@ OAuth или своим API может требовать native. Сначала
 Генератор создаёт native-ingress.caddy с фиксированным loopback upstream и точным
 digest текущего источника. Он не применяет Caddyfile и не меняет DNS.
 
-Каждый запрос проходит /_soty/ingress-check. В конфигурации обязателен
+Для Source-профилей `soty.selected-human-embed.v1/v2` генератор направляет
+`/_soty/*` и `/api/embed/*` в существующий Root gateway. Именно этот путь
+проверяет текущий scoped slot и передаёт обязательное доказательство Source
+через коннектор. Один `forward_auth` перед прямым Native upstream его не
+заменяет: интерфейс может открыться, а первый Source API завершится отказом.
+Обычные Native `/`, `/api/account/*` и остальные маршруты сохраняют прежний путь;
+обычный isolated ingress уже целиком использует Root gateway.
+При переводе существующего приложения на Source нужно заново выполнить
+штатный `plan --mode native` по свежему snapshot и применить полученный
+проверенный ingress, а не менять только digest в прежнем native-блоке.
+Это изменение host CLI/конфигурации; пересборка образа Root для генератора
+не требуется. Проверка: настоящий Caddy должен передать POST
+`/api/embed/query` в Root с исходными method/body/Origin/Root cookie,
+а отказ Root не должен попасть в Native fallback.
+
+Остальные Native-запросы проходят /_soty/ingress-check. В конфигурации обязателен
 uri /_soty/ingress-check? — query удаляется только из копии для проверки доступа,
 параметры исходного приложения сохраняются. Cookie Сот удаляется перед передачей
 приложению; cookies приложения сохраняются. Добавочная frame-ancestors policy

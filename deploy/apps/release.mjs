@@ -3,7 +3,7 @@ import { mkdir, readFile, realpath, writeFile, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { normalizeLocalAppManifest } from '../../scripts/agent-modules/local-apps.mjs';
 import { validateAppDeployment, deploymentOrigin, AppDeploymentError } from '../../src/world/app-deployment.mjs';
-import { formatAppLaunchRoute, validateAppLaunchPath } from '../../src/world/app-launch.mjs';
+import { formatAppLaunchRoute, validateAppLaunchPath, isScopedRuntimeProfile } from '../../src/world/app-launch.mjs';
 
 export const releaseHash = value => createHash('sha256').update(value).digest('hex');
 const check = (value, code) => { if (!value) throw new AppDeploymentError(code); };
@@ -86,7 +86,9 @@ export function nativeIngress(plan) {
     '        -Server',
     '        defer',
     '    }',
-    '    @soty_boot path /_soty/*',
+    // Source APIs need the same signed Root/connector path as boot. The Native
+    // fallback deliberately strips Root cookies and cannot mint Source proofs.
+    '    @soty_boot path /_soty/*' + (isScopedRuntimeProfile(plan.source.profile) ? ' /api/embed/*' : ''),
     '    route {',
     '        handle @soty_boot {',
     '            reverse_proxy 127.0.0.1:' + plan.gatewayPort,
