@@ -12,34 +12,51 @@ export const isRootSsoWorkspacePin = value => value?.id === 'soty.standard-works
 export function attachRootSsoWakeRecovery({ view, document = view.document, signal, current,
   readBinding, lastLaunchAt, recover, clock = Date.now, onFailure = () => {} }) {
   let disposed = false, pending = false;
+  const attempted = new WeakSet();
   const eligible = () => !disposed && !signal.aborted && document.visibilityState === 'visible'
     && current() && isRootSsoWorkspacePin(readBinding()?.source) && clock() - lastLaunchAt() >= 180000;
-  const wake = () => {
+  const wake = (expected = readBinding()) => {
     if (pending || !eligible()) return;
-    const slot = readBinding()?.slot;
+    const slot = expected?.slot;
+    if (!slot || typeof slot !== 'object' || readBinding()?.slot !== slot || attempted.has(slot)) return;
     pending = true;
     void Promise.resolve().then(() => {
-      if (eligible() && readBinding()?.slot === slot) return recover();
+      if (eligible() && readBinding()?.slot === slot) {
+        attempted.add(slot); return recover();
+      }
     }).catch(onFailure).finally(() => { pending = false; });
   };
-  document.addEventListener('visibilitychange', wake, { signal });
-  view.addEventListener('focus', wake, { signal });
-  return () => {
+  const onWake = () => wake();
+  document.addEventListener('visibilitychange', onWake, { signal });
+  view.addEventListener('focus', onWake, { signal });
+  const detach = () => {
     disposed = true;
-    document.removeEventListener('visibilitychange', wake);
-    view.removeEventListener('focus', wake);
+    document.removeEventListener('visibilitychange', onWake);
+    view.removeEventListener('focus', onWake);
   };
+  return Object.freeze(Object.assign(detach, {
+    recoverExpired(error, binding) {
+      // ownedContext sweeps a 300s Root lease before returning its closed-slot
+      // code. An early close or any ACL/device/source denial is not expiry.
+      if (!binding || error?.code !== 'scoped_embed_expired' && !(error?.code === 'app_scoped_context_closed'
+        && clock() - lastLaunchAt() >= 300000)) return;
+      wake(binding);
+    },
+  }));
 }
 
 /** Stage lifecycle only. The profile comes from the validated launcher, never
  * author metadata; tick/probe still require fresh private server/Source ACK. */
-export function attachScopedRenewalLoads({runtime,view,signal,current,profile,renewal,onTickFailure=()=>{}}) {
+export function attachScopedRenewalLoads({runtime,view,signal,current,profile,renewal,readBinding,onTickFailure=()=>{}}) {
   let timer=null,disposed=false;
-  const eligible=()=>!disposed&&current()&&isScopedRuntimeProfile(profile());
+  const eligible=()=>!disposed&&!signal.aborted&&current()&&isScopedRuntimeProfile(profile());
   runtime.addEventListener('load',()=>{
     if(!eligible())return;
     if(timer===null)timer=view.setInterval(()=>{
-      if(eligible()&&runtime.ownerDocument.visibilityState==='visible')void renewal.tick().catch(()=>{if(eligible())onTickFailure();});
+      if(eligible()&&runtime.ownerDocument.visibilityState==='visible') {
+        const binding=readBinding?.();
+        void renewal.tick().catch(error=>{if(eligible()&&(!readBinding||binding?.slot===readBinding()?.slot))onTickFailure(error,binding);});
+      }
     },30000);
     void renewal.probe().catch(()=>{});
   },{capture:true,signal});

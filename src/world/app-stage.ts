@@ -190,9 +190,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   };
   let renewalFrame:HTMLIFrameElement|null=null;
   let lastRuntimeLaunchAt=0;
-  const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:()=>{
+  const readRenewBinding=()=>{
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
-  },readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
+  };
+  const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:readRenewBinding,
+    readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
     async request(args){if(!options.renew)throw new Error('scoped_renewal_unavailable');
       const reply=await options.renew({appId:app.appId,...args,expectedAccountId:accountId});return launcher.prepareRenewal(reply);},
     async bootstrap(reply:ScopedRenewReply){return new Promise<'ready'|'login_required'|'unknown'>(resolve=>{
@@ -213,7 +215,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       else if(state==='ready')showMessage('');},
   });
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
-    current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,onTickFailure:()=>{frameGeneration++;}});
+    current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,readBinding:readRenewBinding,
+    onTickFailure:(error,binding)=>{frameGeneration++;detachRootWake.recoverExpired(error,binding);}});
   let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
     onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
@@ -235,9 +238,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     onFailure: () => { if (current()) { showMessage('Не удалось восстановить вход. Откройте приложение заново.'); recoveryRetry.hidden = false; } },
   });
   const detachRootWake=attachRootSsoWakeRecovery({view,signal:controller.signal,
-    current:()=>current()&&!runtimePending&&!projectCapture.isCapturing(),readBinding:()=>{
-      const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);return binding&&source?{...binding,source}:null;
-    },lastLaunchAt:()=>lastRuntimeLaunchAt,recover:()=>launchRuntime(true,()=>!projectCapture.isCapturing())});
+    current:()=>current()&&!runtimePending&&!projectCapture.isCapturing(),readBinding:readRenewBinding,
+    lastLaunchAt:()=>lastRuntimeLaunchAt,recover:()=>launchRuntime(true,()=>!projectCapture.isCapturing())});
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
     // was actually admitted. A named route always keeps its exact domain ID.

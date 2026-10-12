@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createScopedSlotRenewal,attachScopedRenewalLoads} from './app-scoped-renewal.mjs';
+import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery} from './app-scoped-renewal.mjs';
 import {isScopedRuntimeProfile} from './app-launch.mjs';
 
 test('Stage load arms the same single renewal lifecycle for approved1/2; future or declared names never arm it',async()=>{
@@ -36,4 +36,41 @@ test('retired/profile-changed Stage never ticks or reports a late rejected callb
     current:()=>current,profile:()=>profile,renewal:{async probe(){},tick(){return new Promise((_,no)=>{reject=no;});}},onTickFailure(){failures++;}});
   runtime.dispatchEvent(new Event('load'));tick();current=false;reject(Error('retired'));await new Promise(done=>setImmediate(done));assert.equal(failures,0);
   current=true;profile='unapproved';tick();detach();controller.abort();
+});
+
+test('a visible expired Root slot recovers from the Stage timer without another focus event',async()=>{
+  const runtime=new EventTarget(),document=new EventTarget(),view=new EventTarget(),controller=new AbortController();
+  document.visibilityState='visible';runtime.ownerDocument=document;let tick,launches=0,failures=0;
+  view.setInterval=fn=>{tick=fn;return 1;};view.clearInterval=()=>{};
+  const binding={handle:'expired',slot:{},source:{id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'}};
+  const renewal=createScopedSlotRenewal({readBinding:()=>binding,isCurrent:()=>true,clock:()=>1301000,
+    async readContext(){throw Object.assign(Error('Expired Root slot'),{code:'app_scoped_context_closed',status:403});},
+    request(){assert.fail('An expired context is not renewed as a live Source grant.');},bootstrap(){assert.fail();},commit(){assert.fail();}});
+  const wake=attachRootSsoWakeRecovery({view,document,signal:controller.signal,current:()=>true,readBinding:()=>binding,
+    lastLaunchAt:()=>1000000,clock:()=>1301000,async recover(){launches++;throw Error('fresh launch failed');},onFailure(){failures++;}});
+  const loads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,current:()=>true,
+    profile:()=> 'soty.selected-human-embed.v2',readBinding:()=>binding,renewal,onTickFailure:(error,captured)=>wake.recoverExpired(error,captured)});
+  runtime.dispatchEvent(new Event('load'));await new Promise(setImmediate);tick();await new Promise(setImmediate);
+  assert.equal(launches,1);assert.equal(failures,1);
+  tick();tick();await new Promise(setImmediate);assert.equal(launches,1,'failed recovery does not repeat for the same slot');
+  loads();wake();controller.abort();renewal.dispose();
+});
+
+test('a late timer denial from a replaced slot is not a failure of its successor',async()=>{
+  const runtime=new EventTarget();runtime.ownerDocument={visibilityState:'visible'};const controller=new AbortController();
+  let tick,reject,failures=0,binding={handle:'old',slot:{}};
+  const loads=attachScopedRenewalLoads({runtime,view:{setInterval(fn){tick=fn;return 1;},clearInterval(){}},signal:controller.signal,
+    current:()=>true,profile:()=> 'soty.selected-human-embed.v2',readBinding:()=>binding,
+    renewal:{async probe(){},tick(){return new Promise((_,no)=>{reject=no;});}},onTickFailure(){failures++;}});
+  runtime.dispatchEvent(new Event('load'));tick();binding={handle:'fresh',slot:{}};
+  reject(Object.assign(Error('Old slot expired'),{code:'app_scoped_context_closed',status:403}));await new Promise(setImmediate);
+  assert.equal(failures,0);loads();controller.abort();
+});
+
+test('successful normal renewal does not enter expiry recovery or relaunch the visible frame',async()=>{
+  const runtime=new EventTarget();runtime.ownerDocument={visibilityState:'visible'};const controller=new AbortController();let tick,renewed=0,failures=0;
+  const loads=attachScopedRenewalLoads({runtime,view:{setInterval(fn){tick=fn;return 1;},clearInterval(){}},signal:controller.signal,
+    current:()=>true,profile:()=> 'soty.selected-human-embed.v2',renewal:{async probe(){},async tick(){renewed++;return true;}},onTickFailure(){failures++;}});
+  runtime.dispatchEvent(new Event('load'));tick();await new Promise(setImmediate);assert.equal(renewed,1);assert.equal(failures,0);
+  loads();controller.abort();
 });

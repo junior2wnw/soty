@@ -69,3 +69,62 @@ test('return after a day asks for one fresh launch and cannot resurrect a closed
   await new Promise(setImmediate);assert.equal(launches,1);
   controller.abort();view.dispatchEvent(new Event('focus'));await new Promise(setImmediate);assert.equal(launches,1);detach();
 });
+
+function wakeFixture({recover}={}) {
+  const view=new EventTarget(),document=new EventTarget(),controller=new AbortController();document.visibilityState='visible';
+  let time=1301000,lastLaunch=1000000,active=true,capturing=false,binding={handle:'old',source:rootPin,slot:{}},launches=0,failures=0;
+  const helper=attachRootSsoWakeRecovery({view,document,signal:controller.signal,current:()=>active&&!capturing,
+    readBinding:()=>binding,lastLaunchAt:()=>lastLaunch,clock:()=>time,onFailure(){failures++;},
+    async recover(){launches++;if(recover)await recover();}});
+  return {helper,view,document,controller,binding:()=>binding,counts:()=>({launches,failures}),
+    setBinding(value){binding=value;},setActive(value){active=value;},setCapture(value){capturing=value;},setTime(value){time=value;}};
+}
+const settle=()=>new Promise(setImmediate);
+const closedSlot=()=>Object.assign(Error('Root slot unavailable'),{code:'app_scoped_context_closed',status:403});
+
+test('only known Root lease expiry can request automatic recovery, never an ACL or changed Source denial',async()=>{
+  const f=wakeFixture();
+  for(const binding of [null,undefined]){f.helper.recoverExpired(closedSlot(),binding);await settle();assert.equal(f.counts().launches,0);}
+  for(const error of [{code:'apps_access_denied',status:403},{code:'app_access_revoked',status:403},
+    {code:'app_scoped_context_changed',status:403},{code:'scoped_embed_human_changed',status:403},
+    {code:'app_source_changed',status:403},{status:401},Error('network')]) {
+    f.helper.recoverExpired(error,f.binding());await settle();assert.equal(f.counts().launches,0);
+  }
+  f.setTime(1299999);f.helper.recoverExpired(closedSlot(),f.binding());await settle();assert.equal(f.counts().launches,0);
+  f.setTime(1301000);f.setBinding({...f.binding(),source:{...rootPin,version:1}});
+  f.helper.recoverExpired(closedSlot(),f.binding());await settle();assert.equal(f.counts().launches,0);
+  f.setBinding({...f.binding(),source:rootPin});f.helper.recoverExpired({code:'scoped_embed_expired',status:401},f.binding());
+  await settle();assert.equal(f.counts().launches,1);f.helper();f.controller.abort();
+});
+
+test('queued expiry recovery checks the captured slot, current account, visibility and capture again before launch',async()=>{
+  for(const change of ['slot','account','capture','hidden','dispose','abort']) {
+    const f=wakeFixture(),binding=f.binding();f.helper.recoverExpired(closedSlot(),binding);
+    if(change==='slot')f.setBinding({...binding,slot:{}});
+    if(change==='account')f.setActive(false);
+    if(change==='capture')f.setCapture(true);
+    if(change==='hidden')f.document.visibilityState='hidden';
+    if(change==='dispose')f.helper();
+    if(change==='abort')f.controller.abort();
+    await settle();assert.equal(f.counts().launches,0,change);f.helper();f.controller.abort();
+  }
+});
+
+test('expiry recovery shares one pending attempt with wake and a failed slot cannot relaunch repeatedly',async()=>{
+  let reject;const waiting=new Promise((_,no)=>{reject=no;}),f=wakeFixture({recover:()=>waiting}),binding=f.binding();
+  f.helper.recoverExpired(closedSlot(),binding);f.view.dispatchEvent(new Event('focus'));await settle();
+  assert.equal(f.counts().launches,1);
+  f.helper.recoverExpired(closedSlot(),binding);f.document.dispatchEvent(new Event('visibilitychange'));await settle();
+  assert.equal(f.counts().launches,1);reject(Error('launch failed'));await settle();assert.equal(f.counts().failures,1);
+  for(let index=0;index<4;index++){f.helper.recoverExpired(closedSlot(),binding);f.view.dispatchEvent(new Event('focus'));await settle();}
+  assert.equal(f.counts().launches,1);
+  f.setBinding({...binding,slot:{}});f.helper.recoverExpired(closedSlot(),binding);await settle();assert.equal(f.counts().launches,1);
+  f.helper.recoverExpired(closedSlot(),f.binding());await settle();assert.equal(f.counts().launches,2,'another slot has its own bounded attempt');
+  f.helper();f.controller.abort();
+});
+
+test('capture postpones expiry recovery without spending the slot attempt',async()=>{
+  const f=wakeFixture();f.setCapture(true);f.helper.recoverExpired(closedSlot(),f.binding());await settle();
+  assert.equal(f.counts().launches,0);f.setCapture(false);f.helper.recoverExpired(closedSlot(),f.binding());await settle();
+  assert.equal(f.counts().launches,1);f.helper();f.controller.abort();
+});
