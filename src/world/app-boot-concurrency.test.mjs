@@ -7,6 +7,7 @@ import { renderBootPage } from '../../modules/apps/server/runtime-pages.mjs';
 import { assertApps, textId, requestPath, runtimePath } from '../../modules/apps/server/protocol.mjs';
 import { createLaunchPath } from '../../modules/apps/server/launch-path.mjs';
 import { selectedRuntimeProfile } from '../../modules/apps/server/schema.mjs';
+import { isRootSignedWorkspaceSource } from '../../modules/source-app/server/standard-profile.mjs';
 import { createAppLauncher } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
 
@@ -19,7 +20,7 @@ function fragment(first, last) {
   assert.ok(start >= 0 && end > start, 'actual source branch must exist');
   return source.slice(start, end);
 }
-const sessionSource = fragment('  function primaryKey(', '  function setPolicy(');
+const sessionSource = fragment('  const frameRequests=', '  function setPolicy(');
 const routeSource = fragment('  async function routeApp(', '  function handleRequest(');
 const launchSource = fragment("    if (op === 'apps.launch') {", "    if (op === 'apps.revoke') {");
 const appId = 'app-' + 'a'.repeat(32), domainId = 'dom_' + 'b'.repeat(32);
@@ -45,7 +46,7 @@ function server() {
     return decision;
   };
   const environment = {
-    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, URL, Buffer, tickets, sessions, bootCandidates: new Map(),
+    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, isRootSignedWorkspaceSource, URL, Buffer, tickets, sessions, bootCandidates: new Map(),
     digest, equalDigest, secret, id: appId, app, actor, cookieName: 'soty_app_session', accountSessionMs: 3600000,
     channels: new Map([['synthetic-connector', {}]]), now: () => state.now,
     activeTarget: () => ({ profile: state.profile }),
