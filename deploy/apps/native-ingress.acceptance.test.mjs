@@ -16,17 +16,17 @@ test(`real Caddy preserves Native routing and uses Root for scoped APIs: ${profi
   const gateway = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     authRequests.push({ path: req.url, pin: req.headers['x-soty-ingress-target'], method: req.method,
-      cookie: req.headers.cookie, origin: req.headers.origin, body: Buffer.concat(chunks).toString() });
+      cookie: req.headers.cookie, frame: req.headers['x-soty-frame'], origin: req.headers.origin, body: Buffer.concat(chunks).toString() });
     if (req.url.startsWith('/_soty/boot?')) { res.end('boot'); return; }
     if (req.url.startsWith('/api/embed/')) {
-      res.writeHead(req.headers.cookie === '__Host-soty_app_session=valid' ? 200 : 403); res.end('scoped gateway'); return;
+      res.writeHead(req.headers.cookie?.split('; ').includes('__Host-soty_app_session=valid') ? 200 : 403); res.end('scoped gateway'); return;
     }
     if (req.url !== '/_soty/ingress-check' || req.headers['x-soty-ingress-target'] !== expectedPin
       || req.headers.cookie?.includes('__Host-soty_app_session=invalid')) { res.writeHead(403); res.end(); return; }
     res.writeHead(204); res.end();
   });
   const app = createServer((req, res) => {
-    appRequests.push({ path: req.url, cookie: req.headers.cookie, pin: req.headers['x-soty-ingress-target'] });
+    appRequests.push({ path: req.url, cookie: req.headers.cookie, frame: req.headers['x-soty-frame'], pin: req.headers['x-soty-ingress-target'] });
     res.setHeader('Content-Security-Policy', "default-src 'none'");
     res.setHeader('Set-Cookie', '__Host-own_app=session; Secure; HttpOnly; Path=/; SameSite=Lax');
     res.end('application');
@@ -66,13 +66,15 @@ test(`real Caddy preserves Native routing and uses Root for scoped APIs: ${profi
     await new Promise(done => setTimeout(done, 50));
   }
   assert.equal(ready, true, 'temporary Caddy listener must start');
-  const response = await get('/?project=preserved&include=project', { Cookie: '__Host-soty_app_session=valid; __Host-own_app=own' });
+  const frame='A'.repeat(43),otherFrame='B'.repeat(43);
+  const response = await get('/?project=preserved&include=project', { Cookie: '__Host-soty_app_session=valid; __Host-soty_app_session_'+frame+'=main; __Host-own_app=own; __Host-soty_app_session_'+otherFrame+'=widget', 'X-Soty-Frame':frame });
   assert.equal(response.status, 200);
   assert.equal(authRequests.at(-1).path, '/_soty/ingress-check');
   assert.equal(appRequests.at(-1).path, '/?project=preserved&include=project');
   assert.equal(appRequests.at(-1).cookie.includes('__Host-soty_app_session'), false);
   assert.equal(appRequests.at(-1).cookie.includes('__Host-own_app=own'), true);
   assert.equal(appRequests.at(-1).pin, undefined);
+  assert.equal(appRequests.at(-1).frame, undefined,'Native fallback must not receive the Root frame selector');
   assert.match(response.headers['content-security-policy'], /default-src 'none'/u);
   assert.match(response.headers['content-security-policy'], /frame-ancestors 'self' https:\/\/shell\.example/u);
   assert.match(response.headers['set-cookie'][0], /__Host-own_app=/u);
@@ -80,12 +82,12 @@ test(`real Caddy preserves Native routing and uses Root for scoped APIs: ${profi
   // proof. Exercise the generated Caddy router, not just the template string.
   const scoped = profile.startsWith('soty.selected-human-embed.');
   const nativeBefore = appRequests.length, body = JSON.stringify({ requestId: 'fixture', input: { operation: 'soty.current_context' } });
-  const apiHeaders = { Cookie: '__Host-soty_app_session=valid', Origin: 'https://project.example', 'Content-Type': 'application/json' };
+  const apiHeaders = { Cookie: '__Host-soty_app_session=valid; __Host-soty_app_session_'+frame+'=main; __Host-soty_app_session_'+otherFrame+'=widget', Origin: 'https://project.example', 'Content-Type': 'application/json', 'X-Soty-Frame':frame };
   assert.equal((await get('/api/embed/query', apiHeaders, 'POST', body)).status, 200);
   if (scoped) {
     assert.equal(appRequests.length, nativeBefore);
     assert.deepEqual(authRequests.at(-1), { path: '/api/embed/query', pin: undefined, method: 'POST',
-      cookie: apiHeaders.Cookie, origin: apiHeaders.Origin, body });
+      cookie: apiHeaders.Cookie, frame, origin: apiHeaders.Origin, body });
     assert.equal((await get('/api/embed/query', { ...apiHeaders, Cookie: '__Host-soty_app_session=invalid' }, 'POST', body)).status, 403);
     assert.equal(appRequests.length, nativeBefore, 'denied Source request cannot fall through to Native');
   } else assert.equal(appRequests.at(-1).path, '/api/embed/query');
