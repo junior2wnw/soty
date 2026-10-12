@@ -4,12 +4,19 @@ export { SourceFeedbackClientError };
 /** Cookie/Source authority stays on this exact current origin. No actor, token,
  * resource, recipient or arbitrary URL is accepted from the feedback form. */
 export function createSourceFeedbackClient(options = {}) {
-  const selected = feedbackFields(options, [], ['fetch', 'profileVersion']);
+  const selected = feedbackFields(options, [], ['fetch', 'profileVersion', 'contextRef']);
   const fetcher = selected.fetch ?? globalThis.fetch, profileVersion = selected.profileVersion === undefined ? 1 : selected.profileVersion;
   if (typeof fetcher !== 'function' || ![1, 2, 3].includes(profileVersion)) throw new SourceFeedbackClientError('source_feedback_input_invalid', 400);
+  const contextRef = selected.contextRef;
+  if (contextRef !== undefined && (typeof contextRef !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(contextRef)))
+    throw new SourceFeedbackClientError('source_feedback_input_invalid', 400);
   const root = '/api/embed/feedback';
   async function request(path, args, method = 'POST', signal, operation) {
-    const responseBytes = operation === 'get' && profileVersion === 3 ? 2097152 : 1500000;
+    const responseBytes = operation === 'get' && (profileVersion === 3 || contextRef !== undefined) ? 2097152 : 1500000;
+    if (contextRef !== undefined) {
+      if (method === 'GET') path += (path.includes('?') ? '&' : '?') + 'contextRef=' + encodeURIComponent(contextRef);
+      else args = { ...args, contextRef };
+    }
     const response = await fetcher(root + path, { method, credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer', signal,
       headers: { accept: 'application/json', ...(args === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(args === undefined ? {} : { body: JSON.stringify(args) }) });

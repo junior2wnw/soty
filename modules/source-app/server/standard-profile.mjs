@@ -58,6 +58,11 @@ export const STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: 'soty.standard-workspa
 /** Explicit opt-in: authenticated Root use, short Source sessions and Native ACL.
  * Workspace1 keeps its original RP/OIDC/finite-family behavior. */
 export const STANDARD_ROOT_WORKSPACE_CONTRACT = deepFreeze({ ...STANDARD_WORKSPACE_CONTRACT,
+  // Feedback names the SAME current Native child as domain reads/effects.
+  // This new workspace2 pin does not widen resource1/2/3 or workspace1.
+  rules: STANDARD_WORKSPACE_CONTRACT.rules.map(row => row.kind === 'feedback-read'
+    ? { ...row, queries: [...row.queries, 'contextRef'],
+      ...(row.path === '/api/embed/feedback' ? { responseBytes: 262144 } : {}) } : row),
   auth: { schema: 'soty.root-workspace-auth.v1', cookies: ['soty_rp_session'], basicSeconds: 300,
     proof: 'root-signed-current-context.v1', audience: 'urn:soty:source-authority',
     witnessType: 'soty-source-authority+jwt', witnessMaxSeconds: 10,

@@ -25,6 +25,20 @@ test('portable JSON guard rejects decoded duplicate keys, nested duplicates and 
   assert.deepEqual(parseSourceJson('{"input":{"title":"Synthetic"},"requestId":"one"}'), { input: { title: 'Synthetic' }, requestId: 'one' });
 });
 
+test('recovered feedback receipt keeps its original revision after a later ticket edit', async () => {
+  const value = { requestId: 'fixture-submit-0001', replayed: true,
+    receipt: { ticketId: 'ticket-one', revision: 1, createdAt: 1000 },
+    ticket: { id: 'ticket-one', revision: 2, status: 'in_progress', body: 'Synthetic issue', createdAt: 1000, updatedAt: 2000,
+      canReply: true, canManage: false, canAccept: false, attachments: [], messages: [] } };
+  const accepted = feedbackOutput('submit', value);
+  assert.equal(accepted.receipt.revision, 1); assert.equal(accepted.ticket.revision, 2);
+  const client = createSourceFeedbackClient({ fetch: async () => new Response(JSON.stringify({ ok: true, data: value }),
+    { headers: { 'content-type': 'application/json' } }) });
+  assert.equal((await client.submit({ requestId: value.requestId, body: 'Synthetic issue', attachments: [] })).receipt.revision, 1);
+  for (const revision of [0, -1, '1', 1.5, 3]) assert.throws(() => feedbackOutput('submit', { ...value, receipt: { ...value.receipt, revision } }));
+  assert.throws(() => feedbackOutput('submit', { ...value, receipt: { ...value.receipt, ticketId: 'foreign-ticket' } }));
+});
+
 test('browser fixed client validates current context, response bytes/duplicate keys and Source private projection', async () => {
   const context = { schema: 'soty.source-feedback.context.v1', bindingDigest: 'a'.repeat(64), ready: true, canSubmit: true,
     recipientLabel: 'Поддержка приложения', limits: SOURCE_FEEDBACK_LIMITS, capabilities: { text: true, screenshot: true, voice: true, asr: false } };
@@ -37,4 +51,21 @@ test('browser fixed client validates current context, response bytes/duplicate k
     await assert.rejects(bad.context(), error => error.code === 'source_feedback_response_invalid');
   }
   assert.throws(() => feedbackOutput('context', { ...context, capabilities: { ...context.capabilities, asr: true } }));
+  assert.equal(feedbackOutput('context', { ...context, canManage: true }).canManage, true);
+  assert.equal(feedbackOutput('context', context).canManage, undefined);
+  assert.throws(() => feedbackOutput('context', { ...context, canManage: 'owner' }));
+  const ref = 'C'.repeat(43), captured = [], workspaceClient = createSourceFeedbackClient({ contextRef: ref,
+    fetch: async (url, options) => { captured.push({ url, options });
+      const data = options.method === 'GET' ? context : { requestId: 'fixture-submit-0001', replayed: false,
+        receipt: { ticketId: 'workspace-ticket', revision: 1, createdAt: 1000 },
+        ticket: { id: 'workspace-ticket', revision: 1, status: 'received', body: 'Synthetic issue', createdAt: 1000, updatedAt: 1000,
+          canReply: true, canManage: false, canAccept: false, attachments: [], messages: [] } };
+      return new Response(JSON.stringify({ ok: true, data }),
+      { headers: { 'content-type': 'application/json' } }); } });
+  await workspaceClient.context();
+  assert.equal(captured[0].url, '/api/embed/feedback/context?contextRef=' + ref);
+  assert.equal((await workspaceClient.submit({ requestId: 'fixture-submit-0001', body: 'Synthetic issue', attachments: [] })).ticket.id, 'workspace-ticket');
+  assert.equal(JSON.parse(captured[1].options.body).contextRef, ref);
+  assert.equal(JSON.parse(captured[1].options.body).body, 'Synthetic issue');
+  assert.throws(() => createSourceFeedbackClient({ contextRef: 'foreign URL' }));
 });

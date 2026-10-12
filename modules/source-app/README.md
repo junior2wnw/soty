@@ -364,7 +364,7 @@ is rejected without an alias. Source1/2/3 pins are unchanged.
 ### Root-authenticated workspace2
 
 `STANDARD_ROOT_WORKSPACE_SOURCE` is a separate explicit workspace@2 profile
-(`4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833`).
+(`23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9`).
 Workspace@1 above remains the RP/OIDC profile. Workspace2 accepts no `rp` or
 `rpSessions` configuration and creates no OIDC interaction or refresh family.
 
@@ -395,3 +395,12 @@ family. Explicitly closed Root authority, revoked Source rows and foreign
 cookies do not revive. Native durable UI preferences remain separate from all
 session authority. This protocol alone does not promise automatic browser
 return after 24 hours or independent main tabs.
+
+Workspace2 may reuse the application's exact existing native/embed origin; the
+parent origin remains separate. Its feedback reads and writes require the
+captured workspace `contextRef`, checked against the same current Native child
+before and after reads and inside the final transaction. Construct
+`createSourceFeedbackClient({contextRef: context.ref})` for that captured field,
+and recreate it after the workspace context changes. Legacy feedback clients
+keep their existing requests. A recovered immutable receipt can precede the
+current ticket revision; it retains its original ticket ID and revision.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createScopedSlotRenewal,attachRootSsoWakeRecovery} from './app-scoped-renewal.mjs';
-const rootPin={id:'soty.standard-workspace',version:2,digest:'4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833'};
+const rootPin={id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'};
 // Client lifecycle fixtures only. Actual signed/channel/Source tests live under modules/apps/test.
 function fixture(change={},source={id:'source-one',version:1,digest:'a'.repeat(64)}){let time=1000000,current=true,active={handle:'old',source,slot:{}},
   requests=[],swaps=0,closes=0,nextReady=true,hint='ready';

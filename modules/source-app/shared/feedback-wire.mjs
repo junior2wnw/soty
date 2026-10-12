@@ -52,9 +52,10 @@ export function feedbackInput(operation, input = {}) {
   if (operation === 'status') need(['in_progress', 'needs_action', 'ready_to_check'].includes(value.status)); return value;
 }
 export function feedbackContext(input) {
-  const value = feedbackFields(input, ['schema', 'bindingDigest', 'ready', 'canSubmit', 'recipientLabel', 'limits', 'capabilities']);
+  const value = feedbackFields(input, ['schema', 'bindingDigest', 'ready', 'canSubmit', 'recipientLabel', 'limits', 'capabilities'], ['canManage']);
   need(value.schema === 'soty.source-feedback.context.v1' && /^[a-f0-9]{64}$/u.test(value.bindingDigest)
     && typeof value.ready === 'boolean' && typeof value.canSubmit === 'boolean' && text(value.recipientLabel, 160));
+  need(value.canManage === undefined || typeof value.canManage === 'boolean');
   value.limits = feedbackFields(value.limits, Object.keys(SOURCE_FEEDBACK_LIMITS));
   for (const key of Object.keys(SOURCE_FEEDBACK_LIMITS)) need(Number.isSafeInteger(value.limits[key]) && value.limits[key] > 0 && value.limits[key] <= SOURCE_FEEDBACK_LIMITS[key]);
   value.capabilities = feedbackFields(value.capabilities, ['text', 'voice', 'screenshot', 'asr']);
@@ -92,6 +93,9 @@ export function feedbackOutput(operation, input) {
   if (operation === 'get') { const value = feedbackFields(input, ['ticket']); value.ticket = ticket(value.ticket); return value; }
   const value = feedbackFields(input, ['requestId', 'replayed', 'receipt', 'ticket']); need(requestId(value.requestId) && typeof value.replayed === 'boolean');
   value.receipt = feedbackFields(value.receipt, ['ticketId', 'revision', 'createdAt']); value.ticket = ticket(value.ticket);
-  need(value.receipt.ticketId === value.ticket.id && value.receipt.revision === value.ticket.revision
+  // A durable receipt stays at its committed revision when a later edit has
+  // already advanced the current ticket returned with a recovered response.
+  need(value.receipt.ticketId === value.ticket.id && Number.isSafeInteger(value.receipt.revision)
+    && value.receipt.revision >= 1 && value.receipt.revision <= value.ticket.revision
     && Number.isSafeInteger(value.receipt.createdAt) && value.receipt.createdAt > 0); return value;
 }

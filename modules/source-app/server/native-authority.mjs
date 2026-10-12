@@ -80,7 +80,7 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       }
       used = true;
       return withCurrent(proof, () => { context?.check(); entered = true; inAction = true;
-        try { return syncResult(action()); } finally { inAction = false; } });
+        try { const result = syncResult(action()); context?.check(); return result; } finally { inAction = false; } });
     } });
     approvedCommits.add(capability);
     return { capability, seal() { open = false; }, assertUsed() {
@@ -191,10 +191,18 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       }
       return result;
     },
-    async feedback(proof, operation, input = {}) {
+    async feedback(proof, operation, input = {}, contextRef) {
       check(['context', 'list', 'get', 'submit', 'reply', 'status', 'accept'].includes(operation)
         && typeof port.feedback?.[operation] === 'function', 'source_app_feedback_unavailable', 503);
-      return invoke(proof, port.feedback[operation], input, { mutation: ['submit', 'reply', 'status', 'accept'].includes(operation),
+      const mutation = ['submit', 'reply', 'status', 'accept'].includes(operation);
+      let context = null;
+      if (contract.auth.proof === 'root-signed-current-context.v1') {
+        const captured = proofs.get(proof);
+        context = { check: () => workspace.assert(captured.binding,
+          syncResult(port.currentContext(captured.native, captured.binding)), contextRef),
+          ...(mutation ? { mutationRef: workspaceMutationRef(input.requestId, digest(input), contextRef) } : {}) };
+      } else check(contextRef === undefined, 'source_workspace_context_denied', 403);
+      return invoke(proof, port.feedback[operation], input, { mutation, context,
         bytes: 1500000, responseBytes: operation === 'get' ? feedbackGetBytes : 1500000 });
     },
     close() { closed = true; workspace?.close(); },

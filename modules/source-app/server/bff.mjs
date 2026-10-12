@@ -440,9 +440,16 @@ export function createSourceAppBff(options) {
       ['GET /api/embed/feedback', 'list'], ['POST /api/embed/feedback', 'submit'],
     ]).get(req.method + ' ' + url.pathname);
     if (feedbackOperation) {
-      const args = validateSourceFeedbackInput(feedbackOperation, ['GET', 'HEAD'].includes(req.method) ? Object.fromEntries(url.searchParams) : input);
+      let feedbackArgs = ['GET', 'HEAD'].includes(req.method) ? Object.fromEntries(url.searchParams) : input;
+      let contextRef;
+      if (rootSigned) {
+        if (req.method === 'GET') check(url.searchParams.getAll('contextRef').length === 1, 'source_workspace_context_denied', 403);
+        const selected = fields(feedbackArgs, ['contextRef'], ['limit', 'cursor', 'ticketId', 'requestId', 'body', 'attachments', 'expectedRevision', 'status']);
+        ({ contextRef, ...feedbackArgs } = selected);
+      }
+      const args = validateSourceFeedbackInput(feedbackOperation, feedbackArgs);
       const current = await currentSession(req, context, 'feedback.' + feedbackOperation);
-      const data = await native.feedback(current.authority, feedbackOperation, args);
+      const data = await native.feedback(current.authority, feedbackOperation, args, contextRef);
       if (['submit', 'reply', 'status', 'accept'].includes(feedbackOperation)) await postCommit(context, current.authority);
       else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
         if (rootSigned) await native.assertCurrent(current.authority); }

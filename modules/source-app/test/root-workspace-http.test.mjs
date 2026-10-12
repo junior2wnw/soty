@@ -19,7 +19,7 @@ const random=()=>randomBytes(32).toString('base64url');
 
 // Real RSA/JWKS HTTP, connector MAC, BFF, encrypted SQLite and final Native TX.
 // This issuer is synthetic; the separate Human/Apps gate tests actual Root signing.
-async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false}={}){
+async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false,feedback=false}={}){
   const directory=await mkdtemp(join(tmpdir(),'root-workspace-http-'));let sdk=source;
   if(portable){await buildSourceAppPackage({outdir:directory});await mkdir(join(directory,'node_modules'));
     await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules/openid-client'),process.platform==='win32'?'junction':'dir');
@@ -55,6 +55,11 @@ async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false}={}){
     entry:{domainId:'domain',origin},target:profile.target,policyEpoch:1,expiresAt:now+300000};};newContext();
   const store=createOrdinaryAppStore({databasePath:join(directory,'native.sqlite'),realmId:'fixture',key:randomBytes(32),keyId:'fixture',clock,initialize:true});
   store.createResource({id:'space',incarnationId:'one',title:'Native field'});store.createPrincipal('native-owner');
+  if(feedback) store.db.exec("CREATE TEMP TABLE fixture_child(id TEXT,generation INTEGER);INSERT INTO fixture_child VALUES('native-field',1)");
+  let feedbackReads=0,feedbackWrites=0,afterStaged;
+  const feedbackContext=()=>({schema:'soty.source-feedback.context.v1',bindingDigest:'3'.repeat(64),ready:true,canSubmit:true,canManage:true,
+    recipientLabel:'Native support',limits:{bodyChars:8000,totalAttachmentBytes:1048576,maxAttachments:3,maxAudioSeconds:120},
+    capabilities:{text:true,voice:true,screenshot:true,asr:false}});
   const proofs=new WeakMap();
   function inspect(proof,binding){const held=proofs.get(proof);assert.ok(held&&nativeLive);const verified=sdk.readVerifiedRootContext(held.verified,profile.digest);
     assert.equal(digest(binding.rootPrincipal),digest(verified.rootPrincipal));assert.equal(binding.rootReferenceDigest,digest(verified.reference));
@@ -71,21 +76,77 @@ async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false}={}){
         return{nativeSessionHash:row.native_session_hash,principalId:'native-owner',resourceId:'space'};}
       const hash=digest(random());store.db.prepare('INSERT INTO native_sessions VALUES(?,?,1,1,?)').run(hash,'native-owner',binding.rootExpiresAt);commits++;
       return{nativeSessionHash:hash,principalId:'native-owner',resourceId:'space'};},
-    currentContext(proof,binding){inspect(proof,binding);return{key:'native-field',generation:1,title:'Native field',role:'owner',revision:1,expiresAt:binding.rootExpiresAt};},
+    currentContext(proof,binding){inspect(proof,binding);const row=feedback?store.db.prepare('SELECT * FROM fixture_child').get():{id:'native-field',generation:1};
+      return{key:row.id,generation:row.generation,title:'Native field',role:'owner',revision:1,expiresAt:binding.rootExpiresAt};},
+    ...(feedback?{feedback:{
+      async context(proof,binding,input){inspect(proof,binding);assert.deepEqual(input,{});feedbackReads++;return feedbackContext();},
+      async list(proof,binding,input){inspect(proof,binding);assert.equal(Object.hasOwn(input,'contextRef'),false);feedbackReads++;return{tickets:[],nextCursor:null};},
+      async get(proof,binding,input){inspect(proof,binding);feedbackReads++;throw Object.assign(Error('fixture_ticket_absent'),{status:404,code:'fixture_ticket_absent'});},
+      async submit(proof,binding,input,final){assert.equal(Object.hasOwn(input,'contextRef'),false);
+        return store.tx(()=>final.commit(()=>{inspect(proof,binding);feedbackWrites++;
+          const row={id:'fixture-ticket',resource_id:'space',reporter_id:'native-owner',body:input.body,status:'received',revision:1,created_at:clock(),updated_at:clock()};
+          store.db.prepare('INSERT INTO native_tickets VALUES(?,?,?,?,?,?,?,?,?)').run(...Object.values(row));afterStaged?.();
+          return{requestId:input.requestId,replayed:false,receipt:{ticketId:row.id,revision:1,createdAt:clock()},ticket:{id:row.id,body:row.body,status:row.status,revision:1,
+            createdAt:clock(),updatedAt:clock(),attachments:[],messages:[],canReply:true,canManage:true,canAccept:false}};}));},
+      ...Object.fromEntries(['reply','status','accept'].map(op=>[op,async(proof,binding,input,final)=>store.tx(()=>final.commit(()=>{inspect(proof,binding);feedbackWrites++;return{};}))]))
+    }}:{}),
     read:async()=>({})});
   const {digest: _profileDigest,...rawProfile}=profile;
   bff=sdk.createSourceAppBff({profile:rawProfile,transportKey:key,connectorPort:ipc.address().port,storage:store.storage,native,clock});
   const signer=createResourceSourceProofSigner({profile,key,clock});let token;
-  async function request(path='/api/embed/session-continue',{transport=true}={}){
+  async function request(path='/api/embed/session-continue',{transport=true,input,contextRef,method='POST'}={}){
     rootReads=0;
-    const body=Buffer.from(JSON.stringify(path.endsWith('/query')?{requestId:'root-workspace-query',input:{operation:'soty.current_context'}}:{requestId:'root-workspace-continue'})),cookie=token?'soty_rp_session='+token:'';
-    const response=await fetch(origin+path,{method:'POST',headers:{origin,'content-type':'application/json',...(cookie?{cookie}:{}),...(transport?signer.headers({context,method:'POST',path,body,cookie}):{})},body});
+    const body=method==='GET'?Buffer.alloc(0):Buffer.from(JSON.stringify(input??(path.endsWith('/query')?{requestId:'root-workspace-query',input:{operation:'soty.current_context'}}:{requestId:'root-workspace-continue'}))),cookie=token?'soty_rp_session='+token:'';
+    const response=await fetch(origin+path,{method,headers:{origin,'content-type':'application/json',...(cookie?{cookie}:{}),...(transport?signer.headers({context,method,path,body,cookie}):{})},...(method==='GET'?{}:{body})});
     const set=response.headers.get('set-cookie');if(set)token=set.split(';')[0].split('=')[1];return{status:response.status,body:await response.json(),cookie:!!set};}
   t.after(async()=>{store.close();
     await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:40});});
   return{request,store,commits:()=>commits,clearCookie:()=>{token=undefined;},setMode:value=>{mode=value;},closeRoot:()=>{rootLive=false;},revokeNative:()=>{nativeLive=false;},
-    advance:ms=>{now+=ms;},newContext,profile,rootReads:()=>rootReads,revokeOnRootRead:count=>{revokeAt=count;}};
+    advance:ms=>{now+=ms;},newContext,profile,rootReads:()=>rootReads,revokeOnRootRead:count=>{revokeAt=count;},
+    feedbackReads:()=>feedbackReads,feedbackWrites:()=>feedbackWrites,afterStaged:fn=>{afterStaged=fn;},
+    selectChild:()=>{store.db.prepare("UPDATE fixture_child SET id='another-field',generation=generation+1").run();}};
 }
+
+test('workspace2 feedback HTTP requires the exact current contextRef for every read/effect; legacy pins stay immutable',async t=>{
+  const f=await fixture(t,false,{feedback:true});assert.equal((await f.request()).status,200);
+  const ref=(await f.request('/api/embed/query')).body.data.context.ref;
+  assert.ok((await f.request('/api/embed/feedback/context',{method:'GET'})).status>=400);assert.equal(f.feedbackReads(),0);
+  const ready=await f.request('/api/embed/feedback/context?contextRef='+ref,{method:'GET'});assert.equal(ready.status,200,ready.body.error?.code);assert.equal(ready.body.data.canManage,true);
+  await assert.rejects(f.request('/api/embed/feedback/context?contextRef='+ref+'&contextRef='+ref,{method:'GET'}),
+    error=>error.code==='scoped_embed_route_denied','Root rejects the duplicate locator before any Source HTTP request');
+  assert.ok((await f.request('/api/embed/feedback/context?contextRef='+'z'.repeat(43),{method:'GET'})).status>=400);
+  assert.ok((await f.request('/api/embed/feedback',{input:{requestId:'workspace-feedback-0001',body:'Synthetic',attachments:[]}})).status>=400);
+  assert.equal(f.feedbackReads(),1);assert.equal(f.feedbackWrites(),0);
+  f.selectChild();
+  for(const suffix of ['/context','', '/ticket?ticketId=synthetic-ticket']){
+    const separator=suffix.includes('?')?'&':'?';assert.ok((await f.request('/api/embed/feedback'+suffix+separator+'contextRef='+ref,{method:'GET'})).status>=400);
+  }
+  for(const [op,path] of [['submit',''],['reply','/reply'],['status','/status'],['accept','/accept']]){
+    const input=op==='submit'?{requestId:'workspace-feedback-0001',body:'Synthetic old child draft',attachments:[]}:
+      {requestId:'workspace-feedback-0001',ticketId:'synthetic-ticket',expectedRevision:1,...(op==='reply'?{body:'Synthetic'}:op==='status'?{status:'in_progress'}:{})};
+    assert.ok((await f.request('/api/embed/feedback'+path,{input:{...input,contextRef:ref}})).status>=400);
+  }
+  assert.equal(f.feedbackReads(),1);assert.equal(f.feedbackWrites(),0);assert.equal(f.store.db.prepare('SELECT count(*) n FROM native_tickets').get().n,0);
+  assert.equal(source.STANDARD_WORKSPACE_SOURCE.digest,'c1d52ca7865dfebf6ff05ee12f37e6d9d14e95b78928a5dee8f7defa331ddd99');
+});
+
+test('workspace2 feedback read is suppressed by Native revoke during its final Root await',async t=>{
+  const f=await fixture(t,false,{feedback:true});assert.equal((await f.request()).status,200);
+  const ref=(await f.request('/api/embed/query')).body.data.context.ref;
+  assert.equal((await f.request('/api/embed/feedback/context?contextRef='+ref,{method:'GET'})).status,200);
+  const reads=f.rootReads();assert.ok(reads>1);f.revokeOnRootRead(reads);
+  const response=await f.request('/api/embed/feedback/context?contextRef='+ref,{method:'GET'});
+  assert.ok(response.status>=400);assert.equal(response.body.data,undefined);assert.equal(f.feedbackWrites(),0);
+});
+
+test('workspace2 context changes AFTER staged feedback SQL roll back before Native COMMIT',async t=>{
+  const f=await fixture(t,false,{feedback:true});assert.equal((await f.request()).status,200);
+  const ref=(await f.request('/api/embed/query')).body.data.context.ref;f.afterStaged(()=>f.selectChild());
+  const result=await f.request('/api/embed/feedback',{input:{requestId:'workspace-feedback-staged-0001',body:'Synthetic',attachments:[],contextRef:ref}});
+  assert.ok(result.status>=400);assert.equal(f.feedbackWrites(),1,'SQL hook entered once');
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM native_tickets').get().n,0);
+  assert.equal(f.store.db.prepare('SELECT generation FROM fixture_child').get().generation,1);
+});
 
 for(const portable of [false,true])test('Root witness workspace short-session bootstrap/replay/new-reference '+(portable?'portable SDK':'Source'),async t=>{
   const f=await fixture(t,portable);let reply=await f.request();assert.equal(reply.status,200,reply.body.error?.code);assert.equal(reply.body.renewable,true);assert.equal(f.commits(),1);

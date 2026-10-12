@@ -36,6 +36,9 @@ export interface NativeHooks<Proof=unknown> {
   read?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown)=>Promise<unknown>;
   execute?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown,commit:NativeCommitPort)=>Promise<unknown>;
   readProof?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown)=>Promise<unknown>;
+  /** Workspace2's existing HTTP contextRef is checked by the SDK before/after
+   * reads and inside the final synchronous mutation fence. Native inputs stay
+   * the ordinary closed feedback DTO; no browser project ID creates authority. */
   feedback?:{context:Function;list:Function;get:Function;submit:Function;reply?:Function;status?:Function;accept?:Function};
 }
 export function createSourceNativeAuthorityPort<P>(options:NativeHooks<P>):SourceNativeAuthorityPort;

@@ -73,7 +73,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
-  const view = Object.assign(new EventTarget(), { location, Node: ElementPort, crypto, btoa,
+  const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, crypto, btoa,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
@@ -461,7 +461,7 @@ test('actual stage uses one fresh launch per original open and offers a manual a
   const calls = [], f = await recoveryStage(async (_app, args) => { calls.push(args); return { ...stageResponse('/'), launchBinding: stageBinding }; });
   const first = f.app.main.querySelector('iframe'), emit = bootHint(f, first); emit(); emit(); await turn();
   const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A' });
+  assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A', instanceId: 'main' });
   bootHint(f, second)(); await turn(); assert.equal(calls.length, 2);
   assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
   assert.match(f.app.main.querySelector('.sa-message').textContent, /Откройте приложение заново/u);

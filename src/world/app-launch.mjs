@@ -163,7 +163,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     // Offline resolution and every other deep link keep the strict entry contract.
     const savedRootEntry = requested.path === '/' && value?.path === '/embed'
       && binding?.profile === 'soty.selected-human-embed.v2' && binding.source?.id === 'soty.standard-workspace'
-      && binding.source.version === 2 && binding.source.digest === '4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833';
+      && binding.source.version === 2 && binding.source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
     const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl, url);
     requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin
       && (selected.path === entry.path || (savedRootEntry && selected.path === '/'))), 'invalid_app_entry');

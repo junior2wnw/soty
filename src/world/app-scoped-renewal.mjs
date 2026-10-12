@@ -5,7 +5,7 @@ import { isScopedRuntimeProfile } from './app-launch.mjs';
 // Only the approved Root identity contract may acquire a new finite session.
 // RP profiles retain their original absolute family deadline.
 export const isRootSsoWorkspacePin = value => value?.id === 'soty.standard-workspace' && value.version === 2
-  && value.digest === '4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833';
+  && value.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
 
 /** Returning to a mounted app asks Root for a fresh signed launch. This never
  * revives a closed stage or treats an expired session as authorization. */

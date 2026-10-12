@@ -7,7 +7,7 @@ const shellUrl = 'https://soty.example/#mine';
 const boot = (token = 'A') => `https://demo.apps.example/_soty/boot?path=%2Freader%3Fpage%3D2#${token.repeat(43)}`;
 const target = Object.freeze({ appId, domainId, path: '/reader?page=2' });
 const scopedReply=()=>({url:boot(),runtimeProfile:'soty.selected-human-embed.v2',scopedCloseHandle:'C'.repeat(43),
-  scopedSource:{id:'soty.standard-workspace',version:2,digest:'4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833'}});
+  scopedSource:{id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'}});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const popup = () => ({ opener: {}, closed: false, visits: [], location: { replace(url) { this.owner.visits.push(url); } }, close() { this.closed = true; } });
 function makePopup() { const value = popup(); value.location.owner = value; return value; }

@@ -1,6 +1,6 @@
 export interface FeedbackAttachment {kind:'image'|'audio';name:string;mimeType:string;dataBase64:string}
 export interface FeedbackDraft {body:string;attachments:FeedbackAttachment[]}
-export interface FeedbackContext {schema:'soty.source-feedback.context.v1';bindingDigest:string;ready:boolean;canSubmit:boolean;recipientLabel:string;
+export interface FeedbackContext {schema:'soty.source-feedback.context.v1';bindingDigest:string;ready:boolean;canSubmit:boolean;canManage?:boolean;recipientLabel:string;
   limits:{bodyChars:number;totalAttachmentBytes:number;maxAttachments:number;maxAudioSeconds:number};capabilities:{text:boolean;voice:boolean;screenshot:boolean;asr:false}}
 export interface FeedbackTicket {id:string;revision:number;status:'received'|'in_progress'|'needs_action'|'ready_to_check'|'resolved';body:string;createdAt:number;updatedAt:number;
   canReply:boolean;canManage:boolean;canAccept:boolean;attachments:unknown[];messages:{id:string;kind:'reporter'|'support';body:string;createdAt:number}[]}
@@ -13,7 +13,7 @@ export interface FeedbackClient {
   status(input:FeedbackAction&{status:'in_progress'|'needs_action'|'ready_to_check'},signal?:AbortSignal):Promise<FeedbackWrite>;
   accept(input:FeedbackAction,signal?:AbortSignal):Promise<FeedbackWrite>;
 }
-export function createSourceFeedbackClient(options?:{fetch?:typeof fetch;profileVersion?:1|2|3}):FeedbackClient;
+export function createSourceFeedbackClient(options?:{fetch?:typeof fetch;profileVersion?:1|2|3;contextRef?:string}):FeedbackClient;
 export class SourceFeedbackClientError extends Error {readonly code:string;readonly status:number}
 export const SOURCE_FEEDBACK_LIMITS:Readonly<{bodyChars:8000;totalAttachmentBytes:1048576;maxAttachments:3;maxAudioSeconds:120}>;
 export function createSourceFeedbackController(options?:{api?:Pick<FeedbackClient,'context'|'submit'>;isCurrent?:()=>boolean;requestId?:()=>string;onChange?:(value:unknown)=>void}):{
