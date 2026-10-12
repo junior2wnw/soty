@@ -493,13 +493,18 @@ test('actual shared browser client dispatches signed UI cancel while the origina
     storage: { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) } });
   const baseline = await client.extension('agent.turn', { requestId: 'shared_baseline_001', prompt: 'Shared client baseline' }, { expectedAccountId: account.accountId });
   assert.equal(baseline.ok, true); assert.equal(baseline.status, 'complete');
-  const barrier = f.hold(), turn = ui.turn('Held shared client turn'); await barrier.entered.promise;
+  const barrier = f.hold(), turn = ui.turn('Held shared client turn');
+  // Cancellation may reject the held turn before its own signed ACK returns.
+  // Observe that outcome immediately without releasing the provider barrier.
+  const turnOutcome = Promise.allSettled([turn]); await barrier.entered.promise;
   const cancellation = ui.cancel();
   try {
     const observed = await Promise.race([cancellation.then(value => ({ responded: true, value })), new Promise(done => setTimeout(() => done({ responded: false }), 400))]);
     assert.equal(observed.responded, true, 'shared-client cancel must reach the signed server handler before provider release');
     assert.equal(observed.value.cancelRequested, true); assert.equal(observed.value.remoteTerminationVerified, false);
-  } finally { barrier.release.resolve(); await Promise.allSettled([turn, cancellation]); }
+  } finally { barrier.release.resolve(); await Promise.allSettled([turnOutcome, cancellation]); }
+  const [cancelledTurn] = await turnOutcome;
+  assert.equal(cancelledTurn.status, 'rejected'); assert.equal(cancelledTurn.reason.code, 'agent_cancelled');
   assert.equal(ui.view().phase, 'unknown'); assert.equal(f.calls.length, 2);
 });
 
