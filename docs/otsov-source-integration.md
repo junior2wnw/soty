@@ -53,4 +53,3 @@ Source SQLite → ProjectStore → исходная receipt → Root readProof. 
 handoff в этой проверке synthetic; боевой Root HTTP не проверялся.
 Действующее размещение и вход OTsov из Сот требуют отдельной проверки
 установленного соединения.
-

@@ -50,4 +50,3 @@ export function createSelectedOtsovSourceApplications(rawScope) {
         revision: integer(1), contentHash: text(64) }) } }),
   ]);
 }
-

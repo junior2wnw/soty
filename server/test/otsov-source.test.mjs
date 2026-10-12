@@ -176,4 +176,3 @@ test('lost native receipt and mismatched original digest never claim completion'
     else await assert.rejects(row.adapter.readProof(req, signal()));
   }
 });
-
