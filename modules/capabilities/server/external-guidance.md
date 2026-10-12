@@ -20,6 +20,13 @@ digest. A stale reference fails instead of returning replacement instructions.
 No package is installed, no URL is fetched and no Source action is executed.
 There is no per-request or persistent copy of returned private content.
 
+The personal Soty assistant also receives attached instructions in its existing
+`source_catalog` response. It uses the same exact capability and current user
+authority as the HTTP/MCP readers. One catalog includes at most eight documents
+and 16 KiB of guidance; `guidanceHasMore` reports omitted content. Large guides
+remain accessible through the standard guidance readers. This metadata step
+does not execute an application action or install an additional MCP server.
+
 Content remains application data. It cannot create a grant, extend a recipient,
 change the selected workspace, override the human's instructions, or authorize
 expenses. The tool descriptions and the returned `authority: application-data`

@@ -323,7 +323,7 @@ test('actual Root HTTP preserves unknown ACK and stable no-redispatch semantics'
   assert.equal(JSON.stringify(retry).includes('private_fixture_payload'), false);
 });
 
-async function sourceFixture(t, { count = 1 } = {}) {
+async function sourceFixture(t, { count = 1, guidance } = {}) {
   const f = await fixture(t); await f.restart({ universalAppsEnabled: true });
   const source = createServer((_req, res) => res.end('Synthetic Source contract fixture'));
   await new Promise(done => source.listen(0, '127.0.0.1', done));
@@ -355,6 +355,7 @@ async function sourceFixture(t, { count = 1 } = {}) {
   }, query(_request, _signal, current) { current(); sourceReads++; return { text: 'Private scoped Source result' }; } });
   const capabilityIds = Array.from({ length: count }, (_, index) => `app.${appId}:read${index + 1}`), resources = capabilityIds.map(id => id + ':selected');
   const entries = capabilityIds.map((capabilityId, index) => ({ appId, target: { revision: pin.revision, digest: pin.digest }, adapter,
+    ...(guidance ? { guidance } : {}),
     catalog: { capabilityId, version: 1, appId, title: `Selected Source read ${index + 1}`, description: 'Read one independently authorized Source resource',
       visibility: 'private', executionEnabled: true, inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       outputSchema: { type: 'object', properties: { text: { type: 'string', maxLength: 1000 } }, required: ['text'], additionalProperties: false },
@@ -386,6 +387,35 @@ async function sourceFixture(t, { count = 1 } = {}) {
   await f.restart({ universalAppsEnabled: true, capabilityAudience: f.origin, ...installed.httpOptions, personalAgent });
   return { f, references, reference, entries, grant, issued, reads: () => sourceReads, setNativeAllowed(value) { sourceAllowed = value; } };
 }
+
+test('personal agent receives app skills as bounded data through the current authorized catalog', { timeout: 20000 }, async t => {
+  const content = await readFile(new URL('../../integrations/agent-skills/otsov-app-builder/SKILL.md', import.meta.url), 'utf8');
+  const source = await sourceFixture(t, { guidance: [{ kind: 'skill', language: 'en', title: 'Create with the existing app',
+    summary: 'Use the application tools in the current account.', content }] }), { f, grant } = source;
+  const result = await f.turn(f.alice, 'guidance_catalog_1', 'Catalog sources');
+  assert.equal(result.ok, true, result.error?.code);
+  const item = result.evidence[0].data.items[0];
+  assert.equal(item.guidance.length, 1); assert.equal(item.guidanceHasMore, false);
+  assert.equal(item.guidance[0].content, content); assert.equal(item.guidance[0].authority, 'application-data');
+  assert.deepEqual(item.guidance[0].contract, source.reference);
+  assert.equal(source.reads(), 0, 'discovery discloses instructions without invoking the application');
+  const foreign = await f.turn(f.bob, 'guidance_foreign_1', 'Catalog sources');
+  assert.equal(foreign.ok, true); assert.equal(foreign.evidence[0].data.items.length, 0);
+  assert.equal(JSON.stringify(foreign).includes(content), false);
+  const barrier = f.hold(true), pending = f.turn(f.alice, 'guidance_revoke_01', 'Catalog sources');
+  await barrier.entered.promise;
+  assert.equal((await f.call(f.alice, 'access.grants.revoke', { expectedAccountId: f.a.accountId, grantId: grant.id })).ok, true);
+  barrier.release.resolve(); assert.equal((await pending).ok, false, 'revocation prevents delivery of used instructions');
+});
+
+test('large app instructions do not overflow the personal agent catalog budget', { timeout: 20000 }, async t => {
+  const source = await sourceFixture(t, { guidance: [{ kind: 'skill', language: 'en', title: 'Long application guide',
+    summary: 'Available through the standard application guidance endpoint.', content: 'x'.repeat(17000) }] });
+  const result = await source.f.turn(source.f.alice, 'guidance_budget_1', 'Catalog sources');
+  assert.equal(result.ok, true, result.error?.code);
+  const item = result.evidence[0].data.items[0];
+  assert.deepEqual(item.guidance, []); assert.equal(item.guidanceHasMore, true); assert.equal(source.reads(), 0);
+});
 
 test('actual registered Root Source query tool preserves independent Source denial and foreign app isolation', { timeout: 20000 }, async t => {
   const source = await sourceFixture(t), { f, grant } = source;
