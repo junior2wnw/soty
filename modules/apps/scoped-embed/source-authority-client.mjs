@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 const verifiedRoot = new WeakMap();
 let jose;
-const maintainedJose = () => jose ??= import(pathToFileURL(createRequire(createRequire(import.meta.url).resolve('openid-client')).resolve('jose')).href);
+const maintainedJose = () => jose ??= import(/* @vite-ignore */ pathToFileURL(createRequire(createRequire(import.meta.url).resolve('openid-client')).resolve('jose')).href);
 export function isVerifiedRootContext(proof) { const row=verifiedRoot.get(proof);return !!row&&row.expiresAt>row.clock(); }
 export function readVerifiedRootContext(proof, profileDigest) {
   need(isVerifiedRootContext(proof)&&proof.profileDigest===profileDigest,'source_root_witness_invalid',403);return proof;
