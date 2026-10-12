@@ -1,4 +1,5 @@
 import { capture, closed, connector, approvedOrigin, identifier, pin, sha, hash, need } from './profile.mjs';
+import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 
 export const SELECTED_RESOURCE_PROFILE = 'soty.selected-human-embed.v2';
 export const RESOURCE_SOURCE_PROOF = 'soty.selected-source-request.v2';
@@ -36,7 +37,12 @@ export function selectedResourceProfile(input) {
   need(Number.isSafeInteger(value.target.revision) && value.target.revision > 0); sha(value.target.digest);
   pin(value.sourceProfile); selectedResource(value.resource); need(value.resource.appId === value.appId);
   approvedOrigin(value.embedOrigin); approvedOrigin(value.nativeOrigin); approvedOrigin(value.parentOrigin);
-  need(new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname && value.parentOrigin !== value.embedOrigin);
+  // The Root-signed workspace has no cross-origin RP handoff. It can reuse an
+  // application's existing exact origin; legacy RP profiles keep isolation.
+  const sameOriginWorkspace = isRootSignedWorkspaceSource(value.sourceProfile)
+    && value.resource.selection.kind === 'soty.workspace.v1' && value.nativeOrigin === value.embedOrigin;
+  need((new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace)
+    && value.parentOrigin !== value.embedOrigin);
   const issuer = new URL(value.issuer);
   need(issuer.href === value.issuer && issuer.pathname === '/human-identity' && issuer.origin === value.parentOrigin
     && !issuer.search && !issuer.hash);

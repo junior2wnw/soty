@@ -158,9 +158,15 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
   const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId, ...(instanceId === undefined ? {} : { instanceId }) });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
-  function capture(value, requested, url) {
-    const entry = validateAppEntry(value, requested, shellUrl, url);
-    requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin && selected.path === entry.path), 'invalid_app_entry');
+  function capture(value, requested, url, binding) {
+    // A signed launch may replace the historical default only for the exact Root-SSO pin.
+    // Offline resolution and every other deep link keep the strict entry contract.
+    const savedRootEntry = requested.path === '/' && value?.path === '/embed'
+      && binding?.profile === 'soty.selected-human-embed.v2' && binding.source?.id === 'soty.standard-workspace'
+      && binding.source.version === 2 && binding.source.digest === '4c4a40af5208d2a71320f358da67a1d6be121475d2b3796a55ad1cbaa137a833';
+    const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl, url);
+    requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin
+      && (selected.path === entry.path || (savedRootEntry && selected.path === '/'))), 'invalid_app_entry');
     selected = entry;
   }
   async function issue(initial,external=false,requireSameBinding=false) {
@@ -185,7 +191,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
           &&['id','version','digest'].every(key=>binding.source[key]===scopedBefore.source[key])
         :sameAppLaunchBinding(originalBinding,provenance)),'app_launch_source_changed');
       const url = validateAppLaunchUrl(result?.url, shellUrl);
-      capture(result?.entry, intended, url);
+      capture(result?.entry, intended, url, binding);
       if(!bindingPinned&&!external){originalBinding=provenance;bindingPinned=true;}
       if(!external){const previous=scoped;scoped=binding;abandon(previous);}
       return url;

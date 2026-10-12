@@ -216,3 +216,36 @@ test('stable main/widget locator survives a new launch without becoming a route 
     assert.equal(formatAppLaunchRoute(target).includes(instanceId),false);launcher.dispose();
   }
 });
+
+
+test('saved root entry follows only exact workspace2 into embed and retains its identity and instance', async () => {
+  for (const preResolved of [false, true]) {
+    const calls = [], closed = [], origin = 'https://demo.apps.example'; let upgrade = !preResolved;
+    const launcher = createAppLauncher({ target: { appId, domainId, path: '/' }, accountId: 'account-a', instanceId: 'main', shellUrl,
+      isCurrent: () => true, request: async args => { calls.push(args); const path = upgrade ? '/embed' : '/';
+        return { ...(upgrade ? scopedReply() : {}), url: `${origin}/_soty/boot?path=${encodeURIComponent(path)}#${'A'.repeat(43)}`,
+          entry: { appId, domainId, origin, path }, ...(upgrade ? { scopedCleanup: () => { closed.push(true); } } : {}) }; } });
+    if (preResolved) { await launcher.launch(); assert.equal(launcher.entry().path, '/'); upgrade = true; }
+    await launcher.launch(); assert.deepEqual(launcher.entry(), { appId, domainId, origin, path: '/embed' });
+    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/', expectedAccountId: 'account-a', instanceId: 'main' });
+    const pin = launcher.scopedCapture().source;
+    await launcher.launch({ requireSameBinding: true });
+    assert.deepEqual(calls.at(-1), { appId, domainId, path: '/embed', expectedAccountId: 'account-a', instanceId: 'main' });
+    assert.deepEqual(launcher.scopedCapture().source, pin); launcher.dispose();
+  }
+});
+
+test('saved root compatibility rejects older pins, changed locations and non-root deep links', async () => {
+  const origin = 'https://demo.apps.example';
+  for (const change of [ { scopedSource: { ...scopedReply().scopedSource, version: 1 } },
+    { scopedSource: { ...scopedReply().scopedSource, digest: '0'.repeat(64) } }, { runtimeProfile: 'soty.selected-human-embed.v1' },
+    { entry: { appId: `app-${'f'.repeat(32)}`, domainId, origin, path: '/embed' } },
+    { entry: { appId, domainId: `dom_${'f'.repeat(32)}`, origin, path: '/embed' } }, { requestedPath: '/?x=1' }, { requestedPath: '/board' } ]) {
+    let closed = 0; const { requestedPath = '/', ...response } = change;
+    const launcher = createAppLauncher({ target: { appId, domainId, path: requestedPath }, accountId: 'account-a', shellUrl,
+      isCurrent: () => true, request: async () => ({ ...scopedReply(), url: `${origin}/_soty/boot?path=%2Fembed#${'A'.repeat(43)}`,
+        entry: { appId, domainId, origin, path: '/embed' }, scopedCleanup: () => { closed++; }, ...response }) });
+    await assert.rejects(launcher.launch(), { code: 'invalid_app_entry' }); assert.equal(launcher.entry(), null);
+    assert.equal(closed, 1); launcher.dispose();
+  }
+});

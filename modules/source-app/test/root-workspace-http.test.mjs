@@ -19,7 +19,7 @@ const random=()=>randomBytes(32).toString('base64url');
 
 // Real RSA/JWKS HTTP, connector MAC, BFF, encrypted SQLite and final Native TX.
 // This issuer is synthetic; the separate Human/Apps gate tests actual Root signing.
-async function fixture(t,portable=false,{crossBrand=false}={}){
+async function fixture(t,portable=false,{crossBrand=false,sameOrigin=false}={}){
   const directory=await mkdtemp(join(tmpdir(),'root-workspace-http-'));let sdk=source;
   if(portable){await buildSourceAppPackage({outdir:directory});await mkdir(join(directory,'node_modules'));
     await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules/openid-client'),process.platform==='win32'?'junction':'dir');
@@ -48,7 +48,7 @@ async function fixture(t,portable=false,{crossBrand=false}={}){
   profile=selectedResourceProfile({schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'fixture',hostDeviceId:'host',connectorId:'connector'},
     target:{revision:1,digest:'1'.repeat(64)},sourceProfile:sdk.STANDARD_ROOT_WORKSPACE_SOURCE,
     resource:{registryId:'soty',environmentId:'fixture',tenantId:'owner',appId,resourceId:'space',selection:{kind:'soty.workspace.v1',nativeId:'space',incarnationId:'one'}},
-    issuer,clientId:'native-existing',embedOrigin:origin,nativeOrigin:origin.replace('127.0.0.1','localhost'),parentOrigin:new URL(issuer).origin});
+    issuer,clientId:'native-existing',embedOrigin:origin,nativeOrigin:sameOrigin?origin:origin.replace('127.0.0.1','localhost'),parentOrigin:new URL(issuer).origin});
   const newContext=()=>{context={schema:'soty.verified-launch-continuation.v2',reference:{id:random(),version:1,digest:randomBytes(32).toString('hex')},
     profileDigest:profile.digest,appId,sourceProfile:profile.sourceProfile,resource:profile.resource,instanceId:'main',rootPrincipal:{accountId:'root-person',deviceId:'root-device'},
     humanPrincipal:{issuer,subject:'root-subject',clientId:profile.clientId,clientProfileDigest:'2'.repeat(64),clientGeneration:1},
@@ -76,10 +76,10 @@ async function fixture(t,portable=false,{crossBrand=false}={}){
   const {digest: _profileDigest,...rawProfile}=profile;
   bff=sdk.createSourceAppBff({profile:rawProfile,transportKey:key,connectorPort:ipc.address().port,storage:store.storage,native,clock});
   const signer=createResourceSourceProofSigner({profile,key,clock});let token;
-  async function request(path='/api/embed/session-continue'){
+  async function request(path='/api/embed/session-continue',{transport=true}={}){
     rootReads=0;
     const body=Buffer.from(JSON.stringify(path.endsWith('/query')?{requestId:'root-workspace-query',input:{operation:'soty.current_context'}}:{requestId:'root-workspace-continue'})),cookie=token?'soty_rp_session='+token:'';
-    const response=await fetch(origin+path,{method:'POST',headers:{origin,'content-type':'application/json',...(cookie?{cookie}:{}),...signer.headers({context,method:'POST',path,body,cookie})},body});
+    const response=await fetch(origin+path,{method:'POST',headers:{origin,'content-type':'application/json',...(cookie?{cookie}:{}),...(transport?signer.headers({context,method:'POST',path,body,cookie}):{})},body});
     const set=response.headers.get('set-cookie');if(set)token=set.split(';')[0].split('=')[1];return{status:response.status,body:await response.json(),cookie:!!set};}
   t.after(async()=>{store.close();
     await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:40});});
@@ -99,6 +99,19 @@ for(const portable of [false,true])test('Root witness workspace short-session bo
 test('valid connector MAC cannot substitute independent Root signature/challenge/context/TTL; Native revoke denies',async t=>{
   const f=await fixture(t);for(const mode of ['unsigned','MAC-forged','challenge','audience','long']){f.setMode(mode);assert.ok((await f.request()).status>=400);assert.equal(f.commits(),0);}
   f.setMode('');f.revokeNative();assert.ok((await f.request()).status>=400);assert.equal(f.commits(),0);
+});
+for(const portable of [false,true])test('same existing Native origin admits only the Root-signed workspace, not cookies or forged authority '+(portable?'portable SDK':'Source'),async t=>{
+  const f=await fixture(t,portable,{sameOrigin:true});
+  const {digest: _profileDigest,...raw}=f.profile;
+  assert.throws(()=>selectedResourceProfile({...raw,sourceProfile:source.STANDARD_WORKSPACE_SOURCE}));
+  assert.throws(()=>selectedResourceProfile({...raw,sourceProfile:{...source.STANDARD_ROOT_WORKSPACE_SOURCE,digest:'0'.repeat(64)}}));
+  assert.throws(()=>selectedResourceProfile({...raw,nativeOrigin:raw.nativeOrigin.replace(/:\d+$/u,':1')}));
+  assert.throws(()=>selectedResourceProfile({...raw,parentOrigin:raw.embedOrigin,issuer:raw.embedOrigin+'/human-identity'}));
+  for(const mode of ['unsigned','MAC-forged']){f.setMode(mode);assert.ok((await f.request()).status>=400);assert.equal(f.commits(),0);}
+  f.setMode('');assert.equal((await f.request()).status,200);assert.equal(f.commits(),1);
+  assert.equal((await f.request('/api/embed/query')).body.data.title,'Native field');
+  assert.ok((await f.request('/api/embed/query',{transport:false})).status>=400,'ambient cookie is not Source authority');
+  f.closeRoot();assert.ok((await f.request('/api/embed/query')).status>=400);
 });
 test('portable SDK proof cannot cross another SDK brand; HTTP creates no Native anchor or Source session',async t=>{
   const f=await fixture(t,true,{crossBrand:true});const response=await f.request();assert.ok(response.status>=400);assert.equal(f.commits(),0);

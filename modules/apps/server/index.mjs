@@ -551,7 +551,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
       const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
       assertRuntimeBinding(decision, { requireReady: true });
-      const { entryPath, bootPath } = createLaunchPath(args.path ?? decision.route.entryPath);
+      // Saved main/widget root entries follow only an explicitly admitted Root-SSO workspace.
+      const savedRootEntry = args.path === '/' && decision.route.entryPath === '/embed' && selectedRuntimeProfile(decision.profile)
+        && isRootSignedWorkspaceSource(scopedAdmissions.require(targetTuple(activeTarget(id))).sourceProfile);
+      const { entryPath, bootPath } = createLaunchPath(savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();

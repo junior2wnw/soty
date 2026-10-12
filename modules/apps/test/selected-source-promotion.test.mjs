@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import WebSocket from 'ws';
+import { createAppsService } from '../server/index.mjs';
+import { STANDARD_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
 import { migrateAppsSchema, inspectAppsSchema, ensureInitialPublication, ensureCanonicalDomain, runtimeTargetDigest } from '../server/schema.mjs';
 import { createPublicationRegistry } from '../server/publications.mjs';
 import { createSourceRegistry } from '../server/sources.mjs';
@@ -9,9 +16,9 @@ import { HIVE_SELECTED_SOURCE } from '../scoped-embed/resource-route-adapters.mj
 
 // Actual Apps DDL/SourceRegistry/Publication/ScopedAdmission, all in OWN synthetic SQLite.
 // Constructor-owned actor/channel fixture ports are not Native or public-body authority.
-function fixture(t, version = 8, profileVersion = 2) {
-  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON');
-  migrateAppsSchema(db, { allowScopedEmbedMigration: version >= 7, allowSelectedResourceMigration: version >= 8 });
+function fixture(t, version = 8, profileVersion = 2, options = {}) {
+  const db = new DatabaseSync(options.databasePath ?? ':memory:'); db.exec('PRAGMA foreign_keys=ON');
+  migrateAppsSchema(db, { legacyTemplate: options.template ?? '', allowScopedEmbedMigration: version >= 7, allowSelectedResourceMigration: version >= 8 });
   assert.equal(inspectAppsSchema(db), 'v' + version);
   const owner = Object.freeze({ accountId: 'synthetic_owner', deviceId: 'synthetic_browser' });
   const appId = 'app-' + 'a'.repeat(32), identity = { linkId: 'synthetic_link', hostDeviceId: 'synthetic_host', connectorId: 'synthetic_connector' };
@@ -22,7 +29,7 @@ function fixture(t, version = 8, profileVersion = 2) {
   db.prepare('INSERT INTO local_apps VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(appId, owner.accountId, connectorKey, 'Preserved project', 63345, '/', JSON.stringify(grants), 'enabled', 1, 1, 1);
   db.prepare('INSERT INTO local_app_grants VALUES(?,?,?)').run(appId, 'account', grants.accountIds[0]);
   const app = db.prepare('SELECT * FROM local_apps WHERE id=?').get(appId);
-  ensureCanonicalDomain(db, app, ''); ensureInitialPublication(db, app); db.exec('COMMIT');
+  ensureCanonicalDomain(db, app, options.template ?? ''); ensureInitialPublication(db, app); db.exec('COMMIT');
   let active = true, clock = 100000, probeCalls = 0, notify;
   const assertActor = actor => {
     if (!active || actor.accountId !== owner.accountId || actor.deviceId !== owner.deviceId) throw Object.assign(Error('apps_authentication_required'), { code: 'apps_authentication_required', status: 401 });
@@ -31,10 +38,10 @@ function fixture(t, version = 8, profileVersion = 2) {
     entryPath: '/embed', profile: 'soty.selected-human-embed.v' + profileVersion };
   target.digest = runtimeTargetDigest(target);
   const profile = { schema: target.profile, appId, connector: identity, target: { revision: target.revision, digest: target.digest },
-    sourceProfile: profileVersion === 2 ? { ...HIVE_SELECTED_SOURCE } : { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) },
+    sourceProfile: options.pin ?? (profileVersion === 2 ? { ...HIVE_SELECTED_SOURCE } : { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) }),
     resource: { registryId: 'soty', tenantId: owner.accountId, appId, environmentId: 'production', resourceId: 'selected',
-      ...(profileVersion === 2 ? { selection: { kind: 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
-    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: 'https://selected.apps.test',
+      ...(profileVersion === 2 ? { selection: { kind: options.pin ? 'soty.workspace.v1' : 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
+    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test',
     nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
   const admissions = createScopedAdmissionRegistry({ db, profiles: [profile], clock: () => clock });
   const publications = createPublicationRegistry({ db, now: () => clock, assertActor, canUse: actor => actor.accountId === owner.accountId });
@@ -54,7 +61,7 @@ function fixture(t, version = 8, profileVersion = 2) {
   const promote = args => sources.execute({ op: 'apps.source.promote', actor: owner, args });
   const rows = () => Object.fromEntries(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all()
     .map(({ name }) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
-  return { db, admissions, target, appId, get, rows, prepare, intent, promote, probeCalls: () => probeCalls,
+  return { db, admissions, target, appId, profile, owner, identity, get, rows, prepare, intent, promote, probeCalls: () => probeCalls,
     reopen() { sources.close(); sources = openSources(); }, revoke() { active = false; }, advance() { clock += 60000; },
     notify(work) { notify = work; }, history() { return sources.execute({ op: 'apps.source.history', actor: owner, args: { appId } }); } };
 }
@@ -120,4 +127,48 @@ test('valid Apps8 preparation still requires current owner and exact target/poli
   assert.throws(() => f.promote({ ...args, expectedPolicyEpoch: 2 }), { code: 'app_publication_revision_conflict' });
   f.revoke(); assert.throws(() => f.promote(args), { code: 'apps_authentication_required', status: 401 });
   assert.deepEqual(f.rows(), before);
+});
+
+
+test('actual Apps launch maps a saved root path only for admitted workspace2, preserving actor and immutable target', async t => {
+  for (const pin of [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE]) await t.test('workspace' + pin.version, async sub => {
+    const directory = mkdtempSync(join(tmpdir(), 'soty-saved-entry-')), databasePath = join(directory, 'apps.sqlite');
+    const template = 'https://{appId}.apps.test', f = fixture(sub, 8, 2, { databasePath, template, pin });
+    f.promote(f.intent(await f.prepare())); const before = f.rows();
+    let active = true;
+    const service = createAppsService({ databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
+      allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile],
+      withAuthorityFence: callback => callback(),
+      actorActive: actor => active && actor.accountId === f.owner.accountId && actor.deviceId === f.owner.deviceId,
+      authenticateConnector: async auth => auth.token === 'synthetic-channel-token' && auth.linkId === f.identity.linkId
+        && auth.deviceId === f.identity.hostDeviceId && auth.connectorId === f.identity.connectorId,
+      signSourceAuthority: async () => { throw Error('launch_does_not_issue_identity_witness'); },
+      withHumanSubjectAuthority: ({ actor, issuer, clientId }, callback) => {
+        assert.equal(actor, f.owner); assert.ok(active); return callback({ issuer, clientId, subject: 'synthetic-subject', clientGeneration: 1, clientProfileDigest: 'c'.repeat(64) }); } });
+    const peers = new Set(), server = createServer(); server.on('connection', socket => { peers.add(socket); socket.once('close', () => peers.delete(socket)); }); server.on('upgrade', (req, socket, head) => { if (!service.handleUpgrade(req, socket, head)) socket.destroy(); });
+    await new Promise(done => server.listen(0, '127.0.0.1', done));
+    const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/apps/channel`);
+    sub.after(async () => { ws.terminate(); service.close(); for (const peer of peers) peer.destroy(); await new Promise(done => server.close(done)); rmSync(directory, { recursive: true, force: true }); });
+    ws.on('error', () => {});
+    // Actual channel with a controlled connector ACK, not an upstream health assertion.
+    ws.on('message', bytes => { const frame = JSON.parse(bytes);
+      if (frame.type === 'binding-set') ws.send(JSON.stringify({ type: 'binding-ack', channelId: frame.channelId, syncId: frame.syncId,
+        appId: frame.target.appId, revision: frame.target.revision, digest: frame.target.digest, profile: frame.target.profile })); });
+    await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
+    ws.send(JSON.stringify({ type: 'auth', schema: 'soty.apps-channel.v1', ...f.identity, token: 'synthetic-channel-token',
+      capabilities: { targetBindingVersions: [1, 2], runtimeProfiles: ['soty.relay-restricted.v1', f.profile.schema] } }));
+    const call = args => service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main', ...args } });
+    const deadline = Date.now() + 3000; let initial;
+    while (!initial) { try { initial = call({ path: '/embed' }); } catch (error) {
+      if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
+      await new Promise(done => setTimeout(done, 5)); } }
+    if (pin.version === 2) {
+      const launched = call({ domainId: initial.entry.domainId, path: '/' });
+      assert.deepEqual(launched.entry, initial.entry); assert.equal(launched.entry.path, '/embed');
+      assert.deepEqual(launched.scopedSource, pin); assert.equal(new URL(launched.launchUrl).searchParams.get('path'), '/embed');
+    } else assert.throws(() => call({ path: '/' }), { code: 'app_scoped_admission_required' });
+    for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
+    active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
+    assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');
+  });
 });
