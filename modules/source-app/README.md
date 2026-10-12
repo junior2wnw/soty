@@ -430,3 +430,22 @@ returning to such a binary, use an explicit owner publication CAS to make the
 selected target restricted/unlisted (or explicitly return to a qualified relay
 target), while the new reader still serves. Keep the live database; do not
 restore an old database snapshot as a rollback shortcut.
+
+### Same-origin main window and widgets
+
+For workspace@2, Root boot supplies `/embed?sotyFrame=<public-locator>` and a
+separate HttpOnly cookie for each frame. Wrap the application's existing Source
+fetcher with `createSourceFrameFetch({fetch: existingFetcher})` from the browser
+SDK; use that same wrapper for session checks, editor calls and feedback. It
+adds `x-soty-frame` only to same-origin `/api/embed/*` requests. It creates no
+credential and changes no business DTO or Source profile pin. Standalone pages
+without the query retain their original fetcher.
+
+Root consumes the selector and verifies the exact cookie, actor, app, target
+and live scoped record before forwarding. Hidden renewal keeps the locator
+and changes only that frame's cookie after its existing Source ACK/CAS. Main
+and widget remain separate even though the browser shares one origin cookie
+jar. Native `/embed` may remain an ordinary static entry; no extra proxy route
+is needed for that page. Any direct Native fallback must strip both
+`__Host-soty_app_session` and `__Host-soty_app_session_<43 base64url>` cookies,
+and the `x-soty-frame` header. These Root credentials must never reach Native.

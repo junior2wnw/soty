@@ -148,13 +148,14 @@ function pageClient(config, allowPath) {
       ? (Object.hasOwn(config.errorStates, error.status) ? config.errorStates[error.status] : 'unavailable') : fallback;
     show(state || (error?.code === 'cookie_check' ? 'cookie' : responseState));
   }
-  async function requestJson(method, body, sessionCheck) {
+  async function requestJson(method, body, sessionCheck, frame) {
     const controller = new AbortController(); controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 10_000);
     try {
       const headers = { Accept: 'application/json' };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
       if (sessionCheck !== undefined) headers['X-Soty-Boot-Check'] = sessionCheck;
+      if (frame !== undefined) headers['X-Soty-Frame'] = frame;
       const response = await fetch('/_soty/session', { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
         headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controller.signal });
       const value = await response.json();
@@ -176,16 +177,17 @@ function pageClient(config, allowPath) {
       if (offPage || generation !== currentGeneration) return;
       const path = allowPath(issued.entryPath);
       if (!path || typeof issued.sessionCheck !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(issued.sessionCheck)) throw { code: 'cookie_check' };
+      if(issued.frame!==undefined&&(!config.scoped||typeof issued.frame!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.frame)))throw{code:'cookie_check'};
       show('checking', true);
       checkingCookie = true;
-      const checked = await requestJson('GET', undefined, issued.sessionCheck);
+      const checked = await requestJson('GET', undefined, issued.sessionCheck, issued.frame);
       if (offPage || generation !== currentGeneration) return;
       if (checked.sessionCheck !== issued.sessionCheck) throw { code: 'cookie_check' };
       if(config.scoped){
         if(typeof issued.scopedRequestId!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.scopedRequestId))throw{code:'app_scoped_context_closed'};
         let ready=false;
         try{const response=await fetch('/api/embed/session-continue',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',
-          headers:{'content-type':'application/json',...(config.renewal?{'x-soty-boot-check':issued.sessionCheck}:{})},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
+          headers:{'content-type':'application/json',...(issued.frame?{'x-soty-frame':issued.frame}:{}),...(config.renewal?{'x-soty-boot-check':issued.sessionCheck}:{})},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
           const bytes=await response.arrayBuffer();if(bytes.byteLength>1024)throw{code:'app_scoped_continue_invalid'};
           const value=JSON.parse(new TextDecoder().decode(bytes));
           if(config.renewal&&(!response.ok||value.schema!=='soty.source-session-continuation.v1'||typeof value.ready!=='boolean'))throw{code:'app_scoped_continue_unknown'};
@@ -195,7 +197,7 @@ function pageClient(config, allowPath) {
         if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};
           window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
       }
-      show('opening', true); navigate(path, currentGeneration);
+      show('opening', true); navigate(issued.frame?path+'?sotyFrame='+issued.frame:path, currentGeneration);
     } catch (error) { if (!offPage && generation === currentGeneration) {
       if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
       failure(error,checkingCookie?'cookie':'network');

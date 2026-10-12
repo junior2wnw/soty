@@ -181,10 +181,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             :['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
               &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field])));
           if(!same){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
-          issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId};scopedRenewals.set(key,issued);
+          const previousSession=old?.session??[...sessions.values()].find(value=>value.scopedRecord?.context.reference.id===first.reference.id);
+          const frameId=isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined;
+          if(isRootSignedWorkspaceSource(first.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
+          issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId};scopedRenewals.set(key,issued);
         }
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
-        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId});
+        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
         return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
           runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
           scopedRenewalRequestId:args.requestId,
@@ -663,15 +666,28 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
     respondFailure(req, res, status, error, page);
   }
-  function primaryKey(req) {
-    const name = `__Host-${cookieName}`;
+  const frameRequests=new WeakMap();
+  function requestFrame(req) {return frameRequests.get(req);}
+  function parseRequestFrame(req) {
+    const header=req.headers['x-soty-frame'],url=new URL(req.url||'/', 'https://frame.invalid'),values=url.searchParams.getAll('sotyFrame');
+    assertApps(headerCount(req,'x-soty-frame')<=1&&values.length<=1,'app_frame_invalid',403);
+    const frame=header??values[0];
+    assertApps(frame===undefined||typeof frame==='string'&&/^[A-Za-z0-9_-]{43}$/u.test(frame)
+      &&(values.length===0||header===undefined||header===values[0]),'app_frame_invalid',403);
+    return frame;
+  }
+  function primaryKey(req, frame=requestFrame(req)) {
+    const name = `__Host-${cookieName}${frame?'_'+frame:''}`;
     const values = String(req.headers.cookie || '').split(';').map(part => part.trim()).filter(part => part.split('=', 1)[0].trim() === name);
     assertApps(values.length<=1,'app_session_required',401);
     if(!values.length)return null;
     const token=values[0].slice(name.length+1);assertApps(/^[A-Za-z0-9_-]{43}$/u.test(token),'app_session_required',401);
     return digest(token);
   }
-  function primaryCookie(value) {return `__Host-${cookieName}=${value}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=3600`;}
+  function primaryCookie(value,frame) {return `__Host-${cookieName}${frame?'_'+frame:''}=${value}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=3600`;}
+  // The ordinary ingress cookie remains compatible. Private workspace traffic
+  // selects exactly one frame cookie; its public name conveys no authority.
+  function sessionCookies(value,session) {return session.family.frameId?[primaryCookie(value),primaryCookie(value,session.family.frameId)]:primaryCookie(value);}
   function retirePrimary(session) {if(session.family?.head===session.sessionKey){session.family.head=null;session.family.revision++;}}
   function discardCandidate(session){
     if(bootCandidates.get(session.checkDigest)===session)bootCandidates.delete(session.checkDigest);
@@ -679,13 +695,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     delete session.checkToken;if(session.promotion)delete session.promotion.token;
   }
   function sweepCandidates(){for(const session of bootCandidates.values())if(session.checkExpiresAt<=now()||sessions.get(session.sessionKey)!==session)discardCandidate(session);}
-  function checkCandidate(session,req,app){
+  function checkCandidate(session,req,app,frame=requestFrame(req)){
     const p=session?.promotion;
     assertApps(session&&p&&sessions.get(session.sessionKey)===session&&session.scopedRecord?.session===session
       &&session.checkExpiresAt>now()
       &&session.decision.appId===app.id&&session.decision.domainId===app.appHost.domainId&&session.decision.origin===app.appHost.origin,
       'app_scoped_candidate_changed',403);
-    const key=primaryKey(req);
+    assertApps(frame===session.family.frameId,'app_frame_invalid',403);
+    const key=primaryKey(req,frame);
     const familyCurrent=p.state==='promoted'?session.family.head===session.sessionKey
       :session.family.head===p.baseHead&&session.family.revision===p.baseRevision;
     if(!familyCurrent)discardCandidate(session);
@@ -702,7 +719,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     assertApps(session===stream.bootCandidateSession&&session.sessionKey===stream.session.sessionKey
       &&scopedGateway.sourceContext(session.scopedRecord)?.ready===true,'app_scoped_candidate_unconfirmed',403);
     if(p.state==='pending'){session.family.head=session.sessionKey;session.family.revision++;p.state='promoted';}
-    stream.res.setHeader('Set-Cookie',primaryCookie(p.token));
+    stream.res.setHeader('Set-Cookie',sessionCookies(p.token,session));
   }
   function sessionFor(req, app, { requireCookie = false } = {}) {
     const key=primaryKey(req);
@@ -713,6 +730,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const session = sessions.get(key);
     assertApps(session && session.decision.appId === app.id && session.decision.domainId === app.appHost.domainId && session.decision.origin === app.appHost.origin, 'apps_access_denied', 403);
     assertApps(session.promotion?.state!=='pending','app_scoped_candidate_unconfirmed',403);
+    const frame=requestFrame(req);
+    assertApps(!frame||session.family.frameId===frame&&session.family.head===key,'app_frame_invalid',403);
     checkAccess(session);
     return session;
   }
@@ -729,7 +748,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
     const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
     setPolicy(res, app.appHost.origin, selected);
-    const path = requestPath(req.url || '/');
+    const rootWorkspace=selected&&isRootSignedWorkspaceSource(scopedProfile.sourceProfile),frame=rootWorkspace?parseRequestFrame(req):undefined;
+    if(frame)frameRequests.set(req,frame);
+    let path=requestPath(req.url||'/');const frameUrl=new URL(path,app.appHost.origin);
+    if(rootWorkspace&&frameUrl.searchParams.has('sotyFrame')){
+      assertApps(frameUrl.pathname==='/embed'&&['GET','HEAD'].includes(req.method),'app_frame_invalid',403);
+      frameUrl.searchParams.delete('sotyFrame');
+      path=frameUrl.pathname+frameUrl.search;
+    }
+    assertApps(!rootWorkspace||!(['/embed'].includes(frameUrl.pathname)||frameUrl.pathname.startsWith('/api/embed/'))||frame,'app_frame_required',403);
     assertOrigin(req, app.appHost.origin, !['GET', 'HEAD'].includes(req.method));
     const internalUrl = new URL(path, app.appHost.origin);
     assertApps(req.headers['x-soty-boot-check']===undefined||path==='/_soty/session'&&req.method==='GET'
@@ -778,34 +805,37 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // mint a session. A stale app row or successful launch is not authority.
       const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
       assertRuntimeBinding(decision, { requireReady: true });
-      sweepCandidates();const previous=ticket.rebind?ticket.scopedRecord?.session:null,baseCookieKey=primaryKey(req);
+      const frameId=isRootSignedWorkspaceSource(ticket.scopedRecord?.context.sourceProfile)
+        ?ticket.frameId??ticket.scopedRecord.context.reference.id:undefined;
+      assertApps(!frame||frame===frameId,'app_frame_invalid',403);
+      sweepCandidates();const previous=ticket.rebind?ticket.scopedRecord?.session:null,baseCookieKey=primaryKey(req,frameId);
       let session,sessionCheck;
       if(previous?.promotion&&previous.checkExpiresAt>now()&&sessions.get(previous.sessionKey)===previous){
-        session=checkCandidate(previous,req,app);sessionCheck=session.checkToken;
+        session=checkCandidate(previous,req,app,frameId);sessionCheck=session.checkToken;
       }else{
         assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
         const value=secret(),sessionKey=digest(value);sessionCheck=secret();
-        let family={head:sessionKey,revision:0},promotion;
+        let family={head:sessionKey,revision:0,...(frameId?{frameId}:{})},promotion;
         if(ticket.rebind){
           assertApps(ticket.scopedRecord&&bootCandidates.size<256,'app_scoped_candidate_busy',429);
           const base=baseCookieKey?sessions.get(baseCookieKey):null;
           assertApps(!baseCookieKey||base&&base.decision.appId===app.id&&base.decision.domainId===app.appHost.domainId&&base.decision.origin===app.appHost.origin
-            &&base.family?.head!==null
+            &&base.family?.head!==null&&base.family.frameId===frameId
             &&JSON.stringify(base.scopedRecord?.context.rootPrincipal)===JSON.stringify(ticket.scopedRecord.context.rootPrincipal)
             &&JSON.stringify(base.scopedRecord?.context.humanPrincipal)===JSON.stringify(ticket.scopedRecord.context.humanPrincipal),'app_scoped_candidate_changed',403);
-          family=base?.family??{head:null,revision:0};
+          family=base?.family??{head:null,revision:0,...(frameId?{frameId}:{})};
           promotion={state:'pending',token:value,baseCookieKey,baseHead:family.head,baseRevision:family.revision};
         }
         session={decision,sessionKey,entryPath:ticket.entryPath,checkDigest:digest(sessionCheck),checkToken:sessionCheck,checkExpiresAt:now()+30_000,family,
           ...(ticket.scopedRecord?{scopedRecord:ticket.scopedRecord}:{}),...(promotion?{promotion}:{})};
         if(ticket.scopedRecord)scopedGateway.attach(ticket.scopedRecord,session);sessions.set(sessionKey,session);
         if(promotion)bootCandidates.set(session.checkDigest,session);
-        else res.setHeader('Set-Cookie',primaryCookie(value));
+        else res.setHeader('Set-Cookie',sessionCookies(value,session));
       }
       // CHIPS keys this session by both application host and embedding site.
       // A preview embedded in Soty does not depend on unrestricted third-party
       // cookies, and cannot reuse the session from an unrelated top-level site.
-      json(res, 200, { ok: true, entryPath: ticket.entryPath, sessionCheck,
+      json(res, 200, { ok: true, entryPath: ticket.entryPath, sessionCheck,...(frameId?{frame:frameId}:{}),
         ...(ticket.scopedRecord?{scopedRequestId:ticket.scopedRecord.context.reference.id}:{}),...(ticket.rebind?{renewal:true,renewalRequestId:ticket.renewalRequestId}:{}) }); return;
     }
     if (path === '/_soty/session' && req.method === 'DELETE') {
@@ -839,6 +869,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
+    stream.requestPath=path;
     stream.bootCandidate=candidate;
     if(candidate){stream.candidateApp=app;stream.bootCandidateSession=session;}
     res.once('close', () => closeStream(stream, 'app_client_closed'));
@@ -1307,7 +1338,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
             if(stream.scopedRecord) {
-              const profile=stream.scopedRecord.profile,routeDefinition=embedRoute(profile,stream.req.method,stream.req.url),route=routeDefinition.kind;
+              const profile=stream.scopedRecord.profile,routeDefinition=embedRoute(profile,stream.req.method,stream.requestPath??stream.req.url),route=routeDefinition.kind;
               if(routeDefinition.credentialFree&&frame.headers?.['retry-after']!==undefined){assertApps(frame.status===503&&frame.headers['retry-after']==='1','app_bad_head');stream.res.setHeader('Retry-After','1');}
               if(frame.auth!==undefined) {
                 assertApps(frame.auth?.kind==='start'?route==='auth-start'&&[200,302].includes(frame.status):frame.auth?.kind==='cancel'?route==='auth-start'&&frame.status===200:frame.auth?.kind==='continued'?route==='auth-continue'&&frame.status===200:frame.auth?.kind==='completion'&&route==='auth-callback'&&frame.status===200,'app_scoped_auth_invalid',403);
@@ -1339,7 +1370,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           assertApps(stream.head && !stream.receiving && frame.seq === stream.recvSeq + 1 && typeof frame.data === 'string' && frame.data.length <= CHUNK_BYTES * 4 / 3 + 4 && /^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data), 'app_bad_data');
           const chunk = Buffer.from(frame.data, 'base64'); assertApps(chunk.length <= CHUNK_BYTES, 'app_bad_data');
           stream.received += chunk.length;
-          const responseLimit=stream.scopedRecord?embedRoute(stream.scopedRecord.profile,stream.req.method,stream.req.url).responseBytes:LIMITS.responseBytes;
+          const responseLimit=stream.scopedRecord?embedRoute(stream.scopedRecord.profile,stream.req.method,stream.requestPath??stream.req.url).responseBytes:LIMITS.responseBytes;
           if (stream.kind !== 'ws' && stream.received > responseLimit) { closeStream(stream, 'app_response_too_large'); return; }
           stream.receiving = true; stream.recvSeq = frame.seq;
           if (stream.kind === 'ws') {

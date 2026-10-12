@@ -26,3 +26,5 @@ export function createSourceFeedbackInbox(options?:{api?:FeedbackClient;isCurren
   write(operation?:'reply'|'status'|'accept',status?:'in_progress'|'needs_action'|'ready_to_check'):Promise<boolean>;invalidate():void;dispose():void;
 };
 export {createSourceFeedbackProcessingClient} from './processing.mjs';
+/** Adds only a public frame locator to same-origin Source requests; never creates credentials. */
+export function createSourceFrameFetch(options?:{fetch?:typeof fetch;href?:string}):typeof fetch;

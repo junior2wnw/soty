@@ -148,9 +148,9 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     f.promote(intent); const before = f.rows();
     const outsider = Object.freeze({ accountId: 'new-ungranted-person', deviceId: 'new-person-browser' });
     const actors = [f.owner, outsider]; let humanSubjects = [], forwardedRequests = 0;
-    let active = true;
+    let active = true, clock=Date.now();
     const service = createAppsService({ databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
-      allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile],
+      allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile], now:()=>clock,
       withAuthorityFence: callback => callback(),
       actorActive: actor => active && actors.some(value => value.accountId === actor?.accountId && value.deviceId === actor?.deviceId),
       authenticateConnector: async auth => auth.token === 'synthetic-channel-token' && auth.linkId === f.identity.linkId
@@ -164,7 +164,19 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     sub.after(async () => { ws.terminate(); service.close(); for (const peer of peers) peer.destroy(); await new Promise(done => server.close(done)); rmSync(directory, { recursive: true, force: true }); });
     ws.on('error', () => {});
     // Actual channel with a controlled connector ACK, not an upstream health assertion.
+    const streams=new Map(),seen=[];let holdNext=false,heldReply;
     ws.on('message', bytes => { const frame = JSON.parse(bytes); if (frame.type === 'open') forwardedRequests++;
+      if(frame.type==='bound-open'){forwardedRequests++;streams.set(frame.id,frame);seen.push(frame);}
+      if(frame.type==='data')ws.send(JSON.stringify({type:'ack',id:frame.id,seq:frame.seq}));
+      if(frame.type==='end'&&streams.has(frame.id)){
+        const current=streams.get(frame.id),continued=current.path==='/api/embed/session-continue';
+        const ack={ready:true,renewable:true,sessionExpiresAt:current.context.expiresAt,accessExpiresAt:current.context.expiresAt,receiptDigest:'d'.repeat(64)};
+        const body=continued?{schema:'soty.source-session-continuation.v1',...ack}:{instanceId:current.context.instanceId,reference:current.context.reference.id,path:current.path};
+        const reply=()=>{ws.send(JSON.stringify({type:'head',id:frame.id,status:200,headers:{'content-type':'application/json'},...(continued?{auth:{kind:'continued',ack}}:{})}));
+          ws.send(JSON.stringify({type:'data',id:frame.id,seq:1,data:Buffer.from(JSON.stringify(body)).toString('base64')}));};
+        if(holdNext){holdNext=false;heldReply=reply;}else reply();
+      }
+      if(frame.type==='ack'&&streams.has(frame.id)){ws.send(JSON.stringify({type:'end',id:frame.id}));streams.delete(frame.id);}
       if (frame.type === 'binding-set') ws.send(JSON.stringify({ type: 'binding-ack', channelId: frame.channelId, syncId: frame.syncId,
         appId: frame.target.appId, revision: frame.target.revision, digest: frame.target.digest, profile: frame.target.profile })); });
     await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
@@ -175,6 +187,7 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     while (!initial) { try { initial = call({ path: '/embed' }); } catch (error) {
       if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
       await new Promise(done => setTimeout(done, 5)); } }
+    for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     if (pin.version === 2) {
       const launched = call({ domainId: initial.entry.domainId, path: '/' });
       assert.deepEqual(launched.entry, initial.entry); assert.equal(launched.entry.path, '/embed');
@@ -200,9 +213,68 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
         assert.equal(response.headers['set-cookie'], undefined);
       }
       assert.equal(forwardedRequests, 0, 'anonymous requests never reach Native or acquire a Source proof');
-
+      // A browser shares one cookie jar between same-origin main/widget frames.
+      // Interleave both POSTs before either GET; separate jars hide this race.
+      const jar = new Map();
+      const browser = (path, { body, headers = {}, cookie } = {}) => new Promise((done, reject) => {
+        const bytes = body === undefined ? null : Buffer.from(JSON.stringify(body));
+        const req = request({ hostname: '127.0.0.1', port: server.address().port, path,
+          method: bytes ? 'POST' : 'GET', headers: { Host: new URL(f.profile.embedOrigin).host,
+            Origin: f.profile.embedOrigin, Cookie: cookie ?? [...jar].map(([k, v]) => k + '=' + v).join('; '),
+            ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}), ...headers } }, res => {
+          const parts = []; res.on('data', part => parts.push(part)); res.once('end', () => {
+            for (const item of res.headers['set-cookie'] ?? []) { const pair = item.split(';')[0], at = pair.indexOf('='); jar.set(pair.slice(0, at), pair.slice(at + 1)); }
+            done({ status: res.statusCode, body: JSON.parse(Buffer.concat(parts)), headers: res.headers });
+          });
+        }); req.once('error', reject); req.end(bytes);
+      });
+      const main = call({ instanceId: 'main' }), widget = call({ instanceId: 'widget-12345678-1234-1234-1234-123456789abc' });
+      const boot = launch => browser('/_soty/session', { body: { ticket: new URL(launch.launchUrl).hash.slice(1) } });
+      const mainBoot = await boot(main), widgetBoot = await boot(widget);
+      assert.equal(mainBoot.status, 200); assert.equal(widgetBoot.status, 200);
+      const mainCheck = await browser('/_soty/session', { headers: { 'x-soty-frame': mainBoot.body.scopedRequestId, 'x-soty-boot-check': mainBoot.body.sessionCheck } });
+      const widgetCheck = await browser('/_soty/session', { headers: { 'x-soty-frame': widgetBoot.body.scopedRequestId, 'x-soty-boot-check': widgetBoot.body.sessionCheck } });
+      assert.equal(mainCheck.status, 200, 'main keeps its own session after widget boot in the SAME browser jar');
+      assert.equal(widgetCheck.status, 200);
+      assert.equal(mainBoot.body.frame,mainBoot.body.scopedRequestId);assert.equal(widgetBoot.body.frame,widgetBoot.body.scopedRequestId);
+      const read=frame=>browser('/api/embed/query',{body:{operation:'soty.current_context'},headers:{'x-soty-frame':frame}});
+      assert.equal((await read(mainBoot.body.frame)).body.instanceId,'main');
+      assert.equal((await read(widgetBoot.body.frame)).body.instanceId,'widget-12345678-1234-1234-1234-123456789abc');
+      assert.equal((await browser('/embed?sotyFrame='+mainBoot.body.frame)).body.path,'/embed','Root-only locator is removed before the closed Native route');
+      assert.equal(seen.at(-1).headers['x-soty-frame'],undefined);assert.equal(seen.at(-1).headers.cookie,undefined);
+      const ownCookie=frame=>'__Host-soty_app_session_'+frame;
+      const mainCookie=jar.get(ownCookie(mainBoot.body.frame)),widgetCookie=jar.get(ownCookie(widgetBoot.body.frame));
+      const denied=await browser('/api/embed/query',{body:{},headers:{'x-soty-frame':mainBoot.body.frame},cookie:ownCookie(mainBoot.body.frame)+'='+widgetCookie});
+      assert.equal(denied.status,403,'renaming a widget bearer under the main public name cannot change its authority');
+      assert.equal((await browser('/api/embed/query',{body:{}})).status,403,'last ordinary cookie never selects a private frame');
+      assert.equal((await browser('/api/embed/query',{body:{},headers:{'x-soty-frame':mainBoot.body.frame},cookie:''})).status,403);
+      assert.equal((await browser('/embed?sotyFrame='+mainBoot.body.frame,{headers:{'x-soty-frame':widgetBoot.body.frame}})).status,403);
+      assert.equal((await browser('/embed?sotyFrame='+mainBoot.body.frame+'&sotyFrame='+mainBoot.body.frame)).status,403);
+      const renewed=await service.sourcePreparationExtension.executeAsync({op:'apps.scoped.renew',actor:f.owner,args:{appId:f.appId,handle:main.scopedCloseHandle,requestId:'main-frame-renewal-1'}});
+      const pending=await boot(renewed);assert.equal(pending.status,200);assert.equal(pending.body.frame,mainBoot.body.frame,'renewal retains the visible frame locator');
+      assert.equal(pending.headers['set-cookie'],undefined);assert.equal(jar.get(ownCookie(mainBoot.body.frame)),mainCookie);
+      assert.equal((await read(mainBoot.body.frame)).body.reference,mainBoot.body.scopedRequestId,'visible main remains current before ACK');
+      const confirmed=await browser('/api/embed/session-continue',{body:{requestId:pending.body.scopedRequestId},headers:{'x-soty-frame':pending.body.frame,'x-soty-boot-check':pending.body.sessionCheck}});
+      assert.equal(confirmed.status,200);assert.equal(confirmed.body.ready,true);
+      assert.notEqual(jar.get(ownCookie(mainBoot.body.frame)),mainCookie);assert.equal(jar.get(ownCookie(widgetBoot.body.frame)),widgetCookie);
+      assert.equal((await read(mainBoot.body.frame)).body.reference,pending.body.scopedRequestId);
+      assert.equal((await read(widgetBoot.body.frame)).body.reference,widgetBoot.body.scopedRequestId);
+      service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:main.scopedCloseHandle}});
+      assert.equal((await read(mainBoot.body.frame)).status,200,'closing replaced main cannot retire its new family head');
+      holdNext=true;const late=read(widgetBoot.body.frame);
+      const heldDeadline=Date.now()+1500;
+      while(!heldReply){assert.ok(Date.now()<heldDeadline,'controlled Native reply was reached');await new Promise(done=>setTimeout(done,1));}
+      service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:widget.scopedCloseHandle}});
+      heldReply();assert.equal((await late).status,403,'late response cannot reopen the closed widget');
+      assert.equal((await read(widgetBoot.body.frame)).status,403);assert.equal((await read(mainBoot.body.frame)).status,200);
+      service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:renewed.scopedCloseHandle}});
+      assert.equal((await read(mainBoot.body.frame)).status,403,'both frames stay closed independently');
+      const fresh=await boot(call({instanceId:'main'}));assert.equal(fresh.status,200);
+      const beforeExpiry=seen.length;clock+=301000;const expired=await read(fresh.body.frame);
+      assert.ok([401,403].includes(expired.status),'frame selector never extends the Root lease');assert.equal(seen.length,beforeExpiry);
+      const next=await boot(call({instanceId:'main'}));assert.equal(next.status,200);active=false;
+      assert.ok([401,403].includes((await read(next.body.frame)).status));assert.equal(seen.length,beforeExpiry,'revoked actor never reaches Native');
     } else assert.throws(() => call({ path: '/' }), { code: 'app_scoped_admission_required' });
-    for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
     assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');
   });

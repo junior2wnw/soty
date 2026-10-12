@@ -317,3 +317,21 @@ test('only explicit verified ready:false is login_required; failed/invalid conti
     assert.equal(reply.unknown===true,!next.ok||(await next.json()).ready==='caller');
   }
 });
+
+test('workspace frame selector reaches cookie-check, continuation and entry; hidden renewal never navigates the visible frame',async()=>{
+  for(const renewal of [false,true]){
+    const frame='F'.repeat(43),issued={ok:true,entryPath:'/embed',sessionCheck,frame,scopedRequestId:'R'.repeat(43),
+      ...(renewal?{renewal:true,renewalRequestId:'synthetic-renewal-request'}:{})};
+    const env=browser(renderBootPage({shellUrl,scoped:true,renewal,parentOrigin:'https://soty.example'}),{framed:true,responses:[
+      response(issued),response({ok:true,sessionCheck}),response({schema:'soty.source-session-continuation.v1',ready:true})]});
+    await flush();await flush();
+    assert.equal(env.calls[0].options.headers['X-Soty-Frame'],undefined,'ticket supplies the initial private authority');
+    assert.equal(env.calls[1].options.headers['X-Soty-Frame'],frame);
+    assert.equal(env.calls[2].options.headers['x-soty-frame'],frame);
+    assert.deepEqual(JSON.parse(env.calls[2].options.body),{requestId:issued.scopedRequestId},'business/auth DTO is unchanged');
+    assert.deepEqual(env.navigations,renewal?[]:['/embed?sotyFrame='+frame]);
+    assert.equal(env.parentMessages.length,renewal?1:0);
+  }
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{responses:[response({ok:true,entryPath:'/embed',sessionCheck,frame:'invalid'})]});
+  await flush();assert.equal(env.calls.length,1);assert.deepEqual(env.navigations,[]);
+});
