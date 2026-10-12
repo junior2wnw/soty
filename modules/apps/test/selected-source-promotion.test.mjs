@@ -224,7 +224,7 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
             ...(bytes ? { 'content-type': 'application/json', 'content-length': bytes.length } : {}), ...headers } }, res => {
           const parts = []; res.on('data', part => parts.push(part)); res.once('end', () => {
             for (const item of res.headers['set-cookie'] ?? []) { const pair = item.split(';')[0], at = pair.indexOf('='); jar.set(pair.slice(0, at), pair.slice(at + 1)); }
-            done({ status: res.statusCode, body: JSON.parse(Buffer.concat(parts)), headers: res.headers });
+            const text=Buffer.concat(parts).toString('utf8');done({ status: res.statusCode, body: text?JSON.parse(text):null, headers: res.headers });
           });
         }); req.once('error', reject); req.end(bytes);
       });
@@ -261,14 +261,33 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal((await read(widgetBoot.body.frame)).body.reference,widgetBoot.body.scopedRequestId);
       service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:main.scopedCloseHandle}});
       assert.equal((await read(mainBoot.body.frame)).status,200,'closing replaced main cannot retire its new family head');
+      // The last ordinary/base cookie belongs to a subsequently closed widget.
+      const lastWidget=call({instanceId:'widget-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'});
+      assert.equal((await boot(lastWidget)).status,200);
+      service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:lastWidget.scopedCloseHandle}});
+      const closedOwnerBase=jar.get('__Host-soty_app_session'),outsideBoot=await boot(outside);
+      assert.equal(outsideBoot.status,200);
+      // A retained cookie from a different signed Root actor is not a fallback
+      // for the actor selected by the ordinary/base cookie.
+      jar.set('__Host-soty_app_session',closedOwnerBase);
       holdNext=true;const late=read(widgetBoot.body.frame);
       const heldDeadline=Date.now()+1500;
       while(!heldReply){assert.ok(Date.now()<heldDeadline,'controlled Native reply was reached');await new Promise(done=>setTimeout(done,1));}
       service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:widget.scopedCloseHandle}});
       heldReply();assert.equal((await late).status,403,'late response cannot reopen the closed widget');
       assert.equal((await read(widgetBoot.body.frame)).status,403);assert.equal((await read(mainBoot.body.frame)).status,200);
+      const ingress=()=>browser('/_soty/ingress-check',{headers:{'x-soty-ingress-app':f.appId,'x-soty-ingress-target':f.target.digest}});
+      assert.equal((await browser('/assets/lazy.js')).status,200,'a closed last widget cannot break a surviving main lazy asset');
+      assert.equal(seen.at(-1).context.instanceId,'main');assert.equal(seen.at(-1).headers.cookie,undefined);
+      assert.equal((await ingress()).status,204,'fixed Native ingress also requires a surviving exact-app frame');
+      assert.equal((await browser('/_soty/ingress-check',{headers:{'x-soty-ingress-app':'app-'+'f'.repeat(32),'x-soty-ingress-target':f.target.digest}})).status,403);
+      assert.equal((await browser('/_soty/ingress-check',{headers:{'x-soty-ingress-app':f.appId,'x-soty-ingress-target':'f'.repeat(64)}})).status,403);
+      assert.equal((await browser('/assets/lazy.js',{cookie:'__Host-soty_app_session='+'z'.repeat(43)+'; '+ownCookie(mainBoot.body.frame)+'='+jar.get(ownCookie(mainBoot.body.frame))})).status,403,'unknown base never borrows a valid frame');
+      assert.equal((await browser('/api/embed/query',{body:{}})).status,403,'asset/ingress fallback grants no private Source route');
       service.execute({op:'apps.scoped.close',actor:f.owner,args:{appId:f.appId,handle:renewed.scopedCloseHandle}});
       assert.equal((await read(mainBoot.body.frame)).status,403,'both frames stay closed independently');
+      assert.equal((await browser('/assets/lazy.js')).status,403);assert.equal((await ingress()).status,403,'closed-all denies ingress');
+      assert.equal((await read(outsideBoot.body.frame)).status,200,'another actor is still independently live, but was not borrowed');
       const fresh=await boot(call({instanceId:'main'}));assert.equal(fresh.status,200);
       const beforeExpiry=seen.length;clock+=301000;const expired=await read(fresh.body.frame);
       assert.ok([401,403].includes(expired.status),'frame selector never extends the Root lease');assert.equal(seen.length,beforeExpiry);

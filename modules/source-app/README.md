@@ -449,3 +449,13 @@ jar. Native `/embed` may remain an ordinary static entry; no extra proxy route
 is needed for that page. Any direct Native fallback must strip both
 `__Host-soty_app_session` and `__Host-soty_app_session_<43 base64url>` cookies,
 and the `x-soty-frame` header. These Root credentials must never reach Native.
+
+Only compiled credential-free assets and the fixed Native ingress check may
+use another live frame cookie when the ordinary/base frame has closed. The
+base cookie must still pass its own current publication check and fixes the
+exact actor/device, Human subject, app, profile, target and resource. A bounded
+scan considers only presented frame cookies with that same binding, then
+rechecks live Root authority. Closing all matching frames denies this path;
+a different account's surviving frame cannot supply authority. Private Source
+routes always require their explicit frame selector. Forwarded paths are not
+trusted as authority, and ingress returns no Source witness or business data.

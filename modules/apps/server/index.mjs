@@ -735,6 +735,28 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     checkAccess(session);
     return session;
   }
+  function publicFrameSession(req,app) {
+    // Only compiled credential-free assets and fixed Native ingress use this.
+    // The base cookie fixes the actor/app/target scope even after its frame closes;
+    // a different presented frame may supply liveness, never a different identity.
+    const base=sessionFor(req,app,{requireCookie:true});
+    if(requestFrame(req)){scopedGateway.context(base.scopedRecord);return base;}
+    const scope=context=>{const {reference,instanceId,expiresAt,...binding}=context;return scopedHash(binding);};
+    assertApps(isRootSignedWorkspaceSource(base.scopedRecord?.context.sourceProfile),'app_scoped_context_closed',403);
+    const binding=scope(base.scopedRecord.context);
+    const current=session=>{
+      if(!session?.family.frameId||session.family.head!==session.sessionKey||session.promotion?.state==='pending'
+        ||!session.scopedRecord||scope(session.scopedRecord.context)!==binding)return false;
+      try{checkAccess(session);scopedGateway.context(session.scopedRecord);return true;}
+      catch(error){if(![401,403].includes(error.status))throw error;return false;}
+    };
+    if(current(base))return base;
+    const frames=String(req.headers.cookie||'').split(';').map(part=>/^__Host-soty_app_session_([A-Za-z0-9_-]{43})=/u.exec(part.trim())?.[1]).filter(Boolean);
+    assertApps(frames.length<=SCOPED_EMBED_LIMITS.continuations&&new Set(frames).size===frames.length,'app_session_required',403);
+    for(const frame of frames){const session=sessions.get(primaryKey(req,frame));
+      if(session?.family.frameId===frame&&current(session))return session;}
+    assertApps(false,'app_scoped_context_closed',403);
+  }
   function setPolicy(res, origin, scoped) {
     const frameOrigins = [...origins].join(' ');
     res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
@@ -770,7 +792,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(headerCount(req, 'x-soty-ingress-app') === 1 && req.headers['x-soty-ingress-app'] === app.id
         && headerCount(req, 'x-soty-ingress-target') === 1 && target
         && equalDigest(req.headers['x-soty-ingress-target'], target.digest), 'app_source_changed', 403);
-      const session = sessionFor(req, app);
+      const session = rootWorkspace?publicFrameSession(req,app):sessionFor(req, app);
       const decision = checkAccess(session, { renewPublic: true });
       assertRuntimeBinding(decision, { requireReady: true });
       res.statusCode = 204; res.end(); return;
@@ -865,7 +887,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const route=selected?embedRoute(scopedProfile,req.method,path):null;
     const candidate=req.headers['x-soty-boot-check']!==undefined;
     assertApps(!candidate||selected&&route?.kind==='auth-continue'&&req.method==='POST','app_scoped_candidate_route_denied',403);
-    const session=callbackRecord?callbackRecord.session:candidate?candidateFor(req,app):sessionFor(req,app);
+    const session=callbackRecord?callbackRecord.session:candidate?candidateFor(req,app)
+      :rootWorkspace&&route?.credentialFree?publicFrameSession(req,app):sessionFor(req,app);
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
