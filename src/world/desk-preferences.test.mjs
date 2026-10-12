@@ -4,16 +4,47 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { parseAppLaunchRoute } from './app-launch.mjs';
+import { normalizeFieldCamera } from './unified-field-camera.mjs';
 
 function harness() {
   const rows = new Map();
   const storage = { getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value) };
-  const context = vm.createContext({ exports: {}, require: path => path.includes('app-launch') ? { parseAppLaunchRoute } : {}, localStorage: storage, URLSearchParams });
+  const context = vm.createContext({ exports: {}, require: path => path.includes('app-launch') ? { parseAppLaunchRoute } : path.includes('unified-field-camera') ? { normalizeFieldCamera } : {}, localStorage: storage, URLSearchParams });
   const source = readFileSync(new URL('./product.ts', import.meta.url), 'utf8');
   new vm.Script(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText).runInContext(context);
   return { ...context.exports, rows, storage };
 }
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test('a manual field camera survives reload, account changes and unrelated stale-tab writes', () => {
+  const app = harness(), base = { favorites: [], recent: [] };
+  const fieldView = { mine: { x: 120, y: -80, scale: .92 }, mineFit: 'manual', mineContext: 'personal',
+    search: { x: 8, y: 42, scale: .63 }, searchFit: 'manual', searchScope: 'hive:app' };
+  app.saveDeskPreferences('a', { ...base, fieldView }, { selectedView: true });
+  assert.deepEqual(plain(app.loadDeskPreferences('a').fieldView), fieldView);
+  assert.equal(app.loadDeskPreferences('b').fieldView, undefined);
+  const stale = app.loadDeskPreferences('a');
+  const next = { ...fieldView, mine: { ...fieldView.mine, scale: 1.2 } };
+  app.saveDeskPreferences('a', { ...base, fieldView: next }, { selectedView: true });
+  app.saveDeskPreferences('a', { ...stale, favorites: ['notes'] });
+  assert.equal(app.loadDeskPreferences('a').fieldView.mine.scale, 1.2);
+  app.saveDeskPreferences('b', { ...base, fieldView }, { selectedView: true });
+  app.saveDeskPreferences('a', { ...base, fieldView: undefined }, { selectedView: true });
+  app.saveDeskPreferences('a', stale);
+  assert.equal(app.loadDeskPreferences('a').fieldView, undefined);
+  assert.equal(app.loadDeskPreferences('b').fieldView.mine.scale, .92);
+});
+
+test('stored field views reject malformed coordinates and discard unknown fields', () => {
+  const app = harness(), base = { favorites: [], recent: [] };
+  for (const mine of [{ x: 'secret', y: 0, scale: 1 }, { x: 0, y: null, scale: 1 }, { x: 0, y: 0, scale: -1 }, []]) {
+    app.saveDeskPreferences('a', { ...base, fieldView: { mine } }, { selectedView: true });
+    assert.equal(app.loadDeskPreferences('a').fieldView, undefined);
+  }
+  app.saveDeskPreferences('a', { ...base, fieldView: { mine: { x: 9e9, y: -9e9, scale: 90 },
+    mineFit: 'invalid', mineContext: ' bad ', token: 'never-store', searchScope: '\u0000bad' } }, { selectedView: true });
+  assert.deepEqual(plain(app.loadDeskPreferences('a').fieldView), { mine: { x: 3e6, y: -3e6, scale: 2 } });
+});
 
 test('actual desk preference implementation preserves the selected space across reload and isolates accounts', () => {
   const app = harness();

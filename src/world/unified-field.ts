@@ -19,7 +19,7 @@ export type UnifiedFieldMode = 'mine' | 'search';
 type FieldVisualArt = AppArt & { icon?: FieldAppArt['icon'] };
 type CameraFit = 'manual' | 'overview' | 'context';
 export interface FieldCommitResult { status: 'saved' | 'volatile' | 'conflict'; revision: number; document: FieldDocument; errorCode?: string; localDurable?: boolean }
-export interface UnifiedFieldViewState { mine?: FieldCamera; search?: FieldCamera; mineContext?: string; searchContext?: string; mineSelection?: string; searchSelection?: string; mineFit?: CameraFit; searchFit?: CameraFit }
+export interface UnifiedFieldViewState { mine?: FieldCamera; search?: FieldCamera; mineContext?: string; searchContext?: string; mineSelection?: string; searchSelection?: string; mineFit?: CameraFit; searchFit?: CameraFit; searchScope?: string }
 export interface UnifiedFieldSummary {
   mode: UnifiedFieldMode; camera: FieldCamera; focusContextId: string; selectedShortcutId: string; arranging: boolean;
   persistence: 'saved' | 'saving' | 'pending' | 'error' | 'conflict'; localDurable: boolean; revision: number;
@@ -38,6 +38,7 @@ export interface UnifiedFieldOptions {
   onInspect?: (entity: FieldDirectoryEntity, shortcutId: string) => void;
   onContextActivate?: (contextId: string) => void;
   onStateChange?: (summary: UnifiedFieldSummary) => void;
+  onViewStateChange?: (view: UnifiedFieldViewState) => void;
   resolveArt?: (entity: FieldDirectoryEntity) => FieldVisualArt | null;
 }
 export interface UnifiedFieldUpdate {
@@ -190,7 +191,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     search: viewState.searchFit ?? (viewState.searchContext ? 'context' : viewState.search ? 'manual' : 'overview'),
   };
   let fieldDocument = validateFieldDocument(options.document ?? createFieldDocument()), revision = options.revision ?? 0;
-  let entities = thinEntities(options.entities ?? []), mode = options.mode ?? 'mine', scope = '', searchDocument: FieldScene = { contexts: [], shortcuts: [] };
+  let entities = thinEntities(options.entities ?? []), mode = options.mode ?? 'mine', scope = viewState.searchScope ?? '', searchDocument: FieldScene = { contexts: [], shortcuts: [] };
   let layout = layoutUnifiedField(fieldDocument, entities, metrics), index = createFieldSpatialIndex(layout.nodes);
   const selections: Record<UnifiedFieldMode, string> = { mine: viewState.mineSelection ?? '', search: viewState.searchSelection ?? '' };
   let selectedId = selections[mode], arranging = false, destroyed = false, raf = 0, suppressClickUntil = 0;
@@ -222,7 +223,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     viewState[mode] = { ...camera() };
     selections[mode] = selectedId;
     if (mode === 'mine') { viewState.mineContext = contextFocus.mine; viewState.mineSelection = selectedId; viewState.mineFit = cameraFit.mine; }
-    else { viewState.searchContext = contextFocus.search; viewState.searchSelection = selectedId; viewState.searchFit = cameraFit.search; }
+    else { viewState.searchContext = contextFocus.search; viewState.searchSelection = selectedId; viewState.searchFit = cameraFit.search; viewState.searchScope = scope; }
+    options.onViewStateChange?.(viewState);
   }
   function setCamera(next: FieldCamera, fit: CameraFit = 'manual'): void { if (destroyed) return; cameraFit[mode] = fit; cameras[mode] = normalizeFieldCamera(next); initialized[mode] = true; remember(); schedule(); emit(); }
   function fitOverview(): void {

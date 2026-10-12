@@ -20,6 +20,7 @@ export interface UnifiedFieldScreenOptions {
   mode?: UnifiedFieldMode; query?: string; filter?: FieldFilter;
   filtersByMode?: { mine: FieldFilter; search: FieldFilter };
   viewState?: UnifiedFieldViewState; pinnedApps?: readonly string[];
+  onViewStateChange?: (view: UnifiedFieldViewState) => void;
   onRoute(mode: UnifiedFieldMode, query: string, filter: FieldFilter): void;
   onOpen(entity: DirectoryEntity, record: DirectoryRecord | null): void;
   onCreate(kind: 'app' | 'community' | 'device' | 'person' | 'assistant'): void;
@@ -318,6 +319,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (mode !== 'search') return;
     const generation = ++searchGeneration, query = queries.search, selectedFilter = filter;
     const freshScope = searchResponseScope !== `${query}:${selectedFilter}` || searchItems.length === 0;
+    const restoreView = !searchResponseScope && options.viewState?.search && options.viewState.searchScope === `${query}:${selectedFilter}`;
     more.disabled = true; element.dataset.searchState = 'loading'; empty.hidden = true; searchLimit.hidden = true;
     if (!await searchSlot()) return;
     try {
@@ -333,7 +335,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       searchResponseScope = `${query}:${selectedFilter}`; pruneMetadata();
       const scene = searchPlacement.update(`${query}:${selectedFilter}`, searchItems, allMetadata()); activeSearchScene = scene;
       engine?.update({ entities: allMetadata(), searchDocument: scene, scope: `${query}:${selectedFilter}` });
-      if (!preserveView && freshScope && engine && scene.contexts.length) {
+      if (!preserveView && !restoreView && freshScope && engine && scene.contexts.length) {
         if (!wide.matches) engine.focusContext(scene.contexts[0]!.contextId);
         else {
           const layout = layoutUnifiedField(scene, allMetadata()), visibleContexts = layout.contexts.slice(0, 2);
@@ -585,6 +587,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Проверяем доступ', symbol: 'lock', source: 'owner' });
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
       mode, entities: allMetadata(), ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
+      onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
       onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) openPreview(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();

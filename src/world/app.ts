@@ -600,7 +600,7 @@ class WorldApplication {
     this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
     this.homeQuery = ''; this.homeFilter = 'all'; this.discoveryApps.clear();
     this.fieldState = createHexFieldState(); this.homeFieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
-    this.unifiedFieldView = this.desk.lastSpace ? { mineContext: this.desk.lastSpace, mineFit: 'context' } : {};
+    this.unifiedFieldView = this.desk.fieldView ?? (this.desk.lastSpace ? { mineContext: this.desk.lastSpace, mineFit: 'context' } : {});
     this.unifiedFieldFilter = 'all';
     this.unifiedFieldFilters = { mine: 'all', world: 'all' };
     this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
@@ -914,6 +914,7 @@ class WorldApplication {
       filter: this.unifiedFieldFilter,
       filtersByMode: { mine: this.unifiedFieldFilters.mine, search: this.unifiedFieldFilters.world },
       viewState: this.unifiedFieldView, ...(this.desk.pinnedApps ? { pinnedApps: this.desk.pinnedApps } : {}),
+      onViewStateChange: view => { if (isCurrent()) { this.desk.fieldView = view; this.saveDesk(false, false, true); } },
       ...(this.options.fieldArt ? { resolveArt: this.options.fieldArt } : {}),
       onMessage: (message, error) => { if (isCurrent()) this.toast(message, error); },
       onContextChange: contextId => { if (isCurrent()) { this.desk.lastSpace = contextId; this.saveDesk(true); } },
@@ -1755,7 +1756,7 @@ class WorldApplication {
     dialog.body.append(body);
   }
 
-  private saveDesk(selectedSpace = false, selectedRoute = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace, selectedRoute }); }
+  private saveDesk(selectedSpace = false, selectedRoute = false, selectedView = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace, selectedRoute, selectedView }); }
   private remember(route: string, title: string, symbol: string): void { this.desk.recent = [{ route, title: title.slice(0, 100), symbol }, ...this.desk.recent.filter(item => item.route !== route)].slice(0, 6); this.saveDesk(); }
   private searchCount(totals: WorldSearch['totals']): string { return `${totals.communitiesExact === false ? `${totals.communities}+ сообществ` : nounCount(totals.communities, 'сообщество', 'сообщества', 'сообществ')} · ${totals.peopleExact === false ? `${totals.people}+ человек` : nounCount(totals.people, 'человек', 'человека', 'человек')}`; }
 

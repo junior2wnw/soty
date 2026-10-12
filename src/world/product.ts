@@ -2,6 +2,8 @@ import { button, el, iconButton, textInput } from './dom';
 import { icon } from './icons';
 import { type WorldDialog } from './dialogs';
 import { parseAppLaunchRoute } from './app-launch.mjs';
+import { normalizeFieldCamera } from './unified-field-camera.mjs';
+import type { UnifiedFieldViewState } from './unified-field';
 
 export type CapabilityId = 'notes' | 'apps' | 'devices' | 'agent' | 'communities' | 'contacts' | 'files' | 'chess' | 'terminal' | 'internet' | 'legacy-notes' | 'appearance';
 export interface Capability { id: CapabilityId; title: string; detail: string; symbol: string; color: string; category: 'Дела' | 'Общение' | 'Инструменты'; }
@@ -20,12 +22,28 @@ export const capabilities: readonly Capability[] = [
   { id: 'appearance', title: 'Оформление', detail: 'Тема, яркость и движение', symbol: 'settings', color: 'sage', category: 'Инструменты' },
 ];
 export interface RecentAction { route: string; title: string; symbol: string; }
-export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; lastSpace?: string; lastRoute?: string; }
+export interface DeskPreferences { favorites: CapabilityId[]; recent: RecentAction[]; pinnedApps?: string[]; lastSpace?: string; lastRoute?: string; fieldView?: UnifiedFieldViewState; }
 const defaults: CapabilityId[] = ['notes', 'apps', 'devices', 'agent'];
 const deskKey = (accountId: string): string => `soty.desk.v1:${encodeURIComponent(accountId)}`;
 // Context IDs are opaque field identities, not routes or filenames.
 const isSpaceId = (value: unknown): value is string => typeof value === 'string' && value.length > 0
   && value.length <= 128 && value === value.trim() && !/[\u0000-\u001f\u007f-\u009f\p{Surrogate}]/u.test(value);
+export function normalizeDeskFieldView(value: unknown): UnifiedFieldViewState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const input = value as Record<string, unknown>, result: UnifiedFieldViewState = {};
+  for (const mode of ['mine', 'search'] as const) {
+    const camera = input[mode];
+    if (!camera || typeof camera !== 'object' || Array.isArray(camera)) continue;
+    const coordinates = camera as Record<string, unknown>;
+    if (!['x', 'y', 'scale'].every(key => typeof coordinates[key] === 'number' && Number.isFinite(coordinates[key])) || Number(coordinates.scale) <= 0) continue;
+    result[mode] = normalizeFieldCamera(coordinates);
+    const fit = input[`${mode}Fit`]; if (fit === 'manual' || fit === 'overview' || fit === 'context') result[`${mode}Fit`] = fit;
+    for (const suffix of ['Context', 'Selection'] as const) { const key = `${mode}${suffix}` as const; if (isSpaceId(input[key])) result[key] = input[key]; }
+  }
+  if (!result.mine && !result.search) return;
+  if (result.search && typeof input.searchScope === 'string' && input.searchScope.length <= 240 && !/[\u0000-\u001f\u007f\p{Surrogate}]/u.test(input.searchScope)) result.searchScope = input.searchScope;
+  return result;
+}
 export function normalizeDeskRoute(value: unknown): string | undefined {
   if (typeof value !== 'string' || !value || value.length > 16384 || /[\u0000-\u001f\u007f\p{Surrogate}]/u.test(value)) return;
   try {
@@ -45,20 +63,24 @@ export function normalizeDeskRoute(value: unknown): string | undefined {
 export function loadDeskPreferences(accountId: string): DeskPreferences {
   try {
     const value = JSON.parse(localStorage.getItem(deskKey(accountId)) ?? '{}');
+    const fieldView = normalizeDeskFieldView(value.fieldView);
     return { favorites: Array.isArray(value.favorites) ? [...new Set<CapabilityId>(value.favorites.filter((id: unknown) => capabilities.some(item => item.id === id)))].slice(0, 8) : [...defaults],
       ...(isSpaceId(value.lastSpace) ? { lastSpace: value.lastSpace } : {}),
       ...(normalizeDeskRoute(value.lastRoute) ? { lastRoute: normalizeDeskRoute(value.lastRoute)! } : {}),
+      ...(fieldView ? { fieldView } : {}),
       pinnedApps: Array.isArray(value.pinnedApps) ? [...new Set<string>(value.pinnedApps.filter((id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(id)))].slice(0, 200) : [],
       recent: Array.isArray(value.recent) ? value.recent.filter((item: RecentAction) => item && typeof item.route === 'string' && /^(?:notes|app|community)\/[A-Za-z0-9_-]{3,160}(?:\/[A-Za-z0-9_-]{3,160})?$/.test(item.route) && typeof item.title === 'string' && typeof item.symbol === 'string').slice(0, 6).map((item: RecentAction) => ({ route: item.route, title: item.title.slice(0, 100), symbol: item.symbol.slice(0, 20) })) : [] };
   } catch { return { favorites: [...defaults], recent: [] }; }
 }
-export function saveDeskPreferences(accountId: string, value: DeskPreferences, options: { selectedSpace?: boolean; selectedRoute?: boolean } = {}): void {
+export function saveDeskPreferences(accountId: string, value: DeskPreferences, options: { selectedSpace?: boolean; selectedRoute?: boolean; selectedView?: boolean } = {}): void {
   try {
     // An unrelated write in an older tab must not undo a newer space choice.
-    const lastSpace = options.selectedSpace ? value.lastSpace : loadDeskPreferences(accountId).lastSpace;
-    const lastRoute = normalizeDeskRoute(options.selectedRoute ? value.lastRoute : loadDeskPreferences(accountId).lastRoute);
-    const { lastSpace: _previousSpace, lastRoute: _previousRoute, ...other } = value;
-    localStorage.setItem(deskKey(accountId), JSON.stringify({ ...other, ...(isSpaceId(lastSpace) ? { lastSpace } : {}), ...(lastRoute ? { lastRoute } : {}) }));
+    const stored = loadDeskPreferences(accountId);
+    const lastSpace = options.selectedSpace ? value.lastSpace : stored.lastSpace;
+    const lastRoute = normalizeDeskRoute(options.selectedRoute ? value.lastRoute : stored.lastRoute);
+    const fieldView = normalizeDeskFieldView(options.selectedView ? value.fieldView : stored.fieldView);
+    const { lastSpace: _previousSpace, lastRoute: _previousRoute, fieldView: _previousView, ...other } = value;
+    localStorage.setItem(deskKey(accountId), JSON.stringify({ ...other, ...(isSpaceId(lastSpace) ? { lastSpace } : {}), ...(lastRoute ? { lastRoute } : {}), ...(fieldView ? { fieldView } : {}) }));
   } catch { /* Favorites are optional; core data is saved independently. */ }
 }
 
