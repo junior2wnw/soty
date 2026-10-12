@@ -92,8 +92,15 @@ export class Rollout {
       assertUniversalImagePrerequisites(args.universalPolicy,{candidateImage:image,originalImage:oldImage});
       if(universalReceipt.phase==='features'){
         const observed=validateUniversalPreparedness(await this.universalMeasurement(old.Id,this));
-        const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null});
-        requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
+        if(universalReceipt.expectedCurrentPreparednessSha256!==undefined){
+          // An explicit features update compares the actual current runtime;
+          // it never substitutes the proposed profile for that observation.
+          requireThat(observed.compiledLegacyMode===false&&observed.universalConfigured===true
+            &&hash(observed)===universalReceipt.expectedCurrentPreparednessSha256,'universal_current_runtime_mismatch');
+        }else{
+          const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null});
+          requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
+        }
       }
       requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
     }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');

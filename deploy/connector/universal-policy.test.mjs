@@ -10,15 +10,19 @@ import { prepareUniversalPolicy, publicUniversalPolicy, assertUniversalPolicyCur
   applyUniversalPolicy, assertUniversalImagePrerequisites, captureUniversalPreparedness, assertUniversalPreparedness,
   sealUniversalPolicy, restoreUniversalPolicy,
   UNIVERSAL_POLICY_SCHEMA, universalModeLabel, humanPrivateTarget, reviewsTarget, selectedTarget } from './universal-policy.mjs';
-import { createConfig, preservationHash } from './rollout.mjs';
+import { Rollout, createConfig, preservationHash } from './rollout.mjs';
 import { currentStorageReaders, storageReaderLabel, assertStorageCompatible } from './storage-guard.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
 import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { createHttpApp } from '../../server/http-app.js';
 import { HIVE_SELECTED_KERNEL_SOURCE, HIVE_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE, STANDARD_SELECTED_SOURCE_V2 } from '../../modules/apps/scoped-embed/resource-route-adapters.mjs';
+import { STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
+import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
+import { fixture as engineFixture, args as rolloutArgs } from './test-support/rollout-engine.mjs';
 
 const origin = 'https://soty.fixture.invalid', issuer = origin + '/human-identity';
+const installedApplicationsTarget = '/run/config/soty-installed-applications.mjs';
 const random = () => randomBytes(32).toString('base64url');
 const secretKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -75,6 +79,164 @@ function runtime(f, app, profile) {
     reviewsConfigured: Boolean(app.locals.universalApps?.reviews), humanProfile: profile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
     reviewsConfiguration: f.reviews });
 }
+
+async function installedFixture(t) {
+  const f = await fixture(t), source = path.join(f.root, 'installed.mjs'), appId = 'app-' + 'f'.repeat(32);
+  const scope = { appId, target: { revision: 2, digest: '5'.repeat(64) }, sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId, resourceId: 'hive:workspace',
+      selection: { kind: 'soty.workspace.v1', nativeId: 'hive', incarnationId: 'native-incarnation' } } };
+  globalThis.__universalInstalledPolicy = { created: 0, closed: 0, credentials: 0 };
+  f.beforeRemove.push(() => { delete globalThis.__universalInstalledPolicy; });
+  const code = `export default async function(api){
+    const state=globalThis.__universalInstalledPolicy;state.created++;
+    const close=()=>{state.closed++;};api.ownClose(close);
+    const composition=await api.loadInstalledExistingApplications({createRegistry:()=>[api.createCurrentContextSourceApplication(${JSON.stringify(scope)})]});
+    return {...composition,close,sourceCredentialFor(){state.credentials++;throw Error('must_not_request_a_credential');}};
+  }\n`;
+  const save = text => writeFile(source, text, { mode: 0o600 }); await save(code);
+  return { ...f, source, code, save, plan: { ...f.plan, installedApplications: { source, sha256: sha(code) } } };
+}
+
+test('installed operator CODE is admitted by the actual existing loader, closed, and bound to one fixed RO mount and two settings', async t => {
+  const f = await installedFixture(t), handle = await prepared(t, f), receipt = publicUniversalPolicy(handle);
+  assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 1, closed: 1, credentials: 0 });
+  const base = { Env: ['DATA_DIR=/data'], HostConfig: { Mounts: [] } }, applied = applyUniversalPolicy(base, handle);
+  assert.deepEqual(base, { Env: ['DATA_DIR=/data'], HostConfig: { Mounts: [] } });
+  assert.ok(applied.Env.includes('SOTY_INSTALLED_APPLICATIONS_MODULE=' + installedApplicationsTarget));
+  assert.ok(applied.Env.includes('SOTY_INSTALLED_APPLICATIONS_SHA256=' + sha(f.code)));
+  assert.deepEqual(applied.HostConfig.Mounts.at(-1), { Type: 'bind', Source: f.source, Target: installedApplicationsTarget, ReadOnly: true });
+  assert.deepEqual(receipt.mounts.at(-1), { source: f.source, target: installedApplicationsTarget, readOnly: true, visibility: 'private' });
+  assert.deepEqual(applyUniversalPolicy(applied, handle), applied);
+  assert.equal(JSON.stringify(receipt).includes('must_not_request_a_credential'), false);
+  const entry = await loadInstalledApplicationsEntry({ SOTY_INSTALLED_APPLICATIONS_MODULE: f.source, SOTY_INSTALLED_APPLICATIONS_SHA256: sha(f.code) });
+  assert.equal(entry.sourceReferences.length, 1); await entry.close(); await entry.close();
+  assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 2, closed: 2, credentials: 0 });
+  const key = randomBytes(32), keyId = 'fixture-installed-custody', sealed = await sealUniversalPolicy(handle, { key, keyId });
+  const restored = await restoreUniversalPolicy(f.plan, sealed.packet, f.options, { key, keyId, expectedWitnessId: sealed.witnessId });
+  f.beforeRemove.push(() => disposeUniversalPolicy(restored)); assert.deepEqual(publicUniversalPolicy(restored), receipt);
+  assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 3, closed: 3, credentials: 0 });
+});
+
+test('installed operator omission preserves inherited settings and baseline wire without loading a module', async t => {
+  const f = await installedFixture(t), omitted = { ...f.plan }; delete omitted.installedApplications;
+  const before = { Env: ['DATA_DIR=/data', 'SOTY_INSTALLED_APPLICATIONS_MODULE=/existing/installed.mjs',
+    'SOTY_INSTALLED_APPLICATIONS_SHA256=' + 'b'.repeat(64)], HostConfig: { Mounts: [] } };
+  const handle = await prepared(t, f, omitted), applied = applyUniversalPolicy(before, handle);
+  assert.deepEqual(applied.Env.slice(0, before.Env.length), before.Env);
+  assert.equal(publicUniversalPolicy(handle).mounts.some(value => value.target === installedApplicationsTarget), false);
+  assert.deepEqual(applyUniversalPolicy(before, await prepared(t, f, baselinePlan())),
+    { ...before, Env: [...before.Env, 'SOTY_UNIVERSAL_OPERATOR_ENABLED=1'] });
+  assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 0, closed: 0, credentials: 0 });
+});
+
+test('installed operator input rejects extra authority, malformed hash, wrong bytes and baseline enablement before calling the factory', async t => {
+  const f = await installedFixture(t);
+  for (const installedApplications of [null, true, { ...f.plan.installedApplications, env: ['FORGED=1'] },
+    { ...f.plan.installedApplications, actor: { accountId: 'forged' } }, { ...f.plan.installedApplications, sha256: 'A'.repeat(64) }])
+    await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications }, f.options), failCode('universal_policy_invalid'));
+  await assert.rejects(prepareUniversalPolicy({ ...baselinePlan(), installedApplications: f.plan.installedApplications }, f.options), failCode('universal_policy_invalid'));
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications: { ...f.plan.installedApplications, sha256: '0'.repeat(64) } }, f.options),
+    failCode('universal_policy_installed_applications_hash_mismatch'));
+  let accessed = false; const getter = { sha256: sha(f.code) };
+  Object.defineProperty(getter, 'source', { enumerable: true, get() { accessed = true; return f.source; } });
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications: getter }, f.options), failCode('universal_policy_invalid'));
+  assert.equal(accessed, false); assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 0, closed: 0, credentials: 0 });
+});
+
+test('installed operator code is bounded and the existing loader rejects a JSON catalog or unsupported factory while closing owned resources', async t => {
+  const f = await installedFixture(t);
+  for (const code of ['{"catalog":[{"role":"admin"}]}',
+    `export default function(api){api.ownClose(()=>{globalThis.__universalInstalledPolicy.closed++;});throw {get message(){throw Error('private_error');}};}`]) {
+    await f.save(code);
+    await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications: { source: f.source, sha256: sha(code) } }, f.options),
+      failCode('universal_policy_installed_applications_invalid'));
+  }
+  assert.equal(globalThis.__universalInstalledPolicy.closed, 1);
+  const code = f.code + '\n/*' + ' '.repeat(131072 - Buffer.byteLength(f.code) - 6) + '*/\n';
+  assert.equal(Buffer.byteLength(code), 131072); await f.save(code);
+  await prepared(t, f, { ...f.plan, installedApplications: { source: f.source, sha256: sha(code) } });
+  await f.save(code + ' ');
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications: { source: f.source, sha256: sha(code + ' ') } }, f.options),
+    failCode('universal_policy_file_invalid'));
+});
+
+test('installed operator code cannot use a symlink or junction, a hardlink or nonprivate Linux permissions', async t => {
+  const f = await installedFixture(t), alias = path.join(f.root, 'alias.mjs'); await link(f.source, alias);
+  await assert.rejects(prepareUniversalPolicy(f.plan, f.options), failCode('universal_policy_file_invalid')); await rm(alias);
+  if (process.platform === 'linux') {
+    await chmod(f.source, 0o644); await assert.rejects(prepareUniversalPolicy(f.plan, f.options), failCode('universal_policy_file_permissions'));
+    await chmod(f.source, 0o600);
+  }
+  const actual = path.join(f.root, 'actual-module'), shortcut = path.join(f.root, 'module-shortcut'); await mkdir(actual, { mode: 0o700 });
+  await rename(f.source, path.join(actual, 'installed.mjs')); await symlink(actual, shortcut, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, installedApplications: { source: path.join(shortcut, 'installed.mjs'), sha256: sha(f.code) } }, f.options),
+    failCode('universal_policy_file_invalid'));
+  assert.deepEqual(globalThis.__universalInstalledPolicy, { created: 0, closed: 0, credentials: 0 });
+});
+
+test('installed operator settings and mount refuse conflicting old values, duplicates and shadowing', async t => {
+  const f = await installedFixture(t), handle = await prepared(t, f), base = { Env: ['DATA_DIR=/data'], HostConfig: { Mounts: [] } };
+  for (const extra of [['SOTY_INSTALLED_APPLICATIONS_MODULE=/foreign'], ['SOTY_INSTALLED_APPLICATIONS_SHA256=' + '0'.repeat(64)],
+    ['SOTY_INSTALLED_APPLICATIONS_MODULE'], ['SOTY_INSTALLED_APPLICATIONS_SHA256=' + sha(f.code), 'SOTY_INSTALLED_APPLICATIONS_SHA256=' + sha(f.code)]])
+    assert.throws(() => applyUniversalPolicy({ ...base, Env: [...base.Env, ...extra] }, handle), failCode('universal_policy_preexisting_configuration'));
+  for (const mount of [{ Type: 'bind', Source: f.source, Target: installedApplicationsTarget, ReadOnly: false },
+    { Type: 'bind', Source: f.root, Target: '/run/config', ReadOnly: true }])
+    assert.throws(() => applyUniversalPolicy({ ...base, HostConfig: { Mounts: [mount] } }, handle), failCode('universal_policy_preexisting_configuration'));
+});
+
+test('installed operator byte drift after prepare is fenced before existing rollout STOP and cannot restore an old encrypted witness', async t => {
+  const f = await installedFixture(t), handle = await prepared(t, f), key = randomBytes(32), keyId = 'fixture-installed-custody';
+  const sealed = await sealUniversalPolicy(handle, { key, keyId }), engine = engineFixture();
+  const imageRead = engine.engine.image;
+  engine.engine.image = async id => { const image = await imageRead(id); image.Config.Labels[universalModeLabel] = id === rolloutArgs.candidateImage ? '0' : '1'; return image; };
+  engine.run.allowUniversalFixture = true;
+  engine.run.universalMeasurement = async () => captureUniversalPreparedness({ compiledLegacyMode: true,
+    universalConfigured: false, reviewsConfigured: false, humanHttpEnabled: false, humanProfile: null });
+  await engine.run.prepare({ ...rolloutArgs, universalPolicy: handle, universalWitnessId: sealed.witnessId });
+  const changed = f.code + '\n// changed approved code\n'; await f.save(changed);
+  await assert.rejects(engine.run.promote(), failCode('universal_policy_file_changed'));
+  assert.equal(engine.events.some(value => value.startsWith('stop:')), false);
+  assert.equal(engine.map.get(rolloutArgs.originalId).State.Running, true);
+  await assert.rejects(restoreUniversalPolicy(f.plan, sealed.packet, f.options, { key, keyId, expectedWitnessId: sealed.witnessId }),
+    failCode('universal_policy_witness_invalid'));
+  await assert.rejects(restoreUniversalPolicy({ ...f.plan, installedApplications: { source: f.source, sha256: sha(changed) } }, sealed.packet, f.options,
+    { key, keyId, expectedWitnessId: sealed.witnessId }), failCode('universal_policy_witness_mismatch'));
+});
+
+test('Root signed workspace policy reuses an existing Native Human client without a Source RP callback; legacy workspace still requires its exact callback', async t => {
+  const f = await fixture(t), base = selectedConfiguration(f).profiles[0], source = path.join(f.root, 'root-workspace.json');
+  const profile = { ...base, schema: 'soty.selected-human-embed.v2', sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId: base.appId,
+      resourceId: 'hive:workspace', selection: { kind: 'soty.workspace.v1', nativeId: 'hive', incarnationId: 'native-incarnation' } },
+    nativeOrigin: 'https://hive.fixture.invalid' };
+  const nativeCallback = profile.nativeOrigin + '/account/soty/callback';
+  f.human.clients[0].redirectUri = nativeCallback;
+  await writeFile(f.humanSource, JSON.stringify(f.human), { mode: 0o600 });
+  const plan = { ...f.plan, selected: { source, migrationConfigured: false } };
+  async function configured(value) {
+    await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [value] }), { mode: 0o600 });
+  }
+  await configured(profile);
+  const accepted = await prepared(t, f, plan); assert.equal(publicUniversalPolicy(accepted).selected.profileCount, 1);
+  for (const changed of [
+    { ...profile, clientId: 'rp.missing' },
+    { ...profile, clientId: 'rp.foreign' },
+    { ...profile, issuer: 'https://foreign.fixture.invalid/human-identity' },
+    { ...profile, parentOrigin: 'https://foreign.fixture.invalid' },
+    { ...profile, embedOrigin: 'http://localhost:43123' },
+    { ...profile, nativeOrigin: 'http://native.fixture.invalid:43123' },
+    { ...profile, sourceProfile: { ...STANDARD_ROOT_WORKSPACE_SOURCE, digest: '0'.repeat(64) } },
+  ]) {
+    await configured(changed); await assert.rejects(prepareUniversalPolicy(plan, f.options), error =>
+      typeof error.code === 'string' && error.code.startsWith('universal_policy_') && !error.cause);
+  }
+  const legacy = { ...profile, sourceProfile: STANDARD_WORKSPACE_SOURCE };
+  await configured(legacy);
+  await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  f.human.clients[0].redirectUri = profile.embedOrigin + '/api/embed/callback';
+  await writeFile(f.humanSource, JSON.stringify(f.human), { mode: 0o600 });
+  const oldAccepted = await prepared(t, f, plan); assert.equal(publicUniversalPolicy(oldAccepted).selected.profileCount, 1);
+});
 
 test('remembered consent requires an actual reader3 fallback and explicit host migration before starting', async t => {
   const f = await fixture(t);
@@ -134,6 +296,26 @@ test('closed plan rejects commands, credentials, future schema, getters and base
   const getter = { ...f.plan }; Object.defineProperty(getter, 'human', { enumerable: true, get() { accessed = true; throw new Error('private sentinel'); } });
   await assert.rejects(prepareUniversalPolicy(getter, f.options), failCode('universal_policy_invalid')); assert.equal(accessed, false);
   await assert.rejects(prepareUniversalPolicy({ ...f.plan, human: { issuer, source: 'relative.json' } }, f.options), failCode('universal_policy_path_invalid'));
+});
+
+test('features update CAS is closed and bound to the exact public policy and encrypted witness', async t => {
+  const f = await fixture(t), expected = 'a'.repeat(64), plan = { ...f.plan, expectedCurrentPreparednessSha256: expected };
+  const handle = await prepared(t, f, plan), receipt = publicUniversalPolicy(handle);
+  assert.equal(receipt.expectedCurrentPreparednessSha256, expected);
+  assert.notEqual(receipt.policyDigest, publicUniversalPolicy(await prepared(t, f)).policyDigest);
+  for (const value of [null, true, 1, '', 'a'.repeat(63), 'A'.repeat(64)])
+    await assert.rejects(prepareUniversalPolicy({ ...plan, expectedCurrentPreparednessSha256: value }, f.options), failCode('universal_policy_invalid'));
+  await assert.rejects(prepareUniversalPolicy({ ...baselinePlan(), expectedCurrentPreparednessSha256: expected }, f.options), failCode('universal_policy_invalid'));
+  let accessed = false;
+  const getter = { ...f.plan };
+  Object.defineProperty(getter, 'expectedCurrentPreparednessSha256', { enumerable: true, get() { accessed = true; return expected; } });
+  await assert.rejects(prepareUniversalPolicy(getter, f.options), failCode('universal_policy_invalid')); assert.equal(accessed, false);
+  const key = randomBytes(32), keyId = 'fixture-update-custody', sealed = await sealUniversalPolicy(handle, { key, keyId });
+  const restored = await restoreUniversalPolicy(plan, sealed.packet, f.options, { key, keyId, expectedWitnessId: sealed.witnessId });
+  f.beforeRemove.push(() => disposeUniversalPolicy(restored));
+  assert.deepEqual(publicUniversalPolicy(restored), receipt);
+  await assert.rejects(restoreUniversalPolicy({ ...plan, expectedCurrentPreparednessSha256: 'b'.repeat(64) }, sealed.packet, f.options,
+    { key, keyId, expectedWitnessId: sealed.witnessId }), failCode('universal_policy_witness_mismatch'));
 });
 
 test('private-only rotation leaves public digest unchanged but retires the exact prior witness', async t => {

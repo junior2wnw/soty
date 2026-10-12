@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes, generateKeyPairSync } from 'node:crypto';
 import { fixture as engineFixture, args } from './test-support/rollout-engine.mjs';
-import { Rollout, createConfig, preservationHash } from './rollout.mjs';
+import { Rollout, createConfig, preservationHash, hash } from './rollout.mjs';
 import { prepareUniversalPolicy, publicUniversalPolicy, sealUniversalPolicy, restoreUniversalPolicy, disposeUniversalPolicy,
   captureUniversalPreparedness, universalModeLabel, bindUniversalRollout } from './universal-policy.mjs';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
 import { SafeError } from './docker-api.mjs';
 import { storageReaderLabel, currentStorageReaders } from './storage-guard.mjs';
+import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
 
 const origin = 'https://soty.fixture.invalid', random = () => randomBytes(32).toString('base64url');
 const privateJwk = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
@@ -35,8 +36,83 @@ async function fixture(t, { phase = 'features', fault = {}, human = false } = {}
     f.events.push('measure:' + id); return captureUniversalPreparedness({ compiledLegacyMode: phase === 'legacy-baseline',
     universalConfigured: phase !== 'legacy-baseline', reviewsConfigured: phase !== 'legacy-baseline', humanProfile, humanHttpEnabled: Boolean(humanProfile) }); };
   const request = { ...args, universalPolicy: handle, universalWitnessId: randomBytes(24).toString('base64url') };
-  return { ...f, get migrated() { return f.migrated; }, root, handle, request, options, plan, configuration, humanSource, key, handles };
+  return { ...f, get migrated() { return f.migrated; }, root, handle, request, options, plan, configuration, humanSource, humanProfile, key, handles };
 }
+
+async function activeFeaturesUpdate(t) {
+  const f = await fixture(t, { human: true }), old = f.map.get(args.originalId);
+  const inherited = createConfig(old, args.originalImage, args.transaction, args.revision, undefined, f.handle);
+  old.Config.Env = [...inherited.Env, 'SOTY_TRUST_PROXY=192.0.2.1']; old.HostConfig = inherited.HostConfig;
+  const image = f.engine.image;
+  f.engine.image = async id => { const value = await image(id); value.Config.Labels[universalModeLabel] = '0'; return value; };
+  const current = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: f.humanProfile, humanHttpEnabled: true });
+  const appId = 'app-' + '4'.repeat(32), selectedSource = path.join(f.root, 'workspace-registry.json');
+  const profiles = [{ schema: 'soty.selected-human-embed.v2', appId, connector: { linkId: 'source-link', hostDeviceId: 'source-device', connectorId: 'source-connector' },
+    target: { revision: 2, digest: '5'.repeat(64) }, sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
+    resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId, resourceId: 'hive:workspace',
+      selection: { kind: 'soty.workspace.v1', nativeId: 'hive', incarnationId: 'native-incarnation' } },
+    issuer: f.plan.human.issuer, clientId: f.configuration.clients[0].id, parentOrigin: origin,
+    embedOrigin: 'https://hive.fixture.invalid', nativeOrigin: 'https://hive.fixture.invalid' }];
+  await writeFile(selectedSource, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles }), { mode: 0o600 });
+  f.plan = { ...f.plan, selected: { source: selectedSource, migrationConfigured: true }, expectedCurrentPreparednessSha256: hash(current) };
+  f.handle = await prepareUniversalPolicy(f.plan, f.options); f.handles.push(f.handle); f.request.universalPolicy = f.handle;
+  const target = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: f.humanProfile, humanHttpEnabled: true, selectedProfiles: profiles,
+    selectedRegistryConfigured: true, selectedMigrationConfigured: true, selectedResourceMigrationConfigured: true });
+  f.run.universalMeasurement = async id => id === args.originalId ? current : target;
+  return { ...f, current, target };
+}
+
+test('features CAS adds an approved workspace registry without disabling the current Human/profile or inherited proxy settings', async t => {
+  const f = await activeFeaturesUpdate(t), before = structuredClone(f.map.get(args.originalId));
+  await f.run.prepare(f.request); await f.run.promote();
+  assert.equal(f.run.state.phase, 'committed'); assert.equal(f.run.state.universalPhase, 'features');
+  assert.deepEqual(f.run.original.Config.Env, before.Config.Env);
+  for (const value of before.Config.Env) assert.ok(f.run.config.Env.includes(value));
+  assert.deepEqual(f.run.config.HostConfig.Binds, before.HostConfig.Binds);
+  assert.deepEqual(f.run.config.HostConfig.Mounts.slice(0, before.HostConfig.Mounts.length), before.HostConfig.Mounts);
+  assert.equal(f.run.config.Env.includes('SOTY_SELECTED_EMBED_MIGRATION=1'), true);
+  assert.equal(f.run.config.Env.includes('SOTY_SELECTED_RESOURCE_MIGRATION=1'), true);
+  assert.equal(f.events.filter(value => value === 'start-candidate').length, 1);
+  const sealed = await sealUniversalPolicy(f.handle, { key: f.key, keyId: 'update-custody' });
+  const restored = await restoreUniversalPolicy(f.plan, sealed.packet, f.options, { key: f.key, keyId: 'update-custody', expectedWitnessId: sealed.witnessId });
+  f.handles.push(restored); assert.equal(publicUniversalPolicy(restored).expectedCurrentPreparednessSha256, hash(f.current));
+});
+
+test('features CAS rejects stale, OFF, unknown measurement and wrong original mode/reader before CREATE or STOP', async t => {
+  for (const fault of ['drift', 'off', 'unknown', 'mode', 'reader']) await t.test(fault, async t => {
+    const f = await activeFeaturesUpdate(t);
+    if (fault === 'drift') f.run.universalMeasurement = async () => ({ ...f.current, human: { ...f.current.human, signingPublicKeysDigest: '0'.repeat(64) } });
+    if (fault === 'off') {
+      const off = captureUniversalPreparedness({ compiledLegacyMode: true, universalConfigured: false,
+        reviewsConfigured: false, humanHttpEnabled: false, humanProfile: null });
+      const handle = await prepareUniversalPolicy({ ...f.plan, expectedCurrentPreparednessSha256: hash(off) }, f.options);
+      f.handles.push(handle); f.request.universalPolicy = handle; f.run.universalMeasurement = async () => off;
+    }
+    if (fault === 'unknown') f.run.universalMeasurement = async () => { throw new SafeError('universal_measurement_unresolved'); };
+    if (fault === 'mode' || fault === 'reader') { const image = f.engine.image; f.engine.image = async id => {
+      const value = await image(id); if (id === args.originalImage) {
+        if (fault === 'mode') value.Config.Labels[universalModeLabel] = '1';
+        else { const readers = JSON.parse(currentStorageReaders); readers.readers.apps = [1, 2, 3, 4, 5, 6]; value.Config.Labels[storageReaderLabel] = JSON.stringify(readers); }
+      } return value;
+    }; }
+    await assert.rejects(f.run.prepare(f.request)); assert.deepEqual(f.events, []);
+    assert.equal(f.map.get(args.originalId).State.Running, true);
+  });
+});
+
+test('features update cannot use an ON runtime without a CAS or survive current runtime drift between prepare and promote', async t => {
+  const f = await activeFeaturesUpdate(t), noCas = { ...f.plan }; delete noCas.expectedCurrentPreparednessSha256;
+  const unbound = await prepareUniversalPolicy(noCas, f.options); f.handles.push(unbound);
+  await assert.rejects(f.run.prepare({ ...f.request, universalPolicy: unbound })); assert.deepEqual(f.events, []);
+  await f.run.prepare(f.request);
+  f.run.universalMeasurement = async id => id === args.originalId ? { ...f.current, human: { ...f.current.human, signingPublicKeysDigest: '0'.repeat(64) } } : f.target;
+  const fresh = new Rollout({ engine: f.engine, maintenance: f.run.maintenance, ready: f.run.ready, universalMeasurement: f.run.universalMeasurement,
+    allowUniversalFixture: true, storageProbe: f.run.storageProbe, sleep: async () => {} });
+  await assert.rejects(fresh.guard(f.request), /universal_current_runtime_mismatch/u);
+  assert.equal(f.events.some(value => value.startsWith('stop:')), false);
+});
 
 test('both phases require only the approved delta and actual private measurement before maintenance leave', async t => {
   for (const phase of ['legacy-baseline', 'features']) {

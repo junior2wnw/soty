@@ -76,6 +76,31 @@ The preservation projection normalizes only two Docker API1.45 defaults proven b
 
 ## Private personal-agent opt-in
 
+An already enabled installation can prepare a configuration update with the
+optional `expectedCurrentPreparednessSha256` field in its `features` plan. Take
+this SHA256 from the canonical JSON of the actual current private operator
+measurement. Prepare and promote require that exact measurement, Universal ON,
+and the original mode0 image. Without the field, the original mode1/OFF baseline
+requirements remain unchanged. Existing image-reader, private-file, encrypted
+witness, configuration preservation and single-writer checks still apply.
+First install a compatible image with the current configuration before enabling
+a newer storage format. Keep existing proxy settings in the inspected original
+configuration; do not copy unsupported fields from an older operator plan.
+
+An optional closed `installedApplications: { source, sha256 }` uses the existing
+installed-application loader. It admits one private, hash-approved `.mjs` file
+up to 128 KiB at the fixed read-only target
+`/run/config/soty-installed-applications.mjs`, and sets the two existing
+`SOTY_INSTALLED_APPLICATIONS_MODULE` / `SOTY_INSTALLED_APPLICATIONS_SHA256`
+settings. The real loader validates and closes the module during preparation;
+held bytes, identity and the encrypted witness are checked again. This installs
+operator-owned code and its catalog; it creates no credentials or grants.
+
+Exact Root-signed workspace2 Source profiles reuse a registered current Human
+client without an RP callback. Older Source profiles retain their exact callback
+checks. Native actor, app, current child and finite action-grant checks remain
+independent of this deployment input.
+
 The existing `soty.universal-rollout-policy.v1` feature plan may explicitly include `"personalAgent": {"source": "/home/operator/.config/soty/personal-agent.json"}`. Omission or `null` sets `SOTY_PERSONAL_AGENT_ENABLED=0`; enabling is refused in `legacy-baseline`. The two-step baseline/features image and storage gates are unchanged.
 
 The operator supplies a private `soty.personal-agent-installed.v1` file for the existing [runtime loader](../../server/personal-agent-configuration.js), with the exact intended account IDs in `accountIds`. The policy reuses that validator without network calls, binds the private bytes and file identity to the existing encrypted witness, and adds only `SOTY_PERSONAL_AGENT_ENABLED=1`, `SOTY_PERSONAL_AGENT_CONFIG_FILE=/run/secrets/soty-personal-agent.json`, and the matching read-only bind mount. Conflicting inherited settings or shadowing mounts are refused. No key, account, credential, provider configuration or authority is generated. Private contents and their digests do not enter the public receipt. Runtime actor/source checks still apply; policy validation does not claim a successful model turn or billing receipt.
