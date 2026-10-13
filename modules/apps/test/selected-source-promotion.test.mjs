@@ -188,6 +188,25 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
       await new Promise(done => setTimeout(done, 5)); } }
     for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
+    const policyResponse = await new Promise((done, reject) => {
+      const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed',
+        headers: { Host: new URL(f.profile.embedOrigin).host } }, res => { res.resume(); res.once('end', () => done(res)); });
+      req.once('error', reject); req.end();
+    });
+    assert.ok([401, 403].includes(policyResponse.statusCode));
+    assert.equal(policyResponse.headers['set-cookie'], undefined);
+    const policy = policyResponse.headers['content-security-policy'];
+    assert.match(policy, /(?:^|;\s*)connect-src 'self'(?:;|$)/u);
+    assert.match(policy, /(?:^|;\s*)form-action 'self'(?:;|$)/u);
+    assert.match(policy, /(?:^|;\s*)frame-src 'none'(?:;|$)/u);
+    assert.doesNotMatch(policy, /'unsafe-eval'|https:\/\/(?!root\.test)|\*/u);
+    if (pin.version === 2) {
+      assert.match(policy, /(?:^|;\s*)worker-src 'self'(?:;|$)/u);
+      assert.match(policy, /(?:^|;\s*)script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'(?:;|$)/u);
+    } else {
+      assert.match(policy, /(?:^|;\s*)worker-src 'none'(?:;|$)/u);
+      assert.doesNotMatch(policy, /wasm-unsafe-eval|script-src[^;]*blob:/u);
+    }
     if (pin.version === 2) {
       const launched = call({ domainId: initial.entry.domainId, path: '/' });
       assert.deepEqual(launched.entry, initial.entry); assert.equal(launched.entry.path, '/embed');

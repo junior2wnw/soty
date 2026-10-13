@@ -757,9 +757,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       if(session?.family.frameId===frame&&current(session))return session;}
     assertApps(false,'app_scoped_context_closed',403);
   }
-  function setPolicy(res, origin, scoped) {
+  function setPolicy(res, origin, scoped, rootWorkspace = false) {
     const frameOrigins = [...origins].join(' ');
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
+    // An admitted Root-signed workspace runs its existing bundled compiler and
+    // opaque, credential-free code preview. The exact reviewed pin selects this
+    // policy; neither an app request nor its response can enable it. Native CSP
+    // still intersects below. JS eval, external frames and network stay closed.
+    const scripts = rootWorkspace ? "'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'" : "'self' 'unsafe-inline'";
+    const workers = rootWorkspace ? "'self'" : "'none'";
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src 'self'; worker-src ${workers}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
@@ -769,8 +775,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     assertApps(!app.missing, 'app_not_found', 404);
     const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
     const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
-    setPolicy(res, app.appHost.origin, selected);
     const rootWorkspace=selected&&isRootSignedWorkspaceSource(scopedProfile.sourceProfile),frame=rootWorkspace?parseRequestFrame(req):undefined;
+    setPolicy(res, app.appHost.origin, selected, rootWorkspace);
     if(frame)frameRequests.set(req,frame);
     let path=requestPath(req.url||'/');const frameUrl=new URL(path,app.appHost.origin);
     if(rootWorkspace&&frameUrl.searchParams.has('sotyFrame')){
