@@ -169,7 +169,19 @@ export function createSourceAppBff(options) {
       return { ...await proveSession(session, context, 'continue'), resumedCookie: session.cookieToken };
     }
     const hostOptions = { minimumAccessRemainingMs: 190000 };
-    if (cookie(req, COOKIE)) return currentSession(req, context, 'continue', hostOptions);
+    const token = cookie(req, COOKIE);
+    if (token) {
+      const previous = await store.readSession(digest(token));
+      // Only expiry of an intact, exact RP-bound short carrier is a cache miss.
+      // A revoked/missing/foreign cookie remains a denial, never a lookup hint.
+      check(previous?.active === true && previous.semanticDigest === semanticDigest
+        && previous.identity.issuer === profile.issuer && previous.identity.subject === context.humanPrincipal.subject
+        && digest(previous.rootPrincipal) === digest(context.rootPrincipal)
+        && (contract.kind !== 'soty.workspace.v1' || previous.instanceId === context.instanceId), 'authentication_required', 401);
+      if (previous.expiresAt > clock()) return proveSession(previous, context, 'continue', hostOptions);
+      check(previous.rpMarker && Number.isSafeInteger(previous.createdAt) && Number.isSafeInteger(previous.expiresAt)
+        && previous.expiresAt <= previous.createdAt + 300000, 'authentication_required', 401);
+    }
     check(typeof store.findRenewableSession === 'function' && typeof store.rebindSession === 'function'
       && typeof value.rpSessions?.currentProof === 'function', 'authentication_required', 401);
     await freshRoot(context);
@@ -407,11 +419,15 @@ export function createSourceAppBff(options) {
     if (url.pathname === '/api/embed/session-continue') {
       const args = fields(input, ['requestId']); check(requestId(args.requestId));
       const current = await continueSession(req, context);
+      const shortSession = Boolean(current.session.rpMarker && Number.isSafeInteger(current.session.createdAt)
+        && Number.isSafeInteger(current.session.expiresAt) && current.session.expiresAt <= current.session.createdAt + 300000
+        && typeof store.findRenewableSession === 'function');
+      const deadline = Math.min(current.session.expiresAt, current.proof.sessionExpiresAt, context.expiresAt);
       const reply = headers => send(res, 200, { schema: 'soty.source-session-continuation.v1', ready: true, renewable: rootSigned || Boolean(current.session.rpMarker),
-        sessionExpiresAt: Math.min(current.proof.sessionExpiresAt, context.expiresAt),
+        sessionExpiresAt: deadline,...(shortSession ? { shortSession: true } : {}),
         // This is the usable Basic access bound. A raw AT may outlive the
         // original Source session or Root slot; the ACK must not widen either.
-        accessExpiresAt: Math.min(current.proof.expiresAt, current.proof.sessionExpiresAt, context.expiresAt),
+        accessExpiresAt: Math.min(current.proof.expiresAt, deadline),
         receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }, headers);
       if (current.resumedCookie) {
         await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);

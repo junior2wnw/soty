@@ -24,7 +24,7 @@ import { createEngagementTransaction } from './engagement-transaction.mjs';
 import { createAppDirectory, directoryOperations } from './directory.mjs';
 import { createAppAuthorityPort } from './authority-port.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
-import { createScopedGateway } from '../scoped-embed/gateway.mjs';
+import { createScopedGateway, scopedRenewalBindingDigest } from '../scoped-embed/gateway.mjs';
 import { approvedEmbedProfile, embedRoute } from '../scoped-embed/profile-dispatch.mjs';
 import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../scoped-embed/resource-route-adapters.mjs';
 import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource, isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
@@ -155,28 +155,31 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare','apps.scoped.context','apps.scoped.renew']),
     async executeAsync({ op, args = {}, actor }) {
       if(op==='apps.scoped.renew'){
-        args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId']);const id=appId(args.appId);
+        args=authenticatedArgs(actor,args);exact(args,['appId','handle','requestId','shortSessionHandoff']);const id=appId(args.appId);
+        assertApps(args.shortSessionHandoff===undefined||args.shortSessionHandoff===true,'app_scoped_renew_invalid',403);
         assertApps(scopedGateway&&typeof args.handle==='string'&&/^[A-Za-z0-9_-]{43}$/.test(args.handle)
           &&typeof args.requestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(args.requestId),'app_scoped_renew_invalid',403);
         for(const [key,value]of scopedRenewals)if(value.record.context.expiresAt<=now())scopedRenewals.delete(key);
-        const key=digest(id+'\0'+args.requestId),intent=digest(args.handle),prior=scopedRenewals.get(key);
+        const key=digest(id+'\0'+args.requestId),intent=digest(JSON.stringify([args.handle,args.shortSessionHandoff===true])),prior=scopedRenewals.get(key);
         assertActor(actor);
         let issued;
         if(prior){assertApps(prior.intent===intent&&prior.accountId===actor.accountId&&prior.deviceId===actor.deviceId,'app_scoped_renew_conflict',409);
           scopedGateway.context(prior.record);issued=prior;
         }else{
           assertApps(scopedRenewals.size<256,'app_scoped_renew_busy',429);
-          const {record:old,context:first,sourceOnly}=scopedGateway.ownedAttempt(actor,id,args.handle);
+          const {record:old,context:first,sourceOnly,shortSession}=scopedGateway.ownedAttempt(actor,id,args.handle);
+          assertApps(!args.shortSessionHandoff||shortSession===true,'app_scoped_short_session_required',403);
           if(!sourceOnly){assertApps(old?.session&&sessions.get(old.session.sessionKey)===old.session,'app_scoped_context_closed',403);
             const oldDecision=publications.recheckAccess(old.session.decision);assertRuntimeBinding(oldDecision,{requireReady:true});}
-          await Promise.resolve();assertActor(actor);const {record,context:fresh}=scopedGateway.ownedAttempt(actor,id,args.handle);
-          assertApps(record===old&&JSON.stringify(first)===JSON.stringify(fresh),'app_scoped_context_closed',403);
+          await Promise.resolve();assertActor(actor);const {record,context:fresh,shortSession:freshShort}=scopedGateway.ownedAttempt(actor,id,args.handle);
+          assertApps(record===old&&JSON.stringify(first)===JSON.stringify(fresh)&&(!args.shortSessionHandoff||freshShort===true),'app_scoped_context_closed',403);
           const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id,first.entry.domainId);
           assertApps(domain&&domain.origin===first.entry.origin,'app_scoped_context_closed',403);
           const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor});assertRuntimeBinding(decision,{requireReady:true});
           const scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:first.instanceId}),next=scoped.record.context;
           voiceSourceActors.set(scoped.record,actor);
-          const same=next.instanceId===first.instanceId&&(sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
+          const same=args.shortSessionHandoff===true?scopedRenewalBindingDigest(next)===scopedRenewalBindingDigest(first)
+            :next.instanceId===first.instanceId&&(sourceOnly?next.appId===first.appId&&decision.profile==='soty.selected-human-embed.v2'
             &&['rootPrincipal','humanPrincipal','sourceProfile','resource'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field]))
             :['profileDigest','appId','policyEpoch'].every(field=>next[field]===first[field])
               &&['rootPrincipal','humanPrincipal','sourceProfile','resource','target','entry'].every(field=>JSON.stringify(next[field])===JSON.stringify(first[field])));
@@ -184,13 +187,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const previousSession=old?.session??[...sessions.values()].find(value=>value.scopedRecord?.context.reference.id===first.reference.id);
           const frameId=isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined;
           if(isRootSignedWorkspaceSource(first.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
-          issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId};scopedRenewals.set(key,issued);
+          issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId,
+            ...(args.shortSessionHandoff?{bindingDigest:scopedRenewalBindingDigest(first)}:{})};scopedRenewals.set(key,issued);
         }
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
         assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
         return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
           runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
-          scopedRenewalRequestId:args.requestId,
+          scopedRenewalRequestId:args.requestId,...(issued.bindingDigest?{scopedRenewalBindingDigest:issued.bindingDigest}:{}),
           entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:'/embed'}};
       }
       if(op==='apps.scoped.context') {
@@ -202,6 +206,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const decision=publications.recheckAccess(record.session.decision);assertRuntimeBinding(decision,{requireReady:true});
           const sourceSession=scopedGateway.sourceContext(record);
           return {ready:true,appId:id,scopedSource:{...context.sourceProfile},target:{...context.target},expiresAt:context.expiresAt,
+            ...(record.sourceSession?.shortSession===true?{renewalBindingDigest:scopedRenewalBindingDigest(context)}:{}),
             ...(sourceSession?{sourceSession}:{} )};
         };
         // This deferred signed operation never joins the old slot actor to the

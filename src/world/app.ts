@@ -2002,9 +2002,10 @@ class WorldApplication {
             ...(result.scopedSource ? { scopedSource: result.scopedSource } : {}),
             ...(result.launchBinding === undefined ? {} : { launchBinding: result.launchBinding }),
             ...(cleanup ? { scopedCleanup: cleanup } : {}) }; }),
-      renew: this.options.openApp ? undefined : parameters => this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown}>('apps.scoped.renew',{...parameters}).then(result=>({
+      renew: this.options.openApp ? undefined : parameters => this.api.request<{launchUrl:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string}>('apps.scoped.renew',{...parameters}).then(result=>({
         url:result.launchUrl,entry:result.entry,runtimeProfile:result.runtimeProfile,scopedCloseHandle:result.scopedCloseHandle,
         scopedSlotExpiresAt:result.scopedSlotExpiresAt,scopedRenewalRequestId:result.scopedRenewalRequestId,scopedSource:result.scopedSource,scopedCleanup:this.options.appSlotCleanup?.(result)??undefined,
+        ...(result.scopedRenewalBindingDigest?{scopedRenewalBindingDigest:result.scopedRenewalBindingDigest}:{}),
       })),
     };
   }

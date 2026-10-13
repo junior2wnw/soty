@@ -51,6 +51,18 @@ test('Root SSO rejects a new Source session beyond its fresh Root deadline',asyn
   assert.equal(await f.helper.renew(),false);assert.equal(f.counts().swaps,0);assert.equal(f.counts().closes,1);
 });
 
+test('only an explicit short private ACK with the identical signed scope permits a changed finite witness',async()=>{
+  const source={...rootPin,version:1};
+  for(const mode of ['valid','scope','long','missing']){
+    const f=fixture({readContext:async handle=>({...await finiteContext(source,mode==='long'?1300001:1300000)(handle),
+      renewalBindingDigest:(handle==='new'&&mode==='scope'?'b':'a').repeat(64),
+      ...(mode==='missing'&&handle==='new'?{sourceSession:undefined}:{sourceSession:{ready:true,renewable:true,shortSession:true,
+        sessionExpiresAt:handle==='old'?1060000:mode==='long'?1300001:1300000,accessExpiresAt:handle==='old'?1060000:1300000}})}),
+      async request(input){return{handle:'new',source,slot:{},requestId:input.requestId,expiresAt:1300000,bindingDigest:'a'.repeat(64)};}},source);
+    assert.equal(await f.helper.refresh(),mode==='valid',mode);assert.equal(f.counts().swaps,mode==='valid'?1:0,mode);
+  }
+});
+
 test('return after a day asks for one fresh launch and cannot resurrect a closed or changed stage',async()=>{
   const view=new EventTarget(),document=new EventTarget(),controller=new AbortController();
   document.visibilityState='hidden';let current=true,time=1000000,lastLaunch=time,launches=0,finish;

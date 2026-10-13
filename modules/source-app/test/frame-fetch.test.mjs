@@ -30,3 +30,20 @@ test('no selector on standalone/old pages or foreign/non-Source requests; malfor
     assert.throws(()=>createSourceFrameFetch({fetch,href:'https://native.test/embed?sotyFrame='+suffix}),/source_frame_invalid/);
   assert.throws(()=>wrapped('/api/embed/query',{headers:{'x-soty-frame':'B'.repeat(43)}}),/source_frame_invalid/);
 });
+
+test('short refresh wake checks the exact parent and requestId, retries one read, and never repeats writes or network-unknown outcomes',async()=>{
+  const view=new EventTarget(),parentOrigin='https://root.test',calls=[],wakes=[];
+  view.setTimeout=setTimeout;view.clearTimeout=clearTimeout;
+  const emit=(data,source,origin)=>{const event=new Event('message');Object.assign(event,{data,source,origin});view.dispatchEvent(event);};
+  view.parent={postMessage(data,origin){assert.equal(origin,parentOrigin);wakes.push(data);
+    queueMicrotask(()=>{const reply={schema:'soty.source-frame-refreshed.v1',requestId:data.requestId,ready:true};
+      emit(reply,{},parentOrigin);emit(reply,view.parent,'https://foreign.test');emit({...reply,requestId:'wrong-request-id'},view.parent,parentOrigin);
+      emit(reply,view.parent,parentOrigin);});}};
+  const fetch=async(path,init)=>{calls.push({path,init});if(path==='/api/embed/invoke')throw Error('lost write ACK');
+    return new Response('{}',{status:calls.length===1?401:200});};
+  const wrapped=createSourceFrameFetch({fetch,href:'https://app.test/embed',shortSessionHandoff:true,view,parentOrigin});
+  assert.equal((await wrapped('/api/embed/context')).status,200);assert.equal(wakes.length,1);assert.equal(calls.length,2);
+  const body=JSON.stringify({requestId:'original-write-intent',input:{operation:'write'}});
+  await assert.rejects(wrapped('/api/embed/invoke',{method:'POST',body}));
+  assert.equal(calls.length,3);assert.equal(calls.at(-1).init.body,body);assert.equal(wakes.length,1);
+});

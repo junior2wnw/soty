@@ -2,8 +2,8 @@
  * private installed-channel Source ACK in fresh signed server context. */
 import { isScopedRuntimeProfile } from './app-launch.mjs';
 
-// Only the approved Root identity contract may acquire a new finite session.
-// RP profiles retain their original absolute family deadline.
+// Root identity may acquire a new finite session. RP keeps its family deadline;
+// only the explicit private short-session ACK can request a new short carrier.
 export const isRootSsoWorkspacePin = value => value?.id === 'soty.standard-workspace' && value.version === 2
   && value.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
 
@@ -63,6 +63,24 @@ export function attachScopedRenewalLoads({runtime,view,signal,current,profile,re
   return()=>{disposed=true;if(timer!==null){view.clearInterval(timer);timer=null;}};
 }
 
+/** Source-origin wake-up only. No handle, cookie, deadline or write intent is
+ * accepted from the frame. Current peer and Root-owned slot are checked twice. */
+export function attachSourceFrameRefresh({view,signal,current,readPeer,refresh}) {
+  const receive=async event=>{
+    const peer=readPeer(),data=event.data;
+    if(!current()||signal.aborted||!peer||event.source!==peer.window||event.origin!==peer.origin
+      ||!data||data.schema!=='soty.source-frame-refresh.v1'||typeof data.requestId!=='string'
+      ||!/^[A-Za-z0-9_-]{16,128}$/.test(data.requestId)
+      ||Object.keys(data).length!==2)return;
+    let ready=false;try{ready=await refresh();}catch{}
+    const fresh=readPeer();
+    if(current()&&!signal.aborted&&fresh?.window===peer.window&&fresh.origin===peer.origin)
+      peer.window.postMessage({schema:'soty.source-frame-refreshed.v1',requestId:data.requestId,ready:ready===true},peer.origin);
+  };
+  view.addEventListener('message',receive,{signal});
+  return()=>view.removeEventListener('message',receive);
+}
+
 export function createScopedSlotRenewal({ readBinding, readContext, request, bootstrap, commit, isCurrent,
   onState = () => {}, clock = Date.now } = {}) {
   let disposed = false, pending = null, flight = null, witness = null, captureLeases = 0;
@@ -70,7 +88,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     'BOOTSTRAP_REQUIRED', 'NO_LOCAL_PROFILE', 'CLEANUP_CREDENTIAL_CHANGED', 'authentication_required',
     'apps_authentication_required', 'apps_access_denied', 'app_access_revoked', 'app_access_expired',
     'app_access_changed', 'app_source_changed', 'app_policy_changed', 'app_scoped_context_closed',
-    'app_scoped_context_changed', 'app_scoped_renew_conflict', 'app_scoped_close_unavailable']);
+    'app_scoped_context_changed', 'app_scoped_renew_conflict', 'app_scoped_close_unavailable', 'app_scoped_short_session_required']);
   const denied = error => error?.status === 401 || error?.status === 403 || denialCodes.has(error?.code);
   const state = value => { if (!disposed) onState(value); };
   const live = binding => {
@@ -87,9 +105,11 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
   const sourceReady = (context, binding) => sameSource(context, binding) && context.sourceSession?.ready === true
     && context.sourceSession.renewable === true && Number.isSafeInteger(context.sourceSession.sessionExpiresAt)
     && context.sourceSession.sessionExpiresAt > clock()
-    && (!isRootSsoWorkspacePin(binding.source) || context.sourceSession.sessionExpiresAt <= context.expiresAt);
+    && (!(isRootSsoWorkspacePin(binding.source)||context.sourceSession.shortSession===true)
+      || context.sourceSession.sessionExpiresAt <= context.expiresAt)
+    && (context.sourceSession.shortSession!==true||context.sourceSession.sessionExpiresAt<=clock()+300000);
   const bindingPin = (context, binding) => JSON.stringify([binding.handle, binding.source.id, binding.source.version,
-    binding.source.digest, context.target?.revision ?? null, context.target?.digest ?? null]);
+    binding.source.digest, context.target?.revision ?? null, context.target?.digest ?? null, context.renewalBindingDigest ?? null]);
   // The original slot is server-bound to account/device/generation/resource.
   // This witness permits only an attempt after AT expiry, never readiness or
   // Source permission. A same-slot source/target mutation cannot reuse it.
@@ -98,8 +118,10 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     const pin = bindingPin(context, binding);
     if (witness && (witness.slot !== binding.slot || witness.pin !== pin)) { witness = null; return false; }
     if (sourceReady(context, binding)) {
-      if (witness && witness.until !== context.sourceSession.sessionExpiresAt && !isRootSsoWorkspacePin(binding.source)) { witness = null; return false; }
-      witness = { slot: binding.slot, pin, source: Object.freeze({ ...binding.source }), until: context.sourceSession.sessionExpiresAt };
+      if (witness && witness.until !== context.sourceSession.sessionExpiresAt && !isRootSsoWorkspacePin(binding.source)
+        && !(witness.shortSession&&context.sourceSession.shortSession===true)) { witness = null; return false; }
+      witness = { slot: binding.slot, pin, source: Object.freeze({ ...binding.source }), until: context.sourceSession.sessionExpiresAt,
+        shortSession:context.sourceSession.shortSession===true&&/^[a-f0-9]{64}$/.test(context.renewalBindingDigest??'') };
     } else if (context.sourceSession !== undefined && context.sourceSession !== null) witness = null;
     return witness?.slot === binding.slot && witness.pin === pin && witness.until > clock();
   }
@@ -113,7 +135,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     const context = await read(binding.handle);
     return live(binding) && mayAttempt(context, binding);
   }
-  async function renew() {
+  async function renew(shortSessionHandoff=false) {
     if (flight) return flight;
     flight = (async () => {
       let action;
@@ -121,19 +143,26 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
         const binding = readBinding();
         if (!binding || !live(binding)) return false;
         if (!pending) {
-          if (!await probe() || !live(binding)) return false;
-          pending = { binding, requestId: crypto.randomUUID().replaceAll('-', ''), sessionExpiresAt: witness.until, reply: null };
+          if (!shortSessionHandoff&&(!await probe() || !live(binding))) return false;
+          if(captureLeases>0||!live(binding))return false;
+          // Explicit refresh may outlive the old lease. The server's bounded
+          // private short ACK witness authorizes ONLY a same-scope attempt.
+          pending = { binding, requestId: crypto.randomUUID().replaceAll('-', ''), sessionExpiresAt: witness?.until,
+            shortSessionHandoff:shortSessionHandoff||witness?.shortSession===true, reply: null };
         }
         action = pending; state('pending');
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
-        const reply = action.reply ?? await request({ handle: action.binding.handle, requestId: action.requestId });
+        const reply = action.reply ?? await request({ handle: action.binding.handle, requestId: action.requestId,
+          ...(action.shortSessionHandoff?{shortSessionHandoff:true}:{}) });
         action.reply = reply;
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
         const hinted = await bootstrap(reply);
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
         const context = await read(reply.handle);
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }
-        if (!sourceReady(context, action.binding) || (!isRootSsoWorkspacePin(action.binding.source)
+        const shortReady=action.shortSessionHandoff&&context.sourceSession?.shortSession===true
+          &&/^[a-f0-9]{64}$/.test(reply.bindingDigest??'')&&context.renewalBindingDigest===reply.bindingDigest;
+        if (!sourceReady(context, action.binding) || (action.shortSessionHandoff?!shortReady:!isRootSsoWorkspacePin(action.binding.source)
           && context.sourceSession.sessionExpiresAt !== action.sessionExpiresAt)) {
           if (hinted === 'unknown' && context.sourceSession?.ready !== false && context.sourceSession?.renewable !== false) {
             state('unknown'); action.reply = null; action.cleanup = reply.cleanup; return false;
@@ -150,7 +179,7 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
     })();
     return flight;
   }
-  return Object.freeze({ probe, renew,
+  return Object.freeze({ probe, renew,refresh:()=>renew(true),
     beginCaptureLease() {
       if (disposed || flight || pending) throw new Error('capture_context_changed');
       captureLeases++; let released = false;

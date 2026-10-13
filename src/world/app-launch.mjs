@@ -245,7 +245,9 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       const entry=validateAppEntry(result.entry,{appId:selected.appId,domainId:selected.domainId,path:selected.path},shellUrl);
       requireValue(entry.origin===selected.origin&&Number.isSafeInteger(result.scopedSlotExpiresAt)&&result.scopedSlotExpiresAt>Date.now()
         &&result.scopedSlotExpiresAt<=Date.now()+310000&&typeof result.scopedRenewalRequestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(result.scopedRenewalRequestId),'invalid_app_scoped_launch');
-      return Object.freeze({url,handle:result.scopedCloseHandle,requestId:result.scopedRenewalRequestId,source,expiresAt:result.scopedSlotExpiresAt,cleanup:result.scopedCleanup,slot:Object.freeze({})});},
+      requireValue(result.scopedRenewalBindingDigest===undefined||/^[a-f0-9]{64}$/.test(result.scopedRenewalBindingDigest),'invalid_app_scoped_launch');
+      return Object.freeze({url,handle:result.scopedCloseHandle,requestId:result.scopedRenewalRequestId,source,expiresAt:result.scopedSlotExpiresAt,cleanup:result.scopedCleanup,
+        ...(result.scopedRenewalBindingDigest?{bindingDigest:result.scopedRenewalBindingDigest}:{}),slot:Object.freeze({})});},
     commitRenewal(previous,next){if(!current()||scoped?.slot!==previous.slot)return false;const old=scoped;
       scoped=Object.freeze({profile:old.profile,handle:next.handle,source:next.source,cleanup:next.cleanup,slot:next.slot});abandon(old);return true;},
     async openExternal(openPopup) {

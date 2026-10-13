@@ -18,7 +18,7 @@ import './project-feedback-picker.css';
 import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
 import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
 import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
-import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,type ScopedRenewReply} from './app-scoped-renewal.mjs';
+import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,attachSourceFrameRefresh,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
   presentation?: 'widget';
@@ -28,7 +28,7 @@ export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
-  renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
+  renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string;shortSessionHandoff?:true})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
   onBack(): void; onAccount(): Promise<void>;
   onFullscreenChange?(stage: HTMLElement, expanded: boolean): void;
@@ -217,6 +217,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
     current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,readBinding:readRenewBinding,
     onTickFailure:(error,binding)=>{frameGeneration++;detachRootWake.recoverExpired(error,binding);}});
+  attachSourceFrameRefresh({view,signal:controller.signal,current:()=>current()&&!runtimePending&&!!options.renew,
+    readPeer:()=>{const frame=runtime.querySelector('iframe');return launcher.runtimeProfile()==='soty.selected-human-embed.v2'
+      &&readRenewBinding()&&frame?.contentWindow&&selectedEntry?{window:frame.contentWindow,origin:selectedEntry.origin}:null;},
+    refresh:()=>renewal.refresh()});
   let releaseCaptureLease:(()=>void)|null=null;
   const projectCapture=mountProjectCaptureBridge({view,readPeer:readCapturePeer,
     onCaptureActive(active){if(active){releaseCaptureLease??=renewal.beginCaptureLease();}else{releaseCaptureLease?.();releaseCaptureLease=null;}},
