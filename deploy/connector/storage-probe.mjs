@@ -453,9 +453,13 @@ function profile(value, target) {
       if (origin.origin !== value[key] || origin.username || origin.password || !(origin.protocol === 'https:'
         || origin.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname) && Number(origin.port) >= 1024)) return false;
     }
+    const sameOriginWorkspace = value.schema === 'soty.selected-human-embed.v2'
+      && value.sourceProfile.id === 'soty.standard-workspace' && value.sourceProfile.version === 2
+      && value.sourceProfile.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'
+      && value.resource.selection.kind === 'soty.workspace.v1' && value.nativeOrigin === value.embedOrigin;
     const issuer = new URL(value.issuer);
     return issuer.href === value.issuer && issuer.origin === value.parentOrigin && issuer.pathname === '/human-identity' && !issuer.search && !issuer.hash
-      && new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname && value.parentOrigin !== value.embedOrigin;
+      && (new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace) && value.parentOrigin !== value.embedOrigin;
   } catch { return false; }
 }
 function readScopedApps8(db) {

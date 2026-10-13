@@ -513,3 +513,29 @@ export function assertUniversalPreparedness(handle, input, { allowFixture = fals
   check(canonicalJson(runtime.selected ?? null) === canonicalJson(expected.selected ?? null), 'universal_policy_runtime_mismatch');
   return freeze({ ok: true, schema: UNIVERSAL_RUNTIME_SCHEMA, phase: expected.phase, policyDigest: expected.policyDigest, fixtureOnly: expected.fixtureOnly });
 }
+
+/** Host CODE rotation only. Ordinary policy/current/witness admission stays strict. */
+export function assertInstalledModulePolicyTransition(oldHandle, nextHandle, { source, expectedOldSha256, approvedNewSha256, rollback = false }) {
+  const old = stateFor(oldHandle), next = stateFor(nextHandle);
+  check(old.receipt.phase === 'features' && next.receipt.phase === 'features', 'installed_module_rotation_policy');
+  const projected = structuredClone(old.receipt); delete projected.policyDigest;
+  const proposed = structuredClone(next.receipt); delete proposed.policyDigest;
+  const originalHash = projected.environment.find(item => item.name === installedHashSetting);
+  check(originalHash?.value === expectedOldSha256, 'installed_module_rotation_old_sha');
+  originalHash.value = approvedNewSha256;
+  check(canonicalJson(projected) === canonicalJson(proposed), 'installed_module_rotation_other_policy');
+  check(canonicalJson(old.context) === canonicalJson(next.context) && old.files.length === next.files.length, 'installed_module_rotation_other_policy');
+  for (const previous of old.files) {
+    const current = next.files.find(file => file.source === previous.source && file.target === previous.target);
+    check(current && current.visibility === previous.visibility && canonicalJson(current.chain) === canonicalJson(previous.chain), 'installed_module_rotation_path');
+    const module = previous.target === installedApplicationsTarget;
+    check(!module || previous.source === source, 'installed_module_rotation_path');
+    if (module) {
+      check(createHash('sha256').update(previous.bytes).digest('hex') === expectedOldSha256
+        && createHash('sha256').update(current.bytes).digest('hex') === approvedNewSha256, 'installed_module_rotation_new_sha');
+      if (rollback) check(previous.bytes.length === current.bytes.length && timingSafeEqual(previous.bytes, current.bytes), 'installed_module_rotation_rollback_bytes');
+    } else check(sameIdentity(previous.identity, current.identity) && previous.bytes.length === current.bytes.length
+      && timingSafeEqual(previous.bytes, current.bytes), 'installed_module_rotation_other_file');
+  }
+  return true;
+}
