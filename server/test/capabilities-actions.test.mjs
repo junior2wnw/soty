@@ -69,7 +69,14 @@ test('foreign account, sibling grant, wrong audience and revoked credentials can
   const f = await nativeHttpFixture(t), alice = nativeIdentity('Алиса'), bob = nativeIdentity('Боб');
   const a = await f.bootstrap(alice), b = await f.bootstrap(bob);
   const original = await f.issue(alice, a.accountId), second = await f.issue(bob, b.accountId);
-  const first = await post(f, original.token), id = first.body.invocation.invocationId;
+  const first = await post(f, original.token);
+  const errorCode = first.body?.error?.code;
+  const publicCodes = new Set(['invalid_input', 'payload_too_large', 'ingress_capacity', 'ingress_rate_limit',
+    'budget_exceeded', 'quota_exceeded', 'native_admission_limit', 'native_rate_limit', 'native_ledger_limit',
+    'service_unavailable', 'authorization_required', 'access_denied', 'delegation_denied',
+    'invocation_request_conflict', 'request_timeout', 'internal_error']);
+  assert.equal(first.status, 201, publicCodes.has(errorCode) ? 'notes.createDraft: ' + errorCode : 'notes.createDraft: expected HTTP 201');
+  const id = first.body.invocation.invocationId;
   const sibling = await f.issue(alice, a.accountId, { principalId: original.principalId });
   const wrongAudience = await f.issue(alice, a.accountId, { principalId: original.principalId, grantId: original.grantId, audience: `${f.origin}/other` });
   for (const token of [second.token, sibling.token]) {

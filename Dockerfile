@@ -23,7 +23,7 @@ RUN node scripts/verify-maintained-source-ci.mjs && pnpm run build
 RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run platform:test \
-  && SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
+  && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
   && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
   && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \

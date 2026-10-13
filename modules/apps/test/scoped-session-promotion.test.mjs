@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
-import {createScopedGatewayFixture,renewalSourceAvailable} from './support/scoped-gateway-fixture.mjs';
+import {randomBytes,createHash} from 'node:crypto';
+import {createScopedGatewayFixture,renewalSourceAvailable,diagnosticPhase} from './support/scoped-gateway-fixture.mjs';
 import {createClientWithStorage} from '../../connect/browser/client.mjs';
 
 const random=()=>randomBytes(32).toString('base64url');
@@ -9,7 +9,8 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;})
 async function ready(t,{long=true}={}){
   assert.equal(renewalSourceAvailable,true,'Explicit maintained Source renewal package required');
   const f=await createScopedGatewayFixture({t,renewal:true});
-  const initial=await f.launch();await f.nativeConsent(await f.login(f.reader,long));
+  const initial=await diagnosticPhase('ready.apps.launch',()=>f.launch());
+  await diagnosticPhase('ready.nativeConsent',async()=>f.nativeConsent(await f.login(f.reader,long)));
   assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,200);
   return{f,initial};
 }
@@ -24,7 +25,7 @@ function holdContinuation(f){
   return{entered:entered.promise,release:()=>release.resolve(),dispose(){release.resolve();server.removeListener('request',listener);}};
 }
 async function candidate(f,initial){
-  const requestId=random(),value=await f.reader.client.extension('apps.scoped.renew',{appId:f.appId,handle:initial.scopedCloseHandle,requestId});
+  const requestId=random(),value=await diagnosticPhase('candidate.apps.scoped.renew',()=>f.reader.client.extension('apps.scoped.renew',{appId:f.appId,handle:initial.scopedCloseHandle,requestId}));
   const prior=f.wire.cookies.get(new URL(f.embedded).hostname);
   const issue=await f.wire.request(f.embedded+'/_soty/session',{body:{ticket:new URL(value.launchUrl).hash.slice(1)}});
   assert.equal(issue.status,200);
@@ -82,7 +83,7 @@ for(const[action,close]of[
 ])test('deferred actual Source ACK cannot promote after '+action,{timeout:90000},async t=>{
   const{f,initial}=await ready(t),next=await candidate(f,initial),gate=holdContinuation(f);t.after(()=>gate.dispose());
   const pending=f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:next.requestId},headers:next.headers});await gate.entered;
-  await close(f,initial,next);gate.release();const response=await pending;
+  await diagnosticPhase('deferred.'+action,()=>close(f,initial,next));gate.release();const response=await pending;
   assert.equal(response.status>=400,true);assert.equal(response.headers['set-cookie']===undefined,true);
   assert.equal(f.wire.cookies.get(new URL(f.embedded).hostname)===next.prior,true);
 });
@@ -130,12 +131,51 @@ test('missing Origin and caller ready:true do not promote or create a Source rec
   assert.equal(f.wire.cookies.get(new URL(f.embedded).hostname)===next.prior,true);
 });
 
+async function currentAuthorityDigest(f){
+  const publication=await f.owner.client.extension('apps.publication.get',{appId:f.appId});
+  const app=(await f.owner.client.extension('apps.list')).apps.find(value=>value.id===f.appId);
+  assert.ok(app?.grants);assert.equal(publication.target.digest,f.target.digest);
+  return createHash('sha256').update(JSON.stringify({policyEpoch:publication.policyEpoch,target:publication.target,grants:app.grants})).digest('hex');
+}
+async function waitForCandidateExpiry(f,next){
+  const startWall=Date.now(),startMono=performance.now(),deadline=startMono+45000;
+  const read=()=>{const remaining=Math.floor(deadline-performance.now());assert.ok(remaining>0,'Root boot proof must actually expire within45s');
+    return f.wire.request(f.embedded+'/_soty/session',{headers:next.headers,timeoutMs:Math.min(10000,remaining)});};
+  assert.equal((await read()).status,200,'Candidate routing proof must initially be valid');
+  await new Promise(done=>setTimeout(done,31000));
+  while(performance.now()<deadline){
+    const response=await read(),code=response.body?.error?.code??response.body?.error;
+    assert.equal(response.headers['set-cookie']===undefined,true);
+    if(response.status===403){
+      assert.ok(['app_scoped_candidate_changed','app_session_check_failed'].includes(code),'Root expiry code required');
+      return{code,waitWallMs:Date.now()-startWall,waitMonoMs:Math.round(performance.now()-startMono)};
+    }
+    assert.equal(response.status,200,'Only live candidate or explicit Root expiry accepted');
+    await new Promise(done=>setTimeout(done,100));
+  }
+  assert.fail('Root boot proof did not actually expire within45s');
+}
+
 test('expired candidate routing proof fails before Source admission after real bounded 30-second boot lifetime', {timeout:90000},async t=>{
   const{f,initial}=await ready(t),next=await candidate(f,initial);
   const before=f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rebind_receipts').get().n;
-  await new Promise(done=>setTimeout(done,31000));
+  assert.equal(before,0);const authorityBefore=await currentAuthorityDigest(f);
+  assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,200,'Original session is live alongside the candidate');
+  const expiry=await waitForCandidateExpiry(f,next);
+  assert.ok(expiry.waitMonoMs>=30000,'Real30s boot lifetime remains exercised');
+  assert.equal(await currentAuthorityDigest(f),authorityBefore,'Current target and grants remain unchanged');
+  assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,200,'Original session survives candidate expiry');
+  assert.equal(f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rebind_receipts').get().n,before);
+  assert.equal(f.wire.cookies.get(new URL(f.embedded).hostname)===next.prior,true);
   const response=await f.wire.request(f.embedded+'/api/embed/session-continue',{body:{requestId:next.requestId},headers:next.headers});
-  assert.equal(response.status,403);assert.equal(response.headers['set-cookie']===undefined,true);
+  const responseCode=response.body?.error?.code??response.body?.error;
+  const knownCodes=new Set(['app_scoped_candidate_changed','app_session_check_failed','app_session_required','app_scoped_context_closed',
+    'app_access_revoked','app_offline','app_binding_changed','app_binding_pending','app_stream_closed','app_response_timeout','app_upstream_failed']);
+  const safeCode=knownCodes.has(responseCode)?responseCode:'unmatched_static_code';
+  t.diagnostic(JSON.stringify({schema:'soty.expired-candidate-precondition.v1',phase:'expiredCandidate.sessionContinue',
+    expiryCode:expiry.code,waitWallMs:expiry.waitWallMs,waitMonoMs:expiry.waitMonoMs,httpStatus:response.status,httpCode:safeCode,
+    currentAuthorityUnchanged:true,originalSessionReady:true,sourceAdmissionBefore:before}));
+  assert.equal(response.status,403,'expiredCandidate.sessionContinue: '+safeCode);assert.equal(response.headers['set-cookie']===undefined,true);
   assert.equal(f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rebind_receipts').get().n,before);
   assert.equal(f.wire.cookies.get(new URL(f.embedded).hostname)===next.prior,true);
 });

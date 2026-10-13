@@ -20,6 +20,15 @@ if(sourceAvailable){const {tsImport}=await import(pathToFileURL(join(sourceRoot,
   sdk=await import(pathToFileURL(join(sourceRoot,'server/soty-source-host.mjs')).href);
   try{await access(join(sourceRoot,'server/soty-rp-format.ts'));renewalSourceAvailable=true;}catch{} }
 export {sourceAvailable,renewalSourceAvailable};
+const sourceDiagnosticCodes=new Set(['apps_source_preparation_stale','apps_source_probe_timeout','apps_source_preparation_expired',
+  'apps_source_preparation_mismatch','app_binding_pending','app_binding_changed','app_scoped_context_closed',
+  'app_scoped_admission_required','app_scoped_session_required','app_publication_revision_conflict',
+  'app_publication_target_conflict','apps_owner_required','app_revoked','apps_closed','apps_authentication_required']);
+export async function diagnosticPhase(phase,operation){
+  try{return await operation();}
+  catch(error){const code=Object.getOwnPropertyDescriptor(error,'code')?.value;
+    assert.fail(phase+': '+(sourceDiagnosticCodes.has(code)?code:'unexpected_error'));}
+}
 const random=()=>randomBytes(32).toString('base64url');
 const wait=ms=>new Promise(done=>setTimeout(done,ms));
 export async function until(check,timeout=10000){const end=Date.now()+timeout;while(Date.now()<end){const value=await check();if(value)return value;await wait(30);}throw new Error('scoped_fixture_timeout');}
@@ -111,10 +120,10 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
   await writeFile(hostFile,JSON.stringify({schema:'soty.selected-embed-hosts.v1',entries:[{profile,key:sourceKey.toString('base64url')}]}));
   await startChild(true);
   const publication=await owner.client.extension('apps.publication.get',{appId});
-  const preparation=await owner.client.extension('apps.source.prepare',{appId,expectedPolicyEpoch:publication.policyEpoch,expectedTargetRevision:publication.activeTargetRevision,
-    source:{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,port:sourcePort,entryPath:'/embed',profile:SCOPED_RUNTIME_PROFILE}});
-  await owner.client.extension('apps.source.promote',{appId,requestId:'fixture-selected-source',expectedPolicyEpoch:publication.policyEpoch,expectedTargetRevision:publication.activeTargetRevision,
-    preparationId:preparation.preparationId,launchPolicy:'restricted',listed:false});
+  const preparation=await diagnosticPhase('fixture.apps.source.prepare',()=>owner.client.extension('apps.source.prepare',{appId,expectedPolicyEpoch:publication.policyEpoch,expectedTargetRevision:publication.activeTargetRevision,
+    source:{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,port:sourcePort,entryPath:'/embed',profile:SCOPED_RUNTIME_PROFILE}}));
+  await diagnosticPhase('fixture.apps.source.promote',()=>owner.client.extension('apps.source.promote',{appId,requestId:'fixture-selected-source',expectedPolicyEpoch:publication.policyEpoch,expectedTargetRevision:publication.activeTargetRevision,
+    preparationId:preparation.preparationId,launchPolicy:'restricted',listed:false}));
   await until(async()=>{const list=await owner.client.extension('apps.list');return list.apps.find(value=>value.id===appId)?.state==='ready';});
   const wire=new FixtureWire({backendPort,sourcePort,embedded,native,origin});let serial=0;
   async function launch(signer=reader){const value=await signer.client.extension('apps.launch',{appId});const url=new URL(value.launchUrl);
