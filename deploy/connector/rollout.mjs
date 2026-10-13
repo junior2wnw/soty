@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { installedModuleCandidateBase, installedModuleOriginalForRollout, restoreInstalledModuleOriginal, assertInstalledModuleOriginalProof } from './installed-module-rotation.mjs';
 import { SafeError } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
@@ -44,7 +45,9 @@ export function preservationHash(config) {
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');requireThat(s.queuedSha256==null||(/^[a-f0-9]{64}$/.test(s.queuedSha256)&&s.count>0&&s.activeJobs.every(j=>j.status==='queued')),'maintenance_queued_fingerprint_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,queuedSha256:s.queuedSha256||null};}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
-  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,record,attempts,sleep});this.state={phase:'new'};}
+  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,record,attempts,sleep});this.state={phase:'new'};}
+  candidateConfiguration(original){const candidateBase=this.installedModuleRotation?installedModuleCandidateBase(this.installedModuleRotation,original,this.args.universalPolicy,this.args.candidateImage):original;return createConfig(candidateBase,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy);}
+  async restoreOriginalCode(){if(this.installedModuleRotation)await restoreInstalledModuleOriginal(this.installedModuleRotation);}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
   storageContext(){return {engine:this.engine,probeImage:this.args.storageProbeImage,transactionId:this.args.transaction,getState:()=>this.state,record:fields=>this.note(this.state.phase,fields),probe:this.storageProbe,wait:this.sleep};}
   async guardStart(id,{running=false}={}){return guardStorageStart(this.storageContext(),await this.engine.inspect(id),{running});}
@@ -59,7 +62,7 @@ export class Rollout {
   async startApplication(id){
     const storageGuard=await this.guardStart(id);
     if(id===this.candidate?.Id)await this.checkUniversalCurrent();
-    else if(this.args.universalPolicy&&id===this.original.Id)await this.checkOriginalPreserved();
+    else if(this.args.universalPolicy&&id===this.original.Id){await this.checkOriginalPreserved();if(this.installedModuleRotation)await assertInstalledModuleOriginalProof(this.installedModuleRotation);}
     await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'starting'}});
     await this.reconcile(()=>this.engine.start(id),id,c=>c.State.Running&&c.Image===storageGuard.image);
     await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'confirmed'}});
@@ -73,7 +76,7 @@ export class Rollout {
     args={...args};
     requireThat(/^[a-f0-9]{64}$/.test(args.originalId)&&/^sha256:[a-f0-9]{64}$/.test(args.originalImage)&&/^sha256:[a-f0-9]{64}$/.test(args.candidateImage)&&/^[a-f0-9]{40}$/.test(args.revision)&&/^[a-f0-9]{16,40}$/.test(args.transaction),'invalid_exact_guards');
     requireThat(!args.preserveQueuedSha256||/^[a-f0-9]{64}$/.test(args.preserveQueuedSha256),'invalid_queued_fingerprint');
-    const old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
+    let old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
     requireThat(old.State.Running,'original_not_running');
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
     storageReaders(image);
@@ -104,7 +107,8 @@ export class Rollout {
       }
       requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
     }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');
-    this.args=args;this.original=old;this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy,args.universalPolicy);this.fingerprint=preservationHash(this.config);
+    if(this.installedModuleRotation){const measured=old;old=installedModuleOriginalForRollout(this.installedModuleRotation,measured);this.originalPolicySuspended=hash(measured.HostConfig.RestartPolicy)!==hash(old.HostConfig.RestartPolicy);}
+    this.args=args;this.original=old;this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=this.candidateConfiguration(old);this.fingerprint=preservationHash(this.config);
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
@@ -148,7 +152,7 @@ export class Rollout {
     requireThat(hash(old.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)
       ||this.originalPolicySuspended&&hash(old.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'original_configuration_changed');
     old.HostConfig.RestartPolicy=clone(this.original.HostConfig.RestartPolicy);
-    const fingerprint=preservationHash(createConfig(this.originalForComparison(old),this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy));
+    const fingerprint=preservationHash(this.candidateConfiguration(this.originalForComparison(old)));
     bindUniversalRollout(this.args.universalPolicy,this.universalBinding(fingerprint));
     if(this.candidate)this.validateCandidate(await this.engine.inspect(this.candidate.Id));
   }
@@ -181,7 +185,7 @@ export class Rollout {
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
       const originalNow=await this.engine.inspect(this.original.Id);
-      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy))===this.fingerprint,'original_configuration_changed');
+      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(this.candidateConfiguration(originalNow))===this.fingerprint,'original_configuration_changed');
       await this.checkUniversalCurrent();
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&!s.maintenance,'precheck_not_quiescent');
@@ -226,11 +230,12 @@ export class Rollout {
         // No mutation before stop is needed when preflight failed. An ambiguous
         // stop must be inspected before restoration can be claimed.
         const old=await this.engine.inspect(this.original.Id);
-        if(!stopped&&old.State.Running){if(error.code==='operation_unresolved')throw new SafeError('stop_outcome_unresolved');await this.note('aborted',{failureCode:error.code||'activation_failed'});throw error;}
+        if(!stopped&&old.State.Running){if(error.code==='operation_unresolved')throw new SafeError('stop_outcome_unresolved');await this.restoreOriginalCode();if(this.installedModuleRotation&&this.originalPolicySuspended){await this.checkOriginalPreserved();await this.restartPolicy(this.original.Id,this.original.HostConfig.RestartPolicy);}await this.note('aborted',{failureCode:error.code||'activation_failed'});throw error;}
         const candidate=await this.engine.inspect(this.candidate.Id);
         await this.restartPolicy(candidate.Id,{Name:'no',MaximumRetryCount:0});
         if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
         // Refuse before the legacy connector rollback helper can mutate storage.
+        await this.restoreOriginalCode();
         await this.guardStart(this.original.Id);
         if(entered){
           const current=await this.engine.inspect(this.candidate.Id),state=current.State;
