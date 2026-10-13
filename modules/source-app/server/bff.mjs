@@ -68,14 +68,16 @@ export function createSourceAppBff(options) {
     } finally { open = false; }
   }
   async function postCommit(context, authority) {
-    try { await freshRoot(context); await native.assertCurrent(authority); await freshRoot(context);
+    try { await freshRoot(context, authority); await native.assertCurrent(authority); await freshRoot(context, authority);
       if (rootSigned) await native.assertCurrent(authority); }
     catch { throw new SourceAppError('source_app_effect_unknown', 503); }
   }
-  async function freshRoot(context) {
+  async function freshRoot(context, authority) {
     check(!closed, 'source_app_closed', 503);
     const actual = await readAuthority({ reference: context.reference, connector: profile.connector });
-    check(digest(actual) === digest(context) && actual.expiresAt > clock(), 'source_app_root_changed', 403); return actual;
+    check(digest(actual) === digest(context) && actual.expiresAt > clock(), 'source_app_root_changed', 403);
+    if(rootSigned&&authority)native.refreshRoot(authority,actual);
+    return actual;
   }
   function binding(context, identity, operation, sessionIdHash) {
     return deepFreeze({ identity: { issuer: identity.issuer, subject: identity.subject ?? identity.sub },
@@ -95,7 +97,7 @@ export function createSourceAppBff(options) {
     if (rootSigned) {
       check(session.rootWitness === true && session.rpMarker === undefined && session.expiresAt <= context.expiresAt, 'authentication_required', 401);
       const authority = await native.captureRoot(binding(context, session.identity, operation, session.idHash), verified);
-      await native.assertCurrent(authority); await freshRoot(context); await native.assertCurrent(authority);
+      await native.assertCurrent(authority); await freshRoot(context, authority); await native.assertCurrent(authority);
       return { session, authority, proof: { issuer: profile.issuer, sub: session.identity.subject,
         expiresAt: session.expiresAt, sessionExpiresAt: session.expiresAt } };
     }
@@ -160,7 +162,7 @@ export function createSourceAppBff(options) {
         ...(context.instanceId === undefined ? {} : { instanceId: context.instanceId }), active: true,
         createdAt: clock(), expiresAt: Math.min(context.expiresAt, clock() + 300000) });
       const authority = await native.captureRoot(binding(context, identity, 'root-session', record.idHash), verified);
-      await native.assertCurrent(authority); await freshRoot(context);
+      await native.assertCurrent(authority); await freshRoot(context, authority);
       const result = await storageCommit(store.createRootSession, [record], () => native.commitRootSession(authority));
       fields(result, ['idHash']); check(typeof result.idHash === 'string' && /^[a-f0-9]{64}$/u.test(result.idHash), 'source_app_commit_unknown', 503);
       await postCommit(context, authority);
@@ -430,7 +432,7 @@ export function createSourceAppBff(options) {
         accessExpiresAt: Math.min(current.proof.expiresAt, deadline),
         receiptDigest: digest({ requestId: args.requestId, sessionIdHash: current.session.idHash, context: context.reference }) }, headers);
       if (current.resumedCookie) {
-        await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+        await freshRoot(context, current.authority); await native.assertCurrent(current.authority); await freshRoot(context, current.authority);
         await native.assertCurrent(current.authority);
         // Rebind already used the final Native fence inside the storage CAS;
         // these post-await checks also support async SQL Native hosts.
@@ -446,7 +448,7 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, operation);
       const data = await native.call(current.authority, operation, args);
       if (operation === 'execute') await postCommit(context, current.authority);
-      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+      else { await freshRoot(context, current.authority); await native.assertCurrent(current.authority); await freshRoot(context, current.authority);
         if (rootSigned) await native.assertCurrent(current.authority); }
       send(res, 200, { ok: true, data }); return;
     }
@@ -467,7 +469,7 @@ export function createSourceAppBff(options) {
       const current = await currentSession(req, context, 'feedback.' + feedbackOperation);
       const data = await native.feedback(current.authority, feedbackOperation, args, contextRef);
       if (['submit', 'reply', 'status', 'accept'].includes(feedbackOperation)) await postCommit(context, current.authority);
-      else { await freshRoot(context); await native.assertCurrent(current.authority); await freshRoot(context);
+      else { await freshRoot(context, current.authority); await native.assertCurrent(current.authority); await freshRoot(context, current.authority);
         if (rootSigned) await native.assertCurrent(current.authority); }
       let output;
       try { output = feedbackOutput(feedbackOperation, data); }

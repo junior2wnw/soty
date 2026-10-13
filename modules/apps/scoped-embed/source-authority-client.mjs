@@ -13,6 +13,16 @@ export function isVerifiedRootContext(proof) { const row=verifiedRoot.get(proof)
 export function readVerifiedRootContext(proof, profileDigest) {
   need(isVerifiedRootContext(proof)&&proof.profileDigest===profileDigest,'source_root_witness_invalid',403);return proof;
 }
+// Internal re-witnessing preserves the original Native proof and its ACL/ABA
+// snapshot. Only a newly verified signature for the exact same Root context
+// can replace the elapsed signature deadline; no session/context TTL changes.
+export function refreshVerifiedRootContext(original, fresh) {
+  const before=verifiedRoot.get(original),next=verifiedRoot.get(fresh);
+  need(before&&next&&before.clock===next.clock&&isVerifiedRootContext(fresh)
+    &&hash(original)===hash(fresh)&&fresh.expiresAt>next.clock()
+    &&next.expiresAt<=fresh.expiresAt,'source_root_witness_invalid',403);
+  verifiedRoot.set(original,{expiresAt:next.expiresAt,clock:next.clock});
+}
 
 // Spend1s less than the unchanged10s receiver bound; only transport issuance
 // tolerates bounded issuer-ahead skew. No Root/Native lifetime is extended.

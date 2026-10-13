@@ -2,7 +2,7 @@ import { check, fields, syncResult, deepFreeze, jsonCopy, SourceAppError } from 
 import { standardSourceContract } from './standard-profile.mjs';
 import { createWorkspaceContextAuthority, workspaceMutationRef, contextAfter, workspaceReceipt } from './workspace-context.mjs';
 import { digest } from './wire.mjs';
-import { isVerifiedRootContext } from '../../apps/scoped-embed/source-authority-client.mjs';
+import { isVerifiedRootContext, refreshVerifiedRootContext } from '../../apps/scoped-embed/source-authority-client.mjs';
 
 const approved = new WeakSet();
 const approvedCommits = new WeakSet();
@@ -106,6 +106,11 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     } finally { final?.seal(); }
   }
   return Object.freeze({
+    refreshRoot(proof, verifiedRootContext) {
+      const captured=proofs.get(proof);
+      check(!closed&&!fencing&&captured?.verifiedRoot,'source_root_witness_invalid',403);
+      refreshVerifiedRootContext(captured.verifiedRoot,verifiedRootContext);
+    },
     async captureRoot(binding, verifiedRootContext) {
       check(!closed && contract.auth.proof === 'root-signed-current-context.v1' && isVerifiedRootContext(verifiedRootContext)
         && typeof port.captureRoot === 'function', 'source_root_witness_invalid', 403);
