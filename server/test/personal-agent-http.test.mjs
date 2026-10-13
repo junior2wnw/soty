@@ -689,6 +689,11 @@ test('local receipt tools read and cancel the original owned job after restart w
   const cancelled = await f.turn(f.alice, 'local_receipt_cancel', `Cancel local ${jobId}`);
   assert.equal(cancelled.ok, true); assert.equal(cancelled.evidence[0].data.status, 'succeeded');
   assert.equal(f.service().locals.connectorService.store.state.jobs.length, 1);
+  const queued = await f.turn(f.alice, 'local_receipt_cancel_new', 'Local task Cancel before execution');
+  assert.equal(queued.ok, true); const queuedId = queued.evidence[0].data.jobId;
+  const stopped = await f.turn(f.alice, 'local_receipt_cancel_queued', `Cancel local ${queuedId}`);
+  assert.equal(stopped.ok, true); assert.equal(stopped.evidence[0].data.status, 'cancelled');
+  assert.equal(stopped.evidence[0].data.resultAvailable, true); assert.equal(stopped.evidence[0].data.completionVerified, false);
 });
 
 test('opt-in current local admission observes Connect device revoke after enqueue and before lease', async t => {

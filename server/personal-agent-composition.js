@@ -201,7 +201,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         need(job?.schema === 'soty.connector-job.v4' && job.deviceId === selected.hostDeviceId, 'agent_source_unavailable');
         return { jobId: job.id, status: job.status, cancelRequested: job.cancelRequested === true,
           outcomeUnknown: job.executionUncertain === true,
-          completionVerified: job.executionUncertain !== true && Boolean(job.result) && ['succeeded', 'failed', 'cancelled'].includes(job.status) };
+          resultAvailable: Boolean(job.result),
+          completionVerified: job.executionUncertain !== true && job.status === 'succeeded' && job.result?.ok === true && job.result.exitCode === 0 };
       };
       tools.run_on_my_device = { capability: 'root_owned_local_task',
         description: 'Queue one task on the current user\'s approved local device/workspace. A queued receipt is not task completion.',
