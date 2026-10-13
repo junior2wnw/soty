@@ -11,6 +11,7 @@ export interface AppInspection {
   };
   publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
+    launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
     requiredBindingVersion: 1 | 2;
     binding: { state: 'offline' | 'legacy' | 'update-required' | 'pending' | 'bound' | 'rejected' | 'unavailable' };

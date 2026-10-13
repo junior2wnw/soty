@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { createServer, request } from 'node:http';
 import WebSocket from 'ws';
 import { createAppsService } from '../server/index.mjs';
-import { STANDARD_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
+import { STANDARD_SELECTED_SOURCE_V3, STANDARD_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
+import { preferredInspectionEntry } from '../../../src/world/app-deployment.mjs';
+import { validateAppEntry } from '../../../src/world/app-launch.mjs';
 import { migrateAppsSchema, inspectAppsSchema, ensureInitialPublication, ensureCanonicalDomain, runtimeTargetDigest } from '../server/schema.mjs';
 import { createPublicationRegistry } from '../server/publications.mjs';
 import { createSourceRegistry } from '../server/sources.mjs';
@@ -41,8 +43,8 @@ function fixture(t, version = 8, profileVersion = 2, options = {}) {
   const profile = { schema: target.profile, appId, connector: identity, target: { revision: target.revision, digest: target.digest },
     sourceProfile: options.pin ?? (profileVersion === 2 ? { ...HIVE_SELECTED_SOURCE } : { id: 'planner.selected-workspace', version: 1, digest: '9'.repeat(64) }),
     resource: { registryId: 'soty', tenantId: owner.accountId, appId, environmentId: 'production', resourceId: 'selected',
-      ...(profileVersion === 2 ? { selection: { kind: options.pin?.id === 'soty.standard-workspace' ? 'soty.workspace.v1' : 'hive.project.v1', nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
-    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.publicEntry ? 'https://selected.apps.test' : options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test',
+      ...(profileVersion === 2 ? { selection: { kind: options.selectionKind ?? (options.pin?.id === 'soty.standard-workspace' ? 'soty.workspace.v1' : 'hive.project.v1'), nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
+    issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.embedOrigin ?? (options.publicEntry ? 'https://selected.apps.test' : options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test'),
     nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
   if (options.publicEntry) {
     const template = 'https://{slug}.apps.test', zone = 'zone_' + createHash('sha256').update(template).digest('hex').slice(0, 32);
@@ -139,11 +141,14 @@ test('valid Apps8 preparation still requires current owner and exact target/poli
 
 
 test('actual Apps launch maps a saved root path only for admitted workspace2, preserving actor and immutable target', async t => {
-  for (const pin of [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE]) await t.test('workspace' + pin.version, async sub => {
+  for (const pin of [STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE, STANDARD_SELECTED_SOURCE_V3, HIVE_SELECTED_SOURCE]) await t.test(pin.id + ':' + pin.version, async sub => {
+    const rootWorkspace = pin === STANDARD_ROOT_WORKSPACE_SOURCE;
     const directory = mkdtempSync(join(tmpdir(), 'soty-saved-entry-')), databasePath = join(directory, 'apps.sqlite');
-    const template = 'https://{appId}.apps.test', f = fixture(sub, 8, 2, { databasePath, template, pin, publicEntry: pin.version === 2 });
+    const template = 'https://{appId}.apps.test', f = fixture(sub, 8, 2, { databasePath, template, pin, publicEntry: true,
+      ...(pin === STANDARD_SELECTED_SOURCE_V3 ? { selectionKind: 'soty.resource.v1' } : {}),
+      embedOrigin: [STANDARD_ROOT_WORKSPACE_SOURCE, HIVE_SELECTED_SOURCE].includes(pin) ? 'https://selected.apps.test' : template.replace('{appId}', 'app-' + 'a'.repeat(32)) });
     const prepared = await f.prepare(), intent = f.intent(prepared);
-    if (pin.version === 2) Object.assign(intent, { launchPolicy: 'anyone', listed: true, exposureAck: {
+    if (rootWorkspace) Object.assign(intent, { launchPolicy: 'anyone', listed: true, exposureAck: {
       scope: 'authenticated-workspace', targetRevision: f.target.revision, targetDigest: f.target.digest, profile: f.target.profile } });
     f.promote(intent); const before = f.rows();
     const outsider = Object.freeze({ accountId: 'new-ungranted-person', deviceId: 'new-person-browser' });
@@ -182,11 +187,20 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
     ws.send(JSON.stringify({ type: 'auth', schema: 'soty.apps-channel.v1', ...f.identity, token: 'synthetic-channel-token',
       capabilities: { targetBindingVersions: [1, 2], runtimeProfiles: ['soty.relay-restricted.v1', f.profile.schema] } }));
-    const call = args => service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main', ...(pin.version === 2 ? { domainId: 'dom_' + 'b'.repeat(32) } : {}), ...args } });
+    const inspection = service.execute({ op: 'apps.inspect', actor: f.owner, args: { appId: f.appId } });
+    const preferred = preferredInspectionEntry(inspection);
+    assert.equal(preferred.origin, f.profile.embedOrigin, 'ordinary Open chooses the admitted origin, not an arbitrary active alias');
+    assert.deepEqual(service.execute({ op: 'apps.list', actor: f.owner }).apps[0].entry, preferred, 'card and settings use the same Source projection');
+    const resolved = service.execute({ op: 'apps.entry.get', actor: f.owner, args: { appId: f.appId, domainId: preferred.domainId } }).entry;
+    assert.deepEqual(validateAppEntry(resolved, { appId: f.appId, domainId: preferred.domainId }, f.profile.parentOrigin), { appId: f.appId, ...preferred });
+    const call = args => service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main', domainId: preferred.domainId, ...args } });
     const deadline = Date.now() + 3000; let initial;
     while (!initial) { try { initial = call({ path: '/embed' }); } catch (error) {
       if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
       await new Promise(done => setTimeout(done, 5)); } }
+    assert.equal(initial.entry.origin, f.profile.embedOrigin);
+    const wrongAddress = inspection.addresses.canonical.origin === preferred.origin ? inspection.addresses.aliases[0] : inspection.addresses.canonical;
+    assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'the other same-app address is still fenced');
     for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     const policyResponse = await new Promise((done, reject) => {
       const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed',
@@ -200,14 +214,14 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     assert.match(policy, /(?:^|;\s*)form-action 'self'(?:;|$)/u);
     assert.match(policy, /(?:^|;\s*)frame-src 'none'(?:;|$)/u);
     assert.doesNotMatch(policy, /'unsafe-eval'|https:\/\/(?!root\.test)|\*/u);
-    if (pin.version === 2) {
+    if (rootWorkspace) {
       assert.match(policy, /(?:^|;\s*)worker-src 'self'(?:;|$)/u);
       assert.match(policy, /(?:^|;\s*)script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'(?:;|$)/u);
     } else {
       assert.match(policy, /(?:^|;\s*)worker-src 'none'(?:;|$)/u);
       assert.doesNotMatch(policy, /wasm-unsafe-eval|script-src[^;]*blob:/u);
     }
-    if (pin.version === 2) {
+    if (rootWorkspace) {
       const launched = call({ domainId: initial.entry.domainId, path: '/' });
       assert.deepEqual(launched.entry, initial.entry); assert.equal(launched.entry.path, '/embed');
       assert.deepEqual(launched.scopedSource, pin); assert.equal(new URL(launched.launchUrl).searchParams.get('path'), '/embed');
@@ -316,6 +330,41 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
     assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');
   });
+});
+
+test('Source preferred entry fails closed for missing declaration, wrong app, inactive alias and revocation', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'soty-source-entry-denied-')), databasePath = join(directory, 'apps.sqlite');
+  const template = 'https://{appId}.apps.test', f = fixture(t, 8, 2, { databasePath, template, publicEntry: true });
+  f.promote(f.intent(await f.prepare())); const before = f.rows();
+  let active = true, service;
+  const options = { databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
+    allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, withAuthorityFence: callback => callback(),
+    actorActive: actor => active && actor?.accountId === f.owner.accountId && actor?.deviceId === f.owner.deviceId };
+  t.after(() => { service?.close(); rmSync(directory, { recursive: true, force: true }); });
+  const open = profiles => { service?.close(); service = createAppsService({ ...options, scopedEmbedProfiles: profiles }); };
+  const call = (op, args = {}) => service.execute({ op, actor: f.owner, args: { ...args, ...(op === 'apps.list' ? {} : { appId: f.appId }) } });
+  const unavailable = () => {
+    const snapshot = call('apps.inspect'); assert.equal(snapshot.source.launchEntry, null);
+    assert.equal(snapshot.actions.canPreview, false); assert.equal(preferredInspectionEntry(snapshot), undefined);
+    assert.equal(call('apps.list').apps[0].entry, undefined);
+  };
+  open([]); unavailable();
+  const wrongApp = 'app-' + 'f'.repeat(32);
+  open([{ ...f.profile, appId: wrongApp, resource: { ...f.profile.resource, appId: wrongApp } }]); unavailable();
+  assert.deepEqual(f.rows(), before, 'navigation metadata changes no app, policy, target, admission or grant');
+  open([f.profile]); const preferred = preferredInspectionEntry(call('apps.inspect'));
+  assert.equal(preferred.origin, f.profile.embedOrigin);
+  active = false;
+  assert.throws(() => call('apps.inspect'), { code: 'apps_authentication_required' });
+  assert.throws(() => call('apps.entry.get', { domainId: preferred.domainId }), { code: 'apps_authentication_required' });
+  active = true;
+  const policy = call('apps.publication.get');
+  call('apps.publication.update', { requestId: 'remove-admitted-alias', expectedPolicyEpoch: policy.policyEpoch,
+    expectedTargetRevision: policy.activeTargetRevision, launchPolicy: 'restricted', listed: false, activeDomainIds: [] });
+  unavailable();
+  assert.throws(() => call('apps.entry.get', { domainId: preferred.domainId }), { code: 'app_unavailable' });
+  call('apps.revoke'); unavailable();
+  assert.throws(() => call('apps.entry.get', { domainId: preferred.domainId }), { code: 'app_unavailable' });
 });
 
 

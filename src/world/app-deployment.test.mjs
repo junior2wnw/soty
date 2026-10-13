@@ -26,6 +26,20 @@ test('fresh metadata chooses an enabled named entry, then canonical; revoked or 
   value.source.entryPath = '//outside.example'; assert.equal(preferredInspectionEntry(value), undefined);
   value.source.entryPath = '/'; value.app.state = 'revoked'; assert.equal(preferredInspectionEntry(value), undefined);
 });
+test('Source Open uses the admitted address and never falls back to another app or alias', () => {
+  const value = inspection(); value.source.profile = 'soty.selected-human-embed.v2'; value.source.entryPath = '/embed';
+  assert.equal(preferredInspectionEntry(value), undefined, 'old or missing Source metadata is unavailable');
+  value.source.launchEntry = { domainId: canonicalId, origin: value.addresses.canonical.origin, path: '/embed' };
+  assert.deepEqual(preferredInspectionEntry(value), value.source.launchEntry, 'Perem keeps canonical despite an active alias');
+  value.source.launchEntry = { domainId: aliasId, origin: value.addresses.aliases[0].origin, path: '/embed' };
+  assert.deepEqual(preferredInspectionEntry(value), value.source.launchEntry, 'HIVE keeps its admitted alias');
+  for (const bad of [null, { ...value.source.launchEntry, domainId: 'dom_' + 'f'.repeat(32) },
+    { ...value.source.launchEntry, origin: 'https://other.example' }, { ...value.source.launchEntry, path: '/different' }]) {
+    value.source.launchEntry = bad; assert.equal(preferredInspectionEntry(value), undefined);
+  }
+  value.source.launchEntry = { domainId: aliasId, origin: value.addresses.aliases[0].origin, path: '/embed' };
+  value.addresses.aliases[0].active = false; assert.equal(preferredInspectionEntry(value), undefined);
+});
 test('invalid and ambiguous deployment data cannot generate operator instructions', () => {
   for (const mutate of [
     value => { value.shellOrigin = 'https://user:secret@shell.example'; },

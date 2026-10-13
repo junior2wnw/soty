@@ -1,5 +1,6 @@
 import { AppsError, assertApps, appId, cleanGrants, connectorKey, runtimePath, textId } from './protocol.mjs';
 import { normalizeNamedAppZone } from './domain-policy.mjs';
+import { selectedRuntimeProfile } from './schema.mjs';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isAsync = value => value && typeof value.then === 'function';
@@ -56,7 +57,7 @@ function deviceView(row, target, ownerAccountId) {
 // Caller supplies registries on this SAME DatabaseSync and a synchronous,
 // content-free observation of the supplied immutable target. No transport call
 // or await is allowed while this read snapshot is open.
-export function createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, shellOrigin,
+export function createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, inspectLaunchEntry, shellOrigin,
   nameClaimsEnabled = false, namedAppZone = '', now = Date.now } = {}) {
   assertApps(db && typeof db.prepare === 'function' && typeof db.exec === 'function'
     && typeof assertActor === 'function' && typeof domains?.execute === 'function'
@@ -67,6 +68,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
   assertApps(typeof now === 'function', 'apps_inspection_clock_invalid', 500);
   assertApps(inspectBinding === undefined || typeof inspectBinding === 'function', 'apps_inspection_dependencies_required', 500);
   assertApps(inspectIntegrations === undefined || typeof inspectIntegrations === 'function', 'apps_inspection_dependencies_required', 500);
+  assertApps(inspectLaunchEntry === undefined || typeof inspectLaunchEntry === 'function', 'apps_inspection_dependencies_required', 500);
   const namedOrigin = normalizeNamedAppZone(namedAppZone);
   const claimOrigin = nameClaimsEnabled ? namedOrigin || null : null;
   function authenticate(actor) {
@@ -160,6 +162,12 @@ export function createAppInspection({ db, assertActor, domains, publications, in
         const canonicalDomains = addresses.domains.filter(item => item.role === 'canonical');
         assertApps(canonicalDomains.length <= 1 && canonicalDomains.every(item => item.state === 'bound'), 'apps_registry_corrupt', 500);
         const canonical = canonicalDomains[0];
+        const scoped = selectedRuntimeProfile(target.profile);
+        const launchEntry = canLink && scoped ? inspectLaunchEntry?.(sourceContext, actor) ?? null : null;
+        assertApps(launchEntry === null || (isObject(launchEntry) && !isAsync(launchEntry)
+          && Object.keys(launchEntry).sort().join(',') === 'domainId,origin,path' && launchEntry.path === entryPath
+          && addresses.domains.some(item => item.id === launchEntry.domainId && item.origin === launchEntry.origin
+            && item.state === 'bound' && (item.role === 'canonical' || active.has(item.id)))), 'apps_launch_entry_invalid', 500);
         const aliases = addresses.domains.filter(item => item.role === 'alias').map(item => {
           const isActive = active.has(item.id) && item.state === 'bound';
           return { id: item.id, slug: item.slug, origin: item.origin, state: item.state, active: isActive,
@@ -182,9 +190,10 @@ export function createAppInspection({ db, assertActor, domains, publications, in
             activeDomainIds: [...policy.activeDomainIds], activeTargetRevision: policy.activeTargetRevision },
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
             port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,
+            ...(scoped ? { launchEntry } : {}),
             requiredBindingVersion: policy.requiredBindingVersion, binding, observation, ...(integrations.length ? { integrations } : {}) },
           actions: { canReserveName: enabled && Boolean(claimOrigin) && limits.usedByApp < limits.perApp && limits.usedByAccount < limits.perAccount,
-            canEdit: enabled, canPublish: enabled, canPreview: canLink && Boolean(canonical || aliases.some(item => item.active)) },
+            canEdit: enabled, canPublish: enabled, canPreview: canLink && (scoped ? Boolean(launchEntry) : Boolean(canonical || aliases.some(item => item.active))) },
         };
         db.exec('COMMIT');
         return result;

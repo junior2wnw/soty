@@ -83,7 +83,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
   try {
-    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, now,
+    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, inspectIntegrations, inspectLaunchEntry, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
     appAuthority = createAppAuthorityPort({ db, assertActor, withAuthorityFence, resolveEntry,requireScopedTarget:target=>scopedAdmissions.require(target) });
@@ -300,7 +300,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // One statement observes the current app, target and publication together.
     // A candidates row can predate another writer's revoke or source change.
     const current = db.prepare(`SELECT a.*,t.connector_key AS target_connector_key,t.revision AS target_revision,
-      t.digest AS target_digest,t.port AS target_port,t.entry_path AS target_entry_path,
+      t.digest AS target_digest,t.port AS target_port,t.entry_path AS target_entry_path,t.profile AS target_profile,
       d.identity_json,d.name AS device_name,p.launch_policy,
       CASE WHEN a.state='enabled' THEN (SELECT count(*) FROM app_publication_domains pd
         JOIN app_domains ad ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id
@@ -318,7 +318,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const legacyState = { offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' };
     const state = current.state === 'revoked' ? 'revoked' : legacyState[observed.state];
     let entry;
-    if (current.state === 'enabled' && actor.accountId === current.owner_account_id && current.active_named_address_count > 0) {
+    if (current.state === 'enabled' && actor.accountId === current.owner_account_id && selectedRuntimeProfile(current.target_profile)) {
+      entry = inspectLaunchEntry({ app: { id: current.id, ownerAccountId: current.owner_account_id, state: current.state },
+        target: { appId: current.id, revision: current.target_revision, digest: current.target_digest, profile: current.target_profile,
+          connectorKey: current.target_connector_key, port: current.target_port, entryPath: current.target_entry_path } }, actor);
+    } else if (current.state === 'enabled' && actor.accountId === current.owner_account_id && current.active_named_address_count > 0) {
       const address = db.prepare('SELECT ad.id,ad.origin FROM app_publication_domains pd JOIN app_domains ad '
         + 'ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id '
         + "JOIN app_domain_zones z ON z.id=ad.zone_id AND z.kind='named' "
@@ -335,6 +339,29 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         port: current.target_port, entryPath: current.target_entry_path, grants: JSON.parse(current.grants_json),
         publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count },
         ...(entry ? { entry } : {}) } : {}) };
+  }
+  // Navigation metadata only. Launch/instance creation still recheck the exact
+  // requested domain, current publication, admission and Source origin fence.
+  function inspectLaunchEntry({ app, target }, actor) {
+    if (app.state !== 'enabled' || !selectedRuntimeProfile(target.profile)) return null;
+    let profile;
+    try { profile = scopedAdmissions.require({ ...target, ownerAccountId: app.ownerAccountId }); }
+    catch (error) {
+      if (['app_scoped_admission_required', 'app_scoped_admission_mismatch', 'app_scoped_migration_required'].includes(error.code)) return null;
+      throw error;
+    }
+    const domain = db.prepare(`SELECT ad.id,ad.origin FROM app_domains ad
+      WHERE ad.app_id=? AND ad.owner_account_id=? AND ad.origin=? AND ad.state='bound'
+      AND (ad.role='canonical' OR EXISTS(SELECT 1 FROM app_publication_domains pd
+        WHERE pd.app_id=ad.app_id AND pd.owner_account_id=ad.owner_account_id AND pd.domain_id=ad.id))`).get(app.id, app.ownerAccountId, profile.embedOrigin);
+    if (!domain) return null;
+    let decision;
+    try { decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor }); }
+    catch (error) { if (error instanceof AppsError && error.code === 'apps_access_denied') return null; throw error; }
+    if (decision.appId !== app.id || decision.targetRevision !== target.revision || decision.targetDigest !== target.digest
+      || decision.profile !== target.profile || decision.route.connectorKey !== target.connectorKey
+      || decision.route.port !== target.port || decision.route.entryPath !== target.entryPath) return null;
+    return { domainId: domain.id, origin: domain.origin, path: target.entryPath };
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });

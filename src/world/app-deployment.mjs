@@ -1,4 +1,4 @@
-import { validateAppLaunchPath } from './app-launch.mjs';
+import { isScopedRuntimeProfile, validateAppLaunchPath } from './app-launch.mjs';
 
 export class AppDeploymentError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -19,9 +19,17 @@ function address(value) {
   requireValue(/^dom_[a-f0-9]{32}$/u.test(value.id));
   return { id: value.id, origin: deploymentOrigin(value.origin) };
 }
-/** Pick an enabled named address without changing an already admitted frame. */
+/** Source uses its admitted origin; ordinary sites retain the active alias. */
 export function preferredInspectionEntry(snapshot) {
   if (snapshot.app.state !== 'enabled') return undefined;
+  if (isScopedRuntimeProfile(snapshot.source.profile)) {
+    const entry = snapshot.source.launchEntry;
+    const address = [snapshot.addresses.canonical, ...snapshot.addresses.aliases.filter(value => value.state === 'bound' && value.active)]
+      .find(value => value && value.id === entry?.domainId && value.origin === entry?.origin);
+    if (!address || entry.path !== snapshot.source.entryPath) return undefined;
+    try { return { domainId: address.id, origin: address.origin, path: validateAppLaunchPath(entry.path) }; }
+    catch { return undefined; }
+  }
   const alias = snapshot.addresses.aliases.find(value => value.state === 'bound' && value.active);
   const selected = alias ?? snapshot.addresses.canonical;
   if (!selected) return undefined;
