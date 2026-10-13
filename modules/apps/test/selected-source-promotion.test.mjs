@@ -1,3 +1,4 @@
+import { createScopedSlotRenewal } from "../../../src/world/app-scoped-renewal.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -321,11 +322,28 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal((await read(mainBoot.body.frame)).status,403,'both frames stay closed independently');
       assert.equal((await browser('/assets/lazy.js')).status,403);assert.equal((await ingress()).status,403,'closed-all denies ingress');
       assert.equal((await read(outsideBoot.body.frame)).status,200,'another actor is still independently live, but was not borrowed');
-      const fresh=await boot(call({instanceId:'main'}));assert.equal(fresh.status,200);
+      const freshLaunch=call({instanceId:'main'}),fresh=await boot(freshLaunch);assert.equal(fresh.status,200);
       const beforeExpiry=seen.length;clock+=301000;const expired=await read(fresh.body.frame);
       assert.ok([401,403].includes(expired.status),'frame selector never extends the Root lease');assert.equal(seen.length,beforeExpiry);
+      // Actual client + Apps/gateway + private connector ACK after full W2 expiry.
+      // The connector fixture is constructor-owned; this is not a Native test.
+      let binding={handle:freshLaunch.scopedCloseHandle,source:pin,slot:{}},swaps=0,issuedFrame;
+      const renewal=createScopedSlotRenewal({clock:()=>clock,readBinding:()=>binding,isCurrent:()=>active,
+        readContext:handle=>service.sourcePreparationExtension.executeAsync({op:'apps.scoped.context',actor:f.owner,args:{appId:f.appId,handle}}),
+        request:async args=>{
+          assert.equal(args.shortSessionHandoff,undefined,'W2 must use the existing Root identity branch');
+          const r=await service.sourcePreparationExtension.executeAsync({op:'apps.scoped.renew',actor:f.owner,args:{appId:f.appId,...args}});
+          return{handle:r.scopedCloseHandle,source:r.scopedSource,slot:{},launchUrl:r.launchUrl,requestId:args.requestId};},
+        bootstrap:async reply=>{const issued=await boot(reply);assert.equal(issued.status,200);issuedFrame=issued.body.frame;
+          const ack=await browser('/api/embed/session-continue',{body:{requestId:issued.body.scopedRequestId},headers:{'x-soty-frame':issued.body.frame,'x-soty-boot-check':issued.body.sessionCheck}});
+          assert.equal(ack.status,200);assert.equal(ack.body.shortSession,undefined);return'ready';},
+        commit:(old,next)=>{assert.equal(old.slot,binding.slot);binding=next;swaps++;return true;}});
+      assert.equal(await renewal.refresh(),true);assert.equal(swaps,1);assert.equal(issuedFrame,fresh.body.frame,'same mounted frame locator survives expiry');
+      assert.equal((await read(fresh.body.frame)).body.instanceId,'main');
+      renewal.dispose();const afterRenewal=seen.length;
+
       const next=await boot(call({instanceId:'main'}));assert.equal(next.status,200);active=false;
-      assert.ok([401,403].includes((await read(next.body.frame)).status));assert.equal(seen.length,beforeExpiry,'revoked actor never reaches Native');
+      assert.ok([401,403].includes((await read(next.body.frame)).status));assert.equal(seen.length,afterRenewal,'revoked actor never reaches Native');
     } else assert.throws(() => call({ path: '/' }), { code: 'app_scoped_admission_required' });
     active = false; assert.throws(() => call({ path: '/' }), { code: 'apps_authentication_required' });
     assert.deepEqual(f.rows(), before, 'no preference, target, admission or publication mutation');

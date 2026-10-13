@@ -140,3 +140,23 @@ test('capture postpones expiry recovery without spending the slot attempt',async
   assert.equal(f.counts().launches,0);f.setCapture(false);f.helper.recoverExpired(closedSlot(),f.binding());await settle();
   assert.equal(f.counts().launches,1);f.helper();f.controller.abort();
 });
+
+
+test('Root workspace reactive refresh uses its existing Root renewal branch before and after old lease expiry',async()=>{
+  for(const expired of [false,true]){
+    let request,states=[];
+    const f=fixture({readContext:async handle=>({ready:true,scopedSource:rootPin,expiresAt:handle==='old'?(expired?999999:1080000):1300000,
+      sourceSession:{ready:true,renewable:true,sessionExpiresAt:handle==='old'?(expired?999999:1060000):1300000,accessExpiresAt:handle==='old'?(expired?999999:1060000):1300000}}),
+      async request(input){request=input;assert.equal(input.shortSessionHandoff,undefined,'W2 is not an RP short carrier');return{handle:'new',source:rootPin,slot:{},requestId:input.requestId,expiresAt:1300000};},
+      onState:value=>states.push(value)},rootPin);
+    assert.equal(await f.helper.refresh(),true);assert.ok(request);assert.equal(f.counts().swaps,1);assert.equal(states.at(-1),'ready');
+  }
+});
+
+test('reactive Root refresh still requires fresh finite private ACK and cannot accept changed or missing source authority',async()=>{
+  for(const mode of ['missing','wrong-pin','past','too-long','revoked']){
+    const f=fixture({readContext:async()=>({ready:true,scopedSource:mode==='wrong-pin'?{...rootPin,digest:'f'.repeat(64)}:rootPin,expiresAt:1300000,
+      ...(mode==='missing'?{}:{sourceSession:{ready:mode!=='revoked',renewable:true,sessionExpiresAt:mode==='past'?999999:mode==='too-long'?1300001:1300000,accessExpiresAt:1300000}})})},rootPin);
+    assert.equal(await f.helper.refresh(),false,mode);assert.equal(f.counts().swaps,0,mode);
+  }
+});

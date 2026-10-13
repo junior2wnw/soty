@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery} from './app-scoped-renewal.mjs';
@@ -73,4 +76,18 @@ test('successful normal renewal does not enter expiry recovery or relaunch the v
     current:()=>true,profile:()=> 'soty.selected-human-embed.v2',renewal:{async probe(){},async tick(){renewed++;return true;}},onTickFailure(){failures++;}});
   runtime.dispatchEvent(new Event('load'));tick();await new Promise(setImmediate);assert.equal(renewed,1);assert.equal(failures,0);
   loads();controller.abort();
+});
+
+
+test('actual Stage Root wake callback renews the same mounted frame and does not reload on unknown or denied ACK',async()=>{
+  const ast=ts.createSourceFile('app-stage.ts',readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);let callback;
+  const visit=node=>{if(ts.isCallExpression(node)&&node.expression.getText(ast)==='attachRootSsoWakeRecovery'){
+    const property=node.arguments[0].properties.find(p=>p.name?.getText(ast)==='recover');callback=property.initializer.getText(ast);
+  }ts.forEachChild(node,visit);};visit(ast);assert.ok(callback);
+  for(const ready of [true,false]){
+    let renewals=0,reloads=0;
+    const context={renewal:{async refresh(){renewals++;return ready;}},launchRuntime(){reloads++;},projectCapture:{isCapturing:()=>false}};
+    const recover=vm.runInNewContext('('+ts.transpileModule(callback,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText.replace(/;\s*$/,'')+')',context);
+    await recover();assert.equal(renewals,1);assert.equal(reloads,0);
+  }
 });

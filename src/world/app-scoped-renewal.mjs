@@ -148,7 +148,9 @@ export function createScopedSlotRenewal({ readBinding, readContext, request, boo
           // Explicit refresh may outlive the old lease. The server's bounded
           // private short ACK witness authorizes ONLY a same-scope attempt.
           pending = { binding, requestId: crypto.randomUUID().replaceAll('-', ''), sessionExpiresAt: witness?.until,
-            shortSessionHandoff:shortSessionHandoff||witness?.shortSession===true, reply: null };
+            // Root workspace refresh uses its existing fresh-identity branch,
+            // never the RP-only short-carrier flag or its ACK requirements.
+            shortSessionHandoff:!isRootSsoWorkspacePin(binding.source)&&(shortSessionHandoff||witness?.shortSession===true), reply: null };
         }
         action = pending; state('pending');
         if (!live(action.binding)) { await cleanup(action); pending = null; return false; }

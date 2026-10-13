@@ -243,7 +243,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const detachRootWake=attachRootSsoWakeRecovery({view,signal:controller.signal,
     current:()=>current()&&!runtimePending&&!projectCapture.isCapturing(),readBinding:readRenewBinding,
-    lastLaunchAt:()=>lastRuntimeLaunchAt,recover:()=>launchRuntime(true,()=>!projectCapture.isCapturing())});
+    lastLaunchAt:()=>lastRuntimeLaunchAt,recover:async()=>{await renewal.refresh();}});
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
     // Preserve canonical/community route identity, while pinning the path that
     // was actually admitted. A named route always keeps its exact domain ID.
