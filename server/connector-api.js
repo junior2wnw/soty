@@ -190,6 +190,7 @@ function respondRuntimeState(res, result) {
   // result creates quadratic traffic. It needs only acknowledgement and control.
   respond(res, result?.ok ? { ok: true, job: {
     id: result.job.id, status: result.job.status, cancelRequested: result.job.cancelRequested,
+    ...(result.job.currentOwnerChecked === true ? { currentOwnerChecked: true } : {}),
   } } : result);
 }
 

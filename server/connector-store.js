@@ -31,6 +31,7 @@ class ConnectorStore {
     this.filePath = filePath;
     this.maintenancePath = path.join(path.dirname(filePath), "connector-maintenance.json");
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
+    this.ownedJobActive = typeof options.ownedJobActive === 'function' ? options.ownedJobActive : null;
     this.preserveHistory = options.preserveHistory ?? process.env.SOTY_CONNECTOR_PRESERVE_HISTORY === "1";
     this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
     this.requestIndex = new Map();
@@ -181,6 +182,7 @@ class ConnectorStore {
       if (this.maintenance()) return { ok: false, error: "connector-maintenance" };
       const ownerAccountId = safeId(auth?.ownerAccountId, 160);
       if (ownerAccountId && (typeof auth.guard !== 'function' || auth.guard() !== true)) return { ok: false, error: 'job-access-denied' };
+      if (ownerAccountId && this.ownedJobActive && !safeDeviceId(auth.sourceActorDeviceId)) return { ok: false, error: 'job-access-denied' };
       const ownedRequestId = ownerAccountId ? safeId(auth.requestId, 160) : '';
       const ownedConnectorId = ownerAccountId ? safeId(auth.connectorId, 160) : '';
       if (ownerAccountId && (!ownedRequestId || !ownedConnectorId || !requested.linkId || !requested.deviceId
@@ -226,7 +228,8 @@ class ConnectorStore {
         threadId: clean.threadId,
         requestedConnectorId: safeId(input?.connectorId, 160),
         kind: clean.kind,
-        ...(ownerAccountId ? { ownerAccountId, requestId, requestDigest: fingerprint, requestedConnectorId: ownedConnectorId } : {}),
+        ...(ownerAccountId ? { ownerAccountId, requestId, requestDigest: fingerprint, requestedConnectorId: ownedConnectorId,
+          ...(safeDeviceId(auth.sourceActorDeviceId) ? { sourceActorDeviceId: auth.sourceActorDeviceId } : {}) } : {}),
         input: clean.input,
         permissions: clean.permissions,
         status: "queued",
@@ -351,10 +354,36 @@ class ConnectorStore {
 
   /** A leased runtime observes cancellation without gaining account history. */
   async getAssignedJobState(auth, jobId) {
-    await this.writeQueue; await this.readable();
-    const connector = this.authenticate(auth), job = connector ? this.assignedJob(connector, jobId) : null;
-    return connector && job ? { ok: true, job: { id: job.id, status: job.status, cancelRequested: job.cancelRequested } }
-      : { ok: false, error: 'connector-auth-failed' };
+    if (!this.ownedJobActive) {
+      await this.writeQueue; await this.readable();
+      const connector = this.authenticate(auth), job = connector ? this.assignedJob(connector, jobId) : null;
+      return connector && job ? { ok: true, job: { id: job.id, status: job.status, cancelRequested: job.cancelRequested } }
+        : { ok: false, error: 'connector-auth-failed' };
+    }
+    return this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
+      const connector = this.authenticate(auth), job = connector ? this.assignedJob(connector, jobId) : null;
+      return connector && job ? { ok: true, job: { id: job.id, status: job.status, cancelRequested: job.cancelRequested,
+        currentOwnerChecked: true } }
+        : { ok: false, error: 'connector-auth-failed' };
+    });
+  }
+
+  refreshOwnedJobAdmission(now) {
+    if (!this.ownedJobActive) return;
+    for (const job of this.state.jobs) {
+      if (!job.ownerAccountId || terminalStatuses.has(job.status) || job.cancelRequested) continue;
+      let active = false;
+      try { active = Boolean(job.sourceActorDeviceId && this.ownedJobActive(job) === true); } catch { /* Deny unavailable authority. */ }
+      if (active) continue;
+      job.cancelRequested = true; job.updatedAt = now;
+      this.pushEvent(job, { type: 'cancel_requested', text: 'Доступ владельца устройства отозван' }, now);
+      if (job.status === 'queued') {
+        job.status = 'cancelled'; job.leaseUntil = 0; job.finishedAt = now;
+        job.result = { ok: false, text: 'Отменено до запуска: доступ отозван', exitCode: 130 };
+      }
+      this.signal(job.linkId, job.deviceId);
+    }
   }
 
   async getEvents(auth, jobId, after = 0, owned = {}) {
@@ -393,6 +422,7 @@ class ConnectorStore {
       if (owned.guard && owned.guard() !== true) return { ok: false, error: 'job-access-denied' };
       const now = this.now();
       this.expire(now);
+      this.refreshOwnedJobAdmission(now);
       const ownedJob = owned.ownerAccountId ? this.findOwnedJob(auth, jobId, owned) : null;
       const access = owned.ownerAccountId ? ownedJob ? { ok: true, job: ownedJob } : { ok: false, error: 'job-not-found' }
         : this.authorizeJob(auth, jobId, "cancel", now);
@@ -440,6 +470,7 @@ class ConnectorStore {
       const now = this.now();
       connector.lastSeenAt = now;
       this.expire(now);
+      this.refreshOwnedJobAdmission(now);
       const cancel = this.state.jobs
         .filter((job) => job.linkId === connector.linkId && job.connectorId === connector.connectorId && job.deviceId === connector.deviceId && job.cancelRequested && !terminalStatuses.has(job.status))
         .map((job) => job.id);
@@ -463,6 +494,7 @@ class ConnectorStore {
     const event = cleanEvent(value);
     if (!event) return { ok: false, error: "invalid-event" };
     return await this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
       const connector = this.authenticate(auth);
       const job = connector ? this.assignedJob(connector, jobId) : null;
       if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
@@ -483,6 +515,7 @@ class ConnectorStore {
     const result = cleanResult(value);
     if (!result) return { ok: false, error: "invalid-result" };
     return await this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
       const connector = this.authenticate(auth);
       const job = connector ? this.assignedJob(connector, jobId) : null;
       if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
@@ -491,6 +524,7 @@ class ConnectorStore {
       connector.lastSeenAt = now;
       if (result.appProposal && (job.input?.output !== 'local-app' || result.appProposal.sourceJobId !== job.id)) delete result.appProposal;
       job.result = result;
+      job.executionUncertain = false;
       job.status = job.cancelRequested || result.exitCode === 130 ? "cancelled" : result.ok ? "succeeded" : "failed";
       job.leaseUntil = 0;
       job.finishedAt = now;
@@ -792,6 +826,7 @@ export function normalizeConnectorState(value) {
     if (job.schema === accountJobSchema && (!safeId(job.ownerAccountId,160) || !safeId(job.requestId,160)
       || !/^[a-f0-9]{64}$/u.test(job.requestDigest) || !safeId(job.requestedConnectorId,160) || !safeDeviceId(job.deviceId)
       || job.accessGrantId)) throw new Error('Account job missing account/request binding');
+    if (job.sourceActorDeviceId !== undefined && (job.schema !== accountJobSchema || !safeDeviceId(job.sourceActorDeviceId))) throw new Error('Invalid local task actor binding');
     if (job.schema !== accountJobSchema && job.ownerAccountId) throw new Error('Account ownership requires the account job schema');
   }
   for (const [records,key] of [[value.connectors,connectorKey],[value.jobs,(job)=>job.id],[value.accessGrants || [],(grant)=>grant.id]]) {

@@ -67,6 +67,8 @@ async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost 
       if (last.role === 'user' && last.content === 'Read source') { name = 'source_read_1'; args = sourceInput; }
       if (last.role === 'user' && last.content === 'Catalog sources') { name = 'source_catalog'; args = { limit: 20 }; }
       if (last.role === 'user' && last.content.startsWith('Local task ')) { name = 'run_on_my_device'; args = { text: last.content.slice(11) }; }
+      if (last.role === 'user' && last.content.startsWith('Read local ')) { name = 'read_my_device_task'; args = { jobId: last.content.slice(11) }; }
+      if (last.role === 'user' && last.content.startsWith('Cancel local ')) { name = 'cancel_my_device_task'; args = { jobId: last.content.slice(13) }; }
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; args = { answer: 'Источник проверен', selectedEvidenceIds: evidence.map(item => item.id),
         claims: [{ kind: 'fact', statement: 'Источник доступен текущему пользователю', evidenceIds: evidence.map(item => item.id),
           freshness: 'current', confidence: 'high', applicability: 'Текущий пользователь и разрешённые источники' }] }; }
@@ -665,6 +667,41 @@ test('signed cancel while the actual connector write queue is held prevents a lo
     assert.equal((await f.call(f.alice, 'agent.cancel', { requestId: 'local_cancel_01' })).cancelRequested, true);
     barrier.resolve(); assert.equal((await running).ok, false); assert.equal(store.state.jobs.length, 0);
   } finally { barrier.resolve(); }
+});
+
+test('local receipt tools read and cancel the original owned job after restart without a second dispatch', async t => {
+  const f = await fixture(t), source = await ownedAgent(t, f);
+  const options = { gonka: { ...f.base.gonka, apiKey: 'synthetic-local-only' },
+    personalAgent: { ...f.configuration, localTargetFor: () => source.target } };
+  await f.restart(options);
+  const sent = await f.turn(f.alice, 'local_receipt_send', 'Local task Verify my own workspace');
+  assert.equal(sent.ok, true); const { jobId } = sent.evidence[0].data;
+  const read = await f.turn(f.alice, 'local_receipt_queued', `Read local ${jobId}`);
+  assert.equal(read.ok, true); assert.equal(read.evidence[0].data.completionVerified, false);
+  const store = f.service().locals.connectorService.store;
+  assert.equal((await store.poll(source.auth, 0)).jobs[0].id, jobId);
+  await store.finishJob(source.auth, jobId, { ok: true, text: 'Native fixture process receipt', exitCode: 0 });
+  source.runtime.stop(); await f.restart(options);
+  const finished = await f.turn(f.alice, 'local_receipt_final', `Read local ${jobId}`);
+  assert.equal(finished.ok, true); assert.equal(finished.evidence[0].data.completionVerified, true);
+  assert.equal(finished.evidence[0].data.result.exitCode, 0); assert.equal(finished.evidence[0].data.outcomeUnknown, false);
+  assert.equal((await f.turn(f.bob, 'local_receipt_foreign', `Read local ${jobId}`)).ok, false);
+  const cancelled = await f.turn(f.alice, 'local_receipt_cancel', `Cancel local ${jobId}`);
+  assert.equal(cancelled.ok, true); assert.equal(cancelled.evidence[0].data.status, 'succeeded');
+  assert.equal(f.service().locals.connectorService.store.state.jobs.length, 1);
+});
+
+test('opt-in current local admission observes Connect device revoke after enqueue and before lease', async t => {
+  const f = await fixture(t), source = await ownedAgent(t, f);
+  await f.restart({ localExecutorCurrent: true, gonka: { ...f.base.gonka, apiKey: 'synthetic-local-only' },
+    personalAgent: { ...f.configuration, localTargetFor: () => source.target } });
+  const sent = await f.turn(f.alice, 'local_queued_revoke', 'Local task Must not execute after revoke');
+  assert.equal(sent.ok, true); const { jobId } = sent.evidence[0].data;
+  const phone = await f.phone(); assert.equal((await f.call(phone, 'device.revoke', { deviceId: f.a.deviceId })).ok, true);
+  const store = f.service().locals.connectorService.store;
+  assert.equal((await store.poll(source.auth, 0)).jobs.length, 0);
+  const row = store.state.jobs.find(job => job.id === jobId);
+  assert.equal(row.sourceActorDeviceId, f.a.deviceId); assert.equal(row.status, 'cancelled'); assert.equal(row.attempts, 0);
 });
 
 test('current Connect device revoke at the actual local write barrier admits no second job', async t => {

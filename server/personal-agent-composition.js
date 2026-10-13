@@ -190,25 +190,48 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         && target.cwd === target.cwd.trim() && (path.posix.isAbsolute(target.cwd) || path.win32.isAbsolute(target.cwd)));
       const selected = freeze({ ...target });
       current(actor, services => services.apps.resolveOwnedDevice(actor, selected.hostDeviceId, selected.connectorId));
+      const localJobs = signal => {
+        const services = getServices();
+        return createAppJobsExtension({ store: services.connectors.store,
+          actorActive: candidate => !closed && !signal.aborted && getConnect().isActorActive(candidate),
+          inferenceReady: () => services.connectors.modelProxy.ready === true,
+          resolveOwnedDevice: (candidate, ids) => services.apps.resolveOwnedDevice(candidate, ids.hostDeviceId, ids.connectorId) });
+      };
+      const localProjection = job => {
+        need(job?.schema === 'soty.connector-job.v4' && job.deviceId === selected.hostDeviceId, 'agent_source_unavailable');
+        return { jobId: job.id, status: job.status, cancelRequested: job.cancelRequested === true,
+          outcomeUnknown: job.executionUncertain === true,
+          completionVerified: job.executionUncertain !== true && Boolean(job.result) && ['succeeded', 'failed', 'cancelled'].includes(job.status) };
+      };
       tools.run_on_my_device = { capability: 'root_owned_local_task',
         description: 'Queue one task on the current user\'s approved local device/workspace. A queued receipt is not task completion.',
         inputSchema: { ...schema({ text: { type: 'string', minLength: 1, maxLength: 8000 } }), required: ['text'] },
         validate: input => validate(input, ['text']) && typeof input.text === 'string' && input.text.isWellFormed() && input.text.trim().length > 0 && input.text.length <= 8000,
         async execute(input, signal) {
           need(!signal.aborted, 'agent_cancelled'); assertCurrent();
-          const services = getServices(), taskId = `agent_${createHash('sha256').update(canonical({ scope, turnId, input, target: selected })).digest('hex')}`;
+          const taskId = `agent_${createHash('sha256').update(canonical({ scope, turnId, input, target: selected })).digest('hex')}`;
           // Reuse the existing owner/device/request ledger. Its write-queue guard also observes this turn's cancellation.
-          const jobs = createAppJobsExtension({ store: services.connectors.store,
-            actorActive: candidate => !closed && !signal.aborted && getConnect().isActorActive(candidate),
-            inferenceReady: () => services.connectors.modelProxy.ready === true,
-            resolveOwnedDevice: (candidate, ids) => services.apps.resolveOwnedDevice(candidate, ids.hostDeviceId, ids.connectorId) });
-          const result = await jobs.executeAsync({ op: 'apps.assistant.send', actor, args: { ...selected, expectedAccountId: actor.accountId,
+          const result = await localJobs(signal).executeAsync({ op: 'apps.assistant.send', actor, args: { ...selected, expectedAccountId: actor.accountId,
             requestId: taskId, conversationId: taskId, text: input.text } });
           assertCurrent(); need(!signal.aborted, 'agent_cancelled');
           // createAppJobsExtension's owner-scoped read/write guards produced this closed public projection.
-          need(result.job?.schema === 'soty.connector-job.v4' && result.job.deviceId === selected.hostDeviceId, 'agent_source_unavailable');
-          return evidence('Задача на моём устройстве', { jobId: result.job.id, status: result.job.status, requestId: taskId,
-            completionVerified: ['succeeded', 'failed', 'cancelled'].includes(result.job.status) });
+          return evidence('Задача на моём устройстве', { ...localProjection(result.job), requestId: taskId });
+        } };
+      for (const [name, op, description] of [
+        ['read_my_device_task', 'apps.agent.read', 'Read the original task on the approved device. Unknown means check this same job; never dispatch a replacement. Completion verifies the executor process result, not the truth of its prose.'],
+        ['cancel_my_device_task', 'apps.agent.cancel', 'Request cancellation of the original task on the approved device. A cancellation request does not prove a running process stopped.'],
+      ]) tools[name] = { capability: 'root_owned_local_task', description,
+        inputSchema: { ...schema({ jobId: { type: 'string', pattern: '^job_[a-f0-9]{32}$' } }), required: ['jobId'] },
+        validate: input => validate(input, ['jobId']) && /^job_[a-f0-9]{32}$/u.test(input.jobId),
+        async execute(input, signal) {
+          need(!signal.aborted, 'agent_cancelled'); assertCurrent();
+          const result = await localJobs(signal).executeAsync({ op, actor, args: { hostDeviceId: selected.hostDeviceId,
+            connectorId: selected.connectorId, expectedAccountId: actor.accountId, jobId: input.jobId } });
+          assertCurrent(); need(!signal.aborted, 'agent_cancelled');
+          return evidence('Состояние задачи на моём устройстве', { ...localProjection(result.job),
+            ...(op === 'apps.agent.read' && result.job.result ? { result: { ok: result.job.result.ok === true,
+              exitCode: result.job.result.exitCode, text: result.job.result.text.slice(0, 4000),
+              truncated: result.job.result.text.length > 4000 } } : {}) });
         } };
     }
     if (references.length) {

@@ -35,7 +35,7 @@ export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive,
         if (!actorActive(actor)) return false;
         try { const current = resolveOwnedDevice(actor, { hostDeviceId, connectorId }); return current?.linkId === device.linkId; } catch { return false; }
       };
-      const access = { ownerAccountId: actor.accountId, guard, connectorId, expectedDeviceId: hostDeviceId, maxEventBytes: 256_000 };
+      const access = { ownerAccountId: actor.accountId, sourceActorDeviceId: actor.deviceId, guard, connectorId, expectedDeviceId: hostDeviceId, maxEventBytes: 256_000 };
       let result;
       if (op === 'apps.agent.create' || op === 'apps.assistant.send') {
         const requestId = id(args.requestId);

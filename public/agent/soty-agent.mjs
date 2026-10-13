@@ -2,7 +2,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -359,80 +359,6 @@ var ScopedConnectorHost = (() => {
     });
   }
 
-  // modules/apps/scoped-embed/resource-proof.mjs
-  var import_node_crypto4 = __require("node:crypto");
-
-  // modules/apps/scoped-embed/resource-profile.mjs
-  var SELECTED_RESOURCE_PROFILE = "soty.selected-human-embed.v2";
-  var RESOURCE_SOURCE_PROOF = "soty.selected-source-request.v2";
-  var RESOURCE_LAUNCH_CONTEXT = "soty.verified-launch-continuation.v2";
-  var validatedProfiles = /* @__PURE__ */ new WeakSet();
-  function nativeResourceId(value) {
-    need(
-      typeof value === "string" && value.length > 0 && value.isWellFormed() && Buffer.byteLength(value, "utf8") <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value),
-      "scoped_embed_native_id_invalid"
-    );
-    return value;
-  }
-  function resourceKind(value) {
-    need(typeof value === "string" && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\.v[1-9][0-9]*$/u.test(value) && value.length <= 128, "scoped_embed_resource_kind_invalid");
-    return value;
-  }
-  function selectedResource(value) {
-    closed(value, ["registryId", "tenantId", "appId", "environmentId", "resourceId", "selection"]);
-    for (const field of ["registryId", "tenantId", "appId", "environmentId", "resourceId"]) identifier(value[field]);
-    closed(value.selection, ["kind", "nativeId", "incarnationId"]);
-    resourceKind(value.selection.kind);
-    nativeResourceId(value.selection.nativeId);
-    identifier(value.selection.incarnationId);
-    return value;
-  }
-  function selectedResourceProfile(input) {
-    if (input && typeof input === "object" && validatedProfiles.has(input)) return input;
-    const value = capture(input);
-    closed(value, [
-      "schema",
-      "appId",
-      "connector",
-      "target",
-      "sourceProfile",
-      "resource",
-      "issuer",
-      "clientId",
-      "embedOrigin",
-      "nativeOrigin",
-      "parentOrigin"
-    ]);
-    need(value.schema === SELECTED_RESOURCE_PROFILE && /^app-[a-f0-9]{32}$/u.test(value.appId));
-    connector(value.connector);
-    closed(value.target, ["revision", "digest"]);
-    need(Number.isSafeInteger(value.target.revision) && value.target.revision > 0);
-    sha(value.target.digest);
-    pin(value.sourceProfile);
-    selectedResource(value.resource);
-    need(value.resource.appId === value.appId);
-    approvedOrigin(value.embedOrigin);
-    approvedOrigin(value.nativeOrigin);
-    approvedOrigin(value.parentOrigin);
-    need(new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname && value.parentOrigin !== value.embedOrigin);
-    const issuer = new URL(value.issuer);
-    need(issuer.href === value.issuer && issuer.pathname === "/human-identity" && issuer.origin === value.parentOrigin && !issuer.search && !issuer.hash);
-    identifier(value.clientId);
-    need(Buffer.byteLength(JSON.stringify(value), "utf8") <= 16384, "scoped_embed_profile_too_large");
-    const profile = Object.freeze({ ...value, digest: hash(value) });
-    validatedProfiles.add(profile);
-    return profile;
-  }
-  var RESOURCE_TRANSPORT_LIMITS = Object.freeze({
-    proofHeaderBytes: 12288,
-    headerBytes: 16384,
-    continuations: 256,
-    continuationMs: 3e5,
-    proofMs: 1e4,
-    inflight: 4,
-    callMs: 8e3
-  });
-
   // modules/source-app/server/wire.mjs
   var import_node_crypto3 = __require("node:crypto");
   function canonical2(input) {
@@ -500,6 +426,127 @@ var ScopedConnectorHost = (() => {
     }
   });
   var STANDARD_SELECTED_SOURCE_V2 = deepFreeze({ id: "soty.standard-resource", version: 2, digest: digest(STANDARD_SOURCE_CONTRACT_2) });
+  var STANDARD_SOURCE_CONTRACT_3 = deepFreeze({
+    ...STANDARD_SOURCE_CONTRACT_2,
+    rules: STANDARD_SOURCE_CONTRACT_2.rules.map((row) => row.path === "/api/embed/feedback/ticket" ? { ...row, responseBytes: 2097152 } : row)
+  });
+  var STANDARD_SELECTED_SOURCE_V3 = deepFreeze({ id: "soty.standard-resource", version: 3, digest: digest(STANDARD_SOURCE_CONTRACT_3) });
+  var STANDARD_WORKSPACE_CONTRACT = deepFreeze({
+    ...STANDARD_SOURCE_CONTRACT_3,
+    kind: "soty.workspace.v1",
+    context: {
+      schema: "soty.current-context.v2",
+      authority: "application-namespace-and-current-child-native-acl",
+      readOperation: "soty.current_context",
+      uiOperation: "soty.context.select",
+      maxLeaseMs: 3e5,
+      slotCapacity: "host-configured",
+      instanceBinding: "optional-root-account-device-app-profile-main-or-widget",
+      receipt: "soty.context-after.v1",
+      projection: "soty.workspace-receipt.v1",
+      witness: "soty.workspace-context-witness.v1"
+    }
+  });
+  var STANDARD_WORKSPACE_SOURCE = deepFreeze({ id: "soty.standard-workspace", version: 1, digest: digest(STANDARD_WORKSPACE_CONTRACT) });
+  var STANDARD_ROOT_WORKSPACE_CONTRACT = deepFreeze({
+    ...STANDARD_WORKSPACE_CONTRACT,
+    // Feedback names the SAME current Native child as domain reads/effects.
+    // This new workspace2 pin does not widen resource1/2/3 or workspace1.
+    rules: STANDARD_WORKSPACE_CONTRACT.rules.map((row) => row.kind === "feedback-read" ? {
+      ...row,
+      queries: [...row.queries, "contextRef"],
+      ...row.path === "/api/embed/feedback" ? { responseBytes: 262144 } : {}
+    } : row),
+    auth: {
+      schema: "soty.root-workspace-auth.v1",
+      cookies: ["soty_rp_session"],
+      basicSeconds: 300,
+      proof: "root-signed-current-context.v1",
+      audience: "urn:soty:source-authority",
+      witnessType: "soty-source-authority+jwt",
+      witnessMaxSeconds: 10,
+      session: "fresh-reference-short-native-anchor",
+      feedbackPermission: "explicit-current-native-report"
+    }
+  });
+  var STANDARD_ROOT_WORKSPACE_SOURCE = deepFreeze({ id: "soty.standard-workspace", version: 2, digest: digest(STANDARD_ROOT_WORKSPACE_CONTRACT) });
+  var isRootSignedWorkspaceSource = (pin2) => pin2?.id === STANDARD_ROOT_WORKSPACE_SOURCE.id && pin2.version === 2 && pin2.digest === STANDARD_ROOT_WORKSPACE_SOURCE.digest;
+  var isWorkspaceSource = (pin2) => pin2?.id === STANDARD_WORKSPACE_SOURCE.id && pin2.version === 1 && pin2.digest === STANDARD_WORKSPACE_SOURCE.digest || isRootSignedWorkspaceSource(pin2);
+
+  // modules/apps/scoped-embed/resource-proof.mjs
+  var import_node_crypto4 = __require("node:crypto");
+
+  // modules/apps/scoped-embed/resource-profile.mjs
+  var SELECTED_RESOURCE_PROFILE = "soty.selected-human-embed.v2";
+  var RESOURCE_SOURCE_PROOF = "soty.selected-source-request.v2";
+  var RESOURCE_LAUNCH_CONTEXT = "soty.verified-launch-continuation.v2";
+  var validatedProfiles = /* @__PURE__ */ new WeakSet();
+  function nativeResourceId(value) {
+    need(
+      typeof value === "string" && value.length > 0 && value.isWellFormed() && Buffer.byteLength(value, "utf8") <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value),
+      "scoped_embed_native_id_invalid"
+    );
+    return value;
+  }
+  function resourceKind(value) {
+    need(typeof value === "string" && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\.v[1-9][0-9]*$/u.test(value) && value.length <= 128, "scoped_embed_resource_kind_invalid");
+    return value;
+  }
+  function selectedResource(value) {
+    closed(value, ["registryId", "tenantId", "appId", "environmentId", "resourceId", "selection"]);
+    for (const field of ["registryId", "tenantId", "appId", "environmentId", "resourceId"]) identifier(value[field]);
+    closed(value.selection, ["kind", "nativeId", "incarnationId"]);
+    resourceKind(value.selection.kind);
+    nativeResourceId(value.selection.nativeId);
+    identifier(value.selection.incarnationId);
+    return value;
+  }
+  function selectedResourceProfile(input) {
+    if (input && typeof input === "object" && validatedProfiles.has(input)) return input;
+    const value = capture(input);
+    closed(value, [
+      "schema",
+      "appId",
+      "connector",
+      "target",
+      "sourceProfile",
+      "resource",
+      "issuer",
+      "clientId",
+      "embedOrigin",
+      "nativeOrigin",
+      "parentOrigin"
+    ]);
+    need(value.schema === SELECTED_RESOURCE_PROFILE && /^app-[a-f0-9]{32}$/u.test(value.appId));
+    connector(value.connector);
+    closed(value.target, ["revision", "digest"]);
+    need(Number.isSafeInteger(value.target.revision) && value.target.revision > 0);
+    sha(value.target.digest);
+    pin(value.sourceProfile);
+    selectedResource(value.resource);
+    need(value.resource.appId === value.appId);
+    approvedOrigin(value.embedOrigin);
+    approvedOrigin(value.nativeOrigin);
+    approvedOrigin(value.parentOrigin);
+    const sameOriginWorkspace = isRootSignedWorkspaceSource(value.sourceProfile) && value.resource.selection.kind === "soty.workspace.v1" && value.nativeOrigin === value.embedOrigin;
+    need((new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace) && value.parentOrigin !== value.embedOrigin);
+    const issuer = new URL(value.issuer);
+    need(issuer.href === value.issuer && issuer.pathname === "/human-identity" && issuer.origin === value.parentOrigin && !issuer.search && !issuer.hash);
+    identifier(value.clientId);
+    need(Buffer.byteLength(JSON.stringify(value), "utf8") <= 16384, "scoped_embed_profile_too_large");
+    const profile = Object.freeze({ ...value, digest: hash(value) });
+    validatedProfiles.add(profile);
+    return profile;
+  }
+  var RESOURCE_TRANSPORT_LIMITS = Object.freeze({
+    proofHeaderBytes: 12288,
+    headerBytes: 16384,
+    continuations: 256,
+    continuationMs: 3e5,
+    proofMs: 1e4,
+    inflight: 4,
+    callMs: 8e3
+  });
 
   // modules/apps/scoped-embed/resource-route-adapters.mjs
   var MiB = 1048576;
@@ -567,6 +614,18 @@ var ScopedConnectorHost = (() => {
     STANDARD_SELECTED_SOURCE_V2.id + ":2:" + STANDARD_SELECTED_SOURCE_V2.digest,
     Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V2, kind: STANDARD_SOURCE_CONTRACT_2.kind, contract: STANDARD_SOURCE_CONTRACT_2 })
   );
+  adapters.set(
+    STANDARD_SELECTED_SOURCE_V3.id + ":3:" + STANDARD_SELECTED_SOURCE_V3.digest,
+    Object.freeze({ pin: STANDARD_SELECTED_SOURCE_V3, kind: STANDARD_SOURCE_CONTRACT_3.kind, contract: STANDARD_SOURCE_CONTRACT_3 })
+  );
+  adapters.set(
+    STANDARD_WORKSPACE_SOURCE.id + ":1:" + STANDARD_WORKSPACE_SOURCE.digest,
+    Object.freeze({ pin: STANDARD_WORKSPACE_SOURCE, kind: STANDARD_WORKSPACE_CONTRACT.kind, contract: STANDARD_WORKSPACE_CONTRACT })
+  );
+  adapters.set(
+    STANDARD_ROOT_WORKSPACE_SOURCE.id + ":2:" + STANDARD_ROOT_WORKSPACE_SOURCE.digest,
+    Object.freeze({ pin: STANDARD_ROOT_WORKSPACE_SOURCE, kind: STANDARD_ROOT_WORKSPACE_CONTRACT.kind, contract: STANDARD_ROOT_WORKSPACE_CONTRACT })
+  );
   function selectedRouteAdapter(input) {
     const profile = selectedResourceProfile(input);
     const pin2 = profile.sourceProfile, adapter = adapters.get(pin2.id + ":" + pin2.version + ":" + pin2.digest);
@@ -602,6 +661,16 @@ var ScopedConnectorHost = (() => {
         if (match && asset.extensions.includes(match[1])) return Object.freeze({ kind: "public-ui", requestBytes: 0, responseBytes: adapter.contract.assets.responseBytes, credentialFree: true, redirects: false });
       }
     }
+    if ((adapter.pin.id === STANDARD_SELECTED_SOURCE_V2.id && [2, 3].includes(adapter.pin.version) || isWorkspaceSource(adapter.pin)) && ["GET", "HEAD"].includes(method) && !url.search && url.pathname.startsWith(adapter.contract.assets.path)) {
+      const leaf = url.pathname.slice(adapter.contract.assets.path.length), match = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,239}\.([a-z0-9]+)$/u.exec(leaf);
+      if (match && adapter.contract.assets.extensions.includes(match[1])) return Object.freeze({
+        kind: "public-ui",
+        requestBytes: 0,
+        responseBytes: adapter.contract.assets.responseBytes,
+        credentialFree: true,
+        redirects: false
+      });
+    }
     const route = adapter.contract.rules.find((value) => value.path === url.pathname && value.methods.includes(method));
     need(route, "scoped_embed_route_denied", 403);
     const entries = [...url.searchParams.entries()];
@@ -612,6 +681,7 @@ var ScopedConnectorHost = (() => {
   // modules/apps/scoped-embed/resource-proof.mjs
   var RESOURCE_PROOF_HEADER = "x-soty-selected-proof";
   var RESOURCE_MAC_HEADER = "x-soty-selected-mac";
+  var PROOF_ISSUANCE_CLOCK_SKEW_MS = 1e3;
   var opaque = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
   var mac2 = (key, value) => (0, import_node_crypto4.createHmac)("sha256", key).update(value).digest("base64url");
   function hostKey2(key) {
@@ -633,7 +703,8 @@ var ScopedConnectorHost = (() => {
       "target",
       "policyEpoch",
       "expiresAt"
-    ]);
+    ], isWorkspaceSource(profile.sourceProfile) ? ["instanceId"] : []);
+    need(value.instanceId === void 0 || typeof value.instanceId === "string" && /^(?:main|widget-[a-f0-9-]{36})$/u.test(value.instanceId), "scoped_embed_context_mismatch", 403);
     continuation(value.reference);
     closed(value.rootPrincipal, ["accountId", "deviceId"]);
     Object.values(value.rootPrincipal).forEach(identifier);
@@ -677,7 +748,7 @@ var ScopedConnectorHost = (() => {
           bodyDigest: hash(bytes.toString("base64")),
           cookieDigest: hash(cookie),
           nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
-          expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs)
+          expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS)
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
         need(text.length <= RESOURCE_TRANSPORT_LIMITS.proofHeaderBytes, "scoped_embed_proof_limit", 413);
@@ -688,7 +759,7 @@ var ScopedConnectorHost = (() => {
           schema: "soty.selected-source-probe.v2",
           profileDigest: profile.digest,
           nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
-          expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs
+          expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
         return { request: Object.freeze(proof), headers: { "x-soty-selected-probe": text, [RESOURCE_MAC_HEADER]: mac2(secret2, "probe\0" + text) } };
@@ -741,14 +812,15 @@ var ScopedConnectorHost = (() => {
       need(value.reason === "login_required", "scoped_embed_continue_invalid", 502);
       return Object.freeze({ ready: false, reason: value.reason });
     }
-    closed(value, ["schema", "ready", "sessionExpiresAt", "accessExpiresAt", "renewable", "receiptDigest"]);
-    need(value.ready === true && typeof value.renewable === "boolean" && Number.isSafeInteger(value.sessionExpiresAt) && value.sessionExpiresAt > now && value.sessionExpiresAt <= now + 86401e3 && Number.isSafeInteger(value.accessExpiresAt) && value.accessExpiresAt > now && value.accessExpiresAt <= Math.min(value.sessionExpiresAt, now + 301e3) && typeof value.receiptDigest === "string" && /^[a-f0-9]{64}$/.test(value.receiptDigest), "scoped_embed_continue_invalid", 502);
+    closed(value, ["schema", "ready", "sessionExpiresAt", "accessExpiresAt", "renewable", "receiptDigest"], ["shortSession"]);
+    need(value.ready === true && typeof value.renewable === "boolean" && Number.isSafeInteger(value.sessionExpiresAt) && value.sessionExpiresAt > now && value.sessionExpiresAt <= now + 86401e3 && Number.isSafeInteger(value.accessExpiresAt) && value.accessExpiresAt > now && value.accessExpiresAt <= Math.min(value.sessionExpiresAt, now + 301e3) && typeof value.receiptDigest === "string" && /^[a-f0-9]{64}$/.test(value.receiptDigest) && (value.shortSession === void 0 || value.shortSession === true && value.renewable === true && value.sessionExpiresAt <= now + 3e5), "scoped_embed_continue_invalid", 502);
     return Object.freeze({
       ready: true,
       sessionExpiresAt: value.sessionExpiresAt,
       accessExpiresAt: value.accessExpiresAt,
       renewable: value.renewable,
-      receiptDigest: value.receiptDigest
+      receiptDigest: value.receiptDigest,
+      ...value.shortSession === true ? { shortSession: true } : {}
     });
   }
 
@@ -1357,9 +1429,16 @@ var ScopedConnectorHost = (() => {
         for (const [id, expires] of ipcNonces) if (expires <= clock()) ipcNonces.delete(id);
         need(!ipcNonces.has(value.nonce) && ipcNonces.size < 4096, "scoped_embed_ipc_replayed", 403);
         ipcNonces.set(value.nonce, value.expiresAt);
-        const context = await rootRead({ reference: value.reference, connector: approvedItem.profile.connector });
+        const signed = isRootSignedWorkspaceSource(approvedItem.profile.sourceProfile);
+        const result = await rootRead({
+          reference: value.reference,
+          connector: approvedItem.profile.connector,
+          ...signed ? { sourceChallenge: value.nonce } : {}
+        });
+        const context = signed ? result.context : result;
         need(context.profileDigest === approvedItem.profile.digest, "scoped_embed_ipc_mismatch", 403);
-        const body = JSON.stringify({ nonce: value.nonce, context });
+        if (signed) need(typeof result.identityWitness === "string" && result.identityWitness.length <= 8192, "scoped_embed_ipc_mismatch", 403);
+        const body = JSON.stringify({ nonce: value.nonce, context, ...signed ? { identityWitness: result.identityWitness } : {} });
         need(Buffer.byteLength(body) <= 16384, "scoped_embed_ipc_limit", 502);
         response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-soty-source-mac": mac3(approvedItem.key, "authority-result\0" + body) });
         response.end(body);
@@ -1919,7 +1998,7 @@ function trafficCoreSafeError(error) {
 return { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema };
 })();
 // bundled connector module: ./agent-modules/opencode-release.mjs
-const { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } = (() => {
+const { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } = (() => {
 const openCodeVersion = "1.18.15";
 
 const defaultGonkaModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
@@ -1935,6 +2014,7 @@ function selectGonkaModel(explicitModel, persistedModel) {
 
 function gonkaModelLimitsFor(model) {
   if (model === defaultGonkaModel) return Object.freeze({ context: 380_000, output: 8_192 });
+  if (model === "zai-org/GLM-5.3-Flash") return Object.freeze({ context: 262_144, output: 8_192 });
   return Object.freeze({ context: 262_144, output: 32_768 });
 }
 
@@ -1998,7 +2078,7 @@ function release(asset, sha256, executable) {
   });
 }
 
-return { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor };
+return { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor };
 })();
 // bundled connector module: ./agent-modules/spreadex-ml.mjs
 const { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } = (() => {
@@ -3232,10 +3312,10 @@ function createLocalAppsRuntime(deps, options = {}) {
     }
     localAppsCheck(connected(context), 'apps_not_authenticated');
     if(frame.type==='scoped-authority-result') {
-      channelFrame(context,frame,['nonce','ok','context','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
+      channelFrame(context,frame,['nonce','ok','context','identityWitness','status','code']);localAppsCheck(localAppsNonce(frame.nonce),'apps_bad_frame');
       const pending=context.authorityRequests.get(frame.nonce);if(!pending)return;
       context.authorityRequests.delete(frame.nonce);clearTimeout(pending.timer);
-      if(frame.ok===true)pending.resolve(frame.context);else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
+      if(frame.ok===true)pending.resolve(pending.sourceChallenge===undefined?frame.context:{context:frame.context,identityWitness:frame.identityWitness});else pending.reject(Object.assign(localAppsFail('scoped_embed_authority_denied'),{status:frame.status===403?403:503}));return;
     }
     if(frame.type==='scoped-context-closed') {channelFrame(context,frame,['appId','reference']);localAppsCheck(localAppsId(frame.appId),'apps_bad_frame');scoped?.forget(frame.reference);return;}
     if (frame.type === 'claim-ready') {
@@ -3283,11 +3363,13 @@ function createLocalAppsRuntime(deps, options = {}) {
   }
   function readScopedAuthority(context,request) {
     localAppsCheck(connected(context)&&context.version===2&&context.authorityRequests.size<32,'scoped_embed_channel_required');
+    localAppsCheck(request.sourceChallenge===undefined || localAppsNonce(request.sourceChallenge),'apps_bad_frame');
     const nonce=deps.randomSecret();
     return new Promise((resolve,reject)=>{
-      const pending={resolve,reject};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
+      const pending={resolve,reject,sourceChallenge:request.sourceChallenge};pending.timer=setTimeout(()=>{context.authorityRequests.delete(nonce);reject(localAppsFail('scoped_embed_authority_timeout'));},8000);pending.timer.unref?.();
       context.authorityRequests.set(nonce,pending);
-      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference})){
+      if(!send(context,{type:'scoped-authority-request',channelId:context.channelId,nonce,reference:request.reference,
+        ...(request.sourceChallenge===undefined?{}:{sourceChallenge:request.sourceChallenge})})){
         context.authorityRequests.delete(nonce);clearTimeout(pending.timer);reject(localAppsFail('scoped_embed_channel_required'));
       }
     });
@@ -3552,6 +3634,65 @@ function resolveJobExecutor(job) {
 
 return { resolveJobExecutor };
 })();
+// bundled connector module: ./agent-modules/local-job-receipts.mjs
+const { createLocalJobReceipts } = (() => {
+// Only the existing connector executes jobs. This journal records its original
+// process result; recovery repeats result delivery, never a process or prompt.
+function createLocalJobReceipts(api, { root, binding }) {
+  const schema = 'soty.local-job-receipt.v1', bindingDigest = api.digest(JSON.stringify(binding));
+  const validId = id => typeof id === 'string' && /^job_[a-f0-9]{32}$/u.test(id);
+  const filename = (id, suffix) => { if (!validId(id)) throw new Error('local_receipt_invalid_job'); return api.join(root, `${id}.${suffix}.json`); };
+  const decode = async (id, suffix) => {
+    const value = await api.readJson(filename(id, suffix));
+    if (value.schema !== schema || value.jobId !== id || value.bindingDigest !== bindingDigest
+      || !/^[a-f0-9]{64}$/u.test(value.jobDigest)) throw new Error('local_receipt_binding_denied');
+    if (suffix === 'result' && (value.resultDigest !== api.digest(JSON.stringify(value.result))
+      || typeof value.result?.ok !== 'boolean' || !Number.isInteger(value.result.exitCode)
+      || typeof value.result.text !== 'string' || value.result.text.length > 1000000)) throw new Error('local_receipt_corrupt');
+    return value;
+  };
+  const missing = error => error?.code === 'ENOENT';
+  return {
+    async claim(job) {
+      const id = job?.id, target = filename(id, 'started');
+      await api.mkdir(root);
+      if ((await api.list(root)).length >= 6000) throw new Error('local_receipt_capacity');
+      try { await api.writeExclusive(target, { schema, jobId: id, bindingDigest, jobDigest: api.digest(JSON.stringify(job)) }); return true; }
+      catch (error) { if (error?.code !== 'EEXIST') throw error; await decode(id, 'started'); return false; }
+    },
+    async finish(id, result) {
+      const start = await decode(id, 'started'), value = { ...start, result, resultDigest: api.digest(JSON.stringify(result)) };
+      try { await api.writeExclusive(filename(id, 'result'), value); }
+      catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        if ((await decode(id, 'result')).resultDigest !== value.resultDigest) throw new Error('local_receipt_result_conflict');
+      }
+      return value;
+    },
+    async acknowledge(id) {
+      const value = await decode(id, 'result');
+      try { await api.writeExclusive(filename(id, 'ack'), { ...value, result: undefined }); }
+      catch (error) { if (error?.code !== 'EEXIST') throw error; await decode(id, 'ack'); }
+    },
+    async pending() {
+      let files; try { files = await api.list(root); } catch (error) { if (missing(error)) return []; throw error; }
+      if (files.length > 6000) throw new Error('local_receipt_capacity');
+      const values = [];
+      for (const name of files) {
+        const match = /^(job_[a-f0-9]{32})\.result\.json$/u.exec(name); if (!match) continue;
+        const id = match[1];
+        try { await decode(id, 'ack'); continue; } catch (error) { if (!missing(error)) throw error; }
+        const start = await decode(id, 'started'), value = await decode(id, 'result');
+        if (start.jobDigest !== value.jobDigest) throw new Error('local_receipt_job_conflict');
+        values.push(value);
+      }
+      return values;
+    },
+  };
+}
+
+return { createLocalJobReceipts };
+})();
 // bundled connector module: ./agent-modules/production-origin.mjs
 const { productionShellOriginAllowed } = (() => {
 const productionShells = new Set(['https://4-2.xn--p1ai', 'https://xn--n1afe0b.online', 'https://soty.pochinit.online']);
@@ -3590,7 +3731,7 @@ const updateConfirmMs = safeInteger(env("SOTY_CONNECTOR_UPDATE_CONFIRM_MS"), 1_0
 const maxEventChars = 64_000;
 const maxResultChars = 1_000_000;
 const persisted = loadConfig();
-const gonkaModel = defaultGonkaModel;
+const gonkaModel = selectGonkaModel(arg("--model") || env("SOTY_CONNECTOR_MODEL"), persisted.gonkaModel);
 const gonkaModelLimits = gonkaModelLimitsFor(gonkaModel);
 let linkId = safeLinkId(arg("--link-id") || arg("--relay-id") || env("SOTY_CONNECTOR_LINK_ID", "SOTY_AGENT_RELAY_ID") || persisted.linkId || persisted.relayId);
 let relayBaseUrl = safeBaseUrl(env("SOTY_CONNECTOR_SERVER_URL", "SOTY_AGENT_RELAY_URL") || persisted.serverUrl || persisted.relayBaseUrl || originOf(updateManifestUrl) || "https://xn--n1afe0b.online");
@@ -3601,6 +3742,22 @@ const connectorToken = safeToken(persisted.connectorToken) || randomBytes(32).to
 const connectorId = `${installId}:${scope.toLowerCase()}`;
 const trafficRoot = join(connectorDir, "traffic-core");
 const jobRoot = join(connectorDir, "connector-jobs");
+// OFF until this installation has been explicitly admitted by its device owner.
+// No new listener, dispatch format or executor is introduced.
+const durableResults = env("SOTY_CONNECTOR_DURABLE_RESULTS") === "1";
+const localJobReceipts = durableResults ? createLocalJobReceipts({
+  join, digest: value => sha256(value),
+  mkdir: async target => { await mkdir(target, { recursive: true, mode: 0o700 });
+    if ((await lstat(target)).isSymbolicLink()) throw new Error('local_receipt_directory_denied');
+    if (process.platform === 'win32') await protectSecretFile(target); },
+  readJson: async target => { const info = await lstat(target);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 6200000) throw new Error('local_receipt_file_denied');
+    return JSON.parse(await readFile(target, 'utf8')); },
+  list: target => readdir(target),
+  writeExclusive: async (target, value) => { const file = await open(target, 'wx', 0o600);
+    try { await file.writeFile(JSON.stringify(value), 'utf8'); await file.sync(); } finally { await file.close(); }
+    await protectSecretFile(target); },
+}, { root: join(jobRoot, 'native-results-v1'), binding: { linkId, deviceId, connectorId, relayBaseUrl } }) : null;
 const openCodeRoot = join(connectorDir, "opencode-runtime");
 const openCodeStateRoot = join(connectorDir, "opencode-state");
 const spreadExMlRoot = join(connectorDir, "spreadex-ml");
@@ -4003,6 +4160,7 @@ async function connectorLoop() {
       continue;
     }
     try {
+      if (localJobReceipts) await reconcileLocalResults();
       const result = await serverJson(`/api/connectors/poll?linkId=${encodeURIComponent(linkId)}&deviceId=${encodeURIComponent(deviceId)}&connectorId=${encodeURIComponent(connectorId)}&wait=1`, { timeoutMs: 35_000 });
       if (!result.ok) {
         // A successful registration has recovered this old poll denial. Retry
@@ -4027,9 +4185,20 @@ async function executeJob(job) {
     await finishRemoteJob(job.id, { ok: false, text: "Этот тип задания не поддерживается исполнителем. Обновите подключение.", exitCode: 126 });
     return;
   }
+  // Existing root admission/cancellation is read again at the start boundary.
+  // A dropped admission response cannot turn into process execution.
+  if (localJobReceipts && kind === 'agent') {
+    const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
+    if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
+    if (!['leased', 'running'].includes(state.job.status)) return;
+    if (!await localJobReceipts.claim(job)) return; // A started marker is NEVER re-executable.
+    if (state.job.cancelRequested === true) {
+      await finishRemoteJob(job.id, { ok: false, text: 'Отменено до запуска', exitCode: 130 }, true); return;
+    }
+  }
   const detected = kind === "agent" ? await detectAgent() : null;
   if (kind === "agent" && !detected?.available) {
-    await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" });
+    await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" }, Boolean(localJobReceipts));
     return;
   }
   const requestedRunAs = job.input?.runAs === "system" ? "system" : "user";
@@ -4051,18 +4220,28 @@ async function executeJob(job) {
   const cancelWatch = watchCancellation(job.id, controller);
   try {
     const runtime = { signal: controller.signal, emit };
+    if (localJobReceipts && kind === 'agent') {
+      const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
+      if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
+      if (state.job.cancelRequested === true || !['leased', 'running'].includes(state.job.status)) {
+        controller.abort(); throw new Error('local_job_admission_revoked');
+      }
+    }
     const result = kind === "agent" ? await runOpenCode(job, runtime) : await runShellJob(job, runtime);
     await eventQueue;
-    await finishRemoteJob(job.id, { ...result, ...(kind === "agent" ? { agentId: "opencode" } : {}) });
+    await finishRemoteJob(job.id, { ...result, ...(kind === "agent" ? { agentId: "opencode" } : {}) }, Boolean(localJobReceipts && kind === 'agent'));
   } catch (error) {
     const cancelled = controller.signal.aborted;
     await eventQueue;
+    // Delivery may be unknown after the native result was written. The original
+    // result must stay immutable; never replace it with a transport failure.
+    if (localJobReceipts && kind === 'agent' && (await localJobReceipts.pending()).some(row => row.jobId === job.id)) return;
     await finishRemoteJob(job.id, {
       ok: false,
       text: cancelled ? "Отменено" : safeError(error),
       exitCode: cancelled ? 130 : 1,
       ...(kind === "agent" ? { agentId: "opencode" } : {})
-    });
+    }, Boolean(localJobReceipts && kind === 'agent'));
   } finally {
     clearInterval(heartbeat);
     controller.abort();
@@ -4093,11 +4272,23 @@ async function postJobEvent(jobId, event) {
   });
 }
 
-async function finishRemoteJob(jobId, result) {
-  return await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}/result`, {
+async function finishRemoteJob(jobId, result, durable = false) {
+  if (durable) await localJobReceipts.finish(jobId, result);
+  const response = await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}/result`, {
     method: "POST",
     body: { linkId, deviceId, connectorId, result }
   });
+  if (durable && response.ok && response.job?.id === jobId && ['succeeded', 'failed', 'cancelled'].includes(response.job.status)) await localJobReceipts.acknowledge(jobId);
+  return response;
+}
+
+async function reconcileLocalResults() {
+  for (const receipt of await localJobReceipts.pending()) {
+    // Re-registration never changes the binding encoded in a retained result.
+    const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(receipt.jobId)}/runtime-status`, { timeoutMs: 5_000 });
+    if (!state.ok || state.job?.id !== receipt.jobId) continue;
+    await finishRemoteJob(receipt.jobId, receipt.result, true);
+  }
 }
 
 async function detectAgent(force = false) {
@@ -4156,7 +4347,7 @@ async function runOpenCode(job, { signal, emit }) {
     input: prompt,
     signal,
     timeoutMs: safeInteger(job.input?.timeoutMs, 1_000, 24 * 60 * 60_000, 2 * 60 * 60_000),
-    env: openCodeEnv(),
+    env: openCodeEnv({ boundedLocalTask: durableResults && job.schema === 'soty.connector-job.v4' && !appOutput }),
     onStdout: (chunk) => {
       lineBuffer += chunk;
       const lines = lineBuffer.split("\n");
@@ -4465,7 +4656,7 @@ function modelProxyBaseUrl() {
   return new URL("/api/connectors/gonka/v1", `${relayBaseUrl}/`).toString().replace(/\/$/u, "");
 }
 
-function openCodeEnv() {
+function openCodeEnv({ boundedLocalTask = false } = {}) {
   const config = {
     $schema: "https://opencode.ai/config.json",
     model: `gonka/${gonkaModel}`,
@@ -4504,12 +4695,12 @@ function openCodeEnv() {
           glob: "allow",
           grep: "allow",
           list: "allow",
-          bash: "allow",
-          task: "allow",
+          bash: boundedLocalTask ? "deny" : "allow",
+          task: boundedLocalTask ? "deny" : "allow",
           external_directory: "deny",
           todowrite: "allow",
-          webfetch: "allow",
-          websearch: "allow",
+          webfetch: boundedLocalTask ? "deny" : "allow",
+          websearch: boundedLocalTask ? "deny" : "allow",
           lsp: "allow",
           skill: "allow",
           question: "deny",
@@ -5193,7 +5384,7 @@ async function ensureUserCompanion() {
     `    $sourceData = Get-Content -LiteralPath ${sourceConfig} -Raw | ConvertFrom-Json`,
     "    $userExists = Test-Path -LiteralPath $userConfig",
     "    $userData = if ($userExists) { Get-Content -LiteralPath $userConfig -Raw | ConvertFrom-Json } else { $sourceData }",
-    "    foreach ($name in @('schema','linkId','serverUrl','deviceId','deviceNick','installId','connectorToken')) {",
+    "    foreach ($name in @('schema','linkId','serverUrl','deviceId','deviceNick','installId','connectorToken','gonkaModel')) {",
     "      $sourceProperty = $sourceData.PSObject.Properties[$name]",
     "      if ($null -eq $sourceProperty) { continue }",
     "      $userProperty = $userData.PSObject.Properties[$name]",
@@ -5284,6 +5475,7 @@ async function saveConfig() {
     deviceNick,
     installId,
     connectorToken,
+    gonkaModel,
     workspaceRoot: persisted.workspaceRoot || homedir(),
     allowedRoots: Array.isArray(persisted.allowedRoots) ? persisted.allowedRoots : [persisted.workspaceRoot || homedir()],
     trafficFabric: trafficFabricState,
