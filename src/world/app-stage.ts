@@ -18,7 +18,7 @@ import './project-feedback-picker.css';
 import {mountProjectCaptureBridge,type ProjectCapturePeer} from './project-feedback-capture.mjs';
 import {pickProjectFeedbackMedia} from './project-feedback-picker.mjs';
 import {captureSourcePin,matchesScopedCaptureContext} from './app-project-capture.mjs';
-import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,attachSourceFrameRefresh,type ScopedRenewReply} from './app-scoped-renewal.mjs';
+import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,attachSourceFrameRefresh,isRootSsoWorkspacePin,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
   presentation?: 'widget';
@@ -211,7 +211,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const timeout=setTimeout(()=>finish('unknown'),12000);hidden.src=reply.url;screen.append(hidden);
     });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;lastRuntimeLaunchAt=Date.now();return true;},
     onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.');
-      else if(state==='login_required')showMessage('Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
+      else if(state==='login_required')showMessage(isRootSsoWorkspacePin(readRenewBinding()?.source)
+        ?'Обновление доступа пока не подтверждено. Данные сохранены.'
+        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
       else if(state==='ready')showMessage('');},
   });
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
