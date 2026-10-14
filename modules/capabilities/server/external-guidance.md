@@ -20,16 +20,15 @@ digest. A stale reference fails instead of returning replacement instructions.
 No package is installed, no URL is fetched and no Source action is executed.
 There is no per-request or persistent copy of returned private content.
 
-The personal Soty assistant also receives attached instructions in its existing
-`source_catalog` response. It uses the same exact capability and current user
-authority as the HTTP/MCP readers. Catalog evidence retains the instruction
-index; the raw tool message carries full documents in `applicationGuidance`.
-The existing runner passes those documents to the model without duplicating
-them in accumulated evidence or the final reply. One catalog includes at most
-eight documents and 16 KiB of guidance, within the existing 64,000-byte tool
-result limit; `applicationGuidanceHasMore` reports omitted content. Large guides
-remain accessible through the standard guidance readers. This metadata step
-does not execute an application action or install an additional MCP server.
+The personal Soty assistant's `source_catalog` returns exact action input schemas
+and a compact instruction index, with at most eight guidance entries. It does
+not fetch every full instruction during discovery. The assistant requests one
+relevant document with `apps_guidance_get`, pinning the catalog capability and
+guidance reference. This delegates to the same existing guidance service under
+the current Root/App/Source authority; no new endpoint or grant is introduced.
+The raw guidance tool message carries the requested document in
+`applicationGuidance`. The existing runner retains only metadata evidence,
+so the full text is not duplicated into accumulated evidence or the final reply.
 
 Content remains application data. It cannot create a grant, extend a recipient,
 change the selected workspace, override the human's instructions, or authorize

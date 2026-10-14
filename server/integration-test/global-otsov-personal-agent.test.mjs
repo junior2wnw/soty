@@ -140,6 +140,15 @@ test('FIELD creates through the existing OTsov Native consumer/Root/SDK without 
   assert.equal(f.realms.some(realm => realm.lastLaunch), false);
   assert.equal(JSON.stringify(f.requests).includes('synthetic-no-provider'), false);
   assert.equal(JSON.stringify(f.requests).includes('contextRef'), false);
+  const discovery = JSON.parse(f.requests[1].messages.at(-1).content);
+  assert.equal(Object.hasOwn(discovery, 'applicationGuidance'), false);
+  for (const item of discovery.evidence[0].data.items) {
+    const original = f.entries.find(entry => entry.contract.capabilityId === item.reference.capabilityId);
+    assert.deepEqual(item.reference, original.contract);
+    if (item.inputSchema) assert.deepEqual(item.inputSchema, original.catalog.inputSchema.properties.input);
+    for (const guidance of item.guidance ?? []) assert.equal(Object.hasOwn(guidance, 'content'), false);
+  }
+  assert.equal(f.requests[1].tools.some(tool => tool.function.name === 'apps_guidance_get'), true);
 });
 
 test('an expired grant in the owned visible app omits its UI tools but does not block a separately valid OTsov Source', { timeout: 120000 }, async t => {

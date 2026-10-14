@@ -65,6 +65,7 @@ async function fixture(t, { enabled = true, finishAnswer, policy, lowEffortHost 
       if (last.role === 'user' && last.content === 'Read my notes') { name = 'list_my_notes'; args = {}; }
       if (last.role === 'user' && last.content.startsWith('Read note ')) { name = 'read_my_note'; args = { noteId: last.content.slice(10) }; }
       if (last.role === 'user' && last.content === 'Read source') { name = 'source_read_1'; args = sourceInput; }
+      if (last.role === 'user' && last.content === 'Read guidance') { name = 'apps_guidance_get'; args = sourceInput; }
       if (last.role === 'user' && last.content === 'Catalog sources') { name = 'source_catalog'; args = { limit: 20 }; }
       if (last.role === 'user' && last.content.startsWith('Local task ')) { name = 'run_on_my_device'; args = { text: last.content.slice(11) }; }
       if (last.role === 'tool') { const evidence = JSON.parse(last.content).evidence; args = { answer: 'Источник проверен', selectedEvidenceIds: evidence.map(item => item.id),
@@ -388,7 +389,7 @@ async function sourceFixture(t, { count = 1, guidance } = {}) {
   return { f, references, reference, entries, grant, issued, reads: () => sourceReads, setNativeAllowed(value) { sourceAllowed = value; } };
 }
 
-test('personal agent receives app skills as bounded data through the current authorized catalog', { timeout: 20000 }, async t => {
+test('personal agent discovers summaries then reads only the selected skill under current authority', { timeout: 20000 }, async t => {
   const content = await readFile(new URL('../../integrations/agent-skills/otsov-app-builder/SKILL.md', import.meta.url), 'utf8');
   const source = await sourceFixture(t, { guidance: [{ kind: 'skill', language: 'en', title: 'Create with the existing app',
     summary: 'Use the application tools in the current account.', content }] }), { f, grant } = source;
@@ -397,16 +398,27 @@ test('personal agent receives app skills as bounded data through the current aut
   const item = result.evidence[0].data.items[0];
   assert.equal(item.guidance.length, 1); assert.equal(item.guidanceHasMore, false);
   assert.equal(Object.hasOwn(item.guidance[0], 'content'), false);
+  const catalogMessage = JSON.parse(f.calls.at(-1).body.messages.at(-1).content);
+  assert.equal(Object.hasOwn(catalogMessage, 'applicationGuidance'), false);
+  assert.equal(JSON.stringify(catalogMessage).includes(content), false);
+  f.setSourceInput({ reference: source.reference, guidance: item.guidance[0].reference });
+  const selected = await f.turn(f.alice, 'guidance_selected_1', 'Read guidance');
+  assert.equal(selected.ok, true, selected.error?.code);
   const message = JSON.parse(f.calls.at(-1).body.messages.at(-1).content);
   assert.equal(message.applicationGuidance[0].content, content); assert.equal(message.applicationGuidance[0].authority, 'application-data');
   assert.deepEqual(message.applicationGuidance[0].contract, source.reference);
   assert.deepEqual(message.applicationGuidance[0].reference, item.guidance[0].reference);
   assert.equal(JSON.stringify(result).includes(content), false, 'instructions are task context, not duplicated final evidence');
-  assert.equal(source.reads(), 0, 'discovery discloses instructions without invoking the application');
+  assert.equal(JSON.stringify(selected).includes(content), false);
+  assert.equal(source.reads(), 0, 'metadata and guidance never invoke the application');
+  f.setSourceInput({ reference: source.reference, guidance: { ...item.guidance[0].reference, digest: '0'.repeat(64) } });
+  assert.equal((await f.turn(f.alice, 'guidance_wrong_pin', 'Read guidance')).ok, false);
+  f.setSourceInput({ reference: source.reference, guidance: item.guidance[0].reference });
+  assert.equal((await f.turn(f.bob, 'guidance_foreign_get', 'Read guidance')).ok, false);
   const foreign = await f.turn(f.bob, 'guidance_foreign_1', 'Catalog sources');
   assert.equal(foreign.ok, true); assert.equal(foreign.evidence[0].data.items.length, 0);
   assert.equal(JSON.stringify(foreign).includes(content), false);
-  const barrier = f.hold(true), pending = f.turn(f.alice, 'guidance_revoke_01', 'Catalog sources');
+  const barrier = f.hold(true), pending = f.turn(f.alice, 'guidance_revoke_01', 'Read guidance');
   await barrier.entered.promise;
   assert.equal((await f.call(f.alice, 'access.grants.revoke', { expectedAccountId: f.a.accountId, grantId: grant.id })).ok, true);
   barrier.release.resolve(); assert.equal((await pending).ok, false, 'revocation prevents delivery of used instructions');
@@ -420,7 +432,7 @@ test('large app instructions do not overflow the personal agent catalog budget',
   const item = result.evidence[0].data.items[0];
   assert.equal(item.guidance.length, 1); assert.equal(Object.hasOwn(item.guidance[0], 'content'), false);
   const message = JSON.parse(source.f.calls.at(-1).body.messages.at(-1).content);
-  assert.deepEqual(message.applicationGuidance, []); assert.equal(message.applicationGuidanceHasMore, true); assert.equal(source.reads(), 0);
+  assert.equal(Object.hasOwn(message, 'applicationGuidance'), false); assert.equal(source.reads(), 0);
 });
 
 test('actual registered Root Source query tool preserves independent Source denial and foreign app isolation', { timeout: 20000 }, async t => {
