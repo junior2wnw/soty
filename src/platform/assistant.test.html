@@ -10,13 +10,21 @@ import { createPalette } from '../world/theme/palette.mjs';
 import { mountAssistant } from './assistant.ts';
 for(const [key,value] of Object.entries(createPalette('dark',50)))document.documentElement.style.setProperty(key,value);
 let accountId='qa_assistant_'+crypto.randomUUID(), handle, accepted=null, denied=false, calls=0, historyError=false;
+const params=new URLSearchParams(location.search), personalReady=params.has('personal'), noDevices=params.get('devices')==='0';
+let localCreates=0, personalTurns=0;
 const first={hostDeviceId:'qa_host_a',connectorId:'qa_connector_a',name:'Тестовый компьютер A',online:true};
 const second={hostDeviceId:'qa_host_b',connectorId:'qa_connector_b',name:'Тестовый компьютер B',online:true};
 const proof=document.querySelector('#proof'), root=document.querySelector('#host');
 // This standalone dev fixture never imports production composition or issues network requests.
-window.fetch=async()=>new Response(JSON.stringify({agentConfigured:true}),{headers:{'content-type':'application/json'}});
+window.fetch=async()=>new Response(JSON.stringify({agentConfigured:true,personalAgent:{configured:personalReady}}),{headers:{'content-type':'application/json'}});
 const client={async getLocalState(){return {accountId};},async extension(op,args){
- if(op==='apps.devices')return {devices:calls?[second,first]:[first,second]};
+ if(op==='apps.devices')return {devices:noDevices?[]:calls?[second,first]:[first,second]};
+ if(op==='agent.turn'&&personalReady){
+  personalTurns++;proof.dataset.personalTurns=String(personalTurns);proof.dataset.personalPrompt=args.prompt;
+  if(params.has('unknown'))throw new TypeError('synthetic unknown result');
+  proof.textContent='Тестовая отправка в Сотах: '+personalTurns+'; локальных форм: '+localCreates+'. Никакого исполнения или API.';
+  return {schema:'soty.personal-agent-turn.v1',status:'complete',requestId:args.requestId,answer:'Тестовый ответ без создания приложения.',contextId:'ctx_abcdefghijklmnop12345678'};
+ }
  if(op==='apps.assistant.history'){if(historyError)throw new TypeError('synthetic history unavailable');return {jobs:accepted?[{...first,id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,text:accepted.text,cwd:accepted.cwd,appCreation:false,status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};}
  if(op==='apps.assistant.send'){
   calls++;
@@ -31,7 +39,7 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
  }
  throw new Error('unexpected synthetic operation '+op);
 }};
-async function remount(){handle?.dispose();handle=await mountAssistant(root,{client,connectDevice(){},createApp(){},resumeApp(){}});}
+async function remount(){handle?.dispose();handle=await mountAssistant(root,{client,connectDevice(){},createApp(){localCreates++;proof.dataset.localCreates=String(localCreates);proof.textContent='Локальная форма вызвана: '+localCreates+'; тестовых отправок в Сотах: '+personalTurns+'.';},resumeApp(){}});}
 document.querySelector('#remount').onclick=()=>void remount();
 document.querySelector('#deny').onclick=()=>{denied=true;void remount();};
 document.querySelector('#account').onclick=()=>{accountId='qa_changed_'+crypto.randomUUID();void handle.refresh();};

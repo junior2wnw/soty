@@ -1,4 +1,15 @@
 .sw-app[data-agent-orb=ready]>header.sw-topbar { padding-inline-end: calc(60px + env(safe-area-inset-right,0px)); }
+@media (max-width: 720px) {
+  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner {
+    padding-inline-end: calc(60px + env(safe-area-inset-right,0px));
+  }
+  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner>.sw-button {
+    width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 10px;
+  }
+  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner>.sw-button>span {
+    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
 .sa-stage:has(>.sw-agent-orb)>.sa-toolbar { padding-inline-end: 60px; }
 @media (max-width: 420px) {
   .sa-toolbar { display: grid; grid-template-columns: repeat(5,minmax(44px,1fr)); justify-items: center; }

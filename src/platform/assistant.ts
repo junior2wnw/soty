@@ -100,7 +100,11 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const newChat = button('Новый разговор', 'plus', 'sw-button-quiet sw-assistant-new', () => { void reset(); });
   newChat.setAttribute('aria-label', 'Новый разговор');
   newChat.title = 'Новый разговор';
-  headActions.append(personalMode, deviceMode, newChat, button('Создать приложение', 'app', '', () => { void options.createApp(); })); header.append(title, headActions);
+  const createApp = button('Создать приложение', 'app', '', () => {
+    if (mode === 'device') { void options.createApp(); return; }
+    void prepareApp();
+  });
+  headActions.append(personalMode, deviceMode, newChat, createApp); header.append(title, headActions);
   const layout = el('div', 'sw-assistant-layout'), history = el('aside', 'sw-assistant-history'); history.setAttribute('aria-label', 'История задач');
   const historyHeading = el('div', 'sw-assistant-history-heading'); historyHeading.append(el('h2', '', 'Недавние'), iconButton('Обновить историю', 'refresh', () => { void loadHistory(); }));
   const taskList = el('div', 'sw-assistant-task-list'), historyStatus = el('p', 'sw-muted'); historyStatus.setAttribute('role', 'status');
@@ -143,6 +147,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     personalMode.disabled = deviceMode.disabled = sending || Boolean(mode === 'device' && drafts.read().pending);
     if (mode === 'personal') {
       const state = conversation().view(); prompt.maxLength = 8000; prompt.readOnly = Boolean(state.requestId);
+      createApp.disabled = sending || Boolean(state.requestId);
       send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
       newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
       saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
@@ -156,6 +161,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
         button('На компьютере', 'laptop', 'sw-button-quiet', () => chooseMode('device')));
       return;
     }
+    createApp.disabled = false;
     prompt.maxLength = 16000; privilege.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
     draft = drafts.read();
     const bound = draft.pending?.payload ?? selected;
@@ -181,6 +187,16 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     thread.querySelectorAll<HTMLButtonElement>('.sw-assistant-starters button').forEach(control => { control.disabled = waiting || sending; });
     const suggestions = thread.querySelector<HTMLElement>('.sw-assistant-starters');
     if (suggestions) suggestions.hidden = Boolean(prompt.value.trim()) || waiting || sending;
+  }
+  async function prepareApp(): Promise<void> {
+    const revision = generation;
+    try {
+      if (!await current() || revision !== generation || sending || mode !== 'personal' || conversation().view().requestId) return;
+      const prefix = 'Создай приложение в Сотах:', text = prompt.value;
+      const next = text.startsWith(prefix) ? text : text.length ? `${prefix}\n${text}` : `${prefix} `;
+      if (next.length > prompt.maxLength) { error.textContent = friendly({ code: 'agent_prompt_too_large' }); prompt.focus(); return; }
+      prompt.value = next; error.textContent = ''; saveDraft(); prompt.focus(); prompt.setSelectionRange(next.length, next.length);
+    } catch (cause) { if (!disposed) error.textContent = friendly(cause); }
   }
   function saveDraft(): void {
     if (mode === 'personal') { try { conversation().saveDraft(prompt.value); } catch (cause) { error.textContent = friendly(cause); } updateControls(); return; }
