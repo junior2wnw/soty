@@ -163,7 +163,7 @@ function roomInviteUrl(value, origin) {
 }
 
 /** Local product identity + contacts. Not an OIDC provider or shared identity authority. */
-export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [], initializePlatformInvitations = false } = {}) {
+export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [], initializePlatformInvitations = true } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && allowedOrigins.length <= 64, 'allowed_origins_required');
