@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
-import { createGlmProvider, providerFailureCode } from '../modules/personal-agent/provider/index.mjs';
+import { createGlmProvider, providerFailureDiagnostic } from '../modules/personal-agent/provider/index.mjs';
 import { boundedPolicy, canonical, fields, freeze, identifier, string } from '../modules/personal-agent/provider/validation.mjs';
 import { agentError, agentErrorCode, isPersonalAgentTransport } from './personal-agent-transport.js';
 
@@ -135,7 +135,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
           offeredToolNames: Object.keys(offered), parallelToolCalls: options.parallelToolCalls }); }
         catch (error) {
           assertCurrent();
-          try { console.error(JSON.stringify({ schema: 'soty.personal-agent-provider-failure.v1', code: providerFailureCode(error) })); } catch {}
+          try { console.error(JSON.stringify({ schema: 'soty.personal-agent-provider-failure.v1', ...providerFailureDiagnostic(error) })); } catch {}
           throw agentError('agent_model_unknown');
         }
         finally { activeProvider.close(); activeProvider = null; }

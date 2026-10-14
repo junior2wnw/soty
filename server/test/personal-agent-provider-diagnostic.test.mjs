@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPersonalAgentModule } from '../personal-agent-module.js';
 import { createPersonalAgentTransport } from '../personal-agent-transport.js';
-import { GLM_MODEL, ProviderError, providerFailureCode } from '../../modules/personal-agent/provider/index.mjs';
+import { GLM_MODEL, ProviderError, providerFailureCode, providerFailureDiagnostic, createGlmProvider } from '../../modules/personal-agent/provider/index.mjs';
 
 const PRIVATE = 'synthetic-private-marker-not-a-real-secret';
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -68,14 +68,15 @@ test('actual JSON failures have a safe cause code and keep the unknown-turn no-r
     ['invalid usage', { outputTokens: -1 }, 'provider_invalid_input'],
     ['wrong content type', { contentType: 'text/event-stream' }, 'provider_invalid_stream'],
     ['missing accounting response identifier', { missingRequestId: true }, 'provider_transport_failed'],
-    ['HTTP failure', { httpStatus: 503 }, 'provider_http_failed'],
+    ... [400, 403, 429, 503].map(httpStatus => ['HTTP ' + httpStatus, { httpStatus }, 'provider_http_failed']),
     ['lost transport ACK', { transportThrows: true }, 'provider_transport_failed'],
   ];
   for (const [label, options, code] of cases) await t.test(label, async t => {
     const f = fixture(t, options);
     await assert.rejects(f.turn(), error => error.code === 'agent_model_unknown');
     assert.equal(f.observed.dispatches, 1); assert.equal(f.observed.receipts, 0); assert.equal(f.observed.subscriptions, 0);
-    assert.deepEqual(f.diagnostics.map(value => JSON.parse(value)), [{ schema: 'soty.personal-agent-provider-failure.v1', code }]);
+    assert.deepEqual(f.diagnostics.map(value => JSON.parse(value)), [{ schema: 'soty.personal-agent-provider-failure.v1', code,
+      httpStatus: options.transportThrows || options.missingRequestId ? null : options.httpStatus ?? 200 }]);
     const serialized = JSON.stringify(f.diagnostics);
     assert.equal(serialized.includes(PRIVATE), false); assert.equal(serialized.includes('synthetic-account'), false);
     assert.equal(serialized.includes(REQUEST_ID), false);
@@ -98,7 +99,7 @@ test('a failed diagnostic sink cannot change unknown status or cause another dis
   await assert.rejects(f.turn(), error => error.code === 'agent_reconcile_required');
   assert.equal(f.observed.dispatches, 1); assert.equal(f.observed.receipts, 0); assert.equal(f.observed.subscriptions, 0);
   assert.deepEqual(f.diagnostics.map(value => JSON.parse(value)), [
-    { schema: 'soty.personal-agent-provider-failure.v1', code: 'provider_output_incomplete' },
+    { schema: 'soty.personal-agent-provider-failure.v1', code: 'provider_output_incomplete', httpStatus: 200 },
   ]);
 });
 
@@ -108,6 +109,7 @@ test('diagnostic projection rejects foreign codes, forged errors, accessors and 
   for (const name of ['message', 'cause', 'accounting', 'toJSON']) Object.defineProperty(known, name,
     { get() { reads++; throw Error(PRIVATE); } });
   assert.equal(providerFailureCode(known), 'provider_invalid_finish');
+  assert.deepEqual(providerFailureDiagnostic(known), { code: 'provider_invalid_finish', httpStatus: null });
   const getter = new ProviderError('provider_invalid_finish');
   Object.defineProperty(getter, 'code', { get() { reads++; throw Error(PRIVATE); } });
   const forged = Object.create(ProviderError.prototype, { code: { value: 'provider_invalid_finish' } });
@@ -117,10 +119,26 @@ test('diagnostic projection rejects foreign codes, forged errors, accessors and 
   for (const error of [null, undefined, PRIVATE, {}, new Error(PRIVATE), new ProviderError(PRIVATE),
     getter, forged, throwing, revoked.proxy]) {
     assert.equal(providerFailureCode(error), 'provider_transport_failed');
+    assert.deepEqual(providerFailureDiagnostic(error), { code: 'provider_transport_failed', httpStatus: null });
   }
   assert.equal(reads, 0);
   Object.defineProperty(Object.prototype, 'value', { value: 'provider_model_mismatch', configurable: true });
   try { assert.equal(providerFailureCode(getter), 'provider_transport_failed'); }
   finally { delete Object.prototype.value; }
   assert.equal(reads, 0);
+});
+
+// The diagnostic must not traverse even an authentic failure's private accounting.
+test('trusted HTTP evidence survives hostile accounting accessors without reading them', async () => {
+  let reads = 0;
+  const provider = createGlmProvider({ responseMode: 'json', transport: async () => new Response(PRIVATE, { status: 429 }) });
+  try {
+    await assert.rejects(provider.complete({ requestId: 'synthetic-status', messages: [{ role: 'user', content: PRIVATE }] }), error => {
+      for (const key of ['accounting', 'message', 'cause', 'httpStatus']) Object.defineProperty(error, key,
+        { get() { reads++; throw Error(PRIVATE); } });
+      assert.deepEqual(providerFailureDiagnostic(error), { code: 'provider_http_failed', httpStatus: 429 });
+      assert.equal(reads, 0);
+      return true;
+    });
+  } finally { provider.close(); }
 });

@@ -12,6 +12,7 @@ const SAFE_CODES = new Set(['provider_invalid_input', 'provider_invalid_json', '
   'provider_finish_changed', 'provider_output_incomplete', 'provider_stream_incomplete', 'provider_empty_response',
   'provider_observer_failed', 'provider_event_limit', 'provider_event_count_limit', 'provider_invalid_stream', 'provider_stream_limit', 'provider_invalid_utf8',
   'provider_cancelled', 'provider_timeout', 'provider_closed', 'provider_transport_failed', 'provider_http_failed', 'provider_body_failed']);
+const failureHttpStatuses = new WeakMap();
 // A closed code projection only. Do not inspect raw error text, cause, accounting or getters.
 export function providerFailureCode(error) {
   try {
@@ -19,6 +20,12 @@ export function providerFailureCode(error) {
     const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
     return descriptor && Object.hasOwn(descriptor, 'value') && SAFE_CODES.has(descriptor.value) ? descriptor.value : 'provider_transport_failed';
   } catch { return 'provider_transport_failed'; }
+}
+// Only failures created by this provider carry trusted HTTP evidence; never read accounting.
+export function providerFailureDiagnostic(error) {
+  const status = failureHttpStatuses.get(error);
+  return Object.freeze({ code: providerFailureCode(error),
+    httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null });
 }
 function safeResponseId(value) {
   if (value === null || value === undefined) return null;
@@ -101,7 +108,9 @@ export function createGlmProvider({ transport, policy: inputPolicy = {}, tools: 
     work.then(() => active.delete(controller), () => active.delete(controller));
     try { return await Promise.race([work, aborted]); }
     catch (error) {
-      throw new ProviderError(providerFailureCode(error), accounting());
+      const failure = new ProviderError(providerFailureCode(error), accounting());
+      failureHttpStatuses.set(failure, state.httpStatus);
+      throw failure;
     } finally { clearTimeout(timer); signal.removeEventListener('abort', abortListener); }
   }
   function close() { if (!closed) { closed = true; for (const controller of active) controller.abort('closed'); } }
