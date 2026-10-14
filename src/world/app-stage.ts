@@ -1,3 +1,4 @@
+import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
@@ -188,6 +189,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
         appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
   };
+  const detachInvitation = mountAppInvitationCarrier({ view, appId: app.appId, take: initial.takeInvitation, readPeer: readCapturePeer });
   let renewalFrame:HTMLIFrameElement|null=null;
   let lastRuntimeLaunchAt=0;
   const readRenewBinding=()=>{
@@ -419,6 +421,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

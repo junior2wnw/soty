@@ -106,7 +106,7 @@ export function parseAppLaunchRoute(hash) {
   requireValue(source.length <= 32768 && !source.includes('#'), 'invalid_app_route');
   const queryAt = source.indexOf('?'), parts = (queryAt < 0 ? source : source.slice(0, queryAt)).split('/');
   const parameters = new URLSearchParams(queryAt < 0 ? '' : source.slice(queryAt + 1));
-  requireValue([...parameters.keys()].every(key => ['path', 'panel', 'conversation', 'admin'].includes(key) && parameters.getAll(key).length === 1), 'invalid_app_route');
+  requireValue([...parameters.keys()].every(key => ['path', 'panel', 'conversation', 'admin', 'invitation'].includes(key) && parameters.getAll(key).length === 1), 'invalid_app_route');
   requireValue(parameters.has('panel') || (!parameters.has('conversation') && !parameters.has('admin')), 'invalid_app_route');
   if (parameters.has('admin')) requireValue(parameters.get('admin') === '1', 'invalid_app_route');
   const presentation = parameters.has('panel') ? normalizePresentation({ panel: parameters.get('panel'),
@@ -120,7 +120,9 @@ export function parseAppLaunchRoute(hash) {
     ...(parameters.has('path') ? { path: parameters.get('path') } : {}) });
   if (parts[0] === 'launch') requireValue(!!target.domainId, 'invalid_app_route');
   const communityId = parts[0] === 'app' ? context : undefined;
-  return Object.freeze({ kind: parts[0], target, ...(communityId === undefined ? {} : { communityId }),
+  let invitation = parameters.get('invitation');
+  requireValue(invitation === null || /^[a-f0-9]{64}$/u.test(invitation) && !target.path && !presentation && parts[0] === 'app' && !context, 'invalid_app_invitation');
+  return Object.freeze({ kind: parts[0], target, ...(invitation === null ? {} : { takeInvitation() { const token = invitation; invitation = null; return token; } }), ...(communityId === undefined ? {} : { communityId }),
     ...(presentation === undefined ? {} : { presentation }), route: formatAppLaunchRoute(target, communityId, presentation) });
 }
 

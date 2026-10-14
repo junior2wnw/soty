@@ -1,3 +1,4 @@
+import * as appInvitationCarrier from './app-invitation-carrier.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -94,6 +95,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
+    './app-invitation-carrier.mjs': appInvitationCarrier,
     './app-fullscreen.mjs': appFullscreen,
     './app-deployment.mjs': appDeployment,
     './project-feedback-capture.mjs': projectCapture,
@@ -694,4 +696,15 @@ test('actual app controller enqueues launch before slow optional metadata on the
     assert.deepEqual(f.app.appStage.entry(), { appId, domainId, origin: 'https://app.runtime.example', path: '/' });
     f.app.cleanScreen();
   }
+});
+
+
+test('invitation route never reaches Apps request or saved account route', async () => {
+  const token='a'.repeat(64), route='#app/'+stageAppId+'?invitation='+token;
+  const f=fixture({hash:route}),calls=[];
+  f.app.options.openApp=async(_app,parameters)=>{calls.push(parameters);return stageResponse('/embed');};
+  await f.app.openApplication({appId:stageAppId,name:'EcoLab'},appLaunch.parseAppLaunchRoute(route));
+  assert.equal(calls.length,1);assert.ok(!JSON.stringify(calls).includes(token));
+  assert.ok(!f.location.hash.includes(token));assert.ok(!JSON.stringify(f.app.desk).includes(token));
+  assert.equal(calls[0].path,undefined);f.app.cleanScreen();
 });

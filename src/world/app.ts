@@ -863,7 +863,7 @@ class WorldApplication {
       }
       // Canonicalize only the shell route, never a server-issued ticket URL.
       history.replaceState({ soty: true }, '', `#${intent.route}`);
-      if (this.appStage?.matches(intent)) { this.activeRoute = '#' + intent.route; this.appStage.updateRoute(intent); return true; }
+      if (!intent.takeInvitation && this.appStage?.matches(intent)) { this.activeRoute = '#' + intent.route; this.appStage.updateRoute(intent); return true; }
       const known = this.apps.find(value => value.appId === intent.target.appId);
       const app = known ?? { appId: intent.target.appId, name: 'Приложение', status: 'unknown' };
       await this.openApplication(app, intent, !known); return true;
