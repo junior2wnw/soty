@@ -1,6 +1,10 @@
+import { mountPlatformInvitations } from './platform-invitations.mjs';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const date = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
 const errors = {
+  platform_invitation_required: 'Новые участники входят по приглашению. Откройте ссылку приглашения или подключите свой прежний профиль.',
+  platform_invite_unavailable: 'Приглашение уже использовано, отозвано или просрочено. Попросите новую ссылку.',
+  platform_invite_invalid: 'Ссылка приглашения повреждена. Откройте полную ссылку из сообщения.',
   'snapshot-text-too-large': 'В копии есть текст длиннее поддерживаемого Сотами размера. Импорт остановлен целиком, чтобы ничего не обрезать. Используйте исходное устройство для экспорта этого текста.',
   account_mismatch: 'Профиль изменился. Проверьте, какой аккаунт открыт, и повторите действие.',
   device_revoked: 'Доступ этого устройства завершён. Откройте профиль через другое устройство или файл восстановления.',
@@ -51,6 +55,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   const content = dialog.querySelector('.connect-content');
   const message = dialog.querySelector('.connect-message');
   let tab = ['profile', 'people', 'devices', 'recovery'].includes(initialTab) ? initialTab : 'profile', busy = false, stopped = false, status, local, enrollment, recoveryKit, timer, intent = initialIntent;
+  let platformInvitations = null;
   const note = text => { if (!stopped) message.textContent = text; };
   const guard = fn => async event => {
     event?.preventDefault(); if (busy || stopped) return;
@@ -74,7 +79,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     if (!file || file.size > 3_000_000) throw new Error('file_invalid');
     return JSON.parse(await file.text());
   };
-  function stop() { stopped = true; clearTimeout(timer); dialog.remove(); if (previousFocus?.isConnected) previousFocus.focus(); }
+  function stop() { platformInvitations?.destroy(); stopped = true; clearTimeout(timer); dialog.remove(); if (previousFocus?.isConnected) previousFocus.focus(); }
   dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', stop);
   dialog.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', guard(async () => { intent = null; tab = button.dataset.tab; await render(); })));
@@ -100,6 +105,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   }
   const link = (kind, id) => `${location.origin}/?connect=${kind}&${kind === 'contact' ? 'card' : 'request'}=${encodeURIComponent(id)}`;
   async function render() {
+    platformInvitations?.destroy(); platformInvitations = null;
     clearTimeout(timer);
     if (stopped) return;
     await refresh(); if (stopped) return;
@@ -127,6 +133,8 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         const b = document.createElement('button'); b.textContent = `Открыть сохранённый профиль: ${p.label}`;
         b.addEventListener('click', guard(async () => { await client.switchProfile(p.accountId); await render(); })); content.querySelector('[data-profiles]').append(b);
       }
+      const invitationHost = document.createElement('section'); content.append(invitationHost);
+      platformInvitations = mountPlatformInvitations(invitationHost, { client, accountId: local.accountId, qr });
     } else if (tab === 'people') {
       const list = await client.contacts(); if (stopped) return;
       const contacts = list.contacts || [], incoming = list.requests?.incoming || [], outgoing = list.requests?.outgoing || [];

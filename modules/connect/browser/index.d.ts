@@ -42,6 +42,7 @@ export interface ClientOptions {
   onError?: (error: ConnectError) => void | Promise<void>;
   /** Opt-in Root host profile; only RAM cleanup of its real admitted app slot. */
   scopedAppCleanup?: boolean;
+  capturePlatformInvitation?: boolean;
 }
 
 export interface AccountResult {
@@ -102,7 +103,7 @@ export interface ConnectClient {
   appSlotCleanup(reply: unknown): (() => Promise<void>) | null;
   /** Optional context pins queue admission to the displayed account; it is not sent in the RPC payload. */
   extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string }): Promise<T>;
-  bootstrap(label: string): Promise<AccountResult>;
+  bootstrap(label: string, options?: { invitationToken?: string }): Promise<AccountResult>;
   status(): Promise<AccountStatus>;
   rename(label: string): Promise<{ label: string }>;
   card(): Promise<ContactCard>;

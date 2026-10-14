@@ -4,6 +4,7 @@ import {
   wrapEnrollmentRoot, unwrapEnrollmentRoot, wrapRecoveryRoot, unwrapRecoveryRoot, sealVault, openVault,
 } from './crypto.mjs';
 import { createIndexedDbStorage, emptyState, validateState } from './storage.mjs';
+import { capturePlatformInvitation } from './platform-invitation.mjs';
 
 function requiredString(value, name, max = 256) {
   if (typeof value !== 'string' || !value.length || value.length > max) throw new ConnectError('INVALID_ARGUMENT', name + ' is required.');
@@ -68,6 +69,7 @@ export function createClientWithStorage(options, storage) {
   const normalized = options.fetcher ? options : normalizeOptions(options);
   const { projectId, endpoint, fetcher, onState, onError } = normalized;
   const scope = { projectId, endpoint };
+  const platformInvitation = normalized.capturePlatformInvitation ? capturePlatformInvitation(projectId + ':' + endpoint) : null;
   let queue = Promise.resolve();
   const enrollmentPreviews = new Map();
   const appCleanupReplies = new WeakMap(), appCleanups = new Set();
@@ -301,7 +303,7 @@ export function createClientWithStorage(options, storage) {
   const client = {
     /** Private host effect cleanup. JSON clones cannot obtain a capability. */
     appSlotCleanup: reply => !disposed && reply && typeof reply==='object' ? appCleanupReplies.get(reply)?.callback ?? null : null,
-    getLocalState: () => serialize(async () => view(await read())),
+    getLocalState: () => serialize(async () => { const state = await read(); if (publicLocalState(state).accountId) platformInvitation?.clear(); return view(state); }),
     extension: (operation, args = {}, context) => {
       if (typeof operation !== 'string' || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
         || operation.length > 100) return Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Invalid extension operation.'));
@@ -343,7 +345,7 @@ export function createClientWithStorage(options, storage) {
       });
     },
     dispose: () => { disposed = true; channel?.close(); channel = null;for(const state of appCleanups)releaseCleanup(state); },
-    bootstrap: label => serialize(async () => {
+    bootstrap: (label, { invitationToken } = {}) => serialize(async () => {
       label = deviceLabel(label);
       let state = await read();
       if (!state?.activeDeviceId) {
@@ -361,9 +363,12 @@ export function createClientWithStorage(options, storage) {
       const actor = await installation(state.activeDeviceId, { requireAccount: false });
       // A readable, already committed root must exist before a server account can be created.
       await withRoot(actor, async () => undefined);
-      const result = await rpc('bootstrap', { label: actor.label, encryptionPublicJwk: actor.encryptionPublicJwk }, actor, true);
+      const token = actor.accountId ? null : invitationToken ?? platformInvitation?.get();
+      const result = await rpc('bootstrap', { label: actor.label, encryptionPublicJwk: actor.encryptionPublicJwk,
+        ...(token !== null && token !== undefined ? { invitationToken: token } : {}) }, actor, true);
       checkAccountResult(result, actor);
       await commitAccount(actor, result.accountId, actor.rootEnvelope);
+      platformInvitation?.clear();
       await assertCurrent(actor);
       return result;
     }),

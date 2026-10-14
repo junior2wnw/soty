@@ -474,3 +474,20 @@ test('cross-tab change notifications contain only revisions and re-read durable 
   assert.equal(JSON.stringify(messages).includes(account.accountId), false);
   b.dispose(); await assert.rejects(b.getLocalState(), { code: 'CLIENT_DISPOSED' });
 });
+
+test('platform invitation uses existing bootstrap, survives lost ACK and never spends a token for a known account', async t => {
+  const f=fixture(t), {client:owner}=f.client(); const account=await owner.bootstrap('Owner');
+  const token=base64url(cryptoApi().getRandomValues(new Uint8Array(32)));
+  await owner.extension('platform.invites.issue',{requestId:'browser_invite',token});
+  const before=f.traffic.length; await owner.bootstrap('Owner',{invitationToken:token});
+  assert.equal(f.traffic.slice(before).some(request=>request.op==='bootstrap'&&request.args.invitationToken),false);
+  assert.equal((await owner.extension('platform.invites.list')).invitations[0].redeemedAt,null);
+  const {client:guest}=f.client();f.loseResponse('bootstrap');
+  await assert.rejects(guest.bootstrap('Guest',{invitationToken:token}));
+  const joined=await guest.bootstrap('Guest',{invitationToken:token});
+  assert.notEqual(joined.accountId,account.accountId);
+  assert.equal((await guest.bootstrap('Guest')).accountId,joined.accountId);
+  assert.equal(JSON.stringify(await guest.getLocalState()).includes(token),false);
+  assert.equal((await owner.extension('platform.invites.list')).invitations.filter(row=>row.redeemedAt!==null).length,1);
+  owner.dispose();guest.dispose();
+});

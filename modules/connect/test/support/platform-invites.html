@@ -1,0 +1,17 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/modules/connect/ui/style.css"><title>Проверка приглашений Сот</title><button id="profile">Профиль</button><p id="error" role="status"></p><script type="module">
+import { createConnectClient } from '/modules/connect/browser/index.mjs';
+import { openConnectPanel } from '/modules/connect/ui/index.mjs';
+
+
+const role = new URL(location.href).searchParams.get('role') || sessionStorage.getItem('fixture-role') || 'guest';
+sessionStorage.setItem('fixture-role', role);
+const client = createConnectClient({ projectId:'connect-invitation-fixture', endpoint:'/api/connect/rpc', dbName:'invitation-ui-'+role, capturePlatformInvitation:true });
+window.fixtureClient=client;
+const open = () => openConnectPanel({client,label:role,productName:'Соты',qr:async url=>(await (await fetch('/fixture/qr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url})})).json()).src,bootstrapOnOpen:false});
+document.querySelector('#profile').onclick=open;
+try {
+const account=await client.bootstrap(role);
+if(role==='owner') await fetch('/fixture/admin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:account.accountId})});
+window.fixtureReady=true; open();
+} catch(error) { document.querySelector('#error').textContent=error.code; window.fixtureError=error.code; }
+</script></html>
