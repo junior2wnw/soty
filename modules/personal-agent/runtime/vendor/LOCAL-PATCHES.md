@@ -90,3 +90,19 @@ effect/discovery declaration, cancellation and the total attempt bound.
 `server/integration-test/selected-hive-personal-agent.test.mjs` now discovers the
 actual installed Native schema before its one write and verifies the existing
 Native SQL effect/receipt and revision. Model and accounting IO remain synthetic.
+
+## bounded-preparatory-reads-before-one-effect
+
+The earlier discovery/business/terminal cycle could not read a skill, then a project,
+then apply its one authorized effect. Preparatory reads now retain the current tool
+set, while discovery is still removed after its one use. An installed effect removes
+all tools except finish_answer. Local device submission is explicitly classified as
+an effect too. There are at most eight provider attempts including transient retries;
+the last slot cannot execute an effect without room for the terminal. Every tool still
+checks current authority, all evidence validation and the 90-second turn deadline
+remain, and an unknown effect is never repeated. Fixed failure codes and stages may
+be logged without prompts, answers, account IDs, credentials or raw errors.
+
+Verification: the maintained discovery suite checks catalogue/read/read/write/answer,
+read loops, final-slot denial, revocation, cancellation and second-write denial.
+The provider-diagnostic suite checks that only fixed safe fields enter the logs.

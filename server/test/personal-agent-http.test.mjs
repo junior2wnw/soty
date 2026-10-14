@@ -166,7 +166,7 @@ test('portable generic runtime has an explicit bounded-budget local patch and ve
   assert.equal(pin.upstreamRevision, '23717ad30878c9ad7a8d9d614bbd8384004763c9');
   assert.equal(pin.sourceUnmodified, false);
   assert.equal(pin.upstreamSha256, '502a90932e44fd6ff7b355e67e048044600321af9e007975936b29bcc234c5f9');
-  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability', 'installed-exact-effect-capability', 'bounded-discovery-before-one-business-action']);
+  assert.deepEqual(pin.localPatches, ['bounded-finish-answer-output-budget-2048', 'terminal-schema-current-evidence-and-applicability', 'installed-exact-effect-capability', 'bounded-discovery-before-one-business-action', 'bounded-preparatory-reads-before-one-effect']);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256); assert.equal(bytes.length, pin.bytes);
   const runtime = await import(new URL('agent-runtime-core.ts', root)); assert.equal(typeof runtime.runBoundedRuntimeTurn, 'function');
 });
@@ -180,7 +180,7 @@ test('signed Root turn advertises only current tools and preserves prior reads f
     assert.equal(body.parallel_tool_calls, false); assert.equal(body.tool_choice, 'auto');
   }
   assert.ok(f.calls[0].body.tools.some(value => value.function.name === 'list_my_notes'));
-  assert.deepEqual(f.calls[1].body.tools.map(value => value.function.name), ['finish_answer']);
+  assert.deepEqual(f.calls[1].body.tools.map(value => value.function.name), f.calls[0].body.tools.map(value => value.function.name));
   assert.ok(f.calls[1].body.messages.some(message => message.role === 'assistant'
     && message.tool_calls?.some(call => call.function.name === 'list_my_notes')));
   assert.equal(f.settledReceipts(), 2);

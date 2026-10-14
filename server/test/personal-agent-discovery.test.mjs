@@ -11,7 +11,8 @@ function fixture(sequence, { discovery = ['source_catalog'], afterCatalog = () =
     discoveryCapabilities: discovery, applicability: 'own selected source', systemContext: () => '', isActionHrefAllowed: () => false };
   const tools = Object.fromEntries(Object.keys(counts).map(name => [name, { capability: name, description: name,
     inputSchema: { type: 'object' }, validate: input => input && Object.keys(input).length === 0,
-    execute() { counts[name]++; if (name === 'source_catalog') afterCatalog(adapter); return results[name] ?? evidence(name); } }]));
+    execute() { counts[name]++; if (name === 'source_catalog') afterCatalog(adapter);
+      return typeof results[name] === 'function' ? results[name](counts[name]) : results[name] ?? evidence(name); } }]));
   let calls = 0;
   return { counts, offered, calls: () => calls, run: () => runBoundedRuntimeTurn({ adapter, tools, role: 'human', prompt: 'Use current source',
     contextStore: createIsolatedContextStore({ roles: ['human'] }), timeoutMs,
@@ -46,6 +47,29 @@ test('large skills reach the model without displacing the subsequent business ev
   assert.ok(Buffer.byteLength(JSON.stringify(result.evidence)) < 64000);
   assert.equal(f.counts.source_read_1, 1);
 });
+
+test('catalogue, separate preparatory reads and one write complete in one turn', async () => {
+  const f = fixture(['source_catalog', 'source_read_1', 'source_read_1', 'source_write_1', 'finish_answer'],
+    { results: { source_read_1: n => evidence('read_' + n) } });
+  const result = await f.run();
+  assert.equal(result.status, 'complete'); assert.equal(f.calls(), 5);
+  assert.deepEqual(f.counts, { source_catalog: 1, source_read_1: 2, source_write_1: 1 });
+  assert.deepEqual(result.evidence.map(e => e.id), ['source_catalog', 'read_1', 'read_2', 'source_write_1']);
+  assert.ok(f.offered[2].includes('source_write_1')); assert.deepEqual(f.offered[4], ['finish_answer']);
+});
+
+test('read loops are bounded without executing a write or retrying it', async () => {
+  const f = fixture(Array(9).fill('source_read_1'), { results: { source_read_1: n => evidence('read_' + n) } });
+  await assert.rejects(f.run(), /provider-round-limit/);
+  assert.equal(f.calls(), 8); assert.equal(f.counts.source_read_1, 8); assert.equal(f.counts.source_write_1, 0);
+});
+
+test('the last provider slot cannot execute an effect without a terminal slot', async () => {
+  const f = fixture([...Array(7).fill('source_read_1'), 'source_write_1'],
+    { results: { source_read_1: n => evidence('read_' + n) } });
+  await assert.rejects(f.run(), /provider-round-limit/);
+  assert.equal(f.calls(), 8); assert.equal(f.counts.source_write_1, 0);
+});
 test('a second write, even after discovery, is rejected before execution', async () => {
   const f = fixture(['source_catalog', 'source_write_1', 'source_write_1']);
   await assert.rejects(f.run(), /provider-tool-unknown/); assert.equal(f.counts.source_write_1, 1); assert.equal(f.calls(), 3);
@@ -66,8 +90,8 @@ test('deadline cancellation during the post-discovery provider blocks the write'
   const f = fixture(['source_catalog', async ({ signal }) => { await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); return call('source_write_1'); }], { timeoutMs: 100 });
   await assert.rejects(f.run(), /runtime-deadline/); assert.equal(f.counts.source_write_1, 0);
 });
-test('total provider attempts stay at four across transient retries; writes are not repeated', async () => {
+test('total provider attempts stay at eight across transient retries; writes are not repeated', async () => {
   const transient = () => { throw Object.assign(new Error('synthetic'), { status: 503 }); };
-  const f = fixture([transient, 'source_catalog', transient, 'source_write_1', 'finish_answer']);
-  await assert.rejects(f.run(), /provider-round-limit/); assert.equal(f.calls(), 4); assert.equal(f.counts.source_write_1, 1);
+  const f = fixture([transient, 'source_catalog', transient, 'source_read_1', transient, 'source_write_1', transient, transient, 'finish_answer']);
+  await assert.rejects(f.run(), /provider-round-limit/); assert.equal(f.calls(), 8); assert.equal(f.counts.source_write_1, 1);
 });

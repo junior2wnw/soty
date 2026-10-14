@@ -357,7 +357,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       let lastError: unknown;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          if (providerCalls >= 4) throw new Error("provider-round-limit");
+          if (providerCalls >= 8) throw new Error("provider-round-limit");
           providerCalls++;
           return await raceAbort(options.provider(providerMessages, controller.signal, tools as Record<string, RuntimeToolDefinition<Capability>>, providerOptions));
         }
@@ -374,14 +374,14 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
     const isDiscovery = (name: string, tool: RuntimeToolDefinition<string>) => name === tool.capability
       && discovery.has(tool.capability as Capability);
     let offeredTools: Record<string, RuntimeToolDefinition<string>> = { ...options.tools };
-    let discoveryUsed = false, businessUsed = false;
+    let discoveryUsed = false, effectUsed = false;
     let output: ReturnType<typeof portableToolResult> = { evidence: [], cards: [], actions: [] };
-    // At most discovery -> one business action -> terminal; no executor retry.
+    // Bound preparatory reads independently from the single effect; no executor retry.
     const answerMaxTokens = 2048;
-    for (let phase = 0; phase < 3; phase++) {
+    for (let phase = 0; phase < 8; phase++) {
       offeredTools = { ...offeredTools, [PORTABLE_TERMINAL_TOOL_NAME]: portableTerminalTool(options.adapter.applicability, output.evidence) };
       const routedResponse = await callProvider(messages, offeredTools, { parallelToolCalls: false, maxTokens: answerMaxTokens,
-        ...(businessUsed ? { toolChoice: PORTABLE_TERMINAL_TOOL_NAME } : {}) });
+        ...(effectUsed ? { toolChoice: PORTABLE_TERMINAL_TOOL_NAME } : {}) });
       const routed = portableProviderMessage(routedResponse);
       const calls = routed.tool_calls ?? [];
       if (calls.length !== 1) throw new Error("provider-tool-count-invalid");
@@ -399,7 +399,9 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       try { args = JSON.parse(call.function.arguments); } catch { throw new Error("tool-arguments-invalid"); }
       if (!tool.validate(args)) throw new Error("tool-arguments-invalid");
       const metadataOnly = isDiscovery(call.function.name, tool);
-      if (businessUsed || metadataOnly && discoveryUsed) throw new Error("tool-action-limit");
+      const effect = options.adapter.effectCapabilities?.includes(tool.capability as Capability) === true;
+      if (effectUsed || metadataOnly && discoveryUsed) throw new Error("tool-action-limit");
+      if (effect && providerCalls >= 8) throw new Error("provider-round-limit");
       const rawResult = await raceAbort(Promise.resolve(tool.execute(args, controller.signal)));
       const next = portableToolResult(rawResult);
       output = portableToolResult({ evidence: [...output.evidence, ...next.evidence], cards: [...output.cards, ...next.cards], actions: [...output.actions, ...next.actions] });
@@ -410,7 +412,7 @@ export async function runBoundedRuntimeTurn<Role extends string, Capability exte
       if (metadataOnly) {
         discoveryUsed = true;
         offeredTools = Object.fromEntries(Object.entries(options.tools).filter(([name, value]) => !isDiscovery(name, value)));
-      } else { businessUsed = true; offeredTools = {}; }
+      } else if (effect) { effectUsed = true; offeredTools = {}; }
     }
     throw new Error("provider-round-limit");
   } finally {

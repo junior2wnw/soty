@@ -5,6 +5,16 @@ import { boundedPolicy, canonical, fields, freeze, identifier, string } from '..
 import { agentError, agentErrorCode, isPersonalAgentTransport } from './personal-agent-transport.js';
 
 const requireValue = (ok, code = 'agent_invalid_input') => { if (!ok) throw agentError(code); };
+const runtimeFailureCodes = new Set(['runtime-deadline', 'provider-round-limit', 'provider-tool-count-invalid',
+  'provider-tool-unknown', 'tool-not-authorized', 'tool-arguments-invalid', 'tool-action-limit',
+  'tool-evidence-invalid', 'tool-evidence-duplicate', 'tool-card-invalid', 'tool-action-invalid',
+  'terminal-evidence-invalid', 'terminal-claim-invalid', 'terminal-claim-evidence-invalid']);
+export function turnFailureDiagnostic(error, stage) {
+  const message = types.isNativeError(error) && Object.getOwnPropertyDescriptor(error, 'message');
+  const code = message && Object.hasOwn(message, 'value') && runtimeFailureCodes.has(message.value)
+    ? message.value : agentErrorCode(error);
+  return Object.freeze({ code, stage: ['prepare', 'model', 'account', 'tool', 'runtime'].includes(stage) ? stage : 'runtime' });
+}
 const syncResult = value => {
   if (types.isPromise(value)) { void Promise.prototype.then.call(value, () => {}, () => {}); throw agentError('agent_current_port_async'); }
   return value;
@@ -84,7 +94,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     requireValue(turns.size < maxRetainedTurns, 'agent_capacity');
     const turn = { intent, state: 'running', receipts: [], abort: new AbortController(), retireAfter: timestamp + 1800000 }; turns.set(key, turn);
     const unsubscribe = getConnect().subscribeRevocations(event => { if (event.deviceId === actor.deviceId) turn.abort.abort(); });
-    let bundle, activeProvider, contextEntry;
+    let bundle, activeProvider, contextEntry, stage = 'prepare';
     const assertCurrent = () => {
       currentActor(actor);
       requireValue(!turn.abort.signal.aborted, 'agent_cancelled');
@@ -110,6 +120,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         tools[name] = { ...tool, execute: async (input, signal) => {
           const currentSignal = AbortSignal.any([signal, turn.abort.signal]);
           assertCurrent(); requireValue(!currentSignal.aborted, 'agent_cancelled');
+          stage = 'tool';
           const result = await tool.execute(input, currentSignal); assertCurrent(); requireValue(!currentSignal.aborted, 'agent_cancelled'); return result;
         } };
       }
@@ -131,7 +142,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         activeProvider = createGlmProvider({ transport: bound.complete, tools: registry, responseMode: 'json',
           policy: { ...modelPolicy, ...(options.maxTokens !== undefined ? { maxOutputTokens: Math.min(modelPolicy.maxOutputTokens, options.maxTokens) } : {}) } });
         let result;
-        try { result = await activeProvider.complete({ requestId, messages, signal,
+        try { stage = 'model'; result = await activeProvider.complete({ requestId, messages, signal,
           offeredToolNames: Object.keys(offered), parallelToolCalls: options.parallelToolCalls }); }
         catch (error) {
           assertCurrent();
@@ -140,9 +151,11 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         }
         finally { activeProvider.close(); activeProvider = null; }
         assertCurrent();
+        stage = 'account';
         const receipt = await bound.account(requestId, result, signal); assertCurrent(); turn.receipts.push(receipt);
         if (bundle.verifyCurrent) { await bundle.verifyCurrent(signal); assertCurrent(); }
         requireValue(result.message.toolCalls.length === 1 && (required === undefined || result.message.toolCalls[0].name === required), 'agent_output_invalid');
+        stage = 'runtime';
         return { choices: [{ finish_reason: result.finishReason, message: { content: result.message.content || null,
           tool_calls: result.message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name,
             arguments: canonical(call.arguments, modelPolicy.toolArgumentBytes, modelPolicy.jsonDepth) } })) } }] };
@@ -152,7 +165,13 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       assertCurrent(); requireValue(result.status === 'complete', 'agent_output_invalid');
       turn.state = 'completed';
       return { schema: 'soty.personal-agent-turn.v1', requestId: turnId, ...result, accounting: turn.receipts };
-    } catch (error) { turn.state = 'unknown'; throw agentError(agentErrorCode(error)); }
+    } catch (error) {
+      turn.state = 'unknown';
+      if (agentErrorCode(error) !== 'agent_model_unknown') {
+        try { console.error(JSON.stringify({ schema: 'soty.personal-agent-turn-failure.v1', ...turnFailureDiagnostic(error, stage) })); } catch {}
+      }
+      throw agentError(agentErrorCode(error));
+    }
     finally { activeProvider?.close(); unsubscribe(); if (contextEntry) contextEntry.active--; }
   }
   return Object.freeze({ operations, executeAsync,

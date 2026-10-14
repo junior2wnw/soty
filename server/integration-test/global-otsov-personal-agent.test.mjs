@@ -82,6 +82,20 @@ async function fixture(t) {
               const reference = phase === 'list' ? entries.find(row => row.appId === target.appId && row.catalog.capabilityId.endsWith(':otsov.projects.list')).contract : create.contract;
               args = { reference: forcedReference ?? reference, input: phase === 'list' ? { operation: 'otsov.projects.list', representation: 'compact' }
                 : { operation: 'otsov.project.create', payload }, ...(phase === 'receipt' ? { invocationId: lastInvocation } : {}) };
+              if (phase === 'prepared_create') {
+                const item = evidence[0].data.items.find(item => item.reference.capabilityId === create.contract.capabilityId);
+                assert.ok(item.guidance?.length);
+                name = 'apps_guidance_get'; args = { reference: item.reference, guidance: item.guidance[0].reference };
+              }
+            } else if (phase === 'prepared_create' && last.applicationGuidance) {
+              assert.ok(last.applicationGuidance[0].content.includes('OTsov'));
+              name = 'source_read_1';
+              args = { reference: entries.find(row => row.appId === target.appId && row.catalog.capabilityId.endsWith(':otsov.projects.list')).contract,
+                input: { operation: 'otsov.projects.list', representation: 'compact' } };
+            } else if (phase === 'prepared_create' && request.messages.at(-2).tool_calls[0].function.name === 'source_read_1') {
+              name = 'source_write_1';
+              args = { reference: entries.find(row => row.appId === target.appId && row.catalog.capabilityId.endsWith(':otsov.project.create')).contract,
+                input: { operation: 'otsov.project.create', payload } };
             } else {
               lastInvocation = evidence[0].data.invocationId ?? lastInvocation;
               name = 'finish_answer'; args = { answer: 'Synthetic Native result verified', selectedEvidenceIds: evidence.map(row => row.id), claims: [] };
@@ -149,6 +163,18 @@ test('FIELD creates through the existing OTsov Native consumer/Root/SDK without 
     for (const guidance of item.guidance ?? []) assert.equal(Object.hasOwn(guidance, 'content'), false);
   }
   assert.equal(f.requests[1].tools.some(tool => tool.function.name === 'apps_guidance_get'), true);
+});
+
+test('one signed turn discovers OTsov, reads its skill and projects, then creates one application', { timeout: 120000 }, async t => {
+  const f = await fixture(t); f.setPhase('prepared_create');
+  const result = await f.turn('skill_list_create');
+  assert.equal(result.status, 'complete'); assert.equal(result.evidence.at(-1).data.completionVerified, true);
+  assert.equal(f.requests.length, 5); assert.equal(f.invokeCount(), 1);
+  assert.equal(f.count(f.realms[0]), 14); assert.equal(f.count(f.realms[1]), 13);
+  assert.equal(f.realms.some(realm => realm.lastLaunch), false);
+  assert.deepEqual(f.requests.slice(1).map(request => request.messages.at(-2).tool_calls[0].function.name),
+    ['source_catalog', 'apps_guidance_get', 'source_read_1', 'source_write_1']);
+  assert.deepEqual(f.requests.at(-1).tools.map(tool => tool.function.name), ['finish_answer']);
 });
 
 test('an expired grant in the owned visible app omits its UI tools but does not block a separately valid OTsov Source', { timeout: 120000 }, async t => {

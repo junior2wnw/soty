@@ -4,8 +4,8 @@
   "upstreamRevision": "23717ad30878c9ad7a8d9d614bbd8384004763c9",
   "upstreamPath": "packages/runtime/src/agent-runtime-core.ts",
   "upstreamBlob": "37fb205d91050f2906b4ffd426f7e90b04b9f618",
-  "sha256": "289b6e6d83560c737447967b13f9c77b566519a73a4a80209e3368f37f0bc891",
-  "bytes": 25242,
+  "sha256": "327b61c294a6f9847f98fd29143a64116afe44cf96c170746ee4ecb8b6e55c9a",
+  "bytes": 25442,
   "sourceUnmodified": false,
   "runtime": "Node >=24.15 with native TypeScript stripping",
   "licenseFile": null,
@@ -16,6 +16,7 @@
     "bounded-finish-answer-output-budget-2048",
     "terminal-schema-current-evidence-and-applicability",
     "installed-exact-effect-capability",
-    "bounded-discovery-before-one-business-action"
+    "bounded-discovery-before-one-business-action",
+    "bounded-preparatory-reads-before-one-effect"
   ]
 }

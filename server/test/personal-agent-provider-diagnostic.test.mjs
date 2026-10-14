@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPersonalAgentModule } from '../personal-agent-module.js';
+import { createPersonalAgentModule, turnFailureDiagnostic } from '../personal-agent-module.js';
 import { createPersonalAgentTransport } from '../personal-agent-transport.js';
 import { GLM_MODEL, ProviderError, providerFailureCode, providerFailureDiagnostic, createGlmProvider } from '../../modules/personal-agent/provider/index.mjs';
 
@@ -10,6 +10,16 @@ const terminal = { capability: '__terminal__', description: 'Complete a syntheti
   inputSchema: { type: 'object', additionalProperties: false, properties: {
     answer: { type: 'string' }, selectedEvidenceIds: { type: 'array' }, claims: { type: 'array' },
   }, required: ['answer', 'selectedEvidenceIds', 'claims'] } };
+
+test('turn diagnostics expose only fixed failure codes and stages', () => {
+  assert.deepEqual(turnFailureDiagnostic(new Error('tool-arguments-invalid'), 'runtime'),
+    { code: 'tool-arguments-invalid', stage: 'runtime' });
+  assert.deepEqual(turnFailureDiagnostic(new Error(PRIVATE), PRIVATE),
+    { code: 'agent_unavailable', stage: 'runtime' });
+  const thrownGetter = { get message() { throw Error(PRIVATE); } };
+  assert.deepEqual(turnFailureDiagnostic(thrownGetter, 'account'),
+    { code: 'agent_unavailable', stage: 'account' });
+});
 
 function packet({ finishReason = 'tool_calls', name = 'finish_answer', model = GLM_MODEL, outputTokens = 12 } = {}) {
   return JSON.stringify(
