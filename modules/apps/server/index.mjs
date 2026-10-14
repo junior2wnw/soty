@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -79,6 +79,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
   const voiceSourceCalls=new Set(),contextSourceCalls=new Set();
   const voiceSourceActors=new WeakMap();
+  const backendSourceContexts=new Map();
+  const backendSourceAcquisitions=new Set();
   let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway;
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
@@ -90,6 +92,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if(scopedEmbedProfiles.length && typeof withHumanSubjectAuthority==='function') scopedGateway=createScopedGateway({
       admissions:scopedAdmissions,withAppAuthority:appAuthority,withHumanSubjectAuthority,signSourceAuthority,clock:now,
       onClose(record) {
+        for(const [key,value] of backendSourceContexts)if(value.record===record)backendSourceContexts.delete(key);
+        if(record.backendSource)for(const [key,session] of sessions)if(session.scopedRecord===record)sessions.delete(key);
         for(const [key,session] of bootCandidates)if(session.scopedRecord===record){bootCandidates.delete(key);if(session.promotion?.state==='pending')sessions.delete(session.sessionKey);}
         // Closing an old slot after a successful cutover must not retire its
         // successor. Expiry alone still permits the separately fenced v2
@@ -1051,11 +1055,68 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return response;
   }
   // Exact current selection; never search for another account/device/project slot.
-  function contextSourceSession(owner,scope,handle) {
+  function scopedSourceTarget(owner,id) {
+    assertApps(!closed&&scopedGateway,'context_source_unavailable',503);assertActor(owner);
+    const target=activeTarget(id);assertApps(target,'context_source_denied',403);
+    const profile=scopedAdmissions.require(targetTuple(target));
+    // A headless acquisition uses ONLY the already admitted Native Root-SSO
+    // bootstrap. A finite RP/owner login is never manufactured by the agent.
+    assertApps(isRootSignedWorkspaceSource(profile.sourceProfile),'context_source_denied',403);
+    const domain=db.prepare('SELECT * FROM app_domains WHERE app_id=? AND origin=?').get(id,profile.embedOrigin);
+    assertApps(domain,'context_source_denied',403);
+    const decision=publications.decideAccess({domainId:domain.id,origin:domain.origin,actor:owner});
+    assertRuntimeBinding(decision,{requireReady:true});
+    return {target,profile,domain,decision};
+  }
+  function canOpenScopedSourceContext({owner,appId:id}) {
+    try {scopedSourceTarget(owner,appId(id));return true;}
+    catch(error) {if([401,403,404].includes(error.status))return false;throw error;}
+  }
+  async function openScopedSourceContext({owner,appId:id,signal,withCurrentOwner}) {
+    id=appId(id);assertActor(owner);
+    assertApps(signal instanceof AbortSignal&&!signal.aborted&&typeof withCurrentOwner==='function','context_source_denied',403);
+    let scoped;
+    const key=digest(JSON.stringify([id,owner.accountId,owner.deviceId]));
+    assertApps(!backendSourceAcquisitions.has(key),'context_source_capacity',429);
+    backendSourceAcquisitions.add(key);
+    try {
+      for(const value of [...backendSourceContexts.values()])if(value.record.context.expiresAt<=now())scopedGateway.invalidate(value.record);
+      const prior=backendSourceContexts.get(key);
+      if(prior&&prior.record.context.expiresAt>now()) {
+        withCurrentOwner(current=>withScopedContextSourceAuthority({owner:current,scope:{appId:id},handle:prior.handle},()=>true));
+        return Object.freeze({appId:id,handle:prior.handle});
+      }
+      if(prior)scopedGateway.invalidate(prior.record);
+      withCurrentOwner(current=>{
+        assertApps(current.accountId===owner.accountId&&current.deviceId===owner.deviceId&&!signal.aborted,'context_source_denied',403);
+        const {target,domain,decision}=scopedSourceTarget(current,id);
+        assertApps(sessions.size<4096&&backendSourceContexts.size<SCOPED_EMBED_LIMITS.continuations,'apps_sessions_busy',429);
+        scoped=scopedGateway.open({actor:current,appId:id,domainId:domain.id,target:targetTuple(target),instanceId:'widget-'+randomUUID()});
+        voiceSourceActors.set(scoped.record,current);
+        // The existing opaque instance locator isolates Native default selection
+        // from main/visible slots. No widget, browser cookie or navigation exists.
+        // The connector retains Native cookies privately, exactly as for a slot.
+        const sessionKey=digest(secret()),checkToken=secret();
+        const session={decision,sessionKey,entryPath:'/embed',checkDigest:digest(checkToken),checkToken,checkExpiresAt:now()+30_000,
+          family:{head:sessionKey,revision:0,frameId:scoped.record.context.reference.id},scopedRecord:scoped.record};
+        scoped.record.backendSource=true;scopedGateway.attach(scoped.record,session);sessions.set(sessionKey,session);
+      });
+      assertApps(scoped,'context_source_denied',403);
+      const response=await callSelectedSource({scope:{appId:id},handle:scoped.closeHandle,path:'/api/embed/session-continue',method:'POST',
+        body:Buffer.from(JSON.stringify({requestId:randomUUID()})),kind:'auth-continue',signal,withCurrentOwner,contextRead:false,bootstrap:true});
+      assertApps(response.status===200&&response.data?.ready===true,'context_source_session_unavailable',403);
+      withCurrentOwner(current=>withScopedContextSourceAuthority({owner:current,scope:{appId:id},handle:scoped.closeHandle},()=>true));
+      backendSourceContexts.set(key,{record:scoped.record,handle:scoped.closeHandle});
+      return Object.freeze({appId:id,handle:scoped.closeHandle});
+    } catch(error) {if(scoped)scopedGateway.invalidate(scoped.record);throw error;}
+    finally {backendSourceAcquisitions.delete(key);}
+  }
+  function contextSourceSession(owner,scope,handle,{bootstrap=false}={}) {
     assertApps(!closed&&scopedGateway,'context_source_unavailable',503);assertActor(owner);
     const {record,context}=scopedGateway.ownedContext(owner,scope.appId,handle),session=record.session,profile=record.profile;
     assertApps(session&&sessions.get(session.sessionKey)===session&&session.promotion?.state!=='pending'
-      &&profile.schema==='soty.selected-human-embed.v2'&&scopedGateway.sourceContext(record)?.ready===true,
+      &&profile.schema==='soty.selected-human-embed.v2'&&(scopedGateway.sourceContext(record)?.ready===true
+        ||bootstrap&&record.backendSource===true&&isRootSignedWorkspaceSource(profile.sourceProfile)),
       'context_source_session_unavailable',403);
     if(scope.target)assertApps(scopedHash(context.target)===scopedHash(scope.target)
       &&scopedHash(context.sourceProfile)===scopedHash(scope.sourceProfile)&&scopedHash(context.resource)===scopedHash(scope.resource),
@@ -1123,7 +1184,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
     return callSelectedSource({scope,handle,path,method,body,kind,signal,withCurrentOwner,contextRead:false});
   }
-  async function callSelectedSource({scope,handle,path,method,body,kind,signal,withCurrentOwner,contextRead}) {
+  async function callSelectedSource({scope,handle,path,method,body,kind,signal,withCurrentOwner,contextRead,bootstrap=false}) {
     const deadline=performance.now()+SCOPED_EMBED_LIMITS.callMs;
     assertApps(typeof withCurrentOwner==='function'
       &&signal instanceof AbortSignal&&!signal.aborted,'context_source_denied',403);
@@ -1131,7 +1192,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     let held,stream;
     const current=()=>withCurrentOwner(owner=>{
       assertApps(!signal.aborted&&performance.now()<deadline,'context_source_unknown',503);
-      const value=contextSourceSession(owner,scope,handle);
+      const value=contextSourceSession(owner,scope,handle,{bootstrap});
       assertApps(!held||value.record===held.record&&value.session===held.session&&value.channel===held.channel
         &&value.runtimeBinding===held.runtimeBinding&&scopedHash(value.context)===scopedHash(held.context),'context_source_scope_changed',403);
       assertApps(!signal.aborted&&performance.now()<deadline,'context_source_unknown',503);held??=value;return true;
@@ -1471,6 +1532,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
+    canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,
     withReviewedAppAuthority(request, callback) {
       return appAuthority({ ...request, mode: 'owner' }, ({ appId, ownerId, accountId, appRevision, policyEpoch, target, visibility, grants }) =>

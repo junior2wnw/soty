@@ -60,7 +60,12 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     return getConnect().withActorAuthorityFence(actor, () => callback(getServices()));
   };
   const toolsForActor = async ({ actor, scope, turnId, selection, signal }) => {
-    let selectedScope, verifyCurrent, selectedChildContext;
+    const visibleSelection = selection;
+    let selectedScope, verifyCurrent, selectedChildContext, visibleContextAvailable = true;
+    const canUseNativeTarget = contract => isSelectedNativeContract(contract)
+      && (contract.appId === visibleSelection?.appId ? visibleContextAvailable : current(actor, services =>
+        services.apps?.canOpenScopedSourceContext?.({ owner: actor, appId: contract.appId }) === true));
+    let ensureNativeTarget;
     const nativeInput = data => ({ handle: selection.handle, input: data,
       ...(selectedChildContext ? { contextRef: selectedChildContext.ref } : {}) });
     const currentSelection = () => {
@@ -81,12 +86,19 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       need(reference && reference.capabilityId === value.capabilityId && reference.version === value.version
         && reference.digest === value.digest, 'agent_source_denied'); return reference;
     };
-    const sourceActor = reference => current(actor, services => {
+    const sourceActor = (reference, optional = false) => current(actor, services => {
       need(sourceBound && services.capabilities, 'agent_source_unavailable');
-      const credential = sourceCredentialFor({ actor, reference });
-      if (types.isPromise(credential)) { void Promise.prototype.then.call(credential, () => {}, () => {}); throw agentError('agent_current_port_async'); }
-      simple(credential, ['token', 'audience']);
-      const delegated = services.capabilities.authenticateCredential(credential);
+      let delegated;
+      try {
+        const credential = sourceCredentialFor({ actor, reference });
+        if (optional && credential == null) return null;
+        if (types.isPromise(credential)) { void Promise.prototype.then.call(credential, () => {}, () => {}); throw agentError('agent_current_port_async'); }
+        simple(credential, ['token', 'audience']); delegated = services.capabilities.authenticateCredential(credential);
+      } catch (error) {
+        const code = types.isNativeError(error) && Object.getOwnPropertyDescriptor(error, 'code');
+        if (optional && code && Object.hasOwn(code, 'value') && ['authorization_required', 'access_denied'].includes(code.value)) return null;
+        throw error;
+      }
       // A billing tenant or installed publisher cannot substitute a user's account/device authority.
       services.capabilities.withOwnerAuthority({ actor: delegated }, owner => need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied'));
       return delegated;
@@ -96,8 +108,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied')));
       // Existing Connect/Apps/Native fences remain outside the current actor fence.
       const contract = getServices().capabilities.external?.getContract({ actor: delegated, reference });
-      need(contract && (contract.effects.length === 0 || selection && contract.appId === selection.appId
-        && isSelectedNativeContract(contract)) && contract.executionEnabled === true, 'agent_source_denied');
+      need(contract && (contract.effects.length === 0 || canUseNativeTarget(contract))
+        && contract.executionEnabled === true, 'agent_source_denied');
       current(actor, () => true); return contract;
     };
     const assertCurrent = () => {
@@ -129,8 +141,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           for (const item of page.items) {
             const own = admitted.get(keyFor(item.reference));
             if (!own || own.digest !== item.reference.digest || item.executionEnabled !== true) continue;
-            if (item.effects.length && (!selection || item.appId !== selection.appId
-              || !isSelectedNativeContract(service.getContract({ actor: delegated, reference: own })))) continue;
+            if (item.effects.length && !canUseNativeTarget(service.getContract({ actor: delegated, reference: own }))) continue;
             items.set(keyFor(own), { item, delegated, reference: own });
           }
           cursor = page.cursor;
@@ -283,8 +294,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           const delegated = selected.get(key)?.delegated ?? matches?.[0].delegated ?? sourceActor(reference),
             detail = sourceDetail(reference, delegated), data = captureQueryData(input.input ?? {});
           need(detail.effects.length === 0, 'agent_source_denied');
-          const scopedInput = isSelectedNativeContract(detail) ? (need(selection && detail.appId === selection.appId, 'agent_source_denied'),
-            nativeInput(data)) : data;
+          if (isSelectedNativeContract(detail)) await ensureNativeTarget(reference, delegated, signal);
+          const scopedInput = isSelectedNativeContract(detail) ? nativeInput(data) : data;
           const keys = readKeys.get(key) ?? new Map(), digest = createHash('sha256').update(canonical(data, 65536)).digest('hex');
           if (!keys.has(digest)) { need(keys.size < 8, 'agent_capacity'); keys.set(digest, `agent_read_${prefix}_${createHash('sha256').update(key).digest('hex').slice(0, 16)}_${digest.slice(0, 32)}`); }
           readKeys.set(key, keys);
@@ -296,19 +307,19 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           selected.set(key, { reference, delegated }); return evidence(detail.title, result.result);
         } };
     }
-    if (selection) {
-      // Fail closed before any paid model call. The handle is signed UI input,
-      // never a model argument, prompt, permission, or returned evidence field.
-      assertCurrent(); need(!signal.aborted, 'agent_cancelled');
-      const matches = references.filter(reference => reference.capabilityId === currentContextCapability(selection.appId));
-      need(matches.length === 1, 'agent_source_unavailable');
-      const reference = matches[0], delegated = sourceActor(reference), detail = sourceDetail(reference, delegated);
-      need(detail.appId === selection.appId, 'agent_source_denied');
-      selected.set(keyFor(reference), { reference, delegated });
-      let readSequence = 0;
-      let acceptCommittedRevision;
+    if (selection || references.length) {
+      let readSequence = 0, contextBinding, data, acceptCommittedRevision;
+      const targets = new Map();
+      const rememberTarget = () => {
+        if (contextBinding) targets.set(selection.appId, { selection, selectedScope, selectedChildContext, contextBinding, data });
+      };
+      const activateTarget = target => {
+        rememberTarget(); ({ selection, selectedScope, selectedChildContext, contextBinding, data } = target);
+      };
       const readCurrent = async readSignal => {
         assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
+        need(contextBinding && selection, 'agent_source_denied');
+        const { reference, delegated } = contextBinding;
         const result = await getServices().capabilities.external.query({ actor: delegated, reference,
           idempotencyKey: `agent_context_${prefix}_${readSequence++}`, input: { handle: selection.handle } });
         assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
@@ -322,7 +333,40 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         }
         return data;
       };
-      if (selection) {
+      const bindNativeTarget = async (next, readSignal) => {
+        selection = next; selectedScope = undefined; selectedChildContext = undefined;
+        assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
+        const matches = references.filter(reference => reference.capabilityId === currentContextCapability(selection.appId));
+        need(matches.length === 1, 'agent_source_unavailable');
+        const reference = matches[0], delegated = sourceActor(reference), detail = sourceDetail(reference, delegated);
+        need(detail.appId === selection.appId, 'agent_source_denied');
+        selected.set(keyFor(reference), { reference, delegated }); contextBinding = { reference, delegated };
+        data = await readCurrent(readSignal); selectedChildContext = data.context;
+        rememberTarget();
+      };
+      ensureNativeTarget = async (reference, delegated, readSignal) => {
+        const detail = sourceDetail(reference, delegated);
+        need(canUseNativeTarget(detail), 'agent_source_denied');
+        if (selection?.appId === detail.appId && contextBinding) return;
+        const retained = targets.get(detail.appId);
+        if (retained) { activateTarget(retained); assertCurrent(); return; }
+        // Authenticate the target's current-context grant BEFORE acquiring its
+        // Native session. The reference, not the visible app, chooses authority.
+        const contexts = references.filter(value => value.capabilityId === currentContextCapability(detail.appId));
+        need(contexts.length === 1, 'agent_source_unavailable'); sourceDetail(contexts[0], sourceActor(contexts[0]));
+        const apps = getServices().apps;
+        need(typeof apps?.openScopedSourceContext === 'function', 'agent_source_unavailable');
+        const next = await apps.openScopedSourceContext({ owner: actor, appId: detail.appId, signal: readSignal,
+          // Human/Apps hold their own ORIGINAL Connect fences. Check this
+          // caller before/after, never nest a Connect TX around those ports.
+          withCurrentOwner: callback => {
+            current(actor, () => true); const value = callback(actor);
+            need(!types.isPromise(value), 'agent_current_port_async'); current(actor, () => true); return value;
+          } });
+        assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
+        await bindNativeTarget(next, readSignal);
+      };
+      {
         const writeInput = input => {
           try { if (!validate(input, ['reference', 'input'])) return false; pinned(input.reference); captureQueryData(input.input); return true; }
           catch { return false; }
@@ -331,11 +375,13 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           capabilityId: { type: 'string', maxLength: 160 }, version: { type: 'integer', minimum: 1, maximum: 1000000 },
           digest: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['capabilityId', 'version', 'digest'] }, input: { type: 'object' } }),
           required: ['reference', 'input'] };
-        const selectedWrite = input => {
+        const selectedWrite = async (input, writeSignal) => {
           assertCurrent(); const reference = pinned(input.reference), key = keyFor(reference);
           need(selected.has(key) || selected.size < 8, 'agent_capacity');
           const delegated = selected.get(key)?.delegated ?? sourceActor(reference), detail = sourceDetail(reference, delegated);
-          need(detail.appId === selection.appId && detail.effects.length > 0 && isSelectedNativeContract(detail), 'agent_source_denied');
+          need(detail.effects.length > 0 && isSelectedNativeContract(detail), 'agent_source_denied');
+          await ensureNativeTarget(reference, delegated, writeSignal);
+          need(detail.appId === selection.appId, 'agent_source_denied');
           const data = captureQueryData(input.input), digest = createHash('sha256').update(canonical({ key, data }, 65536)).digest('hex');
           selected.set(key, { reference, delegated });
           return { reference, delegated, detail, digest, input: nativeInput(data) };
@@ -348,13 +394,13 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             effects: result.invocation.effects, ...(result.invocation.receipt ? { receipt: result.invocation.receipt } : {}) });
         };
         tools.source_write_1 = { capability: 'source_write_1',
-          description: 'Apply an explicitly granted Native contract to the EXACT currently selected window. Discover its schema first. An unknown result is not completion: check source_receipt_1 with the same reference/input; never repeat an unknown write.',
+          description: 'Apply an explicitly granted Native contract to its EXACT authenticated application and Native context. The visible window is not changed. Discover its schema first. An unknown result is not completion: check source_receipt_1 with the same reference/input; never repeat an unknown write.',
           inputSchema: writeArgs, validate: writeInput,
           async execute(input, toolSignal) {
-            need(!toolSignal.aborted, 'agent_cancelled'); const value = selectedWrite(input), service = getServices().capabilities.external;
+            need(!toolSignal.aborted, 'agent_cancelled'); const value = await selectedWrite(input, toolSignal), service = getServices().capabilities.external;
             const prior = writeKeys.get(value.digest);
             if (prior) {
-              await service.reconcile({ reference: value.reference, invocationId: prior.invocationId, expectedInput: value.input });
+              await service.reconcile({ reference: value.reference, invocationId: prior.invocationId, expectedInput: prior.value.input });
               need(!toolSignal.aborted, 'agent_cancelled');
               const result = service.get({ actor: value.delegated, invocationId: prior.invocationId });
               if (selectedChildContext) await acceptCommittedRevision(value, result, toolSignal);
@@ -363,7 +409,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             need(writeKeys.size < 8, 'agent_capacity');
             const idempotencyKey = `agent_write_${prefix}_${value.digest.slice(0, 32)}`;
             const admitted = service.admit({ actor: value.delegated, reference: value.reference, idempotencyKey, input: value.input });
-            writeKeys.set(value.digest, { invocationId: admitted.invocation.invocationId });
+            writeKeys.set(value.digest, { invocationId: admitted.invocation.invocationId, value });
             assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled');
             const result = await service.invoke({ actor: value.delegated, reference: value.reference, idempotencyKey, input: value.input });
             need(!toolSignal.aborted, 'agent_cancelled');
@@ -377,16 +423,35 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           validate: input => validate(input, ['reference', 'input', 'invocationId']) && writeInput({ reference: input.reference, input: input.input })
             && typeof input.invocationId === 'string' && /^[A-Za-z0-9_.:-]{3,160}$/u.test(input.invocationId),
           async execute(input, toolSignal) {
-            need(!toolSignal.aborted, 'agent_cancelled'); const value = selectedWrite(input), service = getServices().capabilities.external;
+            need(!toolSignal.aborted, 'agent_cancelled'); const value = await selectedWrite(input, toolSignal), service = getServices().capabilities.external;
             const prior = service.get({ actor: value.delegated, invocationId: input.invocationId });
             need(prior.invocation.capabilityId === value.reference.capabilityId && prior.invocation.version === value.reference.version, 'agent_source_denied');
-            await service.reconcile({ reference: value.reference, invocationId: input.invocationId, expectedInput: value.input });
+            const held = writeKeys.get(value.digest);
+            await service.reconcile({ reference: value.reference, invocationId: input.invocationId,
+              expectedInput: held?.invocationId === input.invocationId ? held.value.input : value.input });
             need(!toolSignal.aborted, 'agent_cancelled'); const result = service.get({ actor: value.delegated, invocationId: input.invocationId });
             if (selectedChildContext) await acceptCommittedRevision(value, result, toolSignal); return writeResult(value, result);
           } };
       }
-      let data = await readCurrent(signal);
-      selectedChildContext = data.context;
+      if (selection) {
+        // The owned visible handle/actor remains mandatory. Only a missing
+        // authenticated Native grant may omit these UI tools; malformed scope,
+        // foreign credentials and revocation after authentication still deny.
+        assertCurrent();
+        const matches = references.filter(reference => reference.capabilityId === currentContextCapability(selection.appId));
+        need(matches.length === 1, 'agent_source_unavailable');
+        if (sourceActor(matches[0], true)) await bindNativeTarget(selection, signal);
+        else {
+          const alternative = references.some(reference => {
+            if (reference === matches[0] || !reference.capabilityId.endsWith(':current_context')) return false;
+            const delegated = sourceActor(reference, true); if (!delegated) return false;
+            const detail = sourceDetail(reference, delegated);
+            return current(actor, services => services.apps?.canOpenScopedSourceContext?.({ owner: actor, appId: detail.appId }) === true);
+          });
+          need(alternative, 'agent_source_unavailable'); visibleContextAvailable = false;
+          selection = undefined; selectedScope = undefined;
+        }
+      }
       acceptCommittedRevision = async (value, result, readSignal) => {
         if (selectedChildContext && result.invocation.status === 'succeeded' && result.invocation.effectState === 'committed') {
           const fresh = await readCurrent(readSignal);
@@ -398,7 +463,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           const scope = { appId: selection.appId, target: selectedScope.target, sourceProfile: selectedScope.sourceProfile, resource: selectedScope.resource };
           const artifacts = result.invocation.receipt.artifacts;
           need(artifacts.length > 0 && artifacts.every(artifact => artifact.sha256 === workspaceWitness({ after, artifact, requestId, inputDigest, scope })), 'agent_source_denied');
-          data = fresh; return;
+          data = fresh; rememberTarget(); return;
         }
         if (selectedScope.resource.selection.kind !== 'hive.project.v1' || result.invocation.status !== 'succeeded'
           || result.invocation.effectState !== 'committed') return;
@@ -410,16 +475,23 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         need(fresh.title === data.title && fresh.role === data.role && fresh.revision === artifact.revision, 'agent_source_denied');
         // Only this independently proven Native COMMIT advances the turn-local
         // revision. Original handle/principal/scope/source pins stay immutable.
-        data = fresh;
+        data = fresh; rememberTarget();
       };
       // Fresh Native read after each accounted model round, before its tool or
       // terminal answer. This observes current permission; it is not a cross-service transaction.
-      verifyCurrent = async readSignal => need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
-      tools.current_context = { capability: 'current_context', description: 'Read the verified title, role and revision of the current selected app project. Metadata only; no canvas contents or write permission.',
+      verifyCurrent = async readSignal => {
+        if (!contextBinding) return;
+        rememberTarget(); const active = targets.get(selection.appId);
+        try { for (const target of [...targets.values()]) {
+          activateTarget(target); need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
+        } } finally { activateTarget(active); }
+      };
+      if (visibleSelection && visibleContextAvailable) tools.current_context = { capability: 'current_context', description: 'Read the verified title, role and revision of the current visible app project. A backend Source call does not change this UI context. Metadata only; no canvas contents or write permission.',
         inputSchema: schema({}), validate: input => validate(input, []), execute(_input, toolSignal) {
-          assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled'); return evidence('Текущий проект', { title: data.title, role: data.role, revision: data.revision });
+          assertCurrent(); need(!toolSignal.aborted, 'agent_cancelled'); const shown = targets.get(visibleSelection.appId).data;
+          return evidence('Текущий проект', { title: shown.title, role: shown.role, revision: shown.revision });
         } };
-      if (selectedScope.resource.selection.kind === 'hive.project.v1' && ['owner', 'editor'].includes(data.role)) {
+      if (selectedScope?.resource.selection.kind === 'hive.project.v1' && ['owner', 'editor'].includes(data.role)) {
         // These aliases do not introduce an executor. Only current, explicitly
         // granted contracts can be offered, and all dispatch/receipt work still
         // goes through the original selected-window ledger tool above.

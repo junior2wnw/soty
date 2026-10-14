@@ -79,16 +79,18 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
       realm.options.workspace.initialChild=binding=>realm.instance.store.db.prepare('SELECT principal_id FROM source_sessions WHERE id_hash=?').get(binding.sessionIdHash)?.principal_id==='native-other'?realm.realmId+'-private-other':realm.realmId+'-one';}
     realm.options.allowEmptyGuest=options.emptyGuestBrowser===true;
     realm.options.allowLinkedLogin=options.allowLinkedLogin===true;
-    realm.instance=await createOrdinaryAppServer({...realm.options,initialize:true,newResource:{title:'Selected synthetic project',guestEmpty:options.emptyGuestBrowser===true}});
+    realm.startNative=initialize=>options.nativeFactory?options.nativeFactory({realm,reader,owner,initialize,directory})
+      :createOrdinaryAppServer({...realm.options,initialize,...(initialize?{newResource:{title:'Selected synthetic project',guestEmpty:options.emptyGuestBrowser===true}}:{})});
+    realm.instance=await realm.startNative(true);
     realm.observeResponse=()=>realm.instance.server.prependListener('request',(req,res)=>{
       if(req.url==='/soty/authorize')realm.lastNativeForm={method:req.method,origin:req.headers.origin??'absent',contentType:req.headers['content-type']?.split(';')[0]??'absent'};
       const callbackDrop=realm.dropNextCallback===true&&req.url?.split('?')[0]==='/api/embed/callback';
       if(realm.dropPath!==req.url&&!callbackDrop)return;realm.dropPath=null;realm.dropNextCallback=false;const end=res.end.bind(res);
       res.end=(...args)=>{if(res.statusCode===200){res.destroy();return res;}return end(...args);};
     });realm.observeResponse();
-    if(!options.emptyGuestBrowser){realm.instance.store.createPrincipal('native-participant');realm.instance.store.createPrincipal('native-owner');realm.instance.store.grant('selected','native-participant','participant');realm.instance.store.grant('selected','native-owner','owner');
+    if(!options.nativeFactory&&!options.emptyGuestBrowser){realm.instance.store.createPrincipal('native-participant');realm.instance.store.createPrincipal('native-owner');realm.instance.store.grant('selected','native-participant','participant');realm.instance.store.grant('selected','native-owner','owner');
       realm.nativeToken=realm.instance.store.createNativeSession(options.libraryNativeOwner&&realm.realmId==='library'?'native-owner':'native-participant');}
-    if(options.workspace)for(const id of realm.options.workspace.children){realm.instance.store.createResource({id,incarnationId:'one',title:id});
+    if(!options.nativeFactory&&options.workspace)for(const id of realm.options.workspace.children){realm.instance.store.createResource({id,incarnationId:'one',title:id});
       if(!id.endsWith('-private-other')){realm.instance.store.grant(id,'native-participant','participant');realm.instance.store.grant(id,'native-owner','owner');}}
     if(options.workspaceOtherActor){realm.instance.store.createPrincipal('native-other');realm.instance.store.grant('selected','native-other','participant');
       realm.instance.store.grant(realm.realmId+'-private-other','native-other','participant');realm.otherNativeToken=realm.instance.store.createNativeSession('native-other');}
@@ -111,7 +113,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   for(const realm of realms){const nativeJar=jars.get('localhost')??new Map();jars.set('localhost',nativeJar);if(realm.nativeToken)nativeJar.set('ordinary_native_'+realm.realmId,realm.nativeToken);
     realm.launch=async(signer=reader)=>{const launch=await signer.client.extension('apps.launch',{appId:realm.appId});const url=new URL(launch.launchUrl);
       const boot=await wire(realm.embedded+'/_soty/session',{body:{ticket:url.hash.slice(1)}});assert.equal(boot.status,200);realm.lastLaunch=launch;return launch;};
-    realm.restart=async()=>{await realm.instance.close();realm.instance=await createOrdinaryAppServer({...realm.options,initialize:false});realm.observeResponse();await realm.instance.listen();};
+    realm.restart=async()=>{await realm.instance.close();realm.instance=await realm.startNative(false);realm.observeResponse();await realm.instance.listen();};
   }
   let serial=0;
   async function authorize(realm,signer=reader,nativeToken){if(nativeToken)jars.get('localhost').set('ordinary_native_'+realm.realmId,nativeToken);
