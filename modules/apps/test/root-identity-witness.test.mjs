@@ -10,7 +10,7 @@ import { join, dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHumanIdentityHostProfile } from '../../human-identity/profile.mjs';
 import { createHumanIdentityService } from '../../human-identity/service.mjs';
-import { createSourceAuthoritySigner } from '../../human-identity/source-authority.mjs';
+import { createSourceAuthoritySigner, createRootWorkspaceSubjectAuthority } from '../../human-identity/source-authority.mjs';
 import { createScopedGateway } from '../scoped-embed/gateway.mjs';
 import { createConnectorScopedFactory } from '../scoped-embed/connector-host.mjs';
 import { createSourceAuthorityClient, isVerifiedRootContext } from '../scoped-embed/source-authority-client.mjs';
@@ -55,10 +55,11 @@ async function fixture(t, pin = STANDARD_ROOT_WORKSPACE_SOURCE) {
       selection: { kind: 'soty.workspace.v1', nativeId: 'namespace', incarnationId: 'one' } },
     issuer: hostProfile.issuer, clientId: 'existing-native-rp', parentOrigin: origin,
     embedOrigin: 'https://' + appId + '.localhost:24444', nativeOrigin: 'http://localhost:19401' };
-  const profile = selectedResourceProfile(raw), actualSigner = createSourceAuthoritySigner({ profile: hostProfile, clock: () => now });
+  const profile = selectedResourceProfile(raw), actualSigner = createSourceAuthoritySigner({ profile: hostProfile, scopedProfiles: [raw], clock: () => now });
+  const rootSubject = createRootWorkspaceSubjectAuthority({ profile: hostProfile, scopedProfiles: [raw], withActorAuthorityFence(candidate, callback) { assert.equal(candidate, actor); assert.ok(active); return callback(); } });
   const signed = [], challenges = [];
   gateway = createScopedGateway({ admissions: { profiles: () => [raw], require: () => profile }, clock: () => now,
-    withHumanSubjectAuthority: (request, callback) => human.withSubjectAuthority(request, callback),
+    withHumanSubjectAuthority: (request, callback) => request.rootProfileDigest === undefined ? human.withSubjectAuthority(request, callback) : rootSubject(request, callback),
     withAppAuthority(request, callback) { assert.equal(request.actor, actor); assert.ok(appActive, 'fixture app still admitted');
       return callback({ appId, ownerId: 'publisher', accountId: actor.accountId, policyEpoch: epoch, target: raw.target,
         entry: { origin: raw.embedOrigin, domainId: 'domain' } }); },
@@ -70,11 +71,11 @@ async function fixture(t, pin = STANDARD_ROOT_WORKSPACE_SOURCE) {
   factory.connect(async request => { challenges.push(request.sourceChallenge); return transform(request.sourceChallenge === undefined
     ? gateway.read(request.reference, request.connector) : await gateway.readWitness(request.reference, request.connector, request.sourceChallenge), request); }, raw.connector);
   const readAuthority = createSourceAuthorityClient({ profile: raw, key, connectorPort: port, clock: () => now });
-  return { context, signed, challenges, actualSigner, gateway, profile, key, now: () => now,
+  return { context, signed, challenges, actualSigner, gateway, profile, key, hostProfile, raw, rootSubject, actor, now: () => now,
     read: () => readAuthority({ reference: context.reference, connector: raw.connector }),
     transform(value) { transform = value; },
     hold() { let enter, release; const entered = new Promise(done => { enter = done; }), wait = new Promise(done => { release = done; }); hold = { enter, wait }; return { entered, release }; },
-    revokeActor() { active = false; }, revokeApp() { appActive = false; }, changePolicy() { epoch++; },
+    revokeActor() { active = false; }, revokeApp() { appActive = false; }, changePolicy() { epoch++; }, changeTarget() { raw.target = { ...raw.target, revision: raw.target.revision + 1 }; },
     changeClient() { human.close(); config.clients[0].version = 2; openHuman(); },
     close() { gateway.abandon(actor, appId, opened.closeHandle); }, advance(ms) { now += ms; },
     artifactCounts() { const db = new DatabaseSync(databasePath, { readOnly: true }); try { return ['human_identity_artifacts', 'human_identity_grant_bindings']
@@ -110,8 +111,8 @@ test('a connector with its real MAC cannot substitute an actor, nonce, context o
   }
 });
 
-test('async signing never releases proof after actor/app/client/policy revoke, close or slot expiry', async t => {
-  for (const method of ['revokeActor', 'revokeApp', 'changeClient', 'changePolicy', 'close', 'expire']) {
+test('async signing never releases proof after actor/app/policy revoke, close or slot expiry', async t => {
+  for (const method of ['revokeActor', 'revokeApp', 'changePolicy', 'changeTarget', 'close', 'expire']) {
     await t.test(method, async sub => {
       const f = await fixture(sub), gate = f.hold(), pending = f.read(); await gate.entered;
       if (method === 'expire') f.advance(300001); else f[method](); gate.release();
@@ -124,4 +125,25 @@ test('workspace1 retains its unsigned RP authority response and cannot request t
   const f = await fixture(t, STANDARD_WORKSPACE_SOURCE); assert.deepEqual(await f.read(), f.context);
   assert.deepEqual(f.challenges, [undefined]); assert.equal(f.signed.length, 0);
   await assert.rejects(f.gateway.readWitness(f.context.reference, f.profile.connector, random()), { code: 'app_scoped_identity_witness_unavailable' });
+});
+
+test('Root Workspace2 remains independent of RP client generation; Workspace1 still rejects it', async t => {
+  const root = await fixture(t); root.changeClient(); assert.deepEqual(await root.read(), root.context);
+  const legacy = await fixture(t, STANDARD_WORKSPACE_SOURCE); legacy.changeClient(); await assert.rejects(legacy.read(), { code: 'scoped_embed_authority_denied' });
+});
+
+
+test('Root subject and signer reject unconfigured profile, wrong issuer, stale target and disabled issuer', async t => {
+  const f = await fixture(t), request = { actor: f.actor, issuer: f.profile.issuer, clientId: f.profile.clientId, rootProfileDigest: f.profile.digest };
+  for (const changed of [{ ...request, rootProfileDigest: 'f'.repeat(64) }, { ...request, clientId: 'unregistered-other' }, { ...request, issuer: 'https://foreign.invalid' }]) {
+    let called = false;
+    assert.throws(() => f.rootSubject(changed, () => { called = true; })); assert.equal(called, false);
+  }
+  assert.throws(() => createRootWorkspaceSubjectAuthority({ profile: { enabled: false }, scopedProfiles: [f.raw], withActorAuthorityFence: () => {} }), { code: 'human_identity_disabled' });
+  assert.throws(() => createSourceAuthoritySigner({ profile: { enabled: false }, scopedProfiles: [f.raw] }), { code: 'human_identity_disabled' });
+  const unconfigured = createSourceAuthoritySigner({ profile: f.hostProfile, scopedProfiles: [] });
+  await assert.rejects(unconfigured({ context: f.context, sourceChallenge: random() }), { code: 'human_identity_subject_mismatch' });
+  for (const changed of [{ ...f.context, target: { ...f.context.target, revision: 2 } }, { ...f.context, profileDigest: 'f'.repeat(64) },
+    { ...f.context, humanPrincipal: { ...f.context.humanPrincipal, clientGeneration: 2 } }])
+    await assert.rejects(f.actualSigner({ context: changed, sourceChallenge: random() }), { code: 'human_identity_subject_mismatch' });
 });

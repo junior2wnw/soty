@@ -1,3 +1,4 @@
+import { scopedSubjectRequest } from '../scoped-embed/authority.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -988,7 +989,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     let entered=false,result;
     // Original Human host port holds the ORIGINAL issued actor's Connect fence.
     // An account/device projection cannot join or replace that actor authority.
-    const returned=withHumanSubjectAuthority({actor,issuer:held.record.profile.issuer,clientId:held.record.profile.clientId},human=>{
+    const returned=withHumanSubjectAuthority(scopedSubjectRequest(actor,held.record.profile),human=>{
       assertApps(!entered&&scopedHash(human)===scopedHash(held.context.humanPrincipal),'voice_source_scope_changed',403);entered=true;
       result=appAuthority({actor:owner,appId:scope.appId,mode:'participant',domainId:held.context.entry.domainId,path:'/embed'},snapshot=>{
         assertApps(snapshot.target.revision===scope.target.revision&&snapshot.target.digest===scope.target.digest
@@ -1136,7 +1137,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     let entered=false,result;
     // Original Human host port holds the ORIGINAL issued actor's Connect fence.
     // An account/device projection cannot join or replace that actor authority.
-    const returned=withHumanSubjectAuthority({actor,issuer:held.record.profile.issuer,clientId:held.record.profile.clientId},human=>{
+    const returned=withHumanSubjectAuthority(scopedSubjectRequest(actor,held.record.profile),human=>{
       assertApps(!entered&&scopedHash(human)===scopedHash(held.context.humanPrincipal),'context_source_scope_changed',403);entered=true;
       result=appAuthority({actor:owner,appId:scope.appId,mode:'participant',domainId:held.context.entry.domainId,path:'/embed'},snapshot=>{
         assertApps(snapshot.target.revision===held.context.target.revision&&snapshot.target.digest===held.context.target.digest

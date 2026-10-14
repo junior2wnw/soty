@@ -28,7 +28,7 @@ import { createReviewsService } from '../modules/reviews/server/index.mjs';
 import { createManagedRootReviews } from '../modules/reviews/server/managed-root.mjs';
 import { createHumanIdentityHostProfile } from '../modules/human-identity/profile.mjs';
 import { createHumanIdentityService } from '../modules/human-identity/service.mjs';
-import { createSourceAuthoritySigner } from '../modules/human-identity/source-authority.mjs';
+import { createSourceAuthoritySigner, createRootWorkspaceSubjectAuthority } from '../modules/human-identity/source-authority.mjs';
 import { validateHumanIdentityRenewalLimits } from './universal-configuration.js';
 import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispatch.mjs';
 import { attachHumanIdentity } from './human-identity.js';
@@ -204,11 +204,14 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       }) } : {}),
     });
   } catch (error) { failedStart(error); throw error; }
-  try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
+  try {
+    const rootWorkspaceSubject = humanProfile?.enabled ? createRootWorkspaceSubjectAuthority({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles,
+      withActorAuthorityFence: (actor, callback) => connect.withActorAuthorityFence(actor, callback) }) : undefined;
+    apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
     namedCanonical: universalEnabled,
     allowScopedEmbedMigration,allowSelectedResourceMigration,scopedEmbedProfiles,
-    withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return human.withSubjectAuthority(request,callback);}:undefined,
-    signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile }) : undefined,
+    withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return request.rootProfileDigest === undefined ? human.withSubjectAuthority(request,callback) : rootWorkspaceSubject(request,callback);}:undefined,
+    signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles }) : undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,

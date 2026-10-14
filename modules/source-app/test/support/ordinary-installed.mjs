@@ -53,7 +53,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
     child.stdout.on('data',part=>{outputBytes+=part.length;});child.stderr.on('data',part=>{outputBytes+=part.length;});}
   startChild(false);const claim=await until(async()=>{assert.equal(child.exitCode,null,'connector safe output bytes='+outputBytes);try{const r=await wireHttp(connectorPort,'/apps/claim',{origin,body:{}});return r.status===200?r.value:null;}catch{return null;}},60000);
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
-  for(const [index,realmId]of['board','library'].entries()){
+  for(const [index,realmId]of(options.realmIds??['board','library']).entries()){
     const port=options.nativePorts?.[index]??await freePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port:options.registrationPorts?.[index]??port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
     const appId=created.app.id,embedded='https://'+appId+'.localhost:'+appTlsPort,native='http://localhost:'+port;
     const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:['ordinary_installed_link_123456789012',claim.hostDeviceId,claim.connectorId].join('|'),port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'};target.digest=runtimeTargetDigest(target);
@@ -65,7 +65,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   }
   await stopChild();await root.locals.closeServices();
   const jwk=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({format:'jwk'});Object.assign(jwk,{kid:'ordinary-fixture',use:'sig',alg:'RS256'});
-  const humanIdentity={enabled:true,issuer:origin+'/human-identity',registryId:'soty',environmentId:'production',clients:realms.map(realm=>({id:realm.profile.clientId,label:'Synthetic '+realm.realmId,
+  const humanIdentity={enabled:true,issuer:origin+'/human-identity',registryId:'soty',environmentId:'production',clients:realms.filter(realm=>!options.withoutRpClients?.includes(realm.realmId)).map(realm=>({id:realm.profile.clientId,label:'Synthetic '+realm.realmId,
     redirectUri:realm.embedded+'/api/embed/callback',clientSecret:realm.clientSecret})),jwks:{keys:[jwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'ordinary-fixture'};
   const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:realms.map(realm=>realm.profile),
     ...(options.externalApplications?{externalApplications:options.externalApplications(realms)}:{}),

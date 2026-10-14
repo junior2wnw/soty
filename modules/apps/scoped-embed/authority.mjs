@@ -9,8 +9,11 @@ import {
   need,
   SCOPED_EMBED_LIMITS,
 } from "./profile.mjs";
-import { isWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
+import { isWorkspaceSource, isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { requireEmbedAdapter, embedContextSchema } from './profile-dispatch.mjs';
+
+export const scopedSubjectRequest = (actor, profile) => ({ actor, issuer: profile.issuer, clientId: profile.clientId,
+  ...(isRootSignedWorkspaceSource(profile.sourceProfile) ? { rootProfileDigest: profile.digest } : {}) });
 
 /** Private Root constructor port. Original actors/authority callbacks never
  * leave this host. A JSON accountId or an HTTP header cannot create authority. */
@@ -37,7 +40,7 @@ export function createScopedEmbedAuthority({
   let stopped = false;
   function human(actor, profile) {
     let entered = false, subject;
-    const returned = withHumanSubjectAuthority({ actor, issuer: profile.issuer, clientId: profile.clientId }, value => {
+    const returned = withHumanSubjectAuthority(scopedSubjectRequest(actor, profile), value => {
       need(!entered, 'scoped_embed_subject_authority_invalid', 500); entered = true;
       subject = capture(value); closed(subject, ['issuer','subject','clientId','clientProfileDigest','clientGeneration']);
       need(subject.issuer === profile.issuer && subject.clientId === profile.clientId
