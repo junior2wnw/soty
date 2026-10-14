@@ -250,7 +250,10 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     }
     index = createFieldSpatialIndex(layout.nodes);
     if (!layout.nodes.some(node => node.shortcutId === selectedId)) selectedId = '';
-    if (contextFocus[mode] && !layout.contexts.some(context => context.contextId === contextFocus[mode])) { contextFocus[mode] = ''; initialized[mode] = false; }
+    if (contextFocus[mode] && !layout.contexts.some(context => context.contextId === contextFocus[mode])) {
+      contextFocus[mode] = '';
+      if (cameraFit[mode] === 'manual') remember(); else initialized[mode] = false;
+    }
     if (!initialized[mode] && viewport.clientWidth && viewport.clientHeight) {
       if (contextFocus[mode]) focusContext(contextFocus[mode]);
       else if (viewport.clientWidth < 720 && layout.contexts[0]) focusContext(layout.contexts[0].contextId);

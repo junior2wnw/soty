@@ -19,6 +19,9 @@ const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadMine', '
   const found = production.body.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(found, `Actual production ${name} exists`); return printer.printNode(ts.EmitHint.Unspecified, found, parsed);
 });
+const firstResolve = production.body.statements.find(node => ts.isVariableStatement(node)
+  && node.declarationList.declarations.some(value => value.name.getText(parsed) === 'firstResolve'))
+  .declarationList.declarations.find(value => value.name.getText(parsed) === 'firstResolve').initializer.getText(parsed);
 const compiled = ts.transpileModule(functions.join('\n') + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, applyPersistence });', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
@@ -28,7 +31,7 @@ const document = () => ({ schema: 'soty.field.v1', contexts: [{ contextId: 'stud
 const deferred = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const resolved = (items = [item], unavailable = [], errors = []) => ({ items, unavailable, errors });
 const page = (items = [item]) => ({ items, cursor: null, status: 'ready', errors: [] });
-function harness({ query = 'HIVE', resolve = async () => resolved(), load = async () => page() } = {}) {
+function harness({ query = 'HIVE', resolve = async () => resolved(), load = async () => page(), viewState } = {}) {
   let liveGeneration = 1, disposed = false, currentDocument = document();
   const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0 };
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
@@ -53,6 +56,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
     fitOverview() { throw new Error('Camera must stay intact'); }, focusContext() { throw new Error('Camera must stay intact'); },
   };
   environment.engine = engine; vm.createContext(environment); new vm.Script(compiled).runInContext(environment);
+  if (viewState) { environment.options = { viewState }; environment.firstResolve = new vm.Script(firstResolve).runInContext(environment); }
   return { environment, state, api: environment.exports,
     accountAba() { liveGeneration = 2; liveGeneration = 3; }, dispose() { disposed = true; },
     get document() { return currentDocument; } };
@@ -75,9 +79,9 @@ const stateClosure = [enginePrint(engineParsed.statements.find(node => ts.isVari
   `const api = { ${enginePrint(engineUpdate)} };`, 'rebuild(); return { ...api, state: summary, snapshot: () => structuredClone(fieldDocument), getLayout: () => layout, fitOverview, setCamera, focusContext, hasUnsavedChanges: () => false };',
   '}', 'exports.stateHarness = stateHarness;'].join('\n');
 const engineCompiled = ts.transpileModule(stateClosure, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-function withField(h, viewState = { mineContext: 'studio', mineFit: 'context' }) {
+function withField(h, viewState = { mineContext: 'studio', mineFit: 'context' }, width = 393, height = 450) {
   const port = vm.createContext({ exports: {}, ...contract, ...camera, ...layout, createFieldHistory, structuredClone, performance, clearTimeout,
-    viewport: { clientWidth: 393, clientHeight: 450, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
+    viewport: { clientWidth: width, clientHeight: height, hasPointerCapture: () => false }, plane: { contains: () => false }, document: { activeElement: null }, HTMLElement: class {},
     live: {}, render() {}, schedule() {}, flushPointerSample() {} });
   new vm.Script(engineCompiled).runInContext(port);
   const engine = port.exports.stateHarness({ accountId: 'offline-back-fixture', document: h.document, mode: 'mine', entities: [...h.environment.metadata.values()], viewState });
@@ -215,6 +219,22 @@ test('explicit All and a new manual camera chosen during pending metadata win wi
     assert.equal(f.engine.state().focusContextId, context); assert.equal(f.viewState.mineFit, intent === 'all' ? 'overview' : 'manual');
     assert.equal(JSON.stringify(f.engine.state().camera), selected);
   }
+});
+
+test('reload with an empty local layout preserves the saved manual camera through remote layout and metadata admission', async () => {
+  const saved = { mine: { x: 123, y: 77, scale: .79 }, mineContext: 'studio', mineFit: 'manual' };
+  const remote = document(), before = JSON.stringify(remote), cameraBefore = { ...saved.mine }, h = harness({ query: '', viewState: saved });
+  h.document.contexts.length = 0; h.document.shortcuts.length = 0;
+  const f = withField(h, saved, 1280, 800);
+  assert.equal(JSON.stringify(f.engine.state().camera), JSON.stringify(cameraBefore), 'An unconfirmed empty local layout must not replace the saved camera');
+  h.api.applyPersistence({ document: remote, revision: 7, projectedRevision: 7, state: 'saved', localDurable: true, pendingCount: 0 });
+  await h.api.loadMine();
+  assert.equal(JSON.stringify(f.engine.state().camera), JSON.stringify(cameraBefore), 'Fresh metadata must not auto-fit a restored manual view');
+  assert.equal(saved.mineFit, 'manual'); assert.equal(JSON.stringify(f.engine.snapshot()), before);
+  const reloaded = withField(harness({ query: '', viewState: JSON.parse(JSON.stringify(saved)) }), JSON.parse(JSON.stringify(saved)), 1280, 800);
+  const point = { x: 350, y: -120 }, viewport = { width: 1280, height: 800 };
+  assert.deepEqual(camera.fieldWorldToScreen(point, reloaded.engine.state().camera, viewport), camera.fieldWorldToScreen(point, cameraBefore, viewport));
+  assert.equal(JSON.stringify(reloaded.engine.snapshot()), before);
 });
 
 test('a genuine confirmed cross-space query keeps existing compact navigation to the matching space', async () => {

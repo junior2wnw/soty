@@ -113,7 +113,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let previewOpener: HTMLElement | null = null;
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
-  let firstResolve = true;
+  let firstResolve = !options.viewState?.mine;
   const wide = matchMedia('(min-width: 901px)');
   let viewPercent: HTMLOutputElement | null = null;
   const report = (error: unknown): void => { if (current()) options.onMessage(errorText(error), true); };
