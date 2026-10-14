@@ -74,6 +74,7 @@ function Invoke-SotyRuntimeOnly {
   Need ((Hash $userScript) -eq $p.currentRuntimeSha256 -and (Hash $machineScript) -eq $p.machineRuntimeSha256) 'runtime_current_changed'
   Need ((Hash $cfgPath) -eq $p.configSha256 -and (Hash $supervisor) -eq $p.supervisorSha256) 'runtime_custody_changed'
   Need ((Hash $p.nodePath) -eq $p.nodeSha256 -and (Hash $p.openCodePath) -eq $p.openCodeSha256) 'runtime_dependency_changed'
+  Need ($p.worker.exeSha256 -eq $p.nodeSha256) 'runtime_node_upgrade_denied'
   $oldRunner = Get-Content -LiteralPath $supervisor -Raw -Encoding UTF8
   $openCodeMatch = [regex]::Matches($oldRunner, "(?m)^\s*\u0024env:SOTY_OPENCODE_PATH\s*=\s*'((?:[^']|'')*)'\s*$")
   Need ($openCodeMatch.Count -eq 1 -and [IO.Path]::GetFullPath($openCodeMatch[0].Groups[1].Value.Replace("''", "'")) -eq [IO.Path]::GetFullPath($p.openCodePath)) 'runtime_old_opencode_path_changed'
