@@ -552,6 +552,11 @@ test('real head and ACK deadlines release exactly their public slots while neigh
   assert.equal(response.status, 502); assert.match(response.body.toString(), /app_response_timeout/u);
   assert.equal(httpAckResponse.status, 200); assert.equal(httpAckResponse.complete, false);
   assert.equal(httpAckResponse.body.toString(), 'response started; upload ACK still pending');
+  // Browser completion and connector delivery use separate sockets. Observe
+  // each public cancellation before counting it; product deadlines stay real.
+  await f.log.wait(frame => frame.type === 'cancel' && frame.id === head.id);
+  await f.log.wait(frame => frame.type === 'cancel' && frame.id === httpAck.id);
+  await f.log.wait(frame => frame.type === 'cancel' && frame.id === ack.id);
   assert.equal(f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === head.id).length, 1);
   assert.equal(f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === httpAck.id && frame.error === 'app_ack_timeout').length, 1);
   const wsCancellation = f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === ack.id);
