@@ -977,9 +977,10 @@ class WorldApplication {
         button('Создать приложение', 'sparkle', 'sw-button-primary', () => this.runHook(() => this.options.agentCreate())),
         button('Мои устройства', 'laptop', 'sw-button-quiet', () => this.openResources('devices'))); host.append(panel); return;
     }
-    host.append(this.loading('Открываем помощника'));
+    const loading = this.loading('Открываем помощника'); host.append(loading);
     void Promise.resolve().then(() => mount(host)).then(handle => {
       if (this.destroyed || sequence !== this.screenSequence || !host.isConnected) { handle.dispose(); return; }
+      loading.remove();
       this.assistantHandle = handle;
     }).catch(error => { if (host.isConnected && sequence === this.screenSequence) host.replaceChildren(emptyState('Помощник пока недоступен', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => this.navigate('assistant')))); });
   }
