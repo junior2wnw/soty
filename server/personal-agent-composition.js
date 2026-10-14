@@ -366,7 +366,17 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         assertCurrent(); need(!readSignal.aborted, 'agent_cancelled');
         await bindNativeTarget(next, readSignal);
       };
-      {
+      let hasNativeWrite = false;
+      try {
+        hasNativeWrite = sourceMatches('', signal).some(({ item, reference, delegated }) => item.effects.length > 0
+          && canUseNativeTarget(sourceDetail(reference, delegated)));
+      } catch {
+        // Offering an unused Source tool is metadata only: failure omits the
+        // write tools, never admits an operation or relaxes its fences. Notes
+        // still work; actually selecting Source runs the strict lookup again.
+        need(!signal.aborted, 'agent_cancelled');
+      }
+      if (hasNativeWrite) {
         const writeInput = input => {
           try { if (!validate(input, ['reference', 'input'])) return false; pinned(input.reference); captureQueryData(input.input); return true; }
           catch { return false; }
