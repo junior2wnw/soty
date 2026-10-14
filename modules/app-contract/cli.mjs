@@ -3,6 +3,7 @@ import { openSync, readSync, closeSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { ContractError, LIMITS, parseContractJson, validateDescriptor, contractDigest, createAdmissionHost, planAdmission, materializeAuthorDraft } from './index.mjs';
 import { createAuthorDraft } from './sdk.mjs';
+import { prepareDescriptorGuide } from './guide.mjs';
 
 const help = Object.freeze({
   ok: true, prototype: true, productionAdmission: false,
@@ -94,7 +95,8 @@ export function runCli(args) {
   const descriptor = at('validate', () => validateDescriptor(read(filename)));
   if (mode === 'validate') {
     return { ok: true, prototype: true, productionAdmission: false, schema: descriptor.schema,
-      digest: contractDigest(descriptor), capabilities: descriptor.capabilities.length, feedback: 'required', reviews: descriptor.reviews.mode };
+      digest: contractDigest(descriptor), capabilities: descriptor.capabilities.length, feedback: 'required', reviews: descriptor.reviews.mode,
+      guide: prepareDescriptorGuide(descriptor, filename) };
   }
   const host = at('host', () => createAdmissionHost(read(flags[1])));
   return { ok: true, plan: at('plan', () => planAdmission(host, descriptor, flags[3])) };

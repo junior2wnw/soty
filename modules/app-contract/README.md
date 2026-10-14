@@ -5,6 +5,17 @@ The companion [durable registration service](server/README.md) now persists
 admission and creates a real feedback inbox through the host composition.
 This pure entrypoint itself installs no route, transport or executor.
 A valid descriptor is metadata, not a grant.
+
+`node modules/app-contract/cli.mjs validate .soty/agent.json` validates the
+existing descriptor and automatically prepares a human/agent HTML guide beside
+it. The JSON result includes `guide.path`, `state:candidate`,
+`routeInstalled:false` and `published:false`. The guide lists only declared
+capabilities, skill/document pins and feedback policy. It installs no MCP or
+permissions. A matching generated file is reused; edited candidates and an
+application's existing `/guide` are never overwritten. The author can serve
+the reviewed HTML through the application's existing guide route and access
+policy. Do not serve the `.soty` directory: author/configuration files stay
+private. Preparing this candidate does not verify live actions or feedback.
 All plans explicitly have productionAdmission:false; only synthetic feedback
 confirmation can produce fixture-ready. UI, agent and local gates are independent.
 
