@@ -4,7 +4,7 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":5,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8],"notes":[1,2],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3]}}';
+export const currentStorageReaders = '{"version":6,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8],"notes":[1,2],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3],"connect":[3,4]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -14,10 +14,10 @@ const keys = (value, expected) => value !== null && typeof value === 'object' &&
 const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
 // Parser knowledge is separate from the current image declaration above. Only
 // an actual image's explicit reader declaration may admit its formats before START.
-const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3] };
+const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4] };
 const legacyStores = ['rooms', 'apps', 'notes', 'capabilities'], universalStores = [...legacyStores, 'appRegistration', 'feedback'], stores = Object.keys(supported);
-const storesFor = version => version === 3 ? legacyStores : version === 4 ? universalStores : stores;
-const formatVersion = schema => schema === 'soty.storage-format.v3' ? 3 : schema === 'soty.storage-format.v4' ? 4 : schema === 'soty.storage-format.v5' ? 5 : null;
+const storesFor = version => version === 3 ? legacyStores : version === 4 ? universalStores : version === 5 ? stores.filter(store => store !== 'connect') : stores;
+const formatVersion = schema => schema === 'soty.storage-format.v3' ? 3 : schema === 'soty.storage-format.v4' ? 4 : schema === 'soty.storage-format.v5' ? 5 : schema === 'soty.storage-format.v6' ? 6 : null;
 const knownFormat = (store, value) => value === 'empty' || supported[store].includes(value);
 const knownReaders = (store, value) => Array.isArray(value) && value.length > 0 && value.length <= supported[store].length
   && value.every(version => supported[store].includes(version)) && new Set(value).size === value.length;
@@ -28,7 +28,7 @@ export function storageReaders(image) {
   const label = image.Config?.Labels?.[storageReaderLabel];
   requireThat(typeof label === 'string', 'storage_reader_unknown');
   try { value = JSON.parse(label); } catch { throw new SafeError('storage_reader_unknown'); }
-  requireThat(keys(value, 'readers,version') && [3, 4, 5].includes(value.version)
+  requireThat(keys(value, 'readers,version') && [3, 4, 5, 6].includes(value.version)
     && keys(value.readers, storesFor(value.version).slice().sort().join(','))
     && storesFor(value.version).every(store => knownReaders(store, value.readers[store])), 'storage_reader_unknown');
   return value.readers;
@@ -187,7 +187,7 @@ export async function guardStorageStart(context, runtime, { running = false } = 
 }
 
 export function requireStorageStartReceipt(value, id) {
-  const version = value?.schema === 'soty.storage-start.v3' ? 3 : value?.schema === 'soty.storage-start.v4' ? 4 : value?.schema === 'soty.storage-start.v5' ? 5 : null;
+  const version = value?.schema === 'soty.storage-start.v3' ? 3 : value?.schema === 'soty.storage-start.v4' ? 4 : value?.schema === 'soty.storage-start.v5' ? 5 : value?.schema === 'soty.storage-start.v6' ? 6 : null;
   requireThat(version && keys(value, [...storesFor(version), 'containerId', 'image', 'mountSha256', 'schema'].sort().join(','))
     && value.containerId === id && matches(ID, value.containerId) && matches(IMAGE, value.image)
     && matches(ID, value.mountSha256) && storesFor(version).every(store => knownFormat(store, value[store])), 'storage_start_guard_missing');

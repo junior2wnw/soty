@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { spawnSync } from 'node:child_process';
 import { createRoomStore } from '../../server/room-store.js';
-import { readStorageFormat } from './storage-probe.mjs';
+import { migrateDatabase } from '../../modules/connect/server/schema.mjs';
+import { snapshotStorage } from './storage-snapshot.mjs';
+import { readConnectFormat, readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, guardStorageStart,
   reconcileStorageProbe, requireStorageStartReceipt, storageReaderLabel } from './storage-guard.mjs';
 
@@ -351,8 +353,8 @@ test('failed probe remains explicit and never becomes a successful start receipt
 
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
-  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 5,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3] } });
+  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 6,
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);
@@ -369,4 +371,30 @@ test('the historical backend overlay fails before any source copy or label and i
   const result = spawnSync(process.execPath, argv.slice(1), { encoding: 'utf8', timeout: 5000 });
   assert.equal(result.error, undefined); assert.equal(result.status, 1); assert.equal(result.stdout, '');
   assert.match(result.stderr, /backend overlay is unsupported.*full application.*root Dockerfile/u);
+});
+
+
+test('Connect bridge snapshot preserves schema3; schema4 fences reader1 and rejects drift', async t => {
+  const root = await directory(t); await mkdir(path.join(root, 'connect'));
+  const filename = path.join(root, 'connect', 'accounts.sqlite');
+  const db = new DatabaseSync(filename);
+  migrateDatabase(db, 'soty', { supportedVersion: 3 }); db.close();
+  const before = await readFile(filename);
+  assert.equal(await readConnectFormat(root), 3);
+  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  const target = path.join(await directory(t), 'snapshot');
+  await snapshotStorage(root, target);
+  assert.equal(await readConnectFormat(target), 3);
+  assert.deepEqual(await readFile(path.join(target, 'connect', 'accounts.sqlite')), before);
+  assert.deepEqual(await readFile(filename), before);
+  const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty'); upgraded.close();
+  const next = await readStorageFormat(root);
+  assert.equal(next.schema, 'soty.storage-format.v6'); assert.equal(next.connect, 4);
+  assertStorageCompatible(image(2), next);
+  const previous = JSON.parse(currentStorageReaders); previous.version = 5; delete previous.readers.connect;
+  assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(previous)), next), /storage_reader_incompatible/);
+  const corrupt = new DatabaseSync(filename); corrupt.exec("UPDATE connect_meta SET value='1' WHERE key='min_reader'"); corrupt.close();
+  await assert.rejects(readStorageFormat(root), /storage_format_unknown/);
+  const drift = new DatabaseSync(filename); drift.exec("UPDATE connect_meta SET value='2' WHERE key='min_reader'; CREATE TABLE unexpected(value)"); drift.close();
+  await assert.rejects(readStorageFormat(root), /storage_format_unreadable/);
 });

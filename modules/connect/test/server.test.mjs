@@ -95,7 +95,7 @@ function fixture(t, options = {}) {
   let time = 1_800_000_000_000;
   const services = [];
   const open = (overrides = {}) => {
-    const service = createConnectService({ databasePath, projectId: PROJECT, allowedOrigins: [ORIGIN, OTHER_ORIGIN], clock: () => time, ...options, ...overrides });
+    const service = createConnectService({ databasePath, projectId: PROJECT, allowedOrigins: [ORIGIN, OTHER_ORIGIN], clock: () => time, initializePlatformInvitations: true, ...options, ...overrides });
     services.push(service); return service;
   };
   t.after(() => {
@@ -604,4 +604,26 @@ test('independent SQLite processes enforce fourth-invite limit and single redemp
   assert.equal(inspection.prepare('SELECT count(*) AS n FROM accounts').get().n, 2);
   assert.equal(inspection.prepare('SELECT count(*) AS n FROM platform_invitations WHERE redeemed_at IS NOT NULL').get().n, 1);
   inspection.close();
+});
+
+test('compatibility-only bridge preserves schema3 and enforces schema4 admission after final writer rollback', async t => {
+ const f=fixture(t,{initializePlatformInvitations:false}), owner=identity('Preserved owner');
+ const original=await boot(f.service,owner);
+ const read=()=>{const db=new DatabaseSync(f.databasePath,{readOnly:true});try{return {version:db.prepare('PRAGMA user_version').get().user_version,metadata:db.prepare('SELECT * FROM connect_meta ORDER BY key').all(),accounts:db.prepare('SELECT * FROM accounts ORDER BY id').all(),devices:db.prepare('SELECT * FROM installations ORDER BY id').all()};}finally{db.close()}};
+ const before=read();assert.equal(before.version,3);assert.equal(before.metadata.find(x=>x.key==='min_reader').value,'1');
+ expectError(await invoke(f.service,owner,'platform.admission.get'),'unsupported_operation');
+ const bridgeAgain=f.open({initializePlatformInvitations:false});await boot(bridgeAgain,owner);assert.deepEqual(read(),before);
+ const final=f.open({initializePlatformInvitations:true,platformAdminAccountIds:[original.accountId]});
+ assert.deepEqual(read().accounts,before.accounts);assert.deepEqual(read().devices,before.devices);assert.equal(read().version,4);
+ assert.equal((await invoke(final,owner,'platform.admission.update',{requestId:'turn_on',expectedRevision:0,inviteOnly:true,defaultQuota:3})).ok,true);
+ const token=randomBytes(32).toString('base64url');await invoke(final,owner,'platform.invites.issue',{requestId:'prepared_before_rollback',token});
+ final.close();f.service.close();bridgeAgain.close();
+ const rollback=f.open({initializePlatformInvitations:false});
+ assert.equal((await invoke(rollback,owner,'platform.admission.get')).inviteOnly,true);
+ const newcomer=identity('New after rollback'),args={label:newcomer.name,encryptionPublicJwk:newcomer.encryptionPublicJwk};
+ expectError(await invoke(rollback,newcomer,'bootstrap',args),'platform_invitation_required');
+ const joined=await invoke(rollback,newcomer,'bootstrap',{...args,invitationToken:token});assert.equal(joined.ok,true);
+ assert.equal((await boot(rollback,owner)).accountId,original.accountId);
+ const preserved=read();assert.equal(preserved.version,4);assert.deepEqual(preserved.accounts.find(x=>x.id===original.accountId),before.accounts[0]);
+ const oldReader=new DatabaseSync(f.databasePath);assert.throws(()=>migrateDatabase(oldReader,PROJECT,{supportedVersion:3,readerEpoch:1}),/connect_reader_too_old/u);oldReader.close();
 });

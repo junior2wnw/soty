@@ -696,6 +696,35 @@ async function readUniversalFormat(dataDir, kind) {
   });
 }
 
+// Frozen DDL fingerprints, independent of the candidate's initializer. No account
+// labels, keys, tokens, grants or request receipts are returned by this reader.
+const connectLayouts = {
+  3: { objects: 24, digest: 'aa2cd38526460fbd91eb55bd1775f2773945e9dd253e8b577f492e177e0fcdce' },
+  4: { objects: 28, digest: '2888dbfccbf0c03810a0ae4e0a270e58ae4af4686ea462f925d077f4fa70a982' },
+};
+export async function readConnectFormat(dataDir = '/data') {
+  const file = await checkedStoreFile(dataDir, 'connect', 'accounts.sqlite');
+  if (!file) return 'empty';
+  return inspectDatabase(file, db => {
+    const version = db.prepare('PRAGMA user_version').get().user_version, expected = connectLayouts[version];
+    if (!expected) fail('storage_format_unknown');
+    const rows = db.prepare("SELECT type,CASE WHEN length(name)<=128 THEN name END AS name,CASE WHEN length(tbl_name)<=128 THEN tbl_name END AS tbl_name,CASE WHEN length(sql)<=32768 THEN sql END AS sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT 29").all();
+    const layout = rows.map(row => [row.type, row.name, row.tbl_name, typeof row.sql === 'string' ? row.sql.replace(/\s+/gu, ' ').trim() : null]);
+    if (rows.length !== expected.objects || createHash('sha256').update(JSON.stringify(layout)).digest('hex') !== expected.digest) fail('storage_format_unreadable');
+    const metadata = db.prepare('SELECT key,CASE WHEN length(value)<=128 THEN value END AS value FROM connect_meta LIMIT 5').all();
+    const meta = Object.fromEntries(metadata.map(row => [row.key, row.value]));
+    if (metadata.length !== 4 || meta.project_id !== 'soty' || meta.schema_lineage !== 'connect.sqlite.local.v1'
+      || meta.schema_version !== String(version) || meta.min_reader !== (version === 4 ? '2' : '1')) fail('storage_format_unknown');
+    if (version === 4) {
+      const policy = db.prepare('SELECT id,invite_only,quota,revision FROM platform_admission LIMIT 2').all();
+      if (policy.length !== 1 || policy[0].id !== 1 || ![0, 1].includes(policy[0].invite_only)
+        || !Number.isSafeInteger(policy[0].quota) || policy[0].quota < 0 || policy[0].quota > 100
+        || !Number.isSafeInteger(policy[0].revision) || policy[0].revision < 0) fail('storage_format_unreadable');
+    }
+    return version;
+  });
+}
+
 export async function readStorageFormat(dataDir = '/data') {
   const root = await lstat(dataDir);
   if (!root.isDirectory() || root.isSymbolicLink()) fail('storage_directory_invalid');
@@ -704,6 +733,9 @@ export async function readStorageFormat(dataDir = '/data') {
   const registration = await readUniversalFormat(dataDir, 'appRegistration'), feedback = await readUniversalFormat(dataDir, 'feedback'), human = await readUniversalFormat(dataDir, 'humanIdentity');
   const metadata = [registration.metadata, feedback.metadata, human.metadata].filter(Boolean);
   if (metadata.some(value => value.registryId !== metadata[0].registryId || value.environmentId !== metadata[0].environmentId)) fail('storage_format_unknown');
+  const connect = await readConnectFormat(dataDir);
+  if (connect === 4) return { ok: true, schema: 'soty.storage-format.v6', rooms, apps, notes, capabilities,
+    appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format, connect };
   if (human.format !== 'empty') return { ok: true, schema: 'soty.storage-format.v5', rooms, apps, notes, capabilities,
     appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format };
   if (registration.format === 'empty' && feedback.format === 'empty') return { ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities };

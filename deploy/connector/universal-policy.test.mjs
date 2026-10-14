@@ -473,7 +473,7 @@ test('image modes enforce legacy v5 baseline before feature writes; copied conta
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('1'), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(baseline, { candidateImage: image(undefined), originalImage: image('0', reader3, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', reader3), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_reader_baseline_required'));
-  const future = JSON.parse(currentStorageReaders); future.version = 6;
+  const future = JSON.parse(currentStorageReaders); future.version = 7;
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', JSON.stringify(future)), originalImage: image('1', currentStorageReaders, 'b') }), failCode('storage_reader_unknown'));
 });
 

@@ -145,7 +145,7 @@ function validateMetadata(db, projectId, readerEpoch, supportedVersion) {
   if (metadata.schema_lineage !== SCHEMA_LINEAGE || metadata.schema_version !== String(version)) throw new Error('connect_schema_metadata_mismatch');
   // A later additive writer may add tables/columns only while retaining this epoch's
   // semantics. Epoch changes, inconsistent metadata and missing invariants fail closed.
-  validateLayout(db, Math.min(version, supportedVersion));
+  validateLayout(db, Math.min(version, SCHEMA_VERSION));
   return version;
 }
 

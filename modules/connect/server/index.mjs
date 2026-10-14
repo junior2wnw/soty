@@ -163,13 +163,14 @@ function roomInviteUrl(value, origin) {
 }
 
 /** Local product identity + contacts. Not an OIDC provider or shared identity authority. */
-export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [] } = {}) {
+export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [], initializePlatformInvitations = false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && allowedOrigins.length <= 64, 'allowed_origins_required');
   const origins = new Set(allowedOrigins.map(originValue));
   assert(typeof clock === 'function', 'invalid_clock');
   assert(typeof canRequestContact === 'function', 'invalid_contact_policy');
+  assert(typeof initializePlatformInvitations === 'boolean', 'invalid_platform_initialization');
   assert(Array.isArray(platformAdminAccountIds) && platformAdminAccountIds.length <= 32 && platformAdminAccountIds.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
   assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
   const extensionOperations = new Map();
@@ -192,7 +193,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
   const db = new DatabaseSync(file);
-  try { migrateDatabase(db, projectId); } catch (error) { db.close(); throw error; }
+  try { migrateDatabase(db, projectId, { supportedVersion: initializePlatformInvitations ? SCHEMA_VERSION : 3 }); } catch (error) { db.close(); throw error; }
   let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false, actorFenceActor = null;
   // Only actor objects emitted by this signed dispatcher can enter the private
   // subject projection fence. Matching JSON fields do not carry this authority.
@@ -355,7 +356,8 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       hitLimit('bootstrap:origin:' + ctx.origin, 120, 60_000, timestamp);
       const accountId = randomId('acct');
       run('INSERT INTO accounts(id,label,created_at) VALUES (?,?,?)', accountId, deviceLabel, timestamp);
-      platformInvitations.admit(args.invitationToken, accountId, timestamp);
+      if (get('PRAGMA user_version').user_version >= 4) platformInvitations.admit(args.invitationToken, accountId, timestamp);
+      else assert(args.invitationToken === undefined, 'unsupported_operation');
       insertInstallation(ctx, encryption, deviceLabel, timestamp, accountId);
       return accountReply(accountId, ctx.deviceId);
     }
@@ -446,7 +448,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
 
     const { device, account } = authenticated(ctx.deviceId);
-    if (PLATFORM_INVITATION_OPERATIONS.includes(op)) return platformInvitations.dispatch(op, args, account.id, ctx.digest, timestamp);
+    if (PLATFORM_INVITATION_OPERATIONS.includes(op)) {
+      assert(get('PRAGMA user_version').user_version >= 4, 'unsupported_operation');
+      return platformInvitations.dispatch(op, args, account.id, ctx.digest, timestamp);
+    }
     if (extensionOperations.has(op)) {
       // The verified active installation, never request arguments, determines the caller.
       const actor = Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label });
