@@ -101,8 +101,9 @@ function reset(){close();backend=initial();preparations=new Map();calls=[];lostO
 async function run(){if(automatic)return;automatic=true;result.dataset.testStatus='running';result.textContent='Выполняются сценарии компонента…';const passed=[];
   try{
     mode.value='selected';reset();await open();assert(key('source-profile').value===profile,'installed option silently changed the source');
+    change('source-port','18437');
     change('source-profile','soty.selected-human-embed.v2');
-    assert(key('source-path').value==='/embed'&&key('source-path').readOnly&&key('source-port').readOnly&&key('source-device').disabled,'installed choice did not retain its prepared device/port/path');
+    assert(key('source-path').value==='/embed'&&key('source-path').readOnly&&key('source-port').value==='18437'&&!key('source-port').readOnly&&key('source-device').disabled,'installed choice did not preserve its editable port and declared device/path');
     click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'selected public consent');
     change('source-public-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','selected lost reply');
     await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'selected receipt settled');

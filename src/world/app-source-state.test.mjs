@@ -78,11 +78,13 @@ test('installed selected option changes only profile/path and retains its exact 
   }
 });
 
-test('installed hints cannot retarget device/port or survive withdrawal during an in-flight check', async () => {
+test('installed hints keep the declared device/path and cannot survive withdrawal during an in-flight check', async () => {
   const snapshot = inspection(), selectedProfile = 'soty.selected-human-embed.v2';
   snapshot.source.entryPath = '/embed'; snapshot.source.integrations = [{ profile: selectedProfile, entryPath: '/embed' }];
   const f = fixture(snapshot); f.source.patch({ profile: selectedProfile });
-  for (const patch of [{ port: '6000' }, { hostDeviceId: 'another' }, { connectorId: 'another' }, { entryPath: '/' }]) {
+  f.source.patch({ port: '6000' }); assert.equal(f.source.read().canPrepare, true);
+  f.source.reset(); f.source.patch({ profile: selectedProfile });
+  for (const patch of [{ hostDeviceId: 'another' }, { connectorId: 'another' }, { entryPath: '/' }]) {
     f.source.patch(patch); assert.equal(f.source.read().canPrepare, false); f.source.reset(); f.source.patch({ profile: selectedProfile });
   }
   const wait = deferred(), flight = f.source.prepare({ isCurrent: () => true, api: { request: () => wait.promise } });

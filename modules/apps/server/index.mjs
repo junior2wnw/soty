@@ -388,9 +388,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const result = [];
     for (const profile of scopedAdmissions.profiles()) {
       if (profile.appId !== app.id || profile.target.revision !== next || !channel.runtimeProfiles.includes(profile.schema)) continue;
-      const candidate = { appId: app.id, ownerAccountId: app.ownerAccountId, revision: next,
-        connectorKey: target.connectorKey, port: target.port, entryPath: '/embed', profile: profile.schema };
-      candidate.digest = runtimeTargetDigest(candidate);
+      // The approved next target can use a different port from the current
+      // relay. Its digest is an installed pin, not a claim about the old port.
+      const candidate = { appId: app.id, ownerAccountId: app.ownerAccountId, revision: next, digest: profile.target.digest,
+        connectorKey: target.connectorKey, entryPath: '/embed', profile: profile.schema };
       try { scopedAdmissions.verifyCandidate(candidate); }
       catch { continue; }
       // An installed option is a hint. The existing prepare still probes the

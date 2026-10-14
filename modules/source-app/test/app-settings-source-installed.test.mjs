@@ -9,9 +9,10 @@ import { createAppSettingsState, createAppSettingsDraftState, dispatchAppSetting
 // Real signed owner RPC, installed connector, HTTP Source probe, Apps admission
 // and SQL receipts. Local storage/locks replace browser APIs only; no UI or
 // production deployment is claimed by this gate.
-test('owner selects installed integration for two ordinary apps; actual prepare/promote survives lost ACK and selected readback', { timeout: 120000 }, async t => {
+test('owner moves relay 18438 to installed Source 18437; exact prepare and durable retry preserve both ordinary apps', { timeout: 120000 }, async t => {
   let promoted = 0;
   const f = await createOrdinaryInstalledFixture(t, { sourceProfile: STANDARD_SELECTED_SOURCE_V3,
+    nativePorts: [18437], registrationPorts: [18438],
     connectorScript: fileURLToPath(new URL('../../../scripts/soty-connector.mjs', import.meta.url)),
     async promoteSource({ realm, owner, reader }) {
       const { appId } = realm, accountId = owner.account.accountId;
@@ -22,7 +23,19 @@ test('owner selects installed integration for two ordinary apps; actual prepare/
       assert.equal(before.source.profile, 'soty.relay-restricted.v1');
       const source = createAppSourceState({ accountId, appId, snapshot: before });
       source.patch({ profile: before.source.integrations[0].profile });
+      if (realm.realmId === 'board') {
+        assert.equal(before.source.port, 18438); assert.equal(realm.port, 18437);
+        let nativeProbes = 0;
+        realm.instance.server.on('request', req => { if (req.method === 'HEAD') nativeProbes++; });
+        source.patch({ port: '18436' }); assert.equal(source.read().canPrepare, true);
+        await assert.rejects(source.prepare({ api, isCurrent: () => true }), { code: 'app_scoped_admission_mismatch' });
+        assert.equal(nativeProbes, 0, 'wrong digest is denied before any Native probe');
+        assert.equal(source.read().preparation, null);
+        assert.equal((await api.request('apps.inspect', { appId })).source.port, 18438);
+      }
+      source.patch({ port: String(realm.port) });
       assert.equal((await source.prepare({ api, isCurrent: () => true })).status, 'ready');
+      assert.equal(source.read().preparation.target.port, realm.port);
       const intent = source.promoteIntent(); assert.equal(intent.expectedSource.digest, realm.target.digest);
       const values = new Map(); let serial = 0, repliesLost = 0;
       const options = { accountId, appId, storage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) },

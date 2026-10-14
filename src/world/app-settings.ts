@@ -417,7 +417,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     else {
       const integration = snapshot.source.integrations?.find(value => value.profile === sourceProfile.value);
       if (!integration) return;
-      sourceModel.patch({ profile: integration.profile, entryPath: integration.entryPath, port: String(snapshot.source.port),
+      sourceModel.patch({ profile: integration.profile, entryPath: integration.entryPath,
         hostDeviceId: snapshot.source.hostDeviceId, connectorId: snapshot.source.connectorId });
     }
     changedSource();
@@ -561,7 +561,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
         : !selectedDevice ? 'Обновите список или выберите другое устройство.' : '');
     deviceHint.hidden = !deviceHint.textContent; text(deviceFailure, deviceError); deviceFailure.hidden = !deviceError;
     inputValue(sourcePortInput, draft.port); inputValue(sourcePathInput, draft.entryPath);
-    sourcePortInput.readOnly = sourcePathInput.readOnly = !editable || selectedProfile;
+    sourcePortInput.readOnly = !editable;
+    sourcePathInput.readOnly = !editable || selectedProfile;
     if (sourceAudience.value !== draft.launchPolicy) sourceAudience.value = draft.launchPolicy; sourceAudience.disabled = !editable;
     sourceAccessBlock.hidden = !ordinary.publicationDirty;
     disable(resetAccess, blocked || !ordinary.publicationDirty);

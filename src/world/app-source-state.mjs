@@ -87,7 +87,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
   const noChange = () => draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source));
   const integrationAvailable = () => draft.profile === PROFILE || draft.mode === 'history'
     || (snapshot.source.integrations ?? []).some(item => item.profile === draft.profile && item.entryPath === draft.entryPath
-      && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key]) && Number(draft.port) === snapshot.source.port);
+      && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key]));
   const remaining = () => {
     if (!prepared) return 0;
     const at = clock();
