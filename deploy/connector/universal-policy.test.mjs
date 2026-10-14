@@ -203,7 +203,7 @@ test('installed operator byte drift after prepare is fenced before existing roll
     { key, keyId, expectedWitnessId: sealed.witnessId }), failCode('universal_policy_witness_mismatch'));
 });
 
-test('Root signed workspace policy reuses an existing Native Human client without a Source RP callback; legacy workspace still requires its exact callback', async t => {
+test('Root signed workspace policy needs no Human RP client; legacy workspace still requires its exact client and callback', async t => {
   const f = await fixture(t), base = selectedConfiguration(f).profiles[0], source = path.join(f.root, 'root-workspace.json');
   const profile = { ...base, schema: 'soty.selected-human-embed.v2', sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
     resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId: base.appId,
@@ -218,9 +218,12 @@ test('Root signed workspace policy reuses an existing Native Human client withou
   }
   await configured(profile);
   const accepted = await prepared(t, f, plan); assert.equal(publicUniversalPolicy(accepted).selected.profileCount, 1);
+  for (const clientId of ['rp.missing', 'rp.foreign']) {
+    await configured({ ...profile, clientId });
+    const withoutRp = await prepared(t, f, plan);
+    assert.equal(publicUniversalPolicy(withoutRp).selected.profileCount, 1);
+  }
   for (const changed of [
-    { ...profile, clientId: 'rp.missing' },
-    { ...profile, clientId: 'rp.foreign' },
     { ...profile, issuer: 'https://foreign.fixture.invalid/human-identity' },
     { ...profile, parentOrigin: 'https://foreign.fixture.invalid' },
     { ...profile, embedOrigin: 'http://localhost:43123' },
@@ -231,6 +234,10 @@ test('Root signed workspace policy reuses an existing Native Human client withou
       typeof error.code === 'string' && error.code.startsWith('universal_policy_') && !error.cause);
   }
   const legacy = { ...profile, sourceProfile: STANDARD_WORKSPACE_SOURCE };
+  for (const clientId of ['rp.missing', 'rp.foreign']) {
+    await configured({ ...legacy, clientId });
+    await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
+  }
   await configured(legacy);
   await assert.rejects(prepareUniversalPolicy(plan, f.options), failCode('universal_policy_selected_human_required'));
   f.human.clients[0].redirectUri = profile.embedOrigin + '/api/embed/callback';

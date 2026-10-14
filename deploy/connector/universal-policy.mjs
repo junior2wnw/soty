@@ -278,7 +278,7 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
           catch { fail('universal_policy_selected_human_required'); }
           check(profile.issuer === human.issuer && context.shellOrigins.includes(profile.parentOrigin)
             && profile.embedOrigin.startsWith('https:') && approvedNativeTransport(profile.nativeOrigin)
-            && clients.some(client => client.id === profile.clientId && (rootWorkspace || client.redirectUri === redirectUri)),
+            && (rootWorkspace || clients.some(client => client.id === profile.clientId && client.redirectUri === redirectUri)),
           'universal_policy_selected_human_required');
         }
       }
