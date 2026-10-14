@@ -8,12 +8,153 @@ param(
   [string]$RelayId = "",
   [string]$DeviceId = "",
   [string]$DeviceNick = "",
-  [switch]$SourceCompanion
+  [switch]$SourceCompanion,
+  [switch]$RuntimeOnly,
+  [string]$RuntimeUpdatePlan = "",
+  [switch]$CheckOnly
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Explicit pinned maintenance of an existing CurrentUser runtime. This branch
+# never bootstraps Node/OpenCode, seeds identity, starts Machine or edits tasks.
+function Invoke-SotyRuntimeOnly {
+  param([string]$PlanPath, [switch]$InspectOnly)
+  if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = @((Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'), (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules')) -join ';'
+  }
+  function Need($Value, [string]$Code) { if (-not $Value) { throw $Code } }
+  function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+  function Regular([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    Need (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'runtime_file_reparse'
+    Need (-not $item.PSIsContainer) 'runtime_file_invalid'
+  }
+  function AtomicBytes([string]$Path, [byte[]]$Bytes, [string]$Expected) {
+    Need ((Hash $Path) -eq $Expected) 'runtime_file_changed'
+    $temp = $Path + '.' + $p.attemptId + '.next'
+    Need ((Test-Path -LiteralPath $temp) -and (Hash $temp) -eq (ByteHash $Bytes)) 'runtime_stage_changed'
+    Need ((Hash $Path) -eq $Expected) 'runtime_file_changed'
+    [IO.File]::Replace($temp, $Path, [System.Management.Automation.Language.NullString]::Value)
+  }
+  function ByteHash([byte[]]$Bytes) { $sha=[Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() } }
+  function StageBytes([string]$Path,[byte[]]$Bytes) {
+    $stream=[IO.File]::Open(($Path + '.' + $p.attemptId + '.next'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try {$stream.Write($Bytes,0,$Bytes.Length);$stream.Flush($true)} finally {$stream.Dispose()}
+  }
+  function ProcessProof($Expected, [string]$Script) {
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$Expected.pid)
+    Need ($null -ne $proc -and $proc.CommandLine -and $proc.CommandLine.Contains($Script)) 'runtime_process_changed'
+    Need ($proc.CreationDate.ToUniversalTime().ToString('o') -eq $Expected.startedAt) 'runtime_generation_changed'
+    Need ((Hash $proc.ExecutablePath) -eq $Expected.exeSha256) 'runtime_executable_changed'
+    Need (([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -eq (Invoke-CimMethod -InputObject $proc -MethodName GetOwnerSid).Sid) 'runtime_owner_changed'
+    return Get-Process -Id $proc.ProcessId
+  }
+  $p = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Need ($p.scope -eq 'CurrentUser' -and $p.attemptId -match '^[a-z0-9-]{8,80}$') 'runtime_plan_invalid'
+  $userDir = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'soty-connector'))
+  Need ([IO.Path]::GetFullPath($p.installDir) -eq $userDir) 'runtime_directory_changed'
+  Need ([IO.Path]::GetFullPath($p.machineDir) -eq [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'soty-agent'))) 'runtime_machine_directory_changed'
+  foreach ($dir in @($userDir, $p.machineDir, $p.packageDir)) {
+    $item = Get-Item -LiteralPath $dir -Force
+    Need (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'runtime_directory_reparse'
+  }
+  $userScript = Join-Path $userDir 'soty-connector.mjs'
+  $cfgPath = Join-Path $userDir 'connector-config.json'
+  $machineScript = Join-Path $p.machineDir 'soty-connector.mjs'
+  $supervisor = Join-Path $p.machineDir 'start-user-connector.ps1'
+  $manifestPath = Join-Path $p.packageDir 'manifest.json'
+  $packageScript = Join-Path $p.packageDir 'soty-connector.mjs'
+  foreach ($file in @($userScript, $cfgPath, $machineScript, $supervisor, $manifestPath, $packageScript, $p.nodePath, $p.openCodePath)) { Regular $file }
+  Need ((Hash $manifestPath) -eq $p.manifestSha256 -and (Hash $packageScript) -eq $p.newRuntimeSha256) 'runtime_package_changed'
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Need ($manifest.schema -eq 'soty.connector.release.v1' -and $manifest.version -eq '1.4.8' -and $manifest.sha256 -eq $p.newRuntimeSha256) 'runtime_manifest_invalid'
+  Need ((Hash $userScript) -eq $p.currentRuntimeSha256 -and (Hash $machineScript) -eq $p.machineRuntimeSha256) 'runtime_current_changed'
+  Need ((Hash $cfgPath) -eq $p.configSha256 -and (Hash $supervisor) -eq $p.supervisorSha256) 'runtime_custody_changed'
+  Need ((Hash $p.nodePath) -eq $p.nodeSha256 -and (Hash $p.openCodePath) -eq $p.openCodeSha256) 'runtime_dependency_changed'
+  $oldRunner = Get-Content -LiteralPath $supervisor -Raw -Encoding UTF8
+  $openCodeMatch = [regex]::Matches($oldRunner, "(?m)^\s*\u0024env:SOTY_OPENCODE_PATH\s*=\s*'((?:[^']|'')*)'\s*$")
+  Need ($openCodeMatch.Count -eq 1 -and [IO.Path]::GetFullPath($openCodeMatch[0].Groups[1].Value.Replace("''", "'")) -eq [IO.Path]::GetFullPath($p.openCodePath)) 'runtime_old_opencode_path_changed'
+  $cfgBytes = [IO.File]::ReadAllBytes($cfgPath)
+  $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Need ($cfg.deviceId -eq $p.deviceId -and $cfg.trafficCoreEnabled -ne $true) 'runtime_device_or_traffic_changed'
+  Need ($p.enableDurableResults -is [bool] -and $p.allowedRoot -eq 'D:\roy' -and $p.serverUrl -eq 'https://soty.pochinit.online') 'runtime_consent_plan_invalid'
+  $issued = Join-Path $userDir ($p.attemptId + '.issued.json')
+  Need (-not (Test-Path -LiteralPath $issued)) 'runtime_attempt_already_issued'
+  foreach ($file in @($userScript, $machineScript)) { Need (-not (Test-Path -LiteralPath ($file + '.previous')) -and -not (Test-Path -LiteralPath ($file + '.update-pending.json'))) 'runtime_prior_update_pending' }
+  $nodeArgs = @($packageScript, 'ctl', 'release-selftest')
+  $probe = (& $p.nodePath @nodeArgs 2>$null | ConvertFrom-Json)
+  Need ($LASTEXITCODE -eq 0 -and $probe.ok -eq $true -and $probe.version -eq '1.4.8' -and $probe.wrapperSha256 -eq $p.newRuntimeSha256) 'runtime_preflight_failed'
+  $runner = (& $p.nodePath $packageScript ctl user-companion-runner --machine-script $machineScript --machine-config (Join-Path $p.machineDir 'connector-config.json') --opencode-path $p.openCodePath 2>$null | ConvertFrom-Json)
+  Need ($LASTEXITCODE -eq 0 -and $runner.ok -eq $true) 'runtime_runner_failed'
+  [void][ScriptBlock]::Create($runner.script)
+  $worker = ProcessProof $p.worker $userScript
+  $parent = ProcessProof $p.supervisor $supervisor
+  Need ((Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$p.worker.pid)).ParentProcessId -eq [int]$p.supervisor.pid) 'runtime_supervisor_changed'
+  $machineWorkers = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($machineScript) })
+  Need ($machineWorkers.Count -eq 0) 'runtime_machine_worker_active'
+  Need ($p.healthPort -ge 1024 -and $p.healthPort -le 65535) 'runtime_health_invalid'
+  $health = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $p.healthPort + '/health') -TimeoutSec 5
+  Need ($health.scope -eq 'CurrentUser' -and $health.system -eq $false -and $health.deviceId -eq $cfg.deviceId -and $null -eq $health.activeJob) 'runtime_busy_or_foreign'
+  if ($InspectOnly) { return @{ok=$true;code='runtime_update_prepared';nodeUpgrade=$false;writes=0;stop=0;claim=0;openCodeInstall=$false} }
+  # The encrypted beforeimage includes config and the supervisor's code. No
+  # plaintext config backup or credential value is written to a transcript.
+  Add-Type -AssemblyName System.Security
+  $backup = [Text.Encoding]::UTF8.GetBytes((@{config=[Convert]::ToBase64String($cfgBytes);supervisor=[Convert]::ToBase64String([IO.File]::ReadAllBytes($supervisor))} | ConvertTo-Json -Compress))
+  $cipher = [Security.Cryptography.ProtectedData]::Protect($backup, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+  $sealed = Join-Path $userDir ($p.attemptId + '.beforeimage.dpapi')
+  $file = [IO.File]::Open($sealed, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $file.Write($cipher,0,$cipher.Length);$file.Flush($true) } finally {$file.Dispose()}
+  $decoded = [Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($sealed),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
+  Need ([Convert]::ToBase64String($decoded) -eq [Convert]::ToBase64String($backup)) 'runtime_backup_failed'
+  $roots = @($cfg.allowedRoots); if ($roots -notcontains $p.allowedRoot) { $roots += $p.allowedRoot }
+  $cfg.allowedRoots = $roots
+  $cfg.serverUrl = $p.serverUrl
+  if ($null -eq $cfg.PSObject.Properties['localJobReceiptsEnabled']) { $cfg | Add-Member -NotePropertyName localJobReceiptsEnabled -NotePropertyValue $p.enableDurableResults } else { $cfg.localJobReceiptsEnabled = $p.enableDurableResults }
+  $newBytes = [IO.File]::ReadAllBytes($packageScript)
+  $runnerBytes = [Text.Encoding]::UTF8.GetBytes($runner.script)
+  $newCfgBytes = [Text.Encoding]::UTF8.GetBytes(($cfg | ConvertTo-Json -Depth 30))
+  # Staging proves write access before stopping either existing process.
+  StageBytes $machineScript $newBytes; StageBytes $userScript $newBytes
+  StageBytes $supervisor $runnerBytes; StageBytes $cfgPath $newCfgBytes
+  # Hold exact process handles and recheck immediately before the owned stop.
+  $null = ProcessProof $p.worker $userScript; $null = ProcessProof $p.supervisor $supervisor
+  Need ((Hash $cfgPath) -eq $p.configSha256 -and (Hash $userScript) -eq $p.currentRuntimeSha256) 'runtime_current_changed'
+  $health = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $p.healthPort + '/health') -TimeoutSec 5
+  Need ($health.scope -eq 'CurrentUser' -and $health.system -eq $false -and $health.deviceId -eq $cfg.deviceId -and $null -eq $health.activeJob) 'runtime_busy_or_foreign'
+  $stream = [IO.File]::Open($issued,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try { $bytes=[Text.Encoding]::UTF8.GetBytes('{"phase":"dispatched","retry":false}');$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true) } finally {$stream.Dispose()}
+  # The old Windows runtime has no authenticated shutdown route. It must be
+  # idle; this bounded stop is not recorded as a graceful executor completion.
+  Stop-Process -InputObject $parent; $parent.WaitForExit(5000) | Out-Null
+  $maintenanceMutex = New-Object Threading.Mutex($false, ('Global\SotyConnectorUser-' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+  $mutexOwned = $false
+  try { try { $mutexOwned = $maintenanceMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $mutexOwned = $true }
+    Need $mutexOwned 'runtime_supervisor_mutex_busy'
+  Stop-Process -InputObject $worker; $worker.WaitForExit(5000) | Out-Null
+  Need ($parent.HasExited -and $worker.HasExited) 'runtime_stop_unknown'
+  $unexpected = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($userScript) -or $_.CommandLine.Contains($machineScript)) })
+  Need ($unexpected.Count -eq 0) 'runtime_foreign_process_started'
+  [IO.File]::Copy($userScript, $userScript + '.previous', $false)
+  [IO.File]::Copy($machineScript, $machineScript + '.previous', $false)
+  AtomicBytes $machineScript $newBytes $p.machineRuntimeSha256
+  AtomicBytes $userScript $newBytes $p.currentRuntimeSha256
+  AtomicBytes $supervisor $runnerBytes $p.supervisorSha256
+  AtomicBytes $cfgPath $newCfgBytes $p.configSha256
+  [IO.File]::WriteAllText(($userScript + '.update-pending.json'), (@{schema='soty.connector.update-pending.v1';fromVersion='1.4.8';toVersion='1.4.8';sha256=$p.newRuntimeSha256;createdAt=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+  } finally { if ($mutexOwned) { $maintenanceMutex.ReleaseMutex() }; $maintenanceMutex.Dispose() }
+  $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $started = Start-Process -FilePath $ps -WindowStyle Hidden -PassThru -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $supervisor + '"'))
+  return @{ok=$true;code='runtime_update_started';supervisorPid=$started.Id;runtimeSha256=$p.newRuntimeSha256;nodeUpgrade=$false;machineStarted=$false;claim=0;healthReadbackRequired=$true}
+}
+
+if ($RuntimeOnly) {
+  try { Invoke-SotyRuntimeOnly -PlanPath $RuntimeUpdatePlan -InspectOnly:$CheckOnly | ConvertTo-Json -Compress; exit 0 }
+  catch { $code=[string]$_.Exception.Message; if($code -notmatch '^runtime_[a-z_]+$'){$code='runtime_update_requires_readback'}; @{ok=$false;code=$code;retry=$false} | ConvertTo-Json -Compress; exit 1 }
+}
+if ($CheckOnly -or $RuntimeUpdatePlan) { throw 'runtime_mode_required' }
 
 function Resolve-AgentDir {
   if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {

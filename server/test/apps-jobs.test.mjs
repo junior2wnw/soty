@@ -50,6 +50,39 @@ async function setup(t) {
     createArgs: { hostDeviceId: host.hostDeviceId, connectorId: host.connectorId, requestId: 'create-a-shopping-app', text: 'Список покупок', cwd: 'C:\\test-workspace' } };
 }
 
+test('opt-in leased account task stops on current owner loss and a late native result resolves unknown without claiming success', async t => {
+  const f = await setup(t), args = { ...f.createArgs, expectedAccountId: f.accountId, conversationId: 'local-current-receipt' };
+  const sent = await invoke(f.service, f.owner, 'apps.assistant.send', args); assert.equal(sent.ok, true);
+  const row = f.store.state.jobs.find(job => job.id === sent.job.id); assert.ok(row.sourceActorDeviceId);
+  let permitted = true; f.store.ownedJobActive = job => permitted && f.service.isActorActive({ accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId });
+  assert.equal((await f.store.poll(f.auth, 0)).jobs[0].id, row.id);
+  permitted = false;
+  const state = await f.store.getAssignedJobState(f.auth, row.id); assert.equal(state.job.cancelRequested, true);
+  assert.equal(state.job.status, 'leased'); // Cancel ACK is not a process result.
+  f.store.state.jobs.find(job => job.id === row.id).executionUncertain = true;
+  await f.store.finishJob(f.auth, row.id, { ok: true, text: 'Actual late native process result', exitCode: 0 });
+  const finished = f.store.state.jobs.find(job => job.id === row.id);
+  assert.equal(finished.status, 'cancelled'); assert.equal(finished.executionUncertain, false);
+  assert.equal((await f.store.poll(f.auth, 0)).jobs.length, 0); assert.equal(finished.attempts, 1);
+});
+
+test('opt-in rejects unidentified existing account tasks and authenticates enqueue device outside caller arguments', async t => {
+  const f = await setup(t), sent = await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs);
+  assert.equal(sent.ok, true); delete f.store.state.jobs[0].sourceActorDeviceId;
+  f.store.ownedJobActive = () => true;
+  assert.equal((await f.store.poll(f.auth, 0)).jobs.length, 0);
+  assert.equal(f.store.state.jobs[0].attempts, 0); assert.equal(f.store.state.jobs[0].status, 'cancelled');
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, requestId: 'spoof-device', sourceActorDeviceId: 'foreign' })).ok, false);
+});
+
+test('opt-in does not attest current account ownership of a legacy shared-room task', async t => {
+  const f = await setup(t); f.store.ownedJobActive = () => true;
+  const sent = await f.store.createJob({ linkId: f.host.linkId, deviceId: f.host.hostDeviceId, kind: 'agent', text: 'Legacy room task' });
+  assert.equal(sent.ok, true); assert.equal((await f.store.poll(f.auth, 0)).jobs[0].id, sent.job.id);
+  const state = await f.store.getAssignedJobState(f.auth, sent.job.id);
+  assert.equal(state.ok, true); assert.equal(state.job.currentOwnerChecked, false);
+});
+
 test('signed app jobs are owned, replay-safe, durable and inaccessible through a shared room link', async t => {
   const f = await setup(t);
   const created = await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs);

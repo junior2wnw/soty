@@ -64,7 +64,8 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice, localExecutorCurrent = false } = {}, nativeSources) {
+  if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityDeviceConsentMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -181,7 +182,15 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
         if (!capabilities?.nativeNotes) throw new AccessError('native_unavailable');
         return capabilities.nativeNotes.verifyContext(token, mode);
       } });
-    connectors = attachConnectorApi(app, { dataDir, gonka });
+    connectors = attachConnectorApi(app, { dataDir, gonka,
+      ...(localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? { storeOptions: {
+        ownedJobActive: job => {
+          const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
+          if (!connect?.isActorActive(actor)) return false;
+          const current = apps?.resolveOwnedDevice(actor, job.deviceId, job.requestedConnectorId);
+          return current?.linkId === job.linkId;
+        },
+      } } : {}) });
     capabilities = createCapabilitiesService({
       databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,

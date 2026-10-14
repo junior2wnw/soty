@@ -2,7 +2,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -14,6 +14,8 @@ import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeRel
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
+import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
+import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
 const connectorVersion = "1.4.8";
@@ -52,6 +54,22 @@ const connectorToken = safeToken(persisted.connectorToken) || randomBytes(32).to
 const connectorId = `${installId}:${scope.toLowerCase()}`;
 const trafficRoot = join(connectorDir, "traffic-core");
 const jobRoot = join(connectorDir, "connector-jobs");
+// OFF until this installation has been explicitly admitted by its device owner.
+// No new listener, dispatch format or executor is introduced.
+const durableResults = env("SOTY_CONNECTOR_DURABLE_RESULTS") === "1" || persisted.localJobReceiptsEnabled === true;
+const localJobReceipts = durableResults ? createLocalJobReceipts({
+  join, digest: value => sha256(value),
+  mkdir: async target => { await mkdir(target, { recursive: true, mode: 0o700 });
+    if ((await lstat(target)).isSymbolicLink()) throw new Error('local_receipt_directory_denied');
+    if (process.platform === 'win32') await protectSecretFile(target); },
+  readJson: async target => { const info = await lstat(target);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 6200000) throw new Error('local_receipt_file_denied');
+    return JSON.parse(await readFile(target, 'utf8')); },
+  list: target => readdir(target),
+  writeExclusive: async (target, value) => { const file = await open(target, 'wx', 0o600);
+    try { await file.writeFile(JSON.stringify(value), 'utf8'); await file.sync(); } finally { await file.close(); }
+    await protectSecretFile(target); },
+}, { root: join(jobRoot, 'native-results-v1'), binding: { linkId, deviceId, connectorId, relayBaseUrl } }) : null;
 const openCodeRoot = join(connectorDir, "opencode-runtime");
 const openCodeStateRoot = join(connectorDir, "opencode-state");
 const spreadExMlRoot = join(connectorDir, "spreadex-ml");
@@ -454,6 +472,7 @@ async function connectorLoop() {
       continue;
     }
     try {
+      if (localJobReceipts) await reconcileLocalResults();
       const result = await serverJson(`/api/connectors/poll?linkId=${encodeURIComponent(linkId)}&deviceId=${encodeURIComponent(deviceId)}&connectorId=${encodeURIComponent(connectorId)}&wait=1`, { timeoutMs: 35_000 });
       if (!result.ok) {
         // A successful registration has recovered this old poll denial. Retry
@@ -478,9 +497,20 @@ async function executeJob(job) {
     await finishRemoteJob(job.id, { ok: false, text: "Этот тип задания не поддерживается исполнителем. Обновите подключение.", exitCode: 126 });
     return;
   }
+  // Existing root admission/cancellation is read again at the start boundary.
+  // A dropped admission response cannot turn into process execution.
+  if (localJobReceipts && kind === 'agent') {
+    const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
+    if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
+    if (!['leased', 'running'].includes(state.job.status)) return;
+    if (!await localJobReceipts.claim(job)) return; // A started marker is NEVER re-executable.
+    if (state.job.cancelRequested === true) {
+      await finishRemoteJob(job.id, { ok: false, text: 'Отменено до запуска', exitCode: 130 }, true); return;
+    }
+  }
   const detected = kind === "agent" ? await detectAgent() : null;
   if (kind === "agent" && !detected?.available) {
-    await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" });
+    await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" }, Boolean(localJobReceipts));
     return;
   }
   const requestedRunAs = job.input?.runAs === "system" ? "system" : "user";
@@ -502,18 +532,28 @@ async function executeJob(job) {
   const cancelWatch = watchCancellation(job.id, controller);
   try {
     const runtime = { signal: controller.signal, emit };
+    if (localJobReceipts && kind === 'agent') {
+      const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
+      if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
+      if (state.job.cancelRequested === true || !['leased', 'running'].includes(state.job.status)) {
+        controller.abort(); throw new Error('local_job_admission_revoked');
+      }
+    }
     const result = kind === "agent" ? await runOpenCode(job, runtime) : await runShellJob(job, runtime);
     await eventQueue;
-    await finishRemoteJob(job.id, { ...result, ...(kind === "agent" ? { agentId: "opencode" } : {}) });
+    await finishRemoteJob(job.id, { ...result, ...(kind === "agent" ? { agentId: "opencode" } : {}) }, Boolean(localJobReceipts && kind === 'agent'));
   } catch (error) {
     const cancelled = controller.signal.aborted;
     await eventQueue;
+    // Delivery may be unknown after the native result was written. The original
+    // result must stay immutable; never replace it with a transport failure.
+    if (localJobReceipts && kind === 'agent' && (await localJobReceipts.pending()).some(row => row.jobId === job.id)) return;
     await finishRemoteJob(job.id, {
       ok: false,
       text: cancelled ? "Отменено" : safeError(error),
       exitCode: cancelled ? 130 : 1,
       ...(kind === "agent" ? { agentId: "opencode" } : {})
-    });
+    }, Boolean(localJobReceipts && kind === 'agent'));
   } finally {
     clearInterval(heartbeat);
     controller.abort();
@@ -544,11 +584,23 @@ async function postJobEvent(jobId, event) {
   });
 }
 
-async function finishRemoteJob(jobId, result) {
-  return await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}/result`, {
+async function finishRemoteJob(jobId, result, durable = false) {
+  if (durable) await localJobReceipts.finish(jobId, result);
+  const response = await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}/result`, {
     method: "POST",
     body: { linkId, deviceId, connectorId, result }
   });
+  if (durable && response.ok && response.job?.id === jobId && ['succeeded', 'failed', 'cancelled'].includes(response.job.status)) await localJobReceipts.acknowledge(jobId);
+  return response;
+}
+
+async function reconcileLocalResults() {
+  for (const receipt of await localJobReceipts.pending()) {
+    // Re-registration never changes the binding encoded in a retained result.
+    const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(receipt.jobId)}/runtime-status`, { timeoutMs: 5_000 });
+    if (!state.ok || state.job?.id !== receipt.jobId) continue;
+    await finishRemoteJob(receipt.jobId, receipt.result, true);
+  }
 }
 
 async function detectAgent(force = false) {
@@ -607,7 +659,7 @@ async function runOpenCode(job, { signal, emit }) {
     input: prompt,
     signal,
     timeoutMs: safeInteger(job.input?.timeoutMs, 1_000, 24 * 60 * 60_000, 2 * 60 * 60_000),
-    env: openCodeEnv(),
+    env: openCodeEnv({ boundedLocalTask: durableResults && job.schema === 'soty.connector-job.v4' && !appOutput }),
     onStdout: (chunk) => {
       lineBuffer += chunk;
       const lines = lineBuffer.split("\n");
@@ -916,7 +968,7 @@ function modelProxyBaseUrl() {
   return new URL("/api/connectors/gonka/v1", `${relayBaseUrl}/`).toString().replace(/\/$/u, "");
 }
 
-function openCodeEnv() {
+function openCodeEnv({ boundedLocalTask = false } = {}) {
   const config = {
     $schema: "https://opencode.ai/config.json",
     model: `gonka/${gonkaModel}`,
@@ -955,12 +1007,12 @@ function openCodeEnv() {
           glob: "allow",
           grep: "allow",
           list: "allow",
-          bash: "allow",
-          task: "allow",
+          bash: boundedLocalTask ? "deny" : "allow",
+          task: boundedLocalTask ? "deny" : "allow",
           external_directory: "deny",
           todowrite: "allow",
-          webfetch: "allow",
-          websearch: "allow",
+          webfetch: boundedLocalTask ? "deny" : "allow",
+          websearch: boundedLocalTask ? "deny" : "allow",
           lsp: "allow",
           skill: "allow",
           question: "deny",
@@ -1422,6 +1474,13 @@ async function runControl(args) {
     })}\n`);
     return;
   }
+  if (command === 'user-companion-runner') {
+    const machineScript = arg('--machine-script'), machineConfig = arg('--machine-config'), openCodePath = arg('--opencode-path') || '';
+    if (!isAbsolute(machineScript || '') || !isAbsolute(machineConfig || '') || (openCodePath && !isAbsolute(openCodePath))) throw new Error('runner_paths_invalid');
+    process.stdout.write(JSON.stringify({ ok: true, script: windowsUserCompanion({ nodePath: process.execPath,
+      machineScript, machineConfig, openCodePath }) }) + '\n');
+    return;
+  }
   if (command === "update") {
     await checkForUpdate();
     process.stdout.write(`${JSON.stringify({ ok: updateState.lastResult !== "error", update: updateState })}\n`);
@@ -1620,69 +1679,9 @@ async function ensureUserCompanion() {
   removeLegacyWindowsCompanion();
   const bootstrap = join(connectorDir, "start-user-connector.ps1");
   const launcher = join(connectorDir, "start-user-connector.vbs");
-  const node = psQuote(process.execPath);
-  const script = psQuote(scriptPath);
-  const sourceConfig = psQuote(configPath);
   const openCode = managedOpenCodePath();
-  const content = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "if ($sid -eq 'S-1-5-18') { exit 0 }",
-    "$mutex = New-Object System.Threading.Mutex($false, ('Global\\SotyConnectorUser-' + $sid))",
-    "if (-not $mutex.WaitOne(0)) { exit 0 }",
-    "try {",
-    "$userDir = Join-Path $env:LOCALAPPDATA 'soty-connector'",
-    "New-Item -ItemType Directory -Force -Path $userDir | Out-Null",
-    "$userScript = Join-Path $userDir 'soty-connector.mjs'",
-    "$userConfig = Join-Path $userDir 'connector-config.json'",
-    "$legacyScript = Join-Path $env:LOCALAPPDATA 'soty-agent\\soty-agent.mjs'",
-    "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($legacyScript) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-    "Remove-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'soty-agent' -Force -ErrorAction SilentlyContinue",
-    `Copy-Item -LiteralPath ${script} -Destination $userScript -Force`,
-    `if (Test-Path -LiteralPath ${sourceConfig}) {`,
-    "  try {",
-    `    $sourceData = Get-Content -LiteralPath ${sourceConfig} -Raw | ConvertFrom-Json`,
-    "    $userExists = Test-Path -LiteralPath $userConfig",
-    "    $userData = if ($userExists) { Get-Content -LiteralPath $userConfig -Raw | ConvertFrom-Json } else { $sourceData }",
-    "    foreach ($name in @('schema','linkId','serverUrl','deviceId','deviceNick','installId','connectorToken','gonkaModel')) {",
-    "      $sourceProperty = $sourceData.PSObject.Properties[$name]",
-    "      if ($null -eq $sourceProperty) { continue }",
-    "      $userProperty = $userData.PSObject.Properties[$name]",
-    "      if ($null -eq $userProperty) { $userData | Add-Member -NotePropertyName $name -NotePropertyValue $sourceProperty.Value } else { $userProperty.Value = $sourceProperty.Value }",
-    "    }",
-    "    if (-not $userExists) { $userData.PSObject.Properties.Remove('workspaceRoot'); $userData.PSObject.Properties.Remove('allowedRoots') }",
-    "    $userData | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $userConfig -Encoding UTF8",
-    "  } catch {}",
-    "}",
-    `$env:SOTY_CONNECTOR_MANAGED = '1'`,
-    `$env:SOTY_CONNECTOR_AUTO_UPDATE = '1'`,
-    `$env:SOTY_CONNECTOR_SCOPE = 'CurrentUser'`,
-    `$env:SOTY_CONNECTOR_COMPANION = '1'`,
-    `$env:SOTY_CONNECTOR_PORT = '0'`,
-    `$env:SOTY_CONNECTOR_UPDATE_URL = ${psQuote(updateManifestUrl)}`,
-    `$env:SOTY_CONNECTOR_SERVER_URL = ${psQuote(relayBaseUrl)}`,
-    `$env:SOTY_CONNECTOR_LINK_ID = ${psQuote(linkId)}`,
-    `$env:SOTY_CONNECTOR_DEVICE_ID = ${psQuote(deviceId)}`,
-    `$env:SOTY_CONNECTOR_DEVICE_NICK = ${psQuote(deviceNick)}`,
-    ...(openCode && existsSync(openCode) ? [`$env:SOTY_OPENCODE_PATH = ${psQuote(openCode)}`] : []),
-    "$env:NODE_OPTIONS = ''",
-    "$pendingPath = $userScript + '.update-pending.json'",
-    "$previousPath = $userScript + '.previous'",
-    "while ($true) {",
-    `  & ${node} $userScript`,
-    "  $code = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }",
-    "  if ($code -ne 75 -and (Test-Path -LiteralPath $pendingPath) -and (Test-Path -LiteralPath $previousPath)) {",
-    "    Copy-Item -LiteralPath $userScript -Destination ($userScript + '.failed') -Force -ErrorAction SilentlyContinue",
-    "    Move-Item -LiteralPath $previousPath -Destination $userScript -Force",
-    "    Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue",
-    "  }",
-    "  if ($code -eq 75) { Start-Sleep -Seconds 1 } else { Start-Sleep -Seconds 3 }",
-    "}",
-    "} finally {",
-    "  try { $mutex.ReleaseMutex() | Out-Null } catch {}",
-    "  $mutex.Dispose()",
-    "}"
-  ].join("\r\n");
+  const content = windowsUserCompanion({ nodePath: process.execPath, machineScript: scriptPath,
+    machineConfig: configPath, openCodePath: openCode && existsSync(openCode) ? openCode : '' });
   const vbs = windowsCompanionVbs(bootstrap);
   await writeFile(bootstrap, `\uFEFF${content}`, "utf8");
   await writeFile(launcher, vbs, "utf8");
@@ -1737,6 +1736,7 @@ async function saveConfig() {
     connectorToken,
     gonkaModel,
     workspaceRoot: persisted.workspaceRoot || homedir(),
+    ...(persisted.localJobReceiptsEnabled === true ? { localJobReceiptsEnabled: true } : {}),
     allowedRoots: Array.isArray(persisted.allowedRoots) ? persisted.allowedRoots : [persisted.workspaceRoot || homedir()],
     trafficFabric: trafficFabricState,
     trafficCoreSettings,
