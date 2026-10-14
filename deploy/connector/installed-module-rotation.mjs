@@ -50,7 +50,8 @@ async function replaceModule(state, expected, bytes) {
 /** Capture before staging. Existing transport has decrypted/verified the rollback envelope in RAM. */
 export async function prepareInstalledModuleRotation({ original, expectedEnvironmentSha256, expectedMountsSha256,
   source, expectedOldSha256, approvedNewSha256, approvedModule, expectedOldReferences, approvedReferences,
-  oldPolicy, restoreOldPolicy, encryptedRollback, encryptedRollbackSha256, rollbackFile, options, validateOnly = false }) {
+  oldPolicy, restoreOldPolicy, encryptedRollback, encryptedRollbackSha256, rollbackFile, options, validateOnly = false,
+  approvedReferenceUpgrades = [] }) {
   need(typeof validateOnly==='boolean','installed_module_rotation_validation_mode');
   need(original?.State?.Running===true && !original.State.Paused && /^[a-f0-9]{64}$/.test(original.Id||''), 'installed_module_rotation_original');
   const env=environment(original), actualMounts=mounts(original.Mounts);
@@ -67,8 +68,26 @@ export async function prepareInstalledModuleRotation({ original, expectedEnviron
   await assertUniversalPolicyCurrent(oldPolicy);
   const originalReferences=await refs(source,expectedOldSha256);
   need(same(originalReferences,expectedOldReferences) && Array.isArray(approvedReferences)
-    && approvedReferences.length<=64 && new Set(approvedReferences.map(r=>r.capabilityId)).size===approvedReferences.length
-    && originalReferences.every(ref=>approvedReferences.some(next=>same(next,ref))),'installed_module_rotation_refs');
+    && approvedReferences.length<=64 && new Set(approvedReferences.map(r=>r.capabilityId)).size===approvedReferences.length,
+    'installed_module_rotation_refs');
+  // Only an explicit Host approval may replace a contract. Grants and receipts remain version-bound.
+  need(Array.isArray(approvedReferenceUpgrades) && approvedReferenceUpgrades.length<=64,'installed_module_rotation_refs');
+  const upgradedIds=new Set();
+  for(const upgrade of approvedReferenceUpgrades){
+    need(upgrade && same(Object.keys(upgrade).sort(),['after','before']) && upgrade.before && upgrade.after,
+      'installed_module_rotation_refs');
+    const {before,after}=upgrade;
+    need(typeof before.capabilityId==='string' && before.capabilityId===after.capabilityId
+      && !upgradedIds.has(before.capabilityId) && Number.isSafeInteger(before.version) && before.version>0
+      && Number.isSafeInteger(after.version) && after.version>before.version
+      && /^[a-f0-9]{64}$/.test(after.digest||'') && after.digest!==before.digest
+      && same({...before,version:after.version,digest:after.digest},after)
+      && originalReferences.some(ref=>same(ref,before)) && approvedReferences.some(ref=>same(ref,after)),
+      'installed_module_rotation_refs');
+    upgradedIds.add(before.capabilityId);
+  }
+  need(originalReferences.every(ref=>approvedReferences.some(next=>same(next,ref))
+    || approvedReferenceUpgrades.some(upgrade=>same(upgrade.before,ref))), 'installed_module_rotation_refs');
   need(encryptedRollback instanceof Uint8Array && sha(encryptedRollback)===encryptedRollbackSha256,'installed_module_rotation_encrypted_backup');
   let envelope;
   try { envelope=JSON.parse(Buffer.from(encryptedRollback).toString('utf8')); } catch { need(false,'installed_module_rotation_encrypted_backup'); }

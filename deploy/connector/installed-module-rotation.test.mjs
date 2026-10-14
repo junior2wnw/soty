@@ -10,6 +10,10 @@ import { prepareUniversalPolicy, disposeUniversalPolicy, captureUniversalPrepare
   applyUniversalPolicy, publicUniversalPolicy, assertUniversalPolicyCurrent, bindUniversalRollout, sealUniversalPolicy } from './universal-policy.mjs';
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
 import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
+import { createCapabilitiesService } from '../../modules/capabilities/server/index.mjs';
+import { createTrustedReadonlyQueryAdapter } from '../../modules/capabilities/server/readonly-queries.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { captureExternalApplications } from '../../server/external-applications.js';
 import { prepareInstalledModuleRotation, stageInstalledModuleRotation, admitInstalledModuleRotation,
   restoreInstalledModuleOriginal, markInstalledModuleRestartSuspended, disposeInstalledModuleRotation } from './installed-module-rotation.mjs';
 
@@ -18,16 +22,16 @@ function scope(character) { const appId='app-'+character.repeat(32);return { app
  resource:{registryId:'root-apps',environmentId:'production',tenantId:'synthetic-owner',appId,resourceId:'workspace-'+character,
  selection:{kind:'soty.workspace.v1',nativeId:'workspace-'+character,incarnationId:'incarnation-'+character}} }; }
 const scopes=[scope('1'),scope('2'),scope('3')];
-const code = added => Buffer.from('const scopes='+JSON.stringify(scopes)+';const extra='+JSON.stringify(scope('4'))+';\nexport default async function(api){const rows=scopes.map(scope=>api.createCurrentContextSourceApplication(scope));'
+const code = (added,version=1) => Buffer.from('const scopes='+JSON.stringify(scopes)+';const extra='+JSON.stringify(scope('4'))+';\nexport default async function(api){const rows=scopes.map(scope=>{const row=api.createCurrentContextSourceApplication(scope);return '+(version===1?'row':'Object.freeze({...row,catalog:Object.freeze({...row.catalog,version:2})})')+';});'
  +(added?'rows.push(...api.createSelectedOtsovSourceApplications(extra));':'')+'const composition=await api.loadInstalledExistingApplications({createRegistry:()=>rows});return {...composition,close(){}};}\n');
 function encryptOriginal(bytes) { const recipient=generateKeyPairSync('rsa',{modulusLength:2048}).publicKey,key=randomBytes(32),iv=randomBytes(12);
  const header={schema:'soty.root-encrypted-backup.v1',algorithm:'RSA-OAEP-SHA256/AES-256-GCM',keyId:sha(recipient.export({type:'spki',format:'der'})),
  key:publicEncrypt({key:recipient,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},key).toString('base64'),iv:iv.toString('base64')};
  const cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(header).sort()))));
  return Buffer.from(JSON.stringify({header,ciphertext:Buffer.concat([cipher.update(bytes),cipher.final(),cipher.getAuthTag()]).toString('base64')})); }
-async function fixture(t,fault={}) {
+async function fixture(t,fault={},upgrade=false) {
  const root=await mkdtemp(path.join(await realpath(tmpdir()),'soty-universal-policy-installed-rotation-')),source=path.join(root,'installed.mjs');
- const oldBytes=code(false),nextBytes=code(true),f=engineFixture(fault),policies=[],handles=[];
+ const oldBytes=code(false),nextBytes=code(!upgrade,upgrade?2:1),f=engineFixture(fault),policies=[],handles=[];
  const options={fixtureRoot:root,shellOrigins:['https://soty.fixture.invalid']};await writeFile(source,oldBytes,{mode:0o600});
  const current=captureUniversalPreparedness({compiledLegacyMode:false,universalConfigured:true,reviewsConfigured:true,humanProfile:null,humanHttpEnabled:false});
  const oldPlan={schema:'soty.universal-rollout-policy.v1',phase:'features',human:null,reviews:null,
@@ -149,4 +153,79 @@ test('canonical property order admission still denies a changed reference field 
  await assert.rejects(prepareInstalledModuleRotation({...f.input,expectedOldReferences:refs,validateOnly:true}),{code:'installed_module_rotation_refs'});
  await assert.rejects(prepareInstalledModuleRotation({...f.input,expectedOldReferences:[...f.input.expectedOldReferences].reverse(),validateOnly:true}),{code:'installed_module_rotation_refs'});
  assert.deepEqual(f.events,[]);await assert.rejects(readFile(f.input.rollbackFile),{code:'ENOENT'});
+});
+
+const upgrades = f => f.input.expectedOldReferences.map(before=>({before,after:f.input.approvedReferences.find(ref=>ref.capabilityId===before.capabilityId)}));
+test('default append-only admission rejects a real v1 to v2 replacement before capture or effects',async t=>{
+ const f=await fixture(t,{},true);
+ await assert.rejects(prepareInstalledModuleRotation({...f.input,validateOnly:true}),{code:'installed_module_rotation_refs'});
+ assert.deepEqual(f.events,[]);assert.equal(sha(await readFile(f.source)),sha(f.oldBytes));await assert.rejects(readFile(f.input.rollbackFile),{code:'ENOENT'});
+});
+
+test('exact Host-approved versions rotate the real module and retain the original full Env/7 mounts',async t=>{
+ const f=await fixture(t,{},true),pairs=upgrades(f),{request}=await f.stage({approvedReferenceUpgrades:pairs});
+ await f.run.prepare(request);await f.run.promote();assert.equal(f.run.state.phase,'committed');
+ const entry=await loadInstalledApplicationsEntry({SOTY_INSTALLED_APPLICATIONS_MODULE:f.source,SOTY_INSTALLED_APPLICATIONS_SHA256:sha(f.nextBytes)});
+ try{assert.deepEqual(entry.sourceReferences,f.input.approvedReferences);}finally{await entry.close();}
+ assert.equal(f.input.expectedOldReferences.every(ref=>ref.version===1),true);
+ assert.equal(f.input.approvedReferences.every(ref=>ref.version===2),true);
+ assert.deepEqual(f.run.config.Env,f.snapshot.Config.Env.map(v=>v==='SOTY_INSTALLED_APPLICATIONS_SHA256='+sha(f.oldBytes)?'SOTY_INSTALLED_APPLICATIONS_SHA256='+sha(f.nextBytes):v));
+ assert.deepEqual(f.run.config.HostConfig.Mounts,f.snapshot.HostConfig.Mounts);assert.equal(f.map.get(args.originalId).State.Running,false);
+});
+
+for(const [name,change] of [
+ ['missing approval',f=>({approvedReferenceUpgrades:upgrades(f).slice(1)})],
+ ['duplicate approval',f=>({approvedReferenceUpgrades:[...upgrades(f),upgrades(f)[0]]})],
+ ['orphan approval',f=>({approvedReferenceUpgrades:[...upgrades(f),{before:{...upgrades(f)[0].before,capabilityId:'app.orphan:read'},after:{...upgrades(f)[0].after,capabilityId:'app.orphan:read'}}]})],
+ ['unused approval',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,digest:'f'.repeat(64)}})})],
+ ['wrong prior digest',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,before:{...pair.before,digest:'0'.repeat(64)}})})],
+ ['partial prior tuple',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,before:{capabilityId:pair.before.capabilityId}})})],
+ ['same-version rewrite',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,version:1}})})],
+ ['nonpositive version',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,version:0}})})],
+ ['fractional version',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,version:2.5}})})],
+ ['unsafe version',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,version:Number.MAX_SAFE_INTEGER+1}})})],
+ ['unchanged digest',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,digest:pair.before.digest}})})],
+ ['invalid digest',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,digest:'invalid'}})})],
+ ['changed capability identity',f=>({approvedReferenceUpgrades:upgrades(f).map((pair,i)=>i?pair:{...pair,after:{...pair.after,capabilityId:'app.foreign:read'}})})],
+ ['removed old capability',f=>({approvedReferenceUpgrades:upgrades(f),approvedReferences:f.input.approvedReferences.slice(1)})],
+ ['duplicate new capability',f=>({approvedReferenceUpgrades:upgrades(f),approvedReferences:[...f.input.approvedReferences,f.input.approvedReferences[0]]})]
+])test(name+' refuses the module before capture, CREATE or STOP',async t=>{
+ const f=await fixture(t,{},true);await assert.rejects(prepareInstalledModuleRotation({...f.input,...change(f),validateOnly:true}),{code:'installed_module_rotation_refs'});
+ assert.deepEqual(f.events,[]);await assert.rejects(readFile(f.input.rollbackFile),{code:'ENOENT'});assert.equal(sha(await readFile(f.source)),sha(f.oldBytes));
+});
+
+test('explicit approval cannot replace the final exact module export fence; failure restores original bytes',async t=>{
+ const f=await fixture(t,{},true),forged=f.input.approvedReferences.map(ref=>({...ref,version:3,digest:'e'.repeat(64)}));
+ await assert.rejects(f.stage({approvedReferences:forged,approvedReferenceUpgrades:upgrades(f).map(pair=>({before:pair.before,after:forged.find(ref=>ref.capabilityId===pair.before.capabilityId)}))}),{code:'installed_module_rotation_refs'});
+ assert.equal(sha(await readFile(f.source)),sha(f.oldBytes));assert.equal(f.map.get(args.originalId).State.Running,true);
+ assert.equal(f.events.some(e=>e.startsWith('create:')||e.startsWith('stop:')),false);assert.deepEqual(f.map.get(args.originalId).HostConfig.RestartPolicy,f.snapshot.HostConfig.RestartPolicy);
+});
+
+test('a real approved module upgrade retains historical contracts and cannot carry a v1 grant into v2',async t=>{
+ const f=await fixture(t,{},true),file=path.join(f.root,'grants.sqlite'),owner={accountId:'rotation-owner',deviceId:'rotation-device'},audience='https://rotation.fixture.invalid';
+ let calls=0,service;
+ const open=async(bytes,refs)=>{
+  const p=path.join(f.root,'grant-catalog.mjs');await writeFile(p,bytes,{mode:0o600});
+  const entry=await loadInstalledApplicationsEntry({SOTY_INSTALLED_APPLICATIONS_MODULE:p,SOTY_INSTALLED_APPLICATIONS_SHA256:sha(bytes)});
+  try{
+   const catalogs=captureExternalApplications(entry.httpOptions.externalApplications).map(row=>row.catalog);
+   const adapter=createTrustedReadonlyQueryAdapter({withAuthority:(_request,callback)=>callback(),query:()=>{calls++;return {title:'Synthetic workspace',role:'owner',revision:1,context:{ref:'B'.repeat(43),generation:1,expiresAt:Date.now()+10000}};}});
+   return createCapabilitiesService({databasePath:file,projectId:'rotation-fixture',actorActive:actor=>actor.accountId===owner.accountId&&actor.deviceId===owner.deviceId,
+    catalog:catalogs,documentation:[],readonlyQueries:[{contract:refs[0],adapter}]});
+  }finally{await entry.close();}
+ };
+ service=await open(f.oldBytes,f.input.expectedOldReferences);t.after(()=>service.close());
+ const call=(op,args={})=>service.execute({op:'access.'+op,actor:owner,args:{expectedAccountId:owner.accountId,...args}});
+ const principal=call('principals.create',{label:'Synthetic old reader'}).principal,resource=`workspace:${scopes[0].appId}:${scopes[0].resource.resourceId}`;
+ const grant=call('grants.issue',{principalId:principal.id,capabilities:[{capabilityId:f.input.expectedOldReferences[0].capabilityId,version:1}],resources:[resource],effects:[],recipients:[resource],expiresAt:Date.now()+600000,budget:{unit:'invocations',limit:5}}).grant;
+ const credential=call('credentials.issue',{grantId:grant.id,audience});
+ const request=reference=>({actor:service.authenticateCredential({token:credential.token,audience}),reference,idempotencyKey:'old-reader-request',input:{handle:'A'.repeat(43)}});
+ await service.external.query(request(f.input.expectedOldReferences[0]));assert.equal(calls,1);
+ const read=sql=>{const db=new DatabaseSync(file,{readOnly:true});try{return db.prepare(sql).all();}finally{db.close();}},originalGrants=read('SELECT * FROM cap_grants'),originalReceipts=read('SELECT * FROM cap_receipts');
+ const {request:rotation}=await f.stage({approvedReferenceUpgrades:upgrades(f)});await f.run.prepare(rotation);await f.run.promote();
+ service.close();service=await open(f.nextBytes,f.input.approvedReferences);
+ await assert.rejects(service.external.query(request(f.input.approvedReferences[0])),{code:'access_denied'});
+ assert.equal(calls,1);assert.deepEqual(read('SELECT * FROM cap_grants'),originalGrants);assert.deepEqual(read('SELECT * FROM cap_receipts'),originalReceipts);
+ const contracts=read('SELECT capability_id,version,digest FROM cap_contracts');
+ for(const ref of [...f.input.expectedOldReferences,...f.input.approvedReferences])assert.equal(contracts.some(row=>row.capability_id===ref.capabilityId&&row.version===ref.version&&row.digest===ref.digest),true);
 });
