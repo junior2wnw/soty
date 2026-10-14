@@ -46,7 +46,7 @@ function fixture(t, version = 8, profileVersion = 2, options = {}) {
     resource: { registryId: 'soty', tenantId: owner.accountId, appId, environmentId: 'production', resourceId: 'selected',
       ...(profileVersion === 2 ? { selection: { kind: options.selectionKind ?? (options.pin?.id === 'soty.standard-workspace' ? 'soty.workspace.v1' : 'hive.project.v1'), nativeId: 'synthetic_native', incarnationId: 'one' } } : { workspaceId: 'selected' }) },
     issuer: 'https://root.test/human-identity', clientId: 'synthetic-selected', embedOrigin: options.embedOrigin ?? (options.publicEntry ? 'https://selected.apps.test' : options.template?.replace('{appId}', appId) ?? 'https://selected.apps.test'),
-    nativeOrigin: 'https://native.test', parentOrigin: 'https://root.test' };
+    nativeOrigin: options.nativeOrigin ?? 'https://native.test', parentOrigin: 'https://root.test' };
   if (options.publicEntry) {
     const template = 'https://{slug}.apps.test', zone = 'zone_' + createHash('sha256').update(template).digest('hex').slice(0, 32);
     const alias = 'dom_' + 'b'.repeat(32);
@@ -76,6 +76,31 @@ function fixture(t, version = 8, profileVersion = 2, options = {}) {
     reopen() { sources.close(); sources = openSources(); }, revoke() { active = false; }, advance() { clock += 60000; },
     notify(work) { notify = work; }, history() { return sources.execute({ op: 'apps.source.history', actor: owner, args: { appId } }); } };
 }
+
+test('admitted workspace cannot turn a malformed Native origin into a CSP wildcard or directive', async t => {
+  for (const nativeOrigin of ['https://*.example.test', 'https://*', 'https://native.test;connect-src']) await t.test(nativeOrigin, async sub => {
+    const directory = mkdtempSync(join(tmpdir(), 'soty-native-policy-'));
+    const databasePath = join(directory, 'apps.sqlite'), template = 'https://{appId}.apps.test';
+    const f = fixture(sub, 8, 2, { databasePath, template, pin: STANDARD_ROOT_WORKSPACE_SOURCE, nativeOrigin });
+    f.promote(f.intent(await f.prepare()));
+    const service = createAppsService({ databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
+      allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile],
+      withAuthorityFence: callback => callback(), actorActive: () => true,
+      signSourceAuthority: async () => { throw Error('malformed_origin_must_not_issue_witness'); },
+      withHumanSubjectAuthority: () => { throw Error('malformed_origin_must_not_resolve_identity'); } });
+    const server = createServer((req, res) => { if (!service.handleRequest(req, res)) res.writeHead(404).end(); });
+    await new Promise(done => server.listen(0, '127.0.0.1', done));
+    sub.after(async () => { service.close(); server.closeAllConnections(); await new Promise(done => server.close(done)); rmSync(directory, { recursive: true, force: true }); });
+    const response = await new Promise((done, reject) => {
+      const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed', headers: { Host: new URL(f.profile.embedOrigin).host } }, res => {
+        let body = ''; res.on('data', chunk => { body += chunk; }); res.once('end', () => done({ status: res.statusCode, body, policy: res.headers['content-security-policy'] }));
+      }); req.once('error', reject); req.end();
+    });
+    assert.equal(response.status, 403);
+    assert.equal(JSON.parse(response.body).error, 'app_native_origin_invalid');
+    assert.equal(response.policy, undefined);
+  });
+});
 
 test('selected v2 on actual Apps6/7 refuses before probe; legacy SQLite promotion failure stays an effect0 counter', async t => {
   for (const version of [6, 7]) {
@@ -211,10 +236,13 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     assert.ok([401, 403].includes(policyResponse.statusCode));
     assert.equal(policyResponse.headers['set-cookie'], undefined);
     const policy = policyResponse.headers['content-security-policy'];
-    assert.match(policy, /(?:^|;\s*)connect-src 'self'(?:;|$)/u);
+    const connect = policy.split(';').map(value => value.trim()).find(value => value.startsWith('connect-src '));
+    assert.equal(connect, rootWorkspace ? `connect-src 'self' ${f.profile.nativeOrigin}` : "connect-src 'self'");
     assert.match(policy, /(?:^|;\s*)form-action 'self'(?:;|$)/u);
     assert.match(policy, /(?:^|;\s*)frame-src 'none'(?:;|$)/u);
-    assert.doesNotMatch(policy, /'unsafe-eval'|https:\/\/(?!root\.test)|\*/u);
+    assert.doesNotMatch(policy, /'unsafe-eval'|\*/u);
+    assert.deepEqual([...new Set(policy.match(/https:\/\/[^\s;]+/gu))].sort(),
+      (rootWorkspace ? [f.profile.nativeOrigin, f.profile.parentOrigin] : [f.profile.parentOrigin]).sort());
     if (rootWorkspace) {
       assert.match(policy, /(?:^|;\s*)worker-src 'self'(?:;|$)/u);
       assert.match(policy, /(?:^|;\s*)script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'(?:;|$)/u);

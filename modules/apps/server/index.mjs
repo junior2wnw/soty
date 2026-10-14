@@ -795,15 +795,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       if(session?.family.frameId===frame&&current(session))return session;}
     assertApps(false,'app_scoped_context_closed',403);
   }
-  function setPolicy(res, origin, scoped, rootWorkspace = false) {
+  function setPolicy(res, origin, scoped, rootWorkspace = false, nativeOrigin = null) {
     const frameOrigins = [...origins].join(' ');
     // An admitted Root-signed workspace runs its existing bundled compiler and
     // opaque, credential-free code preview. The exact reviewed pin selects this
     // policy; neither an app request nor its response can enable it. Native CSP
-    // still intersects below. JS eval, external frames and network stay closed.
+    // still intersects below. Only this admitted workspace's exact Native API
+    // may receive browser requests; response headers cannot add destinations.
     const scripts = rootWorkspace ? "'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'" : "'self' 'unsafe-inline'";
     const workers = rootWorkspace ? "'self'" : "'none'";
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src 'self'; worker-src ${workers}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
+    if (rootWorkspace && nativeOrigin) assertApps(typeof nativeOrigin === 'string'
+      && !/[\s\u0000-\u001f\u007f;,*'"\\<>]/u.test(nativeOrigin)
+      && new URL(nativeOrigin).origin === nativeOrigin, 'app_native_origin_invalid', 403);
+    const connect = rootWorkspace && nativeOrigin && nativeOrigin !== origin ? `'self' ${nativeOrigin}` : "'self'";
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:${scoped?' data:':''}; connect-src ${connect}; worker-src ${workers}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads${scoped?' allow-popups allow-popups-to-escape-sandbox':''}`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
@@ -814,7 +819,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
     const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
     const rootWorkspace=selected&&isRootSignedWorkspaceSource(scopedProfile.sourceProfile),frame=rootWorkspace?parseRequestFrame(req):undefined;
-    setPolicy(res, app.appHost.origin, selected, rootWorkspace);
+    setPolicy(res, app.appHost.origin, selected, rootWorkspace, rootWorkspace && scopedProfile.schema === 'soty.selected-human-embed.v2' ? scopedProfile.nativeOrigin : null);
     if(frame)frameRequests.set(req,frame);
     let path=requestPath(req.url||'/');const frameUrl=new URL(path,app.appHost.origin);
     if(rootWorkspace&&frameUrl.searchParams.has('sotyFrame')){
