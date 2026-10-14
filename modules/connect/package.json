@@ -1,6 +1,6 @@
 {
   "name": "@soty/connect",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Portable project-local accounts, contacts, device grants and controlled updates",
   "type": "module",
   "private": true,
@@ -19,5 +19,5 @@
     "update": "node update/cli.mjs",
     "example": "node examples/server.mjs"
   },
-  "connectCompatibility": { "protocol": 1, "storage": 1, "minReader": 1 }
+  "connectCompatibility": { "protocol": 1, "storage": 1, "minReader": 2 }
 }

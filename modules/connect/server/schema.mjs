@@ -1,5 +1,5 @@
-export const SCHEMA_VERSION = 3;
-export const READER_EPOCH = 1;
+export const SCHEMA_VERSION = 4;
+export const READER_EPOCH = 2;
 const SCHEMA_LINEAGE = 'connect.sqlite.local.v1';
 
 // These are additive migrations. Never recreate a database after an open/migration error.
@@ -84,6 +84,15 @@ export const MIGRATIONS = [
     );
     CREATE INDEX invitations_recipient ON contact_invitations(recipient_id, invalidated_at, dismissed_at);
   `,
+  `
+    CREATE TABLE platform_admission (id INTEGER PRIMARY KEY CHECK(id=1), invite_only INTEGER NOT NULL CHECK(invite_only IN (0,1)), quota INTEGER NOT NULL CHECK(quota BETWEEN 0 AND 100), revision INTEGER NOT NULL);
+    INSERT INTO platform_admission VALUES(1,0,3,0);
+    CREATE TABLE platform_invitations (id TEXT PRIMARY KEY, issuer_id TEXT NOT NULL REFERENCES accounts(id), token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, redeemed_at INTEGER, redeemed_account_id TEXT REFERENCES accounts(id));
+    CREATE INDEX platform_invitations_issuer ON platform_invitations(issuer_id);
+    CREATE TABLE platform_invitation_receipts (account_id TEXT NOT NULL REFERENCES accounts(id), request_id TEXT NOT NULL, operation TEXT NOT NULL, digest TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(account_id,request_id));
+    UPDATE connect_meta SET value='2' WHERE key='min_reader';
+  `,
 ];
 
 const REQUIRED_COLUMNS = {
@@ -108,6 +117,11 @@ function validateLayout(db, understoodVersion) {
     required.recovery_methods += ' consumed_digest receipt_until receipt_json';
   }
   if (understoodVersion >= 3) required.contact_invitations = 'id relationship_id sender_id recipient_id url label created_at expires_at dismissed_at invalidated_at';
+  if (understoodVersion >= 4) {
+    required.platform_admission = 'id invite_only quota revision';
+    required.platform_invitations = 'id issuer_id token_hash created_at expires_at revoked_at redeemed_at redeemed_account_id';
+    required.platform_invitation_receipts = 'account_id request_id operation digest result_json';
+  }
   for (const [table, fields] of Object.entries(required)) {
     const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name));
     if (!fields.split(' ').every((field) => columns.has(field))) throw new Error('connect_schema_layout_invalid');
@@ -148,7 +162,7 @@ export function migrateDatabase(db, projectId, { supportedVersion = SCHEMA_VERSI
       db.exec(MIGRATIONS[index]);
       db.exec(`PRAGMA user_version=${index + 1}`);
       db.prepare('INSERT OR REPLACE INTO connect_meta(key,value) VALUES (?,?)').run('schema_version', String(index + 1));
-      db.prepare('INSERT OR IGNORE INTO connect_meta(key,value) VALUES (?,?)').run('min_reader', String(READER_EPOCH));
+      db.prepare('INSERT OR IGNORE INTO connect_meta(key,value) VALUES (?,?)').run('min_reader', index + 1 >= 4 ? '2' : '1');
       db.prepare('INSERT OR IGNORE INTO connect_meta(key,value) VALUES (?,?)').run('schema_lineage', SCHEMA_LINEAGE);
     }
     const storedProject = db.prepare("SELECT value FROM connect_meta WHERE key='project_id'").get();

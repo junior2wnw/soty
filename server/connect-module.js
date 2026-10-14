@@ -4,11 +4,12 @@ import { createConnectService } from '../modules/connect/server/index.mjs';
 import { createConnectHandler } from '../modules/connect/server/http.mjs';
 const moduleVersion = JSON.parse(readFileSync(new URL('../modules/connect/package.json', import.meta.url), 'utf8')).version;
 
-export function attachConnectModule(app, { dataDir, origins, extensions = [], canRequestContact, env = process.env } = {}) {
+export function attachConnectModule(app, { dataDir, origins, extensions = [], canRequestContact, platformAdminAccountIds, env = process.env } = {}) {
   const allowedOrigins = connectAllowedOrigins(origins, env);
   const service = createConnectService({
     databasePath: path.join(dataDir || path.resolve('data'), 'connect', 'accounts.sqlite'),
-    projectId: 'soty', allowedOrigins, extensions, canRequestContact
+    projectId: 'soty', allowedOrigins, extensions, canRequestContact,
+    platformAdminAccountIds: platformAdminAccountIds ?? (env.SOTY_PLATFORM_ADMIN_ACCOUNT_IDS || '').split(',').map(value => value.trim()).filter(Boolean)
   });
   app.use(createConnectHandler(service));
   app.get('/api/connect/capabilities', (_req, res) => {

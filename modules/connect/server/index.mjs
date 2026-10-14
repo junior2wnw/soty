@@ -4,6 +4,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrateDatabase, READER_EPOCH, SCHEMA_VERSION } from './schema.mjs';
+import { createPlatformInvitations, PLATFORM_INVITATION_OPERATIONS } from './platform-invitations.mjs';
 
 export { READER_EPOCH, SCHEMA_VERSION };
 const MODULE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -29,6 +30,7 @@ const MAX_ENVELOPE_BYTES = 2 * 1024 * 1024;
 const MAX_WRAPPED_BYTES = 256 * 1024;
 const MAX_ARGS_BYTES = MAX_ENVELOPE_BYTES + 16 * 1024;
 const OPERATIONS = new Set([
+  ...PLATFORM_INVITATION_OPERATIONS,
   'bootstrap', 'status', 'profile.rename', 'card.get', 'card.rotate', 'contacts.request', 'contacts.list',
   'contacts.accept', 'contacts.decline', 'contacts.cancel', 'contacts.remove', 'contacts.block', 'contacts.unblock', 'contacts.requestAccount',
   'contacts.sendInvite', 'contacts.dismissInvite',
@@ -161,13 +163,14 @@ function roomInviteUrl(value, origin) {
 }
 
 /** Local product identity + contacts. Not an OIDC provider or shared identity authority. */
-export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false } = {}) {
+export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false, platformAdminAccountIds = [] } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && allowedOrigins.length <= 64, 'allowed_origins_required');
   const origins = new Set(allowedOrigins.map(originValue));
   assert(typeof clock === 'function', 'invalid_clock');
   assert(typeof canRequestContact === 'function', 'invalid_contact_policy');
+  assert(Array.isArray(platformAdminAccountIds) && platformAdminAccountIds.length <= 32 && platformAdminAccountIds.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
   assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
   const extensionOperations = new Map();
   for (const extension of extensions) {
@@ -202,6 +205,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   const get = (sql, ...params) => db.prepare(sql).get(...params);
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
+  const platformInvitations = createPlatformInvitations({ get, all, run, assert, exactArgs, textId, adminAccountIds: platformAdminAccountIds });
   function requireIdle() {
     assert(!closed, 'service_closed');
     assert(!transactionActive && !db.isTransaction, 'connect_transaction_nested');
@@ -338,7 +342,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   }
   function act(op, args, ctx, timestamp) {
     if (op === 'bootstrap') {
-      exactArgs(args, ['label', 'encryptionPublicJwk']);
+      exactArgs(args, ['label', 'encryptionPublicJwk'], ['invitationToken']);
       const deviceLabel = label(args.label);
       const encryption = canonicalJson(normalizePublicJwk(args.encryptionPublicJwk));
       const known = installation(ctx.deviceId);
@@ -351,6 +355,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       hitLimit('bootstrap:origin:' + ctx.origin, 120, 60_000, timestamp);
       const accountId = randomId('acct');
       run('INSERT INTO accounts(id,label,created_at) VALUES (?,?,?)', accountId, deviceLabel, timestamp);
+      platformInvitations.admit(args.invitationToken, accountId, timestamp);
       insertInstallation(ctx, encryption, deviceLabel, timestamp, accountId);
       return accountReply(accountId, ctx.deviceId);
     }
@@ -441,6 +446,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
 
     const { device, account } = authenticated(ctx.deviceId);
+    if (PLATFORM_INVITATION_OPERATIONS.includes(op)) return platformInvitations.dispatch(op, args, account.id, ctx.digest, timestamp);
     if (extensionOperations.has(op)) {
       // The verified active installation, never request arguments, determines the caller.
       const actor = Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label });

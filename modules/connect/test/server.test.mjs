@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fork } from 'node:child_process';
 import { createConnectService, canonicalJson, digestArgs, deviceIdForKey, SCHEMA_VERSION } from '../server/index.mjs';
 import { MIGRATIONS, migrateDatabase } from '../server/schema.mjs';
 
@@ -509,12 +510,12 @@ test('additive migration preserves existing state and future versions fail witho
   assert.throws(() => f.open({ databasePath: oldPath }), /connect_reader_too_old/u);
 });
 
-test('reader epoch supports rollback over additive schema without accepting an unsafe or corrupted layout', async (t) => {
+test('admission reader floor blocks old writers; compatible future additive layouts preserve accounts', async (t) => {
   const f = fixture(t); const actor = identity('Preserved'); const account = await boot(f.service, actor); f.service.close();
   const db = new DatabaseSync(f.databasePath);
-  migrateDatabase(db, PROJECT, { supportedVersion: 2, readerEpoch: 1 });
+  assert.throws(() => migrateDatabase(db, PROJECT, { supportedVersion: 3, readerEpoch: 1 }), /connect_reader_too_old/u);
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
-  assert.equal(db.prepare("SELECT value FROM connect_meta WHERE key='min_reader'").get().value, '1');
+  assert.equal(db.prepare("SELECT value FROM connect_meta WHERE key='min_reader'").get().value, '2');
   db.exec('ALTER TABLE accounts ADD COLUMN future_optional_note TEXT');
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION + 1}`);
   db.prepare("UPDATE connect_meta SET value=? WHERE key='schema_version'").run(String(SCHEMA_VERSION + 1));
@@ -525,4 +526,82 @@ test('reader epoch supports rollback over additive schema without accepting an u
   const corrupt = new DatabaseSync(f.databasePath);
   corrupt.exec('DROP INDEX relationships_active_pair'); corrupt.close();
   assert.throws(() => f.open(), /connect_schema_layout_invalid/u);
+});
+
+test('platform admission defaults off; admin-only changes; bootstrap redeem, replay, expiry and enrollment remain isolated', async t => {
+  const f = fixture(t), owner = identity('Owner'), member = identity('Member');
+  const a = await boot(f.service, owner); await boot(f.service, member);
+  assert.deepEqual(await invoke(f.service, owner, 'platform.admission.get'), { ok: true, inviteOnly: false, defaultQuota: 3, revision: 0, manageAllowed: false });
+  const update = { requestId: 'policy_enable', expectedRevision: 0, inviteOnly: true, defaultQuota: 3 };
+  expectError(await invoke(f.service, owner, 'platform.admission.update', update), 'platform_admin_required');
+  const admin = f.open({ platformAdminAccountIds: [a.accountId] });
+  expectError(await invoke(admin, member, 'platform.admission.update', update), 'platform_admin_required');
+  const changed = await invoke(admin, owner, 'platform.admission.update', update);
+  assert.equal(changed.revision, 1);
+  assert.deepEqual(await invoke(admin, owner, 'platform.admission.update', update), changed);
+  expectError(await invoke(admin, owner, 'platform.admission.update', { ...update, inviteOnly: false }), 'platform_request_conflict');
+  assert.equal((await boot(admin, owner)).accountId, a.accountId);
+  const newcomer = identity('Newcomer'), bootArgs = { label: newcomer.name, encryptionPublicJwk: newcomer.encryptionPublicJwk };
+  expectError(await invoke(admin, newcomer, 'bootstrap', bootArgs), 'platform_invitation_required');
+  const token = randomBytes(32).toString('base64url'), issueArgs = { requestId: 'issue_first', token };
+  const issued = await invoke(admin, owner, 'platform.invites.issue', issueArgs);
+  assert.equal(issued.ok, true);
+  assert.deepEqual(await invoke(admin, owner, 'platform.invites.issue', issueArgs), issued);
+  expectError(await invoke(admin, owner, 'platform.invites.issue', { ...issueArgs, token: randomBytes(32).toString('base64url') }), 'platform_request_conflict');
+  expectError(await invoke(admin, member, 'platform.invites.revoke', { requestId: 'foreign_revoke', invitationId: issued.invitation.id }), 'platform_invite_unavailable');
+  const joined = await invoke(admin, newcomer, 'bootstrap', { ...bootArgs, invitationToken: token });
+  assert.equal(joined.ok, true);
+  assert.deepEqual(await invoke(f.open(), newcomer, 'bootstrap', { ...bootArgs, invitationToken: token }), joined);
+  const foreign = identity('Foreign'), foreignArgs = { label: foreign.name, encryptionPublicJwk: foreign.encryptionPublicJwk };
+  expectError(await invoke(admin, foreign, 'bootstrap', { ...foreignArgs, invitationToken: token }), 'platform_invite_unavailable');
+  expectError(await invoke(admin, owner, 'platform.invites.revoke', { requestId: 'used_revoke', invitationId: issued.invitation.id }), 'platform_invite_already_redeemed');
+  const expiredToken = randomBytes(32).toString('base64url');
+  assert.equal((await invoke(admin, owner, 'platform.invites.issue', { requestId: 'issue_expire', token: expiredToken })).ok, true);
+  const revokedToken = randomBytes(32).toString('base64url');
+  const revoked = await invoke(admin, owner, 'platform.invites.issue', { requestId: 'issue_revoke', token: revokedToken });
+  assert.equal((await invoke(admin, owner, 'platform.invites.revoke', { requestId: 'revoke_one', invitationId: revoked.invitation.id })).ok, true);
+  expectError(await invoke(admin, foreign, 'bootstrap', { ...foreignArgs, invitationToken: revokedToken }), 'platform_invite_unavailable');
+  f.advance(7 * 24 * 60 * 60_000 + 1);
+  expectError(await invoke(admin, foreign, 'bootstrap', { ...foreignArgs, invitationToken: expiredToken }), 'platform_invite_unavailable');
+  const quota = await invoke(admin, owner, 'platform.invites.list');
+  assert.equal(quota.used, 1); assert.equal(quota.remaining, 2);
+  const inspection = new DatabaseSync(f.databasePath);
+  assert.equal(inspection.prepare('SELECT count(*) AS n FROM accounts').get().n, 3);
+  assert.equal(inspection.prepare('SELECT count(*) AS n FROM platform_invitation_receipts WHERE result_json LIKE ?').get('%' + token + '%').n, 0);
+  inspection.close();
+  const newDevice = identity('Existing account device');
+  assert.equal((await enroll(admin, owner, newDevice)).accountId, a.accountId);
+});
+
+async function concurrentPlatformRequests(t, f, requests) {
+  const worker = fileURLToPath(new URL('./support/platform-invite-worker.mjs', import.meta.url));
+  const children = requests.map(() => fork(worker, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] }));
+  t.after(() => { for (const child of children) if (child.connected) child.kill(); });
+  await Promise.all(children.map(child => new Promise((resolve, reject) => { child.once('message', resolve); child.once('error', reject); child.once('exit', code => { if (code) reject(new Error('worker failed')); }); })));
+  return Promise.all(children.map((child, index) => new Promise((resolve, reject) => {
+    child.once('message', resolve); child.once('error', reject);
+    child.send({ databasePath: f.databasePath, timestamp: f.now(), request: requests[index] });
+  })));
+}
+
+test('independent SQLite processes enforce fourth-invite limit and single redemption atomically', async t => {
+  const f = fixture(t), owner = identity('Owner'); const account = await boot(f.service, owner);
+  const tokens = Array.from({ length: 4 }, () => randomBytes(32).toString('base64url'));
+  const requests = await Promise.all(tokens.map((token, i) => signed(f.service, owner, 'platform.invites.issue', { requestId: 'parallel_issue_' + i, token })));
+  const results = await concurrentPlatformRequests(t, f, requests);
+  assert.equal(results.filter(result => result.ok).length, 3);
+  assert.equal(results.filter(result => result.error?.code === 'platform_invite_quota_exhausted').length, 1);
+  const winner = results.findIndex(result => result.ok);
+  assert.deepEqual(await invoke(f.service, owner, 'platform.invites.issue', requests[winner].args), results[winner]);
+  const admin = f.open({ platformAdminAccountIds: [account.accountId] });
+  await invoke(admin, owner, 'platform.admission.update', { requestId: 'enable', expectedRevision: 0, inviteOnly: true, defaultQuota: 3 });
+  const candidates = [identity('A'), identity('B')];
+  const bootRequests = await Promise.all(candidates.map(candidate => signed(admin, candidate, 'bootstrap', { label: candidate.name, encryptionPublicJwk: candidate.encryptionPublicJwk, invitationToken: tokens[winner] })));
+  const admissions = await concurrentPlatformRequests(t, f, bootRequests);
+  assert.equal(admissions.filter(result => result.ok).length, 1);
+  assert.equal(admissions.filter(result => result.error?.code === 'platform_invite_unavailable').length, 1);
+  const inspection = new DatabaseSync(f.databasePath);
+  assert.equal(inspection.prepare('SELECT count(*) AS n FROM accounts').get().n, 2);
+  assert.equal(inspection.prepare('SELECT count(*) AS n FROM platform_invitations WHERE redeemed_at IS NOT NULL').get().n, 1);
+  inspection.close();
 });

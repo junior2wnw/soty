@@ -59,7 +59,7 @@ function validateManifest(m) {
   if (m?.format !== FORMAT || m.name !== NAME || !/^\d+\.\d+\.\d+$/.test(m.version) || !isInt(m.sequence) || m.sequence < 1
       || !Number.isFinite(Date.parse(m.expiresAt)) || !['stable', 'preview'].includes(m.channel)
       || !isInt(m.rollout) || m.rollout > 100 || m.compatibility?.protocol !== 1
-      || m.compatibility?.storage !== 1 || m.compatibility?.minReader !== 1
+      || m.compatibility?.storage !== 1 || ![1, 2].includes(m.compatibility?.minReader)
       || !Array.isArray(m.files) || !m.files.length || m.files.length > 500) fail('manifest_invalid');
   const seen = new Set(); let total = 0;
   for (const f of m.files) {

@@ -30,6 +30,14 @@ test('signed release content, expiration, monotonic sequence and key threshold',
   assert.throws(() => verifyRelease(f.release, trust, { now: Date.parse('2100-01-01') }), /release_expired/);
   assert.throws(() => verifyRelease(f.release, trust, { version: '1.0.0' }), /release_requires_migration/);
 });
+
+test('admission reader2 package is signable but requires explicit migration from 0.1', async () => {
+  const f = await fixture(), candidate = path.join(f.root, 'candidate');
+  await writeFile(path.join(candidate, 'package.json'), JSON.stringify({ name: '@soty/connect', version: '0.2.0', type: 'module', connectCompatibility: { protocol: 1, storage: 1, minReader: 2 } }));
+  const release = await createRelease({ directory: candidate, privateKey: pair.privateKey, keyId: 'release', sequence: 1, expiresAt: '2099-01-01' });
+  assert.throws(() => verifyRelease(release, trust, { version: '0.1.2' }), /release_requires_migration/u);
+  assert.equal(verifyRelease(release, trust, { version: '0.2.0' }).manifest.compatibility.minReader, 2);
+});
 test('validated code update keeps independent account data and remembers anti-rollback state', async () => {
   const f = await fixture();
   const dataFile = path.join(f.root, 'account-data'); await writeFile(dataFile, 'keep-stable-account');
