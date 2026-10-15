@@ -766,6 +766,13 @@ class WorldApplication {
       if (this.view === 'mine' && !this.group && !this.appStage) this.renderPersonal();
       const target = this.appDialogReturnTarget(app.appId).resolve(); if (isDialogFocusTarget(target)) target.focus({ preventScroll: true });
     }));
+    if (/^app-[a-f0-9]{32}$/.test(app.appId)) actions.append(action('Руководство', 'info', () => {
+      void this.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { appId: app.appId, path: '/_soty/guide' }).then(result => {
+        if (!accountCurrent()) return;
+        void this.openApplication(app, parseAppLaunchRoute(formatAppLaunchRoute(result.entry))!);
+      }).catch(error => { if (accountCurrent()) this.toast(error?.code === 'app_guide_unsupported'
+        ? 'У этого приложения собственный вход. Откройте руководство внутри приложения.' : 'Руководство сейчас недоступно.', true); });
+    }));
     if (app.ownerAccountId === this.profile?.profileId) actions.append(action('Название и доступ', 'settings', () => this.openAppSettings(app)));
     dialog.body.append(actions);
   }

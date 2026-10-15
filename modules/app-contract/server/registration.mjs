@@ -299,6 +299,24 @@ export function createUniversalRegistrationService({ databasePath, registryId, e
   }
   return Object.freeze({
     operations: new Set(UNIVERSAL_REGISTRATION_OPERATIONS), schemaVersion: identity.schemaVersion,
+    // Host-only read port. Caller has already checked the actual app-domain session;
+    // no actor substitution, admission, authority refresh, or provider writes.
+    readGuide(input) {
+      require(!disposed, 'registration_closed', 503);
+      closed(input, ['appId', 'ownerId', 'title', 'visibility', 'source']);
+      literalId(input.appId); literalId(input.ownerId);
+      const rows = db.prepare(`SELECT h.*,a.authority_digest AS current_authority_digest
+        FROM registration_heads h JOIN registration_authorities a ON a.scope_key=h.scope_key AND a.owner_id=h.owner_id
+        WHERE h.app_id=? AND h.owner_id=? LIMIT 2`).all(input.appId, input.ownerId);
+      require(rows.length === 1, 'app_guide_unavailable', 404);
+      const row = rows[0], value = project(row, { authorityDigest: row.current_authority_digest });
+      require(value.state === 'ready' && value.descriptor?.app.id === input.appId
+        && same(value.descriptor.app.source, input.source) && value.descriptor.app.visibility === input.visibility,
+        'app_guide_unavailable', 404);
+      return Object.freeze({ title: input.title, tools: Object.freeze(value.descriptor.capabilities
+        .filter(capability => typeof capability.title === 'string').map(capability => capability.title)),
+        feedbackReady: value.feedback.state === 'ready' });
+    },
     execute({ op, actor, args: input = {} }) {
       require(UNIVERSAL_REGISTRATION_OPERATIONS.includes(op), 'unsupported_operation');
       const args = argsFor(op, actor, input);

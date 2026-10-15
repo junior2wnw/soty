@@ -30,6 +30,7 @@ export function sameAppLaunchBinding(first, next) {
 
 /** A local HTTP target, never a return URL or a platform control endpoint. */
 export function validateAppLaunchPath(value) {
+  if (value === '/_soty/guide') return value; // One read-only platform page; every other reserved path stays denied.
   requireValue(typeof value === 'string' && value.length > 0 && value.length <= 8192
     && value.isWellFormed()
     && value.startsWith('/') && !value.startsWith('//') && !/[\\\u0000-\u0020\u007f]/u.test(value), 'invalid_app_path');

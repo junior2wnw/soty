@@ -178,3 +178,12 @@ test('actual signed Root grant revoke during scoped context async boundary preve
   assert.equal((await revoked).ok,true,'revocation uses real signed Core verification and actual Apps grant mutation');
   assert.equal((await f.wire.request(f.embedded+'/api/embed/session-status')).status,403);
 });
+
+test('platform guide never substitutes ordinary sessions for selected Native admission', {
+  skip: sourceAvailable ? false : 'Optional packaged selected Planner Source absent', timeout: 90000 }, async t => {
+  const f = await createScopedGatewayFixture({ t });
+  for (const op of ['apps.entry.get', 'apps.launch']) await assert.rejects(
+    f.reader.client.extension(op, { appId: f.appId, path: '/_soty/guide' }), error => error.code === 'app_guide_unsupported');
+  await f.launch();
+  assert.ok((await f.wire.request(f.embedded + '/_soty/guide')).status >= 400);
+});

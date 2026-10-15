@@ -1,3 +1,4 @@
+import { renderAppGuide } from '../../app-contract/guide.mjs';
 import { scopedSubjectRequest } from '../scoped-embed/authority.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -42,7 +43,7 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
@@ -52,6 +53,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
   assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
     'app_scoped_identity_witness_unavailable',503);
+  assertApps(readAppGuide === undefined || typeof readAppGuide === 'function', 'app_guide_configuration_invalid', 500);
+  const guidePath = value => value === '/_soty/guide' ? value : runtimePath(value);
+  const guideLaunchPath = value => value === '/_soty/guide'
+    ? { entryPath: value, bootPath: '/_soty/boot?' + new URLSearchParams({ path: value }) } : createLaunchPath(value);
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -111,11 +116,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     entryRead = (actor, args) => {
       exact(args, ['appId', 'domainId', 'path']);
       const requested = { appId: appId(args.appId), ...(args.domainId === undefined ? {} : { domainId: textId(args.domainId) }),
-        ...(args.path === undefined ? {} : { path: createLaunchPath(args.path).entryPath }) };
+        ...(args.path === undefined ? {} : { path: guideLaunchPath(args.path).entryPath }) };
       return readEntryTransaction(actor, captured => {
-        const entry = resolveEntry({ actor: captured, ...requested });
+        const guide = requested.path === '/_soty/guide';
+        const entry = resolveEntry({ actor: captured, ...requested, ...(guide ? { path: undefined } : {}) });
+        if (guide) assertApps(!selectedRuntimeProfile(activeTarget(requested.appId)?.profile), 'app_guide_unsupported', 404);
         assertApps(entry, 'app_unavailable', 404);
-        return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: entry.path } };
+        return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: guide ? '/_soty/guide' : entry.path } };
       });
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
@@ -595,7 +602,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // Saved main/widget root entries follow only an explicitly admitted Root-SSO workspace.
       const savedRootEntry = args.path === '/' && decision.route.entryPath === '/embed' && selectedRuntimeProfile(decision.profile)
         && isRootSignedWorkspaceSource(scopedAdmissions.require(targetTuple(activeTarget(id))).sourceProfile);
-      const { entryPath, bootPath } = createLaunchPath(savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath);
+      if (args.path === '/_soty/guide') assertApps(!selectedRuntimeProfile(decision.profile), 'app_guide_unsupported', 404);
+      const { entryPath, bootPath } = guideLaunchPath(savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
@@ -669,13 +677,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function shellUrlFor(app, path) {
     const url = new URL('/', [...origins][0]);
-    url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}?${new URLSearchParams({ path: runtimePath(path) })}`;
+    url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}?${new URLSearchParams({ path: guidePath(path) })}`;
     return url.href;
   }
   function publicResetFor(app, path) {
     try {
       publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin });
-      return runtimePath(path);
+      return guidePath(path);
     } catch { return undefined; }
   }
   function respondAppFailure(req, res, status, error, canRedirect = true) {
@@ -814,6 +822,25 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.setHeader('Origin-Agent-Cluster', '?1');
     if (new URL(origin).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   }
+  function sendGuide(req, res, app, session) {
+    const decision = checkAccess(session);
+    assertApps(!selectedRuntimeProfile(decision.profile), 'app_guide_unsupported', 404);
+    assertRuntimeBinding(decision, { requireReady: true });
+    assertApps(channels.get(decision.route.connectorKey)?.ws.readyState === 1, 'app_offline', 503);
+    const current = db.prepare(`SELECT a.name,a.owner_account_id,p.launch_policy FROM local_apps a
+      JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id WHERE a.id=? AND a.state='enabled'`).get(decision.appId);
+    assertApps(current && typeof readAppGuide === 'function', 'app_guide_unavailable', 404);
+    const view = readAppGuide({ appId: decision.appId, ownerId: current.owner_account_id, title: current.name,
+      visibility: current.launch_policy === 'anyone' ? 'public' : 'private',
+      source: { id: 'apps:' + decision.appId + '/target', revision: decision.targetRevision, digest: decision.targetDigest } });
+    assertApps(view && typeof view.then !== 'function', 'app_guide_unavailable', 404);
+    const html = renderAppGuide(view);
+    checkAccess(session); // Projection cannot outlive a changed actor, policy, or target.
+    res.setHeader('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors ${[...origins].join(' ')}; sandbox`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Content-Length', Buffer.byteLength(html));
+    res.statusCode = 200; res.end(req.method === 'HEAD' ? undefined : html);
+  }
   async function routeApp(req, res, app) {
     assertApps(!app.missing, 'app_not_found', 404);
     const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
@@ -849,7 +876,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
       assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path'||selected&&key==='mode') && internalUrl.searchParams.getAll('path').length <= 1
         &&internalUrl.searchParams.getAll('mode').length<=1&&(!internalUrl.searchParams.has('mode')||internalUrl.searchParams.get('mode')==='renew'),'invalid_app_path');
-      const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
+      const recoveryPath = guidePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
       const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath),scoped:selected,
         renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin,parentOrigins:[...origins] });
       setManagedPagePolicy(res, nonce, [...origins]);
@@ -929,6 +956,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       if (!req.readableEnded) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
       json(res, 200, { ok: true }); return;
     }
+    if (internalUrl.pathname === '/_soty/guide') {
+      assertApps(path === '/_soty/guide' && ['GET','HEAD'].includes(req.method), 'app_guide_path_invalid', 404);
+      assertApps(!selected, 'app_guide_unsupported', 404);
+      sendGuide(req, res, app, sessionFor(req, app)); return;
+    }
     runtimePath(path);
     const callback=selected&&['/api/embed/callback','/api/embed/complete-link'].includes(internalUrl.pathname);
     if(callback)assertApps(req.method==='GET','app_scoped_callback_invalid',403);
@@ -942,6 +974,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
     stream.requestPath=path;
+    if (!selected && path === '/guide' && ['GET','HEAD'].includes(req.method)) stream.guideApp = app;
     stream.bootCandidate=candidate;
     if(candidate){stream.candidateApp=app;stream.bootCandidateSession=session;}
     res.once('close', () => closeStream(stream, 'app_client_closed'));
@@ -1431,6 +1464,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           assertApps(!stream.head && Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599, 'app_bad_head');
           assertApps(stream.kind === 'ws' || frame.status >= 200, 'app_bad_head');
           stream.head = true;
+          if (stream.kind === 'http' && stream.guideApp && frame.status === 404 && !stream.scopedRecord) {
+            sendGuide(stream.req, stream.res, stream.guideApp, stream.session);
+            closeStream(stream, 'app_stream_complete'); return;
+          }
           if (stream.kind === 'ws') {
             assertApps(frame.status === 101, 'app_upgrade_failed'); const headers = cleanHeaders(frame.headers, 'upgrade');
             assertApps(headers['sec-websocket-accept'] && !headers['sec-websocket-extensions'], 'app_upgrade_failed');

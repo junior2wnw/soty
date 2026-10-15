@@ -249,3 +249,10 @@ test('saved root compatibility rejects older pins, changed locations and non-roo
     assert.equal(closed, 1); launcher.dispose();
   }
 });
+
+test('canonical guide is the sole reserved launch path and round-trips exactly', () => {
+  assert.equal(validateAppLaunchPath('/_soty/guide'), '/_soty/guide');
+  const value = { appId, path: '/_soty/guide' };
+  assert.deepEqual(parseAppLaunchRoute(formatAppLaunchRoute(value)).target, value);
+  for (const path of ['/_soty/guide?x', '/_soty/guide/', '/_soty/%67uide', '/guide/../_soty/guide', '/_soty/session', '/_soty/boot']) assert.throws(() => validateAppLaunchPath(path));
+});

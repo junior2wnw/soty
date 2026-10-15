@@ -218,6 +218,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       withActorAuthorityFence: (actor, callback) => connect.withActorAuthorityFence(actor, callback) }) : undefined;
     apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
     namedCanonical: universalEnabled,
+    readAppGuide: universalEnabled ? input => universal?.registration.readGuide(input) : undefined,
     allowScopedEmbedMigration,allowSelectedResourceMigration,scopedEmbedProfiles,
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return request.rootProfileDigest === undefined ? human.withSubjectAuthority(request,callback) : rootWorkspaceSubject(request,callback);}:undefined,
     signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles }) : undefined,

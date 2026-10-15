@@ -44,3 +44,14 @@ test('actual validate CLI escapes hostile metadata, preserves guides and only pr
     assert.deepEqual(readdirSync(directory).sort(), before);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('host guide closed projection escapes text without interpreting URLs or exposing descriptor metadata', async () => {
+  const { renderAppGuide } = await import('../guide.mjs');
+  const view = { title: '<img src="https://internal.invalid/">', tools: ['<script>alert(1)</script>', 'javascript:alert(2) & "label"'], feedbackReady: true };
+  const html = renderAppGuide(view);
+  assert.match(html, /&lt;img src=&quot;https:\/\/internal.invalid\//);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script|<img|<[^>]+(?:href|src)=/);
+  assert.throws(() => renderAppGuide({ ...view, source: { connectorId: 'private' } }));
+  assert.throws(() => renderAppGuide({ ...view, tools: [null] }));
+});

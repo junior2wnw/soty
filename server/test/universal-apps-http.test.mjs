@@ -31,7 +31,8 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Universal test</title>');
   let app, runtime;
   const clients = [], connections = new Set();
-  const source = createServer((_req, res) => res.end('Independent application'));
+  let sourceHandler = (_req, res) => res.end('Independent application');
+  const source = createServer((req, res) => sourceHandler(req, res));
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   for (const item of [source, server]) item.on('connection', socket => { connections.add(socket); socket.once('close', () => connections.delete(socket)); });
   await Promise.all([source, server].map(item => new Promise(done => item.listen(0, '127.0.0.1', done))));
@@ -86,6 +87,7 @@ async function fixture(t, { holdFirstFeedback = false, initialUniversalEnabled =
   const appId = created?.app.id ?? recovered[0].id;
   await until(async () => (await owner.client.extension('apps.list')).apps.find(item => item.id === appId)?.state === 'ready');
   return { app, origin, owner, one, two, appId, dataDir, created, registrationArgs, registrationError, namedZone,
+    client, setSource(handler) { sourceHandler = handler; },
     async restart(options = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { dataDir, connectOrigins: [origin], ...addressOptions, ...options }); },
     service() { return app; } };
 }
@@ -402,4 +404,93 @@ test('Root host reserves disabled human issuer without a database, then signs th
   await f.restart({ universalAppsEnabled: false, humanIdentity });
   assert.equal((await fetch(issuer + '/.well-known/openid-configuration')).status, 503);
   assert.equal((await f.owner.client.extension('apps.list')).apps[0].id, f.appId);
+});
+
+
+function guideHttp(origin, host, path, { cookie, method = 'GET', body } = {}) {
+  return new Promise((resolveResponse, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: new URL(origin).port, path, method,
+      headers: { host, ...(cookie ? { cookie } : {}), ...(body ? { origin: 'http://' + host, 'content-type': 'application/json' } : {}) } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('end', () => resolveResponse({ status: res.statusCode,
+        headers: res.headers, text: Buffer.concat(chunks).toString(), cookie: res.headers['set-cookie']?.map(value => value.split(';')[0]).join('; ') }));
+    }); req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('guide_timeout'))); req.end(body);
+  });
+}
+async function guideSession(f, person = f.owner, path = '/_soty/guide') {
+  const resolved = await person.client.extension('apps.entry.get', { appId: f.appId, path });
+  assert.equal(resolved.entry.path, path);
+  const launch = await person.client.extension('apps.launch', { appId: f.appId, path });
+  const host = new URL(launch.entry.origin).host;
+  const boot = await guideHttp(f.origin, host, new URL(launch.launchUrl).pathname + new URL(launch.launchUrl).search);
+  assert.equal(boot.status, 200);
+  const session = await guideHttp(f.origin, host, '/_soty/session', { method: 'POST', body: JSON.stringify({ ticket: new URL(launch.launchUrl).hash.slice(1) }) });
+  assert.equal(session.status, 200); return { host, cookie: session.cookie };
+}
+function guideState(f) {
+  const db = new DatabaseSync(join(f.dataDir, 'app-registration', 'registry.sqlite'), { readOnly: true });
+  try { return ['registration_heads','registration_authorities','registration_versions','registration_receipts','registration_feedback_outbox']
+    .map(table => db.prepare('SELECT * FROM ' + table).all()); } finally { db.close(); }
+}
+test('automatic app guide uses actual signed entry/session; private owner and participant, HEAD, no metadata leak or writes', async t => {
+  const f = await fixture(t, { appName: '<img src=x> & https://label.invalid/' });
+  const owner = await guideSession(f), participant = await guideSession(f, f.one), before = guideState(f);
+  for (const session of [owner, participant]) {
+    const reply = await guideHttp(f.origin, session.host, '/_soty/guide', session);
+    assert.equal(reply.status, 200); assert.match(reply.text, /&lt;img src=x&gt; &amp; https:\/\/label.invalid\//);
+    assert.match(reply.text, /Сообщить проблему/); assert.match(reply.text, /Действия помощника пока не объявлены/);
+    assert.doesNotMatch(reply.text, /<img|<script|<iframe|acct_|fbi_|apps:|soty.feedback:|connector|descriptorDigest|authorityDigest/);
+    assert.equal(reply.headers['cache-control'], 'private, no-store'); assert.match(reply.headers['content-security-policy'], /default-src 'none'/);
+    const head = await guideHttp(f.origin, session.host, '/_soty/guide', { ...session, method: 'HEAD' });
+    assert.equal(head.status, 200); assert.equal(head.text, ''); assert.equal(head.headers['content-length'], reply.headers['content-length']);
+  }
+  assert.deepEqual(guideState(f), before);
+  assert.notEqual((await guideHttp(f.origin, owner.host, '/_soty/guide')).status, 200);
+  const foreign = await f.client('Foreign');
+  await assert.rejects(() => foreign.client.extension('apps.launch', { appId: f.appId, path: '/_soty/guide' }));
+  for (const path of ['/_soty/guide?x', '/_soty/guide/', '/_soty/%67uide', '/guide/../_soty/guide', '/_soty/unknown']) {
+    assert.notEqual((await guideHttp(f.origin, owner.host, path, owner)).status, 200);
+    await assert.rejects(() => f.owner.client.extension('apps.launch', { appId: f.appId, path }));
+  }
+  assert.notEqual((await guideHttp(f.origin, owner.host, '/_soty/guide', { ...owner, method: 'POST' })).status, 200);
+});
+test('ordinary guide preserves upstream200 and substitutes only exact GET/HEAD404 without forwarding reserved paths', async t => {
+  const f = await fixture(t), session = await guideSession(f); let status = 200, hits = 0;
+  f.setSource((req, res) => { hits++; res.writeHead(status, { 'content-type': 'text/html' }); res.end('Own guide'); });
+  assert.equal((await guideHttp(f.origin, session.host, '/guide', session)).text, 'Own guide');
+  status = 404;
+  const fallback = await guideHttp(f.origin, session.host, '/guide', session); assert.equal(fallback.status, 200); assert.match(fallback.text, /Руководство приложения/);
+  const head = await guideHttp(f.origin, session.host, '/guide', { ...session, method: 'HEAD' }); assert.equal(head.status, 200); assert.equal(head.text, '');
+  assert.equal((await guideHttp(f.origin, session.host, '/guide?x', session)).status, 404);
+  const previousHits = hits; assert.equal((await guideHttp(f.origin, session.host, '/_soty/guide', session)).status, 200); assert.equal(hits, previousHits);
+});
+for (const change of ['disable','acl','source']) test(`guide404 race rechecks ${change} before releasing platform metadata`, async t => {
+  const f = await fixture(t), session = await guideSession(f, f.one); let held;
+  f.setSource((req, res) => { if (req.url === '/guide') held = res; else res.end('Ready'); });
+  const pending = guideHttp(f.origin, session.host, '/guide', session); await until(() => held);
+  if (change === 'disable') await f.owner.client.extension('apps.revoke', { appId: f.appId });
+  else if (change === 'acl') await f.owner.client.extension('apps.update', { appId: f.appId, grants: { accountIds: [], communityIds: [] } });
+  else {
+    const policy = await f.owner.client.extension('apps.publication.get', { appId: f.appId });
+    const prepared = await f.owner.client.extension('apps.source.prepare', { appId: f.appId, expectedPolicyEpoch: policy.policyEpoch,
+      expectedTargetRevision: policy.activeTargetRevision, source: { hostDeviceId: f.registrationArgs.hostDeviceId, connectorId: f.registrationArgs.connectorId, port: f.registrationArgs.port, entryPath: '/changed' } });
+    await f.owner.client.extension('apps.source.promote', { appId: f.appId, requestId: 'guide_source_change', preparationId: prepared.preparationId,
+      expectedPolicyEpoch: policy.policyEpoch, expectedTargetRevision: policy.activeTargetRevision, launchPolicy: 'restricted', listed: false });
+  }
+  held.writeHead(404); held.end('Missing');
+  const result = await pending; assert.notEqual(result.status, 200); assert.doesNotMatch(result.text, /Руководство приложения|Сообщить проблему/);
+  assert.notEqual((await guideHttp(f.origin, session.host, '/_soty/guide', session)).status, 200);
+});
+test('public guide uses actual public alias admission and current host descriptor', async t => {
+  const f = await fixture(t, { addressMode: 'named' });
+  const address = await f.owner.client.extension('apps.domains.get', { appId: f.appId });
+  const alias = await f.owner.client.extension('apps.domains.claim', { appId: f.appId, slug: 'guide-public', requestId: 'guide_claim', expectedDomainsRevision: address.revision });
+  const policy = await f.owner.client.extension('apps.publication.get', { appId: f.appId });
+  await f.owner.client.extension('apps.publication.update', { appId: f.appId, requestId: 'guide_public', expectedPolicyEpoch: policy.policyEpoch,
+    expectedTargetRevision: policy.activeTargetRevision, launchPolicy: 'anyone', listed: false, activeDomainIds: [alias.receipt.domainId],
+    exposureAck: { scope: 'whole-port', targetRevision: policy.target.revision, targetDigest: policy.target.digest, profile: policy.target.profile } });
+  const current = await f.owner.client.extension('apps.universal.get', { appId: f.appId, expectedAccountId: f.owner.account.accountId });
+  await f.owner.client.extension('apps.universal.admit', { appId: f.appId, expectedAccountId: f.owner.account.accountId, expectedRevision: current.registration.revision,
+    requestId: 'guide_public_descriptor', proposal: { kind: 'author-draft', draft: { title: f.created.app.name } } });
+  const result = await guideHttp(f.origin, new URL(alias.receipt.origin).host, '/_soty/guide');
+  assert.equal(result.status, 200); assert.match(result.text, /Руководство приложения/);
 });
