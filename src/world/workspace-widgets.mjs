@@ -53,15 +53,17 @@ export const widgetStorageKey = key;
 
 /** Resize clamps the presentation, not the stored user preference. */
 export function widgetRect(widget, viewport) {
+  const verticalInset = 56 + finite(viewport.bottomInset, 36, 36, Infinity);
   const width = Math.max(1, Math.min(widget.width, viewport.width - 12));
-  const height = Math.max(1, Math.min(widget.height, viewport.height - 92));
+  const height = Math.max(1, Math.min(widget.height, viewport.height - verticalInset));
   const x = viewport.left + 6 + finite(widget.x, 0.65, 0, 1) * Math.max(0, viewport.width - width - 12);
-  const y = viewport.top + 56 + finite(widget.y, 0.12, 0, 1) * Math.max(0, viewport.height - height - 92);
+  const y = viewport.top + 56 + finite(widget.y, 0.12, 0, 1) * Math.max(0, viewport.height - height - verticalInset);
   return { x, y, width, height };
 }
 
 export function widgetPosition(rect, viewport, previous = { x: 0, y: 0 }) {
-  const spanX = viewport.width - rect.width - 12, spanY = viewport.height - rect.height - 92;
+  const verticalInset = 56 + finite(viewport.bottomInset, 36, 36, Infinity);
+  const spanX = viewport.width - rect.width - 12, spanY = viewport.height - rect.height - verticalInset;
   return { x: spanX > 0 ? finite((rect.x - viewport.left - 6) / spanX, 0, 0, 1) : previous.x,
     y: spanY > 0 ? finite((rect.y - viewport.top - 56) / spanY, 0, 0, 1) : previous.y };
 }

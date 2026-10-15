@@ -35,8 +35,16 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   let account = '', generation = 0, disposed = false, active = '', state: WidgetWorkspace = { hidden: false, widgets: [] };
   let manager: WorldDialog | null = null, volatile = false, layoutRevision = 0;
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
-  const viewport = (): WidgetViewport => ({ left: view.visualViewport?.offsetLeft ?? 0, top: view.visualViewport?.offsetTop ?? 0,
-    width: view.visualViewport?.width ?? view.innerWidth, height: view.visualViewport?.height ?? view.innerHeight });
+  const viewport = (): WidgetViewport => {
+    const box = { left: view.visualViewport?.offsetLeft ?? 0, top: view.visualViewport?.offsetTop ?? 0,
+      width: view.visualViewport?.width ?? view.innerWidth, height: view.visualViewport?.height ?? view.innerHeight };
+    const nav = doc.querySelector?.('.sw-mobile-nav')?.getBoundingClientRect();
+    // Keep the top-layer widget above apps, while reserving the shell's actual
+    // navigation and safe area. This clamps presentation only, never preferences.
+    const bottomInset = nav && nav.width > 0 && nav.height > 0 && nav.top >= box.top && nav.top < box.top + box.height
+      ? Math.max(36, box.top + box.height - nav.top + 8) : 36;
+    return { ...box, bottomInset };
+  };
 
   function showLayer(): void {
     manage.hidden = !account || !state.widgets.length;
@@ -186,8 +194,21 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     if (!state.widgets.length) manager.body.append(el('p', 'sw-muted', 'Откройте приложение и выберите «Закрепить виджет» в его меню.'));
   }
   function openManager(): void { if (!account || manager?.element.open) return; manager = options.dialog('Личные виджеты', () => { manager = null; }); renderManager(); }
-  view.addEventListener('resize', layout, { signal: abort.signal });
-  view.visualViewport?.addEventListener('resize', layout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', layout, { signal: abort.signal });
+  let resizeFrame: number | null = null;
+  const resizeLayout = (): void => {
+    if (disposed) return;
+    layout();
+    if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame);
+    // Responsive shell navigation may finish appearing after the resize event.
+    resizeFrame = view.requestAnimationFrame(() => { resizeFrame = null; if (!disposed) layout(); });
+  };
+  view.addEventListener('resize', resizeLayout, { signal: abort.signal });
+  view.visualViewport?.addEventListener('resize', resizeLayout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', resizeLayout, { signal: abort.signal });
+  // Chat/discussion routes can hide or restore this stable shell element
+  // without resizing the viewport. Observe only its actual geometry.
+  const navigation = doc.querySelector?.('.sw-mobile-nav');
+  const navigationResize = navigation && typeof ResizeObserver === 'function' ? new ResizeObserver(resizeLayout) : null;
+  if (navigation) navigationResize?.observe(navigation);
   view.addEventListener('blur', () => { queueMicrotask(() => {
     if (disposed) return;
     for (const [id, row] of mounted) if (row.host.contains(doc.activeElement)) { active = id; return; }
@@ -229,6 +250,6 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
     async flush() { await Promise.all([...mounted.values()].map(row => row.stage?.flush())); },
     hasUnsavedChanges: () => [...mounted.values()].some(row => row.stage?.hasUnsavedChanges()),
-    dispose() { if (disposed) return; disposed = true; generation++; manager?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); },
+    dispose() { if (disposed) return; disposed = true; generation++; navigationResize?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); },
   };
 }

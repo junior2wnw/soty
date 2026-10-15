@@ -165,7 +165,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -460,6 +460,79 @@ async function recoveryStage(request) {
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
   return f;
 }
+
+async function widgetStage(request) {
+  const f = fixture({ hash: '#world' }), account = f.app.deskAccount, generation = f.app.accountGeneration;
+  const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' }));
+  f.app.appStage = f.mountStage(f.app.main, { api: f.app.api, accountId: account, app: { appId: stageAppId, name: 'Widget' }, intent,
+    presentation: 'widget', instanceId: 'widget-11111111-1111-4111-8111-111111111111', request,
+    isCurrent: () => !f.app.destroyed && f.app.deskAccount === account && f.app.accountGeneration === generation,
+    onNavigate() {}, onBack() {}, async onAccount() {}, onSettings() {},
+  });
+  await f.app.appStage.ready;
+  return f;
+}
+
+for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has a bounded UNKNOWN notice and manual retry without another launch or API request`, async t => {
+  let calls = 0;
+  const f = await widgetStage(async () => { calls++; return { ...stageResponse('/'), ...(profile === 'scoped' ? {
+    runtimeProfile: 'soty.selected-human-embed.v2', scopedCloseHandle: 'h'.repeat(43),
+    scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) },
+  } : {}) }; }); t.after(() => f.app.cleanScreen());
+  const runtime = f.app.main.querySelector('.sa-runtime'), message = f.app.main.querySelector('.sa-message');
+  const retry = f.app.main.querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
+  assert.ok(deadline); assert.match(message.textContent, /Открываем окно/u); assert.equal(runtime.getAttribute('aria-busy'), 'true');
+  assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
+  deadline.fn(); await turn();
+  assert.match(message.textContent, /не подтверждена/u); assert.equal(runtime.getAttribute('aria-busy'), 'false');
+  assert.equal(retry.hidden, false); assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+});
+
+for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles transport only and keeps manual recovery after load-to-blank`, async t => {
+  let calls = 0;
+  const f = await widgetStage(async () => { calls++; return { ...stageResponse('/'), ...(profile === 'scoped' ? {
+    runtimeProfile: 'soty.selected-human-embed.v2', scopedCloseHandle: 'h'.repeat(43),
+    scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) },
+  } : {}) }; }); t.after(() => f.app.cleanScreen());
+  const frame = f.app.main.querySelector('iframe'), message = f.app.main.querySelector('.sa-message');
+  f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example',
+    data: { schema: 'soty.app-slot-ready.v1', requestId: 'guessed', ready: true }, ports: [] }));
+  assert.match(message.textContent, /Открываем окно/u, 'a renewal hint cannot attest this visible frame');
+  frame.emit('load'); await turn();
+  assert.equal(message.hidden, true); assert.equal(message.textContent, '');
+  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+});
+
+test('widget transport error permits one explicit retry and ignores queued events from the replaced frame', async t => {
+  let calls = 0; const pending = deferred();
+  const f = await widgetStage(async () => ++calls === 1 ? stageResponse('/') : pending.promise); t.after(() => f.app.cleanScreen());
+  const first = f.app.main.querySelector('iframe'), oldEvents = [...first.handlers.get('load'), ...first.handlers.get('error')];
+  first.emit('error');
+  const retry = f.app.main.querySelector('.sa-recovery-retry');
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /Не удалось загрузить окно/u);
+  assert.equal(retry.hidden, false); assert.equal(f.timers.size, 0);
+  retry.emit('click'); retry.emit('click'); await turn();
+  assert.equal(calls, 2); assert.equal(retry.disabled, true);
+  pending.resolve(stageResponse('/')); await turn();
+  const second = f.app.main.querySelector('iframe'), notice = f.app.main.querySelector('.sa-message').textContent;
+  assert.notEqual(second, first); assert.equal(retry.disabled, false);
+  for (const event of oldEvents) event();
+  assert.equal(f.app.main.querySelector('iframe'), second); assert.equal(f.app.main.querySelector('.sa-message').textContent, notice);
+  assert.equal(calls, 2); assert.equal([...f.timers.values()].filter(value => value.delay === 12000).length, 1);
+});
+
+for (const transition of ['Back', 'account ABA']) test(`widget ${transition} clears the display timer and denies late frame events`, async () => {
+  let calls = 0;
+  const f = await widgetStage(async () => { calls++; return stageResponse('/'); });
+  const frame = f.app.main.querySelector('iframe'), events = [...frame.handlers.get('load'), ...frame.handlers.get('error')];
+  const deadline = [...f.timers.values()].find(value => value.delay === 12000);
+  if (transition === 'Back') { f.location.hash = '#mine'; f.app.cleanScreen(); }
+  else { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+  for (const event of events) event(); deadline.fn(); await turn();
+  assert.equal(f.app.appStage, null); assert.equal(f.app.main.children.length, 0); assert.equal(f.timers.size, 0); assert.equal(calls, 1);
+});
 
 test('actual stage uses one fresh launch per original open and offers a manual action after a repeated untrusted hint', async () => {
   const calls = [], f = await recoveryStage(async (_app, args) => { calls.push(args); return { ...stageResponse('/'), launchBinding: stageBinding }; });
