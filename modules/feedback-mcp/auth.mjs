@@ -332,7 +332,12 @@ export async function createFeedbackAuth(config, { service } = {}) {
         if (!context) { check(req.method === 'GET'); redirect(res, '/auth/login?returnTo=' + encodeURIComponent(path)); return true; }
         const client = await provider.Client.find(details.params.client_id); check(client, 'invalid_client', 400);
         if (req.method === 'GET') {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none';base-uri 'none';frame-ancestors 'none';form-action 'self'" });
+          const redirectUri = details.params.redirect_uri;
+          check(typeof redirectUri === 'string' && safeURL(redirectUri) && client.redirectUriAllowed(redirectUri), 'invalid_redirect_uri', 400);
+          // Chromium applies form-action to the entire POST -> resume -> callback
+          // redirect chain. Permit only this client's validated callback origin.
+          const redirectOrigin = new URL(redirectUri).origin;
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': `default-src 'none';base-uri 'none';frame-ancestors 'none';form-action 'self' ${redirectOrigin}` });
           res.end(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="referrer" content="same-origin"><title>Доступ к отзывам</title><h1>Подключить ${escape(client.clientName ?? client.clientId)}?</h1><p>Приложение получит доступ к вашим проектам и отзывам: чтение, создание и изменения.</p><p>Адрес возврата: ${escape(details.params.redirect_uri)}</p><form method="post"><input type="hidden" name="csrf" value="${escape(context.csrfToken)}"><button name="decision" value="approve">Разрешить</button><button name="decision" value="deny">Отказать</button></form></html>`); return true;
         }
         const data = await body(req); csrfProof(req, data.csrf, true); check(['approve', 'deny'].includes(data.decision), 'invalid_decision', 400);

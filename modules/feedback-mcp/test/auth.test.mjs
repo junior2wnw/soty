@@ -57,6 +57,9 @@ async function fixture(t) {
     const start = await authorize(login, client); assert.equal(start.response.status, 303);
     const page = await login.wire.request(start.response.location); assert.equal(page.status, 200);
     assert.match(page.text, /Разрешить/u);
+    assert.match(page.text, /<meta name="referrer" content="same-origin">/u);
+    assert.equal(page.headers.get('content-security-policy'),
+      `default-src 'none';base-uri 'none';frame-ancestors 'none';form-action 'self' ${new URL(client.redirect_uris[0]).origin}`);
     const response = await login.wire.request(start.response.location, { fields: { csrf: login.browser.csrfToken, decision: 'approve' } });
     assert.equal(response.status, 303);
     const finished = await login.wire.request(response.location); assert.equal(finished.status, 303);
@@ -144,6 +147,18 @@ test('strict confidential upstream config rejects wrong callback and extra field
   await assert.rejects(createFeedbackAuth({ origin: 'https://feedback.example', dataDirectory: '.', encryptionKey: random(), cookieKeys: [random()],
     upstream: { issuer: 'https://root.example/human-identity', clientId: 'feedback', clientSecret: random(), redirectUri: 'https://attacker.example/callback' } },
   { service: { actor() {}, identity() {} } }), error => error.code === 'auth_configuration_invalid');
+});
+
+test('consent form permits only the validated callback origin across its redirect chain', async t => {
+  const f = await fixture(t), logged = await f.login(), registered = await f.register({
+    redirect_uris: ['https://client.example:8443/oauth/callback?next=https%3A%2F%2Fother.example%2F'] });
+  assert.equal(registered.status, 201);
+  const start = await f.authorize(logged, registered.body); assert.equal(start.response.status, 303);
+  const page = await logged.wire.request(start.response.location); assert.equal(page.status, 200);
+  assert.equal(page.headers.get('content-security-policy'),
+    "default-src 'none';base-uri 'none';frame-ancestors 'none';form-action 'self' https://client.example:8443");
+  const unknown = await f.authorize(logged, registered.body, { redirect_uri: 'https://other.example/callback' });
+  assert.ok(unknown.response.status >= 400, 'unregistered callback cannot reach a consent page');
 });
 
 test('real Root renewal survives 300 seconds and restart, issuer mixup and current device revocation fail closed', async t => {
