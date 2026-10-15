@@ -1,9 +1,22 @@
 import { createServer } from "node:http";
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createProjectService, check, exact } from "./service.mjs";
 import { createFeedbackAuth } from "./auth.mjs";
 import { createFeedbackHttp } from "./http.mjs";
+
+function sourceDatabasePath(config) {
+  const path = config.source?.databasePath === undefined
+    ? join(config.dataDirectory, "source.sqlite") : config.source.databasePath;
+  check(
+    typeof path === "string" && isAbsolute(path) &&
+      dirname(resolve(path)) === resolve(config.dataDirectory) &&
+      /^source(?:-[a-z0-9][a-z0-9_-]{0,63})?\.sqlite$/.test(basename(path)),
+    "configuration_source_database_invalid",
+    500,
+  );
+  return path;
+}
 
 export function readFeedbackConfiguration(path) {
   check(
@@ -65,9 +78,11 @@ export function readFeedbackConfiguration(path) {
     ["encryptionKey", "cookieKeys", "upstream", "clients"],
     ["encryptionKey", "cookieKeys", "upstream"],
   );
+  if (config.source) sourceDatabasePath(config);
   return config;
 }
 export async function startFeedbackService(config) {
+  const sourcePath = config.source ? sourceDatabasePath(config) : null;
   const service = createProjectService({
     dataDirectory: config.dataDirectory,
     origin: config.origin,
@@ -91,6 +106,7 @@ export async function startFeedbackService(config) {
           "connectorPort",
           "storageKey",
           "storageKeyId",
+          "databasePath",
         ],
         [
           "profile",
@@ -121,7 +137,7 @@ export async function startFeedbackService(config) {
           ...config.source,
           transportKey: decode(config.source.transportKey),
           storageKey: decode(config.source.storageKey),
-          databasePath: join(config.dataDirectory, "source.sqlite"),
+          databasePath: sourcePath,
         },
       });
     }

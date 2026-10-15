@@ -87,6 +87,12 @@ audience `/mcp`, authorization-code+PKCE и собственные refresh/revoc
 его транспортным ключом, connectorPort, storageKey и storageKeyId. Без этой
 конфигурации внутренний Source выключен и не выдаётся за подключённого агента.
 Source BFF получает подтверждённый Root context; JSON поля аккаунта его не заменяют.
+При смене runtime target можно задать `source.databasePath`: абсолютный путь
+к отдельному `source-ИМЯ.sqlite` непосредственно в `dataDirectory` (ИМЯ — строчные
+латинские буквы, цифры, `_` и `-`). По умолчанию используется `source.sqlite`.
+Старый transport cache сохраняют для отката; новый профиль открывают с новым
+пустым кэшем. Это не перенос и не очистка domain/auth DB: проекты, обращения,
+вложения, credentials и immutable receipts сохраняются в прежних файлах.
 Рабочее пространство Source — текущая личность и её собственные проекты; пустое
 пространство допустимо. Проект можно создать также агентом внутри Сот. `/embed`
 использует maintained frame-fetch/BFF с подтверждённой Source session, без подмены
