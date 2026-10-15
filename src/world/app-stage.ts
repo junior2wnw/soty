@@ -196,7 +196,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const timer = view.setTimeout(cancel, 60000);
       closeAssistDialog = cancel; signal?.addEventListener('abort', cancel, { once: true });
       dialog.body.append(el('p', '', text), el('p', 'sw-muted', 'Подпись действия предоставлена приложением; проверьте его смысл.'),
-        el('p', 'sw-muted', 'Пилот для владельца приложения: одно действие за запрос. Без подтверждения действие не выполняется. Ожидание — до минуты.'));
+        el('p', 'sw-muted', 'Пилот для доступного приложения: одно действие за запрос. Без подтверждения действие не выполняется. Ожидание — до минуты.'));
       const no = button('Отмена', undefined, 'sw-button-quiet', cancel);
       dialog.body.append(no, button('Разрешить', undefined, 'sw-button-primary', () => finish(true)));
       options.onModalChange?.(dialog.element, true); no.focus();
@@ -206,7 +206,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const assist = createBrowserAssistHost({ view, readPeer: () => {
     const frame = runtime.querySelector('iframe'), pin = launcher.binding(), entry = launcher.entry();
     return current() && options.presentation !== 'widget' && frame?.contentWindow && pin && entry ? {
-      window: frame.contentWindow, binding: { appId: app.appId, origin: entry.origin,
+      window: frame.contentWindow, binding: { appId: app.appId, origin: entry.origin, domainId: entry.domainId,
         targetRevision: pin.targetRevision, targetDigest: pin.targetDigest, generation: frameGeneration, channel: assistChannel },
     } : null;
   }, approve: async (value, { signal }) => {

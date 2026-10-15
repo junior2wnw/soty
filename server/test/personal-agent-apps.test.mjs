@@ -8,7 +8,7 @@ import { createNotesService } from '../../modules/notes/server/index.mjs';
 import { createPersonalAgentComposition } from '../personal-agent-composition.js';
 import { GLM_MODEL } from '../../modules/personal-agent/provider/index.mjs';
 import { createPersonalAgentConversation } from '../../src/platform/personal-agent-client.ts';
-import { createBrowserAssistHost } from '../../src/world/browser-assist-pilot.mjs';
+import { createBrowserAssistHost, pumpBrowserAssist } from '../../src/world/browser-assist-pilot.mjs';
 import { createSourceBrowserAssist } from '../../modules/source-app/browser/assist-sdk.mjs';
 import { CHANNEL_SCHEMA } from '../../modules/apps/server/protocol.mjs';
 
@@ -55,9 +55,9 @@ async function fixture(t, { enabled = true, sourceReferences = [], sourceCredent
   let connect, personal, rawApps, selectedInput = {}, selectedTool = 'list_my_apps', hold = null;
   const providerCalls = [], appReads = [], receipts = new Map(), rowsSeen = [], auth = new Map();
   const notes = createNotesService({ databasePath: ':memory:', projectId: 'soty' });
-  rawApps = createAppsService({ databasePath: ':memory:', shellOrigins: [ORIGIN], appOriginTemplate: 'https://{appId}.component-app.test',
-    actorActive: actor => connect.isActorActive(actor), authenticateConnector: value => auth.get(value.token) === `${value.linkId}:${value.deviceId}:${value.connectorId}` });
-  const apps = { execute(request) { if (browserPilotEnabled && request.op === 'apps.inspect') return rawApps.execute(request); assert.equal(request.op, 'apps.list', 'the agent Apps port is read-only');
+  rawApps = createAppsService({ databasePath: ':memory:', shellOrigins: [ORIGIN], appOriginTemplate: 'https://{appId}.component-app.test', namedAppZone: 'https://named.component.test',
+    withAuthorityFence: callback => callback(), actorActive: actor => connect.isActorActive(actor), authenticateConnector: value => auth.get(value.token) === `${value.linkId}:${value.deviceId}:${value.connectorId}` });
+  const apps = { withAppAuthority: (request, callback) => rawApps.withAppAuthority(request, callback), execute(request) { if (browserPilotEnabled && request.op === 'apps.inspect') return rawApps.execute(request); assert.equal(request.op, 'apps.list', 'the agent Apps port is read-only');
     appReads.push({ accountId: request.actor.accountId, expectedAccountId: request.args.expectedAccountId });
     const result = rawApps.execute(request); rowsSeen.push(result.apps); return result; } };
   const tenant = 'component_fixture_tenant', keyRef = Object.freeze({});
@@ -372,4 +372,49 @@ test('browser pilot real Apps + signed client + actual runtime/provider schema +
   const result = await ui.turn('Confirm Add for the filled synthetic task', metadata);
   assert.equal(result.phase, 'complete'); assert.deepEqual(tasks, ['Synthetic same-frame task']); assert.equal(approvals, 2);
   assert.equal(f.providerCalls.length, 6); assert.equal(f.providerCalls.filter(call => call.tools.includes('browser_observe')).length, 4);
+});
+
+
+test('browser participant uses real private grants/public aliases; denies foreign, revoked, epoch and wrong source', async t => {
+  const f = await fixture(t, { browserPilotEnabled: true }), device = await f.ownedHost(f.alice);
+  const app = await f.register(f.alice, device, 'Synthetic participant app');
+  const detail = good(await f.rpc(f.alice, 'apps.inspect', { appId: app.id }));
+  const base = { appId: app.id, origin: detail.addresses.canonical.origin, domainId: detail.addresses.canonical.id,
+    targetRevision: detail.source.revision, targetDigest: detail.source.digest, generation: 1, channel: randomBytes(16).toString('hex') };
+  let seq = 0, effects = 0;
+  const start = (binding = base) => f.rpc(f.bob, 'agent.turn', { requestId: `participant_turn_${++seq}`, prompt: 'Observe current app', browser: binding });
+  assert.equal((await start()).ok, false); assert.equal(f.providerCalls.length, 0);
+  const grant = ids => f.rpc(f.alice, 'apps.update', { appId: app.id, grants: { accountIds: ids, communityIds: [] } }).then(good);
+  await grant([f.bob.account.accountId]); f.input({}, 'browser_observe');
+  const complete = async binding => {
+    const requestId = `participant_turn_${++seq}`, abort = new AbortController();
+    const host = { binding: () => binding, async dispatch(command, signal, guard) { await guard(); effects++; return { ok: true, data: { untrusted: true, items: [], snapshot: 'e'.repeat(32) } }; } };
+    const client = { extension: async (op, args) => good(await f.rpc(f.bob, op, args)) };
+    const pending = f.rpc(f.bob, 'agent.turn', { requestId, prompt: 'Observe current app', browser: binding });
+    const pump = pumpBrowserAssist({ client, accountId: f.bob.account.accountId, requestId, binding, host, signal: abort.signal, assertCurrent: async () => {} });
+    try { return good(await pending); } finally { abort.abort(); await pump; }
+  };
+  await complete(base); assert.equal(effects, 1);
+  const held = f.holdNextProvider(), pending = start(); await entered(held, pending);
+  await grant([]); held.release.resolve(); assert.equal((await pending).ok, false); assert.equal(effects, 1);
+  const claims = [];
+  for (const slug of ['first-participant', 'second-participant']) {
+    const domains = good(await f.rpc(f.alice, 'apps.domains.get', { appId: app.id }));
+    claims.push(good(await f.rpc(f.alice, 'apps.domains.claim', { appId: app.id, slug, requestId: slug, expectedDomainsRevision: domains.revision })).receipt);
+  }
+  const publish = async listed => {
+    const policy = good(await f.rpc(f.alice, 'apps.publication.get', { appId: app.id }));
+    return good(await f.rpc(f.alice, 'apps.publication.update', { appId: app.id, requestId: `participant_policy_${++seq}`,
+      expectedPolicyEpoch: policy.policyEpoch, expectedTargetRevision: policy.activeTargetRevision, launchPolicy: 'anyone', listed,
+      activeDomainIds: claims.map(x => x.domainId), exposureAck: { scope: 'whole-port', targetRevision: policy.target.revision, targetDigest: policy.target.digest, profile: policy.target.profile } }));
+  };
+  await publish(false);
+  const publicBinding = { ...base, origin: claims[1].origin, domainId: claims[1].domainId };
+  await complete(publicBinding); assert.equal(effects, 2); // Exact second alias, not a guessed first alias.
+  assert.equal((await start(base)).ok, false); // Public alias does not open the private canonical origin.
+  assert.equal((await start({ ...publicBinding, targetRevision: base.targetRevision + 1 })).ok, false);
+  assert.equal((await start({ ...publicBinding, targetDigest: '0'.repeat(64) })).ok, false);
+  const epochHeld = f.holdNextProvider(), epochPending = start(publicBinding); await entered(epochHeld, epochPending);
+  await publish(true); epochHeld.release.resolve(); assert.equal((await epochPending).ok, false); assert.equal(effects, 2);
+  good(await f.rpc(f.alice, 'apps.revoke', { appId: app.id })); assert.equal((await start(publicBinding)).ok, false);
 });

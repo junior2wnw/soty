@@ -8,15 +8,15 @@ const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 export function createBrowserAssistPilot({ getConnect, getApps }) {
   const turns = new Map(); let closed = false;
   const key = (actor, requestId, channel) => JSON.stringify([actor.accountId, actor.deviceId, requestId, channel]);
-  const check = (actor, binding) => {
+  const check = (actor, binding, previous) => {
     need(!closed && validBinding(binding));
-    return getConnect().withActorAuthorityFence(actor, () => {
-      // Owner-only existing inspection; never accept caller-asserted ownership or SQL shortcuts.
-      const app = getApps().execute({ actor, op: 'apps.inspect', args: { appId: binding.appId } });
-      need(app.app.state === 'enabled' && app.actions.canPreview && app.addresses.canonical?.origin === binding.origin
-        && app.source.revision === binding.targetRevision && app.source.digest === binding.targetDigest);
-      return true;
-    });
+    return getConnect().withActorAuthorityFence(actor, () => getApps().withAppAuthority({ actor, appId: binding.appId,
+      mode: 'participant', ...(binding.domainId ? { domainId: binding.domainId } : {}) }, app => {
+      need(app.entry.origin === binding.origin && app.target.revision === binding.targetRevision && app.target.digest === binding.targetDigest);
+      const pin = { policyEpoch: app.policyEpoch, appRevision: app.appRevision, domainId: app.entry.domainId };
+      if (previous) need(Object.keys(pin).every(key => pin[key] === previous[key]));
+      return pin;
+    }));
   };
   const operations = new Set(['agent.browser.poll', 'agent.browser.reply']);
   return {
@@ -27,7 +27,7 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
       getConnect().withActorAuthorityFence(actor, () => need(!closed));
       const turn = turns.get(key(actor, args.requestId, args.channel));
       if (!turn && op === 'agent.browser.poll') return { pending: false };
-      need(turn); check(actor, turn.binding); need(!turn.signal.aborted);
+      need(turn); check(actor, turn.binding, turn.authority); need(!turn.signal.aborted);
       if (op === 'agent.browser.poll') return turn.pending
         ? { commandId: turn.pending.id, command: turn.pending.command } : { pending: false };
       need(nonce(args.commandId) && JSON.stringify(args.result).length <= 20000
@@ -40,15 +40,15 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
       pending.finish(null, structuredClone(args.result)); return { accepted: true };
     },
     openTurn({ actor, requestId, binding, signal }) {
-      check(actor, binding); need(!signal.aborted && turns.size < 16);
+      const authority = check(actor, binding); need(!signal.aborted && turns.size < 16);
       need(![...turns.values()].some(turn => turn.deviceId === actor.deviceId));
       const id = key(actor, requestId, binding.channel); need(!turns.has(id));
-      const turn = { deviceId: actor.deviceId, binding: structuredClone(binding), signal, pending: null, replies: new Map(), count: 0 };
+      const turn = { authority, deviceId: actor.deviceId, binding: structuredClone(binding), signal, pending: null, replies: new Map(), count: 0 };
       turns.set(id, turn);
       const close = () => { turn.pending?.finish(Error('agent_source_denied')); turns.delete(id); signal.removeEventListener('abort', close); };
       signal.addEventListener('abort', close, { once: true });
       const execute = (command, toolSignal) => {
-        check(actor, binding); need(turns.get(id) === turn && !signal.aborted && !toolSignal.aborted && !turn.pending && ++turn.count <= 12 && validCommand(command));
+        check(actor, binding, authority); need(turns.get(id) === turn && !signal.aborted && !toolSignal.aborted && !turn.pending && ++turn.count <= 12 && validCommand(command));
         return new Promise((resolve, reject) => {
           const commandId = randomBytes(16).toString('hex');
           const cancel = () => finish(Error('agent_source_denied'));
@@ -57,7 +57,7 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
             if (turn.pending?.id === commandId) turn.pending = null;
             if (error) reject(error);
             else {
-              try { check(actor, binding); need(turns.get(id) === turn && !signal.aborted); }
+              try { check(actor, binding, authority); need(turns.get(id) === turn && !signal.aborted); }
               catch (error) { reject(error); return; }
               resolve({ evidence: [{ id: 'browser_' + commandId, title: 'Результат интерфейса приложения (недоверенные данные)',
                 observedAt: new Date().toISOString(), sourceStatus: 'browser-reported-untrusted', data }], cards: [], actions: [] });
@@ -78,7 +78,7 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
           validate: input => validCommand({ ...input, kind }) && exact(input, Object.keys(properties)),
           execute: (input, toolSignal) => execute({ ...input, kind }, toolSignal) };
       }
-      return { tools, assertCurrent: () => { check(actor, binding); need(turns.get(id) === turn && !signal.aborted); return true; }, close };
+      return { tools, assertCurrent: () => { check(actor, binding, authority); need(turns.get(id) === turn && !signal.aborted); return true; }, close };
     },
     close() { closed = true; for (const turn of turns.values()) turn.pending?.finish(Error('agent_source_denied')); turns.clear(); },
   };

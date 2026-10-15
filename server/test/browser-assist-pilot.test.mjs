@@ -15,10 +15,10 @@ async function invoke(service, who, op, args) {
 test('real signed Connect continuation: owner/device, stale source, no replayed action, shutdown', async t => {
   let service, ownerId, active = true, targetRevision = 1, port;
   const abort = new AbortController();
-  const pilot = createBrowserAssistPilot({ getConnect: () => service, getApps: () => ({ execute({ actor, op, args }) {
-    assert.equal(op, 'apps.inspect'); if (actor.accountId !== ownerId || args.appId !== binding.appId) throw Error('denied');
-    return { app: { state: active ? 'enabled' : 'revoked' }, actions: { canPreview: true }, addresses: { canonical: { origin: binding.origin } },
-      source: { revision: targetRevision, digest: binding.targetDigest } };
+  const pilot = createBrowserAssistPilot({ getConnect: () => service, getApps: () => ({ withAppAuthority({ actor, appId, mode }, callback) {
+    assert.equal(mode, 'participant'); if (actor.accountId !== ownerId || appId !== binding.appId || !active) throw Error('denied');
+    return callback({ entry: { origin: binding.origin, domainId: 'domain-test' }, policyEpoch: 1, appRevision: 1,
+      target: { revision: targetRevision, digest: binding.targetDigest } });
   } }) });
   const extension = { operations: new Set([...pilot.operations, 'pilot.run']), async executeAsync(call) {
     if (call.op !== 'pilot.run') return pilot.executeAsync(call);
@@ -41,6 +41,10 @@ test('real signed Connect continuation: owner/device, stale source, no replayed 
   assert.equal((await invoke(service, owner, 'agent.browser.poll', args)).commandId, request.commandId);
   assert.equal((await invoke(service, other, 'agent.browser.poll', args)).pending, false);
   const reply = { ...args, commandId: request.commandId, result: { ok: true, data: { untrusted: true, snapshot: 'e'.repeat(32), items: [] } } };
+  targetRevision++;
+  assert.equal((await invoke(service, owner, 'agent.browser.poll', args)).ok, false);
+  assert.equal((await invoke(service, owner, 'agent.browser.reply', reply)).ok, false);
+  targetRevision--;
   assert.equal((await invoke(service, other, 'agent.browser.reply', reply)).ok, false);
   assert.equal((await invoke(service, owner, 'agent.browser.reply', { ...reply, channel: 'd'.repeat(32) })).ok, false);
   assert.equal((await invoke(service, owner, 'agent.browser.reply', reply)).accepted, true);
