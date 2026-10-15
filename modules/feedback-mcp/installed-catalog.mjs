@@ -1688,8 +1688,8 @@ export function createFeedbackSourceApplications(api, scope) {
  })]);
 }
 
-// Invoke oldFactory(api) ONCE. Keep its lifecycle, Native handlers and current
-// credential resolver; this helper never manufactures credentials for new refs.
+// Invoke oldFactory(api) ONCE. Keep its lifecycle, Native handlers and existing
+// resolver behavior. New refs have no authority until the host supplies consent.
 export async function appendFeedbackSourceApplications(api, old, scope) {
  const previous = old.httpOptions.externalApplications;
  if (!Array.isArray(previous) || !Array.isArray(old.sourceReferences)) throw Error('feedback_previous_registry_required');
@@ -1700,5 +1700,16 @@ export async function appendFeedbackSourceApplications(api, old, scope) {
    const before=old.sourceReferences[i],after=combined.sourceReferences[i];
    if(!after||before.capabilityId!==after.capabilityId||before.version!==after.version||before.digest!==after.digest) throw Error('feedback_previous_reference_changed');
  }
- return {...old,httpOptions:{...old.httpOptions,externalApplications:combined.httpOptions.externalApplications},sourceReferences:combined.sourceReferences};
+ const addedKeys = new Set(combined.sourceReferences.slice(old.sourceReferences.length).map(reference=>reference.capabilityId+'@'+reference.version));
+ const previousResolver = old.sourceCredentialFor;
+ function sourceCredentialFor(request) {
+   const reference = request?.reference;
+   if (addedKeys.has(reference?.capabilityId+'@'+reference?.version) || typeof previousResolver !== 'function') {
+     // Root discovery skips this explicit denial. Returning undefined would
+     // instead fail credential-shape validation and break unrelated old tools.
+     throw Object.assign(new Error('authorization_required'),{code:'authorization_required'});
+   }
+   return previousResolver(request);
+ }
+ return {...old,httpOptions:{...old.httpOptions,externalApplications:combined.httpOptions.externalApplications},sourceReferences:combined.sourceReferences,sourceCredentialFor};
 }
