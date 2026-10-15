@@ -150,8 +150,16 @@ export function createFeedbackHttp({
       res.once("close", release);
       res.setTimeout(20000, () => res.destroy());
       check(singleHeader(req, "host")?.toLowerCase() === host, "invalid_host");
+      // The maintained connector uses loopback HTTP and authenticates each
+      // Source request with its MAC/Root proof. Public routes still require TLS.
+      const sourceUrl = source?.enabled === true ? new URL(req.url, origin) : null;
+      const localSource = sourceUrl !== null &&
+        ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress) &&
+        req.url === sourceUrl.pathname + sourceUrl.search &&
+        !sourceUrl.pathname.includes("%") && !sourceUrl.pathname.includes("..") &&
+        (sourceUrl.pathname === "/embed" || sourceUrl.pathname.startsWith("/api/embed/"));
       check(
-        new URL(origin).protocol !== "https:" || req.secure,
+        new URL(origin).protocol !== "https:" || req.secure || localSource,
         "https_required",
         403,
       );

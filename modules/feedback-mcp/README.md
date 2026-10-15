@@ -87,6 +87,10 @@ audience `/mcp`, authorization-code+PKCE и собственные refresh/revoc
 его транспортным ключом, connectorPort, storageKey и storageKeyId. Без этой
 конфигурации внутренний Source выключен и не выдаётся за подключённого агента.
 Source BFF получает подтверждённый Root context; JSON поля аккаунта его не заменяют.
+Коннектор передаёт Source-запросы по loopback HTTP с MAC/Root proof, в том числе
+при публичном HTTPS origin. Исключение из TLS guard действует только на точные
+Source-маршруты и реальный loopback socket; остальные API требуют HTTPS. Подпись
+и права проверяет Source BFF, а не наличие заголовка или префикса URL.
 При смене runtime target можно задать `source.databasePath`: абсолютный путь
 к отдельному `source-ИМЯ.sqlite` непосредственно в `dataDirectory` (ИМЯ — строчные
 латинские буквы, цифры, `_` и `-`). По умолчанию используется `source.sqlite`.

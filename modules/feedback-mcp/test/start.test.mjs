@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, basename } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { request } from 'node:http';
+import { createResourceSourceProofSigner } from '../../apps/scoped-embed/resource-proof.mjs';
 import { environment } from '../../human-identity/test/support/renewal-fixture.mjs';
 import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/index.mjs';
 import { readFeedbackConfiguration, startFeedbackService } from '../start.mjs';
@@ -84,4 +86,57 @@ test('a new target uses a separate Source cache and preserves its previous cache
     try { assert.equal(db.prepare('SELECT count(*) AS n FROM source_sessions').get().n, 0); }
     finally { db.close(); }
   }
+});
+
+test('HTTPS deployment accepts MAC-authenticated loopback Source while public and unsigned requests remain closed', async t => {
+  const upstream = await environment(t), path = directory(t), origin = 'https://feedback.example';
+  let client;
+  await upstream.configureClients(clients => {
+    clients[0].redirectUri = origin + '/auth/callback'; clients[0].version++; client = clients[0]; return clients;
+  });
+  const appId = 'app-' + 'b'.repeat(32), transportKey = randomBytes(32);
+  const profile = { schema: 'soty.selected-human-embed.v2', appId,
+    connector: { linkId: 'fixture', hostDeviceId: 'host', connectorId: 'connector' },
+    target: { revision: 2, digest: '2'.repeat(64) }, sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
+    resource: { registryId: 'soty', environmentId: 'fixture', tenantId: 'owner', appId, resourceId: 'feedback',
+      selection: { kind: 'soty.workspace.v1', nativeId: 'feedback', incarnationId: 'one' } },
+    issuer: upstream.issuer, clientId: client.id, embedOrigin: origin, nativeOrigin: origin,
+    parentOrigin: new URL(upstream.issuer).origin };
+  const config = { schema: 'soty.feedback-service.v1', origin, port: 0, dataDirectory: path,
+    auth: { encryptionKey: random(), cookieKeys: [random()], upstream: { issuer: upstream.issuer,
+      clientId: client.id, clientSecret: client.clientSecret, redirectUri: client.redirectUri,
+      renewalProfile: 'soty.human-rp-renewal.v1' } },
+    source: { profile, transportKey: transportKey.toString('base64url'), connectorPort: 49428,
+      storageKey: random(), storageKeyId: 'fixture' } };
+  const running = await startFeedbackService(config);t.after(() => running.close());
+  try {
+  const signer = createResourceSourceProofSigner({ profile, key: transportKey });
+  const send = (url, headers = {}, method = 'GET', body) => new Promise((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: running.server.address().port, path: url,
+      method, agent: false, headers: { host: 'feedback.example', connection: 'close', ...headers } }, res => {
+      const parts = [];res.on('data', p => parts.push(p));res.on('end', () => resolve({ status: res.statusCode,
+        headers: { get: n => res.headers[n.toLowerCase()] ?? null }, body: Buffer.concat(parts).toString() }));
+    });req.on('error', reject);req.end(body);
+  });
+  const probe = signer.probeHeaders();
+  const ready = await send('/api/embed/transport-ready', probe.headers, 'HEAD');
+  assert.equal(ready.status, 204);assert.equal(signer.verifyReady(ready, probe.request), true);
+  assert.equal((await send('/api/embed/transport-ready', probe.headers, 'HEAD')).status, 403, 'consumed nonce cannot replay');
+  for (const url of ['/api/embed/transport-ready', '/api/embed/query']) {
+    const result = await send(url, {}, url.endsWith('transport-ready') ? 'HEAD' : 'GET');
+    assert.ok(result.status >= 400, 'Source proof remains required');
+  }
+  for (const url of ['/api/embed/query', '/api/embed/invoke']) {
+    const result = await send(url, { 'content-type': 'application/json' }, 'POST', '{}');
+    assert.equal(result.status, 403, 'unsigned Source data/action requests remain denied');
+  }
+  // /embed is a public static shell; its queue requests still need Root proof.
+  const shell = await send('/embed');assert.equal(shell.status, 200);assert.match(shell.body, /\/assets\/app\.js/);
+  for (const url of ['/api/me', '/mcp', '/auth/login', '/health', '/api/embed/../../auth/login',
+    '/api/embed/../../api/me', '/api/embed/%2e%2e/../auth/session']) {
+    const result = await send(url);assert.equal(result.status, 403);
+    assert.equal(JSON.parse(result.body).error.code, 'https_required');
+  }
+  assert.equal((await send('/api/me', { 'x-forwarded-proto': 'https' })).status, 200, 'existing TLS proxy path works');
+  } finally { await running.close(); }
 });
