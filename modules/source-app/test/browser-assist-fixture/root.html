@@ -14,7 +14,7 @@ function ask(text, signal) {
   cancelDialog?.(); if (signal?.aborted) return Promise.resolve(false);
   return new Promise(resolve => {
     const dialog = document.createElement('dialog'), title = document.createElement('h2'), copy = document.createElement('p');
-    title.textContent = 'Разрешить действие?'; copy.textContent = text;
+    title.textContent = 'Разрешить действие?'; copy.textContent = text + '\nПодпись действия предоставлена приложением; проверьте его смысл.';
     const no = document.createElement('button'), yes = document.createElement('button');
     no.textContent = 'Отмена'; yes.textContent = 'Разрешить'; let done = false;
     const finish = ok => { if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',cancel);cancelDialog=null;dialog.close();dialog.remove();resolve(ok); };

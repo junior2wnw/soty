@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
@@ -265,4 +266,19 @@ test('ordinary actual entry closes on parent disconnect and cannot claim a late 
     assert.equal(f.counts.close, 1); f.resolveClose(); await turn();
     assert.equal(f.closed().length, 0); assert.equal(f.callbacks.length, 0); assert.equal(f.counts.close, 1);
   }
+});
+
+
+test('actual stock startup registers browser pilot operations without enabling model or user consent', async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), 'soty-browser-startup-'));
+  let root;
+  try {
+    const { createRootStartup } = await import('../startup.js');
+    root = await createRootStartup({ rootDir, env: { HOST: '127.0.0.1', PORT: '0' } });
+    assert.equal(root.server.listening, false);
+    assert.equal(root.app.locals.personalAgent.status().configured, false);
+    assert.equal(root.app.locals.personalAgent.operations.has('agent.browser.poll'), true);
+    assert.equal(root.app.locals.personalAgent.operations.has('agent.browser.reply'), true);
+    await assert.rejects(root.app.locals.personalAgent.executeAsync({ op: 'agent.browser.poll', actor: {}, args: {} }), { code: 'agent_transport_unavailable' });
+  } finally { await root?.close(); await rm(rootDir, { recursive: true, force: true }); }
 });
