@@ -84,7 +84,12 @@ export interface WorldAssistantHandle {
 /** Opaque selection is a locator checked independently by the signed server. */
 export interface WorldAssistantSelection { appId: string; handle: string }
 export interface WorldAssistantContext { appId: string; name: string; path: string; status: string; selection?: WorldAssistantSelection }
-export interface WorldAssistantMountContext { context(): WorldAssistantContext | null; isCurrent(): boolean }
+export interface WorldBrowserAssist {
+  binding(): Record<string, unknown> | null;
+  dispatch(command: unknown, signal: AbortSignal, guard?: () => Promise<void>): Promise<unknown>;
+  revoke(): void;
+}
+export interface WorldAssistantMountContext { browserAssist?(): WorldBrowserAssist | null; context(): WorldAssistantContext | null; isCurrent(): boolean }
 export interface WorldHumanCallState {
   state: string;
   microphone: 'off' | 'permission' | 'publishing' | 'on';

@@ -198,3 +198,24 @@ test('forged selection and stale selection fail before signed dispatch', async (
   const f = fixture(); await assert.rejects(f.make({ readSelection: () => null }).turn('Read', selectedMetadata()), { code: 'agent_source_denied' });
   assert.equal(f.calls.length, 0);
 });
+
+
+test('browser consent cannot be attached to another app context', async () => {
+  const f = fixture(), ui = f.make({ browserAssist: { binding: () => ({ appId: 'app-' + 'a'.repeat(32) }), revoke() {} } });
+  await assert.rejects(ui.turn('Click', { appId: 'app-' + 'b'.repeat(32), name: 'Other', path: '/', status: 'ready' }), /agent_source_denied/u);
+  assert.equal(f.calls.length, 0);
+});
+
+
+test('revoked browser consent blocks late answer and retains sent intent', async () => {
+  const f = fixture(), appId = 'app-' + 'a'.repeat(32), gate = defer();
+  let binding = { appId, origin: 'https://app.test', targetRevision: 1, targetDigest: 'b'.repeat(64), generation: 1, channel: 'c'.repeat(32) };
+  const ui = f.make({ client: { ...f.client, async extension(op, args, options) {
+    if (op === 'agent.browser.poll') return { pending: false };
+    if (op === 'agent.turn') await gate.promise;
+    return f.client.extension(op, args, options);
+  } }, browserAssist: { binding: () => binding, async dispatch() { throw Error('unused'); }, revoke() { binding = null; } } });
+  const pending = ui.turn('Observe', { appId, name: 'Own', path: '/', status: 'ready' });
+  await new Promise(resolve => setImmediate(resolve)); binding = null; gate.resolve();
+  await assert.rejects(pending, /agent_source_denied/u); assert.equal(ui.view().phase, 'unknown'); assert.equal(ui.view().unconfirmed, 1);
+});

@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>Browser assist pilot — Root fixture</title>
+<h1>Same-frame pilot (no model, no production)</h1>
+<p>1. Enable author SDK inside the frame. 2. Enable Root permission. 3. Observe. 4. Fill, Observe again, then click; approve the visible confirmation.</p>
+<button id="enable">Enable for this app</button><button id="revoke">Revoke</button><button id="observe">Observe</button>
+<button id="fill">Fill task</button><button id="click">Click Add</button><button id="stale">Change frame generation</button>
+<pre id="status">Default OFF</pre><iframe id="frame" title="Own task app" sandbox="allow-scripts allow-same-origin" src="http://127.0.0.1:5199/app" style="width:90%;height:350px"></iframe>
+<script type="module">
+import {createBrowserAssistHost} from '/host.mjs';
+const binding={appId:'app-'+ 'a'.repeat(32),origin:'http://127.0.0.1:5199',targetRevision:1,targetDigest:'b'.repeat(64),generation:1,channel:crypto.randomUUID().replaceAll('-','')};
+const frame=document.querySelector('#frame'),status=document.querySelector('#status');let observed;
+const host=createBrowserAssistHost({view:window,readPeer:()=>({window:frame.contentWindow,binding}),approve:async c=>confirm(`${c.kind} «${c.label}»${c.text?': '+c.text:''}?`)});
+const run=fn=>async()=>{try{status.textContent=JSON.stringify(await fn(),null,2);}catch(e){status.textContent=e.message;}};
+document.querySelector('#enable').onclick=run(async()=>{if(!await host.probe())throw Error('Author SDK is off or unavailable');binding.channel=crypto.randomUUID().replaceAll('-','');return host.enable();});document.querySelector('#revoke').onclick=run(()=>{host.revoke();return 'Revoked. Reload app to start a fresh consent.';});
+document.querySelector('#observe').onclick=run(async()=>{const r=await host.dispatch({kind:'observe'});observed=r.data;return r;});
+document.querySelector('#fill').onclick=run(()=>host.dispatch({kind:'fill',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='fill').id,text:'Same iframe task'}));
+document.querySelector('#click').onclick=run(()=>host.dispatch({kind:'click',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='click').id}));
+document.querySelector('#stale').onclick=run(()=>{binding.generation++;return 'Old permission is now stale';});
+window.addEventListener('pagehide',()=>host.close());
+</script>

@@ -1,10 +1,11 @@
+import { pumpBrowserAssist } from '../world/browser-assist-pilot.mjs';
 import type { WorldAssistantContext, WorldAssistantSelection } from '../world/types';
 
 type Client = {
   getLocalState(): Promise<{ accountId?: string | null }>;
   extension<T>(op: string, args: Record<string, unknown>, options: { expectedAccountId: string }): Promise<T>;
 };
-type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection };
+type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection; browser?: Record<string, unknown> };
 type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string };
 export type PersonalAgentView = { phase: 'draft' | 'running' | 'complete' | 'unknown' | 'cancel_requested'; draft: string;
   contextId?: string; requestId?: string; answer?: string; sources: SourcePresentation[]; unconfirmed: number };
@@ -60,8 +61,8 @@ function projectSources(value: unknown): SourcePresentation[] | undefined {
 
 /** Browser intent only. The signed Connect server independently authenticates, authorizes, and accounts every turn.
  * Unknown sends are retained; neither refresh nor recovery automatically repeats a model POST. */
-export function createPersonalAgentConversation({ accountId, client, storage, idFactory = () => crypto.randomUUID(), onChange = () => {}, isCurrent = () => true, readSelection }:
-  { accountId: string; client: Client; storage: Pick<Storage, 'getItem' | 'setItem'>; idFactory?: () => string; onChange?: () => void; isCurrent?: () => boolean; readSelection?: () => WorldAssistantSelection | null }) {
+export function createPersonalAgentConversation({ accountId, client, storage, idFactory = () => crypto.randomUUID(), onChange = () => {}, isCurrent = () => true, readSelection, browserAssist }:
+  { accountId: string; client: Client; storage: Pick<Storage, 'getItem' | 'setItem'>; idFactory?: () => string; onChange?: () => void; isCurrent?: () => boolean; readSelection?: () => WorldAssistantSelection | null; browserAssist?: { binding(): Record<string, unknown> | null; dispatch(command: unknown, signal: AbortSignal, guard?: () => Promise<void>): Promise<unknown>; revoke(): void } }) {
   const key = `soty.personal-agent-ui.v1:${accountId}`;
   let saved: Saved = { schema: 'soty.personal-agent-ui.v1', draft: '', pending: [] }, phase: PersonalAgentView['phase'] = 'draft';
   let disposed = false, running = false, answer: string | undefined, sources: SourcePresentation[] = [];
@@ -73,7 +74,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId']) || parsed.schema !== saved.schema
       || typeof parsed.draft !== 'string' || parsed.draft.length > 8000 || !Array.isArray(parsed.pending) || parsed.pending.length > 8
       || parsed.contextId !== undefined && !context(parsed.contextId)
-      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection']) || !requestId(item.requestId)
+      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection', 'browser']) || !requestId(item.requestId)
         || item.selection !== undefined && !validSelection(item.selection)
         || typeof item.prompt !== 'string' || !item.prompt.trim() || item.prompt.length > 8000 || item.contextId !== undefined && !context(item.contextId))
       || new Set(parsed.pending.map(item => item.requestId)).size !== parsed.pending.length
@@ -96,8 +97,13 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       if (!text.trim() || text.length > 8000 || saved.pending.length >= 8) throw failure('agent_capacity');
       const prompt = promptWithAppContext(text, metadata);
       const selection = metadata?.selection ? { ...metadata.selection } : undefined;
+      let browser: Record<string, unknown> | null | undefined;
       const turnCurrent = async () => {
         await current();
+        if (browser) {
+          const fresh = browserAssist?.binding();
+          if (!fresh || Object.keys(browser).some(key => fresh[key] !== browser![key])) throw failure('agent_source_denied');
+        }
         if (selection && readSelection) { const fresh = readSelection();
           if (!fresh || fresh.appId !== selection.appId || fresh.handle !== selection.handle) throw failure('agent_source_denied');
         }
@@ -106,12 +112,17 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       if (running || saved.active) throw failure('agent_reconcile_required');
       if (saved.pending.length >= 8) throw failure('agent_capacity');
       const id = idFactory(); if (!requestId(id) || saved.pending.some(item => item.requestId === id)) throw failure('agent_invalid_input');
-      const intent: Request = { requestId: id, prompt, ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
+      browser = browserAssist?.binding();
+      if (browser && (!metadata || browser.appId !== metadata.appId)) throw failure('agent_source_denied');
+      const intent: Request = { requestId: id, prompt, ...(browser ? { browser } : {}), ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
       // A storage failure precedes dispatch. Preserve the exact prompt, ID and context before asking the server.
       persist({ ...saved, draft: text, pending: [...saved.pending, intent], active: id });
       answer = undefined; sources = []; phase = 'running'; running = true; notify();
+      const browserAbort = new AbortController();
+      let pump: Promise<void> | undefined;
       try {
         await turnCurrent();
+        if (browser && browserAssist) pump = pumpBrowserAssist({ client, accountId, requestId: id, binding: browser, host: browserAssist, signal: browserAbort.signal, assertCurrent: turnCurrent }).catch(async () => { browserAssist.revoke(); await client.extension('agent.cancel', { requestId: id }, { expectedAccountId: accountId }).catch(() => {}); });
         const result = await client.extension<Record<string, unknown>>('agent.turn', { ...intent }, { expectedAccountId: accountId }); await turnCurrent();
         if (!own(result, ['ok', 'schema', 'requestId', 'status', 'answer', 'contextId', 'evidence', 'claims', 'cards', 'actions', 'telemetry', 'accounting'])
           || result.ok !== undefined && result.ok !== true
@@ -122,9 +133,10 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
         persist({ schema: saved.schema, draft: '', pending: saved.pending.filter(item => item.requestId !== id), contextId: result.contextId });
         answer = result.answer; sources = projectedSources; phase = 'complete'; notify(); return view();
       } catch (error) { phase = 'unknown'; notify(); throw error; }
-      finally { running = false; notify(); }
+      finally { browserAbort.abort(); await pump; running = false; notify(); }
     },
     async cancel() {
+      browserAssist?.revoke();
       const id = saved.active; if (!id) throw failure('agent_turn_unavailable'); await current();
       const result = await client.extension<Record<string, unknown>>('agent.cancel', { requestId: id }, { expectedAccountId: accountId }); await current();
       if (!own(result, ['ok', 'schema', 'requestId', 'cancelRequested', 'remoteTerminationVerified']) || result.ok !== undefined && result.ok !== true || result.schema !== 'soty.personal-agent-cancel.v1'
@@ -133,6 +145,6 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       notify();
       return result;
     },
-    dispose() { disposed = true; answer = undefined; sources = []; },
+    dispose() { browserAssist?.revoke(); disposed = true; answer = undefined; sources = []; },
   };
 }
