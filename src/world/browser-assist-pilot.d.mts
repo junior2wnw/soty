@@ -1,4 +1,4 @@
-export function createBrowserAssistHost(options: { view: Window; readPeer: () => unknown; approve?: (command: unknown) => Promise<boolean> }): {
+export function createBrowserAssistHost(options: { view: Window; readPeer: () => unknown; approve?: (command: unknown, context: { signal: AbortSignal }) => Promise<boolean> }): {
   probe(): Promise<boolean>; enable(): Record<string, unknown>; binding(): Record<string, unknown> | null;
   dispatch(command: unknown, signal?: AbortSignal, guard?: () => Promise<void>): Promise<unknown>; revoke(): void; close(): void;
 };

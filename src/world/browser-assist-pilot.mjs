@@ -36,9 +36,17 @@ export function createBrowserAssistHost({ view, readPeer, approve = async () => 
       if (command.kind !== 'observe') {
         const item = observed?.snapshot === command.snapshot && observed.items.find(item => item.id === command.target && item.kind === command.kind);
         if (!item) throw Error('assist_stale_snapshot');
-        let timer;
-        try { if (await Promise.race([approve({ ...structuredClone(command), label: item.label }), new Promise(resolve => { timer = view.setTimeout(() => resolve(false), 6000); })]) !== true) throw Error('assist_approval_denied'); }
-        finally { view.clearTimeout(timer); }
+        let timer; const approval = new AbortController();
+        const stopApproval = () => approval.abort(); pending.add(stopApproval);
+        signal?.addEventListener('abort', stopApproval, { once: true });
+        try {
+          if (signal?.aborted) throw Error('assist_cancelled');
+          const denied = new Promise(resolve => {
+            approval.signal.addEventListener('abort', () => resolve(false), { once: true });
+            timer = view.setTimeout(stopApproval, 60000);
+          });
+          if (await Promise.race([approve({ ...structuredClone(command), label: item.label }, { signal: approval.signal }), denied]) !== true) throw Error('assist_approval_denied');
+        } finally { view.clearTimeout(timer); pending.delete(stopApproval); signal?.removeEventListener('abort', stopApproval); approval.abort(); }
         current(); observed = null;
       }
       if (guard) await guard();
@@ -100,6 +108,7 @@ export async function pumpBrowserAssist({ client, accountId, requestId, binding,
       if (signal.aborted) return;
       await client.extension('agent.browser.reply', { ...args, commandId: result.commandId, result: reply }, { expectedAccountId: accountId });
     }
-    await new Promise(resolve => { const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }; const timer = setTimeout(done, 250); signal.addEventListener('abort', done, { once: true }); });
+    if (signal.aborted) return;
+    await new Promise(resolve => { const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }; const timer = setTimeout(done, 1000); signal.addEventListener('abort', done, { once: true }); });
   }
 }

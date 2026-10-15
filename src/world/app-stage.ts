@@ -1,3 +1,4 @@
+import { createDialog } from './dialogs';
 import { createBrowserAssistHost } from './browser-assist-pilot.mjs';
 import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
@@ -179,30 +180,53 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
   moreBody.append(widget, publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
   let assistChannel = crypto.randomUUID().replaceAll('-', ''), assistEpoch = 0, assistOn = false;
+  let closeAssistDialog: (() => void) | null = null;
+  const askAssist = (text: string, signal?: AbortSignal): Promise<boolean> => {
+    closeAssistDialog?.();
+    if (!current() || signal?.aborted) return Promise.resolve(false);
+    return new Promise(resolve => {
+      let done = false;
+      const finish = (accepted: boolean) => {
+        if (done) return; done = true; view.clearTimeout(timer); signal?.removeEventListener('abort', cancel);
+        closeAssistDialog = null; resolve(accepted && current()); dialog.close();
+      };
+      const cancel = () => finish(false);
+      const dialog = createDialog('Помощник в приложении', () => { options.onModalChange?.(dialog.element, false); finish(false); },
+        { isCurrent: current, resolve: () => assistToggle }, screen);
+      const timer = view.setTimeout(cancel, 60000);
+      closeAssistDialog = cancel; signal?.addEventListener('abort', cancel, { once: true });
+      dialog.body.append(el('p', '', text), el('p', 'sw-muted', 'Без подтверждения действие не выполняется. Ожидание — до минуты.'));
+      const no = button('Отмена', undefined, 'sw-button-quiet', cancel);
+      dialog.body.append(no, button('Разрешить', undefined, 'sw-button-primary', () => finish(true)));
+      options.onModalChange?.(dialog.element, true); no.focus();
+    });
+  };
+
   const assist = createBrowserAssistHost({ view, readPeer: () => {
     const frame = runtime.querySelector('iframe'), pin = launcher.binding(), entry = launcher.entry();
     return current() && options.presentation !== 'widget' && frame?.contentWindow && pin && entry ? {
       window: frame.contentWindow, binding: { appId: app.appId, origin: entry.origin,
         targetRevision: pin.targetRevision, targetDigest: pin.targetDigest, generation: frameGeneration, channel: assistChannel },
     } : null;
-  }, approve: async value => {
+  }, approve: async (value, { signal }) => {
     const command = value as { kind: string; label: string; text?: string };
-    return current() && view.confirm(`Помощник: ${app.name}\n${command.kind === 'fill' ? 'Заполнить поле' : 'Нажать кнопку'}: ${command.label}${command.kind === 'fill' ? `\nТекст: ${command.text}` : ''}\nРазрешить только это действие?`);
+    return askAssist(`Помощник: ${app.name}\n${command.kind === 'fill' ? 'Заполнить поле' : 'Нажать кнопку'}: ${command.label}${command.kind === 'fill' ? `\nТекст: ${command.text}` : ''}\nРазрешить только это действие?`, signal);
   } });
-  const stopAssist = () => { assistEpoch++; assistOn = false; assist.revoke(); assistChannel = crypto.randomUUID().replaceAll('-', ''); assistToggle.textContent = 'Помощник в приложении: выключен'; assistToggle.setAttribute('aria-pressed', 'false'); };
+  const stopAssist = () => { closeAssistDialog?.(); assistEpoch++; assistOn = false; assist.revoke(); assistChannel = crypto.randomUUID().replaceAll('-', ''); assistToggle.textContent = 'Помощник в приложении: выключен'; assistToggle.setAttribute('aria-pressed', 'false'); };
   const assistToggle = button('Помощник в приложении: выключен', 'sparkle', 'sw-button-quiet', () => {
     if (assistOn) { stopAssist(); return; }
     const epoch = ++assistEpoch; assistToggle.disabled = true;
-    void assist.probe().then(available => {
+    void assist.probe().then(async available => {
       if (epoch !== assistEpoch || !current()) return;
       if (!available) { showMessage('Управление недоступно: автор приложения ещё не включил SDK помощника.'); return; }
-      if (!view.confirm(`Разрешить помощнику видеть отмеченные автором элементы приложения «${app.name}» в этом окне? Каждое нажатие и ввод требуют отдельного подтверждения. Доступ завершится при смене приложения, аккаунта или окна.`)) return;
+      if (!await askAssist(`Разрешить помощнику видеть отмеченные автором элементы приложения «${app.name}» в этом окне? Каждое нажатие и ввод требуют отдельного подтверждения. Доступ завершится при смене приложения, аккаунта или окна.`)) return;
+      if (epoch !== assistEpoch || !current()) return;
       assist.enable(); assistOn = true; assistToggle.textContent = 'Помощник в приложении: включён'; assistToggle.setAttribute('aria-pressed', 'true');
     }).catch(() => { stopAssist(); showMessage('Не удалось включить помощника. Откройте приложение заново.'); })
       .finally(() => { if (!disposed) assistToggle.disabled = false; });
   });
   assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
-  const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding()) stopAssist(); }, 250);
+  const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
   header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,

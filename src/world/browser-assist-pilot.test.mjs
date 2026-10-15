@@ -15,7 +15,7 @@ test('host is off by default; deny, stale app during approval, revoke while pend
     });
   } };
   const view = { crypto: webcrypto, setTimeout, clearTimeout, addEventListener: (_, fn) => listeners.add(fn), removeEventListener: (_, fn) => listeners.delete(fn) };
-  const host = createBrowserAssistHost({ view, readPeer: () => ({ window: frame, binding: current }), approve: c => permit(c) });
+  const host = createBrowserAssistHost({ view, readPeer: () => ({ window: frame, binding: current }), approve: (c, context) => permit(c, context) });
   await assert.rejects(host.dispatch({ kind: 'observe' })); assert.equal(sent.length, 0);
   host.enable(); await host.dispatch({ kind: 'observe' });
   await assert.rejects(host.dispatch({ kind: 'observe' }, undefined, async () => { throw Error('account_changed'); }), /account_changed/u); assert.equal(sent.length, 1);
@@ -24,7 +24,11 @@ test('host is off by default; deny, stale app during approval, revoke while pend
   let accept; permit = async command => { assert.equal(command.label, 'Add task'); return new Promise(r => { accept = r; }); };
   const pending = host.dispatch(click); current = { ...current, generation: 2 }; accept(true);
   await assert.rejects(pending, /permission_closed/u); assert.equal(sent.length, 1);
-  current = structuredClone(binding); host.enable(); hold = true;
+  current = structuredClone(binding); host.enable(); await host.dispatch({ kind: 'observe' });
+  let approvalSignal; permit = async (_, context) => { approvalSignal = context.signal; return new Promise(() => {}); };
+  const waiting = host.dispatch(click); host.revoke();
+  await assert.rejects(waiting, /approval_denied/u); assert.equal(approvalSignal.aborted, true);
+  host.enable(); hold = true;
   const observe = host.dispatch({ kind: 'observe' }); host.revoke();
   await assert.rejects(observe, /cancelled/u); assert.equal(listeners.size, 0); assert.equal(host.binding(), null);
   host.close(); assert.throws(() => host.enable());

@@ -8,12 +8,27 @@
 import {createBrowserAssistHost} from '/host.mjs';
 const binding={appId:'app-'+ 'a'.repeat(32),origin:'http://127.0.0.1:5199',targetRevision:1,targetDigest:'b'.repeat(64),generation:1,channel:crypto.randomUUID().replaceAll('-','')};
 const frame=document.querySelector('#frame'),status=document.querySelector('#status');let observed;
-const host=createBrowserAssistHost({view:window,readPeer:()=>({window:frame.contentWindow,binding}),approve:async c=>confirm(`${c.kind} «${c.label}»${c.text?': '+c.text:''}?`)});
+let cancelDialog = null;
+function ask(text, signal) {
+  cancelDialog?.(); if (signal?.aborted) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog'), title = document.createElement('h2'), copy = document.createElement('p');
+    title.textContent = 'Разрешить действие?'; copy.textContent = text;
+    const no = document.createElement('button'), yes = document.createElement('button');
+    no.textContent = 'Отмена'; yes.textContent = 'Разрешить'; let done = false;
+    const finish = ok => { if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',cancel);cancelDialog=null;dialog.close();dialog.remove();resolve(ok); };
+    const cancel = () => finish(false), timer = setTimeout(cancel,60000); cancelDialog=cancel;
+    no.onclick=cancel;yes.onclick=()=>finish(true);dialog.oncancel=event=>{event.preventDefault();cancel();};dialog.onclose=cancel;
+    signal?.addEventListener('abort',cancel,{once:true});dialog.append(title,copy,no,yes);document.body.append(dialog);dialog.showModal();no.focus();
+  });
+}
+const host=createBrowserAssistHost({view:window,readPeer:()=>({window:frame.contentWindow,binding}),approve:(c,{signal})=>ask(`${c.kind} «${c.label}»${c.text?': '+c.text:''}?`,signal)});
 const run=fn=>async()=>{try{status.textContent=JSON.stringify(await fn(),null,2);}catch(e){status.textContent=e.message;}};
-document.querySelector('#enable').onclick=run(async()=>{if(!await host.probe())throw Error('Author SDK is off or unavailable');binding.channel=crypto.randomUUID().replaceAll('-','');return host.enable();});document.querySelector('#revoke').onclick=run(()=>{host.revoke();return 'Revoked. Reload app to start a fresh consent.';});
+document.querySelector('#enable').onclick=run(async()=>{if(!await host.probe())throw Error('Author SDK is off or unavailable');if(!await ask('Разрешить помощнику доступ к отмеченным элементам этого приложения?'))return 'Denied';binding.channel=crypto.randomUUID().replaceAll('-','');return host.enable();});document.querySelector('#revoke').onclick=run(()=>{cancelDialog?.();host.revoke();return 'Revoked. Reload app to start a fresh consent.';});
 document.querySelector('#observe').onclick=run(async()=>{const r=await host.dispatch({kind:'observe'});observed=r.data;return r;});
 document.querySelector('#fill').onclick=run(()=>host.dispatch({kind:'fill',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='fill').id,text:'Same iframe task'}));
 document.querySelector('#click').onclick=run(()=>host.dispatch({kind:'click',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='click').id}));
-document.querySelector('#stale').onclick=run(()=>{binding.generation++;return 'Old permission is now stale';});
-window.addEventListener('pagehide',()=>host.close());
+document.querySelector('#stale').onclick=run(()=>{cancelDialog?.();host.revoke();binding.generation++;return 'Old permission is now stale';});
+frame.addEventListener('load',()=>{cancelDialog?.();host.revoke();binding.generation++;});
+window.addEventListener('pagehide',()=>{cancelDialog?.();host.close();});
 </script>

@@ -35,6 +35,10 @@ test('real signed Connect continuation: owner/device, stale source, no replayed 
   let request;
   for (let i = 0; i < 20; i++) { await new Promise(r => setImmediate(r)); request = await invoke(service, owner, 'agent.browser.poll', args); if (request.commandId) break; }
   assert.equal(request.command.kind, 'observe');
+  // A second tab/installation turn cannot multiply signed polling load.
+  const concurrent = await invoke(service, owner, 'pilot.run', { requestId: 'pilot_concurrent', binding: { ...binding, channel: 'f'.repeat(32) } });
+  assert.equal(concurrent.ok, false);
+  assert.equal((await invoke(service, owner, 'agent.browser.poll', args)).commandId, request.commandId);
   assert.equal((await invoke(service, other, 'agent.browser.poll', args)).pending, false);
   const reply = { ...args, commandId: request.commandId, result: { ok: true, data: { untrusted: true, snapshot: 'e'.repeat(32), items: [] } } };
   assert.equal((await invoke(service, other, 'agent.browser.reply', reply)).ok, false);

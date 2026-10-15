@@ -41,8 +41,9 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
     },
     openTurn({ actor, requestId, binding, signal }) {
       check(actor, binding); need(!signal.aborted && turns.size < 16);
+      need(![...turns.values()].some(turn => turn.deviceId === actor.deviceId));
       const id = key(actor, requestId, binding.channel); need(!turns.has(id));
-      const turn = { binding: structuredClone(binding), signal, pending: null, replies: new Map(), count: 0 };
+      const turn = { deviceId: actor.deviceId, binding: structuredClone(binding), signal, pending: null, replies: new Map(), count: 0 };
       turns.set(id, turn);
       const close = () => { turn.pending?.finish(Error('agent_source_denied')); turns.delete(id); signal.removeEventListener('abort', close); };
       signal.addEventListener('abort', close, { once: true });
@@ -62,7 +63,7 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
                 observedAt: new Date().toISOString(), sourceStatus: 'browser-reported-untrusted', data }], cards: [], actions: [] });
             }
           };
-          const timer = setTimeout(() => finish(Error('agent_source_denied')), 15000);
+          const timer = setTimeout(() => finish(Error('agent_source_denied')), 75000); // 60s human decision + bounded delivery; DOM reply timeout remains 5s.
           turn.pending = { id: commandId, command: structuredClone(command), finish };
           toolSignal.addEventListener('abort', cancel, { once: true });
         });
