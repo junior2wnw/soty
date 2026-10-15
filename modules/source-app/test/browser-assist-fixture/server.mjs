@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 const files = new Map([
   ['/', new URL('./root.html', import.meta.url)], ['/app', new URL('./app.html', import.meta.url)],
+  ['/app-enabled', new URL('./app-enabled.html', import.meta.url)],
   ['/host.mjs', new URL('../../../../src/world/browser-assist-pilot.mjs', import.meta.url)],
   ['/sdk.mjs', new URL('../../browser/assist-sdk.mjs', import.meta.url)],
   ['/assist-wire.mjs', new URL('../../browser/assist-wire.mjs', import.meta.url)],

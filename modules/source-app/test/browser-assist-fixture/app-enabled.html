@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Author opt-in task app</title>
+<h2>Own task app — authored static SDK-enabled mode</h2><button id="sdk" type="button">Author SDK enabled in this static page</button>
+<input id="task" data-soty-assist="Task title" autocomplete="off"><button id="add" type="button" data-soty-assist="Add task">Add task</button>
+<input type="password" value="fixture-secret" data-soty-assist="Password must be absent"><input type="file" data-soty-assist="File must be absent">
+<ul id="list"></ul>
+<script type="module">
+import {createSourceBrowserAssist} from '/sdk.mjs';
+const sdk=createSourceBrowserAssist({appId:'app-'+ 'a'.repeat(32),parentOrigin:'http://127.0.0.1:5198',enabled:true});
+document.querySelector('#sdk').onclick=()=>{sdk.setEnabled(true);document.querySelector('#sdk').textContent='Author SDK enabled';};
+const list=document.querySelector('#list'),input=document.querySelector('#task');
+const tasks=JSON.parse(localStorage.getItem('assist-pilot-tasks')||'[]');
+function render(){list.replaceChildren(...tasks.map(text=>{const li=document.createElement('li');li.textContent=text;li.setAttribute('data-soty-assist',text);return li;}));}
+document.querySelector('#add').onclick=()=>{if(!input.value.trim())return;tasks.push(input.value);localStorage.setItem('assist-pilot-tasks',JSON.stringify(tasks));input.value='';render();};render();
+window.addEventListener('pagehide',()=>sdk.close());
+</script>
