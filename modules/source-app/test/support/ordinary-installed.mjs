@@ -68,6 +68,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   const humanIdentity={enabled:true,issuer:origin+'/human-identity',registryId:'soty',environmentId:'production',clients:realms.filter(realm=>!options.withoutRpClients?.includes(realm.realmId)).map(realm=>({id:realm.profile.clientId,label:'Synthetic '+realm.realmId,
     redirectUri:realm.embedded+'/api/embed/callback',clientSecret:realm.clientSecret})),jwks:{keys:[jwk]},cookieKeys:[random()],artifactKey:randomBytes(32),artifactKeyId:'ordinary-fixture'};
   const activeOptions={...rootOptions,humanIdentity,allowScopedEmbedMigration:true,allowSelectedResourceMigration:true,scopedEmbedProfiles:realms.map(realm=>realm.profile),
+    ...(options.agentSourceAccess?{agentSourceAccess:options.agentSourceAccess,capabilityAudience:origin}:{}),
     ...(options.externalApplications?{externalApplications:options.externalApplications(realms)}:{}),
     ...(options.personalAgent?{personalAgent:options.personalAgent(realms)}:{})};
   root=createHttpApp(dist,activeOptions);

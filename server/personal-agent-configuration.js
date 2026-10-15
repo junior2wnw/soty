@@ -55,7 +55,16 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
     const flag = field(env, 'SOTY_PERSONAL_AGENT_ENABLED'); need(['', '0', '1'].includes(flag));
     if (flag !== '1') return { personalAgent: { enabled: false } };
     const value = privateFile(field(env, 'SOTY_PERSONAL_AGENT_CONFIG_FILE'));
-    fields(value, ['schema', 'gateway', 'accountIds'], ['localTargets', 'capacity']); need(value.schema === 'soty.personal-agent-installed.v1');
+    fields(value, ['schema', 'gateway', 'accountIds'], ['localTargets', 'capacity', 'sourceAccess']); need(value.schema === 'soty.personal-agent-installed.v1');
+    let agentSourceAccess;
+    if (value.sourceAccess !== undefined) {
+      fields(value.sourceAccess, ['schema', 'keyId', 'key']);
+      need(value.sourceAccess.schema === 1 && typeof value.sourceAccess.keyId === 'string' && /^[\w.-]{1,64}$/u.test(value.sourceAccess.keyId)
+        && typeof value.sourceAccess.key === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(value.sourceAccess.key));
+      const key = Buffer.from(value.sourceAccess.key, 'base64url');
+      need(key.length === 32 && key.toString('base64url') === value.sourceAccess.key);
+      agentSourceAccess = { key, keyId: value.sourceAccess.keyId };
+    }
     let capacity;
     if (value.capacity !== undefined) {
       fields(value.capacity, [], ['maxAccountContexts', 'maxRetainedTurns']);
@@ -64,6 +73,7 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
     }
     fields(value.gateway, ['origin', 'billingTenant', 'inferenceBearer', 'managementSession']);
     const gateway = value.gateway, origin = new URL(gateway.origin);
+    if (agentSourceAccess) need(value.sourceAccess.key !== gateway.inferenceBearer && value.sourceAccess.key !== gateway.managementSession);
     need(origin.protocol === 'https:' && origin.origin === gateway.origin && !origin.username && !origin.password && !origin.search && !origin.hash);
     identifier(gateway.billingTenant, 160);
     need(typeof gateway.inferenceBearer === 'string' && /^[^\s\u0000-\u001f]{20,512}$/u.test(gateway.inferenceBearer)
@@ -80,7 +90,7 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
       targets.set(entry.accountId, Object.freeze({ hostDeviceId: entry.hostDeviceId, connectorId: entry.connectorId, cwd: entry.cwd }));
     }
     const keyRef = Object.freeze({}), billingTenant = gateway.billingTenant;
-    return { personalAgent: { enabled: true, historyEnabled: true,
+    return { ...(agentSourceAccess ? { agentSourceAccess } : {}), personalAgent: { enabled: true, historyEnabled: true,
       ...(capacity ? { capacity } : {}),
       ...(targets.size ? { localTargetFor: ({ actor }) => targets.get(actor.accountId) ?? null } : {}),
       gateway: { gatewayOrigin: gateway.origin, billingTenant, keyRef,

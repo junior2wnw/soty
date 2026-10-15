@@ -6,6 +6,7 @@ import ts from 'typescript';
 
 // Actual controller; synthetic DOM and signed-API boundary. Native layout,
 // checkbox keyboard activation and real Connect signing need the HTML fixture.
+const sourceAccessCompiled = ts.transpileModule(await readFile(new URL('../agent-source-access.ts', import.meta.url), 'utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const compiled = ts.transpileModule(await readFile(new URL('../access-panel.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
@@ -95,7 +96,9 @@ export function fixture(t, initial = {}) {
     return { element, body, close };
   };
   const module = { exports: {} };
-  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ({ './dom': dom, './dialogs': { createDialog }, './icons': { icon: () => make('svg') } })[name] ?? {},
+  const sourceAccessModule={exports:{}};
+  vm.runInNewContext(sourceAccessCompiled,{module:sourceAccessModule,exports:sourceAccessModule.exports,require:name=>({'./dom':dom})[name]??{},document,crypto:{randomUUID},Date,Set,Map});
+  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ({ './agent-source-access': sourceAccessModule.exports, './dom': dom, './dialogs': { createDialog }, './icons': { icon: () => make('svg') } })[name] ?? {},
     document, HTMLElement: Element, crypto: { randomUUID }, URL, Date, Set, Map,
     navigator: { clipboard: { async writeText(value) { assert.ok(typeof value === 'string' && value.startsWith('soty_cap_'), 'synthetic secret only'); copied++; } } },
     window: { addEventListener: (name, fn) => windowEvents.set(name, fn), removeEventListener: name => windowEvents.delete(name) },
@@ -103,6 +106,7 @@ export function fixture(t, initial = {}) {
   const api = { async request(method, args) {
     assert.equal(args.expectedAccountId, currentAccount, 'request remains bound to the mounted account');
     const copiedArgs = structuredClone(args); calls.push({ method, args: copiedArgs });
+    if (method === 'agent.sources.list') return {accountId:currentAccount,deviceId:'synthetic-device',apps:[]};
     if (handlers.has(method)) return handlers.get(method)(copiedArgs);
     if (method === 'access.principals.list') return { principals: structuredClone(data.principals.filter(item => item.accountId === currentAccount)), cursor: null };
     if (method === 'access.grants.list') return { grants: structuredClone(data.grants.filter(item => item.principalId === args.principalId)), cursor: null };

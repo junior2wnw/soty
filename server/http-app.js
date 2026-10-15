@@ -1,4 +1,5 @@
 import express from "express";
+import { createAgentSourceAccess } from './agent-source-access.js';
 import path from "node:path";
 import { attachAccountTransfer } from "./account-transfer.js";
 import { attachConnectModule, connectAllowedOrigins } from "./connect-module.js";
@@ -64,7 +65,7 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, managedReviewsSource, nativeVoice, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, localExecutorCurrent = false } = {}, nativeSources) {
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -79,7 +80,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice,
-    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
@@ -165,7 +166,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [voice, personal, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -173,7 +174,13 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
-    personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities, apps, connectors }), configuration: personalAgent });
+    sourceAccess = createAgentSourceAccess({ entries: externalEntries, getConnect: () => connect, getCapabilities: () => capabilities,
+      getApps: () => apps, configuration: agentSourceAccess, databasePath: path.join(dataDir || path.resolve('data'), 'agent-source-access', 'credentials.sqlite'),
+      audience: admittedCapabilityAudience ? admittedCapabilityAudience.replace(/\/$/u, '') + '/mcp' : null,
+      legacyResolver: personalAgent?.sourceCredentialFor });
+    personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities, apps, connectors }),
+      configuration: { ...personalAgent, sourceReferences: personalAgent?.sourceReferences ?? externalEntries.map(entry => entry.contract),
+        sourceCredentialFor: sourceAccess.sourceCredentialFor } });
     voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
@@ -278,7 +285,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
-      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), personal, ...(voice.operations.size ? [voice] : [])],
+      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, ...(voice.operations.size ? [voice] : [])],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
@@ -317,6 +324,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       const attempt = async action => { try { await action(); } catch { failed = true; } };
       if (nativeSources.enabled) await attempt(() => nativeSources.close());
       await attempt(() => personal.close());
+      await attempt(() => sourceAccess.close());
       await attempt(() => voice.close());
       await attempt(() => humanCalls.close());
       await attempt(() => nativeRecovery?.close());

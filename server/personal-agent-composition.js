@@ -107,6 +107,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       return delegated;
     });
     const sourceDetail = (reference, delegated) => {
+      const latest = sourceActor(reference);
+      need(['accountId', 'clientId', 'principalId', 'grantId'].every(key => latest[key] === delegated[key]), 'agent_source_denied');
       current(actor, services => services.capabilities.withOwnerAuthority({ actor: delegated }, owner =>
         need(owner.accountId === actor.accountId && owner.deviceId === actor.deviceId, 'agent_source_denied')));
       // Existing Connect/Apps/Native fences remain outside the current actor fence.
@@ -145,7 +147,12 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
             const own = admitted.get(keyFor(item.reference));
             if (!own || own.digest !== item.reference.digest || item.executionEnabled !== true) continue;
             if (item.effects.length && !canUseNativeTarget(service.getContract({ actor: delegated, reference: own }))) continue;
-            items.set(keyFor(own), { item, delegated, reference: own });
+            // A broad legacy grant can discover another reference, but cannot
+            // override that reference's current managed consent or tombstone.
+            let ownDelegated;
+            try { ownDelegated = sourceActor(own); sourceDetail(own, ownDelegated); }
+            catch (error) { if (denied(error)) continue; throw error; }
+            items.set(keyFor(own), { item, delegated: ownDelegated, reference: own });
           }
           cursor = page.cursor;
         } while (cursor);

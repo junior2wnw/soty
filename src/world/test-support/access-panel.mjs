@@ -7,6 +7,7 @@ import ts from 'typescript';
 
 // Actual AccessPanel controller, synthetic DOM/dialog and signed-API ports.
 // This does not prove native modal focus, layout, Connect signing or an AS flow.
+const sourceAccessCompiled = ts.transpileModule(await readFile(new URL('../agent-source-access.ts', import.meta.url), 'utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const compiled = ts.transpileModule(await readFile(new URL('../access-panel.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
@@ -112,7 +113,9 @@ function fixture(t, initial = {}) {
     return { element, body, close };
   };
   const module = { exports: {} }, listeners = new Map();
-  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ({ './dom': dom, './dialogs': { createDialog }, './icons': { icon: () => make('svg') } })[name] ?? {},
+  const sourceAccessModule={exports:{}};
+  vm.runInNewContext(sourceAccessCompiled,{module:sourceAccessModule,exports:sourceAccessModule.exports,require:name=>({'./dom':dom})[name]??{},document,crypto:{randomUUID},Date,Set,Map});
+  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ({ './agent-source-access': sourceAccessModule.exports, './dom': dom, './dialogs': { createDialog }, './icons': { icon: () => make('svg') } })[name] ?? {},
     document, HTMLElement: Element, crypto: { randomUUID }, URL, Date, Set, Map, console,
     window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) },
   });
@@ -120,6 +123,7 @@ function fixture(t, initial = {}) {
     assert.equal(args.expectedAccountId, accountId);
     const copied = structuredClone(args); calls.push({ method, args: copied });
     if (handlers.has(method)) return handlers.get(method)(copied);
+    if (method === 'agent.sources.list') return {accountId:accountId,deviceId:'synthetic-device',apps:[]};
     if (method === 'access.principals.list') return { principals: structuredClone(data.principals), cursor: null };
     if (method === 'oauth.connections.list') return { connections: structuredClone(data.connections), nextCursor: null };
     if (method === 'access.invocations.list') return { invocations: [], nextCursor: null };

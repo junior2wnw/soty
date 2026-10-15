@@ -3,6 +3,7 @@ import { createDialog, type WorldDialog } from './dialogs';
 import { icon } from './icons';
 import type { WorldApi } from './types';
 import './access-panel.css';
+import { mountAgentSourceAccess } from './agent-source-access';
 
 export interface AccessAvailability { notesCreateEnabled: boolean; audience: string | null }
 export interface AccessPanelOptions {
@@ -153,6 +154,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   workspace.append(header, availabilityHint, tabs, announcement, content); host.replaceChildren(workspace);
 
   let disposed = false;
+  const sourceAccessHost = el('div'); workspace.append(sourceAccessHost);
   let invalid = false;
   let view: View = 'clients';
   let availability: AccessAvailability = { notesCreateEnabled: false, audience: null };
@@ -177,6 +179,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     state.dialog.body.replaceChildren(); state.dialog.close(); state.dialog.element.remove();
   }
   function erase() {
+    sourceAccess.dispose();
     closeDialog(true);
     knownPrincipals.clear(); revokeOutcomes.clear(); expandedConnections.clear(); selectedPrincipal = null;
     for (const list of [principals, connections, grants, actions, events]) { list.items = []; list.request++; list.cursor = null; list.next = null; list.previous = []; }
@@ -201,6 +204,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       throw error;
     }
   }
+  const sourceAccess = mountAgentSourceAccess(sourceAccessHost, { api: { request }, accountId });
   function openDialog(title: string, returnKey?: string): DialogState {
     closeDialog(true);
     const dialog = createDialog(title, () => {
@@ -819,7 +823,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   selectView('clients'); void checkAvailability();
   return {
     dispose() { if (disposed) return; disposed = true; window.removeEventListener('pagehide', pageHidden); erase(); },
-    async flush() { await Promise.allSettled([...mutations]); },
-    hasUnsavedChanges() { return alive() && (mutations.size > 0 || Boolean(dialogState?.dirty)); }
+    async flush() { await Promise.allSettled([...mutations]); await sourceAccess.flush(); },
+    hasUnsavedChanges() { return alive() && (mutations.size > 0 || Boolean(dialogState?.dirty) || sourceAccess.hasUnsavedChanges()); }
   };
 }
