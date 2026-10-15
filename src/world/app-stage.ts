@@ -71,6 +71,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let disposed = false, runtimeStarted = false, runtimePending = false, accountPending = false;
   let routeGeneration = 0, frameGeneration=0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
   let presentationVersion = 0, applyingPresentation = false;
+  let displayEpoch = 0, releaseRuntimeDisplay: (() => void) | null = null;
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
   let lastVisiblePresentation = initial.presentation;
@@ -290,8 +291,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         &&fresh.generation===peer.generation&&matchesScopedCaptureContext(result,{appId:app.appId,source});
     },capture:parameters=>pickProjectFeedbackMedia({...parameters,document:host.ownerDocument}),
   });
-  const recoveryRetry = button('Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
-  recoveryRetry.hidden = true; message.after(recoveryRetry);
+  const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
+  recoveryRetry.hidden = options.presentation !== 'widget'; message.after(recoveryRetry);
   const recovery = createAppBootRecovery({ view, appId: initial.target.appId, getFrame: () => runtime.querySelector('iframe'),
     isCurrent: current, canRecover: () => !runtimePending,
     recover: stillCurrent => launchRuntime(true, stillCurrent),
@@ -354,6 +355,36 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     ensureDiscussion(); showPanel();
     options.onRemember?.(pinned, app);
   }
+  function resetRuntimeDisplay(): void {
+    displayEpoch++; releaseRuntimeDisplay?.(); releaseRuntimeDisplay = null;
+  }
+  function watchRuntimeDisplay(frame: HTMLIFrameElement): void {
+    const epoch = displayEpoch;
+    let timer: number | undefined, ownMessage = 'Открываем окно приложения…';
+    const live = () => current() && epoch === displayEpoch && runtime.querySelector('iframe') === frame;
+    const clearTimer = () => { if (timer !== undefined) view.clearTimeout(timer); timer = undefined; };
+    const settle = (text: string) => {
+      clearTimer(); runtime.setAttribute('aria-busy', 'false');
+      // A transport event must not erase a later access/renewal message.
+      if (!message.textContent || message.textContent === ownMessage) { showMessage(text); ownMessage = text; }
+      if (text) recoveryRetry.hidden = false;
+    };
+    const loaded = () => {
+      if (!live()) return;
+      frameGeneration++; stopAssist();
+      settle(''); // Document load is not application readiness or authentication.
+    };
+    const failed = () => { if (live()) settle('Не удалось загрузить окно приложения. Попробуйте открыть заново.'); };
+    showMessage(ownMessage); runtime.setAttribute('aria-busy', 'true');
+    frame.addEventListener('load', loaded, { signal: controller.signal });
+    frame.addEventListener('error', failed, { signal: controller.signal });
+    timer = view.setTimeout(() => {
+      if (live()) settle('Загрузка окна не подтверждена. Если оно пустое, откройте заново.');
+    }, 12_000);
+    releaseRuntimeDisplay = () => {
+      clearTimer(); frame.removeEventListener('load', loaded); frame.removeEventListener('error', failed);
+    };
+  }
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
@@ -361,9 +392,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       runtimeStarted=true;runtime.replaceChildren(emptyState('Голосовое приложение недоступно на этом адресе',
         'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
     }
-    runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.hidden = true; showMessage('');
+    resetRuntimeDisplay();
+    runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
+    recoveryRetry.hidden = options.presentation !== 'widget'; showMessage('');
     stopAssist();
     const existingFrame = runtime.querySelector('iframe');
+    if (existingFrame) showMessage('Соединяем с приложением…');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
       const url = await launcher.launch({ requireSameBinding: automatic });
@@ -377,16 +411,17 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       frameGeneration++;
       lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
-      frame.addEventListener('load', () => { frameGeneration++; stopAssist(); }, { signal: controller.signal });
+      watchRuntimeDisplay(frame);
       runtime.replaceChildren(frame);
     } catch (reason) {
       if (!alive()) return;
+      runtime.setAttribute('aria-busy', 'false');
       captureEntry(); const failure = appLaunchFailure(reason);
       if (existingFrame) showMessage(`${failure.title}. ${failure.detail}`);
-      else runtime.replaceChildren(emptyState(failure.title, failure.detail, button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
+      else runtime.replaceChildren(emptyState(failure.title, failure.detail, options.presentation === 'widget' ? undefined : button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
       if (automatic) recoveryRetry.hidden = false;
     } finally {
-      if (current()) { runtimePending = false; refresh.disabled = false; ensureDiscussion(); showPanel(); }
+      if (current()) { runtimePending = false; refresh.disabled = false; recoveryRetry.disabled = false; ensureDiscussion(); showPanel(); }
     }
   }
   function updateRoute(next: AppLaunchIntent): void {
@@ -477,6 +512,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

@@ -20,13 +20,23 @@ const widget = { id: 'widget-11111111-1111-4111-8111-111111111111', name: 'Tasks
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const tick = async () => { await setImmediate(); };
 
-function fixture({ popover = true } = {}) {
+function fixture({ popover = true, navigation = false } = {}) {
   const values = new Map(), storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
   const account = 'profile-a', nodes = [], stages = [], notices = [], dialogs = [];
   workspace.editWidgetWorkspace(storage, account, state => { state.widgets.push({ ...widget }); });
-  const view = new EventTarget(), doc = new EventTarget();
-  Object.assign(view, { localStorage: storage, innerWidth: 390, innerHeight: 844, location: { hash: '' } });
+  const view = new EventTarget(), doc = new EventTarget(), frames = new Map(); let nextFrame = 0;
+  Object.assign(view, { localStorage: storage, innerWidth: 390, innerHeight: 844, location: { hash: '' },
+    requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; },
+    cancelAnimationFrame(id) { frames.delete(id); } });
   Object.assign(doc, { defaultView: view, activeElement: null });
+  let navigationRect = { top: 0, width: 0, height: 0 };
+  const navigationNode = navigation ? { getBoundingClientRect: () => navigationRect } : null, observers = [];
+  doc.querySelector = selector => selector === '.sw-mobile-nav' ? navigationNode : null;
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this); }
+    observe(target) { this.targets.add(target); }
+    disconnect() { this.targets.clear(); }
+  }
   class Port extends EventTarget {
     constructor(tag, className = '', text = '') {
       super(); Object.assign(this, { tagName: tag.toUpperCase(), className, textContent: text, children: [], style: {}, dataset: {}, ownerDocument: doc, hidden: false, open: true });
@@ -57,7 +67,7 @@ function fixture({ popover = true } = {}) {
     const node = el('button', className, label); if (callback) node.addEventListener('click', callback); return node;
   };
   const exports = {};
-  vm.runInNewContext(source, { exports, AbortController, crypto: globalThis.crypto, queueMicrotask,
+  vm.runInNewContext(source, { exports, AbortController, ResizeObserver, crypto: globalThis.crypto, queueMicrotask,
     require: name => name === './dom' ? { el, button, iconButton: (label, icon, callback) => button(label, icon, '', callback) }
       : name === './iframe-pointer-guard' ? pointerGuard : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? launch : {} });
   doc.head = el('head'); doc.createElement = tag => el(tag);
@@ -84,10 +94,91 @@ function fixture({ popover = true } = {}) {
     workspace.editWidgetWorkspace(storage, account, change);
     const event = new Event('storage'); Object.defineProperty(event, 'key', { value: workspace.widgetStorageKey(account) }); view.dispatchEvent(event);
   };
-  return { control, stages, notices, root, nodes, view, doc, el, click, remote, storage, account,
+  return { control, stages, notices, root, nodes, view, doc, el, click, remote, storage, account, frames,
+    frame() { const batch = [...frames.values()]; frames.clear(); for (const callback of batch) callback(); },
+    observers, setNavigation(rect) { navigationRect = rect; },
+    notifyNavigation() { for (const observer of observers) if (observer.targets.has(navigationNode)) observer.callback([], observer); },
     iframePointersBlocked: () => doc.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent)),
     layerChanges: () => layerChanges, read: () => workspace.readWidgetWorkspace(storage, account) };
 }
+
+test('mobile navigation retains its full hit area without changing a pinned desktop workspace or remounting its frame', async t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  f.remote(state => { Object.assign(state.widgets[0], { width: 640, height: 640, x: 1, y: 1 }); });
+  await tick();
+  const saved = f.storage.getItem(workspace.widgetStorageKey(f.account));
+  const node = f.nodes.find(item => item.className === 'sm-widget');
+  const stage = f.stages[0];
+  for (const [width, height, navigationHeight] of [[320, 568, 64], [390, 844, 84]]) {
+    Object.assign(f.view, { innerWidth: width, innerHeight: height });
+    const top = height - navigationHeight;
+    f.doc.querySelector = selector => selector === '.sw-mobile-nav'
+      ? { getBoundingClientRect: () => ({ top, width, height: navigationHeight }) } : null;
+    f.view.dispatchEvent(new Event('resize'));
+    const rect = node.getBoundingClientRect();
+    assert.ok(rect.y + rect.height <= top - 8, 'widget must leave the entire navigation plus an 8px gap');
+    assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved);
+    assert.equal(f.stages.length, 1);
+    assert.equal(stage.disposed, false);
+    assert.equal(stage.current(), true);
+  }
+  Object.assign(f.view, { innerWidth: 1280, innerHeight: 800 });
+  f.doc.querySelector = () => ({ getBoundingClientRect: () => ({ top: 0, width: 0, height: 0 }) });
+  f.view.dispatchEvent(new Event('resize'));
+  assert.deepEqual(node.getBoundingClientRect(), workspace.widgetRect(f.read().widgets[0], { left: 0, top: 0, width: 1280, height: 800 }));
+  assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved);
+});
+
+test('navigation appearing after responsive resize is reserved before the next paint and pending layout is cleaned up', async () => {
+  const f = fixture();
+  f.remote(state => { Object.assign(state.widgets[0], { width: 640, height: 640, y: 1 }); });
+  await tick();
+  const saved = f.storage.getItem(workspace.widgetStorageKey(f.account));
+  const node = f.nodes.find(item => item.className === 'sm-widget');
+  let navigation = null;
+  f.doc.querySelector = () => navigation;
+  Object.assign(f.view, { innerWidth: 320, innerHeight: 568 });
+  f.view.dispatchEvent(new Event('resize'));
+  f.view.dispatchEvent(new Event('resize'));
+  assert.equal(f.frames.size, 1, 'resize work is coalesced');
+  navigation = { getBoundingClientRect: () => ({ top: 504, width: 320, height: 64 }) };
+  f.frame();
+  const rect = node.getBoundingClientRect();
+  assert.ok(rect.y + rect.height <= 496);
+  assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved);
+  assert.equal(f.stages.length, 1);
+  f.view.dispatchEvent(new Event('resize'));
+  f.control.dispose();
+  assert.equal(f.frames.size, 0);
+});
+
+test('navigation geometry changes without a viewport resize preserve the live widget, stored workspace and cleanup', async () => {
+  const f = fixture({ navigation: true });
+  f.remote(state => { Object.assign(state.widgets[0], { width: 640, height: 640, y: 1 }); });
+  await tick();
+  const saved = f.storage.getItem(workspace.widgetStorageKey(f.account));
+  const node = f.nodes.find(item => item.className === 'sm-widget'), stage = f.stages[0];
+  const bottom = () => { const rect = node.getBoundingClientRect(); return rect.y + rect.height; };
+  assert.equal(bottom(), 808, 'hidden navigation permits the saved bottom position');
+  f.setNavigation({ top: 760, width: 390, height: 84 });
+  f.notifyNavigation();
+  assert.ok(bottom() <= 752, 'Back must reserve the newly visible navigation without a resize event');
+  f.frame();
+  f.setNavigation({ top: 780, width: 390, height: 64 });
+  f.notifyNavigation();
+  assert.ok(bottom() <= 772, 'a changed navigation height must also update the clamp');
+  f.setNavigation({ top: 0, width: 0, height: 0 });
+  f.notifyNavigation(); f.frame();
+  assert.equal(bottom(), 808, 'entering a chat restores the saved position without writing it');
+  assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved);
+  assert.equal(f.stages.length, 1); assert.equal(stage.disposed, false); assert.equal(stage.current(), true);
+  const late = f.observers[0].callback;
+  f.notifyNavigation();
+  f.control.dispose();
+  assert.equal(f.frames.size, 0); assert.equal(f.observers[0].targets.size, 0);
+  late([], f.observers[0]);
+  assert.equal(f.frames.size, 0, 'a queued observer callback after dispose must not schedule work');
+});
 
 test('an old hide completion cannot close a replacement stage with the same widget id', async t => {
   const f = fixture(); t.after(() => f.control.dispose());
