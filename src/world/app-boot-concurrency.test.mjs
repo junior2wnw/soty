@@ -20,6 +20,7 @@ function fragment(first, last) {
   assert.ok(start >= 0 && end > start, 'actual source branch must exist');
   return source.slice(start, end);
 }
+const guidePathSource = fragment('  const guidePath =', '  const origins =');
 const sessionSource = fragment('  const frameRequests=', '  function setPolicy(');
 const routeSource = fragment('  async function routeApp(', '  function handleRequest(');
 const launchSource = fragment("    if (op === 'apps.launch') {", "    if (op === 'apps.revoke') {");
@@ -46,7 +47,7 @@ function server() {
     return decision;
   };
   const environment = {
-    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, isRootSignedWorkspaceSource, URL, Buffer, tickets, sessions, bootCandidates: new Map(),
+    assertApps, textId, requestPath, runtimePath, createLaunchPath, selectedRuntimeProfile, isRootSignedWorkspaceSource, URL, URLSearchParams, Buffer, tickets, sessions, bootCandidates: new Map(),
     digest, equalDigest, secret, id: appId, app, actor, cookieName: 'soty_app_session', accountSessionMs: 3600000,
     channels: new Map([['synthetic-connector', {}]]), now: () => state.now,
     activeTarget: () => ({ profile: state.profile }),
@@ -69,7 +70,7 @@ function server() {
     checkAccess(session) { return live(session.decision); }, assertRuntimeBinding: live,
     json(res, status, value) { res.status = status; res.value = value; },
   };
-  vm.runInNewContext(sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\n'
+  vm.runInNewContext(guidePathSource + '\n' + sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\n'
     + 'globalThis.launch=function(args){const op="apps.launch";\n' + launchSource + '\n};', environment, { timeout: 1000 });
   function launch(args) {
     state.launches.push(structuredClone(args));

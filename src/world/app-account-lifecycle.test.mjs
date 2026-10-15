@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as appBootRecovery from './app-boot-recovery.mjs';
+import * as browserAssistPilot from './browser-assist-pilot.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
@@ -92,6 +93,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
     './app-boot-recovery.mjs': appBootRecovery,
+    './browser-assist-pilot.mjs': browserAssistPilot,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
@@ -115,7 +117,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
   ports['./product'].saveDeskPreferences = productModule.exports.saveDeskPreferences;
   const stageModule = { exports: {} };
-  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController });
+  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
