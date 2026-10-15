@@ -1,0 +1,6 @@
+{
+  "schema": "soty.local-app.v1",
+  "name": "feedback",
+  "port": 19244,
+  "entryPath": "/embed"
+}

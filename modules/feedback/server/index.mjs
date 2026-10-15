@@ -31,8 +31,9 @@ export const feedbackOperations = Object.freeze(['apps.feedback.context', 'apps.
 /** Verified Connect actor + Apps participant/source fence are supplied by the
  * host. Neither installation IDs nor actor fields from a body grant access. */
 export function createFeedbackService({ databasePath, registryId = 'soty', environmentId = 'production',
-  actorActive, withAppAuthority, now = Date.now, limits = {} } = {}) {
+  actorActive, withAppAuthority, withTransaction, now = Date.now, limits = {} } = {}) {
   requireThat(typeof databasePath === 'string' && typeof actorActive === 'function' && typeof withAppAuthority === 'function', 'feedback_host_required', 500);
+  requireThat(withTransaction === undefined || typeof withTransaction === 'function', 'feedback_host_required', 500);
   id(registryId); id(environmentId);
   exact(limits, ['maxDatabaseBytes'], []);
   const maxDatabaseBytes = limits.maxDatabaseBytes ?? 64 * 1024 * 1024;
@@ -52,16 +53,49 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
   }
   catch (error) { db.close(); throw error; }
   const operations = new Set(feedbackOperations);
+  let stageReceipt = null;
   function writeCapacity() { requireThat(Number(db.prepare('PRAGMA page_count').get().page_count) < maxPages, 'feedback_storage_capacity', 503); }
   function authenticate(actor) { requireThat(!closed, 'feedback_closed', 503); requireThat(actor && sync(actorActive(actor)) === true, 'feedback_authentication_required', 401); id(actor.accountId); id(actor.deviceId); }
-  function transaction(callback) {
+  function transaction(callback, receiptScope = null) {
     requireThat(!db.isTransaction, 'feedback_nested_transaction', 500);
     db.exec('BEGIN IMMEDIATE');
-    try { const result = sync(callback()); db.exec('COMMIT'); return result; }
+    let active = true, entered = false, completed = false, annotated = false, poisoned = false, staged = null;
+    if (withTransaction) stageReceipt = (actor, inbox, requestKey, intentDigest, value) => {
+      requireThat(!staged, 'feedback_transaction_hook_invalid', 500);
+      staged = { actorId:actor.accountId, inboxId:inbox.id, requestKey, intentDigest, value };
+    };
+    const run = () => {
+      if (!active || entered) { poisoned = true; throw new FeedbackError('feedback_transaction_hook_invalid', 500); }
+      entered = true;
+      try { const result = sync(callback()); completed = true; return result; }
+      catch (error) { poisoned = true; throw error; }
+    };
+    const annotateReceipt = proof => {
+      try {
+      requireThat(active && completed && !annotated && receiptScope && id(receiptScope.args.requestId), 'feedback_transaction_hook_invalid', 500);
+      annotated = true;
+      const encoded = canonicalContractJson(proof);
+      requireThat(Buffer.byteLength(encoded) <= 32768, 'feedback_transaction_hook_invalid', 500);
+      const inbox = installation(receiptScope.provisioningKey), requestKey = hash(receiptScope.args.requestId);
+      requireThat(staged && inbox && staged.inboxId===inbox.id && staged.actorId===receiptScope.actor.accountId
+        && staged.requestKey===requestKey, 'feedback_transaction_hook_invalid', 500);
+      staged.value = { ...staged.value, _hostProof: JSON.parse(encoded) };
+      } catch (error) { poisoned = true; throw error; }
+    };
+    try {
+      const result = sync(withTransaction ? withTransaction(run, annotateReceipt) : run());
+      requireThat(entered && completed && !poisoned, 'feedback_transaction_hook_invalid', 500);
+      // The immutable receipt is inserted once, after the optional host proof
+      // is finalized, still inside the exact transaction that wrote the ticket.
+      if (staged) db.prepare('INSERT INTO feedback_receipts VALUES (?,?,?,?,?)')
+        .run(staged.inboxId,staged.actorId,staged.requestKey,staged.intentDigest,JSON.stringify(staged.value));
+      db.exec('COMMIT'); return result;
+    }
     catch (error) { if (db.isTransaction) db.exec('ROLLBACK');
       if ([5, 6].includes(Number(error.errcode) & 255)) throw new FeedbackError('feedback_busy', 503);
       if ((Number(error.errcode) & 255) === 13) throw new FeedbackError('feedback_storage_capacity', 503);
       throw error; }
+    finally { active = false; stageReceipt = null; }
   }
   const installation = key => db.prepare('SELECT * FROM feedback_installations WHERE provisioning_key=?').get(key);
   function install(scope, provisioningKey) {
@@ -132,7 +166,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           if (args.installationId !== undefined) requireThat(args.installationId === row.id, 'feedback_installation_mismatch', 403);
           const result = callback(context, row);
           authenticate(captured); return result;
-        });
+        }, { actor: captured, args, provisioningKey: key });
         return outcome;
       });
       sync(returned); requireThat(entered, 'feedback_authority_fence_invalid', 500);
@@ -163,6 +197,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
     return { value: null, requestKey };
   }
   function saveReceipt(actor, inbox, requestKey, intentDigest, value) {
+    if (stageReceipt) { stageReceipt(actor,inbox,requestKey,intentDigest,value); return; }
     db.prepare('INSERT INTO feedback_receipts VALUES (?,?,?,?,?)').run(inbox.id, actor.accountId, requestKey, intentDigest, JSON.stringify(value));
   }
   return {
