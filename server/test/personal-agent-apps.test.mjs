@@ -8,6 +8,8 @@ import { createNotesService } from '../../modules/notes/server/index.mjs';
 import { createPersonalAgentComposition } from '../personal-agent-composition.js';
 import { GLM_MODEL } from '../../modules/personal-agent/provider/index.mjs';
 import { createPersonalAgentConversation } from '../../src/platform/personal-agent-client.ts';
+import { createBrowserAssistHost } from '../../src/world/browser-assist-pilot.mjs';
+import { createSourceBrowserAssist } from '../../modules/source-app/browser/assist-sdk.mjs';
 import { CHANNEL_SCHEMA } from '../../modules/apps/server/protocol.mjs';
 
 // Only the WebSocket IO constructor is an in-memory port. Apps schema,
@@ -49,17 +51,17 @@ class MemorySocket extends EventEmitter {
 }
 
 async function fixture(t, { enabled = true, sourceReferences = [], sourceCredentialFor,
-  providerReply, missingUsage = false, receiptStatus = 'completed', receiptOutputTokens = 2 } = {}) {
+  providerReply, browserPilotEnabled = false, missingUsage = false, receiptStatus = 'completed', receiptOutputTokens = 2 } = {}) {
   let connect, personal, rawApps, selectedInput = {}, selectedTool = 'list_my_apps', hold = null;
   const providerCalls = [], appReads = [], receipts = new Map(), rowsSeen = [], auth = new Map();
   const notes = createNotesService({ databasePath: ':memory:', projectId: 'soty' });
   rawApps = createAppsService({ databasePath: ':memory:', shellOrigins: [ORIGIN], appOriginTemplate: 'https://{appId}.component-app.test',
     actorActive: actor => connect.isActorActive(actor), authenticateConnector: value => auth.get(value.token) === `${value.linkId}:${value.deviceId}:${value.connectorId}` });
-  const apps = { execute(request) { assert.equal(request.op, 'apps.list', 'the agent Apps port is read-only');
+  const apps = { execute(request) { if (browserPilotEnabled && request.op === 'apps.inspect') return rawApps.execute(request); assert.equal(request.op, 'apps.list', 'the agent Apps port is read-only');
     appReads.push({ accountId: request.actor.accountId, expectedAccountId: request.args.expectedAccountId });
     const result = rawApps.execute(request); rowsSeen.push(result.apps); return result; } };
   const tenant = 'component_fixture_tenant', keyRef = Object.freeze({});
-  const configuration = { enabled, sourceReferences, ...(sourceCredentialFor ? { sourceCredentialFor } : {}), gateway: {
+  const configuration = { enabled, browserPilotEnabled, sourceReferences, ...(sourceCredentialFor ? { sourceCredentialFor } : {}), gateway: {
     gatewayOrigin: 'https://component-commerce.invalid', billingTenant: tenant, keyRef,
     authorizeActor: ({ actor }) => connect.isActorActive(actor), resolveCredential: async ref => ({ keyRef: ref, tenantId: tenant, bearer: 'synthetic-component-bearer-with-no-provider' }),
     readReceipt: async ({ requestId, billingTenant, keyRef: ref }) => { assert.equal(billingTenant, tenant); assert.equal(ref, keyRef); return { tenantId: tenant, request: receipts.get(requestId) }; },
@@ -325,4 +327,49 @@ test('generic source-free inference remains permitted under the advertised exact
   } });
   const { ui, error, notes } = await browserTurn(f);
   assert.equal(error, undefined); assert.equal(ui.view().phase, 'complete'); assert.equal(notes.length, 1);
+});
+
+
+test('browser pilot real Apps + signed client + actual runtime/provider schema + same-document SDK continuation', async t => {
+  let step = 0;
+  const f = await fixture(t, { browserPilotEnabled: true, providerReply(body, fallback) {
+    const data = body.messages.at(-1).role === 'tool' ? JSON.parse(body.messages.at(-1).content).evidence[0].data.data : null;
+    switch (step++) {
+      case 0: return { name: 'browser_observe', args: {} };
+      case 1: return { name: 'browser_fill', args: { snapshot: data.snapshot, target: data.items.find(x => x.kind === 'fill').id, text: 'Synthetic same-frame task' } };
+      case 3: return { name: 'browser_observe', args: {} };
+      case 4: return { name: 'browser_click', args: { snapshot: data.snapshot, target: data.items.find(x => x.kind === 'click').id } };
+      default: return fallback;
+    }
+  } });
+  const device = await f.ownedHost(f.alice), app = await f.register(f.alice, device, 'Browser pilot synthetic own app');
+  const inspection = good(await f.rpc(f.alice, 'apps.inspect', { appId: app.id }));
+  assert.equal(inspection.actions.canPreview, true);
+  const binding = { appId: app.id, origin: inspection.addresses.canonical.origin, targetRevision: inspection.source.revision,
+    targetDigest: inspection.source.digest, generation: 1, channel: randomBytes(16).toString('hex') };
+  const rootListeners = new Set(), appListeners = new Set(), tasks = []; let approvals = 0;
+  const parent = { postMessage(data) { queueMicrotask(() => { for (const fn of rootListeners) fn({ source: frame, origin: binding.origin, data }); }); } };
+  const frame = { postMessage(data) { queueMicrotask(() => { for (const fn of appListeners) fn({ source: parent, origin: ORIGIN, data }); }); } };
+  const makeNode = (tagName, type, label) => ({ tagName, type, isConnected: true, value: '', autocomplete: 'off', name: '', id: '',
+    closest: () => null, getClientRects: () => [1], getAttribute: () => label, dispatchEvent() {} });
+  const input = makeNode('INPUT', 'text', 'Task'), add = makeNode('BUTTON', 'button', 'Add'); add.click = () => tasks.push(input.value);
+  const child = { crypto: globalThis.crypto, parent, location: { origin: binding.origin }, Event: class {},
+    document: { documentElement: {}, querySelectorAll: () => [input, add, makeNode('INPUT', 'password', 'Never reveal')] },
+    MutationObserver: class { observe() {} disconnect() {} takeRecords() { return []; } }, getComputedStyle: () => ({ visibility: 'visible' }),
+    addEventListener: (_, fn) => appListeners.add(fn), removeEventListener: (_, fn) => appListeners.delete(fn) };
+  const sdk = createSourceBrowserAssist({ appId: app.id, parentOrigin: ORIGIN, view: child, enabled: true });
+  const root = { crypto: globalThis.crypto, setTimeout, clearTimeout, addEventListener: (_, fn) => rootListeners.add(fn), removeEventListener: (_, fn) => rootListeners.delete(fn) };
+  const host = createBrowserAssistHost({ view: root, readPeer: () => ({ window: frame, binding }), approve: async () => { approvals++; return true; } });
+  assert.equal(await host.probe(), true); host.enable();
+  const storage = new Map(), client = { getLocalState: async () => ({ accountId: f.alice.account.accountId }),
+    extension: async (op, args, context) => { assert.equal(context.expectedAccountId, f.alice.account.accountId); return good(await f.rpc(f.alice, op, args)); } };
+  const ui = createPersonalAgentConversation({ accountId: f.alice.account.accountId, client, browserAssist: host,
+    storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } });
+  t.after(() => { ui.dispose(); host.close(); sdk.close(); });
+  const metadata = { appId: app.id, name: app.name, path: '/', status: 'enabled' };
+  const filled = await ui.turn('Fill one synthetic task', metadata);
+  assert.equal(filled.phase, 'complete'); assert.equal(input.value, 'Synthetic same-frame task'); assert.equal(tasks.length, 0);
+  const result = await ui.turn('Confirm Add for the filled synthetic task', metadata);
+  assert.equal(result.phase, 'complete'); assert.deepEqual(tasks, ['Synthetic same-frame task']); assert.equal(approvals, 2);
+  assert.equal(f.providerCalls.length, 6); assert.equal(f.providerCalls.filter(call => call.tools.includes('browser_observe')).length, 4);
 });

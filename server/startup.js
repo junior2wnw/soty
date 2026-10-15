@@ -83,8 +83,9 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
     const capabilityConfiguration = loadCapabilityConfiguration(env), universalConfiguration = loadUniversalConfiguration(env);
     const personalAgentConfiguration = loadPersonalAgentConfiguration(env), nativeVoiceConfiguration = loadNativeVoiceConfiguration(env.SOTY_NATIVE_VOICE_CONFIG || '');
     installedApplications = await loadInstalledApplicationsEntry(env);
-    const personalAgent = installedApplications.sourceCredentialFor ? { ...personalAgentConfiguration.personalAgent,
-      sourceReferences: installedApplications.sourceReferences, sourceCredentialFor: installedApplications.sourceCredentialFor } : personalAgentConfiguration.personalAgent;
+    const personalAgent = { ...personalAgentConfiguration.personalAgent, browserPilotEnabled: true,
+      ...(installedApplications.sourceCredentialFor ? { sourceReferences: installedApplications.sourceReferences,
+        sourceCredentialFor: installedApplications.sourceCredentialFor } : {}) };
     try { app = createHttpApp(distDir, { env, dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration,
       ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration,
       ...httpOptions, env, gonka: rootGonkaOptions(env) }); }

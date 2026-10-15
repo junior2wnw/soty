@@ -1,3 +1,5 @@
+import { createDialog } from './dialogs';
+import { createBrowserAssistHost } from './browser-assist-pilot.mjs';
 import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
@@ -45,6 +47,7 @@ export interface AppStageHandle {
   updateApp(app: WorldAppRecord): void; updateCommunity(group: { communityId: string; name: string } | null): void;
   entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void;
   assistantContext(): WorldAssistantContext | null;
+  browserAssist(): import('./types').WorldBrowserAssist | null;
 }
 
 export function appLaunchFailure(error: unknown): { title: string; detail: string } {
@@ -176,6 +179,55 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
   moreBody.append(widget, publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  let assistChannel = crypto.randomUUID().replaceAll('-', ''), assistEpoch = 0, assistOn = false;
+  let closeAssistDialog: (() => void) | null = null;
+  const askAssist = (text: string, signal?: AbortSignal): Promise<boolean> => {
+    closeAssistDialog?.();
+    if (!current() || signal?.aborted) return Promise.resolve(false);
+    return new Promise(resolve => {
+      let done = false;
+      const finish = (accepted: boolean) => {
+        if (done) return; done = true; view.clearTimeout(timer); signal?.removeEventListener('abort', cancel);
+        closeAssistDialog = null; resolve(accepted && current()); dialog.close();
+      };
+      const cancel = () => finish(false);
+      const dialog = createDialog('Помощник в приложении', () => { options.onModalChange?.(dialog.element, false); finish(false); },
+        { isCurrent: current, resolve: () => assistToggle }, screen);
+      const timer = view.setTimeout(cancel, 60000);
+      closeAssistDialog = cancel; signal?.addEventListener('abort', cancel, { once: true });
+      dialog.body.append(el('p', '', text), el('p', 'sw-muted', 'Подпись действия предоставлена приложением; проверьте его смысл.'),
+        el('p', 'sw-muted', 'Пилот для владельца приложения: одно действие за запрос. Без подтверждения действие не выполняется. Ожидание — до минуты.'));
+      const no = button('Отмена', undefined, 'sw-button-quiet', cancel);
+      dialog.body.append(no, button('Разрешить', undefined, 'sw-button-primary', () => finish(true)));
+      options.onModalChange?.(dialog.element, true); no.focus();
+    });
+  };
+
+  const assist = createBrowserAssistHost({ view, readPeer: () => {
+    const frame = runtime.querySelector('iframe'), pin = launcher.binding(), entry = launcher.entry();
+    return current() && options.presentation !== 'widget' && frame?.contentWindow && pin && entry ? {
+      window: frame.contentWindow, binding: { appId: app.appId, origin: entry.origin,
+        targetRevision: pin.targetRevision, targetDigest: pin.targetDigest, generation: frameGeneration, channel: assistChannel },
+    } : null;
+  }, approve: async (value, { signal }) => {
+    const command = value as { kind: string; label: string; text?: string };
+    return askAssist(`Помощник: ${app.name}\n${command.kind === 'fill' ? 'Заполнить поле' : 'Нажать кнопку'}: ${command.label}${command.kind === 'fill' ? `\nТекст: ${command.text}` : ''}\nРазрешить только это действие?`, signal);
+  } });
+  const stopAssist = () => { closeAssistDialog?.(); assistEpoch++; assistOn = false; assist.revoke(); assistChannel = crypto.randomUUID().replaceAll('-', ''); assistToggle.textContent = 'Помощник в приложении: выключен'; assistToggle.setAttribute('aria-pressed', 'false'); };
+  const assistToggle = button('Помощник в приложении: выключен', 'sparkle', 'sw-button-quiet', () => {
+    if (assistOn) { stopAssist(); return; }
+    const epoch = ++assistEpoch; assistToggle.disabled = true;
+    void assist.probe().then(async available => {
+      if (epoch !== assistEpoch || !current()) return;
+      if (!available) { showMessage('Управление недоступно: автор приложения ещё не включил SDK помощника.'); return; }
+      if (!await askAssist(`Разрешить помощнику видеть отмеченные автором элементы приложения «${app.name}» в этом окне? Каждое нажатие и ввод требуют отдельного подтверждения. Доступ завершится при смене приложения, аккаунта или окна.`)) return;
+      if (epoch !== assistEpoch || !current()) return;
+      assist.enable(); assistOn = true; assistToggle.textContent = 'Помощник в приложении: включён'; assistToggle.setAttribute('aria-pressed', 'true');
+    }).catch(() => { stopAssist(); showMessage('Не удалось включить помощника. Откройте приложение заново.'); })
+      .finally(() => { if (!disposed) assistToggle.disabled = false; });
+  });
+  assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
+  const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
   header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
@@ -310,6 +362,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
     }
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.hidden = true; showMessage('');
+    stopAssist();
     const existingFrame = runtime.querySelector('iframe');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
@@ -324,6 +377,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       frameGeneration++;
       lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
+      frame.addEventListener('load', () => { frameGeneration++; stopAssist(); }, { signal: controller.signal });
       runtime.replaceChildren(frame);
     } catch (reason) {
       if (!alive()) return;
@@ -338,6 +392,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function updateRoute(next: AppLaunchIntent): void {
     if (disposed || !matches(next)) return;
     const wasVisible = !panel.hidden, focusedPanel = panel.contains(host.ownerDocument.activeElement);
+    stopAssist();
     intent = next; presentationVersion++;
     // Closing is immediate and keeps the component/drafts mounted. Reopening
     // must select the route again: a previously shown archive is not the
@@ -414,6 +469,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
+    browserAssist: () => current() && assistOn ? assist : null,
     assistantContext: () => {
       if (!current() || !selectedEntry) return null;
       const binding = launcher.scopedCapture();
@@ -421,6 +477,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

@@ -30,7 +30,7 @@ const terminalArguments = value => {
 /** Callable signed extension. Runtime functions are explicit host imports; no TS donor is dynamically loaded here.
  * outputProfile is local completed-result enforcement, not a claim of upstream forced-tool/json_schema support. */
 export function createPersonalAgentModule({ getConnect, runtime, transport, toolsForActor,
-  scope = { registryId: 'REG.soty', environmentId: 'production', audienceId: 'personal' }, policy = {}, capacity = {}, clock = Date.now } = {}) {
+  browserPilot, scope = { registryId: 'REG.soty', environmentId: 'production', audienceId: 'personal' }, policy = {}, capacity = {}, clock = Date.now } = {}) {
   fields(scope, ['registryId', 'environmentId', 'audienceId']);
   for (const value of Object.values(scope)) identifier(value, 160);
   const hostScope = freeze({ ...scope }), modelPolicy = boundedPolicy(policy);
@@ -42,7 +42,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     && typeof runtime?.createContextStore === 'function' && typeof runtime?.adapterFor === 'function'
     && runtime.outputProfile === 'host-enforced-terminal.v1' && typeof toolsForActor === 'function'
     && isPersonalAgentTransport(transport) && transport.configured === true;
-  const contexts = new Map(), turns = new Map(), operations = new Set(['agent.turn', 'agent.cancel']); let closed = false;
+  const contexts = new Map(), turns = new Map(), operations = new Set(['agent.turn', 'agent.cancel', ...(browserPilot?.operations ?? [])]); let closed = false;
   const now = () => { const value = clock(); requireValue(Number.isSafeInteger(value) && value >= 0); return value; };
   const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
   const actorScope = actor => ({ ...hostScope, accountId: actor.accountId });
@@ -65,6 +65,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
   };
   async function executeAsync({ op, args, actor }) {
     requireValue(configured, 'agent_transport_unavailable'); currentActor(actor);
+    if (browserPilot?.operations.has(op)) return browserPilot.executeAsync({ op, args, actor });
     if (op === 'agent.cancel') {
       fields(args, ['requestId']); const turnId = identifier(args.requestId, 100);
       const turn = turns.get(hash({ scope: actorScope(actor), turnId }));
@@ -74,12 +75,14 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       return { schema: 'soty.personal-agent-cancel.v1', requestId: turnId, cancelRequested, remoteTerminationVerified: false };
     }
     requireValue(op === 'agent.turn');
-    fields(args, ['requestId', 'prompt'], ['contextId', 'selection']);
+    fields(args, ['requestId', 'prompt'], ['contextId', 'selection', 'browser']);
+    requireValue(args.browser === undefined || browserPilot, 'agent_source_denied');
     let selection;
     if (args.selection !== undefined) {
       fields(args.selection, ['appId', 'handle']);
       requireValue(/^app-[a-f0-9]{32}$/u.test(args.selection.appId) && /^[A-Za-z0-9_-]{43}$/u.test(args.selection.handle));
       selection = freeze({ ...args.selection });
+      requireValue(args.browser === undefined || args.browser.appId === selection.appId, 'agent_source_denied');
     }
     const turnId = identifier(args.requestId, 100), prompt = string(args.prompt, 16000);
     requireValue(turnId.length >= 8 && prompt.length <= 8000);
@@ -94,13 +97,15 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     requireValue(turns.size < maxRetainedTurns, 'agent_capacity');
     const turn = { intent, state: 'running', receipts: [], abort: new AbortController(), retireAfter: timestamp + 1800000 }; turns.set(key, turn);
     const unsubscribe = getConnect().subscribeRevocations(event => { if (event.deviceId === actor.deviceId) turn.abort.abort(); });
-    let bundle, activeProvider, contextEntry, stage = 'prepare';
+    let bundle, browserTurn, activeProvider, contextEntry, stage = 'prepare';
     const assertCurrent = () => {
       currentActor(actor);
       requireValue(!turn.abort.signal.aborted, 'agent_cancelled');
       if (bundle) requireValue(syncResult(bundle.assertCurrent()) === true, 'agent_source_denied');
+      if (browserTurn) requireValue(browserTurn.assertCurrent() === true, 'agent_source_denied');
     };
     try {
+      if (args.browser !== undefined) browserTurn = browserPilot.openTurn({ actor, requestId: turnId, binding: args.browser, signal: turn.abort.signal });
       bundle = await toolsForActor({ actor, scope: frameScope, turnId, selection, signal: turn.abort.signal }); currentActor(actor);
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
       requireValue(bundle.verifyCurrent === undefined || typeof bundle.verifyCurrent === 'function', 'agent_source_unavailable');
@@ -114,7 +119,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         assertCurrent(); return getConnect().withActorAuthorityFence(actor, () => rawContext[name](...values));
       }])));
       const tools = {};
-      for (const [name, tool] of Object.entries(bundle.tools)) {
+      for (const [name, tool] of Object.entries({ ...bundle.tools, ...(browserTurn?.tools ?? {}) })) {
         requireValue(name !== 'finish_answer' && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(name)
           && typeof tool.validate === 'function' && typeof tool.execute === 'function' && tool.inputSchema, 'agent_tool_binding_invalid');
         tools[name] = { ...tool, execute: async (input, signal) => {
@@ -172,11 +177,11 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       }
       throw agentError(agentErrorCode(error));
     }
-    finally { activeProvider?.close(); unsubscribe(); if (contextEntry) contextEntry.active--; }
+    finally { browserTurn?.close(); activeProvider?.close(); unsubscribe(); if (contextEntry) contextEntry.active--; }
   }
   return Object.freeze({ operations, executeAsync,
     status: () => Object.freeze({ configured, wholeReady: false, runtimeBound: Boolean(runtime?.runTurn),
       missingBinding: configured ? null : 'current_runtime_tools_and_accounted_gateway', activeTurns: [...turns.values()].filter(value => value.state === 'running').length }),
-    close() { closed = true; for (const turn of turns.values()) if (turn.state === 'running') turn.abort.abort(); },
+    close() { closed = true; browserPilot?.close(); for (const turn of turns.values()) if (turn.state === 'running') turn.abort.abort(); },
   });
 }

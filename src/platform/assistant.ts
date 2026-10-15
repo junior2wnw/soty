@@ -62,6 +62,12 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
   let answerNote: ReturnType<typeof createAssistantAnswerNote> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
+    browserAssist: {
+      binding: () => mountContext?.browserAssist?.()?.binding() ?? null,
+      dispatch: (command, signal, guard) => { const peer = mountContext?.browserAssist?.();
+        return peer ? peer.dispatch(command, signal, guard) : Promise.reject(Error('assist_permission_closed')); },
+      revoke: () => mountContext?.browserAssist?.()?.revoke(),
+    },
     isCurrent: () => !disposed && mountCurrent(), readSelection: () => mountContext?.context()?.selection ?? null,
     onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;

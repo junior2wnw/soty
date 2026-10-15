@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>Browser assist pilot — Root fixture</title>
+<h1>Same-frame pilot (no model, no production)</h1>
+<p>1. Enable author SDK inside the frame. 2. Enable Root permission. 3. Observe. 4. Fill, Observe again, then click; approve the visible confirmation.</p>
+<button id="enable">Enable for this app</button><button id="revoke">Revoke</button><button id="observe">Observe</button>
+<button id="reload-inner">Reload inner app</button>
+<button id="fill">Fill task</button><button id="click">Click Add</button><button id="stale">Change frame generation</button>
+<pre id="status">Default OFF</pre><iframe id="frame" title="Own task app" sandbox="allow-scripts allow-same-origin" src="http://127.0.0.1:5199/app" style="width:90%;height:350px"></iframe>
+<script type="module">
+import {createBrowserAssistHost} from '/host.mjs';
+const binding={appId:'app-'+ 'a'.repeat(32),origin:'http://127.0.0.1:5199',targetRevision:1,targetDigest:'b'.repeat(64),generation:1,channel:crypto.randomUUID().replaceAll('-','')};
+const frame=document.querySelector('#frame'),status=document.querySelector('#status');let observed;
+let cancelDialog = null;
+function ask(text, signal) {
+  cancelDialog?.(); if (signal?.aborted) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog'), title = document.createElement('h2'), copy = document.createElement('p');
+    title.textContent = 'Разрешить действие?'; copy.textContent = text + '\nПодпись действия предоставлена приложением; проверьте его смысл.';
+    const no = document.createElement('button'), yes = document.createElement('button');
+    no.textContent = 'Отмена'; yes.textContent = 'Разрешить'; let done = false;
+    const finish = ok => { if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',cancel);cancelDialog=null;dialog.close();dialog.remove();resolve(ok); };
+    const cancel = () => finish(false), timer = setTimeout(cancel,60000); cancelDialog=cancel;
+    no.onclick=cancel;yes.onclick=()=>finish(true);dialog.oncancel=event=>{event.preventDefault();cancel();};dialog.onclose=cancel;
+    signal?.addEventListener('abort',cancel,{once:true});dialog.append(title,copy,no,yes);document.body.append(dialog);dialog.showModal();no.focus();
+  });
+}
+if(new URL(location.href).searchParams.get('author')==='enabled'){frame.src='http://127.0.0.1:5199/app-enabled';status.textContent='Authored static SDK-enabled fixture; Root permission remains OFF';}
+const host=createBrowserAssistHost({view:window,readPeer:()=>({window:frame.contentWindow,binding}),approve:(c,{signal})=>ask(`${c.kind} «${c.label}»${c.text?': '+c.text:''}?`,signal)});
+const run=fn=>async()=>{try{status.textContent=JSON.stringify(await fn(),null,2);}catch(e){status.textContent=e.message;}};
+document.querySelector('#enable').onclick=run(async()=>{if(!await host.probe())throw Error('Author SDK is off or unavailable');if(!await ask('Разрешить помощнику доступ к отмеченным элементам этого приложения?'))return 'Denied';binding.channel=crypto.randomUUID().replaceAll('-','');return host.enable();});document.querySelector('#revoke').onclick=run(()=>{cancelDialog?.();host.revoke();return 'Revoked. Reload app to start a fresh consent.';});
+document.querySelector('#observe').onclick=run(async()=>{const r=await host.dispatch({kind:'observe'});observed=r.data;return r;});
+document.querySelector('#fill').onclick=run(()=>host.dispatch({kind:'fill',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='fill').id,text:'Same iframe task'}));
+document.querySelector('#click').onclick=run(()=>host.dispatch({kind:'click',snapshot:observed.snapshot,target:observed.items.find(x=>x.kind==='click').id}));
+document.querySelector('#reload-inner').onclick=run(()=>{cancelDialog?.();host.revoke();observed=null;frame.src=frame.src;return 'Inner app reloaded; enable Root permission again. App storage is preserved.';});
+document.querySelector('#stale').onclick=run(()=>{cancelDialog?.();host.revoke();binding.generation++;return 'Old permission is now stale';});
+frame.addEventListener('load',()=>{cancelDialog?.();host.revoke();binding.generation++;});
+window.addEventListener('pagehide',()=>{cancelDialog?.();host.close();});
+</script>
