@@ -10,6 +10,7 @@ import { loadInstalledApplicationsEntry } from '../../server/installed-applicati
 import { canonicalJson } from '../../modules/capabilities/server/validation.mjs';
 
 const states = new WeakMap(), target = '/run/config/soty-installed-applications.mjs';
+const MODULE_MAXIMUM = 131072;
 const setting = 'SOTY_INSTALLED_APPLICATIONS_SHA256', moduleSetting = 'SOTY_INSTALLED_APPLICATIONS_MODULE';
 const need = (ok, code) => { if (!ok) throw new SafeError(code); };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -27,7 +28,7 @@ async function refs(source, hash) {
   try { return structuredClone(entry.sourceReferences); } finally { await entry.close(); }
 }
 async function replaceModule(state, expected, bytes) {
-  const current = await readUniversalLocalFile(state.source, state.options, { privateFile: true });
+  const current = await readUniversalLocalFile(state.source, state.options, { privateFile: true, maximum: MODULE_MAXIMUM });
   let file, temporary;
   try {
     need(sha(current.bytes)===expected, 'installed_module_rotation_file_cas');
@@ -35,14 +36,14 @@ async function replaceModule(state, expected, bytes) {
     temporary=path.join(path.dirname(state.source), '.soty-installed-'+randomBytes(16).toString('hex')+'.tmp');
     file=await open(temporary, constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(constants.O_NOFOLLOW||0), 0o600);
     await file.writeFile(bytes); await file.sync(); await file.close(); file=null;
-    const check=await readUniversalLocalFile(state.source,state.options,{privateFile:true});
+    const check=await readUniversalLocalFile(state.source,state.options,{privateFile:true,maximum:MODULE_MAXIMUM});
     try { const after=await lstat(state.source,{bigint:true});need(sha(check.bytes)===expected
       && before.dev===after.dev && before.ino===after.ino && before.mtimeNs===after.mtimeNs && before.ctimeNs===after.ctimeNs,
       'installed_module_rotation_file_cas'); } finally { check.dispose(); }
     await rename(temporary,state.source);temporary=null;
     const directory=await open(path.dirname(state.source),constants.O_RDONLY|(constants.O_DIRECTORY||0));
     try { await directory.sync(); } finally { await directory.close(); }
-    const actual=await readUniversalLocalFile(state.source,state.options,{privateFile:true});
+    const actual=await readUniversalLocalFile(state.source,state.options,{privateFile:true,maximum:MODULE_MAXIMUM});
     try { need(sha(actual.bytes)===sha(bytes),'installed_module_rotation_readback'); } finally { actual.dispose(); }
   } finally { current.dispose();if(file)await file.close();if(temporary)await unlink(temporary); }
 }
@@ -63,7 +64,7 @@ export async function prepareInstalledModuleRotation({ original, expectedEnviron
     && env.includes(moduleSetting+'='+target), 'installed_module_rotation_path');
   need(/^[a-f0-9]{64}$/.test(expectedOldSha256||'') && /^[a-f0-9]{64}$/.test(approvedNewSha256||'')
     && expectedOldSha256!==approvedNewSha256 && env.includes(setting+'='+expectedOldSha256),'installed_module_rotation_old_sha');
-  need(approvedModule instanceof Uint8Array && approvedModule.length<=131072 && sha(approvedModule)===approvedNewSha256,'installed_module_rotation_new_sha');
+  need(approvedModule instanceof Uint8Array && approvedModule.length<=MODULE_MAXIMUM && sha(approvedModule)===approvedNewSha256,'installed_module_rotation_new_sha');
   need(typeof restoreOldPolicy==='function','installed_module_rotation_old_proof');
   await assertUniversalPolicyCurrent(oldPolicy);
   const originalReferences=await refs(source,expectedOldSha256);
@@ -94,7 +95,7 @@ export async function prepareInstalledModuleRotation({ original, expectedEnviron
   need(envelope?.header?.algorithm==='RSA-OAEP-SHA256/AES-256-GCM'
     && ['soty.root-encrypted-backup.v1','soty.hive-encrypted-backup.v1'].includes(envelope.header.schema)
     && typeof envelope.ciphertext==='string' && envelope.ciphertext.length>0,'installed_module_rotation_encrypted_backup');
-  const captured=await readUniversalLocalFile(source,options,{privateFile:true});
+  const captured=await readUniversalLocalFile(source,options,{privateFile:true,maximum:MODULE_MAXIMUM});
   try {
     need(sha(captured.bytes)===expectedOldSha256,'installed_module_rotation_old_sha');
     // OPEN preflight executes the exact admission path, without file publication or a mutable handle.
@@ -162,7 +163,7 @@ export function installedModuleCandidateBase(handle,original,policy,candidateIma
 export async function restoreInstalledModuleOriginal(handle) {
   const state=stateFor(handle);if(state.phase==='restored')return;
   need(['captured','staging','staged','admitted'].includes(state.phase),'installed_module_rotation_phase');
-  const current=await readUniversalLocalFile(state.source,state.options,{privateFile:true});let currentHash;
+  const current=await readUniversalLocalFile(state.source,state.options,{privateFile:true,maximum:MODULE_MAXIMUM});let currentHash;
   try { currentHash=sha(current.bytes); } finally { current.dispose(); }
   if(currentHash===state.approvedNewSha256)await replaceModule(state,state.approvedNewSha256,state.originalModule);
   else need(currentHash===state.expectedOldSha256,'installed_module_rotation_file_cas');

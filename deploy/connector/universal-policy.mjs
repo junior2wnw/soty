@@ -172,8 +172,12 @@ async function readBounded(source, visibility, context, maximum = MAX_FILE) {
   finally { bytes?.fill(0); if (descriptor) await descriptor.close(); }
 }
 /** Local operator file transport only. Bytes stay private and disposable. */
-export async function readUniversalLocalFile(source, options, { privateFile = false } = {}) {
-  const context = await filesystemContext(options), file = await readBounded(source, privateFile ? 'private' : 'nonsecret', context);
+export async function readUniversalLocalFile(source, options, fileOptions = {}) {
+  const value = safe(fileOptions); closed(value, [], ['privateFile', 'maximum']);
+  const privateFile = Object.hasOwn(value, 'privateFile') ? value.privateFile : false;
+  const maximum = Object.hasOwn(value, 'maximum') ? value.maximum : MAX_FILE;
+  check(typeof privateFile === 'boolean' && Number.isSafeInteger(maximum) && maximum >= 1 && maximum <= 131072, 'universal_policy_invalid');
+  const context = await filesystemContext(options), file = await readBounded(source, privateFile ? 'private' : 'nonsecret', context, maximum);
   return { bytes: file.bytes, dispose() { file.bytes.fill(0); } };
 }
 export function parseUniversalLocalJson(bytes) { return parse(bytes); }

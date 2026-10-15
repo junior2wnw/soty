@@ -16,6 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { captureExternalApplications } from '../../server/external-applications.js';
 import { prepareInstalledModuleRotation, stageInstalledModuleRotation, admitInstalledModuleRotation,
   restoreInstalledModuleOriginal, markInstalledModuleRestartSuspended, disposeInstalledModuleRotation } from './installed-module-rotation.mjs';
+import { readUniversalLocalFile, parseUniversalLocalJson } from './universal-policy.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 function scope(character) { const appId='app-'+character.repeat(32);return { appId,target:{revision:2,digest:'5'.repeat(64)},sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,
@@ -29,9 +30,11 @@ function encryptOriginal(bytes) { const recipient=generateKeyPairSync('rsa',{mod
  key:publicEncrypt({key:recipient,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},key).toString('base64'),iv:iv.toString('base64')};
  const cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(header).sort()))));
  return Buffer.from(JSON.stringify({header,ciphertext:Buffer.concat([cipher.update(bytes),cipher.final(),cipher.getAuthTag()]).toString('base64')})); }
-async function fixture(t,fault={},upgrade=false) {
+async function fixture(t,fault={},upgrade=false,nextSize=0) {
  const root=await mkdtemp(path.join(await realpath(tmpdir()),'soty-universal-policy-installed-rotation-')),source=path.join(root,'installed.mjs');
- const oldBytes=code(false),nextBytes=code(!upgrade,upgrade?2:1),f=engineFixture(fault),policies=[],handles=[];
+ const oldBytes=code(false),rawNext=code(!upgrade,upgrade?2:1),nextBytes=nextSize
+  ? Buffer.concat([rawNext,Buffer.from('\n/*'+' '.repeat(nextSize-rawNext.length-6)+'*/\n')]) : rawNext;
+ const f=engineFixture(fault),policies=[],handles=[];
  const options={fixtureRoot:root,shellOrigins:['https://soty.fixture.invalid']};await writeFile(source,oldBytes,{mode:0o600});
  const current=captureUniversalPreparedness({compiledLegacyMode:false,universalConfigured:true,reviewsConfigured:true,humanProfile:null,humanHttpEnabled:false});
  const oldPlan={schema:'soty.universal-rollout-policy.v1',phase:'features',human:null,reviews:null,
@@ -65,6 +68,31 @@ async function fixture(t,fault={},upgrade=false) {
  catch(error){await restoreInstalledModuleOriginal(rotation);await f.run.restartPolicy(args.originalId,snapshot.HostConfig.RestartPolicy);throw error;} }
  return {...f,source,root,oldBytes,nextBytes,snapshot,input,stage,policies,handles,custody,oldWitness};
 }
+
+test('module rotation stages and restores the 128 KiB boundary with exact bytes and fresh old proof',async t=>{
+ const f=await fixture(t,{},false,131072);assert.equal(f.nextBytes.length,131072);
+ const {rotation,nextPolicy}=await f.stage();assert.deepEqual(await readFile(f.source),f.nextBytes);
+ await restoreInstalledModuleOriginal(rotation);assert.deepEqual(await readFile(f.source),f.oldBytes);
+ await assert.rejects(assertUniversalPolicyCurrent(nextPolicy),{code:'universal_policy_file_changed'});
+ assert.equal(f.events.some(event=>event.startsWith('create:')||event.startsWith('stop:')),false);
+});
+
+test('local file maximum is explicit, bounded and closed while default and JSON limits stay 64 KiB',async t=>{
+ const f=await fixture(t),file=path.join(f.root,'large-local.mjs'),bytes=Buffer.alloc(131072,32);
+ await writeFile(file,bytes,{mode:0o600});
+ await assert.rejects(readUniversalLocalFile(file,f.input.options,{privateFile:true}),{code:'universal_policy_file_invalid'});
+ const read=await readUniversalLocalFile(file,f.input.options,{privateFile:true,maximum:131072});
+ assert.deepEqual(read.bytes,bytes);read.dispose();assert.equal(read.bytes.every(byte=>byte===0),true);
+ for(const value of [{maximum:131073},{maximum:0},{maximum:1.5},{maximum:'131072'},{maximum:null},
+  {privateFile:1},{maximum:131072,actor:'forged'}])
+  await assert.rejects(readUniversalLocalFile(file,f.input.options,value),{code:'universal_policy_invalid'});
+ let accessed=false;const getter={};Object.defineProperty(getter,'maximum',{enumerable:true,get(){accessed=true;return 131072;}});
+ await assert.rejects(readUniversalLocalFile(file,f.input.options,getter),{code:'universal_policy_invalid'});assert.equal(accessed,false);
+ await writeFile(file,Buffer.alloc(131073,32));
+ await assert.rejects(readUniversalLocalFile(file,f.input.options,{privateFile:true,maximum:131072}),{code:'universal_policy_file_invalid'});
+ const json=Buffer.from(JSON.stringify({padding:'x'.repeat(65536)}));
+ assert.throws(()=>parseUniversalLocalJson(json),{code:'universal_policy_file_invalid'});
+});
 
 test('explicit one-key rotation uses real policy/createConfig and retains the measured original full Env/7mounts',async t=>{
  const f=await fixture(t),{request,nextPolicy}=await f.stage();
