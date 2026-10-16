@@ -120,12 +120,12 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
     if (tab === 'profile') {
       const account = status?.account;
       content.innerHTML = `<h3>${escape(account?.label || label)}</h3><p>Ваш профиль сохраняется при обновлениях. У каждого подключённого устройства свой доступ.</p>
-        ${typeof onEditProfile === 'function' ? '<button data-edit-profile>Имя, фото и описание</button>' : `<label>Как вас увидят друзья<input data-name maxlength="64" value="${escape(account?.label || label)}"></label><button data-name-save>Сохранить имя</button>`}
+        ${typeof onEditProfile === 'function' ? '<button data-edit-profile>Имя, фото и описание</button>' : `<label>Как вас увидят друзья<input data-name maxlength="80" value="${escape(account?.label || label)}"></label><button data-name-save>Сохранить имя</button>`}
         <button data-card>Мой QR для знакомства</button><button data-existing>Открыть мой профиль с другого устройства</button>
         <label>Открыть ссылку или QR из сообщения<input data-link placeholder="Вставьте ссылку" autocomplete="off"></label><button data-open-link>Продолжить по ссылке</button>
         <div data-qr></div><div data-profiles></div><p class="connect-muted">При добавлении друга вы остаётесь каждый со своим аккаунтом.</p>`;
       on('[data-card]', async () => { const card = await client.card(); content.querySelector('[data-qr]').replaceChildren(); await showQr(link('contact', card.cardId), 'Добавить меня в контакты'); });
-      on('[data-name-save]', async () => { const name = content.querySelector('[data-name]').value; await client.rename(name); if (onRename) await onRename(name); note('Имя сохранено.'); await render(); });
+      on('[data-name-save]', async () => { const name = content.querySelector('[data-name]').value, expectedAccountId = local.accountId; await client.rename(name, expectedAccountId); if (onRename) await onRename(name); note('Имя сохранено.'); await render(); });
       on('[data-edit-profile]', async () => { if (typeof onEditProfile !== 'function') return; onEditProfile(); dialog.close(); });
       on('[data-existing]', async () => { tab = 'devices'; await render(); });
       on('[data-open-link]', async () => { const next = parseConnectLink(content.querySelector('[data-link]').value); if (!next) { note('Это не ссылка подключения этого проекта.'); return; } intent = next; await render(); });

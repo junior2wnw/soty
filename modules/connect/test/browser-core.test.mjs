@@ -491,3 +491,21 @@ test('platform invitation uses existing bootstrap, survives lost ACK and never s
   assert.equal((await owner.extension('platform.invites.list')).invitations.filter(row=>row.redeemedAt!==null).length,1);
   owner.dispose();guest.dispose();
 });
+
+test('profile rename accepts exactly 80 NFC UTF-16 units and rejects invalid names before network or storage changes', async t => {
+  const f = fixture(t), { client, store } = f.client(); t.after(() => client.dispose());
+  await client.bootstrap('Original');
+  const name = 'я'.repeat(80);
+  await client.rename(` ${name} `);
+  assert.equal((await client.card()).label, name); assert.equal((await client.getLocalState()).label, name);
+  const decomposed = 'e\u0301'.repeat(80), normalized = 'é'.repeat(80);
+  await client.rename(decomposed);
+  assert.equal((await client.card()).label, normalized); assert.equal((await client.getLocalState()).label, normalized);
+  const before = store.inspect(), trafficCount = f.traffic.length;
+  for (const invalid of ['я'.repeat(81), '😀'.repeat(41), '', '   ', 'A\nB', 'A\tB', 'A\u0000B', null, {}]) {
+    await assert.rejects(client.rename(invalid), { code: 'INVALID_ARGUMENT' });
+    assert.equal(f.traffic.length, trafficCount, 'invalid input dispatches neither challenge nor signed write');
+    assert.deepEqual(store.inspect(), before, 'invalid input does not change any local installation or revision');
+  }
+  assert.equal((await client.card()).label, normalized);
+});
