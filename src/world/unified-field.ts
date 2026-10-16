@@ -362,7 +362,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   function render(): void {
     if (destroyed || inPointerFrame) return;
     const current = activeLayout(), view = viewportSize(), cam = camera();
-    const level = arranging ? 'detail' : view.width < 720 && contextFocus[mode] ? 'context' : fieldLevelOfDetail(cam.scale, viewport.dataset.lod as 'overview' | 'context' | 'detail' | undefined);
+    const level = arranging ? 'detail' : contextFocus[mode] ? 'context' : fieldLevelOfDetail(cam.scale, viewport.dataset.lod as 'overview' | 'context' | 'detail' | undefined);
     viewport.dataset.mode = contextFocus[mode] ? 'focus' : 'overview'; viewport.dataset.side = mode; viewport.dataset.lod = level;
     viewport.dataset.persistence = persistence; viewport.classList.toggle('is-arranging', arranging); viewport.classList.toggle('is-moving', !!moving || !!contextPreview);
     viewport.style.setProperty('--uf-scale', String(cam.scale)); viewport.style.setProperty('--uf-label-scale', String(1 / cam.scale));

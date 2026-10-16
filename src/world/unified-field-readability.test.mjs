@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fieldBoundsOverlap } from './unified-field-layout.mjs';
+import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fieldBounds, fieldBoundsOverlap } from './unified-field-layout.mjs';
 import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail, normalizeFieldCamera } from './unified-field-camera.mjs';
 import { resolveAppArt } from './app-art.mjs';
 
@@ -102,6 +102,46 @@ function harness(width, height, { scale, focus = '' } = {}) {
   vm.createContext(environment); new vm.Script(compiled).runInContext(environment);
   return { data, view, camera, calls, environment, render: environment.exports.render, titles: environment.exports.titles };
 }
+
+const cameraFlow = compile([statement('fitOverview'), statement('focusContext')].map(print).join('\n')
+  + '\nexports.fitOverview = fitOverview; exports.focusContext = focusContext;');
+function twelveApps(mode) {
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }], shortcuts: [] }, entities = [];
+  for (let n = 0; n < 12; n++) {
+    const q = n % 4 * 40, r = Math.floor(n / 4) * 52 - q / 2;
+    const entity = { kind: 'app', id: 'app-' + String(n).padStart(32, '0') };
+    document.shortcuts.push({ shortcutId: 'app-' + n, entity, contextId: 'personal', slot: [q, r] });
+    entities.push({ entity, title: 'Приложение ' + n });
+  }
+  const h = harness(1280, 650), data = { document, entities, layout: layoutUnifiedField(document, entities) }, e = h.environment;
+  Object.assign(e, { mode, layout: data.layout, activeLayout: () => data.layout, index: createFieldSpatialIndex(data.layout.nodes),
+    available: id => data.layout.nodes.find(node => node.shortcutId === id), fitFieldCamera, fieldBounds });
+  e.contextFocus[mode] = ''; e.cameraFit[mode] = 'overview';
+  // The camera sink is a DOM port; both actual fit functions and camera math run.
+  e.setCamera = (next, fit = 'manual') => { Object.assign(h.camera, normalizeFieldCamera(next)); e.cameraFit[e.mode] = fit; };
+  new vm.Script(cameraFlow).runInContext(e);
+  return { ...h, data, fitOverview: e.exports.fitOverview, focusContext: e.exports.focusContext };
+}
+
+test('actual desktop overview then explicit context focus reveals all twelve saved apps at the same 45 percent without moving data', () => {
+  for (const mode of ['mine', 'search']) {
+    const h = twelveApps(mode), e = h.environment;
+    const positions = () => JSON.stringify([h.data.document, h.data.layout.nodes.map(({ shortcutId, slot, cx, cy }) => ({ shortcutId, slot, cx, cy }))]);
+    const before = positions();
+    h.fitOverview(); h.render();
+    assert.ok(h.camera.scale < .4); assert.equal(e.viewport.dataset.lod, 'overview'); assert.equal(e.nodeElements.size, 3);
+    h.focusContext('personal'); h.render();
+    assert.equal(h.camera.scale, .45); assert.equal(e.contextFocus[mode], 'personal'); assert.equal(e.cameraFit[mode], 'context');
+    assert.equal(e.viewport.dataset.lod, 'context'); assert.equal(e.nodeElements.size, 12);
+    assert.equal(positions(), before);
+    h.fitOverview(); h.render();
+    assert.equal(e.contextFocus[mode], ''); assert.equal(e.viewport.dataset.lod, 'overview'); assert.equal(e.nodeElements.size, 3);
+    e.setCamera({ ...h.camera, scale: .45 }); h.render();
+    assert.equal(e.viewport.dataset.lod, 'overview', 'ordinary unfocused hysteresis is unchanged'); assert.equal(e.nodeElements.size, 3);
+    assert.equal(positions(), before);
+  }
+});
+
 const rect = box => ({ left: box.x - box.width / 2, right: box.x + box.width / 2, top: box.y - 22, bottom: box.y + 22 });
 const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
