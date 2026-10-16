@@ -206,7 +206,7 @@ class WorldApplication {
         onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
         onOpenCurrentEntry: async entry => {
           if (!current()) return;
-          const next = parseAppLaunchRoute(formatAppLaunchRoute(entry));
+          const next = parseAppLaunchRoute(formatAppLaunchRoute({ appId: entry.appId, domainId: entry.domainId, path: entry.path }));
           if (next && !await this.widgets?.replaceEntry(instanceId, next) && current()) this.toast('Не удалось заменить вход. Сохраните незавершённое действие и повторите.', true);
         },
         onSettings: value => { if (current()) this.openAppSettings(value); },
@@ -775,7 +775,7 @@ class WorldApplication {
     if (/^app-[a-f0-9]{32}$/.test(app.appId)) actions.append(action('Руководство', 'info', () => {
       void this.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { appId: app.appId, path: '/_soty/guide' }).then(result => {
         if (!accountCurrent()) return;
-        void this.openApplication(app, parseAppLaunchRoute(formatAppLaunchRoute(result.entry))!);
+        void this.openApplication(app, parseAppLaunchRoute(formatAppLaunchRoute({ appId: result.entry.appId, domainId: result.entry.domainId, path: result.entry.path }))!);
       }).catch(error => { if (accountCurrent()) this.toast(error?.code === 'app_guide_unsupported'
         ? 'У этого приложения собственный вход. Откройте руководство внутри приложения.' : 'Руководство сейчас недоступно.', true); });
     }));
@@ -1971,7 +1971,7 @@ class WorldApplication {
       ...this.appRuntime(app),
       onOpenCurrentEntry: async entry => {
         if (!current()) return;
-        const next = parseAppLaunchRoute(formatAppLaunchRoute(entry));
+        const next = parseAppLaunchRoute(formatAppLaunchRoute({ appId: entry.appId, domainId: entry.domainId, path: entry.path }));
         if (next) await this.openApplication({ ...app, entry }, next);
       },
       onNavigate: (next, navigation) => {

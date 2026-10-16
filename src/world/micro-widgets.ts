@@ -186,6 +186,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
         suppressMoveClick = false; if (current()) openPlacement(widget.id);
       }, { signal: local.signal });
       handle.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
         if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancel(); return; }
         if (!current()) return;
         const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };

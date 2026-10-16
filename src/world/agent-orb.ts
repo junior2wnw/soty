@@ -160,6 +160,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   const cancelPointerDrag = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer) cancelDrag(); };
   orb.addEventListener('pointercancel', cancelPointerDrag, { signal: abort.signal }); orb.addEventListener('lostpointercapture', cancelPointerDrag, { signal: abort.signal });
   orb.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
     if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancelDrag(); return; }
     const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (event.key !== 'Home' && !delta[event.key]) return;
