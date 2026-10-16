@@ -650,7 +650,7 @@ test('known Native ingress HTML refusals stay denied but render only inside trus
       assert.equal(response.headers.location, undefined); assert.equal(response.headers['set-cookie'], undefined);
       const markup = response.body.toString();
       assert.match(markup, /<h1 id="status-title">[^<]+<\/h1>/u);
-      assert.match(markup, /Откройте отдельно кнопкой над приложением/u);
+      assert.match(markup, /В меню ⋯ над окном выберите „Открыть отдельно“\./u);
       assert.match(markup, /"publicResetPath":null/u);
       assert.doesNotMatch(markup, /\/_soty\/ingress-check|untrusted\.example/u);
       const shellValue = /"shellUrl":("[^"\n]+")/u.exec(markup)?.[1]; assert.ok(shellValue);
