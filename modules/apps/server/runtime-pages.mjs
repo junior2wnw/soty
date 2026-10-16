@@ -112,6 +112,36 @@ function pageClient(config, allowPath) {
   const topLevel = window.top === window.self, controllers = new Set();
   document.body.dataset.framed = String(!topLevel);
   let busy = false, navigated = false, offPage = false, generation = 0;
+  // Optional local phase hints. Never readiness, recovery or authorization.
+  // This starts only after the one-time fragment has already been cleared.
+  const diagnostic = (() => {
+    const phases = ['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation','boot_failed','boot_inactive'];
+    let phase = null, parentOrigin = '', sent = 0, deadline = 0, timeout, active = config.mode === 'boot' && config.scoped === true && !config.renewal && !topLevel;
+    const send = () => {
+      if (!active || !parentOrigin || !phase || sent >= 24) return;
+      if (performance.now() >= deadline) { stop(); return; }
+      sent++;
+      try { window.parent.postMessage({schema:'soty.runtime-phase.v1',phase},parentOrigin); } catch { /* No payload or action. */ }
+      if (sent >= 24) stop();
+    };
+    const stop = () => { active = false; phase = null; parentOrigin = ''; clearTimeout(timeout); window.removeEventListener('message',receive); };
+    const receive = event => {
+      if (!active || offPage || navigated || event.source !== window.parent || !config.parentOrigins.includes(event.origin) || event.ports?.length) return;
+      if (deadline && performance.now() >= deadline) { stop(); return; }
+      try {
+        const data = event.data;
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+        const keys = Reflect.ownKeys(data), schema = Object.getOwnPropertyDescriptor(data,'schema');
+        if (keys.length !== 1 || keys[0] !== 'schema' || !schema || !Object.hasOwn(schema,'value') || schema.value !== 'soty.runtime-phase-watch.v1'
+          || parentOrigin && parentOrigin !== event.origin) return;
+        if (!parentOrigin) { parentOrigin = event.origin; deadline = performance.now()+120_000; timeout = setTimeout(stop,120_000); }
+        send(); if (sent >= 24) stop();
+      } catch { /* Ignore malformed input without reading or serializing it. */ }
+    };
+    if (active) window.addEventListener('message',receive);
+    return { phase(next) { if (active && phases.includes(next)) { phase = next; send(); } },
+      close() { if (active) { phase = 'boot_inactive'; send(); stop(); } } };
+  })();
   let recoveryParentOrigin = '', recoveryNonce = '', recoveryApp = '', recoveryFailure = false, recoverySent = false;
   function notifyRecovery() {
     if (!recoveryParentOrigin || !recoveryFailure || recoverySent || offPage || navigated) return;
@@ -169,10 +199,11 @@ function pageClient(config, allowPath) {
   }
   async function boot() {
     const currentGeneration = generation;
-    if (cleanupFailed || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) { ticket = ''; show('expired'); return; }
+    if (cleanupFailed || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) { ticket = ''; diagnostic.phase('boot_failed'); show('expired'); return; }
     busy = true; let checkingCookie = false;
     try {
       const body = { ticket }; ticket = '';
+      diagnostic.phase('boot_admission_pending');
       const issued = await requestJson('POST', body);
       if (offPage || generation !== currentGeneration) return;
       const path = allowPath(issued.entryPath);
@@ -180,12 +211,14 @@ function pageClient(config, allowPath) {
       if(issued.frame!==undefined&&(!config.scoped||typeof issued.frame!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.frame)))throw{code:'cookie_check'};
       show('checking', true);
       checkingCookie = true;
+      diagnostic.phase('boot_cookie_pending');
       const checked = await requestJson('GET', undefined, issued.sessionCheck, issued.frame);
       if (offPage || generation !== currentGeneration) return;
       if (checked.sessionCheck !== issued.sessionCheck) throw { code: 'cookie_check' };
       if(config.scoped){
         if(typeof issued.scopedRequestId!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.scopedRequestId))throw{code:'app_scoped_context_closed'};
         let ready=false;
+        diagnostic.phase('boot_continuation_pending');
         try{const response=await fetch('/api/embed/session-continue',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',
           headers:{'content-type':'application/json',...(issued.frame?{'x-soty-frame':issued.frame}:{}),...(config.renewal?{'x-soty-boot-check':issued.sessionCheck}:{})},body:JSON.stringify({requestId:issued.scopedRequestId}),signal:AbortSignal.timeout(10000)});
           const bytes=await response.arrayBuffer();if(bytes.byteLength>1024)throw{code:'app_scoped_continue_invalid'};
@@ -197,8 +230,10 @@ function pageClient(config, allowPath) {
         if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};
           window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
       }
+      diagnostic.phase('boot_navigation');
       show('opening', true); navigate(issued.frame?path+'?sotyFrame='+issued.frame:path, currentGeneration);
     } catch (error) { if (!offPage && generation === currentGeneration) {
+      diagnostic.phase('boot_failed');
       if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
       failure(error,checkingCookie?'cookie':'network');
       recoveryFailure=!config.scoped&&checkingCookie&&error?.responseFailed===true&&error?.code==='app_session_check_failed';notifyRecovery();
@@ -212,7 +247,7 @@ function pageClient(config, allowPath) {
     catch (error) { if (!offPage && generation === currentGeneration) failure(error); }
     finally { if (generation === currentGeneration) busy = false; }
   });
-  window.addEventListener('pagehide', () => { offPage = true; generation++; recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
+  window.addEventListener('pagehide', () => { diagnostic.close(); offPage = true; generation++; recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
     for (const controller of controllers) controller.abort(); });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;

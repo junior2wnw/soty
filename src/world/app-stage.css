@@ -25,6 +25,13 @@
 .sa-runtime>.sw-empty { flex: 1; overflow: auto; }
 .sa-loading { margin: auto; padding: 24px; color: var(--sw-muted); font-size: 14px; }
 .sa-frame { flex: 1; width: 100%; min-width: 0; min-height: 0; border: 0; background: var(--sw-surface); }
+.sa-runtime-diagnostics { display: grid; gap: 14px; }
+.sa-runtime-diagnostics ol { margin: 0; padding-inline-start: 22px; }
+.sa-runtime-diagnostics li+li { margin-block-start: 8px; }
+.sa-runtime-diagnostics summary { min-height: 44px; box-sizing: border-box; padding-block: 11px; cursor: pointer; }
+.sa-runtime-diagnostics textarea { margin-block-start: 8px; }
+.sa-runtime-diagnostics .sw-dialog-actions { flex-wrap: wrap; }
+.sa-runtime-diagnostics .sw-dialog-actions>.sw-button { flex: 1 1 210px; min-width: 0; white-space: normal; }
 .sa-discussion { flex: 0 0 clamp(320px, 33%, 440px); min-width: 0; min-height: 0; display: flex; border-inline-start: 1px solid var(--sw-line); background: var(--sw-bg); }
 .sa-discussion>.se-discussion { flex: 1; min-width: 0; }
 @media (max-width: 900px) {

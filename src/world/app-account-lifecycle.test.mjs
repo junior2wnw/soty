@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as appBootRecovery from './app-boot-recovery.mjs';
+import * as appRuntimePhaseTrace from './app-runtime-phase-trace.mjs';
 import * as browserAssistPilot from './browser-assist-pilot.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
@@ -93,6 +94,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
     './app-boot-recovery.mjs': appBootRecovery,
+    './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
     './browser-assist-pilot.mjs': browserAssistPilot,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,

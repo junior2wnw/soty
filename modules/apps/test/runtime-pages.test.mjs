@@ -15,8 +15,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function browser(markup, { framed = false, hash = '#' + ticket, responses = [], cleanThrows = false } = {}) {
   const scripts = [...markup.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gu)];
   assert.equal(scripts.length, 1);
-  const elements = new Map(), calls = [], events = [], navigations = [], listeners = new Map(), timers = new Map(), parentMessages = [];
-  let timerId = 0;
+  const elements = new Map(), calls = [], events = [], navigations = [], listeners = new Map(), timers = new Map(), parentMessages = [], registrations=[], forbidden={storageReads:0,telemetryCalls:0};
+  let timerId = 0, virtualNow = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, { hidden: true, disabled: false, textContent: '', dataset: {}, attributes: new Map(), handlers: new Map(),
       setAttribute(key, value) { this.attributes.set(key, value); },
@@ -27,10 +27,11 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
   };
   const location = { hash, pathname: '/_soty/boot', search: '?path=%2Funtrusted-query',
     replace(path) { events.push(['navigate', path]); navigations.push(path); } };
-  const window = { addEventListener(type, callback) { listeners.set(type, callback); } };
+  const window = { addEventListener(type, callback) { registrations.push({type,fragmentPresent:!!location.hash});if(!listeners.has(type))listeners.set(type,new Set());listeners.get(type).add(callback); },
+    removeEventListener(type,callback){listeners.get(type)?.delete(callback);} };
   window.self = window; window.top = framed ? {} : window;
   const parent = { postMessage(data, origin) { parentMessages.push({ data: structuredClone(data), origin }); } }; window.parent = framed ? parent : window;
-  const context = { window, location, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController, AbortSignal, TextDecoder,
+  const context = { window, location, performance:{now:()=>virtualNow}, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController, AbortSignal, TextDecoder,
     history: { replaceState(_state, _title, path) { events.push(['cleanup', path]); if (cleanThrows) throw new Error('blocked history'); location.hash = ''; } },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     fetch(url, options) {
@@ -42,13 +43,99 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
       return Promise.reject(new Error('unexpected request'));
     },
   };
+  for(const target of [window,context]){
+    for(const key of ['localStorage','sessionStorage','indexedDB'])Object.defineProperty(target,key,{get(){forbidden.storageReads++;throw Error('forbidden_storage');}});
+    target.navigator={sendBeacon(){forbidden.telemetryCalls++;throw Error('forbidden_beacon');}};
+    target.console=Object.fromEntries(['log','warn','error','debug'].map(key=>[key,()=>{forbidden.telemetryCalls++;throw Error('forbidden_console');}]));
+  }
   vm.runInNewContext(scripts[0][1], context, { timeout: 1000 });
-  return { context, element, calls, events, navigations, timers, parent, parentMessages,
+  return { context, element, calls, events, navigations, timers, parent, parentMessages, registrations,forbidden,
+    elapse:ms=>{virtualNow+=ms;},
+    phaseHandler:()=>[...(listeners.get('message')??[])].find(callback=>callback.name==='receive'),
     click: id => element(id).handlers.get('click')?.(),
-    emit: (type, event = {}) => listeners.get(type)?.(event),
+    emit: (type, event = {}) => {for(const callback of [...(listeners.get(type)??[])])callback(event);},
     expire: () => { for (const value of [...timers.values()]) value.callback(); },
   };
 }
+
+const phaseWatch = env => env.emit('message',{data:{schema:'soty.runtime-phase-watch.v1'},origin:'https://soty.example',source:env.parent,ports:[]});
+const diagnosticMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-phase.v1');
+const diagnosticPhases = env => diagnosticMessages(env).map(x=>x.data.phase);
+
+test('actual scoped boot hints describe existing awaits only, after fragment cleanup, without adding auth or readiness',async()=>{
+  const admission=pending(),cookie=pending(),continuation=pending(),frame='F'.repeat(43),requestId='R'.repeat(43);
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>admission.promise,()=>cookie.promise,()=>continuation.promise]});
+  assert.equal(env.events[0][0],'cleanup');assert.ok(env.registrations.length);assert.ok(env.registrations.every(x=>x.fragmentPresent===false));
+  assert.equal(env.context.location.hash,'');assert.equal(env.calls.length,1);assert.equal(diagnosticMessages(env).length,0);
+  phaseWatch(env);assert.deepEqual(diagnosticPhases(env),['boot_admission_pending']);
+  admission.resolve(response({ok:true,entryPath:'/embed',sessionCheck,frame,scopedRequestId:requestId}));await flush();
+  assert.equal(env.calls.length,2);assert.equal(diagnosticPhases(env).at(-1),'boot_cookie_pending');
+  cookie.resolve(response({ok:true,sessionCheck}));await flush();assert.equal(env.calls.length,3);assert.equal(diagnosticPhases(env).at(-1),'boot_continuation_pending');
+  continuation.resolve(response({schema:'soty.source-session-continuation.v1',ready:false}));await flush();
+  assert.equal(diagnosticPhases(env).at(-1),'boot_navigation');assert.deepEqual(env.navigations,['/embed?sotyFrame='+frame]);
+  for(const {data,origin}of diagnosticMessages(env)){assert.deepEqual(Object.keys(data).sort(),['phase','schema']);assert.equal(origin,'https://soty.example');assert.equal(Object.hasOwn(data,'ready'),false);}
+  const text=JSON.stringify(diagnosticMessages(env).map(x=>x.data));for(const secret of[ticket,sessionCheck,frame,requestId,'/embed','https:'])assert.equal(text.includes(secret),false);
+  assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+});
+
+test('actual scoped boot diagnostic on/off keeps identical HTTP sequence, headers, bodies, aborts, navigation and visible card',async()=>{
+  const run=async armed=>{
+    const frame='F'.repeat(43),requestId='R'.repeat(43);
+    const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[response({ok:true,entryPath:'/embed',sessionCheck,frame,scopedRequestId:requestId}),response({ok:true,sessionCheck}),response({schema:'soty.source-session-continuation.v1',ready:true})]});
+    if(armed)phaseWatch(env);await flush();
+    return{calls:env.calls.map(({url,options})=>({url,method:options.method,body:options.body,headers:structuredClone(options.headers),credentials:options.credentials,cache:options.cache,redirect:options.redirect,aborted:options.signal.aborted})),
+      navigations:env.navigations,title:env.element('status-title').textContent,unarmedDiagnosticMessages:armed?null:diagnosticMessages(env).length};
+  };
+  const off=await run(false),on=await run(true);assert.equal(off.unarmedDiagnosticMessages,0);delete off.unarmedDiagnosticMessages;delete on.unarmedDiagnosticMessages;assert.deepEqual(off,on);
+});
+
+test('boot phase responder rejects wrong peers/origins, extra IDs/URLs, ports and accessor payloads',async()=>{
+  const held=pending(),env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>held.promise]});let reads=0;
+  for(const extra of[{source:{}},{origin:'https://evil.example'},{origin:'null'},{ports:[{}]},
+    {data:{schema:'soty.runtime-phase-watch.v1',url:'PRIVATE',requestId:'PRIVATE'}},{data:[]},
+    {data:{get schema(){reads++;throw Error('PRIVATE');}}}]){
+    env.emit('message',{source:env.parent,origin:'https://soty.example',ports:[],data:{schema:'soty.runtime-phase-watch.v1'},...extra});
+  }
+  // Exercise the actual new callback directly for an uncloneable Proxy. Other
+  // legacy listeners are outside this control; real postMessage cannot clone it.
+  assert.equal(typeof env.phaseHandler(),'function');
+  assert.doesNotThrow(()=>env.phaseHandler()({source:env.parent,origin:'https://soty.example',ports:[],data:new Proxy({},{ownKeys(){throw Error('PRIVATE');}})}));
+  assert.equal(reads,0);assert.equal(diagnosticMessages(env).length,0);assert.equal(env.calls.length,1);
+  phaseWatch(env);assert.deepEqual(diagnosticPhases(env),['boot_admission_pending']);env.emit('pagehide');
+  assert.equal(diagnosticPhases(env).at(-1),'boot_inactive');assert.equal(env.calls[0].options.signal.aborted,true);
+  held.resolve(response({ok:true,entryPath:'/embed',sessionCheck,scopedRequestId:'R'.repeat(43)}));await flush();assert.deepEqual(env.navigations,[]);
+  const count=diagnosticMessages(env).length;env.emit('pageshow',{persisted:true});phaseWatch(env);assert.equal(diagnosticMessages(env).length,count);assert.equal(env.element('status-title').textContent,'Нужно открыть заново');
+});
+
+test('failed/cancelled boot keeps the visible failure card and exposes no caught error; diagnostics are finite',async()=>{
+  const secret='PRIVATE_URL_TICKET_SELECTOR_ERROR';
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[response({ok:false,error:secret},false)]});phaseWatch(env);await flush();
+  assert.equal(diagnosticPhases(env).at(-1),'boot_failed');assert.equal(env.navigations.length,0);assert.equal(env.calls.length,1);assert.notEqual(env.element('status-title').textContent,'');
+  assert.equal(JSON.stringify(diagnosticMessages(env).map(x=>x.data)).includes(secret),false);
+  const capped=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,hash:'#bad'});
+  for(let i=0;i<40;i++)phaseWatch(capped);assert.equal(diagnosticMessages(capped).length,24);assert.equal(capped.timers.size,0);
+  const expired=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,hash:'#bad'});phaseWatch(expired);
+  assert.equal([...expired.timers.values()][0].delay,120_000);expired.expire();phaseWatch(expired);assert.equal(diagnosticMessages(expired).length,1);
+  const throttled=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,hash:'#bad'});phaseWatch(throttled);throttled.elapse(120001);phaseWatch(throttled);assert.equal(diagnosticMessages(throttled).length,1);assert.equal(throttled.timers.size,0);
+});
+
+test('legacy/status/top-level/hidden renewal cannot send the new phase schema, and fast boot without handshake is honestly unobserved',async()=>{
+  const responses=()=>[response({ok:true,entryPath:'/embed',sessionCheck,scopedRequestId:'R'.repeat(43),renewal:true,renewalRequestId:'N'.repeat(43)}),response({ok:true,sessionCheck}),response({schema:'soty.source-session-continuation.v1',ready:true})];
+  for(const[page,framed]of[[renderBootPage({shellUrl}),true],[renderStatusPage({shellUrl}),true],
+    [renderBootPage({shellUrl,scoped:true}),false],[renderBootPage({shellUrl,scoped:true,renewal:true,parentOrigin:'https://soty.example'}),true]]){
+    const env=browser(page,{framed,responses:responses()});phaseWatch(env);await flush();assert.equal(diagnosticMessages(env).length,0);
+  }
+  const fast=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:responses()});await flush();phaseWatch(fast);
+  assert.equal(fast.navigations.length,1);assert.equal(diagnosticMessages(fast).length,0,'missing hint is not proof that boot did not run');
+});
+
+test('diagnosed scoped timeout still aborts one existing request and shows its failure without error payload or retry',async()=>{
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Error('PRIVATE_TIMEOUT_ERROR'))))]});
+  phaseWatch(env);const timeout=[...env.timers.values()].find(x=>x.delay===10000);assert.ok(timeout);timeout.callback();await flush();
+  assert.equal(env.calls.length,1);assert.equal(env.calls[0].options.signal.aborted,true);assert.equal(env.navigations.length,0);assert.equal(diagnosticPhases(env).at(-1),'boot_failed');
+  assert.equal(env.element('status-title').textContent,'Не удалось подключиться');assert.equal(JSON.stringify(diagnosticMessages(env)).includes('PRIVATE_TIMEOUT_ERROR'),false);
+  assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});env.emit('pagehide');
+});
 
 test('renderers use shared graphite palette and regular rounded hex geometry, with narrow and reduced-motion styles', () => {
   const page = renderBootPage({ shellUrl, nonce });

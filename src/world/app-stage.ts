@@ -6,6 +6,7 @@ import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
   validateAppEntry, type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
+import { createAppRuntimePhaseTrace, type RuntimePhase } from './app-runtime-phase-trace.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
@@ -91,6 +92,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const header = el('header', 'sa-toolbar'), title = el('div', 'sa-title'), name = el('h2', '', app.name);
   name.tabIndex = -1; const subtitle = el('p'); title.append(name, subtitle);
   const workspace = el('div', 'sa-workspace'), runtime = el('div', 'sa-runtime'), panel = el('aside', 'sa-discussion');
+  let diagnosticOpen = false, closeDiagnostic: (() => void) | null = null, renderDiagnostic: (() => void) | null = null;
+  const runtimeTrace = createAppRuntimePhaseTrace({view,isCurrent:current,getFrame:()=>runtime.querySelector('iframe'),getEpoch:()=>displayEpoch,
+    canSample:()=>!diagnosticOpen,onChange:()=>renderDiagnostic?.()});
   const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
   const detachVoiceBridge=options.nativeVoice?mountRootVoiceCarrier({view,getFrame:()=>runtime.querySelector('iframe'),isCurrent:current,client:options.nativeVoice.client,mount:options.nativeVoice.mount,appId:app.appId,accountId}):()=>{};
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
@@ -145,7 +149,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     expand.replaceChildren(icon(state.active ? 'collapse' : 'expand'), el('span', '', label));
     options.onFullscreenChange?.(screen, state.active);
   } });
-  const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(); });
+  const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(false, () => true, true); });
   refresh.dataset.stageControl = 'refresh';
   const external = button('Открыть отдельно', 'external', 'sw-button-quiet', () => {
     if (!current() || external.disabled) return;
@@ -184,7 +188,53 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
-  moreBody.append(widget, publicReviews, external, refresh, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
+  diagnostics.hidden = options.presentation === 'widget';
+  moreBody.append(widget, publicReviews, external, refresh, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  function openRuntimeDiagnostics(): void {
+    if (!current() || options.presentation === 'widget' || diagnosticOpen) return;
+    closeMore(); runtimeTrace.sample(); diagnosticOpen = true;
+    const dialog = createDialog('Диагностика загрузки', () => {
+      diagnosticOpen = false; closeDiagnostic = renderDiagnostic = null; options.onModalChange?.(dialog.element, false);
+    }, {isCurrent:current,resolve:()=>more});
+    dialog.body.classList.add('sa-runtime-diagnostics');
+    closeDiagnostic = () => dialog.close({restoreFocus:false}); options.onModalChange?.(dialog.element, true);
+    const explanation = el('p', '', 'Включите запись, затем нажмите обычную кнопку «Обновить приложение» или «Открыть приложение заново». События не подтверждают готовность или доступ.');
+    const privacy = el('p', '', 'Отчёт хранится в памяти до двух минут. В нём только этапы загрузки и признаки видимости окна.');
+    const status = el('p'); status.setAttribute('role','status');
+    const events = el('ol'), geometry = el('p'), technical = el('details'), summary = el('summary','','Технические сведения');
+    const report = el('textarea','sw-textarea'); report.readOnly = true; report.rows = 8; technical.append(summary,report);
+    report.setAttribute('aria-label','Безопасный отчёт диагностики'); report.spellcheck = false;
+    const arm = button('Записать следующее открытие', undefined, 'sw-button-primary', () => { if (runtimeTrace.arm()) dialog.close(); });
+    const copy = button('Копировать безопасный отчёт', undefined, 'sw-button-quiet', () => {
+      copy.disabled = true;
+      void runtimeTrace.copy().then(ok => { if (current() && diagnosticOpen) { status.textContent = ok ? 'Безопасный отчёт скопирован.' : 'Копирование недоступно. Можно выделить отчёт вручную.'; copy.disabled = !runtimeTrace.snapshot(); } });
+    });
+    const clear = button('Очистить', undefined, 'sw-button-quiet', () => runtimeTrace.clear());
+    const actions = el('div','sw-dialog-actions'); actions.append(arm,copy,clear);
+    const labels:Record<RuntimePhase,string> = {
+      root_launch:'Обычное открытие начато',root_launch_failed:'Открытие завершилось отказом',root_frame:'Встроенное окно создано',root_attached:'Встроенное окно добавлено на страницу',
+      root_load:'Окно сообщило о загрузке документа; содержимое ещё не проверено',root_error:'Окно сообщило об ошибке загрузки',root_timeout:'За 12 секунд окно не сообщило о загрузке документа',
+      boot_admission_pending:'Страница запуска ожидает ответ проверки входа',boot_cookie_pending:'Страница запуска ожидает подтверждение сессии окна',boot_continuation_pending:'Страница запуска продолжает открытие приложения',
+      boot_navigation:'Запрошен переход к приложению; показ содержимого не подтверждён',boot_failed:'Страница запуска сообщила об отказе',boot_inactive:'Страница запуска покидается или отменена',
+      page_csp_frame_enforce:'Браузер применил ограничение для окон на странице',page_csp_frame_report:'Браузер сообщил о проверке ограничений для окон на странице',
+      page_csp_script_enforce:'Браузер применил ограничение для скриптов на странице',page_csp_script_report:'Браузер сообщил о проверке ограничений для скриптов на странице',
+      page_csp_other_enforce:'Браузер применил другое ограничение на странице',page_csp_other_report:'Браузер сообщил о проверке других ограничений на странице',
+    };
+    renderDiagnostic = () => {
+      const value = runtimeTrace.snapshot(), state = runtimeTrace.state();
+      status.textContent = state === 'armed' ? 'Запись подготовлена для следующего ручного открытия.' : value
+        ? value.truncated ? 'Достигнут предел записи. Сохранены первые 24 события.' : 'События текущего открытия; готовность приложения неизвестна.' : 'Запись выключена.';
+      events.replaceChildren(...(value?.events ?? []).map(event=>el('li','',`${event.t100ms/10} с · ${labels[event.phase]}`)));
+      geometry.hidden = !value?.view;
+      geometry.textContent = value?.view?.connected && value.view.hasArea && value.view.ancestorsVisible && value.view.hit === 'all'
+        ? 'Последняя проверка со стороны Сот не обнаружила перекрытия окна. Содержимое приложения этим не проверяется.'
+        : 'Видимость окна полностью не подтверждена. Этот отчёт не определяет причину.';
+      report.value = value ? JSON.stringify(value,null,2) : ''; technical.hidden = !value;
+      copy.disabled = !value; clear.disabled = !value && state !== 'armed';
+    };
+    dialog.body.append(explanation,privacy,status,events,geometry,technical,actions); renderDiagnostic();
+  }
   let assistChannel = crypto.randomUUID().replaceAll('-', ''), assistEpoch = 0, assistOn = false;
   let closeAssistDialog: (() => void) | null = null;
   const askAssist = (text: string, signal?: AbortSignal): Promise<boolean> => {
@@ -296,7 +346,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         &&fresh.generation===peer.generation&&matchesScopedCaptureContext(result,{appId:app.appId,source});
     },capture:parameters=>pickProjectFeedbackMedia({...parameters,document:host.ownerDocument}),
   });
-  const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
+  const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(false, () => true, true); });
   recoveryRetry.hidden = options.presentation !== 'widget'; message.after(recoveryRetry);
   recoveryRetry.after(externalRecovery);
   const currentEntryRetry = button('Открыть актуальный вход', 'arrow', 'sw-button-primary sa-current-entry-retry', () => { void openCurrentEntry(); });
@@ -388,6 +438,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     options.onRemember?.(pinned, app);
   }
   function resetRuntimeDisplay(): void {
+    runtimeTrace.reset();
     displayEpoch++; releaseRuntimeDisplay?.(); releaseRuntimeDisplay = null;
   }
   function watchRuntimeDisplay(frame: HTMLIFrameElement): void {
@@ -418,7 +469,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       clearTimer(); frame.removeEventListener('load', loaded); frame.removeEventListener('error', failed);
     };
   }
-  async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true): Promise<void> {
+  async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
     if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin!==view.location.origin){
@@ -426,6 +477,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
     }
     resetRuntimeDisplay();
+    if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
     recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
@@ -440,22 +492,26 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
       const voiceFrame=options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin
         &&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';
-      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer';
+      runtimeTrace.attach(frame,launcher.entry()!.origin);
+      frame.src = url;
       if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+options.nativeVoice.mount.frameOrigin+'; autoplay '+options.nativeVoice.mount.frameOrigin;
       frameGeneration++;
       lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
       watchRuntimeDisplay(frame);
       runtime.replaceChildren(frame);
+      runtimeTrace.inserted();
     } catch (reason) {
       if (!alive()) return;
+      runtimeTrace.launchFailed();
       runtime.setAttribute('aria-busy', 'false');
       captureEntry(); const failure = appLaunchFailure(reason);
       const sourceChanged = reason && typeof reason === 'object' && 'code' in reason
         && ['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(String(reason.code));
       currentEntryRetry.hidden = !sourceChanged || !options.onOpenCurrentEntry;
       if (existingFrame) showMessage(`${failure.title}. ${failure.detail}`);
-      else runtime.replaceChildren(emptyState(failure.title, failure.detail, options.presentation === 'widget' || !currentEntryRetry.hidden ? undefined : button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
+      else runtime.replaceChildren(emptyState(failure.title, failure.detail, options.presentation === 'widget' || !currentEntryRetry.hidden ? undefined : button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(false, () => true, true); }), 'app'));
       if (!currentEntryRetry.hidden) recoveryRetry.hidden = true;
       if (automatic) recoveryRetry.hidden = false;
     } finally {
@@ -464,6 +520,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function updateRoute(next: AppLaunchIntent): void {
     if (disposed || !matches(next)) return;
+    closeDiagnostic?.(); runtimeTrace.clear();
     const wasVisible = !panel.hidden, focusedPanel = panel.contains(host.ownerDocument.activeElement);
     stopAssist();
     intent = next; presentationVersion++;
@@ -550,6 +607,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }
