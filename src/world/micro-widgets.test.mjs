@@ -688,3 +688,13 @@ test('a newer replacement completion fences an older pending recovery of the sam
   older.resolve(); assert.equal(await first, false); assert.equal(fresh.disposed, false);
   assert.equal(f.stages.length, 2); assert.equal(f.read().widgets[0].route, refreshedEntry('/second').route);
 });
+
+// Append to src/world/micro-widgets.test.mjs.
+for (const kind of ['move', 'size']) test(`widget ${kind} leaves browser/system shortcuts and IME arrows untouched`, t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const before = f.read();
+  const handle = f.nodes.find(node => kind === 'move' ? node.className === 'sm-widget-grip' : node.title === 'Потяните, чтобы изменить размер');
+  for (const modifiers of [{ key: 'ArrowLeft', altKey: true }, { key: 'Home', ctrlKey: true }, { key: 'ArrowRight', metaKey: true }, { key: 'ArrowUp', isComposing: true }]) {
+    const key = new Event('keydown', { cancelable: true }); Object.assign(key, modifiers); handle.dispatchEvent(key);
+    assert.equal(key.defaultPrevented, false); assert.deepEqual(f.read(), before);
+  }
+});

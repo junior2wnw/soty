@@ -159,7 +159,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       .finally(() => { if (current()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
   });
   external.dataset.stageControl = 'external';
-  const externalRecovery = button('Открыть в новой вкладке', 'external', 'sw-button-quiet sa-recovery-retry', () => { external.click(); });
+  const externalRecovery = button('Открыть в новой вкладке', 'external', 'sw-button-quiet sa-recovery-retry sa-external-recovery', () => { external.click(); });
   externalRecovery.dataset.stageControl = 'external-recovery'; externalRecovery.hidden = true;
   const settings = button('Настройки приложения', 'settings', 'sw-button-quiet', () => {
     closeMore(true); if (current()) void fullscreen.leave().then(() => { if (current()) options.onSettings(app, updateApp); });

@@ -545,7 +545,7 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   } : {}) }; }); t.after(() => f.app.cleanScreen());
   const runtime = f.app.main.querySelector('.sa-runtime'), message = f.app.main.querySelector('.sa-message');
   const retry = f.app.main.querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
-  const separate = f.app.main.querySelector('[data-stage-control=external-recovery]');
+  const separate = f.app.main.querySelector('.sa-external-recovery');
   assert.ok(deadline); assert.match(message.textContent, /Открываем окно/u); assert.equal(runtime.getAttribute('aria-busy'), 'true');
   assert.equal(separate.hidden, true, 'the separate-window fallback waits for an actual loading failure');
   assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
@@ -852,4 +852,142 @@ test('invitation route never reaches Apps request or saved account route', async
   assert.equal(calls.length,1);assert.ok(!JSON.stringify(calls).includes(token));
   assert.ok(!f.location.hash.includes(token));assert.ok(!JSON.stringify(f.app.desk).includes(token));
   assert.equal(calls[0].path,undefined);f.app.cleanScreen();
+});
+
+// Append to src/world/app-account-lifecycle.test.mjs. Uses that file's actual
+// World/Application stage fixture; no copied recovery callback implementation.
+const currentReviewEntry = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
+const oldReviewEntry = { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path: '/embed' };
+const currentReviewResponse = () => ({ entry: currentReviewEntry,
+  url: `${currentReviewEntry.origin}/_soty/boot?${new URLSearchParams({ path: currentReviewEntry.path })}#${'q'.repeat(43)}` });
+
+async function currentReviewMain({ discussion = false } = {}) {
+  const f = fixture({ hash: '#world' }), calls = [], lookups = [];
+  f.app.options.openApp = async (_app, args) => { calls.push(structuredClone(args));
+    if (args.domainId === stageDomainId) throw failure('scoped_embed_source_changed');
+    return currentReviewResponse();
+  };
+  f.app.api = { async request(op, args) { assert.equal(op, 'apps.entry.get'); lookups.push(structuredClone(args)); return { entry: args.current ? currentReviewEntry : oldReviewEntry }; } };
+  await f.app.openApplication({ appId: stageAppId, name: 'Moved application' }, appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' }, undefined, discussion ? { panel: 'discussion' } : undefined)));
+  return { ...f, calls, lookups };
+}
+
+test('actual main UI current-entry button creates a new exact stage, retaining the old launcher target and excluding origin from its route', async t => {
+  const f = await currentReviewMain({ discussion: true }); t.after(() => f.app.cleanScreen()); const oldStage = f.app.appStage;
+  const retry = f.app.main.querySelector('.sa-current-entry-retry'); assert.equal(retry.hidden, false);
+  retry.emit('click'); await turn(); await turn();
+  assert.notEqual(f.app.appStage, oldStage); assert.deepEqual(f.app.appStage.entry(), currentReviewEntry);
+  assert.equal(f.calls.length, 2); assert.equal(f.calls[0].domainId, stageDomainId); assert.equal(f.calls[1].domainId, currentReviewEntry.domainId);
+  assert.equal(f.calls[1].path, '/embed'); assert.equal(f.calls[1].expectedAccountId, 'account-A');
+  assert.equal(f.location.hash, '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: currentReviewEntry.domainId, path: '/embed' }));
+  assert.equal(f.lookups.filter(args => args.current).length, 1); assert.ok(f.app.main.querySelector('iframe'));
+});
+
+test('actual main UI recovery cannot discard an unsaved discussion', async t => {
+  const f = await currentReviewMain({ discussion: true }); t.after(() => f.app.cleanScreen()); const oldStage = f.app.appStage;
+  f.discussionCalls.unsaved = true; f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  assert.equal(f.app.appStage, oldStage); assert.equal(f.calls.length, 1); assert.equal(f.lookups.filter(args => args.current).length, 0);
+});
+
+test('actual main UI current-entry lookup cannot reopen a stage after account ABA', async t => {
+  const f = await currentReviewMain(), gate = deferred(); t.after(() => f.app.cleanScreen());
+  f.app.api.request = async (_op, args) => args.current ? gate.promise : { entry: oldReviewEntry };
+  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); gate.resolve({ entry: currentReviewEntry }); await turn();
+  assert.equal(f.app.appStage, null); assert.equal(f.calls.length, 1);
+});
+
+// The World constructor supplies the widget's callback. Extract its actual
+// arrow initializer, then execute it with actual MicroWidgets and AppStage.
+const currentReviewAst = ts.createSourceFile('app.ts', source, ts.ScriptTarget.Latest, true); let currentReviewWidgetMount;
+function currentReviewVisit(node) {
+  if (ts.isCallExpression(node) && node.expression.getText(currentReviewAst) === 'mountMicroWidgets')
+    currentReviewWidgetMount = node.arguments[1].properties.find(property => property.name?.getText(currentReviewAst) === 'mount')?.initializer.getText(currentReviewAst);
+  ts.forEachChild(node, currentReviewVisit);
+}
+currentReviewVisit(currentReviewAst); assert.ok(currentReviewWidgetMount);
+
+async function currentReviewWidgets() {
+  const f = fixture({ hash: '#world' }), data = new Map(), stages = [], calls = [], lookups = [];
+  const workspace = await import(new URL('./workspace-widgets.mjs', import.meta.url));
+  const floating = await import(new URL('./floating-layout.ts', import.meta.url));
+  const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  Object.assign(f.view, { localStorage: storage, innerWidth: 390, innerHeight: 844 });
+  const root = f.app.root, document = root.ownerDocument;
+  const style = new WeakMap();
+  if (!Object.getOwnPropertyDescriptor(ElementPort.prototype, 'style')) Object.defineProperty(ElementPort.prototype, 'style', { get() { if (!style.has(this)) style.set(this, {}); return style.get(this); } });
+  ElementPort.prototype.dispatchEvent = function(event) { for (const fn of [...this.handlers.get(event.type) || []]) fn(event); return !event.defaultPrevented; };
+  const make = (tagName, className = '', textContent = '') => Object.assign(new ElementPort(), { ownerDocument: document, tagName, className, textContent });
+  const button = (label, _icon, className, action) => { const node = make('button', className, label); if (action) node.addEventListener('click', action); return node; };
+  const exported = {};
+  const code = ts.transpileModule(await readFile(new URL('./micro-widgets.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  vm.runInNewContext(code, { exports: exported, AbortController, Event, crypto, queueMicrotask,
+    require: name => name === './dom' ? { el: make, button, iconButton: (label, icon, action) => button(label, icon, '', action) }
+      : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? appLaunch : name === './floating-layout' ? floating : {},
+  });
+  f.app.options.openApp = async (_app, args) => { calls.push(structuredClone(args));
+    if (args.domainId === stageDomainId) throw failure('scoped_embed_source_changed');
+    return currentReviewResponse();
+  };
+  f.app.api = { async request(op, args) { assert.equal(op, 'apps.entry.get'); lookups.push(structuredClone(args)); return { entry: args.current ? currentReviewEntry : oldReviewEntry }; } };
+  const binder = {};
+  vm.runInNewContext(ts.transpileModule(`exports.bind = function(mountAppStage, parseAppLaunchRoute, formatAppLaunchRoute) { return ${currentReviewWidgetMount}; };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { exports: binder });
+  const mount = binder.bind.call(f.app, f.mountStage, appLaunch.parseAppLaunchRoute, appLaunch.formatAppLaunchRoute);
+  const original = { id: 'widget-11111111-1111-4111-8111-111111111111', name: 'Moved app', route: appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' }), visible: true, x: .81, y: .37, width: 520, height: 440 };
+  workspace.editWidgetWorkspace(storage, f.app.deskAccount, state => { state.widgets.push(original); });
+  f.app.widgets = exported.mountMicroWidgets(root, { mount(...args) { const stage = mount(...args); stages.push(stage); return stage; }, dialog: f.app.dialog.bind(f.app), notify: f.app.toast.bind(f.app) });
+  f.app.widgets.setAccount(f.app.deskAccount); await stages[0].ready;
+  return { ...f, workspace, storage, original, stages, calls, lookups };
+}
+
+test('actual widget UI current-entry button replaces exactly that stage and retains its saved id, geometry and visibility', async t => {
+  const f = await currentReviewWidgets(); t.after(() => f.app.widgets.dispose()); const oldStage = f.stages[0];
+  const retry = f.app.root.querySelector('.sa-current-entry-retry'); assert.equal(retry.hidden, false);
+  retry.emit('click'); await turn(); await turn();
+  assert.equal(f.stages.length, 2); assert.notEqual(f.stages[1], oldStage); assert.deepEqual(f.stages[1].entry(), currentReviewEntry);
+  assert.deepEqual(f.workspace.readWidgetWorkspace(f.storage, 'account-A').widgets, [{ ...f.original, route: appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: currentReviewEntry.domainId, path: '/embed' }) }]);
+  assert.equal(f.calls.length, 2); assert.equal(f.calls[0].domainId, stageDomainId); assert.equal(f.calls[1].domainId, currentReviewEntry.domainId);
+  assert.equal(f.calls[0].instanceId, f.original.id); assert.equal(f.calls[1].instanceId, f.original.id);
+  assert.equal(f.location.hash, '#world', 'widget recovery leaves the main human screen in place');
+});
+
+test('actual widget UI lookup from an older account generation cannot replace its restored widget after ABA', async t => {
+  const f = await currentReviewWidgets(), gate = deferred(); t.after(() => f.app.widgets.dispose());
+  f.app.api.request = async (_op, args) => args.current ? gate.promise : { entry: oldReviewEntry };
+  f.app.root.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  f.app.widgets.setAccount('account-B'); f.app.widgets.setAccount('account-A'); await f.stages.at(-1).ready;
+  gate.resolve({ entry: currentReviewEntry }); await turn();
+  assert.equal(f.stages.length, 2); assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.workspace.readWidgetWorkspace(f.storage, 'account-A').widgets, [f.original]);
+});
+
+function currentReviewFind(node, predicate) {
+  if (predicate(node)) return node;
+  for (const child of node.children || []) { const found = currentReviewFind(child, predicate); if (found) return found; }
+  return null;
+}
+
+test('temporary external-recovery button performs the existing gesture popup launch for the exact widget entry without replacing its frame', async t => {
+  const admissions = [], f = await widgetStage(async args => { admissions.push(structuredClone(args)); return stageResponse('/'); });
+  t.after(() => f.app.cleanScreen()); ElementPort.prototype.click = function() { this.emit('click'); };
+  const frame = f.app.main.querySelector('iframe'), fallback = currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery');
+  let opens = 0, navigated = null;
+  const popup = { closed: false, opener: {}, location: { replace(url) { navigated = url; } }, close() { this.closed = true; } };
+  f.view.open = () => { opens++; return popup; };
+  const deadline = [...f.timers.values()].find(timer => timer.delay === 12000); deadline.fn(); assert.equal(fallback.hidden, false);
+  fallback.emit('click'); assert.equal(opens, 1, 'the popup is created synchronously in the original click');
+  await turn(); await turn();
+  assert.equal(admissions.length, 2); assert.deepEqual(admissions[1], admissions[0]); assert.ok(navigated?.startsWith('https://runtime.example/_soty/boot?'));
+  assert.equal(popup.opener, null); assert.equal(popup.closed, false); assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(f.location.hash, '#world');
+});
+
+test('temporary external recovery closes its unfinished popup on account change without navigating it with a late private URL', async t => {
+  const gate = deferred(); let launches = 0;
+  const f = await widgetStage(async () => ++launches === 1 ? stageResponse('/') : gate.promise); t.after(() => f.app.cleanScreen());
+  ElementPort.prototype.click = function() { this.emit('click'); }; let navigated = null;
+  const popup = { closed: false, opener: {}, location: { replace(url) { navigated = url; } }, close() { this.closed = true; } }; f.view.open = () => popup;
+  [...f.timers.values()].find(timer => timer.delay === 12000).fn();
+  currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery').emit('click'); await turn();
+  f.app.transitionAccount('account-B'); gate.resolve(stageResponse('/')); await turn();
+  assert.equal(popup.closed, true); assert.equal(navigated, null); assert.equal(launches, 2);
 });

@@ -597,3 +597,14 @@ test('viewport changes restore normalized orb preferences without overwriting an
   resize(440, 920); assert.deepEqual(point(), { x: 176, y: 526.4 });
   assert.equal(f.records.length, 0); f.agent.dispose();
 });
+
+// Append to src/world/agent-orb.test.mjs.
+test('orb leaves browser/system shortcuts and IME arrows untouched while preserving ordinary movement', () => {
+  const f = fixture(); f.agent.setAccount('A'); const style = { ...f.orb.style }, saved = new Map(f.saved);
+  for (const modifiers of [{ key: 'ArrowLeft', altKey: true }, { key: 'Home', ctrlKey: true }, { key: 'ArrowRight', metaKey: true }, { key: 'ArrowUp', isComposing: true }]) {
+    const key = new Event('keydown', { cancelable: true }); Object.assign(key, modifiers); f.orb.dispatchEvent(key);
+    assert.equal(key.defaultPrevented, false); assert.deepEqual(f.orb.style, style); assert.deepEqual(f.saved, saved);
+  }
+  const plain = new Event('keydown', { cancelable: true }); Object.assign(plain, { key: 'ArrowLeft', shiftKey: true }); f.orb.dispatchEvent(plain);
+  assert.equal(plain.defaultPrevented, true); assert.equal(parseFloat(f.orb.style.left), parseFloat(style.left) - 40); f.agent.dispose();
+});
