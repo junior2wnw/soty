@@ -12,15 +12,17 @@ const response = (body, ok = true) => ({ ok, status: ok ? 200 : 403, json: async
 const pending = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function browser(markup, { framed = false, hash = '#' + ticket, responses = [], cleanThrows = false } = {}) {
+function browser(markup, { framed = false, hash = '#' + ticket, responses = [], cleanThrows = false, documentState = 'complete' } = {}) {
   const scripts = [...markup.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gu)];
   assert.equal(scripts.length, 1);
   const elements = new Map(), calls = [], events = [], navigations = [], listeners = new Map(), timers = new Map(), parentMessages = [], registrations=[], forbidden={storageReads:0,telemetryCalls:0};
   let timerId = 0, virtualNow = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, { hidden: true, disabled: false, textContent: '', dataset: {}, attributes: new Map(), handlers: new Map(),
+      get href() { return this.attributes.get('href'); },
+      set href(value) { this.attributes.set('href',value); events.push(['href',id,value]); },
       setAttribute(key, value) { this.attributes.set(key, value); },
-      removeAttribute(key) { this.attributes.delete(key); if (key === 'href') delete this.href; },
+      removeAttribute(key) { this.attributes.delete(key); },
       addEventListener(type, callback) { this.handlers.set(type, callback); },
     });
     return elements.get(id);
@@ -31,7 +33,7 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
     removeEventListener(type,callback){listeners.get(type)?.delete(callback);} };
   window.self = window; window.top = framed ? {} : window;
   const parent = { postMessage(data, origin) { parentMessages.push({ data: structuredClone(data), origin }); } }; window.parent = framed ? parent : window;
-  const context = { window, location, performance:{now:()=>virtualNow}, document: { title: '', body: element('body'), getElementById: element }, URL, AbortController, AbortSignal, TextDecoder,
+  const context = { window, location, performance:{now:()=>virtualNow}, document: { title: '', readyState: documentState, body: element('body'), getElementById: element }, URL, AbortController, AbortSignal, TextDecoder,
     history: { replaceState(_state, _title, path) { events.push(['cleanup', path]); if (cleanThrows) throw new Error('blocked history'); location.hash = ''; } },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     fetch(url, options) {
@@ -52,7 +54,7 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
   return { context, element, calls, events, navigations, timers, parent, parentMessages, registrations,forbidden,
     elapse:ms=>{virtualNow+=ms;},
     phaseHandler:()=>[...(listeners.get('message')??[])].find(callback=>callback.name==='receive'),
-    click: id => element(id).handlers.get('click')?.(),
+    click: (id,event={button:0}) => element(id).handlers.get('click')?.(event),
     emit: (type, event = {}) => {for(const callback of [...(listeners.get(type)??[])])callback(event);},
     expire: () => { for (const value of [...timers.values()]) value.callback(); },
   };
@@ -61,6 +63,101 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
 const phaseWatch = env => env.emit('message',{data:{schema:'soty.runtime-phase-watch.v1'},origin:'https://soty.example',source:env.parent,ports:[]});
 const diagnosticMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-phase.v1');
 const diagnosticPhases = env => diagnosticMessages(env).map(x=>x.data.phase);
+
+const scopedResponses = (issued = {}) => [
+  response({ok:true,entryPath:'/embed',sessionCheck,frame:'F'.repeat(43),scopedRequestId:'R'.repeat(43),...issued}),
+  response({ok:true,sessionCheck}),
+  response({schema:'soty.source-session-continuation.v1',ready:true}),
+];
+
+test('only an initial scoped boot renders the initially inert native continuation link',()=>{
+  const scoped = renderBootPage({shellUrl,scoped:true});
+  assert.match(scoped, /<a class="action action-primary" id="native-action" hidden>Продолжить открытие<\/a>/u);
+  assert.doesNotMatch(scoped, /id="native-action"[^>]*href=/u);
+  for(const page of [renderBootPage({shellUrl}),renderStatusPage({shellUrl}),renderBootPage({shellUrl,scoped:true,renewal:true,parentOrigin:'https://soty.example'})]) {
+    assert.doesNotMatch(page,/id="native-action"/u);
+  }
+});
+
+test('fast initial scoped boot exposes the validated link before automatic navigation and waits for document load without a delay',async()=>{
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,documentState:'loading',responses:scopedResponses()});
+  phaseWatch(env);await flush();
+  const link=env.element('native-action'), destination='/embed?sotyFrame='+'F'.repeat(43);
+  assert.equal(env.calls.length,3);assert.equal(link.hidden,false);assert.equal(link.href,destination);
+  assert.equal(env.element('actions').hidden,false);assert.deepEqual(env.navigations,[]);
+  assert.equal(diagnosticPhases(env).at(-1),'boot_continuation_pending');
+  assert.deepEqual([...env.timers.values()].map(x=>x.delay),[120_000],'only the existing diagnostic TTL remains; no navigation delay');
+  assert.equal(env.registrations.filter(x=>x.type==='load').length,1);
+  env.context.document.readyState='complete';env.emit('load');await flush();
+  assert.deepEqual(env.navigations,[destination]);assert.equal(diagnosticPhases(env).at(-1),'boot_navigation');
+  assert.ok(env.events.findIndex(x=>x[0]==='href'&&x[1]==='native-action')<env.events.findIndex(x=>x[0]==='navigate'));
+  assert.equal(link.href,destination,'a stalled auto attempt keeps the ordinary link');
+  env.emit('load');await flush();assert.equal(env.navigations.length,1);assert.equal(env.calls.length,3);
+  assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+});
+
+test('already-complete scoped document keeps automatic navigation and a manual retry without extra requests or interception',async()=>{
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:scopedResponses()});await flush();
+  const link=env.element('native-action'), destination=link.href;let prevented=0;
+  assert.equal(env.navigations.length,1);assert.equal(link.hidden,false);
+  assert.equal(env.registrations.filter(x=>x.type==='load').length,0);
+  for(let i=0;i<2;i++)env.click('native-action',{button:0,defaultPrevented:false,preventDefault(){prevented++;}});
+  assert.equal(prevented,0);assert.equal(link.href,destination);assert.equal(env.calls.length,3);
+  assert.equal(env.navigations.length,1,'the link uses browser default navigation, not another script redirect');
+});
+
+test('normal manual activation before initial load suppresses the deferred auto attempt while modified activation keeps it',async()=>{
+  for(const modified of [false,true]){
+    const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,documentState:'interactive',responses:scopedResponses()});await flush();
+    const destination=env.element('native-action').href;let prevented=0;
+    env.click('native-action',{button:0,defaultPrevented:false,ctrlKey:modified,preventDefault(){prevented++;}});
+    assert.equal(env.element('native-action').href,destination);assert.equal(prevented,0);
+    env.context.document.readyState='complete';env.emit('load');await flush();
+    assert.equal(env.navigations.length,modified?1:0);assert.equal(env.calls.length,3);
+    assert.equal(env.element('native-action').href,destination);
+  }
+});
+
+test('pagehide and BFCache restoration clear the ephemeral native href and cancel a pending load gate',async()=>{
+  for(const documentState of ['loading','complete']){
+    const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,documentState,responses:scopedResponses()});await flush();
+    assert.equal(env.element('native-action').hidden,false);const attempts=env.navigations.length;
+    env.emit('pagehide');await flush();
+    assert.equal(env.element('native-action').hidden,true);assert.equal(env.element('native-action').href,undefined);
+    assert.equal(env.element('actions').hidden,true);
+    env.emit('pageshow',{persisted:true});env.context.document.readyState='complete';env.emit('load');await flush();
+    assert.equal(env.element('status-title').textContent,'Нужно открыть заново');
+    assert.equal(env.element('native-action').href,undefined);assert.equal(env.element('native-action').hidden,true);
+    let prevented=0;env.click('native-action',{button:0,preventDefault(){prevented++;}});
+    assert.equal(prevented,1,'a stale activation cannot follow a restored destination');
+    assert.equal(env.navigations.length,attempts);assert.equal(env.calls.length,3);
+  }
+});
+
+test('invalid admission paths, frames and cookie checks never expose a native destination',async()=>{
+  const cases=[scopedResponses({entryPath:'https://untrusted.example/embed'}),scopedResponses({entryPath:'/_soty/session'}),scopedResponses({frame:'invalid'}),
+    [scopedResponses()[0],response({ok:true,sessionCheck:'X'.repeat(43)})]];
+  for(const responses of cases){
+    const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses});await flush();
+    assert.deepEqual(env.navigations,[]);assert.equal(env.element('native-action').href,undefined);assert.equal(env.element('native-action').hidden,true);
+    assert.equal(env.registrations.filter(x=>x.type==='load').length,0);assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+  }
+});
+
+test('a late admission result from an old generation cannot restore the native href',async()=>{
+  const held=pending(),env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>held.promise]});
+  env.emit('pagehide');env.emit('pageshow',{persisted:true});held.resolve(scopedResponses()[0]);await flush();
+  assert.equal(env.calls.length,1);assert.deepEqual(env.navigations,[]);
+  assert.equal(env.element('native-action').href,undefined);assert.equal(env.element('native-action').hidden,true);
+});
+
+test('legacy entry and hidden renewal retain their existing flow without waiting for a document load',async()=>{
+  const legacy=browser(renderBootPage({shellUrl}),{documentState:'loading',responses:[response({ok:true,entryPath:'/',sessionCheck}),response({ok:true,sessionCheck})]});await flush();
+  assert.deepEqual(legacy.navigations,['/']);assert.equal(legacy.registrations.filter(x=>x.type==='load').length,0);
+  const renewal=browser(renderBootPage({shellUrl,scoped:true,renewal:true,parentOrigin:'https://soty.example'}),{framed:true,documentState:'loading',responses:scopedResponses({renewal:true,renewalRequestId:'synthetic-renewal-request'})});await flush();
+  assert.equal(renewal.calls.length,3);assert.deepEqual(renewal.navigations,[]);assert.equal(renewal.registrations.filter(x=>x.type==='load').length,0);
+  assert.deepEqual(renewal.parentMessages,[{origin:'https://soty.example',data:{schema:'soty.app-slot-ready.v1',requestId:'synthetic-renewal-request',ready:true}}]);
+});
 
 test('actual scoped boot hints describe existing awaits only, after fragment cleanup, without adding auth or readiness',async()=>{
   const admission=pending(),cookie=pending(),continuation=pending(),frame='F'.repeat(43),requestId='R'.repeat(43);
@@ -276,7 +373,7 @@ test('iframe errors never load shell, navigate top, open a popup or retry a cons
   assert.equal(env.element('frame-hint').hidden, false); assert.equal(env.element('actions').hidden, true);
   assert.deepEqual(env.navigations, []); assert.equal(env.calls.length, 1);
   const page = renderStatusPage({ error: 'app_offline', shellUrl });
-  assert.ok(page.includes('Откройте отдельно кнопкой над приложением.'));
+  assert.ok(page.includes('В меню ⋯ над окном выберите „Открыть отдельно“.'));
   assert.doesNotMatch(page, /target="_top"|target="_blank"|window\.open|top\.location|location\.reload/u);
 });
 

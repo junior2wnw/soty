@@ -109,9 +109,34 @@ function pageClient(config, allowPath) {
   }
   const entry = document.getElementById('entry'), title = document.getElementById('status-title'), detail = document.getElementById('status-detail');
   const actions = document.getElementById('actions'), shell = document.getElementById('shell-action'), reset = document.getElementById('reset-action'), frameHint = document.getElementById('frame-hint');
+  const nativeContinue = config.mode === 'boot' && config.scoped === true && !config.renewal ? document.getElementById('native-action') : null;
   const topLevel = window.top === window.self, controllers = new Set();
   document.body.dataset.framed = String(!topLevel);
   let busy = false, navigated = false, offPage = false, generation = 0;
+  let nativeGeneration = -1, cancelNavigationLoad = null;
+  function clearNativeContinue() {
+    if (!nativeContinue) return;
+    nativeContinue.hidden = true; nativeContinue.removeAttribute('href'); nativeGeneration = -1;
+    if (shell.hidden && reset.hidden) actions.hidden = true;
+  }
+  function waitForDocumentLoad() {
+    if (document.readyState === 'complete') return Promise.resolve(true);
+    return new Promise(resolve => {
+      let done = false;
+      const finish = loaded => {
+        if (done) return; done = true;
+        window.removeEventListener('load', loadedDocument); cancelNavigationLoad = null; resolve(loaded);
+      };
+      const loadedDocument = () => finish(true);
+      cancelNavigationLoad = () => finish(false);
+      window.addEventListener('load', loadedDocument, { once: true });
+    });
+  }
+  nativeContinue?.addEventListener('click', event => {
+    if (offPage || nativeGeneration !== generation) { event.preventDefault(); clearNativeContinue(); return; }
+    // Keep ordinary link activation; suppress a still-waiting automatic attempt.
+    if (!event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) navigated = true;
+  });
   // Optional local phase hints. Never readiness, recovery or authorization.
   // This starts only after the one-time fragment has already been cleared.
   const diagnostic = (() => {
@@ -161,6 +186,7 @@ function pageClient(config, allowPath) {
     notifyRecovery();
   });
   function show(state, pending = false) {
+    clearNativeContinue();
     const text = config.copy[state] || config.copy.unavailable;
     title.textContent = text[0]; detail.textContent = text[1];
     document.title = `${text[0]} · Соты`;
@@ -194,7 +220,8 @@ function pageClient(config, allowPath) {
     } finally { clearTimeout(timeout); controllers.delete(controller); }
   }
   function navigate(path, currentGeneration) {
-    if (navigated || offPage || generation !== currentGeneration) return;
+    if (offPage || generation !== currentGeneration) { clearNativeContinue(); return; }
+    if (navigated) return;
     navigated = true; location.replace(path);
   }
   async function boot() {
@@ -230,8 +257,16 @@ function pageClient(config, allowPath) {
         if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};
           window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
       }
+      const destination = issued.frame ? path+'?sotyFrame='+issued.frame : path;
+      show('opening', true);
+      if (nativeContinue) {
+        nativeGeneration = currentGeneration; nativeContinue.href = destination;
+        nativeContinue.hidden = false; actions.hidden = false;
+        if (!await waitForDocumentLoad() || offPage || generation !== currentGeneration) { clearNativeContinue(); return; }
+        if (navigated) return;
+      }
       diagnostic.phase('boot_navigation');
-      show('opening', true); navigate(issued.frame?path+'?sotyFrame='+issued.frame:path, currentGeneration);
+      navigate(destination, currentGeneration);
     } catch (error) { if (!offPage && generation === currentGeneration) {
       diagnostic.phase('boot_failed');
       if(config.renewal)window.parent.postMessage({schema:'soty.app-slot-ready.v1',ready:false,unknown:true},config.parentOrigin);
@@ -247,10 +282,11 @@ function pageClient(config, allowPath) {
     catch (error) { if (!offPage && generation === currentGeneration) failure(error); }
     finally { if (generation === currentGeneration) busy = false; }
   });
-  window.addEventListener('pagehide', () => { diagnostic.close(); offPage = true; generation++; recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
+  window.addEventListener('pagehide', () => { diagnostic.close(); offPage = true; generation++; clearNativeContinue(); cancelNavigationLoad?.(); recoverySent = true; recoveryFailure = false; recoveryParentOrigin = '';
     for (const controller of controllers) controller.abort(); });
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
+    clearNativeContinue(); cancelNavigationLoad?.();
     offPage = false; busy = false; navigated = false;
     show(config.mode === 'boot' ? 'expired' : config.initialState);
   });
@@ -262,10 +298,11 @@ function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[]
   const config = { mode, initialState: state, shellUrl, publicResetPath,parentOrigins, copy, errorStates: statesFor(publicResetPath),
     ...(scoped?{scoped:true,renewal,parentOrigin}:{}) };
   const text = copy[state];
+  const nativeAction = mode === 'boot' && scoped && !renewal ? '<a class="action action-primary" id="native-action" hidden>Продолжить открытие</a>' : '';
   const brand = roundedHexPath(10, undefined, { x: 11, y: 10 });
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
 <body><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
-<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><p class="eyebrow">ПРИЛОЖЕНИЕ</p><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" id="reset-action" type="button" hidden>Продолжить без входа</button></div><p class="frame-hint" id="frame-hint" hidden>Откройте отдельно кнопкой над приложением.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
+<main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><p class="eyebrow">ПРИЛОЖЕНИЕ</p><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
 <script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()});</script></body></html>`;
 }
 
