@@ -175,12 +175,18 @@ test('a saved 21 percent focused phone context keeps its camera but treats sub44
 
 test('explicitly enlarging a thumbnail uses actual focusNode math and permits the next tap to open without moving any placement', () => {
   const h = harness(320, 180, { scale: .21, focus: 'studio' }), e = h.environment, before = JSON.stringify(h.data.document);
+  const emitted = []; e.options.onStateChange = next => emitted.push(next);
+  Object.assign(e, { fieldDocument: h.data.document, exposedSource: h.data.document, exposedDocument: h.data.document,
+    localDurable: true, revision: 0, history: { entries: [] }, message: '' });
   e.cameras = { mine: { ...h.camera } }; e.camera = () => e.cameras.mine; e.activeNode = e.available; e.normalizeFieldCamera = normalizeFieldCamera;
-  new vm.Script(compile(print(statement('focusNode')) + '\nexports.focusNode = focusNode;')).runInContext(e);
+  new vm.Script(compile(['focusNode', 'summary', 'emit'].map(name => print(statement(name))).join('\n') + '\nexports.focusNode = focusNode;')).runInContext(e);
   e.focusNode = e.exports.focusNode; h.render();
   const hive = e.nodeElements.get('hive'); hive.dispatch('click');
   const node = e.available('hive'); assert.ok(node.width * e.cameras.mine.scale >= 44); assert.ok(node.height * e.cameras.mine.scale >= 44);
   assert.ok(e.cameras.mine.scale >= .45); assert.equal(hive.focused, true); assert.equal(hive.dataset.preview, 'false');
+  assert.equal(emitted.length, 1, 'the actual onStateChange callback must receive the camera change even when the node was already focused');
+  assert.equal(emitted[0].camera.scale, e.cameras.mine.scale);
+  assert.equal(`${Math.round(emitted[0].camera.scale * 100)}%`, `${Math.round(e.cameras.mine.scale * 100)}%`, 'the summary feeding the zoom badge must describe the rendered scale');
   assert.equal(JSON.stringify(h.data.document), before); assert.equal(h.calls.activate.length, 0); assert.equal(e.contextFocus.mine, 'studio');
   hive.dispatch('click'); assert.equal(h.calls.activate.length, 1);
 });

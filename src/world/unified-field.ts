@@ -572,7 +572,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const minScale = node.kind === 'device' ? .45 : Math.max(.45, 44 / Math.max(1, Math.min(node.width, node.height)));
     if (cam.scale < minScale) { x = node.cx; y = node.cy; contextFocus[mode] = node.contextId; }
     if (view.width < 720 && contextFocus[mode] !== node.contextId) { contextFocus[mode] = node.contextId; x = node.cx; y = node.cy; }
-    cameras[mode] = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(minScale, cam.scale) }); remember(); render(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
+    cameras[mode] = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(minScale, cam.scale) }); remember(); render(); emit(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
   }
   function perform(task: Promise<unknown>): void { void task.catch(error => { if (!destroyed && persistence !== 'error') announce(errorText(error)); }); }
   confirm.addEventListener('click', () => perform(commitMove()), { signal }); cancelButton.addEventListener('click', () => { cancel(); announce('Перенос отменён.'); focusNode(selectedId); }, { signal });
