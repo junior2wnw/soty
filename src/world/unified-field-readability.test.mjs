@@ -142,6 +142,18 @@ test('actual desktop overview then explicit context focus reveals all twelve sav
   }
 });
 
+test('focused desktop high zoom retains natural detail while a focused phone retains context', () => {
+  for (const scale of [.9, 1, 1.4]) {
+    const h = twelveApps('mine'), before = JSON.stringify(h.data.document);
+    h.focusContext('personal'); h.environment.setCamera({ ...h.camera, scale }); h.render();
+    assert.equal(h.environment.contextFocus.mine, 'personal');
+    assert.equal(h.environment.viewport.dataset.lod, 'detail');
+    assert.equal(JSON.stringify(h.data.document), before);
+  }
+  const phone = harness(393, 458, { scale: 1, focus: 'studio' }); phone.render();
+  assert.equal(phone.environment.viewport.dataset.lod, 'context');
+});
+
 const rect = box => ({ left: box.x - box.width / 2, right: box.x + box.width / 2, top: box.y - 22, bottom: box.y + 22 });
 const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
