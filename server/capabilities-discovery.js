@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { AccessError, assert } from '../modules/capabilities/server/validation.mjs';
 import { DISCOVERY_LIMITS } from '../modules/capabilities/server/discovery.mjs';
 import { buildDiscoveryOpenApi } from '../modules/capabilities/server/openapi.mjs';
-import { renderDiscoveryIndex, renderCapabilityPage } from '../modules/capabilities/server/discovery-pages.mjs';
+import { renderDiscoveryIndex, renderCapabilityPage, createAgentConnectionProfile, renderAgentConnectionPage } from '../modules/capabilities/server/discovery-pages.mjs';
 
 const API = '/api/capabilities';
 const BASE = `${API}/v1`;
@@ -64,6 +64,7 @@ function identify(pathname, segments) {
   if (pathname === `${BASE}/openapi.json`) return { kind: 'openapi' };
   if (pathname === `${BASE}/status`) return { kind: 'status' };
   if (pathname === '/agents') return { kind: 'index' };
+  if (pathname === '/agents/connect') return { kind: 'connect' };
   if (pathname === '/agents/sitemap.xml') return { kind: 'sitemap' };
   const api = /^\/api\/capabilities\/v1\/catalog\/([^/]+)\/versions\/([^/]+)(?:\/(contract\.json|schemas\/(input|output)))?$/u.exec(pathname);
   const page = /^\/agents\/capabilities\/([^/]+)\/versions\/([^/]+)$/u.exec(pathname);
@@ -110,12 +111,12 @@ function send(req, res, body, type, { status = 200, limit = 512 * 1024, cache = 
 
 function sitemap(catalog, origin) {
   assert(origin, 'not_found');
-  const urls = [`${origin}/agents`];
+  const urls = [`${origin}/agents`, `${origin}/agents/connect`];
   let cursor;
   do {
     const page = catalog.search({ limit: DISCOVERY_LIMITS.maxPage, ...(cursor ? { cursor } : {}) });
     for (const item of page.items) urls.push(`${origin}${item.links.html}`);
-    assert(urls.length <= DISCOVERY_LIMITS.versions + 1, 'projection_too_large');
+    assert(urls.length <= DISCOVERY_LIMITS.versions + 2, 'projection_too_large');
     assert(!page.cursor || page.items.length > 0, 'projection_too_large');
     cursor = page.cursor;
   } while (cursor);
@@ -126,6 +127,7 @@ function sitemap(catalog, origin) {
 export function attachCapabilitiesDiscovery(app, { catalog, origin = '', status = () => ({ notesCreateEnabled: false, audience: null }),
   openApi = buildDiscoveryOpenApi() }) {
   const openapi = JSON.stringify(openApi);
+  const connectionProfile = createAgentConnectionProfile(openApi);
   app.use((req, res, next) => {
     const target = req.originalUrl || req.url;
     const split = target.indexOf('?'), pathname = split < 0 ? target : target.slice(0, split);
@@ -160,6 +162,11 @@ export function attachCapabilitiesDiscovery(app, { catalog, origin = '', status 
           send(req, res, renderDiscoveryIndex({ result, query: args.query || '', limit: args.limit || DISCOVERY_LIMITS.defaultPage, origin, noindex }), HTML_TYPE, { limit: 256 * 1024 }); break;
         }
         case 'detail-page': send(req, res, renderCapabilityPage({ detail: catalog.get(route.selection), origin }), HTML_TYPE); break;
+        case 'connect': {
+          const readiness = status();
+          const selected = { notesCreateEnabled: readiness?.notesCreateEnabled === true, audience: typeof readiness?.audience === 'string' ? readiness.audience : null };
+          send(req, res, renderAgentConnectionPage({ profile: connectionProfile, status: selected, origin }), HTML_TYPE, { limit: 128 * 1024, cache: false }); break;
+        }
         case 'sitemap': send(req, res, sitemap(catalog, origin), 'application/xml; charset=utf-8', { limit: 128 * 1024 }); break;
       }
     } catch (error) {

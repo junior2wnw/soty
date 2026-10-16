@@ -49,6 +49,17 @@ Public metadata: `catalog.search({ query, limit, cursor })` returns `{ scope:'pu
 
 `/agents` and `/agents/capabilities/:id/versions/:version` provide semantic, escaped server-rendered pages. Search, forms and links work without JavaScript. A small optional same-origin script only acknowledges PWA update preparation for that read-only document; it is never loaded by the editable SPA. A missing acknowledgement still blocks update. Offline API/document navigation cannot return a cached application shell.
 
+`/agents/connect` explains the existing MCP and typed HTTP connection paths,
+owner consent, authorized application catalog, exact contracts and result checks.
+It derives protocol presence only from the already public composed OpenAPI and
+selects only Notes readiness and the explicit audience from public status. It
+never reads an account catalog, issues a credential, changes a grant or starts
+an invocation. Its current readiness makes GET/HEAD responses `no-store`.
+An unconfigured OAuth profile is stated as unavailable; a configured profile
+links its real metadata without promising that issuance is live. Notes-only
+key issuance and the separate MCP audience remain explicit. Canonical origin
+continues to come solely from the existing trusted deployment setting.
+
 | GET path | Response |
 |---|---|
 | `/api/capabilities/v1/catalog?query=save%20note` | Compact public search with stable bounded pagination |
