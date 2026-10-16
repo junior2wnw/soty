@@ -8,6 +8,7 @@ import { createFieldSpatialIndex, fieldBounds, fieldBoundsOverlap, fieldMovePrev
   nearestFieldNode, UNIFIED_FIELD_METRICS, type FieldDirectoryEntity, type FieldMovePreview, type FieldMoveTarget,
   type FieldNode, type FieldScene, type UnifiedFieldLayout, type UnifiedFieldMetrics } from './unified-field-layout.mjs';
 import type { AppArt } from './app-art.mjs';
+import { resolveAppArt } from './app-art.mjs';
 import type { FieldAppArt } from './field-art.mjs';
 import { errorText } from './dialogs';
 import './unified-field.css';
@@ -329,19 +330,30 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       target.append(inner);
     } else {
       let art: FieldVisualArt | null = null; try { art = options.resolveArt?.(entity) ?? null; } catch { /* Icon fallback remains usable. */ }
+      const fallback = resolveAppArt({ appId: entity.entity.id });
+      for (const name of ['base', 'accent', 'ink'] as const) {
+        const value = art?.palette?.[name];
+        target.style.setProperty(`--uf-art-${name}`, /^#(?:[a-f0-9]{3}|[a-f0-9]{6})$/i.test(value ?? '') ? value! : fallback.palette[name]);
+      }
+      target.dataset.artState = 'fallback';
+      const symbol = art?.icon || entity.symbol || (kind === 'community' ? 'people' : 'cells');
+      if (kind !== 'community') target.append(icon(symbol, 'uf-fallback-mark'));
       const src = localImage(art?.src);
       if (src) {
-        const image = el('img', 'uf-art'); image.src = src; image.alt = ''; image.decoding = 'async'; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+        const image = el('img', 'uf-art'); image.alt = ''; image.decoding = 'async'; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+        const loaded = (): void => { if (image.parentElement !== target) return; target.classList.add('has-art'); target.dataset.artState = 'ready'; };
+        const failed = (): void => { if (image.parentElement !== target) return; image.remove(); target.classList.remove('has-art'); target.dataset.artState = 'fallback'; };
+        image.addEventListener('load', loaded, { once: true }); image.addEventListener('error', failed, { once: true });
         const srcset = art!.srcset.split(',').map(part => part.trim()).filter(Boolean);
         if (srcset.length && srcset.every(part => { const [path, width] = part.split(/\s+/u); return !!localImage(path) && /^\d+w$/.test(width ?? ''); })) image.srcset = art!.srcset;
         image.sizes = art!.sizes;
         const focal = art!.focalPoint; image.style.objectPosition = `${Math.max(0, Math.min(1, focal.x)) * 100}% ${Math.max(0, Math.min(1, focal.y)) * 100}%`;
         target.style.setProperty('--uf-focal-position', image.style.objectPosition);
-        for (const name of ['base', 'accent', 'ink'] as const) if (/^#[a-f0-9]{3,8}$/i.test(art!.palette[name])) target.style.setProperty(`--uf-art-${name}`, art!.palette[name]);
-        image.addEventListener('error', () => { image.remove(); target.classList.remove('has-art'); }, { once: true }); target.append(image); target.classList.add('has-art');
+        target.append(image); image.src = src;
+        if (image.complete) queueMicrotask(() => image.naturalWidth > 0 ? loaded() : failed());
       }
       target.append(hexFrame(metrics.radius));
-      const caption = el('span', 'uf-app-caption uf-label'); caption.append(icon(art?.icon || entity.symbol || (kind === 'community' ? 'people' : 'cells'), 'uf-node-icon'), el('span', 'uf-label-text', entity.title));
+      const caption = el('span', 'uf-app-caption uf-label'); caption.append(icon(symbol, 'uf-node-icon'), el('span', 'uf-label-text', entity.title));
       target.append(caption);
     }
     if (entity.unreadCount && entity.unreadCount > 0) target.append(el('span', 'uf-unread', entity.unreadCount > 99 ? '99+' : String(entity.unreadCount)));

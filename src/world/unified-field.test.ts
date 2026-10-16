@@ -32,7 +32,12 @@ const commits: { document: FieldDocument; expectedRevision: number; requestId: s
 let state: UnifiedFieldSummary | null = null, resolveDelayed: (() => void) | null = null;
 const stateEvents: { time: number; document: FieldDocument }[] = [];
 const engine = createUnifiedField({ accountId: 'synthetic-engine-account', document: initial, entities: items,
-  resolveArt: entity => resolveFieldAppArt(entity.coverKey ?? null), onActivate: (_, id) => activations.push(id!), onInspect: (_, id) => inspections.push(id),
+  resolveArt: entity => {
+    const art = resolveFieldAppArt(entity.coverKey ?? null);
+    if (parameters.get('art') === 'fallback') return { ...art, src: null, srcset: '', status: 'fallback' };
+    if (parameters.get('art') === 'broken') return { ...art, src: '/__fixture_missing-art.webp', srcset: '' };
+    return art;
+  }, onActivate: (_, id) => activations.push(id!), onInspect: (_, id) => inspections.push(id),
   onStateChange: value => { state = value; stateEvents.push({ time: performance.now(), document: value.document }); if (stateEvents.length > 1024) stateEvents.shift(); },
   commit: async (document, context) => {
     commits.push({ document: structuredClone(document), ...context });

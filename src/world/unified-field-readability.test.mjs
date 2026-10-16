@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fieldBoundsOverlap } from './unified-field-layout.mjs';
 import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail } from './unified-field-camera.mjs';
+import { resolveAppArt } from './app-art.mjs';
 
 // Actual production geometry, rendering and event callbacks, with inert DOM ports.
 // These tests do not measure browser typography or claim a real application launch.
@@ -93,7 +94,7 @@ function harness(width, height, { scale, focus = '' } = {}) {
     focusContext: id => calls.focus.push(id), remember: () => calls.remember++, schedule() {}, emit() {},
     el: (tag, className = '', text = '') => new Port(tag, className, text),
     icon: (_, className = 'sw-icon') => new Port('svg', className), hexFrame: () => new Port('svg', 'uf-hex-frame'),
-    initials: title => title.slice(0, 2), localImage: () => null, safeImageUrl: () => null,
+    initials: title => title.slice(0, 2), localImage: () => null, safeImageUrl: () => null, resolveAppArt,
     nounCount: (count, word) => `${count} ${word}`, Date,
     tools: new Port(), moveHint: new Port(), readySettled: true,
   };
