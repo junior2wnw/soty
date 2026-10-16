@@ -5,6 +5,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 import { createAppsService } from '../server/index.mjs';
 
@@ -625,6 +626,91 @@ async function bootSession(f, actor = owner, target = f.primary, localPath = '/s
   return { launch, cookie: response.headers['set-cookie'][0].split(';')[0], check: payload.sessionCheck, payload };
 }
 const documentNavigation = { accept: 'text/html', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
+
+test('known Native ingress HTML refusals stay denied but render only inside trusted shells with the current reopen entry', async t => {
+  const f = await fixture(t, { secure: true }); f.publish({ policy: 'restricted' });
+  const current = await bootSession(f), publication = f.call('apps.publication.get', { appId: f.app.id });
+  const database = new DatabaseSync(f.config.databasePath, { readOnly: true });
+  const grants = database.prepare('SELECT * FROM local_app_grants ORDER BY rowid').all();
+  const nativeBefore = f.log.frames.filter(frame => frame.type === 'open').length;
+  const validHeaders = { accept: 'text/html', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe',
+    'x-soty-ingress-app': f.app.id, 'x-soty-ingress-target': publication.target.digest };
+  try {
+    for (const options of [
+      { headers: validHeaders },
+      { cookie: current.cookie, headers: { ...validHeaders, 'x-soty-ingress-target': 'f'.repeat(64) } },
+      { cookie: current.cookie, origin: 'https://untrusted.example', headers: validHeaders },
+      { cookie: current.cookie, headers: { ...validHeaders, 'x-soty-ingress-app': 'app-' + 'f'.repeat(32) } },
+    ]) {
+      const response = await f.http(f.primary, '/_soty/ingress-check', options);
+      denied(response);
+      const policy = response.headers['content-security-policy'];
+      assert.ok(policy.includes('frame-ancestors ' + f.config.shellOrigins[0]));
+      assert.doesNotMatch(policy, /frame-ancestors 'none'|untrusted\.example|\*/u);
+      assert.equal(response.headers.location, undefined); assert.equal(response.headers['set-cookie'], undefined);
+      const markup = response.body.toString();
+      assert.match(markup, /<h1 id="status-title">[^<]+<\/h1>/u);
+      assert.match(markup, /Откройте отдельно кнопкой над приложением/u);
+      assert.match(markup, /"publicResetPath":null/u);
+      assert.doesNotMatch(markup, /\/_soty\/ingress-check|untrusted\.example/u);
+      const shellValue = /"shellUrl":("[^"\n]+")/u.exec(markup)?.[1]; assert.ok(shellValue);
+      const reopen = new URL(JSON.parse(shellValue));
+      assert.equal(reopen.origin, f.config.shellOrigins[0]);
+      assert.equal(reopen.hash, `#launch/${f.app.id}/${f.primary.id}`,
+        'Root resolves its current default entry on a fresh authorised launch; stored entry queries stay private');
+    }
+    assert.deepEqual(database.prepare('SELECT * FROM local_app_grants ORDER BY rowid').all(), grants);
+    assert.equal(f.launch(owner, f.primary).entry.path, '/start');
+    assert.equal(f.log.frames.filter(frame => frame.type === 'open').length, nativeBefore,
+      'denied ingress never forwards to the Native protocol peer');
+    const jsonRefusal = await f.http(f.primary, '/_soty/ingress-check', {
+      headers: { ...validHeaders, accept: 'application/json' } });
+    denied(jsonRefusal); assert.equal(jsonRefusal.headers['content-type'], 'application/json; charset=utf-8');
+    assert.equal(JSON.parse(jsonRefusal.body).ok, false);
+    const validIngress = await f.http(f.primary, '/_soty/ingress-check', { cookie: current.cookie, headers: validHeaders });
+    assert.equal(validIngress.status, 204); assert.equal(validIngress.body.length, 0);
+    const emptyQuery = await f.http(f.primary, '/_soty/ingress-check?', { headers: validHeaders });
+    denied(emptyQuery); assert.ok(emptyQuery.headers['content-security-policy'].includes('frame-ancestors ' + f.config.shellOrigins[0]));
+    for (const url of ['/_soty/session', '/_soty/ingress-check?unexpected=1']) {
+      const refused = await f.http(f.primary, url, { headers: validHeaders });
+      denied(refused); assert.match(refused.headers['content-security-policy'], /frame-ancestors 'none'/u);
+    }
+    const wrongMethod = await f.http(f.primary, '/_soty/ingress-check', {
+      method: 'POST', origin: f.primary.origin, headers: validHeaders });
+    denied(wrongMethod); assert.match(wrongMethod.headers['content-security-policy'], /frame-ancestors 'none'/u);
+    assert.equal(f.log.frames.filter(frame => frame.type === 'open').length, nativeBefore);
+  } finally { database.close(); }
+});
+
+test('ingress recovery does not make unknown, missing or unavailable application state frameable', async t => {
+  const f = await fixture(t, { secure: true }); f.publish({ policy: 'restricted' });
+  const headers = { accept: 'text/html', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' };
+  const deniedPage = response => {
+    assert.ok([404, 410, 503].includes(response.status));
+    assert.match(response.headers['content-security-policy'], /frame-ancestors 'none'/u);
+    assert.equal(response.headers.location, undefined); assert.equal(response.headers['set-cookie'], undefined);
+    assert.match(response.body.toString(), /"shellUrl":null/u);
+  };
+  deniedPage(await f.http({ origin: 'https://unknown.apps.example.net' }, '/_soty/ingress-check', { headers }));
+  f.retire(f.alternate);
+  deniedPage(await f.http(f.alternate, '/_soty/ingress-check', { headers }));
+  const database = new DatabaseSync(f.config.databasePath);
+  try {
+    // A known Host is insufficient when the current-target read is unavailable.
+    database.exec('ALTER TABLE app_runtime_targets RENAME TO synthetic_unavailable_runtime_targets');
+    deniedPage(await f.http(f.primary, '/_soty/ingress-check', { headers }));
+    database.exec('ALTER TABLE synthetic_unavailable_runtime_targets RENAME TO app_runtime_targets');
+    // A controlled corrupt-registry fault: DNS/domain records survive but the
+    // app row is absent. A recognised hostname alone must not create recovery.
+    database.exec('PRAGMA foreign_keys=OFF');
+    database.prepare('DELETE FROM local_apps WHERE id=?').run(f.app.id);
+    deniedPage(await f.http(f.primary, '/_soty/ingress-check', { headers }));
+  } finally { database.close(); }
+  f.service.close();
+  deniedPage(await f.http(f.primary, '/_soty/ingress-check', { headers }));
+  assert.equal(f.log.frames.some(frame => frame.type === 'open'), false);
+});
+
 function shellDestination(f, target, localPath, response) {
   assert.equal(response.status, 302);
   const url = new URL(response.headers.location);

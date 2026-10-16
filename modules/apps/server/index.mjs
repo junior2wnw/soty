@@ -694,7 +694,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function shellUrlFor(app, path) {
     const url = new URL('/', [...origins][0]);
-    url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}?${new URLSearchParams({ path: guidePath(path) })}`;
+    url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}${path === undefined ? '' : '?' + new URLSearchParams({ path: guidePath(path) })}`;
     return url.href;
   }
   function publicResetFor(app, path) {
@@ -712,6 +712,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (app?.appHost && !app.missing) {
       let path;
       try { path = runtimePath(req.url || '/'); } catch { /* Internal endpoints never redirect into the shell. */ }
+      if (!path && req.method === 'GET' && ['/_soty/ingress-check', '/_soty/ingress-check?'].includes(req.url)
+        && String(req.headers.accept || '').includes('text/html')) {
+        // Native ingress returns this refusal as the iframe document. Keep its
+        // status readable, but offer only a fresh Root launch of the trusted entry.
+        const target = activeTarget(app.id);
+        if (target) {
+          runtimePath(target.entry_path);
+          page = { shellUrl: shellUrlFor(app), frameOrigins: [...origins] };
+        }
+      }
       if (path) {
         const publicResetPath = publicResetFor(app, path), shellUrl = shellUrlFor(app, path);
         page = { shellUrl, publicResetPath, frameOrigins: [...origins] };
@@ -725,7 +735,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     } catch {
       // A recovery view cannot outlive or bypass unavailable authority/storage.
       // Fall back to a content-free status without exposing an unchecked action.
-      status = 503; error = 'app_unavailable';
+      page = undefined; status = 503; error = 'app_unavailable';
     }
     respondFailure(req, res, status, error, page);
   }
