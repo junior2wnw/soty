@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as workspace from './workspace-widgets.mjs';
 import * as launch from './app-launch.mjs';
+import * as floating from './floating-layout.ts';
 
 // Run the actual controller with inert DOM ports: no browser, network or app runtime.
 const pointerGuard = {};
@@ -67,9 +68,9 @@ function fixture({ popover = true, navigation = false } = {}) {
     const node = el('button', className, label); if (callback) node.addEventListener('click', callback); return node;
   };
   const exports = {};
-  vm.runInNewContext(source, { exports, AbortController, ResizeObserver, crypto: globalThis.crypto, queueMicrotask,
+  vm.runInNewContext(source, { exports, AbortController, Event, ResizeObserver, crypto: globalThis.crypto, queueMicrotask,
     require: name => name === './dom' ? { el, button, iconButton: (label, icon, callback) => button(label, icon, '', callback) }
-      : name === './iframe-pointer-guard' ? pointerGuard : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? launch : {} });
+      : name === './iframe-pointer-guard' ? pointerGuard : name === './workspace-widgets.mjs' ? workspace : name === './app-launch.mjs' ? launch : name === './floating-layout' ? floating : {} });
   doc.head = el('head'); doc.createElement = tag => el(tag);
   const root = el('main'); let layerChanges = 0;
   const control = exports.mountMicroWidgets(root, {
@@ -94,13 +95,40 @@ function fixture({ popover = true, navigation = false } = {}) {
     workspace.editWidgetWorkspace(storage, account, change);
     const event = new Event('storage'); Object.defineProperty(event, 'key', { value: workspace.widgetStorageKey(account) }); view.dispatchEvent(event);
   };
-  return { control, stages, notices, root, nodes, view, doc, el, click, remote, storage, account, frames,
+  return { control, stages, notices, root, nodes, view, doc, el, click, remote, storage, account, frames, dialogs,
     frame() { const batch = [...frames.values()]; frames.clear(); for (const callback of batch) callback(); },
     observers, setNavigation(rect) { navigationRect = rect; },
     notifyNavigation() { for (const observer of observers) if (observer.targets.has(navigationNode)) observer.callback([], observer); },
     iframePointersBlocked: () => doc.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent)),
     layerChanges: () => layerChanges, read: () => workspace.readWidgetWorkspace(storage, account) };
 }
+
+test('launcher reserves a header slot on the audited 320/390 sizes without moving or remounting the saved workspace', t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  const saved = f.storage.getItem(workspace.widgetStorageKey(f.account)), stage = f.stages[0];
+  const manager = f.nodes.find(node => node.textContent === 'Личные виджеты');
+  for (const [width, height, rect] of [[320, 568, { left: 265, top: 58.5, width: 44, height: 44 }], [390, 844, { left: 334, top: 74, width: 36, height: 44 }]]) {
+    Object.assign(f.view, { innerWidth: width, innerHeight: height });
+    f.doc.querySelectorAll = () => [{ classList: { contains: () => false }, closest: () => null, getClientRects: () => [rect], getBoundingClientRect: () => rect }];
+    f.view.dispatchEvent(new Event('resize'));
+    assert.equal(manager.style.left, `${width - 100}px`); assert.equal(manager.style.top, '6px');
+    assert.equal(f.root.dataset.microWidgets, 'ready'); assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved);
+    assert.equal(f.stages[0], stage); assert.equal(f.stages.length, 1);
+  }
+});
+
+test('tap controls move and resize an existing live widget, and stale account controls cannot edit another workspace', t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  const original = { ...f.read().widgets[0] }, stage = f.stages[0];
+  f.click('Личные виджеты'); f.click('Положение и размер');
+  const editor = f.dialogs.at(-1), left = f.nodes.find(node => node.textContent === 'Влево' && editor.body.contains(node));
+  assert.ok(left); left.dispatchEvent(new Event('click')); assert.ok(f.read().widgets[0].x < original.x);
+  f.click('Шире'); assert.equal(f.read().widgets[0].width, original.width + 40);
+  assert.equal(f.stages.length, 1); assert.equal(f.stages[0], stage); assert.equal(stage.disposed, false);
+  f.click('Исходное положение'); assert.equal(f.read().widgets[0].width, 320); assert.equal(f.read().widgets[0].x, .65);
+  f.control.setAccount('profile-b'); left.dispatchEvent(new Event('click'));
+  assert.equal(editor.element.open, false); assert.equal(workspace.readWidgetWorkspace(f.storage, 'profile-b').widgets.length, 0);
+});
 
 test('mobile navigation retains its full hit area without changing a pinned desktop workspace or remounting its frame', async t => {
   const f = fixture(); t.after(() => f.control.dispose());
@@ -354,6 +382,18 @@ test('keyboard focus raises an overlapped widget while preserving its control, i
 const dragPointer = (handle, type, x = 100, y = 100) => {
   const event = new Event(type); Object.assign(event, { pointerId: 7, button: 0, isPrimary: true, clientX: x, clientY: y }); handle.dispatchEvent(event);
 };
+
+for (const end of ['pointerup', 'pointercancel', 'Escape']) test(`widget ${end} after dragging does not open its tap menu, while a fresh tap does`, t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  const grip = f.nodes.find(node => node.className === 'sm-widget-grip');
+  dragPointer(grip, 'pointerdown'); dragPointer(grip, 'pointermove', 132, 132);
+  if (end === 'Escape') { const key = new Event('keydown'); Object.assign(key, { key: 'Escape' }); grip.dispatchEvent(key); }
+  else dragPointer(grip, end, 132, 132);
+  const click = () => { const event = new Event('click'); Object.assign(event, { detail: 1 }); grip.dispatchEvent(event); };
+  click(); assert.equal(f.dialogs.length, 0);
+  dragPointer(grip, 'pointerdown'); dragPointer(grip, 'pointerup'); click();
+  assert.equal(f.dialogs.length, 1); assert.equal(f.dialogs[0].element.open, true);
+});
 test('resize crosses a Native iframe without losing capture and saves the final size on the same stage', t => {
   const f = fixture(); t.after(() => f.control.dispose()); const stage = f.stages[0];
   const mainFrame = f.el('iframe'), widgetFrame = f.el('iframe'); f.root.append(mainFrame); stage.host.append(widgetFrame);

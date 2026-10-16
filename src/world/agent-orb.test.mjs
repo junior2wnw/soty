@@ -41,7 +41,12 @@ function bindModalCallback(source, receiver, current, options = {}) {
 }
 
 function fixture({ width = 390, height = 844, delayed = false } = {}) {
-  const tasks = [], records = [], mountWaiters = [], saved = new Map(), controllers = [], location = { hash: '#mine' }; let document, nextId = 0, focusedExisting = false;
+  const tasks = [], records = [], mountWaiters = [], saved = new Map(), controllers = [], mutationObservers = [], location = { hash: '#mine' }; let document, nextId = 0, focusedExisting = false;
+  class MutationObserver {
+    constructor(callback) { this.callback = callback; mutationObservers.push(this); }
+    observe() { this.connected = true; }
+    disconnect() { this.connected = false; }
+  }
   class TrackedAbortController extends AbortController { constructor() { super(); controllers.push(this); } }
   class Element extends EventTarget {
     children = []; dataset = {}; attributes = new Map(); style = {}; parentElement = null;
@@ -113,12 +118,13 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
     vm.runInNewContext(code, { module, exports: module.exports, require: name => {
       if (controllerOnly && !(name in ports)) return {};
       assert.ok(name in ports, `Unexpected Source import ${name}`); return ports[name];
-    }, document, location, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), AbortController: TrackedAbortController, Event, DOMException,
+    }, document, location, MutationObserver, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), AbortController: TrackedAbortController, Event, DOMException,
     localStorage: view.localStorage, navigator: {},
     URLSearchParams, setTimeout, clearTimeout, clearInterval, crypto: { randomUUID: () => `synthetic-${++nextId}` } });
     return module.exports;
   }
   const positions = evaluate(positionCode); ports['./agent-orb-position'] = positions;
+  ports['./floating-layout'] = evaluate(compile(read('./floating-layout.ts')));
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;
   ports['./iframe-pointer-guard'] = evaluate(pointerGuardCode);
   const { mountAgentOrb } = evaluate(orbCode);
@@ -136,7 +142,7 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   });
   const orb = root.querySelector('.sw-agent-orb'), parking = root.querySelector('.sw-agent-parking');
   const click = (detail = 1) => { orb.focus(); return orb.dispatchEvent(event('click', { detail })); };
-  return { agent, orb, parking, root, main, document, view, positions, saved, records, el, click,
+  return { agent, orb, parking, root, main, document, view, positions, saved, records, mutationObservers, el, click,
     iframePointersBlocked: () => document.head.children.some(node => node.tagName === 'STYLE' && /iframe\s*\{\s*pointer-events:\s*none\s*!important\s*;?\s*\}/.test(node.textContent)),
     dialog: () => document.querySelectorAll('.sw-agent-dialog').find(node => node.open) ?? null,
     close() { document.querySelectorAll('.sw-agent-dialog').find(node => node.open)?.querySelector('button')?.dispatchEvent(event('click', { detail: 1 })); },
@@ -277,6 +283,41 @@ test('Keyboard positions are account scoped, Home resets only its account, and 3
   }
   Object.assign(f.view.visualViewport, { width: 320, height: 260, offsetLeft: 12, offsetTop: 150 }); f.view.visualViewport.dispatchEvent(new Event('resize'));
   const rect = f.orb.getBoundingClientRect(); assert.equal(rect.left >= 18, true); assert.equal(rect.top >= 156, true); assert.equal(rect.bottom <= 322, true); f.agent.dispose();
+});
+
+test('saved orb preference is projected away from the real Create CTA and returns after the form closes without a storage write', () => {
+  const f = fixture();
+  const create = f.el('button', '', 'Создать');
+  const action = { x: 224, y: 673, left: 224, top: 673, width: 124, height: 44, right: 348, bottom: 717 };
+  create.getBoundingClientRect = () => action; f.main.append(create);
+  const saved = JSON.stringify({ x: 304 / 390, y: 680 / 844 }); f.saved.set('soty.agent-orb.v1:A', saved);
+  f.agent.setAccount('A');
+  const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  assert.equal(overlaps(f.orb.getBoundingClientRect(), action), false, 'the full CTA, including its right edge, stays available');
+  assert.equal(f.orb.dataset.projected, 'true'); assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved);
+  create.remove(); f.root.dispatchEvent(new Event('soty:floating-layout'));
+  assert.equal(f.orb.dataset.projected, 'false'); assert.equal(f.orb.style.left, '304px'); assert.equal(f.orb.style.top, '680px');
+  assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved); f.agent.dispose();
+});
+
+test('a new route action or a scrolled composer changes projection without persisting it, and the observer is disconnected on disposal', () => {
+  const f = fixture(), action = f.el('button', '', 'Отправить');
+  const saved = JSON.stringify({ x: 304 / 390, y: 680 / 844 }); f.saved.set('soty.agent-orb.v1:A', saved); f.agent.setAccount('A');
+  action.getBoundingClientRect = () => ({ left: 224, top: 673, width: 124, height: 44, right: 348, bottom: 717 }); f.main.append(action);
+  f.mutationObservers[0].callback([{ target: f.main }]); assert.equal(f.orb.dataset.projected, 'true');
+  action.remove(); f.document.dispatchEvent(new Event('scroll')); assert.equal(f.orb.dataset.projected, 'false');
+  assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved);
+  f.agent.dispose(); assert.equal(f.mutationObservers[0].connected, false);
+});
+
+test('tap movement and reset use the existing helper dialog, and an old account dialog cannot move a new account', async () => {
+  const f = fixture(); f.agent.setAccount('A'); f.click(); await f.agent.flush();
+  const actions = f.dialog().querySelectorAll('.sw-agent-position-actions')[0].querySelectorAll('button');
+  const down = actions.find(control => control.textContent === 'Вниз'), reset = actions.find(control => control.textContent === 'Вернуть в угол');
+  assert.ok(down); down.dispatchEvent(new Event('click')); assert.ok(f.saved.has('soty.agent-orb.v1:A'));
+  assert.equal(f.records.length, 1); reset.dispatchEvent(new Event('click')); assert.equal(f.saved.has('soty.agent-orb.v1:A'), false);
+  f.agent.setAccount('B'); down.dispatchEvent(new Event('click'));
+  assert.equal(f.saved.has('soty.agent-orb.v1:B'), false); f.agent.dispose();
 });
 
 test('Actual World modal stack owns one orb and retains one running helper through close/reopen', async () => {

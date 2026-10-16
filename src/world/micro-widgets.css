@@ -13,14 +13,29 @@
 .sa-widget-stage .sa-runtime { flex: 1; min-height: 0; height: 100%; padding: 0; border: 0; border-radius: 0; }
 .sa-widget-stage .sa-frame { height: 100%; min-height: 0; }
 .sa-widget-stage .sw-empty-state { padding: 12px; }
-.sm-widget-manage { position: fixed; top: calc(var(--soty-vv-top, 0px) + 56px); right: 6px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; border-radius: 50%; padding: 12px; pointer-events: auto; z-index: 30; background: var(--sw-surface, #fff); box-shadow: 0 4px 16px #161b2424; }
-body:has(.sm-widget-manage:not([hidden])) .sw-pwa-banner { padding-right: 64px; }
+.sm-widget-manage { position: fixed; top: 6px; left: calc(100% - 100px); width: 44px; height: 44px; min-width: 44px; min-height: 44px; border-radius: 50%; padding: 12px; pointer-events: auto; z-index: 30; background: var(--sw-surface, #fff); box-shadow: 0 4px 16px #161b2424; }
+/* The two persistent controls own one header row. They never sit on a widget's
+   close/fullscreen buttons or on the next screen's contacts action. */
+.sw-app[data-micro-widgets=ready]>header.sw-topbar,
+.sw-app[data-agent-orb=ready][data-micro-widgets=ready]>header.sw-topbar { padding-inline-end: calc(112px + env(safe-area-inset-right,0px)); }
+.sw-app[data-micro-widgets=ready] .sa-stage>.sa-toolbar { padding-inline-end: 112px; }
+.sm-widget-placement { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-block: 12px; }
+.sm-widget-placement>.sw-button { min-width: 0; min-height: 44px; }
+.sm-widget-placement>.sw-button:last-child { grid-column: 1/-1; }
 .sm-widget-resize { position: absolute; bottom: 1px; right: 1px; width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 5px; border-radius: 8px 0 16px; background: var(--sw-surface, #fff); touch-action: none; cursor: nwse-resize; opacity: .8; }
-.sm-widget-setting { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.sm-widget-setting { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; }
 .sm-widget-setting strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .sm-widget-header { height: 48px; flex-basis: 48px; }
   .sm-widget-header > button { width: 44px; min-width: 44px; min-height: 44px; }
   .sm-widget-resize { width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 12px; }
+}
+@media (max-width: 420px) {
+  .sw-app[data-micro-widgets=ready] .sa-stage>.sa-toolbar { padding-inline-end: max(8px,env(safe-area-inset-right)); }
+  .sw-app[data-micro-widgets=ready] .sa-stage>.sa-toolbar>.sa-title { padding-inline-end: 112px; }
+}
+@media (max-width: 720px) {
+  .sw-app[data-micro-widgets=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat)>.sw-pwa-banner { padding-inline-end: 112px; }
+  .sw-app[data-micro-widgets=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat) .sw-chat-header { padding-top: max(56px,calc(56px + env(safe-area-inset-top))); }
 }
 @media (prefers-reduced-motion: reduce) { .sm-widget { scroll-behavior: auto; } }

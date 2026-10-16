@@ -1,9 +1,10 @@
-import { el, emptyState, iconButton } from './dom';
+import { button, el, emptyState, iconButton } from './dom';
 import { createDialog, type WorldDialog } from './dialogs';
 import { clampOrb, dockOrb, readOrbPosition, writeOrbPosition, type OrbPoint, type OrbViewport } from './agent-orb-position';
 import type { WorldAssistantContext, WorldBrowserAssist, WorldAssistantHandle, WorldAppOptions } from './types';
 import './agent-orb.css';
 import { holdIframePointers } from './iframe-pointer-guard';
+import { floatingObstacles, placeFloatingControl } from './floating-layout';
 
 export interface AgentOrbHandle {
   setAccount(accountId: string): void;
@@ -30,7 +31,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   const orb = iconButton('Помощник', 'sparkle'); orb.classList.add('sw-agent-orb'); orb.hidden = true;
   orb.setAttribute('popover', 'manual');
   orb.title = 'Помощник · можно перемещать'; orb.setAttribute('aria-haspopup', 'dialog'); orb.setAttribute('aria-expanded', 'false');
-  const hint = el('span', 'sw-sr-only', 'Нажмите, чтобы открыть. Перетащите или переместите стрелками. Home — вернуть в угол.');
+  const hint = el('span', 'sw-sr-only', 'Нажмите, чтобы открыть. Положение можно изменить кнопками в окне помощника, перетаскиванием или стрелками. Home — вернуть в угол.');
   hint.id = `agent-orb-${crypto.randomUUID()}`; orb.setAttribute('aria-describedby', hint.id); orb.append(hint);
   const parking = el('div'); parking.hidden = true; parking.className = 'sw-agent-parking';
   root.append(orb, parking);
@@ -45,7 +46,9 @@ export function mountAgentOrb(root: HTMLElement, options: {
   };
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
   function raise(): void {
-    if (disposed || typeof orb.showPopover !== 'function') return;
+    if (disposed) return;
+    layout();
+    if (typeof orb.showPopover !== 'function') return;
     try {
       if (orb.matches(':popover-open')) orb.hidePopover();
       if (account && orb.isConnected) orb.showPopover();
@@ -53,8 +56,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
   }
   function layout(): void {
     if (disposed) return;
-    const point = position ? clampOrb(position, viewport()) : dockOrb(viewport());
+    const box = viewport(), preferred = position ? clampOrb(position, box) : dockOrb(box);
+    const point = placeFloatingControl(preferred, box, floatingObstacles(doc, element => element === orb || orb.contains(element)));
     orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
+    orb.dataset.projected = String(point.x !== preferred.x || point.y !== preferred.y);
     root.dataset.agentOrb = account ? 'ready' : 'hidden';
     orb.hidden = !account; orb.dataset.docked = String(!position);
     if (typeof orb.showPopover === 'function') {
@@ -65,6 +70,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
     }
   }
   function save(): void { const store = storage(); if (store) writeOrbPosition(store, account, position, viewport()); }
+  function move(x: number, y: number): void {
+    const rect = orb.getBoundingClientRect();
+    position = clampOrb({ x: rect.left + x, y: rect.top + y }, viewport()); layout(); save();
+  }
   function viewportChanged(): void {
     if (!drag) { const store = storage(); if (store) position = readOrbPosition(store, account, viewport()); }
     layout();
@@ -121,6 +130,11 @@ export function mountAgentOrb(root: HTMLElement, options: {
     });
     const context = current() ? options.context() : null;
     if (context) next.body.append(el('p', 'sw-agent-context', `Открыто: ${context.name}`));
+    const placement = el('details', 'sw-agent-position'), summary = el('summary', '', 'Положение кнопки помощника'), actions = el('div', 'sw-agent-position-actions');
+    for (const [label, symbol, x, y] of [['Влево', 'back', -32, 0], ['Вверх', 'up', 0, -32], ['Вниз', 'down', 0, 32], ['Вправо', 'arrow', 32, 0]] as const)
+      actions.append(button(label, symbol, 'sw-button-quiet', () => { if (current()) move(x, y); }));
+    actions.append(button('Вернуть в угол', 'grid', 'sw-button-quiet', () => { if (current()) { position = null; layout(); save(); } }));
+    placement.append(summary, actions); next.body.append(placement);
     void ensure(next.body);
   }
   orb.addEventListener('click', event => { if (suppressClick && event.detail > 0) { suppressClick = false; event.preventDefault(); return; } suppressClick = false; open(); }, { signal: abort.signal });
@@ -151,12 +165,24 @@ export function mountAgentOrb(root: HTMLElement, options: {
     if (event.key !== 'Home' && !delta[event.key]) return;
     event.preventDefault(); suppressClick = false;
     if (event.key === 'Home') position = null;
-    else { const point = position ?? dockOrb(viewport()), [x, y] = delta[event.key]!;
-      position = clampOrb({ x: point.x + x * (event.shiftKey ? 40 : 16), y: point.y + y * (event.shiftKey ? 40 : 16) }, viewport()); }
+    else { const [x, y] = delta[event.key]!; move(x * (event.shiftKey ? 40 : 16), y * (event.shiftKey ? 40 : 16)); return; }
     layout(); save();
   }, { signal: abort.signal });
   view.addEventListener('resize', viewportChanged, { signal: abort.signal });
   view.visualViewport?.addEventListener('resize', viewportChanged, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', viewportChanged, { signal: abort.signal });
+  let layoutFrame: number | null = null;
+  const scheduleLayout = (): void => {
+    if (disposed || layoutFrame !== null) return;
+    if (typeof view.requestAnimationFrame !== 'function') { layout(); return; }
+    layoutFrame = view.requestAnimationFrame(() => { layoutFrame = null; if (!disposed) layout(); });
+  };
+  root.addEventListener('soty:floating-layout', layout, { signal: abort.signal });
+  doc.addEventListener('scroll', scheduleLayout, { capture: true, signal: abort.signal });
+  doc.addEventListener('focusin', scheduleLayout, { signal: abort.signal });
+  const changes = typeof MutationObserver === 'function' ? new MutationObserver(records => {
+    if (records.some(record => !orb.contains(record.target))) scheduleLayout();
+  }) : null;
+  changes?.observe(doc.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style'] });
   layout();
   return {
     setAccount(next) { if (next === account) return; epoch++; clearModal(); resetSession(); account = next;
@@ -178,6 +204,6 @@ export function mountAgentOrb(root: HTMLElement, options: {
         flush: async () => { await bound?.flush?.(); }, hasUnsavedChanges: () => false }; },
     async flush() { await mounting; await handle?.flush?.(); },
     hasUnsavedChanges: () => !!handle?.hasUnsavedChanges?.(),
-    dispose() { if (disposed) return; clearModal(); resetSession(); disposed = true; epoch++; abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
+    dispose() { if (disposed) return; clearModal(); resetSession(); disposed = true; epoch++; changes?.disconnect(); if (layoutFrame !== null) view.cancelAnimationFrame(layoutFrame); abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
   };
 }

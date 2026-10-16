@@ -1,5 +1,6 @@
 import './micro-widgets.css';
 import { holdIframePointers } from './iframe-pointer-guard';
+import { floatingObstacles, placeFloatingControl } from './floating-layout';
 import { button, el, iconButton } from './dom';
 import type { WorldDialog } from './dialogs';
 import type { AppStageHandle } from './app-stage';
@@ -33,7 +34,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   layer.append(manage); root.append(layer);
   const mounted = new Map<string, { node: HTMLElement; host: HTMLElement; grip: HTMLElement; stage: AppStageHandle | null; abort: AbortController }>();
   let account = '', generation = 0, disposed = false, active = '', state: WidgetWorkspace = { hidden: false, widgets: [] };
-  let manager: WorldDialog | null = null, volatile = false, layoutRevision = 0;
+  let manager: WorldDialog | null = null, placement: WorldDialog | null = null, volatile = false, layoutRevision = 0;
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
   const viewport = (): WidgetViewport => {
     const box = { left: view.visualViewport?.offsetLeft ?? 0, top: view.visualViewport?.offsetTop ?? 0,
@@ -48,6 +49,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
 
   function showLayer(): void {
     manage.hidden = !account || !state.widgets.length;
+    root.dataset.microWidgets = manage.hidden ? 'hidden' : 'ready';
     if (!account || !state.widgets.length) { if (typeof layer.hidePopover === 'function' && layer.matches(':popover-open')) layer.hidePopover(); options.onLayerChange?.(); return; }
     try { if (typeof layer.showPopover === 'function' && !layer.matches(':popover-open')) layer.showPopover(); }
     catch { /* CSS keeps the layer usable in browsers without the top-layer API. */ }
@@ -55,11 +57,15 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   }
   function layout(): void {
     const viewBox = viewport();
+    const point = placeFloatingControl({ x: viewBox.left + viewBox.width - 100, y: viewBox.top + 6 }, viewBox,
+      floatingObstacles(doc, element => layer.contains(element) || element.classList.contains('sw-agent-orb')));
+    Object.assign(manage.style, { left: `${point.x}px`, top: `${point.y}px` });
     state.widgets.forEach((widget, index) => {
       const node = mounted.get(widget.id)?.node; if (!node) return;
       const rect = widgetRect(widget, viewBox);
       Object.assign(node.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px`, zIndex: String(index + 1) });
     });
+    root.dispatchEvent(new Event('soty:floating-layout'));
   }
   function stop(id: string): void {
     const row = mounted.get(id); if (!row) return;
@@ -101,7 +107,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     const owner = account, epoch = generation, local = new AbortController();
     const node = el('section', 'sm-widget'); node.dataset.widgetId = widget.id; node.setAttribute('aria-label', `Виджет: ${widget.name}`);
     const header = el('header', 'sm-widget-header');
-    const grip = button(widget.name, 'cells', 'sm-widget-grip'); grip.title = 'Переместить виджет · стрелки';
+    const grip = button(widget.name, 'cells', 'sm-widget-grip'); grip.title = 'Положение и размер · нажмите или перетащите';
     grip.setAttribute('aria-label', `Переместить виджет: ${widget.name}`); grip.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight ArrowUp ArrowDown Home');
     const open = iconButton(`Открыть полностью: ${widget.name}`, 'expand', () => { view.location.hash = widget.route; });
     const close = iconButton(`Скрыть виджет: ${widget.name}`, 'close', () => { void hide(widget.id); });
@@ -115,9 +121,11 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     node.addEventListener('pointerdown', () => bringToFront(widget.id), { signal: local.signal });
     node.addEventListener('focusin', () => bringToFront(widget.id), { signal: local.signal });
     let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; kind: 'move' | 'size'; moved: boolean; releaseIframes(): void } | null = null;
+    let suppressMoveClick = false;
     const bindDrag = (handle: HTMLElement, kind: 'move' | 'size'): void => {
       handle.addEventListener('pointerdown', event => {
         if (drag || !current() || event.button !== 0 || !event.isPrimary) return;
+        suppressMoveClick = false;
         const latest = state.widgets.find(item => item.id === widget.id)!;
         drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: widgetRect(latest, viewport()), kind, moved: false, releaseIframes: holdIframePointers(doc) };
         try { handle.setPointerCapture(event.pointerId); } catch { cancel(); }
@@ -132,7 +140,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       }, { signal: local.signal });
       handle.addEventListener('pointerup', event => {
         if (!drag || drag.pointer !== event.pointerId) return;
-        const previous = drag; drag = null; previous.releaseIframes();
+        const previous = drag; drag = null; suppressMoveClick = previous.moved; previous.releaseIframes();
         if (current() && previous.moved) {
           const rect = node.getBoundingClientRect();
           const latest = state.widgets.find(item => item.id === widget.id)!;
@@ -140,10 +148,14 @@ export function mountMicroWidgets(root: HTMLElement, options: {
         }
         if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       }, { signal: local.signal });
-      const cancel = (): void => { if (!drag || drag.kind !== kind) return; const previous = drag; drag = null; previous.releaseIframes(); layout(); if (handle.hasPointerCapture(previous.pointer)) handle.releasePointerCapture(previous.pointer); };
+      const cancel = (): void => { if (!drag || drag.kind !== kind) return; const previous = drag; drag = null; suppressMoveClick = true; previous.releaseIframes(); layout(); if (handle.hasPointerCapture(previous.pointer)) handle.releasePointerCapture(previous.pointer); };
       local.signal.addEventListener('abort', cancel, { once: true });
       const cancelled = (event: PointerEvent): void => { if (event.pointerId === drag?.pointer && drag.kind === kind) cancel(); };
       handle.addEventListener('pointercancel', cancelled, { signal: local.signal }); handle.addEventListener('lostpointercapture', cancelled, { signal: local.signal });
+      handle.addEventListener('click', event => {
+        if (suppressMoveClick && event.detail > 0) { suppressMoveClick = false; event.preventDefault(); return; }
+        suppressMoveClick = false; if (current()) openPlacement(widget.id);
+      }, { signal: local.signal });
       handle.addEventListener('keydown', event => {
         if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancel(); return; }
         if (!current()) return;
@@ -162,7 +174,26 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   function render(): void {
     for (const id of mounted.keys()) if (state.hidden || !state.widgets.some(widget => widget.id === id && widget.visible)) stop(id);
     for (const widget of state.widgets) if (!state.hidden && widget.visible && !mounted.has(widget.id)) mount(widget);
-    layout(); showLayer(); renderManager();
+    showLayer(); layout(); renderManager();
+  }
+  function openPlacement(id: string): void {
+    const owner = account, epoch = generation;
+    const item = state.widgets.find(widget => widget.id === id); if (!item) return;
+    placement?.close({ restoreFocus: false });
+    const editor = options.dialog(`Положение и размер: ${item.name}`, () => { if (placement === editor) placement = null; }); placement = editor;
+    const current = (): WorkspaceWidget | undefined => !disposed && owner === account && epoch === generation && editor.element.open
+      ? state.widgets.find(widget => widget.id === id) : undefined;
+    editor.body.append(el('p', 'sw-muted', 'Перемещайте и меняйте размер кнопками. Приложение остаётся открытым.'));
+    const actions = el('div', 'sm-widget-placement');
+    const action = (label: string, symbol: string, change: (widget: WorkspaceWidget) => Partial<WorkspaceWidget>): HTMLElement => button(label, symbol, 'sw-button-quiet', () => {
+      const widget = current(); if (widget) update(id, change(widget));
+    });
+    for (const [label, symbol, x, y] of [['Влево', 'back', -1, 0], ['Вверх', 'up', 0, -1], ['Вниз', 'down', 0, 1], ['Вправо', 'arrow', 1, 0]] as const)
+      actions.append(action(label, symbol, widget => { const box = viewport(), rect = widgetRect(widget, box); return widgetPosition({ ...rect, x: rect.x + x * 32, y: rect.y + y * 32 }, box, widget); }));
+    for (const [label, dimension, amount] of [['Уже', 'width', -40], ['Шире', 'width', 40], ['Высота −', 'height', -40], ['Высота +', 'height', 40]] as const)
+      actions.append(action(label, 'expand', widget => ({ [dimension]: Math.max(dimension === 'width' ? 220 : 160, Math.min(640, widget[dimension] + amount)) })));
+    actions.append(action('Исходное положение', 'grid', () => ({ x: .65, y: .12, width: 320, height: 260 })));
+    editor.body.append(actions, button('Готово', 'check', 'sw-button-primary', () => editor.close()));
   }
   function renderManager(): void {
     if (!manager?.element.open) return;
@@ -189,6 +220,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
         dialog.close({ restoreFocus: false });
         if (!disposed && owner === account && epoch === generation && mounted.get(widget.id) === captured) captured.grip.focus();
       }));
+      row.append(button('Положение и размер', 'expand', 'sw-button-quiet', () => openPlacement(widget.id)));
       manager.body.append(row);
     }
     if (!state.widgets.length) manager.body.append(el('p', 'sw-muted', 'Откройте приложение и выберите «Закрепить виджет» в его меню.'));
@@ -209,6 +241,10 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   const navigation = doc.querySelector?.('.sw-mobile-nav');
   const navigationResize = navigation && typeof ResizeObserver === 'function' ? new ResizeObserver(resizeLayout) : null;
   if (navigation) navigationResize?.observe(navigation);
+  const changes = typeof MutationObserver === 'function' ? new MutationObserver(records => {
+    if (records.some(record => !layer.contains(record.target) && !(record.target instanceof Element && record.target.classList.contains('sw-agent-orb')))) resizeLayout();
+  }) : null;
+  changes?.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style'] });
   view.addEventListener('blur', () => { queueMicrotask(() => {
     if (disposed) return;
     for (const [id, row] of mounted) if (row.host.contains(doc.activeElement)) { active = id; return; }
@@ -234,7 +270,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   }, { signal: abort.signal });
   doc.addEventListener('fullscreenchange', () => { if (typeof layer.hidePopover === 'function' && layer.matches(':popover-open')) layer.hidePopover(); showLayer(); }, { signal: abort.signal });
   return {
-    setAccount(next) { if (next === account) return; generation++; layoutRevision++; manager?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id);
+    setAccount(next) { if (next === account) return; generation++; layoutRevision++; manager?.close({ restoreFocus: false }); placement?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id);
       account = next; active = ''; volatile = false; state = readWidgetWorkspace(storage(), next); render(); },
     pin(app, intent) {
       if (!account || disposed) return;
@@ -250,6 +286,6 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
     async flush() { await Promise.all([...mounted.values()].map(row => row.stage?.flush())); },
     hasUnsavedChanges: () => [...mounted.values()].some(row => row.stage?.hasUnsavedChanges()),
-    dispose() { if (disposed) return; disposed = true; generation++; navigationResize?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); },
+    dispose() { if (disposed) return; disposed = true; generation++; navigationResize?.disconnect(); changes?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); placement?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); delete root.dataset.microWidgets; },
   };
 }

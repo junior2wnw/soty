@@ -38,6 +38,11 @@
 .sw-agent-dialog>.sw-dialog-header h2 { font-size: 16px; }
 .sw-agent-dialog>.sw-dialog-content { max-height: calc(var(--soty-visible-height,100dvh) - 76px); padding: 0; }
 .sw-agent-context { margin: 0; padding: 8px 12px; color: var(--sw-muted); font-size: 12px; }
+.sw-agent-position { padding-inline: 12px; color: var(--sw-muted); font-size: 12px; }
+.sw-agent-position>summary { min-height: 44px; align-content: center; cursor: pointer; }
+.sw-agent-position-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; padding-bottom: 10px; }
+.sw-agent-position-actions>.sw-button { min-width: 0; min-height: 44px; }
+.sw-agent-position-actions>.sw-button:last-child { grid-column: 1/-1; }
 .sw-agent-dialog .sw-assistant { padding: 12px; gap: 12px; }
 .sw-agent-dialog .sw-assistant-heading>div:first-child { display: none; }
 .sw-agent-dialog .sw-assistant-heading .sw-row { flex-wrap: wrap; }
