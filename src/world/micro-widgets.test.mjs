@@ -75,7 +75,7 @@ function fixture({ popover = true, navigation = false } = {}) {
   const root = el('main'); let layerChanges = 0;
   const control = exports.mountMicroWidgets(root, {
     mount(host, _app, _intent, current, instanceId) {
-      const stage = { host, current, instanceId, disposed: false, dirty: false, flush: async () => {},
+      const stage = { host, intent: _intent, current, instanceId, disposed: false, dirty: false, flush: async () => {},
         hasUnsavedChanges() { return this.dirty; }, dispose() { this.disposed = true; },
         assistantContext: () => ({ appId: 'tasks' }) };
       stages.push(stage); return stage;
@@ -438,4 +438,83 @@ test('saved widget instance locator survives hide/show and remains distinct from
   assert.equal(f.stages[0].instanceId,widget.id);
   f.control.setAccount('another');f.control.setAccount(f.account);
   assert.equal(f.stages.at(-1).instanceId,widget.id);assert.notEqual(widget.id,'main');f.control.dispose();
+});
+
+const refreshedEntry = (path = '/current') => launch.parseAppLaunchRoute(launch.formatAppLaunchRoute({
+  appId: 'app-11111111111111111111111111111111', domainId: 'dom_11111111111111111111111111111111', path,
+}));
+
+test('explicit entry replacement creates one new stage for the selected widget and preserves workspace geometry, identity and other frames', async t => {
+  const f = fixture(); t.after(() => f.control.dispose());
+  f.control.pin({ appId: 'app-22222222222222222222222222222222', name: 'Other' }, launch.parseAppLaunchRoute('app/app-22222222222222222222222222222222'));
+  f.remote(state => { Object.assign(state.widgets.find(item => item.id === widget.id), { x: .17, y: .81, width: 410, height: 360 }); }); await tick();
+  const before = f.read(), old = f.stages[0], other = f.stages[1], oldTarget = { ...old.intent.target }, intent = refreshedEntry();
+  assert.equal(await f.control.replaceEntry(widget.id, intent), true);
+  const fresh = f.stages.at(-1); assert.equal(f.stages.length, 3); assert.equal(old.disposed, true); assert.equal(old.current(), false);
+  assert.equal(other.disposed, false); assert.equal(other.current(), true); assert.equal(fresh.current(), true); assert.equal(fresh.instanceId, widget.id);
+  assert.deepEqual({ ...fresh.intent.target }, { ...intent.target }); assert.deepEqual({ ...old.intent.target }, oldTarget, 'the captured old launcher is not mutated');
+  assert.deepEqual(f.read(), { ...before, widgets: before.widgets.map(item => item.id === widget.id ? { ...item, route: intent.route } : item) });
+});
+
+test('explicit refresh of the same address still replaces the immutable old stage', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const old = f.stages[0], before = f.read();
+  assert.equal(await f.control.replaceEntry(widget.id, launch.parseAppLaunchRoute(widget.route)), true);
+  assert.equal(old.disposed, true); assert.equal(f.stages.length, 2); assert.deepEqual(f.read(), before);
+});
+
+for (const reason of ['dirty', 'flush rejected']) test(`entry replacement preserves the old stage and preference when ${reason}`, async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const old = f.stages[0], before = f.read();
+  if (reason === 'dirty') old.dirty = true; else old.flush = async () => { throw new Error('Synthetic unsaved change'); };
+  assert.equal(await f.control.replaceEntry(widget.id, refreshedEntry()), false);
+  assert.equal(old.disposed, false); assert.equal(old.current(), true); assert.equal(f.stages.length, 1); assert.deepEqual(f.read(), before);
+  assert.match(f.notices.at(-1), /Сохраните незавершённое действие/u);
+});
+
+test('entry replacement rejects another app, administrative panel, ephemeral invitation and malformed path before flushing', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); let flushes = 0; f.stages[0].flush = async () => { flushes++; };
+  const good = refreshedEntry(), other = launch.parseAppLaunchRoute('app/app-22222222222222222222222222222222');
+  for (const intent of [other, { ...good, presentation: { panel: 'discussion', administrative: true } }, { ...good, takeInvitation: () => 'ephemeral' }, { ...good, target: { ...good.target, path: 'https://untrusted.invalid/' } }])
+    assert.equal(await f.control.replaceEntry(widget.id, intent), false);
+  assert.equal(flushes, 0); assert.equal(f.stages.length, 1); assert.equal(f.stages[0].disposed, false);
+});
+
+test('entry replacement pending across account ABA cannot dispose or retarget the replacement account stage', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const gate = deferred(); f.stages[0].flush = () => gate.promise;
+  const pending = f.control.replaceEntry(widget.id, refreshedEntry()); f.control.setAccount('profile-b'); f.control.setAccount(f.account);
+  const current = f.stages.at(-1), before = f.read(); gate.resolve(); assert.equal(await pending, false);
+  assert.equal(current.disposed, false); assert.equal(current.current(), true); assert.deepEqual(f.read(), before);
+});
+
+test('late hide of the old stage cannot hide a freshly replaced entry with the same widget id', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const hideGate = deferred(), replaceGate = deferred(); let flushes = 0;
+  f.stages[0].flush = () => ++flushes === 1 ? hideGate.promise : replaceGate.promise;
+  f.click('Скрыть виджет: Tasks'); const replacing = f.control.replaceEntry(widget.id, refreshedEntry());
+  replaceGate.resolve(); assert.equal(await replacing, true); const fresh = f.stages.at(-1);
+  hideGate.resolve(); await tick(); assert.equal(fresh.disposed, false); assert.equal(fresh.current(), true);
+  assert.equal(f.read().widgets[0].visible, true); assert.equal(f.read().widgets[0].route, refreshedEntry().route);
+});
+
+test('an unprocessed newer storage entry fences a stale recovery button without rewriting it', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const old = f.stages[0], gate = deferred(); old.flush = () => gate.promise;
+  const replacing = f.control.replaceEntry(widget.id, refreshedEntry('/older-button'));
+  workspace.editWidgetWorkspace(f.storage, f.account, state => { state.widgets[0].route = refreshedEntry('/newer-selection').route; });
+  const saved = f.storage.getItem(workspace.widgetStorageKey(f.account)); gate.resolve(); assert.equal(await replacing, false);
+  assert.equal(f.storage.getItem(workspace.widgetStorageKey(f.account)), saved); assert.equal(old.disposed, false); assert.equal(f.stages.length, 1);
+});
+
+test('entry replacement keeps newer geometry written while its old stage is flushing', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const gate = deferred(); f.stages[0].flush = () => gate.promise;
+  const replacing = f.control.replaceEntry(widget.id, refreshedEntry());
+  workspace.editWidgetWorkspace(f.storage, f.account, state => { Object.assign(state.widgets[0], { x: .91, y: .73, width: 540, height: 420 }); });
+  gate.resolve(); assert.equal(await replacing, true);
+  assert.deepEqual(f.read().widgets[0], { ...widget, x: .91, y: .73, width: 540, height: 420, route: refreshedEntry().route });
+});
+
+test('a newer replacement completion fences an older pending recovery of the same widget', async t => {
+  const f = fixture(); t.after(() => f.control.dispose()); const older = deferred(), newer = deferred(); let calls = 0;
+  f.stages[0].flush = () => ++calls === 1 ? older.promise : newer.promise;
+  const first = f.control.replaceEntry(widget.id, refreshedEntry('/first')), second = f.control.replaceEntry(widget.id, refreshedEntry('/second'));
+  newer.resolve(); assert.equal(await second, true); const fresh = f.stages.at(-1);
+  older.resolve(); assert.equal(await first, false); assert.equal(fresh.disposed, false);
+  assert.equal(f.stages.length, 2); assert.equal(f.read().widgets[0].route, refreshedEntry('/second').route);
 });

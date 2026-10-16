@@ -12,6 +12,7 @@ import { editWidgetWorkspace, readWidgetWorkspace, widgetLimit, widgetPosition, 
 export interface MicroWidgetsHandle {
   setAccount(account: string): void;
   pin(app: WorldAppRecord, intent: AppLaunchIntent): void;
+  replaceEntry(instanceId: string, intent: AppLaunchIntent): Promise<boolean>;
   clearActive(): void;
   hasActiveWidget(): boolean;
   assistantContext(): WorldAssistantContext | null;
@@ -101,6 +102,34 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     if (row?.stage?.hasUnsavedChanges()) { options.notify('Сохраните незавершённое действие перед скрытием виджета.'); return; }
     commit(value => { if (remove) value.widgets = value.widgets.filter(widget => widget.id !== id);
       else { const widget = value.widgets.find(item => item.id === id); if (widget) widget.visible = false; } });
+  }
+  async function replaceEntry(instanceId: string, intent: AppLaunchIntent): Promise<boolean> {
+    const row = mounted.get(instanceId), previous = state.widgets.find(widget => widget.id === instanceId), owner = account, epoch = generation;
+    if (disposed || !owner || !row || !previous?.visible || state.hidden || intent.presentation || intent.takeInvitation) return false;
+    let route: string;
+    try {
+      if (parseAppLaunchRoute(previous.route)?.target.appId !== intent.target.appId) return false;
+      route = formatAppLaunchRoute(intent.target, intent.communityId);
+    } catch { return false; }
+    const current = (): boolean => !disposed && account === owner && generation === epoch && mounted.get(instanceId) === row
+      && !state.hidden && state.widgets.some(widget => widget.id === instanceId && widget.visible && widget.route === previous.route);
+    try { await row.stage?.flush(); }
+    catch { if (current()) options.notify('Сохраните незавершённое действие перед открытием актуальной версии.'); return false; }
+    if (!current()) return false;
+    if (row.stage?.hasUnsavedChanges()) { options.notify('Сохраните незавершённое действие перед открытием актуальной версии.'); return false; }
+    // Another tab may have changed this entry while its storage event is still
+    // queued. A stale recovery button cannot overwrite that newer selection.
+    const store = storage();
+    if (store && !volatile) {
+      const stored = readWidgetWorkspace(store, owner), selected = stored.widgets.find(widget => widget.id === instanceId);
+      if (stored.hidden || !selected?.visible || selected.route !== previous.route) return false;
+    }
+    const selected = active === instanceId;
+    stop(instanceId); if (selected) active = instanceId;
+    // A new stage captures the new location. The old launcher's immutable
+    // target/binding and every other live widget remain untouched.
+    commit(value => { const widget = value.widgets.find(item => item.id === instanceId); if (widget) widget.route = route; });
+    return mounted.has(instanceId);
   }
   function mount(widget: WorkspaceWidget): void {
     const intent = parseAppLaunchRoute(widget.route); if (!intent) return;
@@ -281,6 +310,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
         else value.widgets.push({ id: `widget-${crypto.randomUUID()}`, route, name: app.name.slice(0, 100) || 'Приложение', visible: true,
           x: Math.max(0, 0.65 - value.widgets.length * 0.08), y: Math.min(0.75, 0.12 + value.widgets.length * 0.06), width: 320, height: 260 }); });
     },
+    replaceEntry,
     clearActive() { active = ''; },
     hasActiveWidget: () => mounted.has(active),
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
