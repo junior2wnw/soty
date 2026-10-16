@@ -124,6 +124,8 @@ export interface WorldAppOptions {
   humanCalls?: WorldHumanCallPort;
   fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;
   localAccount?: () => Promise<{ accountId: string | null; label: string }>;
+  /** Sync the contact-card name for this controller's mounted account. */
+  syncContactName?: (displayName: string) => Promise<void>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;

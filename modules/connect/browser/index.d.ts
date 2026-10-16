@@ -105,7 +105,8 @@ export interface ConnectClient {
   extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string }): Promise<T>;
   bootstrap(label: string, options?: { invitationToken?: string }): Promise<AccountResult>;
   status(): Promise<AccountStatus>;
-  rename(label: string): Promise<{ label: string }>;
+  /** Optional admission fence for an action from an already displayed profile. */
+  rename(label: string, expectedAccountId?: string): Promise<{ label: string }>;
   card(): Promise<ContactCard>;
   rotateCard(): Promise<ContactCard>;
   resolveCard(cardId: string): Promise<ContactCard>;

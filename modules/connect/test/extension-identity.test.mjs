@@ -138,6 +138,55 @@ test('malformed or mismatched context dispatches no challenge; two-argument API 
   assert.equal((await f.primary.extension('world.echo', { text: 'legacy' })).text, 'legacy');
 });
 
+test('profile rename rejects a queued A action before any B challenge in the coalesced ABA race', async t => {
+  const f = await fixture(t);
+  f.afterResponse(body => { if (body.op === 'world.profile.get') f.store.nextRead(() => f.other.switchProfile(f.b)); });
+  const results = await Promise.allSettled([
+    f.primary.extension('world.profile.get', {}, { expectedAccountId: f.a }),
+    f.primary.rename('New A', f.a),
+  ]);
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[1].status, 'rejected'); assert.equal(results[1].reason.code, 'ACTIVE_PROFILE_CHANGED');
+  assert.deepEqual(f.traffic, ['challenge', 'world.profile.get']);
+  f.afterResponse(null);
+  assert.equal((await f.other.card()).label, 'B');
+  await f.other.switchProfile(f.a);
+  assert.equal((await f.primary.card()).label, 'A');
+  assert.deepEqual(f.store.inspect().installations.map(item => item.label), ['A', 'B']);
+});
+
+test('profile rename retains the admission fence immediately before signing', async t => {
+  const f = await fixture(t);
+  f.afterResponse(async body => { if (body.op === 'challenge') await f.other.switchProfile(f.b); });
+  await assert.rejects(f.primary.rename('New A', f.a), { code: 'ACTIVE_PROFILE_CHANGED' });
+  assert.deepEqual(f.traffic, ['challenge']);
+  f.afterResponse(null); assert.equal((await f.other.card()).label, 'B');
+});
+
+test('profile rename can commit only A and rejects its late acknowledgement after B is selected', async t => {
+  const f = await fixture(t);
+  f.afterResponse(async body => { if (body.op === 'profile.rename') await f.other.switchProfile(f.b); });
+  await assert.rejects(f.primary.rename('New A', f.a), { code: 'ACTIVE_PROFILE_CHANGED' });
+  f.afterResponse(null);
+  assert.equal((await f.other.card()).label, 'B');
+  assert.equal((await f.other.getLocalState()).label, 'B');
+  await f.other.switchProfile(f.a);
+  assert.equal((await f.primary.card()).label, 'New A');
+  await f.primary.rename(' New A ', f.a);
+  assert.equal((await f.primary.getLocalState()).label, 'New A');
+});
+
+test('profile rename validates the expected account and preserves the legacy one-argument API', async t => {
+  const f = await fixture(t);
+  for (const expected of [null, '', {}, f.b]) {
+    await assert.rejects(f.primary.rename('New A', expected), { code: expected === f.b ? 'ACTIVE_PROFILE_CHANGED' : 'INVALID_ARGUMENT' });
+  }
+  assert.deepEqual(f.traffic, []);
+  await f.primary.rename(' Legacy A ');
+  assert.equal((await f.primary.getLocalState()).label, 'Legacy A');
+  assert.equal((await f.primary.card()).label, 'Legacy A');
+});
+
 
 function transportClock(t) {
   let now = 0, next = 0;

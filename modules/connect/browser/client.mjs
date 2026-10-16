@@ -376,9 +376,11 @@ export function createClientWithStorage(options, storage) {
       const actor = await installation(), result = await rpc('status', {}, actor, true);
       checkAccountResult(result, actor); return result;
     }),
-    rename: label => serialize(async () => {
+    rename: (label, expectedAccountId) => serialize(async () => {
       label = deviceLabel(label);
-      const actor = await installation(), result = await rpc('profile.rename', { label }, actor, true);
+      const actor = await installation();
+      assertExpectedAccount(actor, expectedAccountId);
+      const result = await rpc('profile.rename', { label }, actor, true);
       await mutate(draft => { for (const item of draft.installations) if (item.accountId === actor.accountId) item.label = label; return draft; });
       await notify(); return result;
     }),

@@ -108,6 +108,7 @@ export function errorText(error: unknown): string {
   const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   const messages: Record<string, string> = {
     ACTIVE_PROFILE_CHANGED: 'Аккаунт изменился. Проверьте выбранный аккаунт и повторите действие.',
+    profile_contact_name_unsynced: 'Имя и описание сохранены. Обновление имени в контактах пока не подтверждено. Нажмите «Сохранить» ещё раз.',
     world_revision_conflict: 'Данные изменились. Обновите и повторите действие.',
     revision_conflict: 'Данные изменились. Обновите и повторите действие.',
     field_revision_conflict: 'Расстановка изменилась в другом окне. Выберите, какую версию оставить.',

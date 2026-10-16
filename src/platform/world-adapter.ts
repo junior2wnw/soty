@@ -61,10 +61,6 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
         if (!result.ok) throw Object.assign(new Error('Call did not start.'), { code: result.code });
       } } : {}),
       snapshotDescription: 'Профиль и сообщества сохранены в Сотах. Сохранение прежних комнат доступно в разделе «Комнаты и инструменты».',
-      onRename: async displayName => {
-        const result = await accountClient.extension<{ profile: WorldProfile }>('world.profile.get');
-        await accountClient.extension('world.profile.update', { expectedRevision: result.profile.revision, displayName });
-      },
     });
     const dialog = document.querySelector<HTMLDialogElement>('dialog.connect-panel');
     if (dialog) await new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true }));
@@ -204,6 +200,11 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       return accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
     } };
     return mountWorldApp(root, { ...options, api, ...(humanCalls ? { humanCalls } : {}),
+      syncContactName: async displayName => {
+        if (!accountId || !current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
+        await accountClient.rename(displayName, accountId);
+        if (!current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
+      },
       requestContact: async (profile: WorldProfile) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
     });
   };

@@ -2276,17 +2276,32 @@ class WorldApplication {
 
   private async updateProfile(parameters: Record<string, unknown>): Promise<void> {
     if (!this.profile) return;
+    const current = this.accountTask();
+    const changed = () => Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
+    if (!current()) throw changed();
     const response = await this.api.request<{ profile: WorldProfile }>('world.profile.update', { expectedRevision: this.profile.revision, ...parameters });
-    if (this.destroyed) return;
-    this.profile = response.profile; this.renderNavigation(); this.announce('Настройки сохранены');
+    if (!current()) throw changed();
+    // World has committed at this point. Retain its revision even if the contact
+    // projection fails so the same form can retry without a false conflict.
+    this.profile = response.profile; this.renderNavigation();
     this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined);
     if (this.view === 'mine' && !this.group) this.renderPersonal();
     if (this.view === 'world' && !this.group) void this.search();
+    if (typeof parameters.displayName === 'string' && this.options.syncContactName) {
+      try { await this.options.syncContactName(response.profile.displayName); }
+      catch (cause) {
+        if (!current() || (cause as { code?: string })?.code === 'ACTIVE_PROFILE_CHANGED') throw changed();
+        throw Object.assign(new Error('The profile was saved but its contact name is not confirmed.'), { code: 'profile_contact_name_unsynced', cause });
+      }
+      if (!current()) throw changed();
+    }
+    if (typeof parameters.displayName !== 'string') this.announce('Настройки сохранены');
   }
 
   openProfileEditor(): void {
     if (this.destroyed) return;
     const profile = this.profile; if (!profile) { this.runHook(this.options.openAccount); return; }
+    const current = this.accountTask();
     const dialog = this.dialog('Профиль'); const form = el('form');
     const name = textInput(profile.displayName, 'Ваше имя', 80); name.required = true;
     const bio = el('textarea', 'sw-textarea'); bio.value = profile.bio; bio.maxLength = 400; bio.placeholder = 'Чем занимаетесь, что любите';
@@ -2304,7 +2319,20 @@ class WorldApplication {
     form.classList.add('sw-profile-form');
     form.append(identity, labeledField('Имя', name), labeledField('О себе', bio), labeledField('Интересы', interests, 'Через запятую. По ним вас смогут найти.'), error);
     pinDialogSubmit(dialog, form, save);
-    form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true; error.textContent = ''; void this.updateProfile({ displayName: name.value.trim(), bio: bio.value.trim(), interests: interests.value.split(',').map(item => item.trim().slice(0, 32)).filter(Boolean).slice(0, 8), avatarColor: worldColors[color] }).then(async () => { if (pendingAvatar && this.profile) { const result = await this.api.request<{ profile: WorldProfile }>('world.profile.avatar.set', { expectedRevision: this.profile.revision, ...pendingAvatar }); this.profile = result.profile; this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined); this.renderNavigation(); if (this.view === 'mine' && !this.group) this.renderPersonal(); } dialog.close(); this.toast('Профиль сохранён'); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; }); });
+    form.addEventListener('submit', event => {
+      event.preventDefault(); if (save.disabled || !current() || !form.reportValidity()) return;
+      save.disabled = true; error.textContent = '';
+      void this.updateProfile({ displayName: name.value.trim(), bio: bio.value.trim(), interests: interests.value.split(',').map(item => item.trim().slice(0, 32)).filter(Boolean).slice(0, 8), avatarColor: worldColors[color] }).then(async () => {
+        if (!current()) return;
+        if (pendingAvatar && this.profile) {
+          const result = await this.api.request<{ profile: WorldProfile }>('world.profile.avatar.set', { expectedRevision: this.profile.revision, ...pendingAvatar });
+          if (!current()) return;
+          this.profile = result.profile; this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined); this.renderNavigation();
+          if (this.view === 'mine' && !this.group) this.renderPersonal();
+        }
+        dialog.close(); this.toast('Профиль сохранён');
+      }).catch(reason => { if (current() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
+    });
     const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(() => this.options.openAccount('recovery')); })); dialog.body.append(form, el('hr', 'sw-rule'), extra);
   }
 
