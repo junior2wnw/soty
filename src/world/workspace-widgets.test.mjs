@@ -57,6 +57,40 @@ test('size-aware movement is inside all supported viewports and resizing does no
   assert.equal(saved.width, 640); assert.equal(saved.height, 640);
 });
 
+test('runtime shell insets reserve actual headers and navigation without changing a normalized preference', () => {
+  const saved = { ...widget(), width: 640, height: 640, x: .7, y: .3 }, before = { ...saved };
+  const desktop = { left: 0, top: 0, width: 1280, height: 900 }, original = widgetRect(saved, desktop);
+  for (const topInset of [112, 211.17, 280]) {
+    const viewport = { left: 11, top: 23, width: 320, height: 568, topInset, bottomInset: 72 };
+    const rect = widgetRect(saved, viewport);
+    assert.equal(rect.y, viewport.top + topInset);
+    assert.equal(rect.y + rect.height, viewport.top + viewport.height - viewport.bottomInset);
+    assert.deepEqual(widgetPosition(rect, viewport, saved), { x: saved.x, y: saved.y }, 'a clamped axis retains its previous normalized position');
+  }
+  assert.deepEqual(saved, before); assert.deepEqual(widgetRect(saved, desktop), original);
+});
+
+test('movement inversion uses the current reserved area on each axis', () => {
+  const saved = widget(), viewport = { left: 17, top: 23, width: 1280, height: 900, topInset: 184, bottomInset: 108 };
+  const rect = widgetRect(saved, viewport), moved = { ...rect, x: rect.x + 40, y: rect.y + 32 };
+  const next = { ...saved, ...widgetPosition(moved, viewport, saved) }, projected = widgetRect(next, viewport);
+  assert.ok(Math.abs(projected.x - moved.x) < 1e-9); assert.ok(Math.abs(projected.y - moved.y) < 1e-9);
+  assert.equal(next.width, saved.width); assert.equal(next.height, saved.height);
+});
+
+test('extreme visual viewports retain a visible header without producing offscreen or negative rectangles', () => {
+  const saved = { ...widget(), width: 640, height: 640, x: 1, y: 1 };
+  for (const width of [1, 10, 320]) for (const height of [1, 24, 48, 80, 180]) {
+    const viewport = { left: 17, top: 23, width, height, topInset: 240, bottomInset: 120 };
+    const rect = widgetRect(saved, viewport);
+    assert.ok(rect.width >= 1 && rect.height >= Math.min(48, height));
+    assert.ok(rect.x >= viewport.left && rect.x + rect.width <= viewport.left + width);
+    assert.ok(rect.y >= viewport.top && rect.y + rect.height <= viewport.top + height);
+  }
+  assert.deepEqual(widgetRect(saved, { left: 0, top: 0, width: 1280, height: 900, topInset: NaN, bottomInset: Infinity }),
+    widgetRect(saved, { left: 0, top: 0, width: 1280, height: 900 }));
+});
+
 test('quota errors and unavailable local storage are reported as unsaved while preserving the current result', () => {
   const store = memory(); store.setItem = () => { throw new Error('quota'); };
   const result = editWidgetWorkspace(store, 'owner', state => { state.widgets.push(widget()); });

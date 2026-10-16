@@ -51,19 +51,29 @@ export function editWidgetWorkspace(storage, account, change) {
 
 export const widgetStorageKey = key;
 
-/** Resize clamps the presentation, not the stored user preference. */
+function widgetArea(viewport) {
+  const width = Math.max(1, viewport.width), height = Math.max(1, viewport.height);
+  const side = Math.min(6, (width - 1) / 2);
+  // If chrome alone fills an unusually small visual viewport, retain a usable
+  // widget header rather than projecting it to a clipped one-pixel window.
+  const header = Math.min(52, height);
+  const bottom = Math.min(finite(viewport.bottomInset, 36, 36, Infinity), height - header);
+  const top = Math.min(finite(viewport.topInset, 56, 56, Infinity), height - bottom - header);
+  return { left: viewport.left + side, top: viewport.top + top, width: width - 2 * side, height: height - top - bottom };
+}
+
+/** Route/viewport chrome clamps presentation only, never the stored preference. */
 export function widgetRect(widget, viewport) {
-  const verticalInset = 56 + finite(viewport.bottomInset, 36, 36, Infinity);
-  const width = Math.max(1, Math.min(widget.width, viewport.width - 12));
-  const height = Math.max(1, Math.min(widget.height, viewport.height - verticalInset));
-  const x = viewport.left + 6 + finite(widget.x, 0.65, 0, 1) * Math.max(0, viewport.width - width - 12);
-  const y = viewport.top + 56 + finite(widget.y, 0.12, 0, 1) * Math.max(0, viewport.height - height - verticalInset);
+  const area = widgetArea(viewport);
+  const width = Math.max(1, Math.min(widget.width, area.width));
+  const height = Math.max(1, Math.min(widget.height, area.height));
+  const x = area.left + finite(widget.x, 0.65, 0, 1) * Math.max(0, area.width - width);
+  const y = area.top + finite(widget.y, 0.12, 0, 1) * Math.max(0, area.height - height);
   return { x, y, width, height };
 }
 
 export function widgetPosition(rect, viewport, previous = { x: 0, y: 0 }) {
-  const verticalInset = 56 + finite(viewport.bottomInset, 36, 36, Infinity);
-  const spanX = viewport.width - rect.width - 12, spanY = viewport.height - rect.height - verticalInset;
-  return { x: spanX > 0 ? finite((rect.x - viewport.left - 6) / spanX, 0, 0, 1) : previous.x,
-    y: spanY > 0 ? finite((rect.y - viewport.top - 56) / spanY, 0, 0, 1) : previous.y };
+  const area = widgetArea(viewport), spanX = area.width - rect.width, spanY = area.height - rect.height;
+  return { x: spanX > 0 ? finite((rect.x - area.left) / spanX, 0, 0, 1) : previous.x,
+    y: spanY > 0 ? finite((rect.y - area.top) / spanY, 0, 0, 1) : previous.y };
 }

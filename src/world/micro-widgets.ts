@@ -37,15 +37,49 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   let account = '', generation = 0, disposed = false, active = '', state: WidgetWorkspace = { hidden: false, widgets: [] };
   let manager: WorldDialog | null = null, placement: WorldDialog | null = null, volatile = false, layoutRevision = 0;
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
-  const viewport = (): WidgetViewport => {
-    const box = { left: view.visualViewport?.offsetLeft ?? 0, top: view.visualViewport?.offsetTop ?? 0,
-      width: view.visualViewport?.width ?? view.innerWidth, height: view.visualViewport?.height ?? view.innerHeight };
+  // Only shell chrome is reserved. Application content and field cells remain
+  // behind the always-on-top widgets; a widget's own toolbar is not shell chrome.
+  const topChrome = '.sw-topbar,.sw-pwa-banner,.sw-inbox-head,.sw-chat-header,.sa-toolbar,.sw-app-toolbar,.uf-screen-head,.uf-local-search,.uf-filters';
+  const fieldChrome = '.uf-context-toolbar,.uf-pan-controls';
+  const bottomChrome = '.sw-field-controls,.sx-personal-field-controls,.uf-screen-arrange,.uf-undo,.uf-move-tools';
+  const chromeElements = (selector: string): Element[] => [...root.querySelectorAll?.(selector) ?? []].filter(element => !layer.contains(element));
+  let chromeResize: ResizeObserver | null = null;
+  const observedChrome = new Set<Element>();
+  const observeChrome = (): void => {
+    if (!chromeResize) return;
+    const navigation = doc.querySelector('.sw-mobile-nav');
+    const next = new Set([...chromeElements(`${topChrome},${fieldChrome},${bottomChrome}`), ...(navigation ? [navigation] : [])]);
+    for (const element of observedChrome) if (!next.has(element)) { chromeResize.unobserve(element); observedChrome.delete(element); }
+    for (const element of next) if (!observedChrome.has(element)) { chromeResize.observe(element); observedChrome.add(element); }
+  };
+  const visibleBox = (): WidgetViewport => ({ left: view.visualViewport?.offsetLeft ?? 0, top: view.visualViewport?.offsetTop ?? 0,
+    width: view.visualViewport?.width ?? view.innerWidth, height: view.visualViewport?.height ?? view.innerHeight });
+  const navigationInset = (box: WidgetViewport): number => {
     const nav = doc.querySelector?.('.sw-mobile-nav')?.getBoundingClientRect();
-    // Keep the top-layer widget above apps, while reserving the shell's actual
-    // navigation and safe area. This clamps presentation only, never preferences.
-    const bottomInset = nav && nav.width > 0 && nav.height > 0 && nav.top >= box.top && nav.top < box.top + box.height
+    return nav && nav.width > 0 && nav.height > 0 && nav.top >= box.top && nav.top < box.top + box.height
       ? Math.max(36, box.top + box.height - nav.top + 8) : 36;
-    return { ...box, bottomInset };
+  };
+  const viewport = (box = visibleBox()): WidgetViewport => {
+    let topInset = 56, bottomInset = navigationInset(box);
+    const reserve = (elements: Iterable<Element>, side: 'top' | 'bottom'): void => {
+      for (const element of elements) {
+        if (element.closest('[hidden],[inert]') || !element.getClientRects().length || view.getComputedStyle(element).visibility === 'hidden') continue;
+        const rect = element.getBoundingClientRect();
+        if (![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0
+          || rect.left >= box.left + box.width || rect.left + rect.width <= box.left || rect.top >= box.top + box.height || rect.top + rect.height <= box.top) continue;
+        if (side === 'top') topInset = Math.max(topInset, rect.top + rect.height - box.top + 8);
+        else bottomInset = Math.max(bottomInset, box.top + box.height - rect.top + 8);
+      }
+    };
+    reserve(chromeElements(topChrome), 'top'); reserve(chromeElements(bottomChrome), 'bottom');
+    for (const toolbar of chromeElements(fieldChrome)) {
+      const style = view.getComputedStyle(toolbar);
+      const side = style.position === 'static' || style.position === 'relative' || style.top !== 'auto' ? 'top' : 'bottom';
+      // The responsive toolbar can stretch between top and bottom while its
+      // buttons occupy one row. Reserve those controls, not the whole field.
+      reserve(toolbar.querySelectorAll('button,select,input'), side);
+    }
+    return { ...box, topInset, bottomInset };
   };
 
   function showLayer(): void {
@@ -57,8 +91,11 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     options.onLayerChange?.();
   }
   function layout(): void {
-    const viewBox = viewport();
-    const point = placeFloatingControl({ x: viewBox.left + viewBox.width - 100, y: viewBox.top + 6 }, viewBox,
+    observeChrome();
+    const box = visibleBox(), viewBox = viewport(box);
+    // The launcher owns its global header slot; route content insets apply to
+    // windows only and must not push the launcher down into those windows.
+    const point = placeFloatingControl({ x: box.left + box.width - 100, y: box.top + 6 }, { ...box, bottomInset: navigationInset(box) },
       floatingObstacles(doc, element => layer.contains(element) || element.classList.contains('sw-agent-orb')));
     Object.assign(manage.style, { left: `${point.x}px`, top: `${point.y}px` });
     state.widgets.forEach((widget, index) => {
@@ -266,11 +303,10 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   };
   view.addEventListener('resize', resizeLayout, { signal: abort.signal });
   view.visualViewport?.addEventListener('resize', resizeLayout, { signal: abort.signal }); view.visualViewport?.addEventListener('scroll', resizeLayout, { signal: abort.signal });
-  // Chat/discussion routes can hide or restore this stable shell element
-  // without resizing the viewport. Observe only its actual geometry.
-  const navigation = doc.querySelector?.('.sw-mobile-nav');
-  const navigationResize = navigation && typeof ResizeObserver === 'function' ? new ResizeObserver(resizeLayout) : null;
-  if (navigation) navigationResize?.observe(navigation);
+  root.addEventListener('scroll', resizeLayout, { signal: abort.signal, capture: true });
+  // Routes replace headers; browser reflow, keyboard and font loading can resize
+  // existing ones. Rebind the bounded observer on layout, then discard old nodes.
+  chromeResize = typeof ResizeObserver === 'function' ? new ResizeObserver(resizeLayout) : null;
   const changes = typeof MutationObserver === 'function' ? new MutationObserver(records => {
     if (records.some(record => !layer.contains(record.target) && !(record.target instanceof Element && record.target.classList.contains('sw-agent-orb')))) resizeLayout();
   }) : null;
@@ -317,6 +353,6 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
     async flush() { await Promise.all([...mounted.values()].map(row => row.stage?.flush())); },
     hasUnsavedChanges: () => [...mounted.values()].some(row => row.stage?.hasUnsavedChanges()),
-    dispose() { if (disposed) return; disposed = true; generation++; navigationResize?.disconnect(); changes?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); placement?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); delete root.dataset.microWidgets; },
+    dispose() { if (disposed) return; disposed = true; generation++; chromeResize?.disconnect(); observedChrome.clear(); changes?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); placement?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); delete root.dataset.microWidgets; },
   };
 }

@@ -1,6 +1,6 @@
 export interface WorkspaceWidget { id: string; route: string; name: string; visible: boolean; x: number; y: number; width: number; height: number }
 export interface WidgetWorkspace { hidden: boolean; widgets: WorkspaceWidget[] }
-export interface WidgetViewport { left: number; top: number; width: number; height: number; bottomInset?: number }
+export interface WidgetViewport { left: number; top: number; width: number; height: number; topInset?: number; bottomInset?: number }
 export interface WidgetRect { x: number; y: number; width: number; height: number }
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
 export const widgetLimit: number;
