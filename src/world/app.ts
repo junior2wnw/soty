@@ -1617,8 +1617,14 @@ class WorldApplication {
       const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
       conversations.replaceChildren(...visible.map(paintConversation)); listStatus.textContent = '';
       if (!groups.length) {
-        const actions = el('div', 'sw-stack');
-        actions.append(button('Пригласить по QR или ссылке', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people'))), button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
+        const actions = el('div', 'sw-stack sw-inbox-start-actions');
+        const invite = button('', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people')));
+        invite.setAttribute('aria-label', 'Пригласить по QR или ссылке');
+        const fullLabel = el('span', 'sw-inbox-invite-full', 'Пригласить по QR или ссылке');
+        const shortLabel = el('span', 'sw-inbox-invite-short', 'Пригласить');
+        fullLabel.setAttribute('aria-hidden', 'true'); shortLabel.setAttribute('aria-hidden', 'true');
+        invite.append(fullLabel, shortLabel);
+        actions.append(invite, button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
         conversations.append(emptyState('Начните разговор', 'Добавьте человека или создайте чат для своих.', actions, 'chat'));
       }
       else if (!visible.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';

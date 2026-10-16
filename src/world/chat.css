@@ -38,6 +38,7 @@
 .sw-app .sw-conversation-list .sw-empty { padding: 32px 14px; gap: 12px; }
 .sw-app .sw-conversation-list .sw-empty h2 { font-size: 18px; }
 .sw-app .sw-conversation-list .sw-empty p { font-size: 12px; }
+.sw-inbox-invite-short { display: none; }
 .sw-app .sw-message-room { min-height: 0; min-width: 0; height: 100%; overflow: hidden; background: var(--sw-bg); }
 .sw-app .sw-message-room>.sw-empty { height: 100%; padding: 24px; }
 .sw-app .sw-message-room>.sw-empty h2 { font-size: 24px; letter-spacing: -.65px; }
@@ -202,6 +203,14 @@
   .sw-app :is(.sw-conversation-list,.sw-chat-messages)>.sw-empty .sw-empty-art { display: none; }
   .sw-app :is(.sw-conversation-list,.sw-chat-messages)>.sw-empty h2 { font-size: 20px; line-height: 26px; }
   .sw-app :is(.sw-conversation-list,.sw-chat-messages)>.sw-empty p { font-size: 14px; line-height: 21px; }
+  .sw-app .sw-conversation-list>.sw-empty { min-height: 0; padding: 10px 8px; gap: 8px; }
+  .sw-app .sw-conversation-list>.sw-empty h2 { font-size: 18px; line-height: 24px; }
+  .sw-app .sw-conversation-list>.sw-empty p { font-size: 13px; line-height: 18px; }
+  .sw-app .sw-inbox-start-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); width: 100%; gap: 8px; }
+  .sw-app .sw-inbox-start-actions>.sw-button { min-width: 0; min-height: 44px; padding: 8px; gap: 6px; font-size: 13px; }
+  .sw-app .sw-inbox-start-actions>.sw-button>.sw-icon { width: 16px; height: 16px; }
+  .sw-inbox-invite-full { display: none; }
+  .sw-inbox-invite-short { display: inline; }
   .sw-app .sw-composer>textarea { max-height: min(144px,28dvh); overflow-y: auto; }
   .sw-app .sw-composer>.sw-button { width: 44px; height: 44px; min-height: 44px; }
   .sw-app .sw-chat-header>.sw-icon-button { width: 44px; height: 44px; min-height: 44px; padding: 10px; }
