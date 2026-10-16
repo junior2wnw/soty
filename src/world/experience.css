@@ -68,10 +68,19 @@
   flex-direction: column;
   align-items: center;
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scroll-padding-block: 8px;
   border-right: 1px solid var(--sw-line);
   padding: 20px 8px 12px;
   background: var(--sw-bg);
   z-index: 21;
+}
+
+.sx-sidebar > * {
+  flex-shrink: 0;
 }
 
 .sx-brand-button {
@@ -193,6 +202,57 @@
   height: 45px;
   aspect-ratio: 1;
   clip-path: none;
+}
+
+/* Preserve usable controls when a desktop rail has little vertical space. */
+@media (min-width:721px) and (max-height:650px) {
+  .sw-app .sx-sidebar,
+  .sw-app[data-field=unified] aside.sx-sidebar {
+    padding: 8px;
+  }
+  .sw-app .sx-sidebar > .sx-brand-button {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-height: 44px;
+    margin: 0 0 8px;
+  }
+  .sw-app .sx-sidebar .sx-brand-button > .sx-brand-mark {
+    width: 38px;
+    height: 44px;
+    min-height: 0;
+    padding: 0;
+    font-size: 25px;
+    line-height: 1;
+  }
+  .sw-app .sx-sidebar > .sx-rail-nav {
+    gap: 4px;
+  }
+  .sw-app .sx-sidebar .sx-rail-nav > .sx-rail-button.sw-button {
+    min-height: 48px;
+    gap: 2px;
+    padding: 6px 2px;
+    line-height: 14px;
+  }
+  .sw-app .sx-sidebar .sx-rail-button > .sw-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .sw-app .sx-sidebar > .sx-rail-footer {
+    gap: 4px;
+    padding-top: 8px;
+  }
+  .sw-app .sx-sidebar .sx-rail-footer > :is(.sw-icon-button,.sx-profile-button) {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex: none;
+  }
+  .sw-app .sx-sidebar .sx-profile-button > .sw-avatar {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .sx-header-brand {
