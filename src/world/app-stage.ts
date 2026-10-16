@@ -149,16 +149,18 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   refresh.dataset.stageControl = 'refresh';
   const external = button('Открыть отдельно', 'external', 'sw-button-quiet', () => {
     if (!current() || external.disabled) return;
-    closeMore(true); external.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
+    closeMore(true); external.disabled = externalRecovery.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
     // Do not await a route, flush or API read before this user-gesture popup.
     void launcher.openExternal(() => view.open('about:blank', '_blank')).then(result => {
       if (!current()) return;
       captureEntry();
       if (result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
     }).catch(reason => { const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`); })
-      .finally(() => { if (current()) { external.disabled = false; external.removeAttribute('aria-busy'); } });
+      .finally(() => { if (current()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
   });
   external.dataset.stageControl = 'external';
+  const externalRecovery = button('Открыть в новой вкладке', 'external', 'sw-button-quiet sa-recovery-retry', () => { external.click(); });
+  externalRecovery.dataset.stageControl = 'external-recovery'; externalRecovery.hidden = true;
   const settings = button('Настройки приложения', 'settings', 'sw-button-quiet', () => {
     closeMore(true); if (current()) void fullscreen.leave().then(() => { if (current()) options.onSettings(app, updateApp); });
   });
@@ -296,6 +298,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
   recoveryRetry.hidden = options.presentation !== 'widget'; message.after(recoveryRetry);
+  recoveryRetry.after(externalRecovery);
   const currentEntryRetry = button('Открыть актуальный вход', 'arrow', 'sw-button-primary sa-current-entry-retry', () => { void openCurrentEntry(); });
   currentEntryRetry.hidden = true; recoveryRetry.after(currentEntryRetry);
   async function openCurrentEntry(): Promise<void> {
@@ -396,6 +399,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       clearTimer(); runtime.setAttribute('aria-busy', 'false');
       // A transport event must not erase a later access/renewal message.
       if (!message.textContent || message.textContent === ownMessage) { showMessage(text); ownMessage = text; }
+      externalRecovery.hidden = !text;
       if (text) recoveryRetry.hidden = false;
     };
     const loaded = () => {
@@ -424,7 +428,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     resetRuntimeDisplay();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
-    recoveryRetry.hidden = options.presentation !== 'widget'; showMessage('');
+    recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
     stopAssist();
     const existingFrame = runtime.querySelector('iframe');
     if (existingFrame) showMessage('Соединяем с приложением…');

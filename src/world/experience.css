@@ -1047,7 +1047,7 @@
   background: var(--sw-surface-hover);
 }
 
-.sx-assistant-content>.sw-assistant {
+.sx-assistant-content .sw-assistant {
   padding: 0;
   max-width: none;
 }
@@ -1060,7 +1060,8 @@
   justify-content: flex-end;
 }
 
-.sx-assistant-content:has(>.sw-assistant) {
+.sx-assistant-content:has(.sw-assistant),
+.sx-assistant-content:has(.sx-agent) {
   padding: 0;
   border: 0;
   border-radius: 0;

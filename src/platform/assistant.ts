@@ -112,10 +112,14 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   });
   headActions.append(personalMode, deviceMode, newChat, createApp); header.append(title, headActions);
   const layout = el('div', 'sw-assistant-layout'), history = el('aside', 'sw-assistant-history'); history.setAttribute('aria-label', 'История задач');
-  const historyHeading = el('div', 'sw-assistant-history-heading'); historyHeading.append(el('h2', '', 'Недавние'), iconButton('Обновить историю', 'refresh', () => { void loadHistory(); }));
+  const historyHeading = el('div', 'sw-assistant-history-heading'), historyBody = el('div', 'sw-assistant-history-body');
+  historyBody.id = `assistant-history-${crypto.randomUUID()}`; historyBody.hidden = matchMedia('(max-width: 850px)').matches;
+  const historyToggle = button('Недавние', 'down', 'sw-button-quiet', () => { historyBody.hidden = !historyBody.hidden; historyToggle.setAttribute('aria-expanded', String(!historyBody.hidden)); });
+  historyToggle.setAttribute('aria-controls', historyBody.id); historyToggle.setAttribute('aria-expanded', String(!historyBody.hidden));
+  historyHeading.append(historyToggle, iconButton('Обновить историю', 'refresh', () => { void loadHistory(); }));
   const taskList = el('div', 'sw-assistant-task-list'), historyStatus = el('p', 'sw-muted'); historyStatus.setAttribute('role', 'status');
   const more = button('Ещё', 'down', 'sw-button-quiet', () => { void loadHistory(true); }); more.hidden = true;
-  history.append(historyHeading, taskList, historyStatus, more);
+  historyBody.append(taskList, historyStatus, more); history.append(historyHeading, historyBody);
   const pane = el('div', 'sw-assistant-pane'), notice = el('div', 'sw-assistant-notice'); notice.setAttribute('role', 'status');
   const target = el('div', 'sw-assistant-target'), hosts = el('select', 'sw-input'); hosts.setAttribute('aria-label', 'Устройство помощника');
   const folder = el('details', 'sw-assistant-folder'), cwd = textInput(draft.cwd, 'Полный путь на устройстве', 2000);

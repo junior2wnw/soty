@@ -9,6 +9,17 @@ import type { WorldProfile, WorldCommunity, WorldMessage, WorldAppRecord, WorldA
 if (!import.meta.env.DEV)
     throw new Error('UI fixture is development-only');
 const params = new URLSearchParams(location.search);
+// An explicit, development-only specimen for normal assistant composition.
+// It never calls a model, a computer or the production capabilities endpoint.
+const assistantSpecimen = params.get('assistant');
+if (assistantSpecimen === 'personal' || assistantSpecimen === 'device') {
+    const fixtureFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+        if (url.origin === location.origin && url.pathname === '/api/apps/capabilities') return Promise.resolve(new Response(JSON.stringify({ agentConfigured: true, personalAgent: { configured: assistantSpecimen === 'personal' } }), { headers: { 'content-type': 'application/json' } }));
+        return fixtureFetch(input, init);
+    };
+}
 const palette = params.get('theme') === 'light' ? 'light' : 'dark';
 localStorage.setItem('soty.world.ui.v1', JSON.stringify({ themeMode: palette, themeBrightness: 50, view: 'mine', presentation: 'field', homePresentation: 'list' }));
 const self: WorldProfile = { profileId: 'qa-field4-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true };
@@ -134,7 +145,7 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 result = { profile: people.find(item => item.profileId === args.profileId) || self, communities: groups, canRequestContact: true };
                 break;
             case 'world.community.list':
-                result = { communities: groups };
+                result = { communities: params.get('chats') === 'empty' ? [] : groups };
                 break;
             case 'world.community.get':
                 result = { community: group };
@@ -188,6 +199,9 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 break;
             case 'apps.devices':
                 result = { devices: [{ hostDeviceId: 'qa-notebook', connectorId: 'qa-connector', name: 'Мой ноутбук', online: true, claimed: true }] };
+                break;
+            case 'apps.assistant.history':
+                result = { jobs: [], nextCursor: null };
                 break;
             case 'apps.list':
                 result = { apps: apps.map(app => ({ id: app.appId, name: app.name, hostDeviceId: 'qa-notebook', connectorId: 'qa-connector', ownerAccountId: self.profileId, state: 'ready', port: app.name === 'Покупки' ? 5324 : 3000, entryPath: '/', grants: app.grants || { accountIds: [], communityIds: [] } })) };
@@ -280,10 +294,10 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
     } };
 const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
 const assistant = (host: HTMLElement) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
-  connectDevice: () => toast('Устройство: локальный пример'), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) });
+  connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) });
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
-mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: () => toast('Устройство: локальный пример'), agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
+mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
 const marker = el('aside', 'sx-fixture-badge', 'Примеры · локальная проверка');
 marker.setAttribute('aria-label', 'Изолированный UI пример. Данные вымышленные, операции локальные.');
 document.body.append(marker);

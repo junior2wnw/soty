@@ -545,11 +545,17 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   } : {}) }; }); t.after(() => f.app.cleanScreen());
   const runtime = f.app.main.querySelector('.sa-runtime'), message = f.app.main.querySelector('.sa-message');
   const retry = f.app.main.querySelector('.sa-recovery-retry'), deadline = [...f.timers.values()].find(value => value.delay === 12000);
+  const separate = f.app.main.querySelector('[data-stage-control=external-recovery]');
   assert.ok(deadline); assert.match(message.textContent, /Открываем окно/u); assert.equal(runtime.getAttribute('aria-busy'), 'true');
+  assert.equal(separate.hidden, true, 'the separate-window fallback waits for an actual loading failure');
   assert.equal(retry.hidden, false); assert.equal(retry.disabled, false);
   deadline.fn(); await turn();
   assert.match(message.textContent, /не подтверждена/u); assert.equal(runtime.getAttribute('aria-busy'), 'false');
   assert.equal(retry.hidden, false); assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+  assert.equal(separate.hidden, false, 'an unconfirmed frame exposes the existing explicit external-launch action');
+  f.app.main.querySelector('iframe').emit('load'); await turn();
+  assert.equal(separate.hidden, true, 'a late document load clears the temporary fallback without launching anything');
+  assert.equal(calls, 1);
 });
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles transport only and keeps manual recovery after load-to-blank`, async t => {

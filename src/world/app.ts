@@ -204,6 +204,11 @@ class WorldApplication {
         presentation: 'widget', instanceId, isCurrent: current, ...this.appRuntime(app),
         onNavigate: () => { /* The widget owns its route independently of the main screen. */ },
         onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
+        onOpenCurrentEntry: async entry => {
+          if (!current()) return;
+          const next = parseAppLaunchRoute(formatAppLaunchRoute(entry));
+          if (next && !await this.widgets?.replaceEntry(instanceId, next) && current()) this.toast('Не удалось заменить вход. Сохраните незавершённое действие и повторите.', true);
+        },
         onSettings: value => { if (current()) this.openAppSettings(value); },
         onModalChange: (modal, open) => { if (open) { if (current()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); },
       }),
@@ -1964,6 +1969,11 @@ class WorldApplication {
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
       ...this.appRuntime(app),
+      onOpenCurrentEntry: async entry => {
+        if (!current()) return;
+        const next = parseAppLaunchRoute(formatAppLaunchRoute(entry));
+        if (next) await this.openApplication({ ...app, entry }, next);
+      },
       onNavigate: (next, navigation) => {
         if (!current()) return;
         if (navigation?.replace) { history.replaceState({ soty: true }, '', '#' + next.route); this.activeRoute = '#' + next.route; this.desk.lastRoute = next.route; this.saveDesk(false, true); }
