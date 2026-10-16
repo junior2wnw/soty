@@ -42,7 +42,7 @@ const closureSource = [
   'function createStateHarness(options) {',
   print(declaration('accountId')),
   ...variables.map(print),
-  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'cancel', 'finishGesture']
+  ...['summary', 'emit', 'announce', 'remember', 'setCamera', 'fitOverview', 'focusContext', 'rebuild', 'cancel', 'finishGesture', 'resetPointers']
     .map(name => print(namedFunction(statements, name))),
   print(declaration('lastWidth')),
   `const onResize = ${print(resize.arguments[0])};`,

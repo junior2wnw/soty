@@ -569,11 +569,12 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   contextSelect.addEventListener('change', () => { if (moving) { previewMove({ contextId: contextSelect.value, slot: nextFieldSlot(fieldDocument, contextSelect.value, available(moving.shortcutId)?.kind), swap: false }); if (viewport.clientWidth < 720) focusContext(contextSelect.value); } }, { signal });
 
   plane.addEventListener('keydown', event => {
-    if ((event.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]')) return;
+    if (event.defaultPrevented || event.isComposing || (event.target as HTMLElement).closest('input,textarea,select,[contenteditable]')) return;
     if (event.altKey) return; // Alt+Left/Right belongs to browser history.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
+    if (event.ctrlKey || event.metaKey) return;
     if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault();
       if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusContext(current.contextId); else options.onInspect(current.entity, current.shortcutId); } return; }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
     if (event.key === 'Escape') { if (moving || contextPreview) { event.preventDefault(); cancel(); announce('Перенос отменён.'); } else if (arranging) setArrange(false); else fitOverview(); return; }
     if (event.key === ' ' && arranging) { event.preventDefault(); if (!moving) beginMove(selectedId); return; }
     if (event.key === 'Enter' && moving) { event.preventDefault(); perform(commitMove()); return; }
@@ -634,11 +635,11 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       }
     } finally { inPointerFrame = false; }
   }
-  function finishGesture(cancelled: boolean): void {
+  function finishGesture(cancelled: boolean, releaseCapture = true): void {
     if (cancelled) pendingPointer = null; else flushPointerSample();
     const current = gesture; gesture = null; if (current?.timer) clearTimeout(current.timer);
     if (current?.moved) suppressClickUntil = performance.now() + 300;
-    if (current && viewport.hasPointerCapture(current.pointerId)) viewport.releasePointerCapture(current.pointerId);
+    if (releaseCapture && current && viewport.hasPointerCapture(current.pointerId)) viewport.releasePointerCapture(current.pointerId);
     if (cancelled) { cancel(); return; }
     if (current?.type === 'move') perform(commitMove());
     else if (current?.type === 'context' && contextPreview) {
@@ -646,32 +647,51 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     }
     render();
   }
+  function resetPointers(): void {
+    const captured = [...pointers.keys()];
+    pointers.clear();
+    if (pinch) suppressClickUntil = performance.now() + 300;
+    pinch = null;
+    // Clear ownership before releasing capture: its queued lost event belongs
+    // to this finished sequence and must not cancel a subsequent press.
+    finishGesture(true);
+    for (const id of captured) if (viewport.hasPointerCapture(id)) viewport.releasePointerCapture(id);
+  }
+  function capturePointer(id: number): boolean {
+    try { viewport.setPointerCapture(id); return true; }
+    catch { resetPointers(); return false; }
+  }
   viewport.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
     suppressClickUntil = 0; // A new deliberate press is not the previous drag's trailing click.
     if ((event.target as HTMLElement).closest('.uf-move-tools,.uf-inspect')) return;
     const point = localPoint(event); pointers.set(event.pointerId, point);
     if (pointers.size > 1) {
-      finishGesture(true); const [a, b] = [...pointers.values()]; pinch = { distance: Math.max(1, Math.hypot(a!.x - b!.x, a!.y - b!.y)),
+      finishGesture(true, false); const [a, b] = [...pointers.values()]; pinch = { distance: Math.max(1, Math.hypot(a!.x - b!.x, a!.y - b!.y)),
         world: fieldScreenToWorld({ x: (a!.x + b!.x) / 2, y: (a!.y + b!.y) / 2 }, camera(), viewportSize()), camera: { ...camera() } };
-      for (const id of pointers.keys()) viewport.setPointerCapture(id); return;
+      for (const id of pointers.keys()) if (!capturePointer(id)) return;
+      return;
     }
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-shortcut-id]'), header = (event.target as HTMLElement).closest<HTMLElement>('.uf-context-title');
     gesture = { pointerId: event.pointerId, x: point.x, y: point.y, camera: { ...camera() }, type: 'press', shortcutId: target?.dataset.shortcutId ?? '', contextId: header?.dataset.contextId ?? '', moved: false,
       point: fieldScreenToWorld(point, camera(), viewportSize()) };
     if (mode === 'mine' && gesture.shortcutId && options.commit && !arranging && target?.dataset.preview !== 'true') {
-      const captured = gesture; captured.timer = setTimeout(() => { if (gesture !== captured || captured.moved || destroyed) return; arranging = true; beginMove(captured.shortcutId); captured.type = 'move'; captured.moved = true; viewport.setPointerCapture(captured.pointerId); suppressClickUntil = performance.now() + 300; emit(); }, 450);
+      const captured = gesture; captured.timer = setTimeout(() => { if (gesture !== captured || captured.moved || destroyed) return;
+        captured.moved = true; if (!capturePointer(captured.pointerId)) return;
+        arranging = true; beginMove(captured.shortcutId); captured.type = 'move'; suppressClickUntil = performance.now() + 300; emit(); }, 450);
     }
   }, { signal });
   viewport.addEventListener('pointermove', event => {
-    if (!pointers.has(event.pointerId)) return; const point = localPoint(event); pointers.set(event.pointerId, point);
+    if (!pointers.has(event.pointerId)) return;
+    if (event.pointerType !== 'touch' && event.buttons === 0) { resetPointers(); return; }
+    const point = localPoint(event); pointers.set(event.pointerId, point);
     if (pinch && pointers.size >= 2) {
       pendingPointer = { pinch }; schedule(); return;
     }
     const current = gesture; if (!current || current.pointerId !== event.pointerId) return;
     const distance = Math.hypot(point.x - current.x, point.y - current.y);
     if (!current.moved && distance > 7) {
-      current.moved = true; if (current.timer) clearTimeout(current.timer); viewport.setPointerCapture(event.pointerId);
+      current.moved = true; if (current.timer) clearTimeout(current.timer); if (!capturePointer(event.pointerId)) return;
       if (arranging && mode === 'mine' && current.shortcutId) { beginMove(current.shortcutId); current.type = 'move'; }
       else if (arranging && mode === 'mine' && current.contextId) current.type = 'context'; else current.type = 'pan';
     }
@@ -679,19 +699,19 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   }, { signal });
   viewport.addEventListener('pointerup', event => {
     if (!pointers.has(event.pointerId)) return;
-    if (pinch) { flushPointerSample(); pointers.delete(event.pointerId); pinch = null; suppressClickUntil = performance.now() + 300; finishGesture(true); return; }
+    if (pinch) { flushPointerSample(); resetPointers(); return; }
     pointers.delete(event.pointerId);
     const point = localPoint(event), view = viewportSize();
     if (gesture?.pointerId === event.pointerId && gesture.type !== 'press') pendingPointer = { gesture, point };
     finishGesture(point.x < 0 || point.y < 0 || point.x > view.width || point.y > view.height);
   }, { signal });
-  viewport.addEventListener('pointercancel', event => { pointers.delete(event.pointerId); pinch = null; finishGesture(true); }, { signal });
-  viewport.addEventListener('lostpointercapture', () => { if (gesture) finishGesture(true); }, { signal });
+  viewport.addEventListener('pointercancel', event => { if (pointers.has(event.pointerId)) resetPointers(); }, { signal });
+  viewport.addEventListener('lostpointercapture', event => { if (pointers.has(event.pointerId)) resetPointers(); }, { signal });
   window.addEventListener('pointerup', event => {
     if (viewport.contains(event.target as Node) || !pointers.has(event.pointerId)) return;
-    pointers.delete(event.pointerId); pinch = null; finishGesture(true);
+    resetPointers();
   }, { signal });
-  window.addEventListener('blur', () => { pointers.clear(); pinch = null; finishGesture(true); }, { signal });
+  window.addEventListener('blur', resetPointers, { signal });
   viewport.addEventListener('click', event => {
     if (event.detail > 0 && performance.now() < suppressClickUntil) { event.preventDefault(); event.stopPropagation(); return; }
     if (arranging && moving && !(event.target as HTMLElement).closest('.uf-node,.uf-context-title,.uf-move-tools')) {
@@ -742,15 +762,15 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (update.visibleKinds !== undefined) visibleKinds = [...update.visibleKinds];
       if (update.document && (update.acceptRemote === true || persistence === 'saved' || same(update.document, fieldDocument))) {
         const next = validateFieldDocument(update.document), differs = !same(next, fieldDocument);
-        if (update.acceptRemote && differs) { generation++; cancel(); history.entries.length = 0; selectedId = ''; }
+        if (update.acceptRemote && differs) { generation++; resetPointers(); history.entries.length = 0; selectedId = ''; }
         fieldDocument = next; if (update.revision !== undefined) revision = update.revision;
         if (update.persistence === 'saved' || update.acceptRemote === true) { persistence = 'saved'; localDurable = true; lastIntent = null; }
         else if (update.persistence === 'pending') { persistence = 'pending'; localDurable = update.localDurable === true; }
         else if (update.persistence === 'conflict') { persistence = 'conflict'; localDurable = false; }
       }
       if (update.searchDocument) searchDocument = structuredClone(update.searchDocument);
-      if (update.mode && update.mode !== mode) { finishGesture(true); remember(); mode = update.mode; arranging = false; selectedId = selections[mode]; }
-      if (update.scope !== undefined && update.scope !== scope) { finishGesture(true); scope = update.scope; if (mode === 'search') { initialized.search = false; contextFocus.search = ''; selectedId = ''; selections.search = ''; } }
+      if (update.mode && update.mode !== mode) { resetPointers(); remember(); mode = update.mode; arranging = false; selectedId = selections[mode]; }
+      if (update.scope !== undefined && update.scope !== scope) { resetPointers(); scope = update.scope; if (mode === 'search') { initialized.search = false; contextFocus.search = ''; selectedId = ''; selections.search = ''; } }
       if (moving) { const source = fieldDocument.shortcuts.find(item => item.shortcutId === moving!.shortcutId); if (!source || !same(moving.start, fieldDocument) || !entities.some(entity => fieldEntityKey(entity.entity) === fieldEntityKey(source.entity))) cancel(); }
       if (update.selectedShortcutId !== undefined) selectedId = update.selectedShortcutId;
       rebuild(); emit();
@@ -774,6 +794,6 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (result.status !== 'saved' && !localDurable) throw Object.assign(new Error('field_not_saved'), { code: 'field_not_saved' });
     },
     snapshot: () => structuredClone(fieldDocument),
-    destroy() { if (destroyed) return; remember(); finishGesture(true); destroyed = true; generation++; controller.abort(); resize.disconnect(); clearInterval(ttl); if (raf) cancelAnimationFrame(raf); nodeElements.clear(); contextElements.clear(); inspectElements.clear(); entities = []; viewport.remove(); if (!readySettled) { readySettled = true; resolveReady(); } },
+    destroy() { if (destroyed) return; remember(); resetPointers(); destroyed = true; generation++; controller.abort(); resize.disconnect(); clearInterval(ttl); if (raf) cancelAnimationFrame(raf); nodeElements.clear(); contextElements.clear(); inspectElements.clear(); entities = []; viewport.remove(); if (!readySettled) { readySettled = true; resolveReady(); } },
   };
 }
