@@ -5,12 +5,12 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fieldBoundsOverlap } from './unified-field-layout.mjs';
-import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail } from './unified-field-camera.mjs';
+import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail, normalizeFieldCamera } from './unified-field-camera.mjs';
 import { resolveAppArt } from './app-art.mjs';
 
 // Actual production geometry, rendering and event callbacks, with inert DOM ports.
 // These tests do not measure browser typography or claim a real application launch.
-const source = readFileSync(new URL('./unified-field.ts', import.meta.url), 'utf8');
+const source = readFileSync(process.env.SOTY_REVIEW_FIELD_SOURCE || new URL('./unified-field.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('unified-field.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const printer = ts.createPrinter(), print = node => printer.printNode(ts.EmitHint.Unspecified, node, parsed);
 const production = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedField');
@@ -18,7 +18,7 @@ const statement = name => production.body.statements.find(node => ts.isFunctionD
 const titles = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'compactOverviewTitles');
 assert.ok(titles && statement('render') && statement('renderNode'));
 const compile = value => ts.transpileModule(value, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const compiled = compile([print(titles), print(statement('renderNode')), print(statement('render')),
+const compiled = compile([[titles, statement('renderNode'), statement('render'), statement('focusPreview')].filter(Boolean).map(print).join('\n'),
   'exports.titles = compactOverviewTitles; exports.render = render;'].join('\n'));
 const callback = (owner, event) => {
   let result;
@@ -44,6 +44,7 @@ class Port {
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(value => value !== this); }
   setAttribute(name, value) { this.attributes.set(name, value); }
   getAttribute(name) { return this.attributes.get(name); }
+  focus() { this.focused = true; }
   addEventListener(name, handler) { this.listeners.set(name, handler); }
   querySelector(selector) {
     for (const child of this.children) {
@@ -81,7 +82,7 @@ function specimen() {
 function harness(width, height, { scale, focus = '' } = {}) {
   const data = specimen(), view = { width, height }, camera = fitFieldCamera(data.layout.bounds, view, { padding: 60 });
   if (scale !== undefined) camera.scale = scale;
-  const calls = { activate: [], inspect: [], focus: [], remember: 0 }, plane = new Port(), viewport = new Port();
+  const calls = { activate: [], inspect: [], focus: [], nodeFocus: [], remember: 0 }, plane = new Port(), viewport = new Port();
   const environment = { exports: {}, destroyed: false, inPointerFrame: false, activeLayout: () => data.layout,
     viewportSize: () => view, camera: () => camera, cameraFit: { mine: focus ? 'context' : 'overview' },
     contextFocus: { mine: focus }, mode: 'mine', arranging: false, moving: null, contextPreview: null,
@@ -91,7 +92,7 @@ function harness(width, height, { scale, focus = '' } = {}) {
     nodeElements: new Map(), contextElements: new Map(), inspectElements: new Map(), selectedId: '', persistence: 'saved',
     options: { resolveArt: () => null, onActivate: (...args) => calls.activate.push(args), onInspect: (...args) => calls.inspect.push(args) },
     available: id => data.layout.nodes.find(node => node.shortcutId === id),
-    focusContext: id => calls.focus.push(id), remember: () => calls.remember++, schedule() {}, emit() {},
+    focusContext: id => calls.focus.push(id), focusNode: id => calls.nodeFocus.push(id), remember: () => calls.remember++, schedule() {}, emit() {},
     el: (tag, className = '', text = '') => new Port(tag, className, text),
     icon: (_, className = 'sw-icon') => new Port('svg', className), hexFrame: () => new Port('svg', 'uf-hex-frame'),
     initials: title => title.slice(0, 2), localImage: () => null, safeImageUrl: () => null, resolveAppArt,
@@ -160,6 +161,28 @@ test('a focused phone space and a readable desktop overview retain ordinary app 
     hive.dispatch('click'); assert.equal(h.calls.activate.length, 1); assert.equal(h.calls.focus.length, 0);
     hive.dispatch('contextmenu'); assert.equal(h.calls.inspect.length, 1);
   }
+});
+
+test('a saved 21 percent focused phone context keeps its camera but treats sub44 cells as previews without inspect actions', () => {
+  const h = harness(320, 180, { scale: .21, focus: 'studio' }), before = JSON.stringify([h.camera, h.data.document]);
+  h.render(); const e = h.environment, hive = e.nodeElements.get('hive');
+  assert.equal(e.viewport.dataset.lod, 'context', 'the saved focus can still own its context');
+  assert.equal(hive.dataset.preview, 'true'); assert.equal(hive.getAttribute('aria-label'), 'Приблизить: HIVE');
+  assert.equal(e.inspectElements.has('hive'), false); assert.equal(JSON.stringify([h.camera, h.data.document]), before);
+  hive.dispatch('click'); assert.deepEqual(h.calls.nodeFocus, ['hive']); assert.equal(h.calls.activate.length, 0); assert.equal(h.calls.focus.length, 0);
+  hive.dispatch('contextmenu'); assert.deepEqual(h.calls.nodeFocus, ['hive', 'hive']); assert.equal(h.calls.inspect.length, 0);
+});
+
+test('explicitly enlarging a thumbnail uses actual focusNode math and permits the next tap to open without moving any placement', () => {
+  const h = harness(320, 180, { scale: .21, focus: 'studio' }), e = h.environment, before = JSON.stringify(h.data.document);
+  e.cameras = { mine: { ...h.camera } }; e.camera = () => e.cameras.mine; e.activeNode = e.available; e.normalizeFieldCamera = normalizeFieldCamera;
+  new vm.Script(compile(print(statement('focusNode')) + '\nexports.focusNode = focusNode;')).runInContext(e);
+  e.focusNode = e.exports.focusNode; h.render();
+  const hive = e.nodeElements.get('hive'); hive.dispatch('click');
+  const node = e.available('hive'); assert.ok(node.width * e.cameras.mine.scale >= 44); assert.ok(node.height * e.cameras.mine.scale >= 44);
+  assert.ok(e.cameras.mine.scale >= .45); assert.equal(hive.focused, true); assert.equal(hive.dataset.preview, 'false');
+  assert.equal(JSON.stringify(h.data.document), before); assert.equal(h.calls.activate.length, 0); assert.equal(e.contextFocus.mine, 'studio');
+  hive.dispatch('click'); assert.equal(h.calls.activate.length, 1);
 });
 
 test('keyboard context-menu shortcut cannot inspect a sub44 preview and returns to its space', () => {

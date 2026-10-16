@@ -423,13 +423,13 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         target.addEventListener('focus', () => { selectedId = node.shortcutId; remember(); schedule(); emit(); }, { signal });
         target.addEventListener('click', event => {
           const item = available(node.shortcutId); if (!item) return;
-          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { focusContext(item.contextId); return; }
+          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { focusPreview(item); return; }
           selectedId = item.shortcutId; remember();
           if (arranging) { if (moving) previewMove({ contextId: item.contextId, slot: [...item.slot], swap: true }); else beginMove(item.shortcutId); }
           else options.onActivate?.(item.entity, item.shortcutId);
         }, { signal }); nodeElements.set(node.shortcutId, target); plane.append(target);
         target.addEventListener('contextmenu', event => { const current = available(node.shortcutId); if (!current) return;
-          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { event.preventDefault(); focusContext(current.contextId); return; }
+          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { event.preventDefault(); focusPreview(current); return; }
           if (options.onInspect) { event.preventDefault(); selectedId = current.shortcutId; remember(); options.onInspect(current.entity, current.shortcutId); } }, { signal });
       }
       const signature = JSON.stringify(node.entity);
@@ -440,7 +440,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         target.style.width = `${node.width / cam.scale}px`; target.style.height = `${node.height / cam.scale}px`;
       } else if (node.kind === 'person') target.style.height = `${Math.max(node.height, 44 / cam.scale)}px`;
       const screenWidth = node.kind === 'device' ? node.width : node.width * cam.scale, screenHeight = node.kind === 'device' ? node.height : node.height * cam.scale;
-      const preview = level === 'overview' && Math.min(screenWidth, screenHeight) < 44;
+      // A saved or manually zoomed-out context can be just as small as the
+      // overview. Its thumbnails must not grow full-size captions/actions.
+      const preview = !arranging && Math.min(screenWidth, screenHeight) < 44;
       target.dataset.preview = String(preview);
       target.style.setProperty('--uf-node-screen-width', `${screenWidth}px`); target.style.setProperty('--uf-node-screen-height', `${screenHeight}px`);
       const caption = screenWidth < 135 ? 'compact' : 'full'; if (target.dataset.caption !== caption) target.dataset.caption = caption;
@@ -458,7 +460,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         action.setAttribute('aria-label', `Действия: ${node.entity.title}`); action.tabIndex = node.shortcutId === activeId ? 0 : -1; action.classList.toggle('is-selected', node.shortcutId === selectedId);
       } else { inspectElements.get(node.shortcutId)?.remove(); inspectElements.delete(node.shortcutId); }
       target.classList.toggle('is-selected', node.shortcutId === selectedId); target.classList.toggle('is-moving', node.shortcutId === moving?.shortcutId);
-      target.setAttribute('aria-label', preview ? `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
+      target.setAttribute('aria-label', preview ? contextFocus[mode] === node.contextId ? `Приблизить: ${node.entity.title}`
+        : `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
       target.tabIndex = level === 'overview' && !arranging ? -1 : node.shortcutId === activeId ? 0 : -1;
     }
     for (const [id, target] of nodeElements) if (!keep.has(id)) { target.remove(); nodeElements.delete(id); inspectElements.get(id)?.remove(); inspectElements.delete(id); }
@@ -553,6 +556,12 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     render();
   }
   function setArrange(enabled: boolean): void { arranging = enabled && mode === 'mine' && !!options.commit; cancel(); emit(); }
+  function focusPreview(node: FieldNode): void {
+    // Fitting the same large context again could leave a thumbnail unchanged.
+    // This explicit action instead brings that object to a readable scale.
+    if (contextFocus[mode] === node.contextId) focusNode(node.shortcutId);
+    else focusContext(node.contextId);
+  }
   function focusNode(shortcutId: string): void {
     const node = activeNode(shortcutId); if (!node) return;
     selectedId = shortcutId; const cam = camera(), view = viewportSize(), margin = 40;
@@ -560,9 +569,10 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     let x = cam.x, y = cam.y;
     if (point.x - node.width * cam.scale / 2 < margin || point.x + node.width * cam.scale / 2 > view.width - margin) x += (point.x - view.width / 2) / cam.scale;
     if (point.y - node.height * cam.scale / 2 < margin || point.y + node.height * cam.scale / 2 > view.height - margin) y += (point.y - view.height / 2) / cam.scale;
-    if (cam.scale < .45) { x = node.cx; y = node.cy; contextFocus[mode] = node.contextId; }
+    const minScale = node.kind === 'device' ? .45 : Math.max(.45, 44 / Math.max(1, Math.min(node.width, node.height)));
+    if (cam.scale < minScale) { x = node.cx; y = node.cy; contextFocus[mode] = node.contextId; }
     if (view.width < 720 && contextFocus[mode] !== node.contextId) { contextFocus[mode] = node.contextId; x = node.cx; y = node.cy; }
-    cameras[mode] = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(.45, cam.scale) }); remember(); render(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
+    cameras[mode] = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(minScale, cam.scale) }); remember(); render(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
   }
   function perform(task: Promise<unknown>): void { void task.catch(error => { if (!destroyed && persistence !== 'error') announce(errorText(error)); }); }
   confirm.addEventListener('click', () => perform(commitMove()), { signal }); cancelButton.addEventListener('click', () => { cancel(); announce('Перенос отменён.'); focusNode(selectedId); }, { signal });
@@ -574,7 +584,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
     if (event.ctrlKey || event.metaKey) return;
     if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault();
-      if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusContext(current.contextId); else options.onInspect(current.entity, current.shortcutId); } return; }
+      if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusPreview(current); else options.onInspect(current.entity, current.shortcutId); } return; }
     if (event.key === 'Escape') { if (moving || contextPreview) { event.preventDefault(); cancel(); announce('Перенос отменён.'); } else if (arranging) setArrange(false); else fitOverview(); return; }
     if (event.key === ' ' && arranging) { event.preventDefault(); if (!moving) beginMove(selectedId); return; }
     if (event.key === 'Enter' && moving) { event.preventDefault(); perform(commitMove()); return; }

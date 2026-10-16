@@ -123,7 +123,7 @@
 .uf-viewport[data-lod=overview] .uf-device-inner { width: 44px; padding: 8px; }
 .uf-viewport[data-lod=overview] .uf-device-inner .uf-label { display: none; }
 .uf-viewport[data-lod=overview] .uf-app-caption { font-size: 14px; line-height: 18px; gap: 5px; padding: 2px 0; }
-.uf-viewport[data-lod=overview] .uf-node[data-preview=true] :is(.uf-app-caption,.uf-label,.uf-unread) { display: none; }
+.uf-viewport .uf-node[data-preview=true] :is(.uf-app-caption,.uf-label,.uf-unread) { display: none; }
 .uf-viewport[data-compact-overview=true] .uf-context-title { padding: 8px 10px; gap: 8px; }
 .uf-viewport[data-compact-overview=true] .uf-context-title>.sw-icon { width: 20px; height: 20px; }
 .uf-viewport[data-compact-overview=true] .uf-context-title .uf-context-name { max-width: 100%; font-size: 14px; line-height: 20px; }
