@@ -127,15 +127,14 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const resultArea = el('div', 'sw-assistant-result'), events = el('ol', 'sw-assistant-events'); events.setAttribute('aria-label', 'Последние действия');
   const stop = button('Остановить', 'close', 'sw-button-quiet', () => { void cancel(); }); stop.hidden = true;
   const form = el('form', 'sw-assistant-composer'), prompt = el('textarea', 'sw-input');
-  prompt.rows = 3; prompt.maxLength = 16_000; prompt.value = draft.text; prompt.placeholder = 'Что сделать в вашем проекте?'; prompt.setAttribute('aria-label', 'Задача помощнику');
+  prompt.rows = 3; prompt.maxLength = 16_000; prompt.value = draft.text; prompt.placeholder = 'Что хотите сделать?'; prompt.setAttribute('aria-label', 'Задача помощнику');
   const controls = el('div', 'sw-assistant-composer-controls'), saved = el('span', 'sw-muted'), send = button('Отправить', 'arrow', 'sw-button-primary'); send.type = 'submit';
   controls.append(saved, send); form.append(prompt, controls);
   const error = el('p', 'sw-error'); error.setAttribute('role', 'alert');
-  const privilege = el('small', 'sw-muted sw-assistant-privilege', 'Работает с правами вашего пользователя на выбранном устройстве.');
+  const privilege = el('details', 'sw-muted sw-assistant-privilege');
+  const privilegeText = el('p', '', 'Работает с правами вашего пользователя на выбранном устройстве.');
+  privilege.append(el('summary', '', 'Возможности и доступ'), privilegeText);
   pane.append(notice, target, thread, status, events, resultArea, stop, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
-  const narrowLayout = matchMedia('(max-width: 600px)');
-  function positionThread(): void { pane.insertBefore(thread, narrowLayout.matches && pane.dataset.mode === 'welcome' ? privilege : status); }
-  narrowLayout.addEventListener('change', positionThread, { signal: abort.signal });
 
   function chooseMode(next: 'personal' | 'device'): void {
     if (disposed || sending || mode === 'device' && drafts.read().pending) return;
@@ -157,7 +156,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
       newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
       saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
-      privilege.textContent = 'Работает с вашими записками и разрешёнными источниками. Подтверждённые диалоги сохраняются. При явной настройке может поставить задачу на вашем устройстве в очередь; это ещё не означает её выполнение.';
+      privilegeText.textContent = 'Работает с вашими записками и разрешёнными источниками. Подтверждённые диалоги сохраняются. При явной настройке может поставить задачу на вашем устройстве в очередь; это ещё не означает её выполнение.';
       if (state.phase === 'running') status.textContent = 'Помощник работает…';
       else if (state.phase === 'cancel_requested') status.textContent = 'Остановка запрошена · удалённое завершение не подтверждено';
       else if (state.phase === 'unknown') status.textContent = 'Подтверждение не получено · отправка не повторяется';
@@ -168,7 +167,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       return;
     }
     createApp.disabled = false;
-    prompt.maxLength = 16000; privilege.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
+    prompt.maxLength = 16000; privilegeText.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
     draft = drafts.read();
     const bound = draft.pending?.payload ?? selected;
     if (bound) {
@@ -222,13 +221,11 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
 
   function welcome(): void {
     pane.dataset.mode = 'welcome';
-    positionThread();
     thread.replaceChildren(); resultArea.replaceChildren(); events.replaceChildren(); status.textContent = '';
     if (mode === 'personal') {
       const state = conversation().view();
       if (state.answer) {
         pane.dataset.mode = 'conversation';
-        positionThread();
         const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer));
         const note = answerNote ??= createAssistantAnswerNote({ accountId, answer: state.answer, api: { request },
           store: createDraftStore(accountId, 'soty'), isCurrent: current });
@@ -420,7 +417,6 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   }
   function follow(target: AssistantTarget): void {
     pane.dataset.mode = 'conversation';
-    positionThread();
     selected = target; activeJob = null; continuable = false; const version = ++generation; if (timer) clearTimeout(timer);
     thread.replaceChildren(); events.replaceChildren(); resultArea.replaceChildren(); error.textContent = ''; status.textContent = 'Открываем задачу…';
     let after = 0; updateControls(); renderHistory();

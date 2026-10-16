@@ -46,6 +46,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   };
   const openAccount = async (initialTab: 'profile' | 'people' | 'devices' | 'recovery' = 'profile') => {
     const callView = currentCallView;
+    const mountedWorld = world, accountAtOpen = activeAccount, generationAtOpen = mountGeneration;
+    let editProfileRequested = false;
     const [{ openConnectPanel, parseConnectLink }, { default: QRCode }] = await Promise.all([
       import('../../modules/connect/ui/index.mjs'), import('qrcode'), import('../../modules/connect/ui/style.css'),
     ]);
@@ -53,6 +55,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const panel = openConnectPanel({ client: accountClient, label: state.label || 'Мой профиль', productName: 'Соты',
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       initialIntent: parseConnectLink(window.location.href), initialTab,
+      onEditProfile: () => { editProfileRequested = true; },
       ...(callView ? { onContactCall: async ({ peerAccountId, label }: { peerAccountId: string; label: string }) => {
         const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one', displayLabel: label });
         if (!result.ok) throw Object.assign(new Error('Call did not start.'), { code: result.code });
@@ -67,6 +70,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (dialog) await new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true }));
     else panel.close();
     await refresh();
+    if (editProfileRequested && world === mountedWorld && activeAccount === accountAtOpen && mountGeneration === generationAtOpen) mountedWorld.editProfile();
   };
   const voiceResponse=await fetch('/api/apps/capabilities',{cache:'no-store',signal:AbortSignal.timeout(8000)}).catch(()=>null);
   const voiceMount=voiceResponse?.ok?(await voiceResponse.json()).nativeVoice:null;

@@ -1060,9 +1060,39 @@
   justify-content: flex-end;
 }
 
+.sx-assistant-content:has(>.sw-assistant) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.sx-assistant-content .sw-assistant-layout {
+  min-height: min(640px, max(280px, calc(100dvh - 300px)));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sx-assistant-content .sw-assistant-pane { padding: 8px 0; }
+.sx-assistant-content .sw-assistant-heading .sw-row>.sw-button:last-child { display: none; }
+.sx-assistant-content .sw-assistant-heading .sw-row { flex-wrap: wrap; }
+
+@media (max-width: 600px) {
+  .sx-assistant-modes { width: 100%; box-sizing: border-box; }
+  .sx-assistant-modes .sw-button { flex: 1; min-height: 44px; padding-inline: 9px; }
+  .sx-assistant-content .sw-assistant-heading { justify-content: flex-start; }
+}
+
 .sx-saved-dialog {
   min-width: 0;
 }
+
+.uf-add-create { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,210px),1fr)); gap: 8px; }
+.uf-add-create .sw-button { height: 100%; min-height: 48px; justify-content: flex-start; text-align: left; }
+.uf-add-list { display: grid; gap: 4px; margin-top: 10px; }
+.uf-add-dialog h3 { margin: 22px 0 12px; font-size: 14px; }
 
 .sw-app .sw-main:has(>.sa-stage) {
   display: flex;

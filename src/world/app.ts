@@ -45,12 +45,12 @@ interface HomeNote { noteId: string; title: string; preview: string; pinned: boo
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
 interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<void>; reconnect(): void; hasUnsavedChanges(): boolean; }
 
-export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; }
+export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void; }
 
 export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): WorldAppHandle {
   const app = new WorldApplication(root, options);
   void app.refresh();
-  return { destroy: () => app.destroy(), refresh: () => app.refresh() };
+  return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor() };
 }
 
 class WorldApplication {
@@ -729,7 +729,7 @@ class WorldApplication {
   }
 
   private openProfileMenu(): void {
-    const menu=this.dialog('Мои настройки');const options=el('div','sx-profile-menu');
+    const menu=this.dialog('Профиль и настройки');const options=el('div','sx-profile-menu');
     const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
     options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
     const continuity = createOriginContinuityLinks(); if (continuity) options.append(continuity);
@@ -952,7 +952,7 @@ class WorldApplication {
         if (item.entity.kind === 'person' && record && 'profileId' in record) { const person = record as DirectoryPerson; this.openPersonDialog({ ...person, bio: person.bio ?? '', interests: person.interests ?? [] }); return; }
         if (item.entity.kind === 'device') this.runHook(() => this.options.openAccount('devices'));
       }),
-      onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openAddApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.navigate('assistant'); },
+      onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openAddApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }); },
     });
     this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header);
   }
@@ -960,19 +960,20 @@ class WorldApplication {
   private renderAssistant(): void {
     const section = el('section', 'sx-assistant');
     const header = el('header', 'sx-assistant-heading');
-    const copy = el('div'); copy.append(el('h1', '', 'Помощник'), el('p', 'sx-subtitle', this.assistantMode === 'create' ? 'Из идеи — в полезное приложение' : 'Разговоры и задачи'));
+    const copy = el('div'); copy.append(el('h1', '', 'Помощник'), el('p', 'sx-subtitle', this.assistantMode === 'create' ? 'Из идеи — в полезное приложение' : 'Спросите, разберитесь или поручите задачу'));
     const tabs = el('div', 'sx-assistant-modes'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Режим помощника');
     const choose = (mode: 'create' | 'chat', keyboard = false): void => this.afterNoteSaved(() => {
       this.assistantMode = mode; this.navigateReady('assistant');
       if (keyboard) this.main.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')?.focus({ preventScroll: true });
     });
-    for (const [mode, label] of [['create', 'Приложение'], ['chat', 'Задачи']] as const) {
+    for (const [mode, label] of [['chat', 'Разговор'], ['create', 'Создать приложение']] as const) {
       const tab = button(label, mode === 'create' ? 'grid' : 'sparkle', '', () => choose(mode, document.activeElement === tab));
       tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(mode === this.assistantMode));
       tab.tabIndex = mode === this.assistantMode ? 0 : -1;
       tab.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-        event.preventDefault(); choose(event.key === 'Home' ? 'create' : event.key === 'End' ? 'chat' : mode === 'create' ? 'chat' : 'create', true);
+        event.preventDefault(); choose(event.key === 'Home' ? 'chat' : event.key === 'End' ? 'create' : mode === 'create' ? 'chat' : 'create', true);
       });
       tabs.append(tab);
     }
@@ -1610,7 +1611,11 @@ class WorldApplication {
       const visible = groups.filter(group => (!unreadOnly || group.unreadCount > 0) && (!needle || `${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle))).sort((a, b) => Number(!!b.membership?.pinned) - Number(!!a.membership?.pinned) || (previews.get(b.communityId)?.createdAt ?? 0) - (previews.get(a.communityId)?.createdAt ?? 0));
       const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
       conversations.replaceChildren(...visible.map(paintConversation)); listStatus.textContent = '';
-      if (!groups.length) conversations.append(emptyState('Пока нет чатов', 'Создайте чат для своих или найдите сообщество.', button('Новый чат', 'plus', 'sw-button-primary', () => this.openCommunityForm(undefined, true)), 'chat'));
+      if (!groups.length) {
+        const actions = el('div', 'sw-stack');
+        actions.append(button('Пригласить по QR или ссылке', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people'))), button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
+        conversations.append(emptyState('Начните разговор', 'Добавьте человека или создайте чат для своих.', actions, 'chat'));
+      }
       else if (!visible.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';
       if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
     };
@@ -1627,7 +1632,8 @@ class WorldApplication {
     renderList();
     if (restoreHeadingFocus) title.focus({ preventScroll: true });
     if (selected) this.mountChat(room, selected, true);
-    else room.append(emptyState('Ближе к своим', 'Выберите чат, чтобы продолжить разговор.', undefined, 'chat'));
+    else if (groups.length) room.append(emptyState('Ближе к своим', 'Выберите чат, чтобы продолжить разговор.', undefined, 'chat'));
+    else room.hidden = true;
     const pendingPreviews = new Set(groups.filter(group => group.communityId !== selectedId).map(group => group.communityId)); let previewWorkers = 0;
     const loadPreviews = async (): Promise<void> => {
       previewWorkers++;
@@ -2262,9 +2268,10 @@ class WorldApplication {
     if (this.view === 'world' && !this.group) void this.search();
   }
 
-  private openProfileEditor(): void {
+  openProfileEditor(): void {
+    if (this.destroyed) return;
     const profile = this.profile; if (!profile) { this.runHook(this.options.openAccount); return; }
-    const dialog = this.dialog('Моя страница'); const form = el('form');
+    const dialog = this.dialog('Профиль'); const form = el('form');
     const name = textInput(profile.displayName, 'Ваше имя', 80); name.required = true;
     const bio = el('textarea', 'sw-textarea'); bio.value = profile.bio; bio.maxLength = 400; bio.placeholder = 'Чем занимаетесь, что любите';
     const interests = textInput(profile.interests.join(', '), 'Фото, музыка, технологии', 240);
@@ -2282,7 +2289,7 @@ class WorldApplication {
     form.append(identity, labeledField('Имя', name), labeledField('О себе', bio), labeledField('Интересы', interests, 'Через запятую. По ним вас смогут найти.'), error);
     pinDialogSubmit(dialog, form, save);
     form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true; error.textContent = ''; void this.updateProfile({ displayName: name.value.trim(), bio: bio.value.trim(), interests: interests.value.split(',').map(item => item.trim().slice(0, 32)).filter(Boolean).slice(0, 8), avatarColor: worldColors[color] }).then(async () => { if (pendingAvatar && this.profile) { const result = await this.api.request<{ profile: WorldProfile }>('world.profile.avatar.set', { expectedRevision: this.profile.revision, ...pendingAvatar }); this.profile = result.profile; this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined); this.renderNavigation(); if (this.view === 'mine' && !this.group) this.renderPersonal(); } dialog.close(); this.toast('Профиль сохранён'); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; }); });
-    const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Аккаунт, устройства и контакты', 'person', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(this.options.openAccount); }), button('Прежние комнаты и инструменты', 'chat', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(this.options.openLegacy); })); dialog.body.append(form, el('hr', 'sw-rule'), extra);
+    const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(() => this.options.openAccount('recovery')); })); dialog.body.append(form, el('hr', 'sw-rule'), extra);
   }
 
   private colorPicker(current: string, change: (color: string) => void): HTMLElement {

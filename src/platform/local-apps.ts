@@ -52,6 +52,12 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     const status = el('p', 'sw-muted', 'Соединяемся с вашим коннектором…'); status.setAttribute('role', 'status');
     const body = el('div', 'sw-stack'); body.append(status); panel.body.append(body);
     let busy = false, forwardedPort: number | null = null;
+    const windows = /Windows/i.test(navigator.userAgent), mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+    const installer = (forWindows: boolean, primary = false): HTMLAnchorElement => {
+      const link = el('a', `sw-button ${primary ? 'sw-button-primary' : 'sw-button-quiet'}`, forWindows ? 'Скачать для Windows' : 'Скачать для macOS / Linux');
+      link.href = forWindows ? '/agent/install-windows-machine.cmd' : '/agent/install-macos-linux.sh';
+      link.download = forWindows ? 'soty-connector.cmd' : 'soty-connector.sh'; return link;
+    };
     const attach = async (claim: { hostDeviceId: string; connectorId: string; claimCode: string }) => {
       const result = await client.extension<{ device: HostDevice }>('apps.claim', claim);
       claim.claimCode = '';
@@ -103,13 +109,6 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
       } catch (error) {
         if (closed) return;
         status.textContent = stage === 'connector' ? forwardedPort ? `Не удалось подключиться через порт ${forwardedPort}.` : 'Не найдено подключение к этому компьютеру.' : friendly(error);
-        const windows = /Windows/i.test(navigator.userAgent);
-        const mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
-        const installer = (forWindows: boolean, primary = false): HTMLAnchorElement => {
-          const link = el('a', `sw-button ${primary ? 'sw-button-primary' : 'sw-button-quiet'}`, forWindows ? 'Для Windows' : 'Для macOS / Linux');
-          link.href = forWindows ? '/agent/install-windows-machine.cmd' : '/agent/install-macos-linux.sh';
-          link.download = forWindows ? 'soty-connector.cmd' : 'soty-connector.sh'; return link;
-        };
         const downloads = el('div', 'sw-row');
         downloads.append(installer(windows, !mobile), installer(!windows));
         body.replaceChildren(status, el('p', 'sw-muted', forwardedPort ? 'Проверьте SSH-туннель и разрешение браузера на доступ к приложениям этого устройства. Можно подключить сервер файлом от его коннектора.' : 'Откройте коннектор и разрешите браузеру подключение к нему. Затем нажмите «Повторить».'),
@@ -134,10 +133,24 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         if (!Number.isSafeInteger(value) || value < 1024 || value > 65535) return; forwardedPort = value; void connect(); });
       body.replaceChildren(form); port.focus();
     }
-    body.replaceChildren(choice('Подключить этот компьютер', 'Открывать его приложения и управлять им из Сот', 'laptop', () => { void connect(); }));
-    body.append(choice('Подключить сервер по SSH', 'Для проекта, который уже работает на сервере', 'server', forwardedConnection));
-    if (openAccount) body.append(choice('Мой профиль на другом устройстве', 'Те же записки, контакты и сообщества — по QR', 'phone', () => { panel.close(); void openAccount(); }));
-    if (/Android|iPhone|iPad/i.test(navigator.userAgent)) body.append(el('p', 'sw-muted', 'Чтобы подключить компьютер, откройте Соты на нём. На телефоне можно открыть свой профиль по QR.'));
+    const computerSetup = () => {
+      const steps = el('ol', 'sw-connect-steps');
+      steps.append(el('li', '', 'Скачайте и запустите коннектор на компьютере.'), el('li', '', 'Вернитесь в Соты на этом компьютере и проверьте подключение.'), el('li', '', 'Добавьте нужные приложения на своё поле.'));
+      const downloads = el('div', 'sw-row'); downloads.append(installer(windows, !mobile), installer(!windows));
+      body.replaceChildren(el('h3', '', 'Приложения с вашего компьютера'), steps, downloads,
+        button('Коннектор запущен — подключить', 'check', 'sw-button-primary', () => { void connect(); }),
+        button('У меня файл подключения', 'folder', 'sw-button-quiet', fileConnection),
+        button('Другой способ подключения', 'back', 'sw-button-quiet', connectionChoices));
+      if (mobile) body.prepend(el('p', 'sw-muted', 'Этот шаг выполняется на компьютере. Откройте на нём Соты в своём профиле.'));
+    };
+    function connectionChoices(): void {
+      forwardedPort = null;
+      body.replaceChildren(choice('Подключить этот компьютер', 'Установить коннектор и открыть свои приложения в Сотах', 'laptop', computerSetup));
+      body.append(choice('Подключить сервер по SSH', 'Для проекта, который уже работает на сервере', 'server', forwardedConnection));
+      if (openAccount) body.append(choice('Мой профиль на другом устройстве', 'Те же записки, контакты и сообщества — по QR', 'phone', () => { panel.close(); void openAccount(); }));
+      if (mobile) body.append(el('p', 'sw-muted', 'Чтобы подключить компьютер, откройте Соты на нём. На телефоне можно открыть свой профиль по QR.'));
+    }
+    connectionChoices();
   }
 
   const builder = createAppBuilderAction({ client, refresh, connectDevice, openAccount, dialog, friendly, createStates, ...deps });

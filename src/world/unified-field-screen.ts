@@ -566,17 +566,16 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     };
     find.addEventListener('input', render); render();
     const create = el('div', 'uf-add-create');
+    create.setAttribute('aria-label', 'Создать или подключить');
+    for (const [kind, label, symbol] of [['assistant', 'Создать приложение с ИИ', 'sparkle'], ['app', 'Подключить приложение', 'grid'], ['person', 'Добавить контакт', 'person'], ['device', 'Подключить устройство', 'laptop']] as const) create.append(button(label, symbol, `sw-button-wide${kind === 'assistant' ? ' sw-button-primary' : ''}`, () => { instance.close(); options.onCreate(kind); }));
     create.append(button('Найти в Сотах', 'search', 'sw-button-wide', () => {
       instance.close(); queries.search = ''; filtersByMode.search = 'all';
       if (mode === 'search') { filter = 'all'; updateChrome(); route(); run(searchDirectory()); } else changeMode('search');
       searchInput.focus();
-    }), button('Новое пространство', 'layers', 'sw-button-wide', () => { instance.close(); newContext(); }));
-    const extra = button('Создать или подключить', 'plus', 'sw-button-wide', () => {
-      instance.close(); const creator = dialog('Создать или подключить'), extras = el('div', 'uf-add-extra-actions');
-      for (const [kind, label, symbol] of [['app', 'Подключить приложение', 'grid'], ['community', 'Создать сообщество', 'people'], ['device', 'Подключить устройство', 'laptop'], ['person', 'Добавить контакт', 'person'], ['assistant', 'Создать с ИИ', 'sparkle']] as const) extras.append(button(label, symbol, 'sw-button-wide', () => { creator.close(); options.onCreate(kind); }));
-      creator.body.append(extras);
-    });
-    instance.body.append(find, list, create, extra); find.focus();
+    }), button('Новое пространство', 'layers', 'sw-button-wide', () => { instance.close(); newContext(); }), button('Создать сообщество', 'people', 'sw-button-wide', () => { instance.close(); options.onCreate('community'); }));
+    const availableHeading = el('h3', '', 'Уже доступно');
+    instance.body.append(create, availableHeading, find, list);
+    create.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
     // Refresh the available directory on each opening so newly connected apps/devices are reachable.
     run(loadMine().then(() => { if (current() && instance.element.open) render(); }));
   }

@@ -7,6 +7,7 @@
 .sw-connect-choice:hover{background:var(--sw-surface-hover);border-color:var(--sw-control-border)}
 .sw-connect-choice>span{display:grid;gap:5px;flex:1;min-width:0}.sw-connect-choice small{font-size:12px;line-height:1.5;color:var(--sw-muted)}
 .sw-connect-choice>.sw-icon:first-child{width:30px;height:30px;color:var(--sw-sage-ink)}
+.sw-connect-steps{display:grid;gap:12px;margin:0;padding-left:22px;font-size:14px;line-height:1.6}
 .sw-app-grants{display:grid;gap:6px}.sw-grant-choice{display:flex;align-items:center;gap:12px;min-height:44px;padding:8px 10px;border:1px solid var(--sw-line);border-radius:12px;cursor:pointer}.sw-grant-choice:has(input:checked){background:var(--sw-selected)}.sw-grant-choice input{width:20px;height:20px;accent-color:var(--sw-switch-on)}.sw-grant-choice span{min-width:0;overflow-wrap:anywhere}
 .sw-app-access{min-width:0;margin:0;padding:0;border:0}.sw-app-access legend{padding:0;margin-bottom:8px}
 
