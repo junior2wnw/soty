@@ -114,10 +114,27 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const readEntryTransaction = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 32 * 1024,
       busyCode: 'apps_entry_busy', timeoutCode: 'apps_entry_timeout_invalid', responseCode: 'apps_entry_response_too_large' });
     entryRead = (actor, args) => {
-      exact(args, ['appId', 'domainId', 'path']);
+      exact(args, ['appId', 'domainId', 'path', 'current']);
+      assertApps(args.current === undefined || args.current === true && args.domainId === undefined && args.path === undefined,
+        'invalid_app_current_entry');
       const requested = { appId: appId(args.appId), ...(args.domainId === undefined ? {} : { domainId: textId(args.domainId) }),
         ...(args.path === undefined ? {} : { path: guideLaunchPath(args.path).entryPath }) };
       return readEntryTransaction(actor, captured => {
+        // Explicit recovery asks for a locator for the currently admitted Source.
+        // It never rewrites an exact saved/deep link or opens a scoped context.
+        if (args.current === true) {
+          const app = row(requested.appId), target = activeTarget(requested.appId);
+          assertApps(app?.state === 'enabled' && target, 'app_unavailable', 404);
+          const preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
+            app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
+            target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,
+              connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path },
+          }, captured) : undefined;
+          assertApps(!selectedRuntimeProfile(target.profile) || preferred, 'app_unavailable', 404);
+          const entry = resolveEntry({ actor: captured, appId: app.id, ...preferred });
+          assertApps(entry, 'app_unavailable', 404);
+          return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: entry.path } };
+        }
         const guide = requested.path === '/_soty/guide';
         const entry = resolveEntry({ actor: captured, ...requested, ...(guide ? { path: undefined } : {}) });
         if (guide) assertApps(!selectedRuntimeProfile(activeTarget(requested.appId)?.profile), 'app_guide_unsupported', 404);

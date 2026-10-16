@@ -178,7 +178,8 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       scope: 'authenticated-workspace', targetRevision: f.target.revision, targetDigest: f.target.digest, profile: f.target.profile } });
     f.promote(intent); const before = f.rows();
     const outsider = Object.freeze({ accountId: 'new-ungranted-person', deviceId: 'new-person-browser' });
-    const actors = [f.owner, outsider]; let humanSubjects = [], forwardedRequests = 0;
+    const reader = Object.freeze({ accountId: 'synthetic_reader', deviceId: 'reader-browser' });
+    const actors = [f.owner, reader, outsider]; let humanSubjects = [], forwardedRequests = 0;
     let active = true, clock=Date.now();
     const service = createAppsService({ databasePath, appOriginTemplate: template, shellOrigins: ['https://root.test'],
       allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile], now:()=>clock,
@@ -227,6 +228,23 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
     assert.equal(initial.entry.origin, f.profile.embedOrigin);
     const wrongAddress = inspection.addresses.canonical.origin === preferred.origin ? inspection.addresses.aliases[0] : inspection.addresses.canonical;
     assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'the other same-app address is still fenced');
+    for (const actor of [f.owner, reader]) {
+      const current = service.execute({ op: 'apps.entry.get', actor, args: { appId: f.appId, current: true } });
+      assert.deepEqual(current.entry, { appId: f.appId, ...preferred }, 'explicit current lookup resolves the admitted origin for an allowed participant');
+    }
+    const currentOutside = () => service.execute({ op: 'apps.entry.get', actor: outsider, args: { appId: f.appId, current: true } });
+    if (rootWorkspace) assert.deepEqual(currentOutside().entry, { appId: f.appId, ...preferred }, 'public workspace still requires a fresh access decision');
+    else assert.throws(currentOutside, { code: 'app_unavailable' }, 'current lookup leaks no address to an ungranted participant');
+    assert.throws(() => service.execute({ op: 'apps.entry.get', actor: f.owner,
+      args: { appId: f.appId, current: true, domainId: wrongAddress.id } }), { code: 'invalid_app_current_entry' });
+    assert.throws(() => service.execute({ op: 'apps.entry.get', actor: f.owner,
+      args: { appId: f.appId, current: true, path: '/embed' } }), { code: 'invalid_app_current_entry' });
+    assert.throws(() => service.execute({ op: 'apps.entry.get', actor: f.owner,
+      args: { appId: f.appId, current: false } }), { code: 'invalid_app_current_entry' });
+    const exactOld = service.execute({ op: 'apps.entry.get', actor: f.owner,
+      args: { appId: f.appId, domainId: wrongAddress.id, path: '/embed' } });
+    assert.equal(exactOld.entry.domainId, wrongAddress.id, 'ordinary exact lookup never silently substitutes an origin');
+    assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'metadata recovery does not weaken launch admission');
     for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     const policyResponse = await new Promise((done, reject) => {
       const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed',

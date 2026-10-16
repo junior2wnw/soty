@@ -4,7 +4,7 @@ import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
 import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
-  type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
+  validateAppEntry, type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
@@ -33,6 +33,8 @@ export interface AppStageOptions {
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
   renew?:((parameters:{appId:string;handle:string;requestId:string;expectedAccountId:string;shortSessionHandoff?:true})=>Promise<{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string;scopedCleanup?:(()=>Promise<void>)|undefined}>)|undefined;
   onNavigate(intent: AppLaunchIntent, options?: { replace?: boolean }): void;
+  /** Explicit navigation to a fresh server-resolved Source entry, never a silent rebind. */
+  onOpenCurrentEntry?(entry: AppResolvedEntry): void | Promise<void>;
   onBack(): void; onAccount(): Promise<void>;
   onFullscreenChange?(stage: HTMLElement, expanded: boolean): void;
   onModalChange?(modal: HTMLDialogElement, open: boolean): void;
@@ -59,6 +61,7 @@ export function appLaunchFailure(error: unknown): { title: string; detail: strin
   if (['apps_launch_busy', 'apps_entry_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже.' };
   if (['invalid_app_launch_url', 'invalid_app_entry', 'invalid_app_path', 'invalid_app_launch_binding'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
   if (['app_launch_source_changed', 'app_launch_binding_required'].includes(code)) return { title: 'Вход изменился', detail: 'Откройте приложение заново.' };
+  if (['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(code)) return { title: 'Адрес приложения изменился', detail: 'Откройте актуальный вход. Сохранённая ссылка останется на прежнем адресе.' };
   return { title: 'Не удалось открыть приложение', detail: 'Проверьте подключение и попробуйте ещё раз.' };
 }
 
@@ -71,7 +74,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let disposed = false, runtimeStarted = false, runtimePending = false, accountPending = false;
   let routeGeneration = 0, frameGeneration=0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
   let presentationVersion = 0, applyingPresentation = false;
-  let displayEpoch = 0, releaseRuntimeDisplay: (() => void) | null = null;
+  let displayEpoch = 0, entryRecoveryEpoch = 0, entryRecoveryPending = false, releaseRuntimeDisplay: (() => void) | null = null;
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
   let lastVisiblePresentation = initial.presentation;
@@ -293,6 +296,32 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(); });
   recoveryRetry.hidden = options.presentation !== 'widget'; message.after(recoveryRetry);
+  const currentEntryRetry = button('Открыть актуальный вход', 'arrow', 'sw-button-primary sa-current-entry-retry', () => { void openCurrentEntry(); });
+  currentEntryRetry.hidden = true; recoveryRetry.after(currentEntryRetry);
+  async function openCurrentEntry(): Promise<void> {
+    if (!current() || runtimePending || entryRecoveryPending || currentEntryRetry.hidden || !options.onOpenCurrentEntry) return;
+    const epoch = entryRecoveryEpoch, live = () => current() && epoch === entryRecoveryEpoch;
+    entryRecoveryPending = true; currentEntryRetry.disabled = true;
+    try {
+      await discussion?.flush(); await feedback?.flush();
+      if (!live()) return;
+      if (discussion?.hasUnsavedChanges() || feedback?.hasUnsavedChanges() || reviews?.hasUnsavedChanges()) {
+        showMessage('Сохраните незавершённое действие перед переходом к актуальному входу.'); return;
+      }
+      const result = await options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', {
+        appId: initial.target.appId, current: true, expectedAccountId: accountId,
+      });
+      if (!live()) return;
+      const entry = validateAppEntry(result.entry, { appId: initial.target.appId }, view.location.href);
+      // The owner of this stage creates a new exact route/stage. Its original
+      // launcher, saved address and any existing iframe are never rebound here.
+      await options.onOpenCurrentEntry(entry);
+    } catch (reason) {
+      if (live()) { const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`); }
+    } finally {
+      if (live()) { entryRecoveryPending = false; currentEntryRetry.disabled = false; }
+    }
+  }
   const recovery = createAppBootRecovery({ view, appId: initial.target.appId, getFrame: () => runtime.querySelector('iframe'),
     isCurrent: current, canRecover: () => !runtimePending,
     recover: stillCurrent => launchRuntime(true, stillCurrent),
@@ -393,6 +422,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
     }
     resetRuntimeDisplay();
+    entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
     recoveryRetry.hidden = options.presentation !== 'widget'; showMessage('');
     stopAssist();
@@ -417,8 +447,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!alive()) return;
       runtime.setAttribute('aria-busy', 'false');
       captureEntry(); const failure = appLaunchFailure(reason);
+      const sourceChanged = reason && typeof reason === 'object' && 'code' in reason
+        && ['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(String(reason.code));
+      currentEntryRetry.hidden = !sourceChanged || !options.onOpenCurrentEntry;
       if (existingFrame) showMessage(`${failure.title}. ${failure.detail}`);
-      else runtime.replaceChildren(emptyState(failure.title, failure.detail, options.presentation === 'widget' ? undefined : button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
+      else runtime.replaceChildren(emptyState(failure.title, failure.detail, options.presentation === 'widget' || !currentEntryRetry.hidden ? undefined : button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void launchRuntime(); }), 'app'));
+      if (!currentEntryRetry.hidden) recoveryRetry.hidden = true;
       if (automatic) recoveryRetry.hidden = false;
     } finally {
       if (current()) { runtimePending = false; refresh.disabled = false; recoveryRetry.disabled = false; ensureDiscussion(); showPanel(); }
@@ -481,7 +515,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     // The discussion already resolves and polls its own exact-entry authority.
     // Late initial metadata and title/device changes must not clear a loaded
     // conversation. Observed grant/policy changes still refresh immediately.
-    if (accessChanged) recovery.cancel();
+    if (accessChanged) { recovery.cancel(); entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; }
     if (discussion && accessChanged) void discussion.refresh();
   }
   function updateCommunity(value: { communityId: string; name: string } | null): void {

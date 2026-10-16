@@ -107,7 +107,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
-    './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
+    './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => !!discussionCalls.unsaved, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };
   const dialogsModule = { exports: {} };
   vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
@@ -472,6 +472,70 @@ async function widgetStage(request) {
   await f.app.appStage.ready;
   return f;
 }
+
+async function staleSourceStage({ lookup, open, discussion = false } = {}) {
+  const f = fixture({ hash: '#world' }), account = f.app.deskAccount, generation = f.app.accountGeneration;
+  const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' },
+    undefined, discussion ? { panel: 'discussion' } : undefined));
+  const stale = { appId: stageAppId, domainId: stageDomainId, origin: 'https://runtime.example', path: '/embed' };
+  const requests = [], opened = []; let launches = 0;
+  f.app.api = { async request(op, args) {
+    requests.push({ op, args: structuredClone(args) }); assert.equal(op, 'apps.entry.get');
+    return args.current ? lookup() : { entry: stale };
+  } };
+  f.app.appStage = f.mountStage(f.app.main, { api: f.app.api, accountId: account,
+    app: { appId: stageAppId, name: 'Moved Source', grants: { accountIds: [account], communityIds: [] } }, intent,
+    presentation: 'widget', instanceId: 'widget-11111111-1111-4111-8111-111111111111',
+    request: async () => { launches++; throw failure('scoped_embed_source_changed'); },
+    isCurrent: () => !f.app.destroyed && f.app.deskAccount === account && f.app.accountGeneration === generation,
+    onOpenCurrentEntry: async entry => { opened.push(entry); await open?.(entry); },
+    onNavigate() {}, onBack() {}, async onAccount() {}, onSettings() {},
+  });
+  await f.app.appStage.ready;
+  return { ...f, currentRequests: requests, opened, stale, launches: () => launches };
+}
+
+test('a stale Source address offers one explicit current-entry lookup without rebinding its original launcher', async t => {
+  const pending = deferred(), fresh = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
+  const f = await staleSourceStage({ lookup: () => pending.promise }); t.after(() => f.app.cleanScreen());
+  const retry = f.app.main.querySelector('.sa-current-entry-retry');
+  assert.equal(retry.hidden, false); assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, true);
+  assert.match(f.app.main.querySelector('.sa-runtime').children[0].textContent, /Адрес приложения изменился/u);
+  assert.equal(f.currentRequests.length, 1, 'failed launch only resolved its original exact entry');
+  retry.emit('click'); retry.emit('click'); await turn();
+  assert.deepEqual(f.currentRequests.at(-1), { op: 'apps.entry.get', args: { appId: stageAppId, current: true, expectedAccountId: 'account-A' } });
+  assert.equal(f.currentRequests.length, 2); assert.equal(retry.disabled, true);
+  pending.resolve({ entry: fresh }); await turn();
+  assert.deepEqual(f.opened, [fresh]); assert.equal(retry.disabled, false);
+  assert.deepEqual(f.app.appStage.entry(), f.stale, 'the captured old address was not silently changed');
+  assert.equal(f.launches(), 1); assert.equal(f.app.main.querySelector('iframe'), null);
+});
+
+for (const transition of ['account ABA', 'grant removal']) test(`a late current-entry reply cannot navigate after ${transition}`, async t => {
+  const pending = deferred(), f = await staleSourceStage({ lookup: () => pending.promise }); t.after(() => f.app.cleanScreen());
+  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+  else f.app.appStage.updateApp({ appId: stageAppId, name: 'Moved Source', grants: { accountIds: [], communityIds: [] } });
+  pending.resolve({ entry: { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' } }); await turn();
+  assert.deepEqual(f.opened, []); assert.equal(f.launches(), 1);
+});
+
+test('a mismatched current-entry DTO cannot substitute another app', async t => {
+  const f = await staleSourceStage({ lookup: async () => ({ entry: { appId: `app-${'f'.repeat(32)}`,
+    domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' } }) }); t.after(() => f.app.cleanScreen());
+  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  assert.deepEqual(f.opened, []); assert.equal(f.launches(), 1);
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /безопасно открыть/u);
+});
+
+test('current-entry navigation preserves an unsaved discussion and makes no lookup until it can leave', async t => {
+  const f = await staleSourceStage({ discussion: true, lookup: async () => { throw Error('must_not_request'); } }); t.after(() => f.app.cleanScreen());
+  f.discussionCalls.unsaved = true;
+  f.app.main.querySelector('.sa-current-entry-retry').emit('click'); await turn();
+  assert.equal(f.currentRequests.length, 1); assert.deepEqual(f.opened, []);
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /Сохраните незавершённое действие/u);
+  assert.equal(f.app.main.querySelector('.sa-current-entry-retry').disabled, false);
+});
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has a bounded UNKNOWN notice and manual retry without another launch or API request`, async t => {
   let calls = 0;
