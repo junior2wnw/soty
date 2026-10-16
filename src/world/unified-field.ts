@@ -17,6 +17,45 @@ export type { FieldCamera } from './unified-field-camera.mjs';
 export type { FieldDocument, FieldContext, FieldEntityRef } from '../../modules/field/contract.mjs';
 export type UnifiedFieldMode = 'mine' | 'search';
 type FieldVisualArt = AppArt & { icon?: FieldAppArt['icon'] };
+
+export interface FieldWheelInput {
+  deltaX: number; deltaY: number; deltaMode: number;
+  ctrlKey: boolean; metaKey: boolean; shiftKey: boolean;
+}
+
+/** Scroll follows the canvas; only an explicit zoom gesture changes its scale. */
+export function fieldWheelCamera(camera: FieldCamera, input: FieldWheelInput, anchor: FieldPoint, view: { width: number; height: number }): FieldCamera | null {
+  if (![input.deltaX, input.deltaY].every(Number.isFinite) || ![0, 1, 2].includes(input.deltaMode)) return null;
+  const factor = input.deltaMode === 1 ? 16 : input.deltaMode === 2 ? view.height : 1;
+  const dx = input.deltaX * factor, dy = input.deltaY * factor;
+  if (input.ctrlKey || input.metaKey) {
+    if (!dy) return null;
+    return zoomFieldCamera(camera, camera.scale * Math.exp(Math.max(-20, Math.min(20, -dy * .002))), anchor, view);
+  }
+  if (!dx && !dy) return null;
+  const horizontal = input.shiftKey && !dx;
+  return normalizeFieldCamera({ ...camera, x: camera.x + (horizontal ? dy : dx) / camera.scale, y: camera.y + (horizontal ? 0 : dy) / camera.scale });
+}
+
+/** A page or nested control must never lose its own scrolling to the canvas. */
+export function shouldYieldFieldWheel(target: Element, viewport: HTMLElement, input: FieldWheelInput): boolean {
+  if (target.closest('input,textarea,select,[contenteditable],.uf-move-tools,.uf-inspect,.uf-pan-controls')) return true;
+  const styleOf = (node: Element): CSSStyleDeclaration | undefined => viewport.ownerDocument.defaultView?.getComputedStyle(node);
+  const scrolls = (node: Element, axis: 'X' | 'Y', root = false): boolean => {
+    const style = styleOf(node), overflow = style?.[axis === 'X' ? 'overflowX' : 'overflowY'] ?? '';
+    const allowed = /auto|scroll|overlay/.test(overflow) || root && !/hidden|clip/.test(overflow);
+    return allowed && (axis === 'X' ? node.scrollWidth - node.clientWidth : node.scrollHeight - node.clientHeight) > 1;
+  };
+  for (let node: Element | null = target; node && node !== viewport; node = node.parentElement) {
+    if (scrolls(node, 'X') || scrolls(node, 'Y')) return true;
+  }
+  if (!input.ctrlKey && !input.metaKey && input.deltaY) {
+    for (let node = viewport.parentElement; node; node = node.parentElement) {
+      if (scrolls(node, 'Y', node === viewport.ownerDocument.scrollingElement)) return true;
+    }
+  }
+  return false;
+}
 type CameraFit = 'manual' | 'overview' | 'context';
 export interface FieldCommitResult { status: 'saved' | 'volatile' | 'conflict'; revision: number; document: FieldDocument; errorCode?: string; localDurable?: boolean }
 export interface UnifiedFieldViewState { mine?: FieldCamera; search?: FieldCamera; mineContext?: string; searchContext?: string; mineSelection?: string; searchSelection?: string; mineFit?: CameraFit; searchFit?: CameraFit; searchScope?: string }
@@ -519,6 +558,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
 
   plane.addEventListener('keydown', event => {
     if ((event.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]')) return;
+    if (event.altKey) return; // Alt+Left/Right belongs to browser history.
     if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault();
       if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusContext(current.contextId); else options.onInspect(current.entity, current.shortcutId); } return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
@@ -542,9 +582,13 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (next) focusNode(next.shortcutId);
   }, { signal });
   viewport.addEventListener('wheel', event => {
-    if (!event.ctrlKey && !event.metaKey) return; event.preventDefault();
-    const rect = viewport.getBoundingClientRect(), factor = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewportSize().height : 1;
-    setCamera(zoomFieldCamera(camera(), camera().scale * Math.exp(-event.deltaY * factor * .002), { x: event.clientX - rect.left, y: event.clientY - rect.top }, viewportSize()));
+    if (event.defaultPrevented || !event.cancelable || gesture || pinch) return;
+    const target = event.target instanceof Element ? event.target : viewport;
+    if (shouldYieldFieldWheel(target, viewport, event)) return;
+    const rect = viewport.getBoundingClientRect();
+    const next = fieldWheelCamera(camera(), event, { x: event.clientX - rect.left, y: event.clientY - rect.top }, viewportSize());
+    if (!next) return;
+    event.preventDefault(); setCamera(next);
   }, { passive: false, signal });
   function localPoint(event: PointerEvent): FieldPoint { const rect = viewport.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; }
   function flushPointerSample(): void {

@@ -88,13 +88,27 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const spaces = iconButton('Управлять пространствами', 'settings', () => manageContexts());
   const viewTools = iconButton('Вид поля', 'sliders', () => openViewTools()); viewTools.classList.add('uf-view-tools');
   toolbar.append(zoom, contextSelector, overview, spaces, viewTools);
+  const panControls = el('div', 'uf-pan-controls'); panControls.hidden = true;
+  panControls.setAttribute('role', 'group'); panControls.setAttribute('aria-label', 'Перемещение поля');
+  const panField = (x: number, y: number): void => {
+    if (!engine) return;
+    const camera = engine.getCamera(), viewport = engine.element;
+    const stepX = Math.max(48, Math.min(240, viewport.clientWidth * .4)), stepY = Math.max(48, Math.min(240, viewport.clientHeight * .4));
+    engine.setCamera({ ...camera, x: camera.x + x * stepX / camera.scale, y: camera.y + y * stepY / camera.scale });
+  };
+  const hidePanControls = (): void => { panControls.hidden = true; viewTools.focus({ preventScroll: true }); };
+  for (const [label, symbol, x, y] of [['Посмотреть левее', 'back', -1, 0], ['Посмотреть выше', 'up', 0, -1], ['Посмотреть ниже', 'down', 0, 1], ['Посмотреть правее', 'next', 1, 0]] as const) {
+    panControls.append(iconButton(label, symbol, () => panField(x, y)));
+  }
+  panControls.append(iconButton('Скрыть кнопки перемещения', 'close', hidePanControls));
+  panControls.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); hidePanControls(); } }, { signal });
   const arrangeHint = el('p', 'uf-arrange-hint', 'Перетащите соту или нажмите на неё'); arrangeHint.hidden = true;
   const more = button('Показать ещё', 'plus', 'uf-more', () => run(searchDirectory(true))); more.hidden = true;
   const searchLimit = el('div', 'uf-search-limit'); searchLimit.hidden = true;
   const searchLimitCopy = el('span', '', 'Показаны первые 256 результатов. Уточните поиск.'); searchLimitCopy.setAttribute('role', 'status');
   searchLimit.append(searchLimitCopy, button('Уточнить поиск', 'search', 'sw-button-quiet', () => searchInput.focus()));
   const undo = button('Отменить', 'back', 'uf-undo', () => run(engine?.undo())); undo.hidden = true;
-  host.append(loading, empty, feedback, toolbar, arrangeHint, more, undo); element.append(head, localSearch, filters, searchLimit, host);
+  host.append(loading, empty, feedback, toolbar, panControls, arrangeHint, more, undo); element.append(head, localSearch, filters, searchLimit, host);
   const dialogs = new Set<WorldDialog>();
   const metadata = new Map<string, DirectoryEntity>(BUILTINS.map(item => [fieldEntityKey(item.entity), item]));
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;
@@ -139,6 +153,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     contexts.addEventListener('change', () => { closePreview(false); contexts.value ? engine?.focusContext(contexts.value) : engine?.fitOverview(); instance.close(); });
     instance.body.append(labeledField('Показать', types), labeledField('Перейти к', contexts), row,
       button('Показать всё', 'expand', 'sw-button-wide', () => { closePreview(false); engine?.fitOverview(); instance.close(); }));
+    const panToggle = button(panControls.hidden ? 'Кнопки перемещения' : 'Скрыть кнопки перемещения', 'arrow', 'sw-button-wide', () => {
+      const show = panControls.hidden; instance.close({ restoreFocus: false }); panControls.hidden = !show;
+      (show ? panControls.querySelector<HTMLButtonElement>('button') : viewTools)?.focus({ preventScroll: true });
+    });
+    panToggle.setAttribute('aria-expanded', String(!panControls.hidden));
+    instance.body.append(panToggle, el('p', 'uf-input-help', 'Тяните поле или прокручивайте трекпадом. Для масштаба — два пальца, Ctrl + колесо или кнопки − и +.'));
     if (mode === 'mine') instance.body.append(button('Мои пространства', 'layers', 'sw-button-wide', () => { instance.close(); manageContexts(); }));
   }
   function merge(items: readonly DirectoryEntity[]): void { for (const item of items) metadata.set(fieldEntityKey(item.entity), item); metadataRevision++; }

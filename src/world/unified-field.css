@@ -281,7 +281,11 @@
 }
 
 /* Controls are secondary to the scene on compact and touch-sized screens. */
-.uf-view-tools { display: none; }
+.uf-view-tools { display: inline-flex; }
+.uf-pan-controls { position: absolute; top: 16px; left: 50%; z-index: 12; transform: translateX(-50%); display: flex; gap: 4px; width: max-content; max-width: calc(100% - 16px); padding: 6px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--sw-surface); box-shadow: var(--sw-shadow-dialog); }
+.uf-pan-controls>.sw-icon-button { flex: none; width: 44px; height: 44px; min-width: 44px; min-height: 44px; border-radius: 10px; }
+.uf-pan-controls>.sw-icon-button:last-child { margin-left: 4px; border-left: 1px solid var(--sw-line); }
+.uf-input-help { margin: 12px 0 0; color: var(--sw-muted); font-size: 13px; line-height: 20px; }
 .uf-compact-filter { display: none; }
 .uf-view-zoom { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 12px 0; }
 .uf-view-zoom>.sw-icon-button { width: 44px; min-height: 44px; }
@@ -296,6 +300,7 @@
 .uf-compact-label { display: none; }
 .uf-move-cancel>.sw-icon { display: none; }
 @media (max-width:900px) {
+  .uf-pan-controls { top: 60px; }
   .uf-screen { min-height: 0; }
   .uf-screen-head,.sw-app[data-field=unified] .uf-screen-head { display: block; min-height: 0; padding: 8px 16px; }
   .uf-screen-head h1 { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
