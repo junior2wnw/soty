@@ -734,8 +734,13 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   let lastWidth = 0, lastHeight = 0;
   const resize = new ResizeObserver(() => {
     const width = viewport.clientWidth, height = viewport.clientHeight;
+    const resized = lastWidth > 0 && lastHeight > 0 && (width !== lastWidth || height !== lastHeight);
     const changed = Math.abs(width - lastWidth) > 40 || Math.abs(height - lastHeight) > 40;
     lastWidth = width; lastHeight = height;
+    // Pointer samples capture the previous viewport's coordinates. A reflow
+    // must not let their late release persist a different slot or context.
+    // Identical notifications and the first observation keep the owned gesture.
+    if (resized && (gesture || pinch || moving || contextPreview || pointers.size)) resetPointers();
     if (!initialized[mode]) rebuild();
     else if (changed && !gesture && !moving) {
       if (cameraFit[mode] === 'context' && contextFocus[mode]) focusContext(contextFocus[mode]);
