@@ -55,7 +55,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(presentation){
  const state={current:true,recoveryCurrent:true,calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],draft:'retained discussion draft'};
  let now=0,next=0;const tasks=new Map(),doc=new Node('document',state),view=new Node('window',state),runtime=new Node('runtime',state);
- Object.assign(view,{document:doc,performance:{now:()=>now},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
+ Object.assign(view,{document:doc,performance:{now:()=>now},crypto:{randomUUID:()=> 'a'.repeat(32)},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
    setTimeout:(fn,ms)=>{const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
  doc.elementsFromPoint=()=>[runtime.querySelector('iframe')];doc.activeElement=null;
  const button=(text,_icon,_cls,action)=>Object.assign(new Node('button',state),{textContent:text,action});
@@ -85,6 +85,19 @@ test('actual launch wiring observes before src/insert and preserves existing loa
 test('actual route reset rejects old peers and erases diagnostics without remounting iframe or touching drafts',async()=>{
  const f=fixture();f.h.api.arm();f.h.refresh();await flush();const frame=f.h.frame();f.h.route();assert.equal(f.h.api.snapshot(),null);assert.equal(f.h.frame(),frame);assert.equal(f.state.calls.launch,1);assert.equal(f.state.draft,'retained discussion draft');
  f.view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-phase.v1',phase:'boot_cookie_pending'}});assert.equal(f.h.api.snapshot(),null);
+});
+
+test('actual stage distinguishes load from a correlated Boot reply without changing transport UI or the retained draft',async()=>{
+ const f=fixture();f.h.api.arm();f.h.refresh();await flush();f.tick(0);const frame=f.h.frame();
+ assert.equal(f.state.probes[0].data.schema,'soty.runtime-phase-watch.v2');
+ const watchId=f.state.probes[0].data.watchId;
+ frame.emit('load');f.tick(12_001);
+ assert.equal(f.h.api.snapshot().events.at(-1).phase,'root_boot_unobserved');
+ assert.equal(f.state.messages.at(-1),'');
+ f.view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-phase.v2',watchId,phase:'boot_failed'}});
+ assert.equal(f.h.api.snapshot().events.at(-1).phase,'boot_failed');
+ assert.equal(f.h.api.snapshot().events.filter(x=>x.phase==='boot_document_ack').length,1);
+ assert.equal(f.state.calls.launch,1);assert.equal(f.state.messages.at(-1),'');assert.equal(f.state.draft,'retained discussion draft');
 });
 
 test('actual diagnostic dialog arms/copies/clears only on explicit controls and never starts a launch',async()=>{

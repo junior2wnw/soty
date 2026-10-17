@@ -141,15 +141,16 @@ function pageClient(config, allowPath) {
   // This starts only after the one-time fragment has already been cleared.
   const diagnostic = (() => {
     const phases = ['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation','boot_failed','boot_inactive'];
-    let phase = null, parentOrigin = '', sent = 0, deadline = 0, timeout, active = config.mode === 'boot' && config.scoped === true && !config.renewal && !topLevel;
+    let phase = null, parentOrigin = '', protocol = '', watchId = '', sent = 0, deadline = 0, timeout, active = config.mode === 'boot' && config.scoped === true && !config.renewal && !topLevel;
     const send = () => {
       if (!active || !parentOrigin || !phase || sent >= 24) return;
       if (performance.now() >= deadline) { stop(); return; }
       sent++;
-      try { window.parent.postMessage({schema:'soty.runtime-phase.v1',phase},parentOrigin); } catch { /* No payload or action. */ }
+      try { window.parent.postMessage(protocol === 'soty.runtime-phase-watch.v2'
+        ? {schema:'soty.runtime-phase.v2',watchId,phase} : {schema:'soty.runtime-phase.v1',phase},parentOrigin); } catch { /* No payload or action. */ }
       if (sent >= 24) stop();
     };
-    const stop = () => { active = false; phase = null; parentOrigin = ''; clearTimeout(timeout); window.removeEventListener('message',receive); };
+    const stop = () => { active = false; phase = null; parentOrigin = ''; protocol = ''; watchId = ''; clearTimeout(timeout); window.removeEventListener('message',receive); };
     const receive = event => {
       if (!active || offPage || navigated || event.source !== window.parent || !config.parentOrigins.includes(event.origin) || event.ports?.length) return;
       if (deadline && performance.now() >= deadline) { stop(); return; }
@@ -157,9 +158,13 @@ function pageClient(config, allowPath) {
         const data = event.data;
         if (!data || typeof data !== 'object' || Array.isArray(data)) return;
         const keys = Reflect.ownKeys(data), schema = Object.getOwnPropertyDescriptor(data,'schema');
-        if (keys.length !== 1 || keys[0] !== 'schema' || !schema || !Object.hasOwn(schema,'value') || schema.value !== 'soty.runtime-phase-watch.v1'
-          || parentOrigin && parentOrigin !== event.origin) return;
-        if (!parentOrigin) { parentOrigin = event.origin; deadline = performance.now()+120_000; timeout = setTimeout(stop,120_000); }
+        if (!schema || !Object.hasOwn(schema,'value') || parentOrigin && parentOrigin !== event.origin) return;
+        const legacy = schema.value === 'soty.runtime-phase-watch.v1' && keys.length === 1 && keys[0] === 'schema';
+        const watch = Object.getOwnPropertyDescriptor(data,'watchId');
+        const correlated = schema.value === 'soty.runtime-phase-watch.v2' && keys.length === 2 && keys.includes('schema') && keys.includes('watchId')
+          && watch && Object.hasOwn(watch,'value') && typeof watch.value === 'string' && /^[a-f0-9]{32}$/.test(watch.value);
+        if (!legacy && !correlated || protocol && (protocol !== schema.value || correlated && watchId !== watch.value)) return;
+        if (!parentOrigin) { parentOrigin = event.origin; protocol = schema.value; watchId = correlated ? watch.value : ''; deadline = performance.now()+120_000; timeout = setTimeout(stop,120_000); }
         send(); if (sent >= 24) stop();
       } catch { /* Ignore malformed input without reading or serializing it. */ }
     };

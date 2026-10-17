@@ -1,17 +1,17 @@
 /** Opt-in local observations only. Never authority, readiness or a retry trigger. */
 const BOOT = new Set(['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation','boot_failed','boot_inactive']);
-const ROOT = new Set(['root_launch','root_launch_failed','root_frame','root_attached','root_load','root_error','root_timeout']);
+const ROOT = new Set(['root_launch','root_launch_failed','root_frame','root_attached','root_load','root_error','root_timeout','root_boot_unobserved','boot_document_ack']);
 const CSP = new Set(['page_csp_frame_enforce','page_csp_frame_report','page_csp_script_enforce','page_csp_script_report','page_csp_other_enforce','page_csp_other_report']);
 const LIMIT = 24, TTL = 120_000;
 
-function bootPhase(data) {
+function bootPhase(data, watchId) {
   try {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const keys = Reflect.ownKeys(data);
-    if (keys.length !== 2 || !keys.includes('schema') || !keys.includes('phase')) return null;
-    const schema = Object.getOwnPropertyDescriptor(data, 'schema'), phase = Object.getOwnPropertyDescriptor(data, 'phase');
-    return schema && phase && Object.hasOwn(schema, 'value') && Object.hasOwn(phase, 'value')
-      && schema.value === 'soty.runtime-phase.v1' && BOOT.has(phase.value) ? phase.value : null;
+    if (!watchId || keys.length !== 3 || !keys.includes('schema') || !keys.includes('phase') || !keys.includes('watchId')) return null;
+    const schema = Object.getOwnPropertyDescriptor(data, 'schema'), phase = Object.getOwnPropertyDescriptor(data, 'phase'), watch = Object.getOwnPropertyDescriptor(data,'watchId');
+    return schema && phase && watch && Object.hasOwn(schema, 'value') && Object.hasOwn(phase, 'value') && Object.hasOwn(watch,'value')
+      && schema.value === 'soty.runtime-phase.v2' && watch.value === watchId && BOOT.has(phase.value) ? phase.value : null;
   } catch { return null; }
 }
 
@@ -41,8 +41,8 @@ export function sampleRuntimeFrame(frame, view) {
 
 export function createAppRuntimePhaseTrace({view,isCurrent,getFrame,getEpoch,canSample=()=>true,onChange=()=>{}}) {
   let armed = false, disposed = false, capture = null, armTimer, armDeadline = 0, expiry;
-  let peer = null, expectedOrigin = '', epoch, frameTimer;
-  let releases = [], probes = [], loadProbeSent = false;
+  let peer = null, expectedOrigin = '', epoch, frameTimer, ackTimer, watchId = '';
+  let releases = [], probes = [], loadProbeSent = false, acknowledged = false;
   const clock = () => view.performance.now();
   const notify = () => { try { onChange(); } catch { /* Diagnostics cannot break the app. */ } };
   const current = () => !disposed && isCurrent();
@@ -56,7 +56,8 @@ export function createAppRuntimePhaseTrace({view,isCurrent,getFrame,getEpoch,can
     for (const release of releases) release(); releases = [];
     for (const timer of probes) view.clearTimeout(timer); probes = [];
     if (frameTimer !== undefined) view.clearTimeout(frameTimer); frameTimer = undefined;
-    peer = null; expectedOrigin = '';
+    if (ackTimer !== undefined) view.clearTimeout(ackTimer); ackTimer = undefined;
+    peer = null; expectedOrigin = ''; watchId = '';
   };
   const discard = () => {
     stopListeners(); if (expiry !== undefined) view.clearTimeout(expiry); expiry = undefined; capture = null;
@@ -73,8 +74,8 @@ export function createAppRuntimePhaseTrace({view,isCurrent,getFrame,getEpoch,can
   };
   const sample = () => { if (frameLive() && canSample()) { capture.view = sampleRuntimeFrame(peer,view); notify(); } };
   const probe = () => {
-    if (!frameLive() || !peer.contentWindow) return;
-    try { peer.contentWindow.postMessage({schema:'soty.runtime-phase-watch.v1'},expectedOrigin); } catch { /* No retry or payload. */ }
+    if (!frameLive() || !peer.contentWindow || !watchId) return;
+    try { peer.contentWindow.postMessage({schema:'soty.runtime-phase-watch.v2',watchId},expectedOrigin); } catch { /* No retry or payload. */ }
   };
   const clear = () => {
     armed = false; armDeadline = 0; if (armTimer !== undefined) view.clearTimeout(armTimer); armTimer = undefined; discard(); notify();
@@ -111,19 +112,37 @@ export function createAppRuntimePhaseTrace({view,isCurrent,getFrame,getEpoch,can
     attach(frame,origin) {
       if (!live()) return;
       try { const parsed = new URL(origin); if (!['https:','http:'].includes(parsed.protocol) || parsed.origin !== origin) return; } catch { return; }
-      peer = frame; expectedOrigin = origin; epoch = getEpoch(); loadProbeSent = false;
+      peer = frame; expectedOrigin = origin; epoch = getEpoch(); loadProbeSent = false; acknowledged = false;
+      // Correlation only, never authority. The ephemeral ID is not exported.
+      try { const value = view.crypto.randomUUID().replaceAll('-',''); watchId = /^[a-f0-9]{32}$/.test(value) ? value : ''; }
+      catch { watchId = ''; }
       listen(frame,'load',()=>{
         if (!frameLive()) return;
         if (frameTimer !== undefined) view.clearTimeout(frameTimer); frameTimer = undefined;
         record('root_load');
         if (!loadProbeSent) { loadProbeSent = true; probe(); }
       });
-      listen(frame,'error',()=>{ if (frameLive()) { if (frameTimer !== undefined) view.clearTimeout(frameTimer); frameTimer = undefined; record('root_error'); } });
+      listen(frame,'error',()=>{ if (frameLive()) {
+        if (frameTimer !== undefined) view.clearTimeout(frameTimer); frameTimer = undefined;
+        if (ackTimer !== undefined) view.clearTimeout(ackTimer); ackTimer = undefined;
+        record('root_error');
+      } });
       listen(view,'message',event=>{
         if (!frameLive() || event.source !== peer.contentWindow || event.origin !== expectedOrigin || event.ports?.length) return;
-        const phase = bootPhase(event.data); if (phase) record(phase);
+        const phase = bootPhase(event.data,watchId);
+        if (phase) {
+          if (!acknowledged) {
+            acknowledged = true;
+            if (ackTimer !== undefined) view.clearTimeout(ackTimer); ackTimer = undefined;
+            record('boot_document_ack');
+          }
+          record(phase);
+        }
       });
       frameTimer = view.setTimeout(()=>{ if (frameLive()) { sample(); record('root_timeout'); } },12_000);
+      // A load event (including a blank/error document) is not a Boot response.
+      // No response also cannot prove failure: a fast Boot may already have left.
+      ackTimer = view.setTimeout(()=>{ if (frameLive() && !acknowledged) record('root_boot_unobserved'); },12_000);
       record('root_frame');
     },
     inserted() {

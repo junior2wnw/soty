@@ -63,12 +63,60 @@ function browser(markup, { framed = false, hash = '#' + ticket, responses = [], 
 const phaseWatch = env => env.emit('message',{data:{schema:'soty.runtime-phase-watch.v1'},origin:'https://soty.example',source:env.parent,ports:[]});
 const diagnosticMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-phase.v1');
 const diagnosticPhases = env => diagnosticMessages(env).map(x=>x.data.phase);
+const phaseWatchV2 = (env,watchId='a'.repeat(32),extra={}) => env.emit('message',{
+  source:env.parent,origin:'https://soty.example',ports:[],data:{schema:'soty.runtime-phase-watch.v2',watchId},...extra});
+const correlatedMessages = env => env.parentMessages.filter(x=>x.data.schema==='soty.runtime-phase.v2');
 
 const scopedResponses = (issued = {}) => [
   response({ok:true,entryPath:'/embed',sessionCheck,frame:'F'.repeat(43),scopedRequestId:'R'.repeat(43),...issued}),
   response({ok:true,sessionCheck}),
   response({schema:'soty.source-session-continuation.v1',ready:true}),
 ];
+
+test('correlated boot observation echoes only the current watch ID and phases with the existing auth/navigation sequence',async()=>{
+  const admission=pending(),cookie=pending(),continuation=pending(),watchId='a'.repeat(32);
+  const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>admission.promise,()=>cookie.promise,()=>continuation.promise]});
+  phaseWatchV2(env,watchId);
+  assert.equal(env.context.location.hash,'');assert.deepEqual(correlatedMessages(env).map(x=>x.data.phase),['boot_admission_pending']);
+  admission.resolve(scopedResponses()[0]);await flush();cookie.resolve(scopedResponses()[1]);await flush();
+  continuation.resolve(scopedResponses()[2]);await flush();
+  assert.equal(env.calls.length,3);assert.deepEqual(env.navigations,['/embed?sotyFrame='+'F'.repeat(43)]);
+  assert.deepEqual(correlatedMessages(env).map(x=>x.data.phase),['boot_admission_pending','boot_cookie_pending','boot_continuation_pending','boot_navigation']);
+  for(const message of correlatedMessages(env)){
+    assert.equal(message.origin,'https://soty.example');assert.equal(message.data.watchId,watchId);
+    assert.deepEqual(Object.keys(message.data).sort(),['phase','schema','watchId']);assert.equal('ready' in message.data,false);
+  }
+  const serialized=JSON.stringify(correlatedMessages(env));for(const secret of [ticket,sessionCheck,'F'.repeat(43),'R'.repeat(43),'/embed'])assert.equal(serialized.includes(secret),false);
+  assert.deepEqual(env.forbidden,{storageReads:0,telemetryCalls:0});
+});
+
+test('correlated observer rejects forged peers/origins, getters, extra keys and stale/mixed watches without additional requests',()=>{
+  const held=pending(),env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>held.promise]});
+  let reads=0;const poison={schema:'soty.runtime-phase-watch.v2',get watchId(){reads++;throw Error('PRIVATE');}};
+  for(const extra of [{source:{}},{origin:'https://evil.example'},{origin:'null'},{ports:[{}]},
+    {data:poison},{data:{schema:'soty.runtime-phase-watch.v2',watchId:'bad'}},
+    {data:{schema:'soty.runtime-phase-watch.v2',watchId:'a'.repeat(32),url:'PRIVATE'}}])phaseWatchV2(env,'a'.repeat(32),extra);
+  assert.equal(reads,0);assert.equal(env.parentMessages.length,0);
+  phaseWatchV2(env);assert.equal(correlatedMessages(env).length,1);
+  phaseWatchV2(env,'b'.repeat(32));phaseWatch(env);
+  assert.equal(correlatedMessages(env).length,1);assert.equal(diagnosticMessages(env).length,0);assert.equal(env.calls.length,1);
+  for(let i=0;i<40;i++)phaseWatchV2(env);assert.equal(correlatedMessages(env).length,24);
+  assert.equal(env.calls.length,1,'duplicates cannot restart admission or create a second request');
+  assert.equal(env.timers.size,1,'the existing admission request deadline remains, not diagnostic timers');
+});
+
+test('correlated observation closes on pagehide/expiry and cannot revive from BFCache',()=>{
+  for(const close of ['pagehide','expiry']){
+    const held=pending(),env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>held.promise]});
+    phaseWatchV2(env);const before=correlatedMessages(env).length;
+    if(close==='pagehide'){env.emit('pagehide');env.emit('pageshow',{persisted:true});}
+    else env.elapse(120001);
+    phaseWatchV2(env);const after=correlatedMessages(env).length;
+    assert.equal(after,close==='pagehide'?before+1:before);
+    phaseWatchV2(env,'b'.repeat(32));assert.equal(correlatedMessages(env).length,after);
+    assert.equal(env.calls.length,1);assert.equal(env.navigations.length,0);
+  }
+});
 
 test('only an initial scoped boot renders the initially inert native continuation link',()=>{
   const scoped = renderBootPage({shellUrl,scoped:true});
