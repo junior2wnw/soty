@@ -553,6 +553,72 @@ const dragPointer = (handle, type, x = 100, y = 100) => {
   const event = new Event(type); Object.assign(event, { pointerId: 7, button: 0, isPrimary: true, clientX: x, clientY: y }); handle.dispatchEvent(event);
 };
 
+test('viewport resize during widget sizing cancels the owned gesture without saving a forced smaller preference', t => {
+  const f=fixture({visualViewport:{offsetLeft:0,offsetTop:0,width:390,height:844}});t.after(()=>f.control.dispose());
+  const stage=f.stages[0],before=f.read(),handle=f.nodes.find(node=>node.title==='Потяните, чтобы изменить размер');
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',140,140);
+  assert.equal(f.iframePointersBlocked(),true);
+  Object.assign(f.view.visualViewport,{width:250,height:260,offsetTop:180});
+  f.view.visualViewport.dispatchEvent(new Event('resize'));f.frame();
+  assert.equal(f.iframePointersBlocked(),false,'keyboard/rotation must release the document-wide iframe guard');
+  assert.equal(handle.hasPointerCapture(7),false);
+  dragPointer(handle,'pointerup',140,140);
+  assert.deepEqual(f.read(),before,'temporary viewport clamping must not overwrite the preferred widget size');
+  Object.assign(f.view.visualViewport,{width:390,height:844,offsetTop:0});f.view.visualViewport.dispatchEvent(new Event('resize'));f.frame();
+  const rect=stage.host.parent.getBoundingClientRect();assert.equal(rect.width,before.widgets[0].width);assert.equal(rect.height,before.widgets[0].height);
+  assert.equal(f.stages.length,1);assert.equal(stage.disposed,false);
+});
+
+test('a late pointerup after viewport shrink cannot persist the temporary clamp as the widget size',t=>{
+  const f=fixture({visualViewport:{offsetLeft:0,offsetTop:0,width:390,height:844}});t.after(()=>f.control.dispose());
+  const before=f.read(),handle=f.nodes.find(node=>node.title==='Потяните, чтобы изменить размер');
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',140,140);
+  Object.assign(f.view.visualViewport,{width:250,height:260,offsetTop:180});f.view.visualViewport.dispatchEvent(new Event('resize'));f.frame();
+  dragPointer(handle,'pointerup',140,140);
+  assert.equal(f.read().widgets[0].width,before.widgets[0].width);
+  assert.equal(f.read().widgets[0].height,before.widgets[0].height);
+});
+
+test('layout notifications without an actual geometry change preserve an active widget preview and its pointer ownership',t=>{
+  const f=fixture();t.after(()=>f.control.dispose());const node=f.stages[0].host.parent,before=f.read();
+  const handle=f.nodes.find(node=>node.title==='Потяните, чтобы изменить размер');
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',130,125);const preview=node.getBoundingClientRect();
+  f.view.dispatchEvent(new Event('resize'));f.frame();
+  assert.deepEqual(node.getBoundingClientRect(),preview);
+  assert.equal(handle.hasPointerCapture(7),true);assert.equal(f.iframePointersBlocked(),true);assert.deepEqual(f.read(),before);
+  dragPointer(handle,'pointerup',130,125);assert.equal(f.read().widgets[0].width,preview.width);assert.equal(f.read().widgets[0].height,preview.height);
+});
+
+for(const kind of ['move','size'])test(`${kind} gesture on window blur releases capture and preserves the saved workspace`,async t=>{
+  const f=fixture();t.after(()=>f.control.dispose());const before=f.read(),stage=f.stages[0];
+  const handle=f.nodes.find(node=>kind==='move'?node.className==='sm-widget-grip':node.title==='Потяните, чтобы изменить размер');
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',130,125);
+  f.view.dispatchEvent(new Event('blur'));await tick();
+  assert.equal(handle.hasPointerCapture(7),false);assert.equal(f.iframePointersBlocked(),false);
+  dragPointer(handle,'pointerup',130,125);assert.deepEqual(f.read(),before);assert.equal(stage.disposed,false);assert.equal(f.stages.length,1);
+});
+
+for(const kind of ['move','size'])test(`keyboard movement supersedes an active ${kind} gesture and its late pointerup`,t=>{
+  const f=fixture();t.after(()=>f.control.dispose());
+  const handle=f.nodes.find(node=>kind==='move'?node.className==='sm-widget-grip':node.title==='Потяните, чтобы изменить размер');
+  const before=f.read();dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',130,125);
+  const key=new Event('keydown',{cancelable:true});Object.assign(key,{key:'ArrowRight'});handle.dispatchEvent(key);
+  const after=f.read();assert.equal(key.defaultPrevented,true);assert.notDeepEqual(after,before);
+  assert.equal(handle.hasPointerCapture(7),false);assert.equal(f.iframePointersBlocked(),false);
+  dragPointer(handle,'pointerup',130,125);assert.deepEqual(f.read(),after);assert.equal(f.stages.length,1);
+});
+
+test('pointer cancellation after a viewport change cannot persist preview geometry or poison the next drag',t=>{
+  const f=fixture({visualViewport:{offsetLeft:0,offsetTop:0,width:390,height:844}});t.after(()=>f.control.dispose());
+  const before=f.read(),handle=f.nodes.find(node=>node.title==='Потяните, чтобы изменить размер');
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',130,125);
+  Object.assign(f.view.visualViewport,{offsetLeft:10,offsetTop:160,width:320,height:300});f.view.visualViewport.dispatchEvent(new Event('scroll'));
+  dragPointer(handle,'pointercancel',130,125);dragPointer(handle,'pointerup',130,125);assert.deepEqual(f.read(),before);
+  Object.assign(f.view.visualViewport,{offsetLeft:0,offsetTop:0,width:390,height:844});f.view.visualViewport.dispatchEvent(new Event('resize'));f.frame();
+  dragPointer(handle,'pointerdown');dragPointer(handle,'pointermove',120,120);dragPointer(handle,'pointerup',120,120);
+  assert.equal(f.read().widgets[0].width,340);assert.equal(f.read().widgets[0].height,280);assert.equal(f.iframePointersBlocked(),false);
+});
+
 for (const end of ['pointerup', 'pointercancel', 'Escape']) test(`widget ${end} after dragging does not open its tap menu, while a fresh tap does`, t => {
   const f = fixture(); t.after(() => f.control.dispose());
   const grip = f.nodes.find(node => node.className === 'sm-widget-grip');

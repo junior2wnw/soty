@@ -33,7 +33,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   layer.setAttribute('popover', 'manual'); layer.setAttribute('aria-label', 'Личные виджеты');
   const manage = iconButton('Личные виджеты', 'grid', () => openManager()); manage.classList.add('sm-widget-manage');
   layer.append(manage); root.append(layer);
-  const mounted = new Map<string, { node: HTMLElement; host: HTMLElement; grip: HTMLElement; stage: AppStageHandle | null; abort: AbortController }>();
+  const mounted = new Map<string, { node: HTMLElement; host: HTMLElement; grip: HTMLElement; stage: AppStageHandle | null; abort: AbortController; isDragging(): boolean; cancelGesture(viewport?: WidgetViewport): void }>();
   let account = '', generation = 0, disposed = false, active = '', state: WidgetWorkspace = { hidden: false, widgets: [] };
   let manager: WorldDialog | null = null, placement: WorldDialog | null = null, volatile = false, layoutRevision = 0;
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
@@ -99,9 +99,12 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       floatingObstacles(doc, element => layer.contains(element) || element.classList.contains('sw-agent-orb')));
     Object.assign(manage.style, { left: `${point.x}px`, top: `${point.y}px` });
     state.widgets.forEach((widget, index) => {
-      const node = mounted.get(widget.id)?.node; if (!node) return;
+      const row = mounted.get(widget.id); if (!row) return;
+      const node = row.node; node.style.zIndex = String(index + 1);
+      // Unrelated layout notifications must not erase the owned drag preview.
+      if (row.isDragging()) return;
       const rect = widgetRect(widget, viewBox);
-      Object.assign(node.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px`, zIndex: String(index + 1) });
+      Object.assign(node.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     });
     root.dispatchEvent(new Event('soty:floating-layout'));
   }
@@ -181,19 +184,20 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     const host = el('div', 'sm-widget-content'), resize = iconButton(`Размер виджета: ${widget.name}`, 'expand'); resize.classList.add('sm-widget-resize');
     resize.title = 'Потяните, чтобы изменить размер';
     node.append(header, host, resize); layer.append(node);
-    const row = { node, host, grip, stage: null as AppStageHandle | null, abort: local }; mounted.set(widget.id, row);
+    const row = { node, host, grip, stage: null as AppStageHandle | null, abort: local, isDragging: (): boolean => false, cancelGesture: (_viewport?: WidgetViewport): void => {} }; mounted.set(widget.id, row);
     const current = (): boolean => !disposed && account === owner && generation === epoch && mounted.get(widget.id) === row
       && !state.hidden && state.widgets.some(item => item.id === widget.id && item.visible);
     node.addEventListener('pointerdown', () => bringToFront(widget.id), { signal: local.signal });
     node.addEventListener('focusin', () => bringToFront(widget.id), { signal: local.signal });
-    let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; kind: 'move' | 'size'; moved: boolean; releaseIframes(): void } | null = null;
+    let drag: { pointer: number; x: number; y: number; rect: ReturnType<typeof widgetRect>; viewport: WidgetViewport; kind: 'move' | 'size'; moved: boolean; releaseIframes(): void } | null = null;
+    row.isDragging = () => drag !== null;
     let suppressMoveClick = false;
-    const bindDrag = (handle: HTMLElement, kind: 'move' | 'size'): void => {
+    const bindDrag = (handle: HTMLElement, kind: 'move' | 'size'): (() => void) => {
       handle.addEventListener('pointerdown', event => {
         if (drag || !current() || event.button !== 0 || !event.isPrimary) return;
         suppressMoveClick = false;
-        const latest = state.widgets.find(item => item.id === widget.id)!;
-        drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: widgetRect(latest, viewport()), kind, moved: false, releaseIframes: holdIframePointers(doc) };
+        const latest = state.widgets.find(item => item.id === widget.id)!, box = viewport();
+        drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, rect: widgetRect(latest, box), viewport: box, kind, moved: false, releaseIframes: holdIframePointers(doc) };
         try { handle.setPointerCapture(event.pointerId); } catch { cancel(); }
       }, { signal: local.signal });
       handle.addEventListener('pointermove', event => {
@@ -224,18 +228,27 @@ export function mountMicroWidgets(root: HTMLElement, options: {
       }, { signal: local.signal });
       handle.addEventListener('keydown', event => {
         if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
-        if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancel(); return; }
+        if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); row.cancelGesture(); return; }
         if (!current()) return;
         const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-        if (event.key === 'Home' && kind === 'move') { event.preventDefault(); update(widget.id, { x: 0.65, y: 0.12 }); return; }
+        if (event.key === 'Home' && kind === 'move') { row.cancelGesture(); event.preventDefault(); update(widget.id, { x: 0.65, y: 0.12 }); return; }
         if (!delta[event.key]) return;
+        row.cancelGesture();
         event.preventDefault(); const latest = state.widgets.find(item => item.id === widget.id)!, [x, y] = delta[event.key]!, step = event.shiftKey ? 40 : 16;
         const rect = widgetRect(latest, viewport());
         update(widget.id, kind === 'move' ? widgetPosition({ ...rect, x: rect.x + x * step, y: rect.y + y * step }, viewport(), latest)
           : { width: Math.max(220, Math.min(640, latest.width + x * step)), height: Math.max(160, Math.min(640, latest.height + y * step)) });
       }, { signal: local.signal });
+      return cancel;
     };
-    bindDrag(grip, 'move'); bindDrag(resize, 'size'); layout();
+    const cancelMove = bindDrag(grip, 'move'), cancelSize = bindDrag(resize, 'size');
+    row.cancelGesture = box => {
+      // A reflow may clamp the visible rectangle without changing the saved
+      // preference. Never persist that temporary rectangle on a late pointerup.
+      if (!drag || box && (['left', 'top', 'width', 'height', 'topInset', 'bottomInset'] as const).every(key => drag!.viewport[key] === box[key])) return;
+      cancelMove(); cancelSize();
+    };
+    layout();
     row.stage = options.mount(host, { appId: intent.target.appId, name: widget.name, status: 'unknown' }, intent, current, widget.id);
   }
   function render(): void {
@@ -296,6 +309,8 @@ export function mountMicroWidgets(root: HTMLElement, options: {
   let resizeFrame: number | null = null;
   const resizeLayout = (): void => {
     if (disposed) return;
+    const box = viewport();
+    for (const row of mounted.values()) row.cancelGesture(box);
     layout();
     if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame);
     // Responsive shell navigation may finish appearing after the resize event.
@@ -311,7 +326,9 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     if (records.some(record => !layer.contains(record.target) && !(record.target instanceof Element && record.target.classList.contains('sw-agent-orb')))) resizeLayout();
   }) : null;
   changes?.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style'] });
-  view.addEventListener('blur', () => { queueMicrotask(() => {
+  view.addEventListener('blur', () => {
+    for (const row of mounted.values()) row.cancelGesture();
+    queueMicrotask(() => {
     if (disposed) return;
     for (const [id, row] of mounted) if (row.host.contains(doc.activeElement)) { active = id; return; }
     if (doc.activeElement?.tagName === 'IFRAME') active = '';
