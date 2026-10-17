@@ -78,7 +78,10 @@ export function createBrowserAssistPilot({ getConnect, getApps }) {
           validate: input => validCommand({ ...input, kind }) && exact(input, Object.keys(properties)),
           execute: (input, toolSignal) => execute({ ...input, kind }, toolSignal) };
       }
-      return { tools, assertCurrent: () => { check(actor, binding, authority); need(turns.get(id) === turn && !signal.aborted); return true; }, close };
+      return { tools, assertCurrent: () => { check(actor, binding, authority); need(turns.get(id) === turn && !signal.aborted); return true; },
+        // Read-only result recovery checks the original immutable app pins.
+        // It cannot reopen the closed execution lease or dispatch commands.
+        assertResultAuthority: () => { check(actor, turn.binding, authority); return true; }, close };
     },
     close() { closed = true; for (const turn of turns.values()) turn.pending?.finish(Error('agent_source_denied')); turns.clear(); },
   };

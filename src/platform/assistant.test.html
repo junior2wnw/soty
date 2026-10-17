@@ -1,7 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Assistant isolated acceptance fixture</title>
 <style>body{margin:0;background:var(--sw-bg);color:var(--sw-ink);font-family:Manrope,system-ui,sans-serif}.qa-controls{padding:12px;display:flex;gap:8px;flex-wrap:wrap}.qa-controls button{padding:10px;font:inherit}#proof{padding:12px}.sw-app.qa-host{position:relative;inset:auto;display:block;overflow:visible}</style>
-<div class="qa-controls"><strong>Только тестовые данные · никакого исполнения или API</strong><button id="remount">Открыть заново</button><button id="deny">Закрыть доступ к задаче</button><button id="account">Сменить тестовый аккаунт</button><button id="history-error">Ошибка истории</button></div>
+<div class="qa-controls"><strong>Только тестовые данные · никакого исполнения или API</strong><button id="remount">Открыть заново</button><button id="deny">Закрыть доступ к задаче</button><button id="account">Сменить тестовый аккаунт</button><button id="history-error">Ошибка истории</button><button id="finish-personal">Завершить тестовую задачу</button></div>
 <output id="proof" aria-label="Проверка отправки"></output><main id="host" class="sw-app qa-host"></main>
 <script type="module">
 import '../world/world.css';
@@ -12,6 +12,7 @@ for(const [key,value] of Object.entries(createPalette('dark',50)))document.docum
 let accountId='qa_assistant_'+crypto.randomUUID(), handle, accepted=null, denied=false, calls=0, historyError=false;
 const params=new URLSearchParams(location.search), personalReady=params.has('personal'), noDevices=params.get('devices')==='0';
 let localCreates=0, personalTurns=0;
+let personalResult, personalRequest, releasePersonal, personalComplete=false, statusReads=0;
 const first={hostDeviceId:'qa_host_a',connectorId:'qa_connector_a',name:'Тестовый компьютер A',online:true};
 const second={hostDeviceId:'qa_host_b',connectorId:'qa_connector_b',name:'Тестовый компьютер B',online:true};
 const proof=document.querySelector('#proof'), root=document.querySelector('#host');
@@ -21,10 +22,21 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
  if(op==='apps.devices')return {devices:noDevices?[]:calls?[second,first]:[first,second]};
  if(op==='agent.turn'&&personalReady){
   personalTurns++;proof.dataset.personalTurns=String(personalTurns);proof.dataset.personalPrompt=args.prompt;
+  personalRequest=args.requestId; personalComplete=false;
+  personalResult={schema:'soty.personal-agent-turn.v1',status:'complete',requestId:args.requestId,answer:'Тестовый ответ без создания приложения.',contextId:'ctx_abcdefghijklmnop12345678'};
+  if(params.has('hold'))await new Promise(resolve=>{releasePersonal=resolve;});
+  personalComplete=true;
   if(params.has('unknown'))throw new TypeError('synthetic unknown result');
   proof.textContent='Тестовая отправка в Сотах: '+personalTurns+'; локальных форм: '+localCreates+'. Никакого исполнения или API.';
-  return {schema:'soty.personal-agent-turn.v1',status:'complete',requestId:args.requestId,answer:'Тестовый ответ без создания приложения.',contextId:'ctx_abcdefghijklmnop12345678'};
+  return personalResult;
  }
+ if(op==='agent.status'&&personalReady){
+  statusReads++;proof.dataset.statusReads=String(statusReads);
+  if(args.requestId!==personalRequest)return {schema:'soty.personal-agent-status.v1',requestId:args.requestId,state:'unavailable'};
+  proof.textContent='Проверок состояния: '+statusReads+'; тестовых запросов к модели: '+personalTurns+'. Никакого исполнения или API.';
+  return {schema:'soty.personal-agent-status.v1',requestId:args.requestId,state:personalComplete?'completed':'running',stage:personalComplete?'runtime':'model',elapsedMs:15000,modelRounds:1,completedTools:0,cancelRequested:false,...(personalComplete?{result:personalResult}:{})};
+ }
+ if(op==='agent.cancel'&&personalReady)return {schema:'soty.personal-agent-cancel.v1',requestId:args.requestId,cancelRequested:true,remoteTerminationVerified:false};
  if(op==='apps.assistant.history'){if(historyError)throw new TypeError('synthetic history unavailable');return {jobs:accepted?[{...first,id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,text:accepted.text,cwd:accepted.cwd,appCreation:false,status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};}
  if(op==='apps.assistant.send'){
   calls++;
@@ -44,5 +56,6 @@ document.querySelector('#remount').onclick=()=>void remount();
 document.querySelector('#deny').onclick=()=>{denied=true;void remount();};
 document.querySelector('#account').onclick=()=>{accountId='qa_changed_'+crypto.randomUUID();void handle.refresh();};
 document.querySelector('#history-error').onclick=()=>{historyError=!historyError;void handle.refresh();};
+document.querySelector('#finish-personal').onclick=()=>{releasePersonal?.();releasePersonal=undefined;};
 await remount();
 </script></html>

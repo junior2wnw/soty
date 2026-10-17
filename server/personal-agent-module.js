@@ -26,6 +26,36 @@ const terminalArguments = value => {
       && Array.isArray(value.selectedEvidenceIds) && value.selectedEvidenceIds.length <= 32 && Array.isArray(value.claims) && value.claims.length <= 16;
   } catch { return false; }
 };
+// Retain only the bounded presentation already returned to this actor. Source
+// payloads, tool arguments and provider messages are not a status transport.
+function recoverableAnswer(result, requestId) {
+  if (typeof result.answer !== 'string' || !result.answer.trim() || result.answer.length > 8000
+    || typeof result.contextId !== 'string' || !/^ctx_[A-Za-z0-9_-]{16,124}$/u.test(result.contextId)) return undefined;
+  const evidence = result.evidence ?? [];
+  if (!Array.isArray(evidence) || evidence.length > 32) return undefined;
+  const projected = [];
+  for (const source of evidence) {
+    if (!source || typeof source !== 'object'
+      || !['id', 'title', 'sourceStatus'].every(name => typeof source[name] === 'string'
+        && source[name].trim() && source[name].length <= (name === 'title' ? 160 : name === 'id' ? 128 : 64)
+        && !/[\u0000-\u001f\u007f]/u.test(source[name]))
+      || !(source.observedAt === null || typeof source.observedAt === 'string'
+        && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(source.observedAt)
+        && Number.isFinite(Date.parse(source.observedAt)) && new Date(source.observedAt).toISOString() === source.observedAt)) return undefined;
+    projected.push({ id: source.id, title: source.title, observedAt: source.observedAt, sourceStatus: source.sourceStatus });
+  }
+  return Object.freeze({ schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId,
+    answer: result.answer, contextId: result.contextId, evidence: projected });
+}
+function recoveryPointers(value) {
+  requireValue(Array.isArray(value) && value.length <= 8, 'agent_output_invalid');
+  return value.map(entry => {
+    fields(entry, ['reference', 'invocationId']); fields(entry.reference, ['capabilityId', 'version']);
+    identifier(entry.reference.capabilityId, 160); identifier(entry.invocationId, 160);
+    requireValue(Number.isSafeInteger(entry.reference.version) && entry.reference.version >= 1 && entry.reference.version <= 1000000, 'agent_output_invalid');
+    return { reference: { capabilityId: entry.reference.capabilityId, version: entry.reference.version }, invocationId: entry.invocationId };
+  });
+}
 
 /** Callable signed extension. Runtime functions are explicit host imports; no TS donor is dynamically loaded here.
  * outputProfile is local completed-result enforcement, not a claim of upstream forced-tool/json_schema support. */
@@ -42,7 +72,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     && typeof runtime?.createContextStore === 'function' && typeof runtime?.adapterFor === 'function'
     && runtime.outputProfile === 'host-enforced-terminal.v1' && typeof toolsForActor === 'function'
     && isPersonalAgentTransport(transport) && transport.configured === true;
-  const contexts = new Map(), turns = new Map(), operations = new Set(['agent.turn', 'agent.cancel', ...(browserPilot?.operations ?? [])]); let closed = false;
+  const contexts = new Map(), turns = new Map(), operations = new Set(['agent.turn', 'agent.cancel', 'agent.status', ...(browserPilot?.operations ?? [])]); let closed = false;
   const now = () => { const value = clock(); requireValue(Number.isSafeInteger(value) && value >= 0); return value; };
   const hash = value => createHash('sha256').update(canonical(value)).digest('hex');
   const actorScope = actor => ({ ...hostScope, accountId: actor.accountId });
@@ -66,6 +96,32 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
   async function executeAsync({ op, args, actor }) {
     requireValue(configured, 'agent_transport_unavailable'); currentActor(actor);
     if (browserPilot?.operations.has(op)) return browserPilot.executeAsync({ op, args, actor });
+    if (op === 'agent.status') {
+      fields(args, ['requestId']); const turnId = identifier(args.requestId, 100);
+      const turn = turns.get(hash({ scope: actorScope(actor), turnId }));
+      // Absence after expiry/restart is UNKNOWN, never evidence of no effect.
+      const at = now();
+      if (!turn || turn.state !== 'running' && turn.retireAfter <= at) {
+        return { schema: 'soty.personal-agent-status.v1', requestId: turnId, state: 'unavailable' };
+      }
+      const progress = { stage: turn.stage, modelRounds: turn.modelRounds, completedTools: turn.completedTools,
+        elapsedMs: Math.min(1800000, Math.max(0, at - turn.startedAt)), cancelRequested: turn.abort.signal.aborted };
+      let result;
+      if (turn.state === 'completed' && turn.result) {
+        try { turn.assertRecoveryCurrent(); result = structuredClone(turn.result); }
+        catch { return { schema: 'soty.personal-agent-status.v1', requestId: turnId, state: 'unknown', ...progress }; }
+      }
+      let sourceRecovery;
+      if (turn.state === 'unknown' && typeof turn.sourceRecovery === 'function') {
+        // Read only under current Native/Root fences; no Source invocation or
+        // model request is retried. Unavailable proof remains unknown.
+        try { sourceRecovery = recoveryPointers(await turn.sourceRecovery(AbortSignal.timeout(3000))); }
+        catch { sourceRecovery = undefined; }
+      }
+      currentActor(actor);
+      return { schema: 'soty.personal-agent-status.v1', requestId: turnId, state: turn.state,
+        ...progress, ...(result ? { result } : {}), ...(sourceRecovery?.length ? { sourceRecovery } : {}) };
+    }
     if (op === 'agent.cancel') {
       fields(args, ['requestId']); const turnId = identifier(args.requestId, 100);
       const turn = turns.get(hash({ scope: actorScope(actor), turnId }));
@@ -95,7 +151,8 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     const timestamp = now();
     for (const [id, value] of turns) if (value.state !== 'running' && value.retireAfter <= timestamp) turns.delete(id);
     requireValue(turns.size < maxRetainedTurns, 'agent_capacity');
-    const turn = { intent, state: 'running', receipts: [], abort: new AbortController(), retireAfter: timestamp + 1800000 }; turns.set(key, turn);
+    const turn = { intent, state: 'running', stage: 'prepare', modelRounds: 0, completedTools: 0,
+      startedAt: timestamp, receipts: [], abort: new AbortController(), retireAfter: timestamp + 1800000 }; turns.set(key, turn);
     const unsubscribe = getConnect().subscribeRevocations(event => { if (event.deviceId === actor.deviceId) turn.abort.abort(); });
     let bundle, browserTurn, activeProvider, contextEntry, stage = 'prepare';
     const assertCurrent = () => {
@@ -104,11 +161,22 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       if (bundle) requireValue(syncResult(bundle.assertCurrent()) === true, 'agent_source_denied');
       if (browserTurn) requireValue(browserTurn.assertCurrent() === true, 'agent_source_denied');
     };
+    // A completed result is owned conversation data. Recovering it needs fresh
+    // actor/Source authority, not a browser execution lease already closed in
+    // finally. This port cannot execute a browser or Source action.
+    turn.assertRecoveryCurrent = () => {
+      currentActor(actor);
+      if (bundle) requireValue(syncResult(bundle.assertCurrent()) === true, 'agent_source_denied');
+      if (browserTurn) requireValue(typeof browserTurn.assertResultAuthority === 'function'
+        && syncResult(browserTurn.assertResultAuthority()) === true, 'agent_source_denied');
+    };
     try {
       if (args.browser !== undefined) browserTurn = browserPilot.openTurn({ actor, requestId: turnId, binding: args.browser, signal: turn.abort.signal });
       bundle = await toolsForActor({ actor, scope: frameScope, turnId, selection, signal: turn.abort.signal }); currentActor(actor);
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
       requireValue(bundle.verifyCurrent === undefined || typeof bundle.verifyCurrent === 'function', 'agent_source_unavailable');
+      requireValue(bundle.sourceRecovery === undefined || typeof bundle.sourceRecovery === 'function', 'agent_source_unavailable');
+      turn.sourceRecovery = bundle.sourceRecovery;
       assertCurrent();
       const bound = transport.bind({ actor, scope: frameScope, turnId, assertCurrent }); bound.guard();
       if (bundle.contextStore === undefined) contextEntry = contextFor(actor);
@@ -125,8 +193,8 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         tools[name] = { ...tool, execute: async (input, signal) => {
           const currentSignal = AbortSignal.any([signal, turn.abort.signal]);
           assertCurrent(); requireValue(!currentSignal.aborted, 'agent_cancelled');
-          stage = 'tool';
-          const result = await tool.execute(input, currentSignal); assertCurrent(); requireValue(!currentSignal.aborted, 'agent_cancelled'); return result;
+          stage = turn.stage = 'tool';
+          const result = await tool.execute(input, currentSignal); assertCurrent(); requireValue(!currentSignal.aborted, 'agent_cancelled'); turn.completedTools++; return result;
         } };
       }
       const adapter = runtime.adapterFor({ actor, scope: frameScope, tools }); assertCurrent();
@@ -147,7 +215,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         activeProvider = createGlmProvider({ transport: bound.complete, tools: registry, responseMode: 'json',
           policy: { ...modelPolicy, ...(options.maxTokens !== undefined ? { maxOutputTokens: Math.min(modelPolicy.maxOutputTokens, options.maxTokens) } : {}) } });
         let result;
-        try { stage = 'model'; result = await activeProvider.complete({ requestId, messages, signal,
+        try { stage = turn.stage = 'model'; turn.modelRounds++; result = await activeProvider.complete({ requestId, messages, signal,
           offeredToolNames: Object.keys(offered), parallelToolCalls: options.parallelToolCalls }); }
         catch (error) {
           assertCurrent();
@@ -156,11 +224,11 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
         }
         finally { activeProvider.close(); activeProvider = null; }
         assertCurrent();
-        stage = 'account';
+        stage = turn.stage = 'account';
         const receipt = await bound.account(requestId, result, signal); assertCurrent(); turn.receipts.push(receipt);
         if (bundle.verifyCurrent) { await bundle.verifyCurrent(signal); assertCurrent(); }
         requireValue(result.message.toolCalls.length === 1 && (required === undefined || result.message.toolCalls[0].name === required), 'agent_output_invalid');
-        stage = 'runtime';
+        stage = turn.stage = 'runtime';
         return { choices: [{ finish_reason: result.finishReason, message: { content: result.message.content || null,
           tool_calls: result.message.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name,
             arguments: canonical(call.arguments, modelPolicy.toolArgumentBytes, modelPolicy.jsonDepth) } })) } }] };
@@ -168,6 +236,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       // Keep the complete runtime below the browser's signed-turn transport deadline.
       const result = await runtime.runTurn({ timeoutMs: 90_000, adapter, role: 'human', prompt, contextStore, contextId: args.contextId, tools, provider });
       assertCurrent(); requireValue(result.status === 'complete', 'agent_output_invalid');
+      turn.result = recoverableAnswer(result, turnId);
       turn.state = 'completed';
       return { schema: 'soty.personal-agent-turn.v1', requestId: turnId, ...result, accounting: turn.receipts };
     } catch (error) {

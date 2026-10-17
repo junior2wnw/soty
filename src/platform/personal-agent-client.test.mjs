@@ -33,6 +33,60 @@ test('unknown send/reload does not repeat; explicit new task preserves original 
   assert.deepEqual(retained, { requestId: 'browser_turn_1', prompt: 'Original exact prompt' });
   f.outcome('complete'); await reopened.turn('Explicit new prompt'); assert.equal(f.calls.length, 2); assert.equal(reopened.view().unconfirmed, 1);
 });
+
+test('status recovery validates exact ACK after reload and never repeats the original turn', async () => {
+  const f = fixture(); f.outcome('unknown'); await assert.rejects(f.make().turn('Original private question'));
+  const sent = f.calls[0].args; let reads = 0;
+  const client = { ...f.client, async extension(op, args, options) {
+    assert.equal(op, 'agent.status'); assert.deepEqual(args, { requestId: sent.requestId });
+    assert.deepEqual(options, { expectedAccountId: 'account_one' }); reads++;
+    return { schema: 'soty.personal-agent-status.v1', requestId: sent.requestId, state: 'completed', stage: 'runtime',
+      elapsedMs: 1532, modelRounds: 1, completedTools: 0, cancelRequested: false,
+      result: { schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId: sent.requestId, answer: 'Recovered exact answer', contextId } };
+  } };
+  const restored = f.make({ client }), result = await restored.checkStatus();
+  assert.equal(result.phase, 'complete'); assert.equal(result.question, 'Original private question');
+  assert.equal(result.answer, 'Recovered exact answer'); assert.equal(result.unconfirmed, 0);
+  await restored.checkStatus(); assert.equal(reads, 1); assert.equal(f.calls.length, 1);
+});
+
+test('unavailable or malformed status cannot erase unknown intent or disclose a different answer', async () => {
+  for (const kind of ['missing', 'wrong-id', 'false-envelope', 'bad-count', 'wrong-answer-id', 'extra-secret']) {
+    const f = fixture(); f.outcome('unknown'); await assert.rejects(f.make().turn('Retain original'));
+    const id = f.calls[0].args.requestId, status = { schema: 'soty.personal-agent-status.v1', requestId: id,
+      state: 'completed', stage: 'runtime', elapsedMs: 10, modelRounds: 1, completedTools: 0, cancelRequested: false,
+      result: { schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId: id, answer: 'Untrusted until validated', contextId } };
+    if (kind === 'wrong-id') status.requestId = 'another_request_01';
+    if (kind === 'false-envelope') status.ok = false;
+    if (kind === 'bad-count') status.completedTools = 100000;
+    if (kind === 'wrong-answer-id') status.result.requestId = 'another_request_01';
+    if (kind === 'extra-secret') status.credential = 'must-not-be-accepted';
+    const ui = f.make({ client: { ...f.client, extension: async () => kind === 'missing'
+      ? { schema: status.schema, requestId: id, state: 'unavailable' } : status } });
+    const before = [...f.data.values()][0];
+    if (kind === 'missing') assert.equal((await ui.checkStatus()).phase, 'unknown');
+    else await assert.rejects(ui.checkStatus(), { code: 'agent_output_invalid' });
+    assert.equal(ui.view().answer, undefined); assert.equal(ui.view().unconfirmed, 1);
+    assert.equal([...f.data.values()][0], before); assert.equal(f.calls.length, 1);
+  }
+});
+
+test('account, mount and selection changes while checking status preserve the original intent', async () => {
+  for (const change of ['account', 'mount', 'selection']) {
+    const f = fixture(); f.outcome('unknown'); const metadata = selectedMetadata();
+    await assert.rejects(f.make({ readSelection: () => metadata.selection }).turn('Exact original', metadata));
+    const gate = defer(); let current = true, selection = metadata.selection;
+    const ui = f.make({ isCurrent: () => current, readSelection: () => selection,
+      client: { ...f.client, extension: async () => { await gate.promise; return {}; } } });
+    const before = [...f.data.values()][0], checking = ui.checkStatus();
+    await new Promise(done => setImmediate(done));
+    if (change === 'account') f.account('another_account');
+    if (change === 'mount') current = false;
+    if (change === 'selection') selection = null;
+    gate.resolve(); await assert.rejects(checking);
+    assert.equal([...f.data.values()][0], before); assert.equal(ui.view().answer, undefined);
+  }
+});
 test('storage rejection happens before any signed model dispatch', async () => {
   const f = fixture(), ui = f.make({ storage: { getItem: () => null, setItem: () => { throw new Error('storage full'); } } });
   await assert.rejects(ui.turn('Retain this draft')); assert.equal(f.calls.length, 0);

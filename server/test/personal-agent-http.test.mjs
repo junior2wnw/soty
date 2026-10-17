@@ -167,6 +167,45 @@ async function historyNote(f, actor, accountId) {
   const value = await f.call(actor, 'notes.get', { expectedAccountId: accountId, noteId: metadata.noteId }); assert.equal(value.ok, true); return value.note;
 }
 
+test('signed status observes own running stages and completed presentation without another model dispatch', async t => {
+  const f = await fixture(t), barrier = f.hold(), id = 'status_http_own_001';
+  const pending = f.turn(f.alice, id, 'Private original prompt'); await barrier.entered.promise;
+  const status = await f.call(f.alice, 'agent.status', { requestId: id });
+  assert.equal(status.ok, true); assert.equal(status.schema, 'soty.personal-agent-status.v1');
+  assert.equal(status.state, 'running'); assert.equal(status.stage, 'model'); assert.equal(status.modelRounds, 1);
+  assert.equal(status.completedTools, 0); assert.equal(typeof status.elapsedMs, 'number');
+  assert.equal(JSON.stringify(status).includes('Private original prompt'), false);
+  const foreign = await f.call(f.bob, 'agent.status', { requestId: id });
+  assert.equal(foreign.state, 'unavailable'); assert.equal(foreign.result, undefined); assert.equal(foreign.stage, undefined);
+  barrier.release.resolve(); const answer = await pending; assert.equal(answer.ok, true);
+  const count = f.calls.length, complete = await f.call(f.alice, 'agent.status', { requestId: id });
+  assert.equal(complete.state, 'completed'); assert.equal(complete.result.answer, answer.answer);
+  assert.equal(complete.result.contextId, answer.contextId); assert.equal(complete.result.accounting, undefined);
+  assert.ok(complete.result.evidence.every(entry => !Object.hasOwn(entry, 'data')));
+  assert.equal(f.calls.length, count);
+});
+
+test('a lost signed turn ACK recovers its actual completed answer with readonly status and no repeated model POST', async t => {
+  const f = await fixture(t), browser = await sharedBrowser(t, f), records = new Map(); let lose = true;
+  const ui = createPersonalAgentConversation({ accountId: browser.account.accountId,
+    client: { getLocalState: () => browser.client.getLocalState(), async extension(op, args, options) {
+      const result = await browser.client.extension(op, args, options);
+      if (op === 'agent.turn' && lose) { lose = false; throw new TypeError('synthetic transport lost after actual completed Root turn'); }
+      return result;
+    } }, storage: { getItem: key => records.get(key) ?? null, setItem: (key, value) => records.set(key, value) } });
+  await assert.rejects(ui.turn('Exact recoverable question')); assert.equal(ui.view().phase, 'unknown');
+  assert.equal(ui.view().unconfirmed, 1); assert.equal(f.calls.length, 1);
+  const recovered = await ui.checkStatus();
+  assert.equal(recovered.phase, 'complete'); assert.equal(recovered.answer, 'Подтверждённый ответ');
+  assert.equal(recovered.question, 'Exact recoverable question'); assert.equal(recovered.unconfirmed, 0);
+  assert.equal(f.calls.length, 1); assert.equal(recovered.requestId, undefined);
+  const account = { expectedAccountId: browser.account.accountId };
+  const list = await browser.client.extension('notes.list', account, account);
+  const metadata = list.notes.find(note => note.title === 'Диалог с помощником'); assert.ok(metadata);
+  const { note } = await browser.client.extension('notes.get', { ...account, noteId: metadata.noteId }, account);
+  assert.equal(JSON.parse(note.body).turns.length, 1);
+});
+
 test('portable generic runtime has an explicit bounded-budget local patch and verified source pin', async () => {
   const root = new URL('../../modules/personal-agent/runtime/vendor/', import.meta.url), pin = JSON.parse(await readFile(new URL('UPSTREAM.json', root))),
     bytes = await readFile(new URL('agent-runtime-core.ts', root));

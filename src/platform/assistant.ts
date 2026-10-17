@@ -19,6 +19,7 @@ interface Options { client: ConnectClient; connectDevice(): void | Promise<void>
 const finished = (status: string) => ['succeeded', 'failed', 'cancelled'].includes(status);
 const sourceStatusLabel = (status: string) => status === 'current' ? 'Данные на момент ответа'
   : status === 'stale' ? 'Данные устарели' : status === 'unavailable' ? 'Источник недоступен' : 'Актуальность неизвестна';
+const genericFailure = 'Не удалось выполнить действие. Проверьте соединение и повторите.';
 function friendly(cause: unknown): string {
   const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : cause instanceof Error ? cause.message : '';
   return ({ app_model_unavailable: 'Подключение к модели пока недоступно. Черновик сохранён.', apps_device_not_owned: 'Доступ к этому устройству изменился. Выберите другое устройство.',
@@ -39,7 +40,7 @@ function friendly(cause: unknown): string {
     agent_memory_unavailable: 'Сохранённый диалог сейчас недоступен. Черновик сохранён; начните новый разговор или проверьте записки.',
     agent_memory_capacity: 'Сохранённый диалог заполнен. Начните новый разговор; прежний останется в ваших записках.',
     invalid_workspace: 'Укажите полный путь к папке на выбранном компьютере.', job_request_conflict: 'Параметры этой отправки не совпадают с принятой задачей. Проверьте историю.' } as Record<string, string>)[code]
-    || 'Не удалось выполнить действие. Проверьте соединение и повторите.';
+    || genericFailure;
 }
 function jobLabel(job: Pick<Job, 'status' | 'cancelRequested' | 'executionUncertain'>): string {
   if (job.executionUncertain) return 'Связь с исполнителем потеряна · результат уточняется';
@@ -60,6 +61,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   let draft = drafts.read(), disposed = false, sending = false, devices: Host[] = [], modelReady = false;
   let mode: 'personal' | 'device' = 'device', modeChosen = false, personalReady = false;
   let personal: ReturnType<typeof createPersonalAgentConversation> | undefined;
+  let personalTimer: ReturnType<typeof setTimeout> | undefined, checkingPersonal = false, personalStatusFailures = 0;
   let answerNote: ReturnType<typeof createAssistantAnswerNote> | undefined;
   const conversation = () => personal ??= createPersonalAgentConversation({ accountId, client: options.client, storage: tabStorage,
     browserAssist: {
@@ -69,13 +71,13 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       revoke: () => mountContext?.browserAssist?.()?.revoke(),
     },
     isCurrent: () => !disposed && mountCurrent(), readSelection: () => mountContext?.context()?.selection ?? null,
-    onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { updateControls(); if (!personal?.view().answer) welcome(); } } });
+    onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { if (!personal?.view().answer) welcome(); updateControls(); watchPersonal(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
   let timer: ReturnType<typeof setTimeout> | undefined, cursor: string | null = null;
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
   const abort = new AbortController(), tasks = new Map<string, Task>();
   const lock = () => {
-    if (disposed) return; disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer);
+    if (disposed) return; disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer);
     const message = el('div', 'sw-assistant'); message.append(el('h2', '', 'Аккаунт изменился'), el('p', 'sw-muted', 'Содержимое закрыто. Откройте помощника в текущем профиле.'), button('Открыть заново', 'refresh', '', () => location.reload())); host.replaceChildren(message);
   };
   const current = async () => {
@@ -130,6 +132,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const status = el('p', 'sw-assistant-status'); status.setAttribute('role', 'status');
   const resultArea = el('div', 'sw-assistant-result'), events = el('ol', 'sw-assistant-events'); events.setAttribute('aria-label', 'Последние действия');
   const stop = button('Остановить', 'close', 'sw-button-quiet', () => { void cancel(); }); stop.hidden = true;
+  const checkPersonal = button('Проверить выполнение', 'refresh', 'sw-button-quiet', () => { void checkPersonalStatus(); }); checkPersonal.hidden = true;
   const form = el('form', 'sw-assistant-composer'), prompt = el('textarea', 'sw-input');
   prompt.rows = 3; prompt.maxLength = 16_000; prompt.value = draft.text; prompt.placeholder = 'Что хотите сделать?'; prompt.setAttribute('aria-label', 'Задача помощнику');
   const controls = el('div', 'sw-assistant-composer-controls'), saved = el('span', 'sw-muted'), send = button('Отправить', 'arrow', 'sw-button-primary'); send.type = 'submit';
@@ -138,14 +141,34 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const privilege = el('details', 'sw-muted sw-assistant-privilege');
   const privilegeText = el('p', '', 'Работает с правами вашего пользователя на выбранном устройстве.');
   privilege.append(el('summary', '', 'Возможности и доступ'), privilegeText);
-  pane.append(notice, target, thread, status, events, resultArea, stop, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
+  pane.append(notice, target, thread, status, events, resultArea, stop, checkPersonal, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
+
+  function watchPersonal(): void {
+    if (personalTimer) clearTimeout(personalTimer);
+    personalTimer = undefined;
+    const state = personal?.view();
+    if (disposed || !mountCurrent() || mode !== 'personal' || checkingPersonal || personalStatusFailures >= 3 || state?.phase !== 'running') return;
+    personalTimer = setTimeout(() => { personalTimer = undefined; void checkPersonalStatus(true); }, document.hidden ? 8000 : 3000);
+  }
+  async function checkPersonalStatus(automatic = false): Promise<void> {
+    if (checkingPersonal || disposed || mode !== 'personal' || !personal?.view().requestId || !await current()) return;
+    checkingPersonal = true; checkPersonal.disabled = true; if (!automatic) personalStatusFailures = 0;
+    try {
+      const state = await conversation().checkStatus(); personalStatusFailures = 0; if (!await current() || mode !== 'personal') return;
+      if (state.phase === 'complete') { prompt.value = state.draft; error.textContent = ''; welcome(); }
+      else if (!automatic && state.phase === 'unknown') status.textContent = 'Подтверждение пока недоступно. Отправка сохранена; повторного запроса к модели нет.';
+    } catch (cause) { personalStatusFailures++; if (!disposed && !automatic) error.textContent = friendly(cause); }
+    finally { checkingPersonal = false; if (!disposed) { updateControls(); watchPersonal(); } }
+  }
 
   function chooseMode(next: 'personal' | 'device'): void {
     if (disposed || sending || mode === 'device' && drafts.read().pending) return;
     try {
       const text = next === 'personal' ? conversation().view().draft : drafts.read().text;
       saveDraft(); modeChosen = true; mode = next; generation++; if (timer) clearTimeout(timer);
+      if (personalTimer) clearTimeout(personalTimer); personalTimer = undefined;
       prompt.value = text; error.textContent = ''; welcome(); updateControls();
+      if (next === 'personal') watchPersonal();
       if (next === 'device' && selected) follow(selected);
     } catch (cause) { error.textContent = friendly(cause); }
   }
@@ -159,9 +182,13 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       createApp.disabled = sending || Boolean(state.requestId);
       send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
       newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
+      checkPersonal.hidden = !state.requestId; checkPersonal.disabled = checkingPersonal;
       saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
       privilegeText.textContent = 'Работает с вашими записками и разрешёнными источниками. Подтверждённые диалоги сохраняются. При явной настройке может поставить задачу на вашем устройстве в очередь; это ещё не означает её выполнение.';
-      if (state.phase === 'running') status.textContent = 'Помощник работает…';
+      if (state.phase === 'running') {
+        const label = ({ prepare: 'Готовим задачу', model: 'Модель обдумывает ответ', account: 'Проверяем выполнение', tool: 'Работаем с приложением', runtime: 'Готовим ответ' } as Record<string, string>)[state.progress?.stage ?? 'prepare'];
+        status.textContent = state.progress ? `${label} · ${Math.floor(state.progress.elapsedMs / 1000)} с${state.progress.completedTools ? ` · действий: ${state.progress.completedTools}` : ''}` : 'Помощник работает…';
+      }
       else if (state.phase === 'cancel_requested') status.textContent = 'Остановка запрошена · удалённое завершение не подтверждено';
       else if (state.phase === 'unknown') status.textContent = 'Подтверждение не получено · отправка не повторяется';
       else if (state.phase === 'complete') status.textContent = 'Ответ получен';
@@ -171,6 +198,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       return;
     }
     createApp.disabled = false;
+    checkPersonal.hidden = true;
     prompt.maxLength = 16000; privilegeText.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
     draft = drafts.read();
     const bound = draft.pending?.payload ?? selected;
@@ -228,6 +256,17 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     thread.replaceChildren(); resultArea.replaceChildren(); events.replaceChildren(); status.textContent = '';
     if (mode === 'personal') {
       const state = conversation().view();
+      if (state.question) {
+        pane.dataset.mode = 'conversation';
+        const question = el('article', 'sw-assistant-question'); question.append(el('small', 'sw-muted', 'Вы'), el('p', '', state.question)); thread.append(question);
+      }
+      if (state.sourceRecovery?.length) {
+        const recovery = el('details', 'sw-muted'); recovery.append(el('summary', '', 'Действия с неподтверждённым результатом'));
+        recovery.append(el('p', '', 'Изменение могло сохраниться. Не повторяйте его; сначала проверьте исходную квитанцию.'));
+        const list = el('ul');
+        for (const pointer of state.sourceRecovery) { const entry = el('li'); entry.textContent = `${pointer.reference.capabilityId} · ${pointer.invocationId}`; list.append(entry); }
+        recovery.append(list); thread.append(recovery);
+      }
       if (state.answer) {
         pane.dataset.mode = 'conversation';
         const response = el('article', 'sw-assistant-answer'); response.append(el('small', '', 'Помощник'), el('p', '', state.answer));
@@ -274,7 +313,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
         }
         thread.append(response);
       }
-      else thread.append(heading('Чем помочь?', 'Спросите о своих записках или доступном источнике.'));
+      else if (!state.question) thread.append(heading('Чем помочь?', 'Спросите о своих записках или доступном источнике.'));
       return;
     }
     const intro = el('div', 'sw-assistant-welcome'); intro.append(icon('sparkle'), el('h2', '', 'От идеи — к работающему проекту'), el('p', 'sw-muted', 'Выберите устройство и поставьте задачу. Ход работы и результат останутся здесь.'));
@@ -378,10 +417,11 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     if (mode === 'personal') {
       if (sending || !personalReady || !await current()) return;
       answerNote?.dispose(); answerNote = undefined;
-      sending = true; error.textContent = ''; updateControls();
+      sending = true; personalStatusFailures = 0; error.textContent = ''; updateControls();
       try { const state = await conversation().turn(prompt.value, mountContext?.context()); if (!await current()) return;
         prompt.value = state.draft; welcome(); }
-      catch (cause) { if (!disposed) error.textContent = friendly(cause); }
+      catch (cause) { if (!disposed) { const message = friendly(cause); error.textContent = conversation().view().requestId && message === genericFailure
+        ? 'Ответ не подтверждён. Проверьте соединение и нажмите «Проверить выполнение». Исходная отправка сохранена.' : message; } }
       finally { sending = false; if (!disposed) updateControls(); }
       return;
     }
@@ -489,7 +529,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   }, { signal: abort.signal });
   welcome(); updateControls(); void refresh();
   if (draft.lastJob && !draft.pending) follow(draft.lastJob);
-  return { dispose() { disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); host.replaceChildren(); }, refresh,
+  return { dispose() { disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer); host.replaceChildren(); }, refresh,
     async flush() { drafts.flush(); await answerNote?.flush(); if (mode === 'personal' && !conversation().view().requestId) conversation().saveDraft(prompt.value); },
     hasUnsavedChanges: () => sending || Boolean(answerNote?.hasUnsavedChanges()) || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
 }
