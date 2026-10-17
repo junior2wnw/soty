@@ -302,13 +302,14 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
         const row = el('div', 'sn-check-item'); row.dataset.done = String(item.done); row.dataset.itemId = item.id;
         const check = el('input'); check.type = 'checkbox'; check.checked = item.done; check.disabled = readOnly; check.setAttribute('aria-label', item.text || 'Отметить пункт');
         const toggle = el('label', 'sn-check-toggle'); toggle.append(check);
-        const field = textInput(item.text, 'Новый пункт', 1000); field.setAttribute('aria-label', 'Текст пункта'); field.disabled = readOnly;
+        const field = el('textarea', 'sn-check-text'); field.value = item.text; field.placeholder = 'Новый пункт'; field.maxLength = 1000; field.rows = 1;
+        field.setAttribute('aria-label', 'Текст пункта'); field.disabled = readOnly;
         const change = (patch: Partial<typeof item>) => { const items = session!.state().note.items.map(entry => entry.id === item.id ? { ...entry, ...patch } : entry); edit({ items }); };
         check.addEventListener('change', () => { change({ done: check.checked }); row.dataset.done = String(check.checked); });
-        field.addEventListener('input', () => { change({ text: field.value }); check.setAttribute('aria-label', field.value || 'Отметить пункт'); });
-        field.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addItem(item.id); } });
+        field.addEventListener('input', () => { change({ text: field.value }); check.setAttribute('aria-label', field.value || 'Отметить пункт'); fitTextarea(field); });
+        field.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); addItem(item.id); } });
         const remove = iconButton('Удалить пункт', 'close', () => { edit({ items: session!.state().note.items.filter(entry => entry.id !== item.id) }); renderItems(); }); remove.disabled = readOnly;
-        row.append(toggle, field, remove); checklist.append(row); if (focusId === item.id) field.focus();
+        row.append(toggle, field, remove); checklist.append(row); fitTextarea(field); if (focusId === item.id) field.focus();
       }
     }
     function addItem(afterId?: string) {
@@ -317,7 +318,10 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
       items.splice(index, 0, item); edit({ items }); renderItems(item.id);
     }
   }
-  function fitTextarea(body: HTMLTextAreaElement) { body.style.height = 'auto'; body.style.height = `${Math.max(body.classList.contains('sn-note-title') ? 1 : 150, body.scrollHeight)}px`; }
+  function fitTextarea(body: HTMLTextAreaElement) {
+    const minimum = body.classList.contains('sn-note-title') ? 1 : body.classList.contains('sn-check-text') ? 44 : 150;
+    body.style.height = 'auto'; body.style.height = `${Math.max(minimum, body.scrollHeight)}px`;
+  }
   async function changeState(state: NoteState) {
     if (!session) return; edit({ state }); await session.flush().catch(() => {}); if (disposed) return;
     renderEditor(); if (session) updateStatus(session.state()); void loadList();
@@ -394,7 +398,8 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   const online = () => { if (disposed) return; if (session?.state().dirty) void session.retry(); else if (openedSnapshot?.source === 'cache') void refreshSnapshot(); void loadList(); };
   let measuredWidth = -1;
   const resizeObserver = new ResizeObserver(() => {
-    if (!editor.clientWidth || editor.clientWidth === measuredWidth) return; measuredWidth = editor.clientWidth;
+    if (!editor.clientWidth) { measuredWidth = 0; return; }
+    if (editor.clientWidth === measuredWidth) return; measuredWidth = editor.clientWidth;
     for (const textarea of editor.querySelectorAll('textarea')) fitTextarea(textarea);
   });
   resizeObserver.observe(editor);
