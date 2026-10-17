@@ -1204,7 +1204,8 @@ class WorldApplication {
     if (group.membership?.state === 'active') {
       actions.append(badge('Вы участник', 'check', 'sage'));
       if (this.options.humanCalls) actions.append(this.groupHumanCallButton(group));
-      const pin = iconButton(group.membership.pinned ? 'Открепить сообщество' : 'Закрепить в моих сотах', 'pin', () => { void this.mutateMembership('world.membership.preferences', { pinned: !group.membership?.pinned }); }); pin.classList.toggle('is-selected', group.membership.pinned); actions.append(pin);
+      actions.append(button('Добавить на поле', 'plus', 'sw-button-quiet', () => this.addCommunityToField(group)));
+      const pin = iconButton(group.membership.pinned ? 'Открепить чат' : 'Закрепить чат', 'pin', () => { void this.mutateMembership('world.membership.preferences', { pinned: !group.membership?.pinned }); }); pin.classList.toggle('is-selected', group.membership.pinned); actions.append(pin);
       actions.append(iconButton(group.pendingCount ? `Участники и управление, ${nounCount(group.pendingCount, 'новая заявка', 'новые заявки', 'новых заявок')}` : 'Участники и управление', 'people', () => this.openGroupManagement(group)));
       if (group.pendingCount) actions.append(button(`${group.pendingCount} ${group.pendingCount === 1 ? 'заявка' : 'заявки'}`, 'people', 'sw-button-small', () => this.openGroupManagement(group, 'requested')));
     } else actions.append(this.joinButton(group));
@@ -1260,6 +1261,17 @@ class WorldApplication {
     const replace = (items: WorldCommunity[]): WorldCommunity[] => items.map(item => item.communityId === group.communityId ? group : item);
     this.communities = replace(this.communities); this.results.communities = replace(this.results.communities);
     if (group.membership?.state === 'active' && !this.communities.some(item => item.communityId === group.communityId)) this.communities.push(group);
+  }
+
+  private addCommunityToField(group: WorldCommunity): void {
+    const current = this.accountTask();
+    this.afterNoteSaved(() => {
+      if (!current()) return;
+      this.navigateReady('mine'); const field = this.unifiedField; if (!field) return;
+      void field.addEntity({ kind: 'community', id: group.communityId }).catch(reason => {
+        if (current() && this.unifiedField === field) this.toast(errorText(reason), true);
+      });
+    });
   }
 
   private async mutateMembership(method: string, parameters: Record<string, unknown>): Promise<void> {

@@ -33,6 +33,7 @@ export interface UnifiedFieldScreen {
   element: HTMLElement; ready: Promise<void>;
   setMode(mode: UnifiedFieldMode, query?: string, filter?: FieldFilter): void;
   attachHeaderSearch(header: HTMLElement): void;
+  addEntity(ref: FieldEntityRef): Promise<void>;
   focusSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>;
   hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
 }
@@ -634,6 +635,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     element, ready,
     setMode(next, query, nextFilter) { if (!current()) return; if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
     attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); },
+    async addEntity(ref) {
+      await ready; if (!current()) return;
+      // A caller supplies an identity, never display metadata or authority.
+      const result = await directory.resolve([ref]); if (!current()) return;
+      const item = result.items.find(value => fieldEntityKey(value.entity) === fieldEntityKey(ref));
+      if (!item) { options.onMessage(result.errors.length ? 'Не удалось проверить доступ. Повторите добавление.' : 'Сота недоступна для добавления.', true); return; }
+      merge([item]); engine?.update({ entities: allMetadata() }); addToContext(item);
+    },
     focusContext(contextId) { if (current()) engine?.focusContext(contextId); }, openAdd,
     async refresh(refreshOptions) { await ready; if (!current()) return; await loadMine(); if (mode === 'search') await searchDirectory(false, refreshOptions?.preserveView === true); },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
