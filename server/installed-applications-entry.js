@@ -10,6 +10,7 @@ import { createTavyshNativeDeviceBroker } from './tavysh-native-device-broker.js
 import { createCurrentContextSourceApplication } from './current-context-source.js';
 import { createSelectedNativeSourceApplication } from './selected-native-source.js';
 import { createSelectedHiveSourceApplications } from './selected-hive-source.js';
+import { createHiveWorkspaceSourceApplications } from './hive-workspace-source.js';
 import { createSelectedOtsovSourceApplications } from './otsov-source.js';
 import { createTavyshDeviceStatusAdapter } from './tavysh-device-read-adapter.js';
 
@@ -103,7 +104,7 @@ export async function loadInstalledApplicationsEntry(env = process.env) {
     need(typeof factory === 'function' && !types.isProxy(factory));
     const api = Object.freeze({ loadInstalledExistingApplications, createTavyshNativeDeviceBroker,
       createTavyshDeviceStatusAdapter, createCurrentContextSourceApplication, createSelectedNativeSourceApplication, createSelectedHiveSourceApplications,
-      createSelectedOtsovSourceApplications, ownClose });
+      createSelectedOtsovSourceApplications, createHiveWorkspaceSourceApplications, ownClose });
     const produced = factory(api);
     need(!types.isProxy(produced));
     const result = fields(types.isPromise(produced) ? await produced : produced, ['httpOptions', 'sourceReferences', 'close'], ['sourceCredentialFor']);

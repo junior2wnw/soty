@@ -48,6 +48,23 @@ test('installed operator code can compose the existing OTsov tools without issui
   assert.equal(installed.sourceCredentialFor, undefined, 'registry metadata is not a delegated user credential');
   assert.deepEqual(installed.httpOptions.externalApplications.map(row => row.catalog.effects), [[], [], ['create']]);
 });
+test('installed operator code can append bounded HIVE workspace2 tools without a delegated credential', async t => {
+  const f = await fixture(t), appId = 'app-' + 'c'.repeat(32), scope = {
+    appId, target: { revision: 2, digest: 'd'.repeat(64) },
+    sourceProfile: { id: 'soty.standard-workspace', version: 2, digest: '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9' },
+    resource: { registryId: 'soty', environmentId: 'test', tenantId: 'synthetic-publisher', appId,
+      resourceId: 'hive', selection: { kind: 'soty.workspace.v1', nativeId: 'hive', incarnationId: 'one' } },
+  };
+  const config = await f.code(`export default async api => ({...await api.loadInstalledExistingApplications({
+    createRegistry: () => api.createHiveWorkspaceSourceApplications(${JSON.stringify(scope)}) }), close() {}});`);
+  const installed = await loadInstalledApplicationsEntry(config); t.after(() => installed.close());
+  assert.equal(installed.sourceReferences.length, 2);
+  assert.deepEqual(installed.sourceReferences.map(row => row.capabilityId), [
+    `app.${appId}:hive.workspace.cells.context`, `app.${appId}:hive.workspace.additive.batch`,
+  ]);
+  assert.equal(installed.sourceCredentialFor, undefined);
+  assert.deepEqual(installed.httpOptions.externalApplications.map(row => row.catalog.effects), [[], ['update']]);
+});
 async function boot(t, f, entryEnv = {}) {
   // The actual current index source is held; only dependency import URLs are
   // adapted in this OWN temporary copy. Its maintained installed-entry callsite
