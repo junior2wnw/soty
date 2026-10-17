@@ -1,10 +1,13 @@
 import type { WorldMessage } from './types';
-export interface ChatDraft { text: string; replyTo: string | null; pending: { clientId: string; text: string; replyTo: string | null } | null; }
+export interface ChatDraft { text: string; replyTo: string | null; attachments?: string[]; pending: { clientId: string; text: string; replyTo: string | null; attachments?: string[] } | null; }
 export interface ChatDraftStore {
   read(accountId: string, communityId: string): ChatDraft;
   edit(accountId: string, communityId: string, text: string, replyTo?: string | null): boolean;
-  beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null): { clientId: string; text: string; replyTo: string | null; durable: boolean };
-  acknowledge(accountId: string, communityId: string, clientId: string): ChatDraft;
+  setAttachments(accountId: string, communityId: string, attachments: string[]): boolean;
+  beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null, attachments?: string[]): { clientId: string; text: string; replyTo: string | null; attachments?: string[]; durable: boolean };
+  recoverPending(accountId: string, communityId: string, pending: {clientId:string;text:string;replyTo?:string|null;attachments:string[]}): ChatDraft;
+  discardUnsubmitted(accountId: string, communityId: string, clientId: string): ChatDraft;
+  acknowledge(accountId: string, communityId: string, clientId: string, acceptedAttachments?: string[]): ChatDraft;
   retrySave(accountId: string, communityId: string): boolean;
   subscribe(accountId: string, communityId: string, listener: (draft: ChatDraft) => void): () => void;
   storageChanged(key: string | null): void;

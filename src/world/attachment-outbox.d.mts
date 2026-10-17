@@ -1,0 +1,7 @@
+import type { WorldApi, WorldAttachment } from './types';
+export const ATTACHMENT_LIMITS: Readonly<{ batch: number; chunkBytes: number; fileBytes: number; batchBytes: number; storeBytes: number }>;
+export interface AttachmentOutboxItem { attachmentId: string; name: string; size: number; status: 'pending'|'uploading'|'ready'|'error'|'cancel-pending'; sent: number; error: string|null; }
+export interface AttachmentMessageIntent {clientId:string;text:string;replyTo:string|null;attachments:string[];}
+export interface AttachmentOutbox { ready: Promise<void>; snapshot(): AttachmentOutboxItem[]; reconcile():Promise<void>; pendingIntent():AttachmentMessageIntent|null; acceptedIntent():AttachmentMessageIntent|null; isPending(id:string):boolean; prepareSend(intent:{clientId:string;text:string;replyTo?:string|null;attachments?:string[]}):Promise<{state:'pending'|'accepted';intent:AttachmentMessageIntent}>; add(files: File[]): Promise<void>; retry(id: string): Promise<void>; remove(id: string): Promise<void>; acknowledge(ids: string[],intent?:AttachmentMessageIntent): Promise<void>; refs(): string[]; canSend(): boolean; close(): void; }
+export function createAttachmentOutbox(options: { api: WorldApi; accountId: string; communityId: string; initialOrder?: string[]; current?(): boolean; allowUpload?(): boolean; changed?(rows: AttachmentOutboxItem[]): void }): AttachmentOutbox;
+export function downloadAttachment(options: {api: WorldApi; accountId: string; communityId: string; attachment: WorldAttachment; current?(): boolean}): Promise<{name:string;blob:Blob}>;

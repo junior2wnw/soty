@@ -41,5 +41,6 @@ export function shouldSendOnEnter(event) {
 
 export function chatPreview(message) {
   if (!message) return '';
-  return message.removed ? 'Сообщение удалено' : message.text.replace(/\s+/gu, ' ').trim();
+  return message.removed ? 'Сообщение удалено' : message.text.replace(/\s+/gu, ' ').trim()
+    || (message.attachments?.length ? message.attachments.length === 1 ? `Файл · ${message.attachments[0].name}` : `Файлы · ${message.attachments.length}` : '');
 }

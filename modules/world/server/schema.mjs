@@ -1,6 +1,9 @@
 import { DISCOVERY_MIGRATION } from './discovery.mjs';
 
 export const SCHEMA_VERSION = 3;
+// Reader-first delivery: ordinary constructors still create/migrate only to3.
+// Chat4 is created solely by the explicit offline attachment migration.
+export const MAX_READER_SCHEMA_VERSION = 4;
 const LINEAGE = 'soty.world.sqlite.v1';
 const SCHEMA = `
 CREATE TABLE world_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -71,7 +74,7 @@ export function migrateWorld(db, projectId) {
       const insert = db.prepare('INSERT INTO world_meta(key,value) VALUES (?,?)');
       insert.run('project_id', projectId); insert.run('lineage', LINEAGE); insert.run('schema_version', '1');
       db.exec('PRAGMA user_version=1'); version = 1;
-    } else if (!Number.isInteger(version) || version < 1 || version > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+    } else if (!Number.isInteger(version) || version < 1 || version > MAX_READER_SCHEMA_VERSION) throw new Error('world_schema_unsupported');
     const meta = Object.fromEntries(db.prepare('SELECT key,value FROM world_meta').all().map(row => [row.key, row.value]));
     if (meta.project_id !== projectId) throw new Error('world_project_mismatch');
     if (meta.lineage !== LINEAGE || meta.schema_version !== String(version)) throw new Error('world_schema_metadata_mismatch');
@@ -87,8 +90,11 @@ export function migrateWorld(db, projectId) {
       db.exec(DISCOVERY_MIGRATION);
       db.exec('PRAGMA user_version=3');
       db.prepare("UPDATE world_meta SET value='3' WHERE key='schema_version'").run();
+      version = 3;
     }
+    if (version === 4 && ['chat_attachments','chat_attachment_chunks'].some(name => !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name))) throw new Error('world_schema_metadata_mismatch');
     if (db.prepare('PRAGMA quick_check').all().some(row => row.quick_check !== 'ok') || db.prepare('PRAGMA foreign_key_check').get()) throw new Error('world_storage_corrupt');
     db.exec('COMMIT');
+    return version;
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }

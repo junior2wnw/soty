@@ -3,7 +3,8 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assert, identifier, folded, WorldError } from './validation.mjs';
-import { migrateWorld, SCHEMA_VERSION } from './schema.mjs';
+import { migrateWorld, SCHEMA_VERSION, MAX_READER_SCHEMA_VERSION } from './schema.mjs';
+import { ATTACHMENT_OPERATIONS, attachmentOperation } from './attachments.mjs';
 import { createModel } from './model.mjs';
 import { PROFILE_OPERATIONS, profileOperation } from './profiles.mjs';
 import { COMMUNITY_OPERATIONS, communityOperation } from './communities.mjs';
@@ -12,13 +13,14 @@ import { AVATAR_OPERATIONS, avatarOperation } from './avatars.mjs';
 import { DIRECTORY_OPERATIONS, directoryMatches, directoryOperation } from './directory.mjs';
 import { FIELD_OPERATIONS, fieldOperation, migrateField } from './field.mjs';
 
-export { WorldError, SCHEMA_VERSION };
-export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS, ...DIRECTORY_OPERATIONS, ...FIELD_OPERATIONS]);
+export { WorldError, SCHEMA_VERSION, MAX_READER_SCHEMA_VERSION };
+export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS, ...DIRECTORY_OPERATIONS, ...FIELD_OPERATIONS, ...ATTACHMENT_OPERATIONS]);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const READ_OPERATIONS = new Set(['world.profile.get', 'world.profile.view', 'world.discovery.search',
   ...DIRECTORY_OPERATIONS,
   'world.field.get',
-  'world.community.get', 'world.community.list', 'world.membership.list', 'world.chat.list', 'world.profile.avatar.read', 'world.profile.avatars']);
+  'world.community.get', 'world.community.list', 'world.membership.list', 'world.chat.list', 'world.profile.avatar.read', 'world.profile.avatars',
+  'world.attachment.capabilities', 'world.attachment.status', 'world.attachment.read']);
 function physicalPath(file) {
   try { return realpathSync(file); }
   catch (error) { if (error.code !== 'ENOENT') throw error; return resolve(physicalPath(dirname(file)), basename(file)); }
@@ -31,24 +33,27 @@ function outsideModule(file) {
 
 /** Trusted service boundary only. Mount as a Connect extension after proof/device/account verification.
  * Do not expose execute directly as an HTTP handler and do not construct actor from request arguments. */
-export function createWorldService({ databasePath, projectId, clock = Date.now } = {}) {
+export function createWorldService({ databasePath, projectId, clock = Date.now, attachmentWrites = false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof clock === 'function', 'invalid_clock');
+  assert(typeof attachmentWrites === 'boolean', 'invalid_attachment_mode');
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') {
     assert(outsideModule(file), 'database_must_be_outside_module');
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
   const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false;
-  try { migrateWorld(db, projectId); migrateField(db); } catch (error) { db.close(); throw error; }
+  let schemaVersion;
+  try { schemaVersion = migrateWorld(db, projectId); assert(!attachmentWrites || schemaVersion === 4, 'attachment_migration_required'); migrateField(db); } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
   db.function('world_directory_match', { deterministic: true }, directoryMatches);
   const subscribers = new Set(); let events = [];
   const m = createModel(db, event => { events.push(Object.freeze(event)); });
+  Object.assign(m, { schemaVersion, attachmentWrites });
   const operations = new Set(WORLD_OPERATIONS);
   return {
-    projectId, schemaVersion: SCHEMA_VERSION, operations,
+    projectId, schemaVersion, operations,
     /** Host-only, synchronous authority boundary. Lock order is Connect -> World -> Apps.
      * Read predicates may use this connection; World operations and async work may not.
      * Only the downstream Apps transaction writes. This is not a cross-file commit. */
@@ -96,6 +101,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
         else if (CHAT_OPERATIONS.includes(op)) result = chatOperation(m, op, args, actor, now);
         else if (DIRECTORY_OPERATIONS.includes(op)) result = directoryOperation(m, op, args, actor);
         else if (FIELD_OPERATIONS.includes(op)) result = fieldOperation(m, op, args, actor, now);
+        else if (ATTACHMENT_OPERATIONS.includes(op)) result = attachmentOperation(m, op, args, actor, now);
         else result = avatarOperation(m, op, args, actor, now);
         if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
           const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);

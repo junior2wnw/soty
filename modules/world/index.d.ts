@@ -32,6 +32,7 @@ export interface WorldAvatar {
   avatarRevision: number | null;
 }
 export interface WorldCommunity {
+  chatReaderEpoch?: 4;
   communityId: string;
   name: string;
   description: string;
@@ -58,7 +59,9 @@ export interface WorldMessage {
   createdAt: number;
   replyTo: string | null;
   removed: boolean;
+  attachments?: WorldAttachment[];
 }
+export interface WorldAttachment { attachmentId: string; name: string; size: number; chunks: number; mediaType: 'application/octet-stream'; manifestSha256: string; fileSha256: string; }
 export interface WorldSearchResult {
   people: WorldProfile[];
   communities: WorldCommunity[];
@@ -103,4 +106,4 @@ export interface WorldService {
   subscribeMembership(listener: (event: MembershipEvent) => unknown): () => void;
   close(): void;
 }
-export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number }): WorldService;
+export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number; attachmentWrites?: boolean }): WorldService;

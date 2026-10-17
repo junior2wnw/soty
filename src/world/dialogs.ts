@@ -107,6 +107,22 @@ export function switchControl(label: string, checked: boolean, change: (next: bo
 export function errorText(error: unknown): string {
   const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   const messages: Record<string, string> = {
+    attachments_disabled: 'Приём файлов пока выключен. Уже отправленные файлы остаются доступны.',
+    chat_reader_upgrade_required: 'Для этого чата нужна новая версия Сот. Обновите приложение.',
+    attachment_batch_limit: 'Можно выбрать до 10 файлов: каждый до 1 МБ, вместе до 4 МБ.',
+    attachment_storage_quota: 'Место для файлов закончилось. Отмените незавершённые загрузки.',
+    attachment_store_capacity: 'Хранилище файлов заполнено. Нужна проверка администратора.',
+    attachment_not_ready: 'Файл ещё не готов. Дождитесь загрузки или повторите её.',
+    attachment_unavailable: 'Файл недоступен: он удалён, истёк срок загрузки или изменился доступ.',
+    attachment_integrity_failed: 'Файл не прошёл проверку целостности. Повторите передачу.',
+    attachment_request_conflict: 'Эта передача уже содержит другой файл. Выберите файл заново.',
+    attachment_context_changed: 'Аккаунт или чат изменился. Вернитесь к исходному разговору.',
+    attachment_send_unconfirmed: 'Сначала уточните прежнюю отправку: она уже могла быть принята. Новый черновик сохранён.',
+    attachment_queue_changed: 'Очередь обновилась в другом окне. Проверьте оставшиеся файлы и повторите действие.',
+    attachment_account_mismatch: 'Аккаунт изменился. Откройте вложения из исходного аккаунта.',
+    attachment_local_storage: 'Не удалось сохранить файл на устройстве. Освободите место и повторите выбор.',
+    attachment_transfer_failed: 'Не удалось загрузить файл. Подпись сохранена, можно повторить.',
+    attachment_queue_busy: 'Очередь файлов обновляется. Подождите немного.',
     ACTIVE_PROFILE_CHANGED: 'Аккаунт изменился. Проверьте выбранный аккаунт и повторите действие.',
     profile_contact_name_unsynced: 'Имя и описание сохранены. Обновление имени в контактах пока не подтверждено. Нажмите «Сохранить» ещё раз.',
     world_revision_conflict: 'Данные изменились. Обновите и повторите действие.',

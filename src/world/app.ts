@@ -1,4 +1,5 @@
 import './world.css';
+import './attachments.css';
 import './product.css';
 import './shell.css';
 import './chat.css';
@@ -21,6 +22,7 @@ import { observeVisibleViewport } from './visible-viewport';
 import { mountAgentOrb, type AgentOrbHandle } from './agent-orb';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
+import { createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
@@ -1293,6 +1295,9 @@ class WorldApplication {
     const highlightTimers = new Set<ReturnType<typeof setTimeout>>();
     const known = new Map<string, WorldMessage>();
     const rows = new Map<string, HTMLElement>();
+    let outbox: AttachmentOutbox | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false;
+    let attachmentReader = group.chatReaderEpoch === 4, acknowledgingAttachments = false;
+    const chatList = (args: Record<string, unknown>): Promise<{ messages: WorldMessage[]; hasMore: boolean }> => this.api.request('world.chat.list', { ...args, ...(attachmentReader ? { readerEpoch: 4 } : {}) });
     const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
     const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     let timelineDirty = false, searchMatches: string[] = [], unseen = 0;
@@ -1370,6 +1375,11 @@ class WorldApplication {
     const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, group.communityId, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
     const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
     const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
+    const filePicker = el('input'); filePicker.type = 'file'; filePicker.multiple = true; filePicker.hidden = true;
+    const touchKeyboard = matchMedia('(pointer:coarse)').matches; input.enterKeyHint = touchKeyboard ? 'enter' : 'send'; input.setAttribute('aria-keyshortcuts', touchKeyboard ? 'Control+Enter Meta+Enter' : 'Enter');
+    const attach = iconButton('Прикрепить файлы', 'plus', () => filePicker.click()); attach.hidden = true;
+    const attachmentRail = el('div', 'sw-attachment-queue'); attachmentRail.hidden = true; attachmentRail.setAttribute('aria-label', 'Вложения перед отправкой');
+    const attachmentHint = el('div', 'sw-attachment-hint', 'До 10 файлов: каждый до 1 МБ, вместе до 4 МБ. Подпись необязательна.'); attachmentHint.hidden = true;
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
     const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = true; error.append(retrySend);
     const draftStatus = el('div', 'sw-chat-draft-status'); draftStatus.setAttribute('role', 'status');
@@ -1377,7 +1387,7 @@ class WorldApplication {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
-    const updateComposer = (): void => { input.disabled = accessClosed || !group.permissions.canWrite; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
+    const updateComposer = (): void => { input.disabled = accessClosed || !group.permissions.canWrite; input.placeholder = group.permissions.canWrite ? attachmentWritable || attachmentRows.length ? 'Сообщение или подпись к файлам' : 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); send.disabled = sending || input.disabled || !input.value.trim() && !outbox?.canSend() || attachmentRows.length > 0 && !outbox?.canSend(); attach.disabled = sending || input.disabled || !attachmentWritable; cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : outbox?.pendingIntent() ? 'Уточнить прежнюю отправку' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
     const describeDraft = (): void => {
       const volatile = this.chatDrafts.isVolatile(accountId, group.communityId);
       const draft = this.chatDrafts.read(accountId, group.communityId), clearing = !draft.text && !draft.replyTo && !draft.pending;
@@ -1393,10 +1403,48 @@ class WorldApplication {
     input.addEventListener('input', () => { this.chatDrafts.edit(accountId, group.communityId, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
     input.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229) return;
-      if (shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
+      if (touchKeyboard ? event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey : shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
       else if (event.key === 'Escape' && replyTo && !sending) { event.preventDefault(); cancelReply.click(); }
     });
-    composer.append(input, send); dock.append(reply, error, composer); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    const sizeLabel = (bytes: number): string => bytes < 1024 ? `${bytes} Б` : `${Math.ceil(bytes / 1024)} КБ`;
+    const renderAttachments = (): void => {
+      if (!active()) return;
+      attachmentRail.hidden = attachmentRows.length === 0; attachmentRail.replaceChildren();
+      attachmentHint.hidden = !attachmentWritable && !attachmentRows.length;
+      attachmentHint.textContent = outbox?.pendingIntent() ? 'Прежняя отправка ещё без подтверждения. Уточним её результат; ваши новые изменения останутся черновиком.' : attachmentWritable ? 'До 10 файлов: каждый до 1 МБ, вместе до 4 МБ. Подпись необязательна.' : 'Отправка файлов пока выключена. Очередь сохранена на устройстве; файл можно убрать.';
+      for (const item of attachmentRows) {
+        const card = el('div', 'sw-attachment-card'); card.dataset.attachmentId = item.attachmentId;
+        const info = el('div', 'sw-attachment-info'); info.append(el('strong', '', item.name));
+        const label = item.status === 'ready' ? 'Готов к отправке' : item.status === 'uploading' ? `Загружаем · ${Math.round(item.sent / Math.max(1, item.size) * 100)}%` : item.status === 'error' ? errorText({ code: item.error }) : item.status === 'cancel-pending' ? item.error ? 'Удаление пока не подтверждено' : 'Отменяем загрузку…' : 'В очереди';
+        info.append(el('span', '', `${sizeLabel(item.size)} · ${label}`)); card.append(info);
+        if (item.status === 'uploading') { const progress = el('progress'); progress.max = Math.max(1,item.size); progress.value = item.sent; progress.setAttribute('aria-label', `Загрузка ${item.name}`); card.append(progress); }
+        if (item.status === 'error' || item.status === 'cancel-pending' && item.error) { const retry = iconButton(`Повторить ${item.name}`, 'refresh', () => { void outbox?.retry(item.attachmentId).catch(reason => { errorMessage.textContent = errorText(reason); }); }); retry.disabled = sending; card.append(retry); }
+        const remove = iconButton(`Убрать ${item.name}`, 'close', () => { void outbox?.remove(item.attachmentId).catch(reason => { errorMessage.textContent = errorText(reason); }); }); remove.disabled = sending || item.status === 'cancel-pending' || !!outbox?.isPending(item.attachmentId); card.append(remove); attachmentRail.append(card);
+      }
+      if (!acknowledgingAttachments) {
+        const accepted=outbox?.acceptedIntent(),pending=outbox?.pendingIntent();
+        if(accepted)this.chatDrafts.acknowledge(accountId,group.communityId,accepted.clientId,accepted.attachments);
+        if(pending)this.chatDrafts.recoverPending(accountId,group.communityId,pending);
+        this.chatDrafts.setAttachments(accountId,group.communityId,attachmentRows.map(item=>item.attachmentId));
+      }
+      updateComposer();
+    };
+    const chooseFiles = (files: FileList | null): void => {
+      if (!files?.length || !outbox || attach.disabled) return;
+      if (files.length > 10) { errorMessage.textContent = errorText({code:'attachment_batch_limit'}); return; }
+      errorMessage.textContent = '';
+      void outbox.add(Array.from(files)).catch(reason => { if(active()) errorMessage.textContent = errorText(reason); });
+    };
+    filePicker.addEventListener('change',()=>{chooseFiles(filePicker.files);filePicker.value='';});
+    chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
+    chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
+    composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    const attachmentReady = this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities',{communityId:group.communityId,expectedAccountId:accountId}).then(result=>{
+      if(!active())return; attachmentReader=result.readable; attachmentWritable=result.writable;
+      attach.hidden=attachmentHint.hidden=!attachmentWritable;
+      if(attachmentReader) { outbox=createAttachmentOutbox({api:this.api,accountId,communityId:group.communityId,initialOrder:initialDraft.attachments??[],current:active,allowUpload:()=>attachmentWritable,changed:items=>{attachmentRows=items;renderAttachments();}}); return outbox.ready.catch(reason=>{attachmentWritable=false;errorMessage.textContent=errorText(reason);updateComposer();}); }
+      updateComposer();
+    }).catch(()=>{ /* Older text-only servers do not expose the attachment port. */ });
     fitComposer(); updateComposer(); refreshReply();
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
@@ -1467,6 +1515,18 @@ class WorldApplication {
       if (!own) { const author = el('button', 'sw-message-author', message.author.displayName); author.type = 'button'; author.addEventListener('click', () => this.openPersonDialog(message.author)); body.append(author); }
       if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
       body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
+      if (!message.removed && message.attachments?.length) {
+        const files = el('div','sw-message-files');
+        for(const attachment of message.attachments) {
+          const download=button(attachment.name,'download','sw-message-file',()=>{
+            if(download.disabled)return;download.disabled=true;download.setAttribute('aria-busy','true');
+            void downloadAttachment({api:this.api,accountId,communityId:group.communityId,attachment,current:active}).then(result=>{
+              if(!active())return;const url=URL.createObjectURL(result.blob),link=el('a');link.href=url;link.download=result.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+            }).catch(reason=>{if(active())this.toast(errorText(reason),true);}).finally(()=>{download.disabled=false;download.removeAttribute('aria-busy');});
+          }); download.setAttribute('aria-label',`Скачать ${attachment.name}`);download.append(el('small','',sizeLabel(attachment.size)));files.append(download);
+        }
+        body.append(files);
+      }
       const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
       if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); delivered.setAttribute('aria-label', 'Отправлено'); delivered.title = 'Отправлено'; meta.append(delivered); }
       body.append(meta); row.append(body);
@@ -1518,7 +1578,7 @@ class WorldApplication {
       if (historyLoading || !hasHistory || initial || accessClosed || !active()) return false;
       historyLoading = true; previous.disabled = true; previous.querySelector('span')!.textContent = 'Загружаем историю'; messages.setAttribute('aria-busy', 'true');
       try {
-        const history = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, before: firstSeq, limit: 60 });
+        await attachmentReady; const history = await chatList({ communityId: group.communityId, before: firstSeq, limit: 60 });
         if (!active()) return false; const position = capturePosition(); history.messages.forEach(append); hasHistory = history.hasMore && history.messages.length > 0; previous.hidden = !hasHistory; refreshTimeline(); restorePosition(position); updateJump(); if (retrySend.hidden) errorMessage.textContent = ''; return history.messages.length > 0;
       } catch (reason) { if (active() && !closeAccess(reason)) errorMessage.textContent = errorText(reason); return false; }
       finally { historyLoading = false; previous.disabled = false; previous.querySelector('span')!.textContent = 'Ранее'; messages.setAttribute('aria-busy', 'false'); }
@@ -1534,17 +1594,17 @@ class WorldApplication {
           if (current.community.membership?.state !== 'active') { closeAccess({ code: 'community_membership_required' }); return; }
           group = current.community; this.updateCommunity(group); refreshHeader(); updateComposer();
         }
-        const response = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, limit: 60 });
+        await attachmentReady; const response = await chatList({ communityId: group.communityId, limit: 60 });
         if (!active()) return;
         const updates: WorldMessage[] = [], incoming: WorldMessage[] = []; let nextSync = Math.max(0, ...response.messages.map(message => message.seq)), hasMoreForward = false;
         if (!initial) {
           // Refresh existing tombstones without jumping past an unseen interval.
           const visiblePosition = capturePosition();
           if (visiblePosition.node && Number(visiblePosition.node.dataset.messageSeq) < (response.messages[0]?.seq ?? 0)) {
-            const visible = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after: Math.max(0, Number(visiblePosition.node.dataset.messageSeq) - 1), limit: 60 });
+            const visible = await chatList({ communityId: group.communityId, after: Math.max(0, Number(visiblePosition.node.dataset.messageSeq) - 1), limit: 60 });
             if (!active()) return; updates.push(...visible.messages);
           }
-          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after, limit: 60 }), append: message => incoming.push(message) });
+          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => chatList({ communityId: group.communityId, after, limit: 60 }), append: message => incoming.push(message) });
           if (!active()) return;
           nextSync = forward.cursor; hasMoreForward = forward.hasMore;
         }
@@ -1568,22 +1628,46 @@ class WorldApplication {
     };
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
-      event.preventDefault(); const text = input.value.trim(); if (!text || send.disabled) return;
-      sending = true; const pending = this.chatDrafts.beginSend(accountId, group.communityId, text, replyTo); describeDraft(); updateComposer();
+      event.preventDefault(); const text = input.value.trim(), attachmentIds=attachmentRows.map(item=>item.attachmentId); if ((!text && !attachmentIds.length) || send.disabled) return;
+      sending = true; const pending = this.chatDrafts.beginSend(accountId, group.communityId, text, replyTo,attachmentIds); describeDraft(); updateComposer();
+      let dispatched=false;
       errorMessage.textContent = ''; retrySend.hidden = true;
-      void this.api.request<{ message: WorldMessage }>('world.chat.send', { communityId: group.communityId, clientId: pending.clientId, text, replyTo: pending.replyTo }).then(response => {
-        const draft = this.chatDrafts.acknowledge(accountId, group.communityId, pending.clientId);
+      void (async()=>{
+        let submitted=pending;
+        if(pending.attachments?.length&&outbox){
+          const prepared=await outbox.prepareSend(pending);
+          if(prepared.state==='accepted'){
+            this.chatDrafts.acknowledge(accountId,group.communityId,prepared.intent.clientId,prepared.intent.attachments);
+            if(active())void load();return;
+          }
+          submitted={...prepared.intent,durable:true};
+          this.chatDrafts.recoverPending(accountId,group.communityId,prepared.intent);
+        }
+        if(!active())return;
+        const sentIds=submitted.attachments??[];
+        dispatched=true;
+        const response=await this.api.request<{message:WorldMessage}>('world.chat.send',{communityId:group.communityId,clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,...(sentIds.length?{attachments:sentIds,expectedAccountId:accountId}:{})});
+        acknowledgingAttachments=true;
+        try { if(sentIds.length)await outbox?.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds}); }
+        finally { acknowledgingAttachments=false; }
+        const draft = this.chatDrafts.acknowledge(accountId, group.communityId, submitted.clientId,sentIds);
         if (!active()) return;
         const stickToEnd = nearEnd(), position = capturePosition();
         append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
         updateJump(); notifyConversation(); void load();
-      }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
+      })().catch(async reason => {
+        if(!dispatched&&reason?.code==='attachment_queue_changed'){
+          this.chatDrafts.discardUnsubmitted(accountId,group.communityId,pending.clientId);
+          try{await outbox?.reconcile();}catch{/* The typed local storage error remains retryable. */}
+        }
+        if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; }
+      }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, group.communityId); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
     const previousCleanup = this.chatCleanup;
-    this.chatCleanup = () => { previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
+    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
   }
 
@@ -1664,7 +1748,7 @@ class WorldApplication {
       try { while (active() && pendingPreviews.size) {
         const id = pendingPreviews.values().next().value; if (!id) break; pendingPreviews.delete(id);
         if (!groups.some(group => group.communityId === id)) continue;
-        try { const response = await this.api.request<{ messages: WorldMessage[] }>('world.chat.list', { communityId: id, limit: 1 }); if (!active()) return; if (!groups.some(group => group.communityId === id)) continue; const message = response.messages[0]; if (message) previews.set(id, message); renderList(); }
+        try { const response = await this.api.request<{ messages: WorldMessage[] }>('world.chat.list', { communityId: id, limit: 1,...(groups.find(group=>group.communityId===id)?.chatReaderEpoch===4?{readerEpoch:4}:{}) }); if (!active()) return; if (!groups.some(group => group.communityId === id)) continue; const message = response.messages[0]; if (message) previews.set(id, message); renderList(); }
         catch { /* A community remains usable when its preview could not refresh. */ }
       } } finally { previewWorkers--; }
     };

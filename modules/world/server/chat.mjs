@@ -1,15 +1,18 @@
 import { assert, exact, identifier, id, integer, text, limit } from './validation.mjs';
+import { admitMessageAttachments, messageAttachments } from './attachments.mjs';
 
 export const CHAT_OPERATIONS = ['world.chat.list', 'world.chat.send', 'world.chat.remove', 'world.chat.read'];
 export function chatOperation(m, op, args, actor, now) {
   function message(row) {
+    const attachments = row.deleted_at === null ? messageAttachments(m, row.id) : [];
     return { messageId: row.id, seq: row.seq, text: row.deleted_at === null ? row.text : '',
       author: m.profile(m.person(row.author_id)), createdAt: row.created_at,
-      replyTo: row.reply_to, removed: row.deleted_at !== null };
+      replyTo: row.reply_to, removed: row.deleted_at !== null, ...(attachments.length ? { attachments } : {}) };
   }
   if (op === 'world.chat.list') {
-    exact(args, ['communityId'], ['after', 'before', 'limit']);
+    exact(args, ['communityId'], ['after', 'before', 'limit', 'readerEpoch']);
     const { row } = m.requireMember(args.communityId, actor.accountId); const size = limit(args.limit);
+    assert(m.schemaVersion !== 4 || args.readerEpoch === 4, 'chat_reader_upgrade_required');
     assert(args.after === undefined || args.before === undefined, 'invalid_cursor');
     const after = args.after === undefined ? 0 : integer(args.after);
     const before = args.before === undefined ? Number.MAX_SAFE_INTEGER : integer(args.before, 1);
@@ -19,21 +22,28 @@ export function chatOperation(m, op, args, actor, now) {
     return { messages: (ascending ? page : page.reverse()).map(message), hasMore: rows.length > size };
   }
   if (op === 'world.chat.send') {
-    exact(args, ['communityId', 'clientId', 'text'], ['replyTo']);
+    exact(args, ['communityId', 'clientId', 'text'], ['replyTo', 'attachments', 'expectedAccountId']);
     const { row } = m.requireMember(args.communityId, actor.accountId);
-    const clientId = identifier(args.clientId); const body = text(args.text, 6000, { empty: false, multiline: true });
+    const refs = args.attachments === undefined ? [] : args.attachments;
+    assert(Array.isArray(refs) && refs.length <= 10 && new Set(refs).size === refs.length, 'attachment_batch_limit');
+    refs.forEach(identifier);
+    if (refs.length) assert(args.expectedAccountId === actor.accountId, 'attachment_account_mismatch');
+    const clientId = identifier(args.clientId); const body = text(args.text, 6000, { empty: refs.length > 0, multiline: true });
     const replyTo = args.replyTo === undefined || args.replyTo === null ? null : identifier(args.replyTo);
     if (replyTo) assert(m.get('SELECT 1 FROM messages WHERE id=? AND community_id=?', replyTo, row.id), 'message_not_found');
     const previous = m.get('SELECT * FROM messages WHERE community_id=? AND author_id=? AND client_id=?', row.id, actor.accountId, clientId);
     if (previous) {
       // The original body is deliberately removed after moderation. A replay can return its tombstone,
       // but can never restore the removed content or create a new message.
-      assert(previous.deleted_at !== null || previous.text === body && previous.reply_to === replyTo, 'request_conflict');
+      assert(previous.deleted_at !== null || previous.text === body && previous.reply_to === replyTo
+        && JSON.stringify(messageAttachments(m, previous.id).map(item => item.attachmentId)) === JSON.stringify(refs), 'request_conflict');
       return { message: message(previous) };
     }
     m.rate('chat:' + actor.accountId, 60, 60_000, now);
+    const attachments = refs.length ? admitMessageAttachments(m, refs, row.id, actor.accountId, now) : [];
     const messageId = id('msg');
     m.run('INSERT INTO messages(id,community_id,author_id,client_id,text,reply_to,created_at) VALUES (?,?,?,?,?,?,?)', messageId, row.id, actor.accountId, clientId, body, replyTo, now);
+    attachments.forEach((item, position) => m.run("UPDATE chat_attachments SET state='published',message_id=?,position=? WHERE id=?", messageId, position, item.id));
     return { message: message(m.get('SELECT * FROM messages WHERE id=?', messageId)) };
   }
   if (op === 'world.chat.remove') {
@@ -44,6 +54,10 @@ export function chatOperation(m, op, args, actor, now) {
     assert(item.author_id === actor.accountId || ['owner', 'moderator'].includes(participation.role), 'community_permission_denied');
     if (item.deleted_at === null) {
       m.run("UPDATE messages SET text='',deleted_at=?,deleted_by=? WHERE id=?", now, actor.accountId, item.id);
+      if (m.schemaVersion === 4) {
+        m.run('DELETE FROM chat_attachment_chunks WHERE attachment_id IN(SELECT id FROM chat_attachments WHERE message_id=?)', item.id);
+        m.run("UPDATE chat_attachments SET state='removed' WHERE message_id=?", item.id);
+      }
       m.audit(actor.accountId, op, item.id, now);
     }
     return { removed: true };

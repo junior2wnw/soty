@@ -75,7 +75,8 @@ export function createModel(db, emit) {
       revision: row.revision, memberCount: get("SELECT COUNT(*) AS n FROM memberships WHERE community_id=? AND state='active'", row.id).n,
       previewMembers: previews, membership: member(participation), permissions: { canManage: manager, canModerate: manager, canWrite: active },
       ...(manager ? { pendingCount: get("SELECT COUNT(*) AS n FROM memberships WHERE community_id=? AND state='requested'", row.id).n } : {}),
-      unreadCount: active ? unread(row.id, actorId) : 0, createdAt: row.created_at };
+      unreadCount: active ? unread(row.id, actorId) : 0, createdAt: row.created_at,
+      ...(get('PRAGMA user_version').user_version === 4 ? { chatReaderEpoch: 4 } : {}) };
   }
   function audit(actorId, operation, targetId, now) {
     run('INSERT INTO world_audit(account_id,operation,target_id,created_at) VALUES (?,?,?,?)', actorId, operation, targetId, now);
