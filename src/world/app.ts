@@ -1368,8 +1368,9 @@ class WorldApplication {
     const updateComposer = (): void => { input.disabled = accessClosed || !group.permissions.canWrite; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
     const describeDraft = (): void => {
       const volatile = this.chatDrafts.isVolatile(accountId, group.communityId);
-      draftStatus.textContent = volatile ? 'Черновик пока только в открытом приложении' : '';
-      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !volatile; downloadDraft.hidden = !volatile;
+      const draft = this.chatDrafts.read(accountId, group.communityId), clearing = !draft.text && !draft.replyTo && !draft.pending;
+      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : '';
+      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !volatile; downloadDraft.hidden = !volatile || !draft.text;
     };
     error.append(draftStatus, downloadDraft, limitStatus); describeDraft();
     const fitComposer = (): void => { const stick = nearEnd(); input.style.height = 'auto'; input.style.height = `${Math.min(144, Math.max(24, input.scrollHeight))}px`; if (stick) messages.scrollTop = messages.scrollHeight; };

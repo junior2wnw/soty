@@ -31,6 +31,55 @@ test('storage failure retains the draft in memory and prevents a safe update cla
   failing = false; assert.equal(drafts.retrySave('alice', 'room'), true); assert.equal(drafts.hasVolatile(), false);
   assert.equal(createChatDraftStore(disk).read('alice', 'room').text, 'Не потерять');
 });
+
+test('an acknowledged draft with failed cleanup stays a dirty tombstone until storage removal succeeds', () => {
+  const disk = storage(); let denyRemoval = false, sends = 0;
+  const failing = { ...disk, removeItem(key) { if (denyRemoval) throw Error('Synthetic storage access revoked'); disk.removeItem(key); } },
+    drafts = createChatDraftStore(failing, () => `request-${++sends}`),
+    pending = drafts.beginSend('alice', 'room', 'Already acknowledged');
+  assert.equal(pending.durable, true); denyRemoval = true;
+  const acknowledged = drafts.acknowledge('alice', 'room', pending.clientId);
+  assert.equal(acknowledged.text, ''); assert.equal(acknowledged.pending, null);
+  assert.equal(drafts.isVolatile('alice', 'room'), true); assert.equal(drafts.hasVolatile(), true);
+  assert.equal(createChatDraftStore(disk).read('alice', 'room').pending.clientId, pending.clientId, 'Failed storage cannot claim durable cleanup');
+  drafts.storageChanged('soty.chat.draft.v1:alice:room');
+  assert.equal(drafts.read('alice', 'room').text, '', 'Stale disk metadata cannot revive the live tombstone');
+  assert.equal(drafts.read('alice', 'room').pending, null);
+  assert.equal(drafts.retrySave('alice', 'room'), false); assert.equal(drafts.hasVolatile(), true);
+  denyRemoval = false; assert.equal(drafts.retrySave('alice', 'room'), true);
+  assert.equal(drafts.hasVolatile(), false); assert.deepEqual(createChatDraftStore(disk).read('alice', 'room'), { text: '', replyTo: null, pending: null });
+  assert.equal(sends, 1, 'Cleanup recovery must not create another send intent');
+});
+
+test('failed explicit clearing is visible without changing another account or a later draft', () => {
+  const disk = storage(); let denyRemoval = false;
+  const drafts = createChatDraftStore({ ...disk, removeItem(key) { if (denyRemoval) throw Error('Synthetic remove denied'); disk.removeItem(key); } });
+  drafts.edit('alice', 'room', 'Discard this local draft'); drafts.edit('bob', 'room', 'Bob private');
+  denyRemoval = true; assert.equal(drafts.edit('alice', 'room', ''), false);
+  assert.equal(drafts.hasVolatile(), true); assert.equal(drafts.read('alice', 'room').text, '');
+  drafts.edit('alice', 'room', 'A later thought');
+  assert.equal(drafts.isVolatile('alice', 'room'), false, 'A later successful durable edit supersedes the tombstone');
+  assert.equal(createChatDraftStore(disk).read('alice', 'room').text, 'A later thought');
+  assert.equal(drafts.read('bob', 'room').text, 'Bob private');
+});
+
+test('actual World ACK cleanup failure recovers locally without another SQL message', async t => {
+  const { createWorldService } = await import('../../modules/world/server/index.mjs');
+  const world = createWorldService({ databasePath: ':memory:', projectId: 'draft-ack-test' }); t.after(() => world.close());
+  const actor = { accountId: 'acct_draft_ack', deviceId: 'dev_draft_ack', label: 'Synthetic draft owner' },
+    call = (op, args = {}) => world.execute({ actor, op: 'world.' + op, args });
+  call('profile.get'); const communityId = call('community.create', { requestId: 'draft_room_001', name: 'Synthetic local room' }).community.communityId;
+  const disk = storage(); let denyRemoval = false;
+  const drafts = createChatDraftStore({ ...disk, removeItem(key) { if (denyRemoval) throw Error('Synthetic cleanup denied'); disk.removeItem(key); } }, () => 'draft_send_001'),
+    pending = drafts.beginSend(actor.accountId, communityId, 'One real stored message'),
+    accepted = call('chat.send', { communityId, clientId: pending.clientId, text: pending.text, replyTo: pending.replyTo }).message;
+  assert.equal(call('chat.list', { communityId }).messages[0].messageId, accepted.messageId);
+  denyRemoval = true; drafts.acknowledge(actor.accountId, communityId, pending.clientId);
+  assert.equal(drafts.hasVolatile(), true); assert.equal(drafts.read(actor.accountId, communityId).pending, null);
+  denyRemoval = false; assert.equal(drafts.retrySave(actor.accountId, communityId), true);
+  assert.equal(createChatDraftStore(disk).read(actor.accountId, communityId).text, '');
+  assert.equal(call('chat.list', { communityId }).messages.length, 1);
+});
 test('an ACK updates a reopened composer and preserves newer text written in another tab', () => {
   const disk = storage(); const first = createChatDraftStore(disk, () => 'request-123');
   const pending = first.beginSend('alice', 'room', 'Отправляю');

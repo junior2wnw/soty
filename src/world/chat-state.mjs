@@ -39,7 +39,12 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       if (value.text || value.replyTo || value.pending) storage.setItem(key, JSON.stringify(value));
       else storage.removeItem(key);
       volatile.delete(key);
-    } catch { durable = false; if (value.text || value.replyTo || value.pending) volatile.add(key); else volatile.delete(key); }
+    } catch {
+      // A failed removal is a dirty tombstone too: the acknowledged/cleared
+      // draft still exists on disk. Keep the live empty value and its warning
+      // until retrySave confirms removal; stale storage events cannot revive it.
+      durable = false; volatile.add(key);
+    }
     notify(key, value); return durable;
   }
   return {
