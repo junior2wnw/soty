@@ -31,7 +31,7 @@ export function createPwaController(): PwaController {
   const installed = () => display.matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
   let state: PwaState = { install: installed() ? 'installed' : 'unavailable', update: 'idle', connection: 'checking',
     worker: development ? 'development' : supported ? 'registering' : 'unsupported', offlineReady: false };
-  let prompt: InstallPrompt | undefined, registration: ServiceWorkerRegistration | undefined, destroyed = false;
+  let prompt: InstallPrompt | undefined, registration: ServiceWorkerRegistration | undefined, destroyed = false, installGeneration = 0;
   let connectionFlight: Promise<void> | undefined, guardFlight: Promise<boolean> | undefined, updateFlight: Promise<boolean> | undefined;
   let reloadArmed = false, reloadRequired = false, reloading = false, lastUpdateCheck = 0;
   const listeners = new Set<(state: PwaState) => void>(), abort = new AbortController();
@@ -71,8 +71,18 @@ export function createPwaController(): PwaController {
     try { await registration.update(); if (registration.waiting) publish({ update: 'available' }); }
     catch { /* An update check is independent of editing and connection state. */ }
   };
-  const beforeInstall = (event: Event) => { event.preventDefault(); prompt = event as InstallPrompt; publish({ install: 'available' }); };
-  const appInstalled = () => { prompt = undefined; publish({ install: 'installed' }); };
+  const appInstalled = () => { installGeneration++; prompt = undefined; publish({ install: 'installed' }); };
+  const beforeInstall = (event: Event) => {
+    event.preventDefault();
+    if (installed() || state.install === 'installed') { appInstalled(); return; }
+    installGeneration++; prompt = event as InstallPrompt; publish({ install: 'available' });
+  };
+  const settleInstall = (generation: number, next: PwaInstallState) => {
+    // The browser's installation event outranks a late result of its old prompt.
+    if (destroyed || generation !== installGeneration) return;
+    if (installed() || state.install === 'installed') appInstalled();
+    else publish({ install: next });
+  };
   const displayChanged = () => { if (installed()) appInstalled(); };
   const refreshConnection = () => { void checkConnection(); };
   const visible = () => {
@@ -135,10 +145,10 @@ export function createPwaController(): PwaController {
     get: () => ({ ...state }),
     subscribe(listener) { listeners.add(listener); listener({ ...state }); return () => listeners.delete(listener); },
     async requestInstall() {
-      if (!prompt || state.install !== 'available') return 'unavailable';
-      const event = prompt; prompt = undefined; publish({ install: 'prompting' });
-      try { await event.prompt(); const choice = await event.userChoice; publish({ install: choice.outcome === 'accepted' ? 'accepted' : 'unavailable' }); return choice.outcome; }
-      catch { publish({ install: 'unavailable' }); return 'unavailable'; }
+      if (destroyed || !prompt || state.install !== 'available') return 'unavailable';
+      const event = prompt, generation = installGeneration; prompt = undefined; publish({ install: 'prompting' });
+      try { await event.prompt(); const choice = await event.userChoice; settleInstall(generation, choice.outcome === 'accepted' ? 'accepted' : 'unavailable'); return choice.outcome; }
+      catch { settleInstall(generation, 'unavailable'); return 'unavailable'; }
     },
     checkConnection, checkUpdate,
     applyUpdate() {
@@ -155,7 +165,7 @@ export function createPwaController(): PwaController {
         } catch { publish({ update: 'failed' }); return false; }
       })().finally(() => { updateFlight = undefined; }); return updateFlight;
     },
-    destroy() { destroyed = true; abort.abort(); clearInterval(interval); listeners.clear(); if (singleton) singleton = undefined; },
+    destroy() { destroyed = true; installGeneration++; prompt = undefined; abort.abort(); clearInterval(interval); listeners.clear(); if (singleton) singleton = undefined; },
   };
 }
 
