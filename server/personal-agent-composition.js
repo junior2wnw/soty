@@ -64,7 +64,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
   };
   const toolsForActor = async ({ actor, scope, turnId, selection, signal }) => {
     const visibleSelection = selection;
-    let selectedScope, verifyCurrent, selectedChildContext, visibleContextAvailable = true;
+    let selectedScope, verifyCurrent, sourceRecovery, selectedChildContext, visibleContextAvailable = true;
     const canUseNativeTarget = contract => isSelectedNativeContract(contract)
       && (contract.appId === visibleSelection?.appId ? visibleContextAvailable : current(actor, services =>
         services.apps?.canOpenScopedSourceContext?.({ owner: actor, appId: contract.appId }) === true));
@@ -525,7 +525,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           || result.invocation.effectState !== 'committed') return;
         const artifact = result.invocation.receipt?.artifacts.find(item => item.type === 'hive-project'
           && item.id === selectedScope.resource.selection.nativeId);
-        need(['hive.cell.title', 'hive.cell.create'].includes(value.input.input.operation) && value.input.input.expectedRevision === data.revision
+        need(['hive.cell.title', 'hive.cell.create', 'hive.workflow.create'].includes(value.input.input.operation) && value.input.input.expectedRevision === data.revision
           && artifact?.revision === data.revision + 1, 'agent_source_denied');
         const fresh = await readCurrent(readSignal);
         need(fresh.title === data.title && fresh.role === data.role && fresh.revision === artifact.revision, 'agent_source_denied');
@@ -537,10 +537,55 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       // terminal answer. This observes current permission; it is not a cross-service transaction.
       verifyCurrent = async readSignal => {
         if (!contextBinding) return;
-        rememberTarget(); const active = targets.get(selection.appId);
+        rememberTarget(); const activeAppId = selection.appId;
         try { for (const target of [...targets.values()]) {
-          activateTarget(target); need(canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
-        } } finally { activateTarget(active); }
+          activateTarget(target);
+          const fresh = await readCurrent(readSignal);
+          if (canonical(fresh) !== canonical(data)) {
+            // A lost return is never permission to adopt a new revision. Only
+            // the ORIGINAL private ledger input and independently read Native
+            // receipt may advance this target. reconcile never executes.
+            const service = getServices().capabilities.external; let accepted = false;
+            for (const held of writeKeys.values()) {
+              const value = held.value;
+              if (value.detail.appId !== selection.appId) continue;
+              sourceDetail(value.reference, value.delegated);
+              const prior = service.get({ actor: value.delegated, invocationId: held.invocationId });
+              if (prior.invocation.effectState !== 'unknown') continue;
+              await service.reconcile({ reference: value.reference, invocationId: held.invocationId, expectedInput: value.input });
+              need(!readSignal.aborted, 'agent_cancelled');
+              const result = service.get({ actor: value.delegated, invocationId: held.invocationId });
+              await acceptCommittedRevision(value, result, readSignal);
+              accepted ||= result.invocation.status === 'succeeded' && result.invocation.effectState === 'committed';
+            }
+            need(accepted && canonical(await readCurrent(readSignal)) === canonical(data), 'agent_source_denied');
+          }
+        } } finally { activateTarget(targets.get(activeAppId)); }
+      };
+      sourceRecovery = async readSignal => {
+        need(readSignal instanceof AbortSignal && !readSignal.aborted, 'agent_cancelled');
+        assertCurrent(); rememberTarget(); const active = selection && targets.get(selection.appId), items = [];
+        try {
+          for (const held of writeKeys.values()) {
+            const value = held.value, target = targets.get(value.detail.appId);
+            need(target, 'agent_source_denied'); activateTarget(target);
+            sourceDetail(value.reference, value.delegated);
+            const service = getServices().capabilities.external,
+              result = service.get({ actor: value.delegated, invocationId: held.invocationId });
+            if (result.invocation.effectState !== 'unknown') continue;
+            // Metadata recovery still requires current Native authority. A
+            // revision change is not completion; a context change or revoke
+            // denies the pointer. Private dispatch input stays in this bundle.
+            const fresh = await readCurrent(readSignal);
+            if (selectedChildContext) need(fresh.context.ref === selectedChildContext.ref
+              && fresh.context.generation === selectedChildContext.generation, 'agent_source_denied');
+            sourceDetail(value.reference, value.delegated);
+            service.get({ actor: value.delegated, invocationId: held.invocationId });
+            items.push({ reference: { capabilityId: value.reference.capabilityId, version: value.reference.version },
+              invocationId: held.invocationId });
+          }
+          assertCurrent(); need(!readSignal.aborted, 'agent_cancelled'); return freeze(items);
+        } finally { if (active) activateTarget(active); }
       };
       if (visibleSelection && visibleContextAvailable) tools.current_context = { capability: 'current_context', description: 'Read the verified title, role and revision of the current visible app project. A backend Source call does not change this UI context. Metadata only; no canvas contents or write permission.',
         inputSchema: schema({}), validate: input => validate(input, []), execute(_input, toolSignal) {
@@ -599,7 +644,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         }
       }
     }
-    return { tools, assertCurrent, ...(verifyCurrent ? { verifyCurrent } : {}), ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
+    return { tools, assertCurrent, ...(verifyCurrent ? { verifyCurrent } : {}), ...(sourceRecovery ? { sourceRecovery } : {}), ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
       // The module wraps every context callback in its fresh Connect fence. Do not nest that fence here.
       io: (op, args) => getServices().notes.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } }) }) } : {}) };
   };

@@ -7,6 +7,7 @@ import { selectedResource } from '../modules/apps/scoped-embed/resource-profile.
 import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource } from '../modules/source-app/server/standard-profile.mjs';
 import { contextAfter, workspaceMutationRef, workspaceWitness, workspaceReceipt } from '../modules/source-app/server/workspace-context.mjs';
 import { HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../modules/apps/scoped-embed/resource-route-adapters.mjs';
+import { selectedHiveWorkflowOperations } from './hive-workflow-input.js';
 
 const installed = new WeakMap();
 const need = value => { if (!value) throw new AccessError('selected_native_source_denied'); };
@@ -28,11 +29,12 @@ export function isSelectedNativeContract(contract) {
 export function createSelectedNativeSourceApplication(raw) {
   need(raw && typeof raw === 'object' && !types.isProxy(raw) && !Array.isArray(raw)
     && [Object.prototype, null].includes(Object.getPrototypeOf(raw)));
-  const descriptors = Object.getOwnPropertyDescriptors(raw), names = ['scope', 'catalog', 'projectReceipt', 'guidance'];
+  const descriptors = Object.getOwnPropertyDescriptors(raw), names = ['scope', 'catalog', 'projectReceipt', 'readOutput', 'validateNativeInput', 'guidance'];
   need(Reflect.ownKeys(descriptors).every(key => typeof key === 'string' && names.includes(key)
     && Object.hasOwn(descriptors[key], 'value')) && ['scope', 'catalog'].every(key => Object.hasOwn(descriptors, key)));
   const rawScope = descriptors.scope.value, rawCatalog = descriptors.catalog.value,
-    projectReceipt = descriptors.projectReceipt?.value, guidance = descriptors.guidance?.value;
+    projectReceipt = descriptors.projectReceipt?.value, readOutput = descriptors.readOutput?.value,
+    validateNativeInput = descriptors.validateNativeInput?.value, guidance = descriptors.guidance?.value;
   const scope = captureQueryData(rawScope), catalog = captureQueryData(rawCatalog);
   fields(scope, ['appId', 'target', 'sourceProfile', 'resource']); fields(scope.target, ['revision', 'digest']);
   need(/^app-[a-f0-9]{32}$/u.test(scope.appId) && Number.isSafeInteger(scope.target.revision) && scope.target.revision > 0
@@ -47,6 +49,12 @@ export function createSelectedNativeSourceApplication(raw) {
   if (workspace) need(same(catalog.resources, [`workspace:${scope.appId}:${scope.resource.resourceId}`])
     && same(catalog.recipients, catalog.resources));
   const effectful = catalog.effects.length > 0;
+  // Reviewed CODE may reduce a bounded Native read to the exact public tool
+  // schema. This grants no authority and never transforms mutations/receipts.
+  need(readOutput === undefined || !effectful && standard && typeof readOutput === 'function' && !types.isProxy(readOutput)
+    && !types.isAsyncFunction(readOutput) && !types.isGeneratorFunction(readOutput));
+  need(validateNativeInput === undefined || effectful && workspace && typeof validateNativeInput === 'function' && !types.isProxy(validateNativeInput)
+    && !types.isAsyncFunction(validateNativeInput) && !types.isGeneratorFunction(validateNativeInput));
   need(effectful && !workspace ? typeof projectReceipt === 'function' && !types.isProxy(projectReceipt)
     && !types.isAsyncFunction(projectReceipt) && !types.isGeneratorFunction(projectReceipt) : projectReceipt === undefined);
   freezeDeep(scope); freezeDeep(catalog);
@@ -68,9 +76,20 @@ export function createSelectedNativeSourceApplication(raw) {
     need(!workspace || value.input.operation !== 'soty.context.select');
     registry.validateInput(entry, value); return value;
   }
+  function validatedInput(request) {
+    const value = input(request.input);
+    if (validateNativeInput !== undefined) {
+      need(host && host.withOwner(request, () => {
+        const checked = validateNativeInput(value.input);
+        if (types.isPromise(checked)) { void Promise.prototype.then.call(checked, () => {}, () => {}); need(false); }
+        need(checked === true); return true;
+      }) === true);
+    }
+    return value;
+  }
   async function call(request, path, data, signal) {
     need(host && signal instanceof AbortSignal && !signal.aborted);
-    const captured = input(request.input), response = await host.apps().callScopedNativeSource({ scope,
+    const captured = validatedInput(request), response = await host.apps().callScopedNativeSource({ scope,
       handle: captured.handle, path, requestId: request.requestId, input: data, signal,
       ...(workspace ? { contextRef: captured.contextRef } : {}),
       withCurrentOwner: callback => host.withOwner(request, callback) });
@@ -80,6 +99,7 @@ export function createSelectedNativeSourceApplication(raw) {
     fields(envelope, ['ok', 'data']); need(envelope.ok === true); return captureQueryData(envelope.data);
   }
   function hiveOperation(value) {
+    if (value.operation === 'hive.workflow.create') return selectedHiveWorkflowOperations(value);
     const create = value.operation === 'hive.cell.create';
     fields(value, ['operation', 'expectedRevision', 'id', 'title', ...(create ? ['viewId', 'x', 'y'] : [])]);
     need((create || value.operation === 'hive.cell.title') && Number.isSafeInteger(value.expectedRevision) && value.expectedRevision >= 1
@@ -96,11 +116,11 @@ export function createSelectedNativeSourceApplication(raw) {
     return [{ op: 'object.update', id: value.id, patch: { title: value.title } }];
   }
   const adapter = effectful ? Object.freeze({ profile: EXTERNAL_ADAPTER_PROFILE, withAuthority,
-    async execute(request, signal) { const data = input(request.input); need(request.inputDigest === canonicalHash(data));
+    async execute(request, signal) { const data = validatedInput(request); need(request.inputDigest === canonicalHash(data));
       if (hive) await call(request, '/api/embed/operations', { expectedRevision: data.input.expectedRevision, operations: hiveOperation(data.input) }, signal);
       else await call(request, '/api/embed/invoke', data.input, signal); },
     async readProof(request, signal) {
-      const data = input(request.input), base = { requestId: request.requestId, inputDigest: request.inputDigest };
+      const data = validatedInput(request), base = { requestId: request.requestId, inputDigest: request.inputDigest };
       need(request.inputDigest === canonicalHash(data));
       let proof; try {
         if (hive) {
@@ -169,6 +189,12 @@ export function createSelectedNativeSourceApplication(raw) {
             result.insertionViews = insertionViews;
           }
         } else result = await call(request, '/api/embed/query', data.input, signal);
+        if (readOutput !== undefined) {
+          need(current() === true);
+          const projected = readOutput(result, data.input);
+          if (types.isPromise(projected)) { void Promise.prototype.then.call(projected, () => {}, () => {}); need(false); }
+          result = captureQueryData(projected);
+        }
         need(current() === true); registry.validateOutput(entry, result); return result;
       } });
   return Object.freeze({ appId: scope.appId, target: scope.target, catalog: wrapped, adapter,
