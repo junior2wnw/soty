@@ -125,7 +125,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
         initialOpening = false;
         if (options.initialNoteId === 'new') await openNew();
         else if (options.initialNoteId) await openNote(options.initialNoteId);
-        else if (rows[0] && matchMedia('(min-width: 801px)').matches) await openNote(rows[0].noteId, false);
+        else if (rows[0] && matchMedia('(min-width: 801px)').matches) await openNote(rows[0].noteId);
         else showLanding();
       }
     } catch (error) {
@@ -145,7 +145,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
         if (policy !== 'network') { showUnavailable(error); return; }
         if (options.initialNoteId === 'new') await openNew();
         else if (options.initialNoteId) await openNote(options.initialNoteId);
-        else if (rows[0] && matchMedia('(min-width: 801px)').matches) await openNote(rows[0].noteId, false);
+        else if (rows[0] && matchMedia('(min-width: 801px)').matches) await openNote(rows[0].noteId);
         else showLanding();
       }
     } finally { if (!disposed && seq === listRequest) loadMore.disabled = false; }
@@ -197,7 +197,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
       editor.querySelector<HTMLTextAreaElement>('.sn-note-title')?.focus();
     } catch (error) { message.textContent = notesErrorText(error); }
   }
-  async function openNote(noteId: string, focus = true) {
+  async function openNote(noteId: string) {
     if (session?.state().note.noteId === noteId) { root.classList.add('sn-editing'); return; }
     const seq = ++openRequest;
     try {
@@ -208,7 +208,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
       if (savedDraft) { installSession(savedDraft.note, savedDraft); root.classList.add('sn-editing'); return; }
       const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache, active: () => !disposed && seq === openRequest });
       if (disposed || seq !== openRequest) return;
-      installSession(result.note, undefined, result); if (focus) root.classList.add('sn-editing');
+      installSession(result.note, undefined, result); root.classList.add('sn-editing');
     } catch (error) { if (!disposed && seq === openRequest) { message.textContent = notesErrorText(error); showUnavailable(error); } }
   }
   async function openDraft(draft: Draft) {
@@ -251,7 +251,9 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   }
   function edit(patch: Parameters<NoteSession['edit']>[0]) { session?.edit(patch); }
   function renderEditor() {
-    if (!session) return; const note = session.state().note; const readOnly = note.state === 'trashed'; editor.replaceChildren(); editor.dataset.color = note.color;
+    if (!session) return; const note = session.state().note; const readOnly = note.state === 'trashed';
+    for (const previous of editor.querySelectorAll('.sn-editor-viewport')) resizeObserver.unobserve(previous);
+    editor.replaceChildren(); editor.dataset.color = note.color;
     noteActionsDialog?.close();
     const toolbar = el('div', 'sn-editor-toolbar');
     const back = iconButton('К списку записок', 'back', () => { void safeAction(() => { root.classList.remove('sn-editing'); search.focus(); }); }); back.classList.add('sn-mobile-back');
@@ -295,7 +297,8 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     const add = button('Пункт списка', 'plus', 'sn-add-item', () => addItem()); add.hidden = readOnly;
     const viewport = el('div', 'sn-editor-viewport');
     content.append(noteTitle, body, checklist, add); viewport.append(banner, alert, recovery, content);
-    editor.append(toolbar, viewport); renderItems(); fitTextarea(noteTitle); fitTextarea(body);
+    editor.append(toolbar, viewport); measuredWidth = -1; resizeObserver.observe(viewport);
+    renderItems(); fitTextarea(noteTitle); fitTextarea(body);
     function renderItems(focusId?: string) {
       checklist.replaceChildren(); if (!session) return;
       for (const item of session.state().note.items) {
@@ -399,7 +402,8 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   let measuredWidth = -1;
   const resizeObserver = new ResizeObserver(() => {
     if (!editor.clientWidth) { measuredWidth = 0; return; }
-    if (editor.clientWidth === measuredWidth) return; measuredWidth = editor.clientWidth;
+    const width = editor.querySelector<HTMLElement>('.sn-editor-viewport')?.clientWidth ?? editor.clientWidth;
+    if (width === measuredWidth) return; measuredWidth = width;
     for (const textarea of editor.querySelectorAll('textarea')) fitTextarea(textarea);
   });
   resizeObserver.observe(editor);
