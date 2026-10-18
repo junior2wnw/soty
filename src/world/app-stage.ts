@@ -382,6 +382,25 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
     onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
   }):null;
+  const mainRuntimeControls = options.presentation === 'widget' ? null : createWidgetRuntimeControls({
+    presentation:'main',returnTarget:{isCurrent:current,resolve:()=>name},
+    view,screen,message,runtime,runtimeActions,current,
+    capture:()=>{
+      const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
+        scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
+    },
+    matchesCapture:value=>{
+      if(!current()||value.epoch!==displayEpoch||value.frame!==runtime.querySelector('iframe'))return false;
+      const fresh=launcher.scopedCapture();if(!value.scoped||!fresh)return value.scoped===!!fresh;
+      const before=value.source,after=captureSourcePin(fresh.source);
+      return !!before&&!!after&&value.slot===fresh.slot&&value.handle===fresh.handle
+        &&before.id===after.id&&before.version===after.version&&before.digest===after.digest;
+    },
+    canAct:()=>current()&&!runtimePending,
+    createDialog,iconButton,button,el,isFocusTarget:isDialogFocusTarget,
+    retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
+    onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
+  });
   async function openCurrentEntry(): Promise<void> {
     if (!current() || runtimePending || entryRecoveryPending || currentEntryRetry.hidden || !options.onOpenCurrentEntry) return;
     const epoch = entryRecoveryEpoch, live = () => current() && epoch === entryRecoveryEpoch;
@@ -667,6 +686,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }
