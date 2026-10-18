@@ -293,10 +293,14 @@ test('D1 malformed post-commit host result cannot duplicate the saved effect on 
 });
 
 const writerSource = String.raw`
-  import { writeFileSync, existsSync } from 'node:fs';
+  import { writeFileSync, existsSync, renameSync } from 'node:fs';
   import { join } from 'node:path';
   const c = JSON.parse(process.argv[1]);
-  const mark = (name, value) => writeFileSync(join(c.directory, name + '-' + c.tag), JSON.stringify(value));
+  const mark = (name, value) => {
+    const target = join(c.directory, name + '-' + c.tag), pending = target + '.pending';
+    writeFileSync(pending, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+    renameSync(pending, target);
+  };
   const { createWorldService } = await import(c.worldModule);
   const { createAppsService } = await import(c.appsModule);
   let world, apps;

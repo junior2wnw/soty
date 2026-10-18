@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { Server } from 'node:http';
 import { createGonkaProxy, createApplicationTokenAuthenticator, defaultGonkaProxyModel } from '../gonka-proxy.js';
+import { loadWorldConfiguration } from '../world-configuration.js';
 
 const startupUrl = new URL('../startup.js', import.meta.url);
 const startup = await readFile(startupUrl, 'utf8');
@@ -52,8 +53,8 @@ function controlledStartup() {
   server.close = () => calls.push('server.close'); server.closeAllConnections = () => calls.push('connections.close');
   const app = { locals: { appsService: { handleUpgrade: () => false }, humanCalls: { attachSignaling() { calls.push('human.attach'); } },
     async closeServices() { calls.push('services.close'); if (state.root) state.reentrant = state.root.close(); if (state.failure === 'services') throw new Error('not-public-detail'); } } };
-  const values = { createServer: () => server, path, fileURLToPath, types, WebSocketServer: SocketServer,
-    createHttpApp(_dist, options) { calls.push('http.create'); assert.equal(options.env.HOST, 'controlled.invalid'); assert.equal(options.gonka.apiKey, ''); return app; },
+  const values = { createServer: () => server, path, fileURLToPath, types, loadWorldConfiguration, WebSocketServer: SocketServer,
+    createHttpApp(_dist, options) { calls.push('http.create'); assert.equal(options.env.HOST, 'controlled.invalid'); assert.equal(options.gonka.apiKey, ''); state.httpOptions = options; return app; },
     waitForRejectedHttpStart: async () => {}, createRoomStore: () => ({ close() { calls.push('rooms.close'); if (state.failure === 'rooms') throw new Error('not-public-detail'); } }),
     attachRealtime() { calls.push('realtime.attach'); }, createTrafficTunnelProxy: options => ({ enabled: false, publicPath: options.publicPath }),
     hasSingleHostHeader: () => true, fenceClosingUpgrade: () => false,
@@ -64,6 +65,19 @@ function controlledStartup() {
   const create = new Function(...Object.keys(values), code + '\nreturn createRootStartup;')(...Object.values(values));
   return { create, server, state, calls, sockets };
 }
+
+test('actual factory takes the World writer flag only from its explicit host environment', async () => {
+  for (const flag of ['', '0', '1']) {
+    const f = controlledStartup();
+    const root = await f.create({
+      env: { HOST: 'controlled.invalid', SOTY_WORLD_ATTACHMENT_WRITES: flag },
+      httpOptions: { worldAttachmentWrites: flag !== '1' },
+    });
+    assert.equal(f.state.httpOptions.worldAttachmentWrites, flag === '1');
+    assert.equal(f.calls.includes('listen'), false);
+    await root.close();
+  }
+});
 
 test('actual factory controlled lifecycle retains realtime/human caps and starts only explicitly', async () => {
   const f = controlledStartup();
