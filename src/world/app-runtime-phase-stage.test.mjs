@@ -24,7 +24,9 @@ exports.harness=(host,options,state)=>{
  const current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
- const closeMore=()=>{},showMessage=text=>{message.textContent=text;state.messages.push(text);};
+ const closeMore=()=>{};
+ ${declaration('messageOwner').replace(/^const /u,'let ')}
+ ${fn('showMessage')}
  const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>null};
  const button=host.button,el=host.el,emptyState=()=>host.el('div'),createDialog=host.createDialog;
  const appLaunchFailure=()=>({title:'Existing error',detail:'Existing detail'});
@@ -64,6 +66,8 @@ function fixture(presentation){
  const el=(tag,_class,text='')=>Object.assign(new Node(tag,state),{textContent:text});
  const createDialog=(_title,onClose)=>{const dialog={element:new Node('dialog',state),body:new Node('body',state),close(){onClose();}};state.dialogs.push(dialog);return dialog;};
  const host={view,runtime,ownerDocument:doc,message:new Node('message',state),panel:Object.assign(new Node('panel',state),{hidden:true}),button,el,createDialog};
+ let observedMessage=host.message.textContent;
+ Object.defineProperty(host.message,'textContent',{get:()=>observedMessage,set:text=>{observedMessage=text;state.messages.push(text);}});
  const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
  const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){}},state);
  const tick=ms=>{const target=now+ms;while(true){const t=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!t||t[1].at>target)break;tasks.delete(t[0]);now=t[1].at;t[1].fn();}now=target;};

@@ -104,6 +104,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const detachVoiceBridge=options.nativeVoice?mountRootVoiceCarrier({view,getFrame:()=>runtime.querySelector('iframe'),isCurrent:current,client:options.nativeVoice.client,mount:options.nativeVoice.mount,appId:app.appId,accountId}):()=>{};
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite'); message.setAttribute('aria-atomic', 'true');
+  let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
   const feedbackHost = el('div');
   const reviewsHost = el('div');
@@ -130,7 +131,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
-  function showMessage(text: string): void { if (current()) { message.textContent = text; message.hidden = !text; } }
+  function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
     moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && current()) more.focus();
   }
@@ -330,11 +331,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       view.addEventListener('message',receive);controller.signal.addEventListener('abort',cancel,{once:true});
       const timeout=setTimeout(()=>finish('unknown'),12000);hidden.src=reply.url;screen.append(hidden);
     });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;lastRuntimeLaunchAt=Date.now();return true;},
-    onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.');
+    onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.','renewal');
       else if(state==='login_required')showMessage(isRootSsoWorkspacePin(readRenewBinding()?.source)
         ?'Обновление доступа пока не подтверждено. Данные сохранены.'
-        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
-      else if(state==='ready'&&(!runtimeDisplay||runtimeDisplay.snapshot().phase==='ready'))showMessage('');},
+        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.','renewal');
+      else if(state==='ready'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');},
   });
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
     current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,readBinding:readRenewBinding,
@@ -474,7 +475,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function watchRuntimeDisplay(frame: HTMLIFrameElement): void {
     const epoch = displayEpoch, binding = launcher.scopedCapture(), source = captureSourcePin(binding?.source), entry = launcher.entry();
-    let ownMessage = 'Открываем окно приложения…';
     const live = () => current() && epoch === displayEpoch && runtime.querySelector('iframe') === frame;
     const sameSlot = () => {
       const fresh = launcher.scopedCapture(), pin = captureSourcePin(fresh?.source);
@@ -511,12 +511,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       runtime.setAttribute('aria-busy', String(state.busy));
       // Other account/renewal errors own their message and are never erased by
       // a late transport event. All copy here is finite and contains no URL.
-      if (!message.textContent || message.textContent === ownMessage) { showMessage(state.message); ownMessage = state.message; }
+      if (!message.textContent || messageOwner === 'runtime') showMessage(state.message, 'runtime');
       recoveryRetry.hidden = options.presentation === 'widget' ? false : !state.canRetry;
       externalRecovery.hidden = !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
     } });
     runtimeDisplay = display;
-    showMessage(ownMessage); runtime.setAttribute('aria-busy', 'true');
+    if (!message.textContent || messageOwner === 'runtime') showMessage(display.snapshot().message, 'runtime');
+    runtime.setAttribute('aria-busy', 'true');
     releaseRuntimeDisplay = () => {
       display.dispose(); frame.removeEventListener('load', loaded);
       if (runtimeDisplay === display) runtimeDisplay = null;
@@ -537,7 +538,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
     stopAssist();
     const existingFrame = runtime.querySelector('iframe');
-    if (existingFrame) showMessage('Соединяем с приложением…');
+    if (existingFrame) showMessage('Соединяем с приложением…', 'runtime');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
       const url = await launcher.launch({ requireSameBinding: automatic });

@@ -29,7 +29,7 @@ const app = { id: appId, name: 'ХочуИпотеку', state: 'ready', access:
   ownerAccountId: 'account-A', createdAt: 1, updatedAt: 1, entry: { appId, domainId, origin: 'https://app.fixture.invalid', path: '/' } };
 
 function fixture({ mode = 'search', loadMine = async () => {}, beforeRead = async () => {} } = {}) {
-  const calls = [], cameraCalls = [], focusCalls = [], updates = [], metadata = new Map(), exports = {}, state = { current: true };
+  const calls = [], cameraCalls = [], focusCalls = [], updates = [], listCloses = [], metadata = new Map(), exports = {}, state = { current: true };
   const directory = createFieldDirectory({ accountId: 'account-A', isCurrent: () => state.current, api: { async request(op, args) {
     calls.push({ op, args }); await beforeRead(); assert.equal(args.expectedAccountId, 'account-A');
     assert.equal(op, 'apps.directory.search'); return { apps: [app], nextCursor: null };
@@ -45,10 +45,10 @@ function fixture({ mode = 'search', loadMine = async () => {}, beforeRead = asyn
     engine: { element: { clientWidth: 1280, clientHeight: 800 },
       update(value) { updates.push(value); }, setCamera(value) { cameraCalls.push(value); }, focusContext(value) { focusCalls.push(value); } },
     wide: { matches: true }, fieldEntityKey, layoutUnifiedField, fieldBounds, rectPoints, fitFieldCamera,
-    options: { onMessage() {} }, closePreview() {}, updateSummary() {},
+    options: { onMessage() {} }, closeList(restore) { assert.equal(restore, false); listCloses.push(restore); }, closePreview() {}, updateSummary() {},
   };
   vm.runInNewContext(compiled, environment);
-  return { api: exports.api, environment, state, calls, cameraCalls, focusCalls, updates, directory };
+  return { api: exports.api, environment, state, calls, cameraCalls, focusCalls, updates, listCloses, directory };
 }
 
 test('registration refresh re-queries an existing empty query and shows the new owner app without changing camera or query', async () => {
@@ -57,6 +57,7 @@ test('registration refresh re-queries an existing empty query and shows the new 
   assert.equal(f.environment.searchItems[0].entity.id, appId); assert.equal(f.environment.empty.hidden, true);
   assert.equal(f.environment.queries.search, 'Хочу'); assert.equal(f.cameraCalls.length, 0); assert.equal(f.focusCalls.length, 0);
   assert.equal(f.updates.length, 1); assert.equal(f.updates[0].searchDocument.shortcuts[0].entity.id, appId);
+  assert.deepEqual(f.listCloses, [false], 'Search refresh closes the old chooser without moving focus');
   f.directory.dispose();
 });
 
@@ -74,6 +75,7 @@ test('Mine refresh loads metadata without public search, camera moves or changin
 
 test('a changed screen during directory loading cannot dispatch a search or deliver its late private result', async () => {
   const before = fixture(); before.state.current = false; await before.api.refresh({ preserveView: true }); assert.equal(before.calls.length, 0);
+  assert.equal(before.listCloses.length, 0, 'A retired screen cannot close its former chooser');
   let resolve, entered = false;
   const late = fixture({ beforeRead: async () => { entered = true; await new Promise(done => { resolve = done; }); } });
   const pending = late.api.refresh({ preserveView: true });

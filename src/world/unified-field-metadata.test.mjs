@@ -33,7 +33,7 @@ const resolved = (items = [item], unavailable = [], errors = []) => ({ items, un
 const page = (items = [item]) => ({ items, cursor: null, status: 'ready', errors: [] });
 function harness({ query = 'HIVE', resolve = async () => resolved(), load = async () => page(), viewState } = {}) {
   let liveGeneration = 1, disposed = false, currentDocument = document();
-  const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0 };
+  const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0, listCloses: [] };
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
     mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
     emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
@@ -47,7 +47,8 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
     directory: { resolve, async loadMine() { state.pages++; return load(); } },
     pruneMetadata() {}, allMetadata() { return [...environment.metadata.values()]; },
     updateMineFilter() { environment.exports.updateMineEmpty(currentDocument); },
-    updateStatus() {}, closePreview() { state.previewClosed = (state.previewClosed ?? 0) + 1; environment.selected = null; }, openPreview() {},
+    updateStatus() {}, closeList(restore) { assert.equal(restore, false); state.listCloses.push(restore); },
+    closePreview() { state.previewClosed = (state.previewClosed ?? 0) + 1; environment.selected = null; }, openPreview() {},
     run(promise) { state.runs.push(promise); },
     mountEngine() { state.mounts++; environment.engine = engine; environment.exports.updateMineEmpty(currentDocument); },
   };
@@ -92,6 +93,7 @@ test('Back with a HIVE query never reports no results before current metadata re
   const pending = deferred(), h = harness({ resolve: () => pending.promise });
   h.api.updateMineEmpty(h.document); assert.equal(h.environment.empty.hidden, true); assert.equal(h.state.empties.length, 0);
   const load = h.api.loadMine(); h.api.updateMineEmpty(h.document);
+  assert.deepEqual(h.state.listCloses, [false], 'Metadata loading closes the old chooser without restoring its focus');
   assert.equal(h.environment.element.dataset.mineState, 'loading'); assert.equal(h.environment.empty.hidden, true);
   assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'Проверяем доступ');
   pending.resolve(resolved()); await load;
