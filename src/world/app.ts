@@ -1382,6 +1382,8 @@ class WorldApplication {
     const filePicker = el('input'); filePicker.type = 'file'; filePicker.multiple = true; filePicker.hidden = true;
     const touchKeyboard = matchMedia('(pointer:coarse)').matches; input.enterKeyHint = touchKeyboard ? 'enter' : 'send'; input.setAttribute('aria-keyshortcuts', touchKeyboard ? 'Control+Enter Meta+Enter' : 'Enter');
     const attach = iconButton('Прикрепить файлы', 'plus', () => filePicker.click()); attach.hidden = true;
+    const attachmentSummary = el('div', 'sw-attachment-summary'); attachmentSummary.hidden = true; attachmentSummary.setAttribute('role', 'status'); attachmentSummary.setAttribute('aria-live', 'polite'); attachmentSummary.setAttribute('aria-atomic', 'true'); attachmentSummary.setAttribute('aria-label', 'Подготовка вложений перед отправкой');
+    const attachmentSummaryCount = el('strong'), attachmentSummarySize = el('span'), attachmentSummaryStatus = el('span', 'sw-attachment-summary-status'); attachmentSummaryStatus.hidden = true; attachmentSummary.append(attachmentSummaryCount, attachmentSummarySize, attachmentSummaryStatus);
     const attachmentRail = el('div', 'sw-attachment-queue'); attachmentRail.hidden = true; attachmentRail.setAttribute('aria-label', 'Вложения перед отправкой');
     const attachmentHint = el('div', 'sw-attachment-hint', 'До 10 файлов: каждый до 1 МБ, вместе до 4 МБ. Подпись необязательна.'); attachmentHint.hidden = true;
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
@@ -1413,6 +1415,15 @@ class WorldApplication {
     const sizeLabel = (bytes: number): string => bytes < 1024 ? `${bytes} Б` : `${Math.ceil(bytes / 1024)} КБ`;
     const renderAttachments = (): void => {
       if (!active()) return;
+      attachmentSummary.hidden = attachmentRows.length === 0;
+      const readyCount = attachmentRows.filter(item => item.status === 'ready').length, errorCount = attachmentRows.filter(item => item.status === 'error' || item.status === 'cancel-pending' && item.error).length;
+      const summaryCount = attachmentRows.length ? `Готово ${readyCount} из ${attachmentRows.length}` : '', summarySize = attachmentRows.length ? `${attachmentRows.length} / 10 файлов · ${sizeLabel(attachmentRows.reduce((sum, item) => sum + item.size, 0))}` : '';
+      const summaryStatus = !attachmentRows.length ? '' : outbox?.pendingIntent() ? 'Отправка не подтверждена' : errorCount ? `Требуют внимания: ${errorCount}` : '';
+      // Aggregate text changes on queue/state changes, never on each uploaded chunk.
+      if (attachmentSummaryCount.textContent !== summaryCount) attachmentSummaryCount.textContent = summaryCount;
+      if (attachmentSummarySize.textContent !== summarySize) attachmentSummarySize.textContent = summarySize;
+      if (attachmentSummaryStatus.textContent !== summaryStatus) attachmentSummaryStatus.textContent = summaryStatus;
+      attachmentSummaryStatus.hidden = !summaryStatus;
       attachmentRail.hidden = attachmentRows.length === 0; attachmentRail.replaceChildren();
       attachmentHint.hidden = !attachmentWritable && !attachmentRows.length;
       attachmentHint.textContent = outbox?.pendingIntent() ? 'Прежняя отправка ещё без подтверждения. Уточним её результат; ваши новые изменения останутся черновиком.' : attachmentWritable ? 'До 10 файлов: каждый до 1 МБ, вместе до 4 МБ. Подпись необязательна.' : 'Отправка файлов пока выключена. Очередь сохранена на устройстве; файл можно убрать.';
@@ -1442,7 +1453,7 @@ class WorldApplication {
     filePicker.addEventListener('change',()=>{chooseFiles(filePicker.files);filePicker.value='';});
     chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
     chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
-    composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentSummary, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
     const attachmentReady = this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities',{communityId:group.communityId,expectedAccountId:accountId}).then(result=>{
       if(!active())return; attachmentReader=result.readable; attachmentWritable=result.writable;
       attach.hidden=attachmentHint.hidden=!attachmentWritable;

@@ -1,5 +1,9 @@
-.sw-attachment-queue { display: grid; gap: 8px; padding: 10px 18px 0; max-height: 220px; overflow: auto; }
-.sw-attachment-queue[hidden], .sw-attachment-hint[hidden] { display: none; }
+.sw-attachment-queue { display: grid; gap: 8px; padding: 10px 18px 0; max-height: min(220px, max(70px, calc(var(--soty-visible-height, 100dvh) - 280px))); overflow: auto; }
+.sw-attachment-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; padding: 10px 18px 0; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.sw-attachment-summary strong { font-size: 13px; }
+.sw-attachment-summary > span { opacity: .78; }
+.sw-attachment-summary .sw-attachment-summary-status { flex-basis: 100%; opacity: 1; }
+.sw-attachment-queue[hidden], .sw-attachment-hint[hidden], .sw-attachment-summary[hidden], .sw-attachment-summary [hidden] { display: none; }
 .sw-attachment-card { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border: 1px solid var(--sw-line); border-radius: 12px; background: var(--sw-surface); min-width: 0; }
 .sw-attachment-info { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .sw-attachment-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
@@ -39,10 +43,44 @@
 .sw-message-photo [hidden], .sw-photo-stage [hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) { .sw-dialog.sw-photo-gallery[open], .sw-dialog.sw-photo-gallery[open]::backdrop, .sw-message-photo { scroll-behavior: auto; transition: none; animation: none; } }
 @media (max-width: 480px) {
-  .sw-attachment-queue { padding: 6px 8px 0; max-height: 180px; }
+  .sw-attachment-summary { padding: 6px 10px 0; }
+  .sw-attachment-queue { padding: 6px 8px 0; max-height: min(180px, max(70px, calc(var(--soty-visible-height, 100dvh) - 280px))); }
   .sw-attachment-hint { padding: 0 10px 6px; }
   .sw-attachment-card { gap: 4px; padding-left: 8px; }
   .sw-message-photos { gap: 6px; }
   .sw-photo-controls { grid-template-columns: 44px minmax(70px, 1fr) 44px; }
   .sw-photo-controls > :last-child { grid-column: 1 / -1; }
+}
+
+/* In a short desktop/tablet chat, keep the queue and composer reachable.
+   The side rail and conversation list remain available for navigation. */
+@media (min-width: 721px) and (max-height: 360px) {
+  .sw-app:not([data-human-call-active="true"]):not([data-human-call-incoming="true"]):has(> .sw-main > .sw-inbox.has-room .sw-attachment-queue:not([hidden])) {
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "rail notice" "rail main";
+  }
+  .sw-app:not([data-human-call-active="true"]):not([data-human-call-incoming="true"]):has(> .sw-main > .sw-inbox.has-room .sw-attachment-queue:not([hidden])) > .sw-topbar {
+    display: none;
+  }
+}
+
+/* Let the composer dock scroll before it can displace the chat header.
+   Keep every context row and action in normal flow; no sticky overlap. */
+@media (max-height: 360px) {
+  .sw-app > .sw-main > .sw-inbox.has-room .sw-chat:has(> .sw-composer-dock > .sw-attachment-queue:not([hidden])) {
+    overflow: clip;
+  }
+  .sw-app > .sw-main > .sw-inbox.has-room .sw-chat:has(> .sw-composer-dock > .sw-attachment-queue:not([hidden])) > .sw-chat-messages {
+    padding-block: 0;
+  }
+  .sw-app > .sw-main > .sw-inbox.has-room .sw-chat:has(> .sw-composer-dock > .sw-attachment-queue:not([hidden])) > .sw-composer-dock {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: auto;
+    scrollbar-gutter: stable;
+    scroll-padding-block: 8px;
+  }
 }
