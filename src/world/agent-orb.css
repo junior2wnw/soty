@@ -1,4 +1,8 @@
 .sw-app[data-agent-orb=ready]>header.sw-topbar { padding-inline-end: calc(60px + env(safe-area-inset-right,0px)); }
+/* A short chat with queued files needs a real 44px slot, not a text overlap. */
+.sw-app[data-agent-orb=ready] .sw-chat>.sw-chat-header[data-agent-orb-dock=queue] {
+  padding-inline-end: calc(60px + env(safe-area-inset-right,0px));
+}
 @media (max-width: 720px) {
   .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner {
     padding-inline-end: calc(60px + env(safe-area-inset-right,0px));

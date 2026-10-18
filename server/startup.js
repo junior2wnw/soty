@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { createHttpApp, waitForRejectedHttpStart } from './http-app.js';
+import { loadWorldConfiguration } from './world-configuration.js';
 import { createRoomStore } from './room-store.js';
 import { attachRealtime } from './realtime.js';
 import { createTrafficTunnelProxy } from './traffic-tunnel-proxy.js';
@@ -50,6 +51,7 @@ export function rootGonkaOptions(env) {
  * to start listening; this instance never owns process signals, IPC or exit. */
 export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), httpOptions = {} } = {}) {
   const env = captureEnvironment(rawEnv);
+  const worldConfiguration = loadWorldConfiguration(env);
   const distDir = env.SOTY_DIST_DIR ? path.resolve(env.SOTY_DIST_DIR) : path.join(rootDir, 'dist');
   const dataDir = env.DATA_DIR || path.join(rootDir, 'data'), port = Number.parseInt(env.PORT || '8080', 10), host = env.HOST || '0.0.0.0';
   const operatorFlag = env.SOTY_UNIVERSAL_OPERATOR_ENABLED ?? '';
@@ -88,7 +90,7 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
       ...(installedApplications.sourceCredentialFor ? { sourceCredentialFor: installedApplications.sourceCredentialFor } : {}) };
     try { app = createHttpApp(distDir, { env, dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration,
       ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration,
-      ...httpOptions, env, gonka: rootGonkaOptions(env) }); }
+      ...httpOptions, ...worldConfiguration, env, gonka: rootGonkaOptions(env) }); }
     catch (error) { await waitForRejectedHttpStart(error); throw error; }
     server = createServer(app); server.keepAliveTimeout = 65000; server.headersTimeout = 70000;
     wss = new WebSocketServer({ noServer: true, maxPayload: 34000000 });

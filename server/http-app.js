@@ -1,6 +1,7 @@
 import express from "express";
 import { createAgentSourceAccess } from './agent-source-access.js';
 import path from "node:path";
+import { types } from "node:util";
 import { attachAccountTransfer } from "./account-transfer.js";
 import { attachConnectModule, connectAllowedOrigins } from "./connect-module.js";
 import { attachConnectorApi } from "./connector-api.js";
@@ -9,6 +10,7 @@ import { attachSotyIdentityAdapterApi } from "./soty-identity-adapter-api.js";
 import { attachTrafficControl } from "./traffic-control.js";
 import { attachConnectReleaseSource } from "./connect-release-source.js";
 import { createWorldService } from "../modules/world/server/index.mjs";
+import { captureWorldAttachmentWrites } from './world-configuration.js';
 import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
@@ -53,8 +55,11 @@ export async function waitForRejectedHttpStart(error) {
 }
 
 export function createHttpApp(distDir, options = {}) {
+  if (!(options && typeof options === 'object' && !types.isProxy(options)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(options)))) throw new AccessError('native_source_configuration_invalid');
+  const worldAttachmentWrites = captureWorldAttachmentWrites(options);
   const nativeSources = captureNativeSourceHandlers(options);
-  try { return createHttpAppWithNativeSources(distDir, options, nativeSources); }
+  try { return createHttpAppWithNativeSources(distDir, options, nativeSources, worldAttachmentWrites); }
   catch (error) {
     if (nativeSources.enabled) {
       const cleanup = Promise.all([rejectedStarts.get(error), nativeSources.close()]).then(() => undefined);
@@ -65,7 +70,7 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, localExecutorCurrent = false } = {}, nativeSources, worldAttachmentWrites = false) {
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -182,7 +187,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       configuration: { ...personalAgent, sourceReferences: personalAgent?.sourceReferences ?? externalEntries.map(entry => entry.contract),
         sourceCredentialFor: sourceAccess.sourceCredentialFor } });
     voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
-    world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
+    world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty', attachmentWrites: worldAttachmentWrites });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
       verifyNativeContext: (token, mode) => {

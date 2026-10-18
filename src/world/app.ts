@@ -1462,8 +1462,8 @@ class WorldApplication {
     }).catch(()=>{ /* Older text-only servers do not expose the attachment port. */ });
     fitComposer(); updateComposer(); refreshReply();
     let composerWidth = 0;
-    const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
-    composerResize.observe(composer); composerResize.observe(dock);
+    const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); updateJump(); });
+    composerResize.observe(composer); composerResize.observe(dock); composerResize.observe(messages);
     const unsubscribeDraft = this.chatDrafts.subscribe(accountId, group.communityId, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; updateComposer(); refreshReply(); describeDraft(); });
 
     const ordered = (): WorldMessage[] => [...known.values()].sort((a, b) => a.seq - b.seq);
@@ -1475,7 +1475,7 @@ class WorldApplication {
     };
     const restorePosition = (position: ReturnType<typeof capturePosition>): void => { messages.scrollTop = position.node?.isConnected ? messages.scrollTop + position.node.getBoundingClientRect().top - position.top : position.scroll + messages.scrollHeight - position.height; };
     const updateJump = (): void => {
-      jump.hidden = initial || nearEnd() || !known.size; if (nearEnd()) unseen = 0;
+      jump.hidden = initial || nearEnd() || !known.size || messages.clientHeight < 60; if (nearEnd()) unseen = 0;
       jumpCount.hidden = !unseen; jumpCount.textContent = unseen > 99 ? '99+' : String(unseen); jump.setAttribute('aria-label', unseen ? `К последним сообщениям, ${unseen} новых` : 'К последним сообщениям');
     };
     const focusMessage = (messageId: string): void => {

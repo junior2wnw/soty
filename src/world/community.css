@@ -46,4 +46,14 @@
   .sw-detail-view.has-chat .sw-community-summary { display: none; }
   .sx-community-apps { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
+
+/* Short windows still need a reachable description, tabs and community actions.
+   The chat keeps its separate bounded composer and message scrolling. */
+@media (max-height: 360px) {
+  .sw-detail-view.has-chat > .sw-community-summary { display: none; }
+  .sw-detail-view:not(.has-chat) { display: block; overflow: auto; overscroll-behavior: contain; }
+  .sw-detail-view:not(.has-chat) > .sw-community-summary { max-height: none; overflow: visible; }
+  .sw-detail-view:not(.has-chat) > .sw-community-content,
+  .sw-detail-view:not(.has-chat) .sw-community-body { overflow: visible; }
+}
 @media (max-width: 359px) { .sx-community-apps { grid-template-columns: minmax(0,1fr); } }

@@ -37,6 +37,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   root.append(orb, parking);
   let account = '', epoch = 0, sessionEpoch = 0, disposed = false, expandedStage: HTMLElement | null = null;
   let modal: HTMLDialogElement | null = null;
+  let queueDockHeader: HTMLElement | null = null;
   let position: OrbPoint | null = null, drag: { pointer: number; start: OrbPoint; before: OrbPoint | null; x: number; y: number; moved: boolean; releaseIframes(): void } | null = null;
   let suppressClick = false, dialog: WorldDialog | null = null, host: HTMLElement | null = null;
   let handle: WorldAssistantHandle | null = null, mounting: Promise<void> | null = null;
@@ -54,13 +55,39 @@ export function mountAgentOrb(root: HTMLElement, options: {
       if (account && orb.isConnected) orb.showPopover();
     } catch { /* The control remains usable in browsers without top-layer support. */ }
   }
+  function clearQueueDock(): void { queueDockHeader?.removeAttribute('data-agent-orb-dock'); queueDockHeader = null; }
+  function queueDock(box: OrbViewport): OrbPoint | null {
+    let header: HTMLElement | null = null;
+    if (account && !modal && !expandedStage && orb.parentElement === root) {
+      for (const chat of root.querySelectorAll<HTMLElement>('.sw-chat')) {
+        const queue = chat.querySelector<HTMLElement>('.sw-attachment-queue'), candidate = chat.querySelector<HTMLElement>('.sw-chat-header');
+        if (queue && !queue.hidden && !queue.closest('[hidden],[inert]') && queue.getClientRects().length
+          && candidate?.parentElement === chat && candidate.getClientRects().length) { header = candidate; break; }
+      }
+    }
+    if (header !== queueDockHeader) { clearQueueDock(); queueDockHeader = header; header?.setAttribute('data-agent-orb-dock', 'queue'); }
+    if (!header) return null;
+    // Reserve actual header space before measuring. This projection never changes
+    // the saved preference; a moved pointer still uses the ordinary drag path.
+    const rect = header.getBoundingClientRect(), style = view.getComputedStyle?.(header);
+    const top = parseFloat(style?.paddingTop ?? '') || 0, bottom = parseFloat(style?.paddingBottom ?? '') || 0;
+    const point = { x: rect.right - 50, y: rect.top + top + (rect.height - top - bottom - 44) / 2 };
+    if (!Number.isFinite(point.x + point.y) || rect.width < 104 || rect.height < 56
+      || point.x < box.left + 6 || point.x + 44 > box.left + box.width - 6
+      || point.y < box.top + 6 || point.y + 44 > box.top + box.height - 6) { clearQueueDock(); return null; }
+    return drag?.moved ? null : point;
+  }
   function layout(): void {
     if (disposed) return;
+    root.dataset.agentOrb = account ? 'ready' : 'hidden';
     const box = viewport(), preferred = position ? clampOrb(position, box) : dockOrb(box);
-    const point = placeFloatingControl(preferred, box, floatingObstacles(doc, element => element === orb || orb.contains(element)));
+    const dock = queueDock(box), obstacles = dock ? [] : floatingObstacles(doc, element => element === orb || orb.contains(element));
+    for (const target of [queueDockHeader?.parentElement?.querySelector<HTMLElement>('.sw-attachment-summary'),
+      queueDockHeader?.parentElement?.querySelector<HTMLElement>('.sw-attachment-queue')])
+      if (!dock && target && !target.hidden && target.getClientRects().length) obstacles.push(target.getBoundingClientRect());
+    const point = dock ?? placeFloatingControl(preferred, box, obstacles);
     orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
     orb.dataset.projected = String(point.x !== preferred.x || point.y !== preferred.y);
-    root.dataset.agentOrb = account ? 'ready' : 'hidden';
     orb.hidden = !account; orb.dataset.docked = String(!position);
     if (typeof orb.showPopover === 'function') {
       try {
@@ -205,6 +232,6 @@ export function mountAgentOrb(root: HTMLElement, options: {
         flush: async () => { await bound?.flush?.(); }, hasUnsavedChanges: () => false }; },
     async flush() { await mounting; await handle?.flush?.(); },
     hasUnsavedChanges: () => !!handle?.hasUnsavedChanges?.(),
-    dispose() { if (disposed) return; clearModal(); resetSession(); disposed = true; epoch++; changes?.disconnect(); if (layoutFrame !== null) view.cancelAnimationFrame(layoutFrame); abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
+    dispose() { if (disposed) return; clearModal(); resetSession(); disposed = true; clearQueueDock(); epoch++; changes?.disconnect(); if (layoutFrame !== null) view.cancelAnimationFrame(layoutFrame); abort.abort(); orb.remove(); parking.remove(); delete root.dataset.agentOrb; },
   };
 }

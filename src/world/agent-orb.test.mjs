@@ -11,7 +11,8 @@ import * as feedbackMedia from './feedback-media.mjs';
 const read = file => readFileSync(new URL(file, import.meta.url), 'utf8');
 const compile = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const pointerGuardCode = compile(read('./iframe-pointer-guard.ts'));
-const orbCode = compile(read('./agent-orb.ts')), positionCode = compile(read('./agent-orb-position.ts')), dialogsCode = compile(read('./dialogs.ts'));
+// The optional path runs the same contracts against the preserved old module.
+const orbCode = compile(readFileSync(process.env.SOTY_TEST_ORB_SOURCE ?? new URL('./agent-orb.ts', import.meta.url), 'utf8')), positionCode = compile(read('./agent-orb-position.ts')), dialogsCode = compile(read('./dialogs.ts'));
 const appCode = compile(`${read('./app.ts')}\nexports.TestController = WorldApplication;`);
 const feedbackCode = compile(read('./app-feedback.ts'));
 const stageAst = ts.createSourceFile('app-stage.ts', read('./app-stage.ts'), ts.ScriptTarget.Latest, true);
@@ -607,4 +608,131 @@ test('orb leaves browser/system shortcuts and IME arrows untouched while preserv
   }
   const plain = new Event('keydown', { cancelable: true }); Object.assign(plain, { key: 'ArrowLeft', shiftKey: true }); f.orb.dispatchEvent(plain);
   assert.equal(plain.defaultPrevented, true); assert.equal(parseFloat(f.orb.style.left), parseFloat(style.left) - 40); f.agent.dispose();
+});
+
+// Native layout remains Root QA. These ports model the measured short-chat
+// header/summary/44px controls and execute the real orb/drag/modal controller.
+const rectangle = (left, top, width, height) => ({ x: left, y: top, left, top, width, height, right: left + width, bottom: top + height });
+const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+function queuedChatFixture(width = 320, height = 240) {
+  const f = fixture({ width, height }), chat = f.el('section', 'sw-chat'), header = f.el('div', 'sw-chat-header');
+  const summary = f.el('div', 'sw-attachment-summary', 'Готово 10 из 10 · 1,2 МБ'), queue = f.el('div', 'sw-attachment-queue');
+  const cancel = f.el('button', '', 'Отменить вложение'), send = f.el('button', '', 'Отправить');
+  const headerButtons = [f.el('button', '', 'О сообществе'), f.el('button', '', 'Поиск'), f.el('button', '', 'Действия')];
+  header.append(...headerButtons); queue.append(cancel); chat.append(header, summary, queue, send); f.main.append(chat);
+  const headerBox = { left: 0, top: 0, width, height: 57 };
+  header.getBoundingClientRect = () => rectangle(headerBox.left, headerBox.top, headerBox.width, headerBox.height);
+  // Reservation is the CSS contract; actual flex layout is checked in Chrome.
+  for (const [index, control] of headerButtons.entries()) control.getBoundingClientRect = () => {
+    const edge = headerBox.left + headerBox.width - (header.getAttribute('data-agent-orb-dock') === 'queue' ? 60 : 0);
+    return index === 0 ? rectangle(headerBox.left, headerBox.top + 6.5, edge - headerBox.left - 88, 44)
+      : rectangle(edge - (3 - index) * 44, headerBox.top + 6.5, 44, 44);
+  };
+  summary.getBoundingClientRect = () => rectangle(headerBox.left + 8, headerBox.top + 68, headerBox.width - 16, 44);
+  cancel.getBoundingClientRect = () => rectangle(headerBox.left + width - 52, headerBox.top + 116, 44, 44);
+  send.getBoundingClientRect = () => rectangle(headerBox.left + width - 52, headerBox.top + height - 48, 44, 44);
+  const key = 'soty.agent-orb.v1:A', saved = JSON.stringify({ x: (width - 50) / width, y: 77 / height });
+  f.saved.set(key, saved);
+  const layout = () => f.root.dispatchEvent(new Event('soty:floating-layout'));
+  return { ...f, chat, header, headerBox, headerButtons, summary, queue, cancel, send, key, originalSaved: saved, layout };
+}
+
+for (const [width, height] of [[320, 240], [390, 320]]) test(`queue dock keeps the complete summary and 44px actions visible at ${width}x${height}`, () => {
+  const f = queuedChatFixture(width, height); f.agent.setAccount('A');
+  const orb = f.orb.getBoundingClientRect();
+  assert.equal(intersects(orb, f.summary.getBoundingClientRect()), false, 'saved y=77 previously covered count/bytes');
+  assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  assert.equal(orb.width, 44); assert.equal(orb.height, 44);
+  for (const control of [...f.headerButtons, f.cancel, f.send]) {
+    const target = control.getBoundingClientRect(); assert.ok(target.width >= 44 && target.height >= 44);
+    assert.equal(intersects(orb, target), false, control.textContent);
+  }
+  assert.ok(orb.top >= 6 && orb.bottom <= height - 6);
+  assert.equal(f.saved.get(f.key), f.originalSaved); assert.equal(f.records.length, 0);
+  f.click(); assert.ok(f.dialog(), 'the same helper button remains actionable'); f.agent.dispose();
+});
+
+test('queue dock is a temporary projection: queue removal restores preference; taller viewport keeps an active queue protected without a write', () => {
+  const f = queuedChatFixture(); f.agent.setAccount('A'); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  f.queue.hidden = true; f.summary.hidden = true; f.layout();
+  assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false); assert.equal(f.orb.style.top, '77px');
+  assert.equal(f.saved.get(f.key), f.originalSaved);
+  f.queue.hidden = false; f.summary.hidden = false; f.layout(); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  f.view.visualViewport.height = 540; f.view.dispatchEvent(new Event('resize'));
+  assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue'); assert.equal(f.saved.get(f.key), f.originalSaved);
+  f.view.visualViewport.height = 240; f.view.visualViewport.dispatchEvent(new Event('resize'));
+  assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  f.agent.dispose(); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false);
+});
+
+test('queue dock uses the visible viewport and padded header content row, leaving the widget row available', () => {
+  const f = queuedChatFixture();
+  Object.assign(f.view.visualViewport, { offsetLeft: 12, offsetTop: 150 }); Object.assign(f.headerBox, { left: 12, top: 150, height: 107 });
+  f.view.getComputedStyle = element => element === f.header ? { paddingTop: '56px', paddingBottom: '7px' } : { visibility: 'visible' };
+  f.agent.setAccount('A'); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  assert.equal(f.orb.style.left, '282px'); assert.equal(f.orb.style.top, '206px');
+  assert.equal(f.saved.get(f.key), f.originalSaved);
+  f.headerBox.top = 0; f.view.visualViewport.dispatchEvent(new Event('scroll'));
+  assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false, 'a header outside the visible viewport cannot supply the slot');
+  assert.ok(f.orb.getBoundingClientRect().top >= 156); f.agent.dispose();
+});
+
+test('queue dock yields to actual modal and Stage ownership and fences account/route cleanup', () => {
+  const f = queuedChatFixture(); f.agent.setAccount('A'); const app = f.world(), modal = app.dialog('Settings');
+  assert.equal(f.orb.parentElement, modal.element); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false);
+  modal.close(); f.drain(); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  const stage = f.el('section'); f.main.append(stage); f.agent.setStage(stage, true);
+  assert.equal(f.orb.parentElement, stage); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false);
+  f.agent.setStage(stage, false); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  f.agent.setAccount('B'); assert.equal(f.saved.has('soty.agent-orb.v1:B'), false); assert.equal(f.saved.get(f.key), f.originalSaved);
+  f.agent.setAccount(''); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false); assert.equal(f.orb.hidden, true);
+  f.agent.setAccount('A'); assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue');
+  f.chat.remove(); f.layout(); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false); f.agent.dispose();
+});
+
+test('queue dock preserves pointer capture/cancel/iframe guards and persists only an explicit completed user drag', () => {
+  const f = queuedChatFixture(); const frame = f.el('iframe'); f.main.append(frame); f.agent.setAccount('A');
+  pointer(f.orb, 'pointerdown'); pointer(f.orb, 'pointermove', { clientX: 200, clientY: 100 });
+  assert.equal(f.iframePointersBlocked(), true);
+  assert.equal(intersects(f.orb.getBoundingClientRect(), f.summary.getBoundingClientRect()), false, 'drag projection also treats summary text as an obstacle');
+  pointer(f.orb, 'pointercancel'); assert.equal(f.iframePointersBlocked(), false); assert.equal(f.orb.hasPointerCapture(1), false);
+  assert.equal(f.orb.style.top, '6.5px'); assert.equal(f.saved.get(f.key), f.originalSaved);
+  pointer(f.orb, 'pointerdown', { pointerId: 2 }); pointer(f.orb, 'pointermove', { pointerId: 2, clientX: 200, clientY: 100 }); pointer(f.orb, 'pointerup', { pointerId: 2, clientX: 200, clientY: 100 });
+  assert.notEqual(f.saved.get(f.key), f.originalSaved, 'only the explicit drag changes the preference');
+  assert.equal(f.orb.style.top, '6.5px'); assert.equal(f.iframePointersBlocked(), false); assert.equal(frame.isConnected, true);
+  f.agent.dispose(); assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false);
+});
+
+test('queue dock CSS reserves 60px only for the owned header and keeps the orb 44px', () => {
+  const css = read('./agent-orb.css');
+  assert.match(css, /\.sw-app\[data-agent-orb=ready\] \.sw-chat>\.sw-chat-header\[data-agent-orb-dock=queue\]\s*\{\s*padding-inline-end:\s*calc\(60px \+ env\(safe-area-inset-right,0px\)\);\s*\}/);
+  assert.match(css, /\.sw-agent-orb\.sw-icon-button\s*\{[^}]*width: 44px; height: 44px; min-width: 44px; min-height: 44px;/);
+});
+
+for (const [width, height] of [[320, 420], [390, 540], [1200, 900]]) test(`queue dock stays reserved at ${width}x${height} for a saved preference inside queued filenames`, () => {
+  const f = queuedChatFixture(width, height), value = JSON.stringify({ x: (width - 50) / width, y: 200 / height });
+  f.saved.set(f.key, value); f.queue.getBoundingClientRect = () => rectangle(8, 112, width - 16, 180);
+  f.agent.setAccount('A');
+  assert.equal(intersects(f.orb.getBoundingClientRect(), f.queue.getBoundingClientRect()), false, 'saved preference cannot cover filename text');
+  assert.equal(intersects(f.orb.getBoundingClientRect(), f.summary.getBoundingClientRect()), false);
+  assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue'); assert.equal(f.saved.get(f.key), value);
+  for (const nextHeight of [240, 320, 420, 540, height]) {
+    f.view.visualViewport.height = nextHeight; f.view.visualViewport.dispatchEvent(new Event('resize'));
+    assert.equal(f.header.getAttribute('data-agent-orb-dock'), 'queue'); assert.equal(f.orb.style.top, '6.5px');
+    assert.equal(f.saved.get(f.key), value);
+  }
+  f.queue.hidden = true; f.summary.hidden = true; f.layout();
+  assert.equal(f.header.hasAttribute('data-agent-orb-dock'), false);
+  assert.equal(f.orb.style.left, `${width - 50}px`); assert.equal(f.orb.style.top, '200px');
+  assert.equal(f.saved.get(f.key), value); f.agent.dispose();
+});
+
+test('queue dock treats the complete rail and its plain filename text as drag obstacles at any height', () => {
+  const f = queuedChatFixture(390, 540); f.queue.getBoundingClientRect = () => rectangle(8, 112, 374, 180);
+  f.agent.setAccount('A'); pointer(f.orb, 'pointerdown'); pointer(f.orb, 'pointermove', { clientX: 100, clientY: 220 });
+  assert.equal(f.iframePointersBlocked(), true);
+  assert.equal(intersects(f.orb.getBoundingClientRect(), f.queue.getBoundingClientRect()), false);
+  assert.equal(intersects(f.orb.getBoundingClientRect(), f.summary.getBoundingClientRect()), false);
+  pointer(f.orb, 'pointercancel'); assert.equal(f.iframePointersBlocked(), false);
+  assert.equal(f.orb.style.top, '6.5px'); assert.equal(f.saved.get(f.key), f.originalSaved); f.agent.dispose();
 });
