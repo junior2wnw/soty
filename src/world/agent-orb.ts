@@ -81,7 +81,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
     if (disposed) return;
     root.dataset.agentOrb = account ? 'ready' : 'hidden';
     const box = viewport(), preferred = position ? clampOrb(position, box) : dockOrb(box);
-    const dock = queueDock(box), obstacles = dock ? [] : floatingObstacles(doc, element => element === orb || orb.contains(element));
+    const dock = queueDock(box), obstacles = dock ? [] : floatingObstacles(doc, element => element === orb || orb.contains(element), modal ? '' : '.sa-stage-runtime-notice');
     for (const target of [queueDockHeader?.parentElement?.querySelector<HTMLElement>('.sw-attachment-summary'),
       queueDockHeader?.parentElement?.querySelector<HTMLElement>('.sw-attachment-queue')])
       if (!dock && target && !target.hidden && target.getClientRects().length) obstacles.push(target.getBoundingClientRect());

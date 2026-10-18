@@ -59,6 +59,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     ? { entryPath: value, bootPath: '/_soty/boot?' + new URLSearchParams({ path: value }) } : createLaunchPath(value);
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
+  const bootRefusalOrigins = captureBootRefusalOrigins(origins);
   const template = validateTemplate(appOriginTemplate, origins);
   const namedZone = normalizeNamedAppZone(namedAppZone), limits = normalizeDomainLimits(domainLimits);
   assertApps(Array.isArray(retainedNamedAppZones) && retainedNamedAppZones.length <= 8, 'invalid_retained_app_zones');
@@ -688,6 +689,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (app.hostStatus === 'invalid') return { status: 400, error: 'invalid_app_host' };
     return { status: 404, error: 'app_not_found' };
   }
+  // An error document never grants entry. Its only additional viewer is the
+  // pre-captured trusted shell; request headers/query cannot select ancestors.
+  function respondRuntimeFailure(req, res, status, error, page) {
+    if (bootRefusalOrigins.length && req.method === 'GET' && typeof req.url === 'string'
+      && /^\/_soty\/boot(?:\?|$)/u.test(req.url)
+      && typeof req.headers.accept === 'string' && req.headers.accept.includes('text/html')) {
+      const refusalStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status : 503;
+      respondFailure(req, res, refusalStatus, 'app_unavailable', { frameOrigins: bootRefusalOrigins }); return;
+    }
+    respondFailure(req, res, status, error, page);
+  }
   function setStatusPolicy(res) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
@@ -708,7 +720,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     try {
     const app = appForRequest(req);
     const failure = app && hostFailure(app);
-    if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return; }
+    if (failure) { setStatusPolicy(res); respondRuntimeFailure(req, res, failure.status, failure.error); return; }
     if (app?.appHost && !app.missing) {
       let path;
       try { path = runtimePath(req.url || '/'); } catch { /* Internal endpoints never redirect into the shell. */ }
@@ -737,7 +749,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // Fall back to a content-free status without exposing an unchecked action.
       page = undefined; status = 503; error = 'app_unavailable';
     }
-    respondFailure(req, res, status, error, page);
+    respondRuntimeFailure(req, res, status, error, page);
   }
   const frameRequests=new WeakMap();
   function requestFrame(req) {return frameRequests.get(req);}
@@ -1014,10 +1026,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
   }
   function handleRequest(req, res) {
-    if (closed) { setStatusPolicy(res); respondFailure(req, res, 503, 'app_server_closed'); return true; }
+    if (closed) { setStatusPolicy(res); respondRuntimeFailure(req, res, 503, 'app_server_closed'); return true; }
     const app = appForRequest(req); if (!app) return false;
     const failure = hostFailure(app);
-    if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return true; }
+    if (failure) { setStatusPolicy(res); respondRuntimeFailure(req, res, failure.status, failure.error); return true; }
     void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondAppFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
   }
   function voiceSourceSession(owner,scope) {
@@ -1633,6 +1645,17 @@ function assertOrigin(req, origin, required) {
 }
 function headerCount(req, name) { let count = 0; for (let i = 0; i < (req.rawHeaders?.length || 0); i += 2) if (req.rawHeaders[i].toLowerCase() === name) count++; return count; }
 const pageNonce = () => randomBytes(16).toString('base64');
+// Match the normal managed Boot viewer set, captured before any admission or
+// storage failure. An invalid/non-web configured set gets no embedded fallback.
+function captureBootRefusalOrigins(origins) {
+  const values = [...origins];
+  const trusted = values.length > 0 && values.every(value => {
+    if (typeof value !== 'string') return false;
+    try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && url.origin === value; }
+    catch { return false; }
+  });
+  return Object.freeze(trusted ? values : []);
+}
 function setManagedPagePolicy(res, nonce, frameOrigins = []) {
   res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${frameOrigins.length ? frameOrigins.join(' ') : "'none'"}; sandbox allow-scripts allow-same-origin`);
   res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');

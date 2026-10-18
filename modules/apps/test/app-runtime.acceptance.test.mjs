@@ -933,3 +933,73 @@ test('B3: normalized ambiguous targets are rejected while local hash-SPA navigat
     assert.equal(response.status, 200);
   }
 });
+
+
+test('early Boot refusal: query, unavailable host and closed service remain denied but visible only to configured shells', async t => {
+  const f = await fixture(t, { secure: true }); f.publish({ policy: 'restricted' });
+  const inactive = f.alias('boot-unpublished');
+  const iframeNavigation = { accept: 'text/html', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe',
+    referer: 'https://untrusted.example/not-a-shell' };
+  const malformedBoot = '/_soty/boot?path=%2Fone&path=%2Ftwo';
+  const database = new DatabaseSync(f.config.databasePath, { readOnly: true });
+  const grants = database.prepare('SELECT * FROM local_app_grants ORDER BY rowid').all();
+  const nativeBefore = f.log.frames.filter(frame => frame.type === 'open').length;
+  const ancestors = response => response.headers['content-security-policy'].split(';')
+    .map(value => value.trim()).find(value => value.startsWith('frame-ancestors '));
+  const noSessionOrRedirect = response => {
+    assert.equal(response.headers.location, undefined); assert.equal(response.headers['set-cookie'], undefined);
+  };
+  const genericRefusal = (response, status) => {
+    assert.equal(response.status, status); assert.equal(response.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(ancestors(response), 'frame-ancestors ' + f.config.shellOrigins[0]);
+    assert.equal(response.headers['cache-control'], 'no-store'); assert.equal(response.headers['referrer-policy'], 'no-referrer');
+    noSessionOrRedirect(response);
+    const markup = response.body.toString();
+    assert.match(markup, /<h1 id="status-title">Приложение недоступно<\/h1>/u);
+    assert.match(markup, /"mode":"status","initialState":"unavailable","shellUrl":null,"publicResetPath":null/u);
+    assert.match(markup, /<div class="actions" id="actions" hidden>/u);
+    assert.doesNotMatch(markup, /<a\b[^>]*\bhref=|<form\b|Independent private app|runtime_owner|runtime_host|32123|untrusted\.example/u);
+    assert.equal(markup.includes(f.app.id), false);
+  };
+  const unchangedEarlyBoundary = async (target, error) => {
+    const json = await f.http(target, '/_soty/boot?path=%2Fstart', { headers: { accept: 'application/json' } });
+    assert.equal(json.status, 503); assert.equal(json.headers['content-type'], 'application/json; charset=utf-8');
+    assert.deepEqual(JSON.parse(json.body), { ok: false, error });
+    assert.equal(ancestors(json), "frame-ancestors 'none'"); noSessionOrRedirect(json);
+    for (const options of [
+      { path: '/private-result', headers: iframeNavigation },
+      { path: '/_soty/boot?path=%2Fstart', method: 'HEAD', headers: iframeNavigation },
+    ]) {
+      const response = await f.http(target, options.path, options);
+      assert.equal(response.status, 503); assert.equal(ancestors(response), "frame-ancestors 'none'");
+      noSessionOrRedirect(response);
+      if (options.method === 'HEAD') assert.equal(response.body.length, 0);
+    }
+  };
+  try {
+    const normal = await f.http(f.primary, '/_soty/boot?path=%2Fstart', { headers: iframeNavigation });
+    assert.equal(normal.status, 200); assert.equal(ancestors(normal), 'frame-ancestors ' + f.config.shellOrigins[0]);
+    noSessionOrRedirect(normal);
+    denied(await f.http(f.primary, '/_soty/session', { headers: { accept: 'application/json' } }));
+
+    // Duplicate path is rejected by the real routeApp validator, then its HTTP catch renders the refusal.
+    genericRefusal(await f.http(f.primary, malformedBoot, { headers: iframeNavigation }), 400);
+    const queryJson = await f.http(f.primary, malformedBoot, { headers: { accept: 'application/json' } });
+    assert.equal(queryJson.status, 400); assert.equal(queryJson.headers['content-type'], 'application/json; charset=utf-8');
+    assert.deepEqual(JSON.parse(queryJson.body), { ok: false, error: 'invalid_app_path' }); noSessionOrRedirect(queryJson);
+
+    // An unpublished real alias fails before routeApp and must not gain actions, cookies or entry.
+    genericRefusal(await f.http(inactive, '/_soty/boot?path=%2Fstart', {
+      origin: 'https://untrusted.example', headers: iframeNavigation }), 503);
+    await unchangedEarlyBoundary(inactive, 'app_named_runtime_unavailable');
+    denied(await f.http(f.primary, '/_soty/session', { headers: { accept: 'application/json' } }));
+
+    // The listener remains real and open while the actual service's early closed branch handles the request.
+    f.service.close();
+    genericRefusal(await f.http(f.primary, '/_soty/boot?path=%2Fstart', { headers: iframeNavigation }), 503);
+    await unchangedEarlyBoundary(f.primary, 'app_server_closed');
+    assert.deepEqual(database.prepare('SELECT * FROM local_app_grants ORDER BY rowid').all(), grants);
+    assert.equal(f.log.frames.filter(frame => frame.type === 'open').length, nativeBefore,
+      'Boot error documents do not forward a request or grant Native access');
+  } finally { database.close(); }
+});

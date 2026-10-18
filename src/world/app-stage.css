@@ -38,6 +38,14 @@
   .sa-stage.has-discussion .sa-runtime { display: none; }
   .sa-discussion { flex: 1; width: 100%; border: 0; }
 }
+
+/* Short mobile windows prioritize the open app. Back restores the shell;
+ * connection notices and active/incoming call controls keep their priority. */
+@media (max-width: 720px) and (max-height: 360px) {
+  .sw-app:not([data-human-call-incoming=true]):not([data-human-call-active=true]):has(> .sw-main > .sa-stage:not(.sa-widget-stage)) { grid-template-rows: auto minmax(0,1fr); grid-template-areas: "notice" "main"; }
+  .sw-app:not([data-human-call-incoming=true]):not([data-human-call-active=true]):has(> .sw-main > .sa-stage:not(.sa-widget-stage)) > :is(.sw-topbar,.sw-mobile-nav) { display: none; }
+  .sw-app[data-agent-orb=ready]:not([data-human-call-incoming=true]):not([data-human-call-active=true]) > .sw-main > .sa-stage:not(.sa-widget-stage) > .sa-toolbar { padding-inline-end: max(60px,env(safe-area-inset-right)); }
+}
 @media (max-width: 760px) {
   .sw-app>.sw-main:has(>.sa-stage) { padding: 0; }
   .sa-toolbar { min-height: 56px; padding: 6px 8px; gap: 4px; }
@@ -90,3 +98,17 @@
 .sa-stage-runtime-dialog-actions > .sw-button[hidden] { display: none; }
 .sa-stage-runtime-dialog button { min-width: 44px; min-height: 44px; }
 .sa-stage-runtime-copy { margin: 0 0 12px; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* A short main Stage keeps three 44px controls and the title in one row.
+ * Existing secondary buttons live in More; widget chrome has its own layout. */
+@media (max-height: 360px) {
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar { display: grid; grid-template-columns: 44px minmax(0,1fr) 44px 44px; grid-template-rows: 44px; justify-items: stretch; gap: 4px; box-sizing: border-box; height: 56px; min-height: 56px; padding: 5px 8px 6px; padding-inline: max(8px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-right)); }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar > .sw-icon-button:first-child { grid-area: 1 / 1; }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar > .sa-title { grid-area: 1 / 2; padding-inline-end: 0; }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar > .sa-title p { display: none; }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar > [data-stage-control=fullscreen] { grid-area: 1 / 3; }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar > .sa-more { grid-area: 1 / 4; }
+  .sa-stage:not(.sa-widget-stage):has(> .sw-agent-orb) > .sa-toolbar { padding-inline-end: max(60px,env(safe-area-inset-right)); }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar .sa-more-body { top: calc(100% + 2px); box-sizing: border-box; animation: none; }
+  .sa-stage:not(.sa-widget-stage) > .sa-toolbar .sa-more-body > .sw-icon-button > span { display: inline; }
+}
