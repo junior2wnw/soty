@@ -22,7 +22,8 @@ import { observeVisibleViewport } from './visible-viewport';
 import { mountAgentOrb, type AgentOrbHandle } from './agent-orb';
 import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { canGroupMessages, chatDayKey, chatDayLabel, chatListTime, chatPreview, shouldSendOnEnter } from './messenger.mjs';
-import { createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
+import { createAttachmentOutbox, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
+import { createChatAttachmentMedia } from './attachment-gallery';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
@@ -1286,6 +1287,7 @@ class WorldApplication {
   private mountChat(parent: HTMLElement, group: WorldCommunity, showHeader = false): void {
     this.avatars.setContext(group.communityId);
     const sequence = this.screenSequence;
+    const accountCurrent = this.accountTask();
     const accountId = this.profile?.profileId ?? this.deskAccount;
     const initialDraft = this.chatDrafts.read(accountId, group.communityId);
     const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${group.name}`);
@@ -1298,7 +1300,7 @@ class WorldApplication {
     let outbox: AttachmentOutbox | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false;
     let attachmentReader = group.chatReaderEpoch === 4, acknowledgingAttachments = false;
     const chatList = (args: Record<string, unknown>): Promise<{ messages: WorldMessage[]; hasMore: boolean }> => this.api.request('world.chat.list', { ...args, ...(attachmentReader ? { readerEpoch: 4 } : {}) });
-    const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
+    const active = (): boolean => accountCurrent() && !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
     const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     let timelineDirty = false, searchMatches: string[] = [], unseen = 0;
 
@@ -1365,6 +1367,8 @@ class WorldApplication {
       header.append(searchOpen, more); chat.append(header);
     }
     const messages = el('div', 'sw-chat-messages'); messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Сообщения'); messages.setAttribute('aria-live', 'polite'); messages.setAttribute('aria-relevant', 'additions'); messages.setAttribute('tabindex', '0'); messages.append(this.loading('Загружаем разговор'));
+    const attachmentMedia = createChatAttachmentMedia({ api: this.api, accountId, communityId: group.communityId, viewport: messages, current: active,
+      dialog: (title, onClose) => this.dialog(title, onClose), error: reason => { if (active() && !closeAccess(reason)) this.toast(errorText(reason), true); } });
     const previous = button('Ранее', 'back', 'sw-chat-history', () => { void loadHistory(); }); previous.hidden = true;
     const jump = iconButton('К последним сообщениям', 'down', () => { messages.scrollTo({ top: messages.scrollHeight, behavior: this.preferences.motion ? 'smooth' : 'instant' }); unseen = 0; updateJump(); markRead(); }); jump.classList.add('sw-chat-jump'); jump.hidden = true;
     const jumpCount = el('span', 'sw-chat-jump-count'); jumpCount.hidden = true; jump.append(jumpCount);
@@ -1516,16 +1520,7 @@ class WorldApplication {
       if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
       body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
       if (!message.removed && message.attachments?.length) {
-        const files = el('div','sw-message-files');
-        for(const attachment of message.attachments) {
-          const download=button(attachment.name,'download','sw-message-file',()=>{
-            if(download.disabled)return;download.disabled=true;download.setAttribute('aria-busy','true');
-            void downloadAttachment({api:this.api,accountId,communityId:group.communityId,attachment,current:active}).then(result=>{
-              if(!active())return;const url=URL.createObjectURL(result.blob),link=el('a');link.href=url;link.download=result.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-            }).catch(reason=>{if(active())this.toast(errorText(reason),true);}).finally(()=>{download.disabled=false;download.removeAttribute('aria-busy');});
-          }); download.setAttribute('aria-label',`Скачать ${attachment.name}`);download.append(el('small','',sizeLabel(attachment.size)));files.append(download);
-        }
-        body.append(files);
+        body.append(attachmentMedia.render(message.messageId, message.attachments, () => active() && known.get(message.messageId) === message && !message.removed));
       }
       const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
       if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); delivered.setAttribute('aria-label', 'Отправлено'); delivered.title = 'Отправлено'; meta.append(delivered); }
@@ -1536,6 +1531,7 @@ class WorldApplication {
     const append = (message: WorldMessage): void => {
       const old = known.get(message.messageId);
       if (old && old.removed === message.removed && old.text === message.text && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
+      attachmentMedia.remove(message.messageId);
       known.set(message.messageId, message); firstSeq = Math.min(firstSeq, message.seq); timelineDirty = true;
       messages.querySelector('.sw-empty')?.remove();
       const row = createMessage(message), existing = rows.get(message.messageId); rows.set(message.messageId, row);
@@ -1565,7 +1561,7 @@ class WorldApplication {
     };
     const closeAccess = (reason: unknown): boolean => {
       if (!(typeof reason === 'object' && reason && 'code' in reason && ['community_membership_required', 'community_not_found', 'community_banned'].includes(String(reason.code)))) return false;
-      accessClosed = true; closeMenu(); updateComposer(); this.avatars.setContext(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
+      accessClosed = true; attachmentMedia.clear(); closeMenu(); updateComposer(); this.avatars.setContext(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
       previous.hidden = true; jump.hidden = true; searchBar.hidden = true; if (this.chatTimer) clearInterval(this.chatTimer); if (catchupTimer) clearTimeout(catchupTimer); return true;
     };
     chat.addEventListener('soty:chat-community', event => {
@@ -1667,7 +1663,7 @@ class WorldApplication {
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, group.communityId); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
     const previousCleanup = this.chatCleanup;
-    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
+    this.chatCleanup = () => { attachmentMedia.close(); outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
   }
 

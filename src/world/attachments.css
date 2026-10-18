@@ -14,8 +14,35 @@
 .sw-message-file > span { min-width: 0; overflow-wrap: anywhere; }
 .sw-message-file > small { flex-shrink: 0; font-size: 11px; opacity: .72; margin-left: auto; }
 .sw-message-file svg { flex-shrink: 0; }
+.sw-message-file-item { min-width: 0; }
+.sw-message-photos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: min(480px, 100%); }
+.sw-message-photos > :only-child { grid-column: 1 / -1; max-width: 320px; }
+.sw-message-photo { display: grid; place-items: center; width: 100%; aspect-ratio: 4 / 3; min-height: 100px; min-width: 44px; padding: 0; overflow: hidden; border: 1px solid var(--sw-line); border-radius: 12px; color: inherit; background: var(--sw-surface); cursor: pointer; }
+.sw-message-photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sw-message-photo-label { padding: 12px; text-align: center; font-size: 12px; }
+.sw-message-photos .sw-message-file { border: 0; padding: 6px 2px; min-height: 44px; font-size: 12px; }
+.sw-message-photos .sw-message-file > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-dialog.sw-photo-gallery { --sw-photo-top: max(8px, env(safe-area-inset-top)); --sw-photo-bottom: max(8px, env(safe-area-inset-bottom)); position: fixed; inset: var(--sw-photo-top) 8px var(--sw-photo-bottom); margin: auto; width: min(960px, calc(100vw - 16px)); max-width: calc(100vw - 16px); height: min(820px, calc(100dvh - var(--sw-photo-top) - var(--sw-photo-bottom))); max-height: calc(100dvh - var(--sw-photo-top) - var(--sw-photo-bottom)); padding: 0; overflow: hidden; }
+.sw-dialog.sw-photo-gallery[open] { display: flex; flex-direction: column; }
+.sw-photo-gallery > .sw-dialog-header { flex: 0 0 auto; min-height: 60px; gap: 12px; padding: 8px 12px; }
+.sw-photo-gallery > .sw-dialog-header h2 { font-size: 20px; }
+.sw-photo-gallery > .sw-dialog-content { flex: 1 1 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px; min-width: 0; min-height: 0; max-height: none; overflow: hidden; padding: 8px 12px 12px; }
+.sw-photo-stage { display: grid; place-items: center; min-height: 0; min-width: 0; background: var(--sw-surface); border-radius: 12px; overflow: hidden; touch-action: pan-y pinch-zoom; }
+.sw-photo-stage img { grid-area: 1 / 1; width: 100%; height: 100%; min-height: 0; max-height: 100%; object-fit: contain; }
+.sw-photo-fallback { grid-area: 1 / 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; max-height: 100%; min-height: 0; overflow: auto; padding: 12px; }
+.sw-photo-status { text-align: center; }
+.sw-photo-gallery .sw-photo-name { margin: 0; min-width: 0; line-height: 20px; height: 20px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-photo-controls { display: grid; grid-template-columns: 44px minmax(70px, 1fr) 44px auto; align-items: center; gap: 8px; }
+.sw-photo-counter { text-align: center; font-size: 13px; }
+.sw-photo-gallery button, .sw-message-file { min-width: 44px; min-height: 44px; }
+.sw-message-photo:focus-visible, .sw-photo-gallery button:focus-visible { outline: 2px solid var(--sw-accent); outline-offset: 3px; }
+.sw-message-photo [hidden], .sw-photo-stage [hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .sw-dialog.sw-photo-gallery[open], .sw-dialog.sw-photo-gallery[open]::backdrop, .sw-message-photo { scroll-behavior: auto; transition: none; animation: none; } }
 @media (max-width: 480px) {
   .sw-attachment-queue { padding: 6px 8px 0; max-height: 180px; }
   .sw-attachment-hint { padding: 0 10px 6px; }
   .sw-attachment-card { gap: 4px; padding-left: 8px; }
+  .sw-message-photos { gap: 6px; }
+  .sw-photo-controls { grid-template-columns: 44px minmax(70px, 1fr) 44px; }
+  .sw-photo-controls > :last-child { grid-column: 1 / -1; }
 }
