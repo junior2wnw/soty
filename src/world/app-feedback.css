@@ -17,5 +17,5 @@
 .sf-dialog button { min-height:44px; }.sf-dialog :focus-visible { outline:3px solid #287eb5; outline-offset:3px; }
 .sf-dialog [hidden] { display:none!important; }
 .sa-toolbar [data-stage-control=feedback] { flex:none; min-height:44px; }
-@media(max-width:700px) { .sa-toolbar [data-stage-control=feedback] { width:44px; min-width:44px; padding:0; }.sa-toolbar [data-stage-control=feedback]>span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; } }
+@media(max-width:700px) { .sa-toolbar>[data-stage-control=feedback] { width:44px; min-width:44px; padding:0; }.sa-toolbar>[data-stage-control=feedback]>span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; } }
 @media(max-width:480px) { .sf-dialog { padding:14px; border-radius:14px; }.sf-header { flex-wrap:nowrap; }.sf-header h2 { min-width:0; font-size:18px; }.sf-header>button { flex:none; width:44px; min-width:44px; padding:0; }.sf-header>button>span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }.sf-media-actions button { flex:1 1 130px; }.sf-row button { flex:1 1 150px; } }
