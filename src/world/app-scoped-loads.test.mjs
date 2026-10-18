@@ -6,6 +6,28 @@ import assert from 'node:assert/strict';
 import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,isRootSsoWorkspacePin} from './app-scoped-renewal.mjs';
 import {isScopedRuntimeProfile} from './app-launch.mjs';
 
+function stageMessagePorts(readRenewBinding, runtimeDisplay) {
+  const ast=ts.createSourceFile('app-stage.ts',readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);
+  let renewal,native,show;
+  const visit=node=>{
+    if(ts.isFunctionDeclaration(node)&&node.name?.text==='showMessage')show=node.getText(ast);
+    if(ts.isCallExpression(node)&&['createScopedSlotRenewal','createAppRuntimeDisplay'].includes(node.expression.getText(ast))){
+      const property=node.arguments[0].properties.find(p=>p.name?.getText(ast)===(node.expression.getText(ast)==='createScopedSlotRenewal'?'onState':'onChange'));
+      if(node.expression.getText(ast)==='createScopedSlotRenewal')renewal=property?.initializer.getText(ast);else native=property?.initializer.getText(ast);
+    }
+    ts.forEachChild(node,visit);
+  };visit(ast);assert.ok(renewal&&native&&show,'execute the actual Stage message functions');
+  const message={textContent:'',hidden:true},attributes={};
+  // Shared scalar/DOM ports; the actual showMessage implementation owns all writes.
+  const context={exports:{},message,messageOwner:'manual',current:()=>true,isRootSsoWorkspacePin,readRenewBinding,runtimeDisplay,
+    runtime:{setAttribute(name,value){attributes[name]=value;}},options:{presentation:'main'},recoveryRetry:{},externalRecovery:{},dismissRuntimeNotice:{}};
+  const code=show+`\nObject.assign(exports,{onState:(${renewal}),nativeFor:(live)=>(${native}),showMessage,owner:()=>messageOwner});`;
+  vm.runInNewContext(ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
+  return{api:context.exports,message,context,attributes};
+}
+const nativeMessageState=(phase,message='')=>({phase,message,busy:['opening','boot','authenticating'].includes(phase),
+  canRetry:['unconfirmed','denied','error'].includes(phase),canExternal:['unconfirmed','denied','error'].includes(phase),canDismiss:['unconfirmed','denied','error'].includes(phase)});
+
 test('Stage load arms the same single renewal lifecycle for approved1/2; future or declared names never arm it',async()=>{
   for(const profile of ['soty.selected-human-embed.v1','soty.selected-human-embed.v2','soty.selected-human-embed.v3','author-selected']){
     const runtime=new EventTarget();runtime.ownerDocument={visibilityState:'visible'};
@@ -92,16 +114,13 @@ test('actual Stage Root wake callback renews the same mounted frame and does not
   }
 });
 
-test('actual Stage W2 warning describes an unconfirmed renewal and clears only on a freshly confirmed Source ACK',async()=>{
-  const ast=ts.createSourceFile('app-stage.ts',readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8'),ts.ScriptTarget.Latest,true);let callback;
-  const visit=node=>{if(ts.isCallExpression(node)&&node.expression.getText(ast)==='createScopedSlotRenewal'){
-    callback=node.arguments[0].properties.find(p=>p.name?.getText(ast)==='onState')?.initializer.getText(ast);
-  }ts.forEachChild(node,visit);};visit(ast);assert.ok(callback);
+test('actual Stage W2 warning yields to current Native status after Source ACK and preserves manual or newer-display messages',async()=>{
   const source={id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'};
-  for(const permanentRevoke of [false,true]){
-    let binding={handle:'old',slot:{},source},allowed=false,commits=0,closes=0,message='';const states=[];
-    const display=vm.runInNewContext('('+ts.transpileModule(callback,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText.replace(/;\s*$/,'')+')',{
-      isRootSsoWorkspacePin,readRenewBinding:()=>binding,showMessage:text=>{message=text;}});
+  const nativeWarning='Загрузка окна не подтверждена. Если оно пустое, откройте заново.';
+  for(const runtimePhase of ['unconfirmed','authenticating',null,'ready'])for(const permanentRevoke of [false,true]){
+    let binding={handle:'old',slot:{},source},allowed=false,commits=0,closes=0;const states=[];
+    let native=nativeMessageState(runtimePhase,runtimePhase==='unconfirmed'?nativeWarning:runtimePhase==='authenticating'?'Подтверждаем вход в приложение…':'');
+    const ports=stageMessagePorts(()=>binding,runtimePhase===null?null:{snapshot:()=>native}),display=ports.api.onState;
     const helper=createScopedSlotRenewal({readBinding:()=>binding,isCurrent:()=>true,clock:()=>1000000,
       async request(args){if(!allowed)throw Object.assign(Error('Current server denial'),{status:403,code:permanentRevoke?'app_access_revoked':'app_scoped_context_closed'});
         return{handle:'new',slot:{},requestId:args.requestId,source,cleanup:async()=>{closes++;}};},
@@ -110,13 +129,38 @@ test('actual Stage W2 warning describes an unconfirmed renewal and clears only o
       commit(old,next){assert.equal(old.slot,binding.slot);binding=next;commits++;return true;},
       onState:state=>{states.push(state);display(state);}});
     assert.equal(await helper.refresh(),false);assert.equal(commits,0);assert.equal(states.at(-1),'login_required');
-    assert.equal(message,'Обновление доступа пока не подтверждено. Данные сохранены.');
+    assert.equal(ports.message.textContent,'Обновление доступа пока не подтверждено. Данные сохранены.');
     allowed=!permanentRevoke;
     assert.equal(await helper.refresh(),!permanentRevoke);assert.equal(commits,permanentRevoke?0:1);
     assert.equal(states.at(-1),permanentRevoke?'login_required':'ready');
-    assert.equal(message,permanentRevoke?'Обновление доступа пока не подтверждено. Данные сохранены.':'');
+    assert.equal(ports.message.textContent,permanentRevoke?'Обновление доступа пока не подтверждено. Данные сохранены.':native.message);
+    assert.equal(ports.api.owner(),permanentRevoke?'renewal':'runtime');
+    if(!permanentRevoke&&['unconfirmed','authenticating'].includes(runtimePhase)){
+      // Ownership accepts a later current observer delivery. A timed-out display
+      // itself remains terminal; retry/new-display timing is covered separately.
+      native=nativeMessageState('ready');ports.api.nativeFor(()=>true)(native);
+      assert.equal(ports.message.textContent,'');assert.equal(ports.api.owner(),'runtime');
+    }
     assert.equal(closes,0);helper.dispose();
     binding={...binding,source:{id:'soty.standard-resource',version:2,digest:'a'.repeat(64)}};display('login_required');
-    assert.match(message,/Войдите в приложение заново/,'the existing RP login instruction stays intact');
+    assert.match(ports.message.textContent,/Войдите в приложение заново/,'the existing RP login instruction stays intact');
   }
+  let native=nativeMessageState('unconfirmed',nativeWarning);
+  const ports=stageMessagePorts(()=>({source}),{snapshot:()=>native});
+  const current=ports.api.nativeFor(()=>true);
+  for(const important of ['Скопируйте черновик: браузер пока не смог его сохранить.','Не удалось открыть аккаунт. Попробуйте ещё раз.','Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.']){
+    for(const phase of ['unconfirmed','ready']){
+      native=nativeMessageState(phase,phase==='unconfirmed'?nativeWarning:'');
+      ports.api.onState('login_required');ports.api.showMessage(important);ports.api.onState('ready');
+      current(native);native=nativeMessageState('ready');current(native);
+      assert.equal(ports.message.textContent,important);assert.equal(ports.api.owner(),'manual');
+    }
+  }
+  let formerCurrent=true;const stale=ports.api.nativeFor(()=>formerCurrent);formerCurrent=false;
+  native=nativeMessageState('unconfirmed',nativeWarning);ports.api.showMessage('');current(native);
+  const before={message:ports.message.textContent,owner:ports.api.owner(),attributes:{...ports.attributes},external:ports.context.externalRecovery.hidden};
+  stale(nativeMessageState('ready'));
+  assert.deepEqual({message:ports.message.textContent,owner:ports.api.owner(),attributes:{...ports.attributes},external:ports.context.externalRecovery.hidden},before);
+  current(nativeMessageState('ready'));stale(native);
+  assert.equal(ports.message.textContent,'');assert.equal(ports.api.owner(),'runtime');
 });

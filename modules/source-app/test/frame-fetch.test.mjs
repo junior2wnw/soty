@@ -47,3 +47,24 @@ test('short refresh wake checks the exact parent and requestId, retries one read
   await assert.rejects(wrapped('/api/embed/invoke',{method:'POST',body}));
   assert.equal(calls.length,3);assert.equal(calls.at(-1).init.body,body);assert.equal(wakes.length,1);
 });
+
+test('masked or malformed ancestor origins keep standalone fetch usable without a wildcard or a refresh',async()=>{
+  for(const parentOrigin of [undefined,null,'null','','not an origin','https://root.test/','https://root.test/path','data:text/plain,hello','file://','ws://root.test']){
+    const view=new EventTarget();view.location={ancestorOrigins:[parentOrigin]};
+    view.parent={postMessage(){assert.fail('untrusted parent must never receive a refresh');}};
+    const fetch=async()=>new Response('{}',{status:401});
+    assert.equal(createSourceFrameFetch({fetch,href:'https://app.test/embed',shortSessionHandoff:true,view}),fetch);
+  }
+});
+
+test('a masked ancestor preserves the per-frame selector and returns an unauthorized read without replay',async()=>{
+  const view=new EventTarget(),calls=[];view.location={ancestorOrigins:['null']};
+  view.parent={postMessage(){assert.fail('masked parent must never receive a refresh');}};
+  const fetch=async(input,init)=>{calls.push({input,init});return new Response('{}',{status:401});};
+  const wrapped=createSourceFrameFetch({fetch,href:'https://app.test/embed?sotyFrame='+'A'.repeat(43),shortSessionHandoff:true,view});
+  const signal=new AbortController().signal;
+  const response=await wrapped('/api/embed/context',{credentials:'same-origin',signal});
+  assert.equal(response.status,401);assert.equal(calls.length,1);
+  assert.equal(calls[0].init.headers.get('x-soty-frame'),'A'.repeat(43));
+  assert.equal(calls[0].init.signal,signal);assert.equal(calls[0].init.credentials,'same-origin');
+});

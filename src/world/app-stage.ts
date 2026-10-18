@@ -1,4 +1,4 @@
-import { createDialog } from './dialogs';
+import { createDialog, isDialogFocusTarget, type DialogReturnTarget } from './dialogs';
 import { createBrowserAssistHost } from './browser-assist-pilot.mjs';
 import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
@@ -6,6 +6,8 @@ import { button, el, emptyState, iconButton } from './dom';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLaunchLocation,isScopedRuntimeProfile,
   validateAppEntry, type AppLaunchIntent, type AppLaunchPresentation, type AppLaunchRequest, type AppResolvedEntry } from './app-launch.mjs';
 import { createAppBootRecovery } from './app-boot-recovery.mjs';
+import { createAppRuntimeDisplay, type RuntimeDisplayHandle } from './app-runtime-display.mjs';
+import { createWidgetRuntimeControls } from './app-widget-runtime-controls.mjs';
 import { createAppRuntimePhaseTrace, type RuntimePhase } from './app-runtime-phase-trace.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
@@ -46,6 +48,8 @@ export interface AppStageOptions {
   onRemember?(intent: AppLaunchIntent, app: WorldAppRecord): void;
 }
 export interface AppStageHandle {
+  /** Local presentation port. It transfers one UI button, never the iframe. */
+  mountRuntimeControls?(host:HTMLElement,owner:DialogReturnTarget):boolean;
   ready: Promise<void>; matches(intent: AppLaunchIntent): boolean; updateRoute(intent: AppLaunchIntent): void;
   updateApp(app: WorldAppRecord): void; updateCommunity(group: { communityId: string; name: string } | null): void;
   entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void;
@@ -76,6 +80,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let routeGeneration = 0, frameGeneration=0, saved: AppSavedHandle | null = null, discussion: AppDiscussionHandle | null = null;
   let presentationVersion = 0, applyingPresentation = false;
   let displayEpoch = 0, entryRecoveryEpoch = 0, entryRecoveryPending = false, releaseRuntimeDisplay: (() => void) | null = null;
+  let runtimeDisplay: RuntimeDisplayHandle | null = null;
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
   let lastVisiblePresentation = initial.presentation;
@@ -98,7 +103,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
   const detachVoiceBridge=options.nativeVoice?mountRootVoiceCarrier({view,getFrame:()=>runtime.querySelector('iframe'),isCurrent:current,client:options.nativeVoice.client,mount:options.nativeVoice.mount,appId:app.appId,accountId}):()=>{};
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
-  const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status');
+  const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite'); message.setAttribute('aria-atomic', 'true');
+  let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
   const feedbackHost = el('div');
   const reviewsHost = el('div');
@@ -125,7 +131,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
-  function showMessage(text: string): void { if (current()) { message.textContent = text; message.hidden = !text; } }
+  function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
     moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && current()) more.focus();
   }
@@ -165,6 +171,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   external.dataset.stageControl = 'external';
   const externalRecovery = button('Открыть в новой вкладке', 'external', 'sw-button-quiet sa-recovery-retry sa-external-recovery', () => { external.click(); });
   externalRecovery.dataset.stageControl = 'external-recovery'; externalRecovery.hidden = true;
+  const dismissRuntimeNotice = button('Скрыть сообщение', 'close', 'sw-button-quiet sa-recovery-retry', () => {
+    if (current() && runtimeDisplay?.dismiss()) name.focus();
+  });
+  dismissRuntimeNotice.dataset.stageControl = 'runtime-dismiss'; dismissRuntimeNotice.hidden = true;
   const settings = button('Настройки приложения', 'settings', 'sw-button-quiet', () => {
     closeMore(true); if (current()) void fullscreen.leave().then(() => { if (current()) options.onSettings(app, updateApp); });
   });
@@ -321,11 +331,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       view.addEventListener('message',receive);controller.signal.addEventListener('abort',cancel,{once:true});
       const timeout=setTimeout(()=>finish('unknown'),12000);hidden.src=reply.url;screen.append(hidden);
     });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;lastRuntimeLaunchAt=Date.now();return true;},
-    onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.');
+    onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.','renewal');
       else if(state==='login_required')showMessage(isRootSsoWorkspacePin(readRenewBinding()?.source)
         ?'Обновление доступа пока не подтверждено. Данные сохранены.'
-        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.');
-      else if(state==='ready')showMessage('');},
+        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.','renewal');
+      else if(state==='ready'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');},
   });
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
     current:()=>current()&&!!options.renew,profile:()=>launcher.runtimeProfile(),renewal,readBinding:readRenewBinding,
@@ -348,10 +358,49 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     },capture:parameters=>pickProjectFeedbackMedia({...parameters,document:host.ownerDocument}),
   });
   const recoveryRetry = button(options.presentation === 'widget' ? 'Обновить окно' : 'Открыть приложение заново', 'refresh', 'sw-button-quiet sa-recovery-retry', () => { void launchRuntime(false, () => true, true); });
-  recoveryRetry.hidden = options.presentation !== 'widget'; message.after(recoveryRetry);
-  recoveryRetry.after(externalRecovery);
+  recoveryRetry.hidden = options.presentation !== 'widget';
   const currentEntryRetry = button('Открыть актуальный вход', 'arrow', 'sw-button-primary sa-current-entry-retry', () => { void openCurrentEntry(); });
-  currentEntryRetry.hidden = true; recoveryRetry.after(currentEntryRetry);
+  currentEntryRetry.hidden = true;
+  const runtimeActions = el('div', 'sa-runtime-actions'); runtimeActions.setAttribute('role', 'group');
+  runtimeActions.setAttribute('aria-label', 'Восстановление окна приложения');
+  runtimeActions.append(recoveryRetry, currentEntryRetry, externalRecovery, dismissRuntimeNotice); message.after(runtimeActions);
+  const widgetRuntimeControls = options.presentation === 'widget' ? createWidgetRuntimeControls({
+    view,screen,message,runtime,runtimeActions,current,
+    capture:()=>{
+      const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
+        scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
+    },
+    matchesCapture:value=>{
+      if(!current()||value.epoch!==displayEpoch||value.frame!==runtime.querySelector('iframe'))return false;
+      const fresh=launcher.scopedCapture();if(!value.scoped||!fresh)return value.scoped===!!fresh;
+      const before=value.source,after=captureSourcePin(fresh.source);
+      return !!before&&!!after&&value.slot===fresh.slot&&value.handle===fresh.handle
+        &&before.id===after.id&&before.version===after.version&&before.digest===after.digest;
+    },
+    canAct:()=>current()&&!runtimePending,
+    createDialog,iconButton,button,el,isFocusTarget:isDialogFocusTarget,
+    retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
+    onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
+  }):null;
+  const mainRuntimeControls = options.presentation === 'widget' ? null : createWidgetRuntimeControls({
+    presentation:'main',returnTarget:{isCurrent:current,resolve:()=>name},
+    view,screen,message,runtime,runtimeActions,current,
+    capture:()=>{
+      const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
+        scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
+    },
+    matchesCapture:value=>{
+      if(!current()||value.epoch!==displayEpoch||value.frame!==runtime.querySelector('iframe'))return false;
+      const fresh=launcher.scopedCapture();if(!value.scoped||!fresh)return value.scoped===!!fresh;
+      const before=value.source,after=captureSourcePin(fresh.source);
+      return !!before&&!!after&&value.slot===fresh.slot&&value.handle===fresh.handle
+        &&before.id===after.id&&before.version===after.version&&before.digest===after.digest;
+    },
+    canAct:()=>current()&&!runtimePending,
+    createDialog,iconButton,button,el,isFocusTarget:isDialogFocusTarget,
+    retry:recoveryRetry,currentEntry:currentEntryRetry,external,dismiss:dismissRuntimeNotice,
+    onModalChange:(modal,open)=>{if(!open||current())options.onModalChange?.(modal,open);},
+  });
   async function openCurrentEntry(): Promise<void> {
     if (!current() || runtimePending || entryRecoveryPending || currentEntryRetry.hidden || !options.onOpenCurrentEntry) return;
     const epoch = entryRecoveryEpoch, live = () => current() && epoch === entryRecoveryEpoch;
@@ -441,33 +490,57 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function resetRuntimeDisplay(): void {
     runtimeTrace.reset();
     displayEpoch++; releaseRuntimeDisplay?.(); releaseRuntimeDisplay = null;
+    runtime.setAttribute('aria-busy', 'false');
   }
   function watchRuntimeDisplay(frame: HTMLIFrameElement): void {
-    const epoch = displayEpoch;
-    let timer: number | undefined, ownMessage = 'Открываем окно приложения…';
+    const epoch = displayEpoch, binding = launcher.scopedCapture(), source = captureSourcePin(binding?.source), entry = launcher.entry();
     const live = () => current() && epoch === displayEpoch && runtime.querySelector('iframe') === frame;
-    const clearTimer = () => { if (timer !== undefined) view.clearTimeout(timer); timer = undefined; };
-    const settle = (text: string) => {
-      clearTimer(); runtime.setAttribute('aria-busy', 'false');
-      // A transport event must not erase a later access/renewal message.
-      if (!message.textContent || message.textContent === ownMessage) { showMessage(text); ownMessage = text; }
-      externalRecovery.hidden = !text;
-      if (text) recoveryRetry.hidden = false;
+    const sameSlot = () => {
+      const fresh = launcher.scopedCapture(), pin = captureSourcePin(fresh?.source);
+      return !!binding && !!fresh && !!source && !!pin && fresh.slot === binding.slot && fresh.handle === binding.handle
+        && pin.id === source.id && pin.version === source.version && pin.digest === source.digest;
     };
-    const loaded = () => {
-      if (!live()) return;
-      frameGeneration++; stopAssist();
-      settle(''); // Document load is not application readiness or authentication.
+    const denied = new Set(['ACTIVE_PROFILE_CHANGED','ACCOUNT_MISMATCH','authentication_required','apps_access_denied','app_access_revoked',
+      'app_access_changed','app_source_changed','app_policy_changed','scoped_embed_authority_changed','scoped_embed_source_changed']);
+    const readiness = async (): Promise<'ready'|'pending'|'denied'|'unknown'|'unsupported'> => {
+      if (!live()) return 'unknown';
+      if (!binding || !source || !isScopedRuntimeProfile(launcher.runtimeProfile())) return 'unsupported';
+      if (!sameSlot()) return 'unknown';
+      try {
+        // Existing authenticated Root read. It never renews, grants, replays a
+        // ticket or accepts a frame's self-declared ready assertion.
+        const value = await options.api.request<unknown>('apps.scoped.context', { appId: app.appId, handle: binding.handle });
+        if (!live() || !sameSlot()) return 'unknown';
+        if (!matchesScopedCaptureContext(value, { appId: app.appId, source })) return 'pending';
+        const session = (value as { sourceSession?: { ready?: boolean; reason?: string; accessExpiresAt?: number; sessionExpiresAt?: number } }).sourceSession;
+        if (session?.ready === false && session.reason === 'login_required') return 'denied';
+        const now = Date.now();
+        return session?.ready === true && Number.isSafeInteger(session.accessExpiresAt) && session.accessExpiresAt! > now
+          && Number.isSafeInteger(session.sessionExpiresAt) && session.sessionExpiresAt! > now ? 'ready' : 'pending';
+      } catch (error) {
+        if (!live() || !sameSlot()) return 'unknown';
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        return typeof code === 'string' && denied.has(code) ? 'denied' : 'unknown';
+      }
     };
-    const failed = () => { if (live()) settle('Не удалось загрузить окно приложения. Попробуйте открыть заново.'); };
-    showMessage(ownMessage); runtime.setAttribute('aria-busy', 'true');
+    const loaded = () => { if (live()) { frameGeneration++; stopAssist(); } };
     frame.addEventListener('load', loaded, { signal: controller.signal });
-    frame.addEventListener('error', failed, { signal: controller.signal });
-    timer = view.setTimeout(() => {
-      if (live()) settle('Загрузка окна не подтверждена. Если оно пустое, откройте заново.');
-    }, 12_000);
+    const display = createAppRuntimeDisplay({ view, frame, origin: entry!.origin, isCurrent: live, readiness, onChange: state => {
+      if (!live()) return;
+      runtime.setAttribute('aria-busy', String(state.busy));
+      // Other account/renewal errors own their message and are never erased by
+      // a late transport event. All copy here is finite and contains no URL.
+      if (!message.textContent || messageOwner === 'runtime') showMessage(state.message, 'runtime');
+      recoveryRetry.hidden = options.presentation === 'widget' ? false : !state.canRetry;
+      externalRecovery.hidden = !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
+    } });
+    runtimeDisplay = display;
+    if (!message.textContent || messageOwner === 'runtime') showMessage(display.snapshot().message, 'runtime');
+    runtime.setAttribute('aria-busy', 'true');
     releaseRuntimeDisplay = () => {
-      clearTimer(); frame.removeEventListener('load', loaded); frame.removeEventListener('error', failed);
+      display.dispose(); frame.removeEventListener('load', loaded);
+      if (runtimeDisplay === display) runtimeDisplay = null;
+      dismissRuntimeNotice.hidden = true;
     };
   }
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
@@ -484,7 +557,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
     stopAssist();
     const existingFrame = runtime.querySelector('iframe');
-    if (existingFrame) showMessage('Соединяем с приложением…');
+    if (existingFrame) showMessage('Соединяем с приложением…', 'runtime');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
       const url = await launcher.launch({ requireSameBinding: automatic });
@@ -588,7 +661,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   host.ownerDocument.addEventListener('pointerdown', event => {
     if (!moreBody.hidden && event.target instanceof view.Node && !moreHost.contains(event.target)) closeMore();
   }, { signal: controller.signal });
-  host.ownerDocument.addEventListener('keydown', event => { if (event.key === 'Escape' && !moreBody.hidden) { event.preventDefault(); closeMore(true); } }, { signal: controller.signal });
+  host.ownerDocument.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!moreBody.hidden) { event.preventDefault(); closeMore(true); return; }
+    if (runtimeActions.contains(host.ownerDocument.activeElement) && runtimeDisplay?.dismiss()) { event.preventDefault(); name.focus(); }
+  }, { signal: controller.signal });
   host.ownerDocument.addEventListener('visibilitychange', showPanel, { signal: controller.signal });
   narrow.addEventListener('change', showPanel, { signal: controller.signal });
   view.addEventListener('message', event => {
@@ -600,6 +677,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
+    mountRuntimeControls:(header,owner)=>widgetRuntimeControls?.attach(header,owner)??false,
     browserAssist: () => current() && assistOn ? assist : null,
     assistantContext: () => {
       if (!current() || !selectedEntry) return null;
@@ -608,6 +686,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

@@ -8,8 +8,14 @@ export function createSourceFrameFetch({fetch: fetcher = globalThis.fetch, href 
   if(values.length>1||values.length===1&&!/^[A-Za-z0-9_-]{43}$/u.test(values[0]))throw new TypeError('source_frame_invalid');
   // The browser's actual ancestor origin (or a trusted host option), never '*'.
   // A response only wakes a fresh server read; it conveys no Source authority.
+  // Referrer policy can mask ancestorOrigins as 'null'. Keep ordinary fetch
+  // working when no exact web origin is available for the optional handoff.
+  let trustedParentOrigin=false;
+  if(typeof parentOrigin==='string'){
+    try{const origin=new URL(parentOrigin);trustedParentOrigin=['https:','http:'].includes(origin.protocol)&&origin.origin===parentOrigin;}catch{}
+  }
   const canRefresh=shortSessionHandoff===true&&view?.parent&&view.parent!==view&&typeof view.addEventListener==='function'
-    &&typeof parentOrigin==='string'&&new URL(parentOrigin).origin===parentOrigin;
+    &&trustedParentOrigin;
   if(!values.length&&!canRefresh)return fetcher;
   const frame=values[0];
   let flight=null;

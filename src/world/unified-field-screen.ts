@@ -70,7 +70,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   searchInput.type = 'search'; searchInput.setAttribute('aria-label', 'Найти в моих сотах'); searchInput.autocomplete = 'off';
   const clear = iconButton('Очистить поиск', 'close', () => { searchInput.value = ''; queries[mode] = ''; inputChanged(); searchInput.focus(); });
   clear.classList.add('uf-search-clear'); search.append(icon('search'), searchInput, clear);
-  const localSearch = el('div', 'uf-local-search'); localSearch.append(search);
+  const listButton = button('Список', 'list', 'uf-list-button', () => openList());
+  listButton.setAttribute('aria-haspopup', 'dialog'); listButton.setAttribute('aria-label', 'Соты списком');
+  const localSearch = el('div', 'uf-local-search'); localSearch.append(search, listButton);
   const filters = el('div', 'uf-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Какие объекты показать');
   const compactFilter = el('select', 'uf-compact-filter'); compactFilter.setAttribute('aria-label', 'Какие объекты показать'); filters.append(compactFilter);
   compactFilter.addEventListener('change', () => { filter = compactFilter.value as FieldFilter; filtersByMode[mode] = filter; updateChrome(); inputChanged(true); });
@@ -126,6 +128,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let activeSearches = 0, queuedSearch: ((admitted: boolean) => void) | null = null;
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
   let previewOpener: HTMLElement | null = null;
+  let listDialog: WorldDialog | null = null;
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
   let firstResolve = !options.viewState?.mine;
@@ -175,8 +178,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   function placeSearch(): void {
     searchInput.placeholder = wide.matches ? mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества' : 'Поиск';
     const placeholder = header?.querySelector('.sx-global-search');
-    if (wide.matches && header) { placeholder?.replaceWith(search); if (search.parentElement !== header) header.insertBefore(search, header.querySelector('.sx-mobile-profile')); }
-    else { if (search.parentElement !== localSearch) localSearch.append(search); placeholder?.remove(); }
+    if (wide.matches && header) { placeholder?.replaceWith(search); if (search.parentElement !== header) header.insertBefore(search, header.querySelector('.sx-mobile-profile')); sides.after(listButton); }
+    else { if (search.parentElement !== localSearch) localSearch.prepend(search); if (listButton.parentElement !== localSearch) localSearch.append(listButton); placeholder?.remove(); }
   }
   function updateChrome(): void {
     const focused = document.activeElement;
@@ -201,8 +204,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     contextKey = ''; if (summary) updateSummary(summary); placeSearch();
   }
   function route(): void { options.onRoute(mode, queries[mode], filter); }
-  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); }
+  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); }
   function inputChanged(immediate = false): void {
+    closeList(false);
     queries[mode] = searchInput.value; clear.hidden = !searchInput.value; route();
     element.dataset.query = queries[mode] ? 'active' : 'empty';
     if (searchTimer) clearTimeout(searchTimer);
@@ -261,6 +265,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }));
   }
   function updateSummary(next: UnifiedFieldSummary): void {
+    if (summary && (next.document !== summary.document || next.focusContextId !== summary.focusContextId || next.arranging !== summary.arranging)) closeList(false);
     if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()) options.onContextChange?.(next.focusContextId);
     if (mode === 'mine' && selected?.shortcutId) {
       const inspected = next.document.shortcuts.find(shortcut => shortcut.shortcutId === selected?.shortcutId);
@@ -295,7 +300,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }
   }
   function applyPersistence(next: FieldPersistenceState): void {
-    if (!current()) return; state = next; updateStatus();
+    if (!current()) return; closeList(false); state = next; updateStatus();
     if (!engine && next.state !== 'loading' && next.document.contexts.length) mountEngine(next);
     if (engine && next.state === 'saved' && !engine.hasUnsavedChanges()) {
       const previousRefs = new Set(engine.snapshot().shortcuts.map(shortcut => fieldEntityKey(shortcut.entity)));
@@ -338,6 +343,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   async function searchDirectory(append = false, preserveView = false): Promise<void> {
     if (mode !== 'search') return;
+    closeList(false);
     const generation = ++searchGeneration, query = queries.search, selectedFilter = filter;
     const freshScope = searchResponseScope !== `${query}:${selectedFilter}` || searchItems.length === 0;
     const restoreView = !searchResponseScope && options.viewState?.search && options.viewState.searchScope === `${query}:${selectedFilter}`;
@@ -381,7 +387,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     } finally { releaseSearchSlot(); if (current() && generation === searchGeneration && query === queries.search && selectedFilter === filter) more.disabled = false; }
   }
   async function loadMine(): Promise<void> {
-    if (!engine) return; const generation = ++mineGeneration;
+    if (!engine) return; closeList(false); const generation = ++mineGeneration;
     const resolvedUnavailableRefs = new Set<string>();
     mineConfirmedGeneration = -1;
     empty.hidden = true; element.dataset.mineState = 'loading';
@@ -483,6 +489,69 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     copy.append(actions); panel.append(close, copy); element.append(panel); element.dataset.preview = 'open'; preview = panel;
     panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePreview(); } }, { signal });
     panel.focus({ preventScroll: true });
+  }
+  function closeList(restoreFocus = true): void {
+    const instance = listDialog; listDialog = null; instance?.close({ restoreFocus });
+  }
+  function listEntries(localQuery = ''): { key: string; title: string; detail: string; entity?: FieldEntityRef; shortcutId?: string; contextId?: string }[] {
+    if (!current() || !engine) return [];
+    if (mode === 'search' && (searchResponseScope !== `${queries.search}:${filter}` || element.dataset.searchState === 'loading' || element.dataset.searchState === 'offline')) return [];
+    const privateReady = mode === 'search' || mineConfirmedGeneration === mineGeneration;
+    const doc = mode === 'mine' ? engine.snapshot() : searchScene(), query = queries[mode].trim().toLocaleLowerCase('ru');
+    const matchingContexts = new Set(doc.contexts.filter(context => context.title.toLocaleLowerCase('ru').includes(query)).map(context => context.contextId));
+    const known = mode === 'mine' ? mineKnownRefs : new Set(searchItems.map(item => fieldEntityKey(item.entity)));
+    const entries = new Map<string, { key: string; title: string; detail: string; entity: FieldEntityRef; shortcutId: string; contexts: Set<string> }>();
+    const includedContexts = new Set<string>();
+    for (const shortcut of doc.shortcuts) {
+      const key = fieldEntityKey(shortcut.entity), item = metadata.get(key);
+      if (!known.has(key) || !item || (item.entity.kind === 'builtin' ? !BUILTINS.some(builtin => fieldEntityKey(builtin.entity) === key) : (!privateReady || !directory.getRecord(item.entity)))) continue;
+      if (mode === 'mine' && !matches(item, matchingContexts.has(shortcut.contextId) ? '' : queries.mine, filter)) continue;
+      const context = doc.contexts.find(value => value.contextId === shortcut.contextId); if (!context) continue;
+      includedContexts.add(context.contextId);
+      let entry = entries.get(key);
+      if (!entry) { entry = { key, title: item.title, detail: kindLabel(item.entity.kind), entity: item.entity, shortcutId: shortcut.shortcutId, contexts: new Set() }; entries.set(key, entry); }
+      entry.contexts.add(context.title);
+    }
+    const rows: { key: string; title: string; detail: string; entity?: FieldEntityRef; shortcutId?: string; contextId?: string }[] = [...entries.values()].map(({ contexts, ...entry }) => ({ ...entry, detail: `${entry.detail} · ${[...contexts].join(', ')}` }));
+    for (const context of doc.contexts) if (!query || matchingContexts.has(context.contextId) || includedContexts.has(context.contextId)) rows.push({ key: `context:${context.contextId}`, title: context.title, detail: 'Пространство', contextId: context.contextId });
+    const find = localQuery.trim().toLocaleLowerCase('ru');
+    return rows.filter(row => `${row.title} ${row.detail}`.toLocaleLowerCase('ru').includes(find));
+  }
+  function openList(): void {
+    if (!current() || !engine || document.querySelector('dialog[open]')) return;
+    closePreview(false);
+    const capturedMode = mode, capturedQuery = queries[mode], capturedFilter = filter;
+    const instance = dialog(mode === 'mine' ? 'Мои соты списком' : 'Результаты списком'); listDialog = instance;
+    instance.element.classList.add('uf-list-dialog');
+    instance.element.addEventListener('close', () => { if (listDialog === instance) listDialog = null; }, { once: true });
+    const find = textInput('', 'Найти в этом списке', 100); find.type = 'search'; find.autocomplete = 'off'; find.setAttribute('aria-label', 'Найти в этом списке');
+    const status = el('p', 'uf-list-status'); status.setAttribute('role', 'status');
+    const list = el('div', 'uf-list-results'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', 'Соты и пространства');
+    const live = (): boolean => current() && listDialog === instance && instance.element.open && mode === capturedMode && queries[mode] === capturedQuery && filter === capturedFilter && !Array.from(document.querySelectorAll('dialog[open]')).some(other => other !== instance.element);
+    const render = (): void => {
+      if (!live()) return;
+      list.replaceChildren(); const rows = listEntries(find.value);
+      for (const row of rows) {
+        const action = button('', row.contextId ? 'layers' : 'next', 'uf-list-entry', () => {
+          if (!live()) return;
+          const fresh = listEntries(find.value).find(value => value.key === row.key);
+          if (!fresh) { render(); status.textContent = 'Список изменился. Доступ к соте пока не подтверждён.'; find.focus({ preventScroll: true }); return; }
+          closeList();
+          if (!current()) return;
+          if (fresh.contextId) { closePreview(false); engine?.focusContext(fresh.contextId); }
+          else if (fresh.entity) { const item = metadata.get(fieldEntityKey(fresh.entity)); if (item) activate(item, fresh.shortcutId); }
+        });
+        const copy = el('span', 'uf-list-copy'); copy.append(el('strong', '', row.title), el('small', '', row.detail)); action.replaceChildren(icon(row.contextId ? 'layers' : 'next'), copy); list.append(action);
+      }
+      const pending = mode === 'mine' ? mineConfirmedGeneration !== mineGeneration || element.dataset.mineState !== 'ready' : element.dataset.searchState === 'loading' || element.dataset.searchState === 'offline' || searchResponseScope !== `${queries.search}:${filter}`;
+      status.textContent = rows.length ? `${rows.length} в списке${pending ? ' · доступ к части сот ещё не подтверждён' : ''}` : pending ? 'Доступ к сотам пока не подтверждён. Закройте список и обновите поле.' : find.value.trim() ? 'В этом списке ничего не найдено.' : 'В текущем разделе нет сот.';
+    };
+    find.addEventListener('input', render, { signal });
+    instance.body.append(find, status, list);
+    if (mode === 'search' && searchCursor) instance.body.append(el('p', 'uf-list-page-note', 'Здесь только загруженные результаты. «Показать ещё» на поле добавит следующую страницу.'));
+    render();
+    const focus = matchMedia('(pointer: coarse)').matches ? list.querySelector<HTMLButtonElement>('button') ?? instance.element.querySelector<HTMLButtonElement>('button') : find;
+    focus?.focus({ preventScroll: true });
   }
   function activate(entity: FieldDirectoryEntity, shortcutId?: string): void {
     if (!current()) return;
@@ -633,7 +702,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   updateChrome();
   return {
     element, ready,
-    setMode(next, query, nextFilter) { if (!current()) return; if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
+    setMode(next, query, nextFilter) { if (!current()) return; closeList(false); if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
     attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); },
     async addEntity(ref) {
       await ready; if (!current()) return;
@@ -648,6 +717,6 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },
     reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); },
-    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; persistence.dispose(); directory.dispose(); search.remove(); element.remove(); },
+    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
   };
 }

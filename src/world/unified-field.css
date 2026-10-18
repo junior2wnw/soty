@@ -376,3 +376,20 @@
   html[data-soty-keyboard=true] .uf-context-toolbar { position: absolute; top: 4px; right: 8px; left: auto; padding: 0; background: transparent; display: block; }
   html[data-soty-keyboard=true] .uf-context-toolbar>.uf-context-selector { display: none; }
 }
+
+/* A text-size chooser supplements the field; it never changes its geometry. */
+.uf-local-search { display: flex; align-items: center; gap: 8px; }
+.uf-local-search>.uf-global-search { flex: 1; min-width: 0; }
+.uf-list-button.sw-button { flex: none; min-height: 44px; padding: 10px 12px; gap: 8px; border: 1px solid var(--sw-line); border-radius: 14px; background: var(--sw-surface-subtle); color: var(--sw-ink); font-size: 14px; line-height: 22px; }
+.sw-dialog.uf-list-dialog { width: min(640px,calc(100vw - 24px)); margin-inline: auto; max-height: calc(var(--soty-visible-height,100dvh) - 24px); }
+.sw-dialog.uf-list-dialog[open] { display: grid; grid-template-rows: auto minmax(0,1fr); }
+.uf-list-dialog .sw-dialog-content { display: flex; flex-direction: column; gap: 10px; min-height: 0; max-height: none; overflow: hidden; }
+.uf-list-dialog .sw-input { flex: none; width: 100%; min-height: 44px; font-size: 16px; }
+.uf-list-status,.uf-list-page-note { flex: none; margin: 0; color: var(--sw-muted); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.uf-list-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.uf-list-entry.sw-button { display: flex; width: 100%; min-width: 0; min-height: 44px; justify-content: flex-start; align-items: center; gap: 12px; padding: 10px 8px; text-align: left; white-space: normal; }
+.uf-list-entry>.sw-icon { flex: none; width: 22px; height: 22px; }
+.uf-list-copy { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.uf-list-copy strong,.uf-list-copy small { white-space: normal; overflow-wrap: anywhere; }
+.uf-list-copy strong { font-size: 16px; line-height: 22px; font-weight: 600; }
+.uf-list-copy small { color: var(--sw-muted); font-size: 12px; line-height: 18px; }

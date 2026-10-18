@@ -250,6 +250,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     };
     layout();
     row.stage = options.mount(host, { appId: intent.target.appId, name: widget.name, status: 'unknown' }, intent, current, widget.id);
+    row.stage.mountRuntimeControls?.(header,{isCurrent:current,resolve:()=>grip});
   }
   function render(): void {
     for (const id of mounted.keys()) if (state.hidden || !state.widgets.some(widget => widget.id === id && widget.visible)) stop(id);
