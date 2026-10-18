@@ -40,9 +40,10 @@ export function placeFloatingControl(preferred: FloatingPoint, view: FloatingVie
 }
 
 /** Read visible shell controls, including iframe bounds we cannot inspect. */
-export function floatingObstacles(doc: Document, ignore: (element: Element) => boolean): FloatingRect[] {
+export function floatingObstacles(doc: Document, ignore: (element: Element) => boolean, extraSelector = ''): FloatingRect[] {
   const result: FloatingRect[] = [];
-  for (const element of doc.querySelectorAll?.('button,a[href],input,textarea,select,summary,[role="button"],iframe') ?? []) {
+  const controls = 'button,a[href],input,textarea,select,summary,[role="button"],iframe';
+  for (const element of doc.querySelectorAll?.(extraSelector ? `${controls},${extraSelector}` : controls) ?? []) {
     if (ignore(element) || element.closest('[hidden],[inert]') || !element.getClientRects().length) continue;
     let collapsed = false;
     for (let parent = element.parentElement; parent; parent = parent.parentElement) {

@@ -110,6 +110,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const reviewsHost = el('div');
   const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
     if (!current()) return;
+    if (!moreBody.hidden) closeMore(true);
     feedback ??= mountAppFeedback(feedbackHost, { api: options.api, accountId, appId: app.appId, title: app.name, isCurrent: current,
       onModalChange: (modal, open) => { if (!open || current()) options.onModalChange?.(modal, open); } });
     feedback.open();
@@ -117,8 +118,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
   const field = iconButton('Добавить на моё поле', 'plus', () => {
-    closeMore();
-    void fullscreen.leave().then(() => { if (current()) options.onPlaceInField?.(app); })
+    const returnToMore = field.parentElement === moreBody;
+    closeMore(returnToMore);
+    void fullscreen.leave().then(() => {
+      if (!current()) return;
+      if (returnToMore) more.focus();
+      options.onPlaceInField?.(app);
+    })
       .catch(() => showMessage('Не удалось открыть поле. Попробуйте ещё раз.'));
   });
   field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
@@ -131,18 +137,58 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
+  const shortToolbar = view.matchMedia('(max-height: 360px)');
   function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
     moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && current()) more.focus();
   }
+  function fitMore(): void {
+    if (options.presentation === 'widget') return;
+    if (!current()) { closeMore(); return; }
+    const active = host.ownerDocument.activeElement;
+    if (shortToolbar.matches && active?.closest('.sw-topbar,.sw-mobile-nav') && !active.getClientRects().length) more.focus();
+    if (!shortToolbar.matches || moreBody.hidden) {
+      for (const property of ['max-height', 'max-width', 'translate']) moreBody.style.removeProperty(property);
+      return;
+    }
+    const viewport = view.visualViewport;
+    const stage = screen.getBoundingClientRect(), padding = view.getComputedStyle(header);
+    const pixels = (value: string): number => Math.max(0, Number.parseFloat(value) || 0);
+    const left = Math.max(stage.left, viewport?.offsetLeft ?? 0) + pixels(padding.paddingLeft);
+    const right = Math.min(stage.right, view.innerWidth,
+      (viewport?.offsetLeft ?? 0) + (viewport?.width ?? view.innerWidth)) - pixels(padding.paddingRight);
+    const bottom = Math.min(stage.bottom, view.innerHeight,
+      (viewport?.offsetTop ?? 0) + (viewport?.height ?? view.innerHeight)) - 8;
+    moreBody.style.removeProperty('translate'); moreBody.style.removeProperty('max-height');
+    moreBody.style.maxWidth = `${Math.max(0, Math.floor(right - left))}px`;
+    const rect = moreBody.getBoundingClientRect();
+    const x = Math.max(left - rect.left, Math.min(0, right - rect.right));
+    moreBody.style.translate = `${x}px 0px`;
+    moreBody.style.maxHeight = `${Math.max(0, Math.floor(bottom - rect.top))}px`;
+  }
+  function syncShortToolbar(): void {
+    if (options.presentation === 'widget' || !current()) return;
+    const controls = [field, report, discuss], target = shortToolbar.matches ? moreBody : header;
+    if (controls.some(control => control.parentElement !== target)) {
+      const restoreFocus = controls.some(control => control.contains(host.ownerDocument.activeElement));
+      if (shortToolbar.matches) moreBody.prepend(...controls);
+      else for (const control of controls) header.insertBefore(control, expand);
+      if (restoreFocus) closeMore(true);
+    }
+    fitMore();
+  }
+  function focusDiscussionControl(): void {
+    (discuss.parentElement === moreBody && moreBody.hidden ? more : discuss).focus();
+  }
   const back = iconButton('Назад', 'back', () => { if (current()) options.onBack(); });
   const discuss = iconButton('Обсуждение приложения', 'chat', () => {
-    if (current()) void navigatePresentation(intent.presentation ? undefined : { panel: 'discussion' }, true);
+    if (current()) { closeMore(); void navigatePresentation(intent.presentation ? undefined : { panel: 'discussion' }, true); }
   });
   discuss.setAttribute('aria-controls', panel.id); discuss.dataset.stageControl = 'discussion';
   const more = iconButton('Действия с приложением', 'more', () => {
     if (!current()) return;
     const open = moreBody.hidden; moreBody.hidden = !open; more.setAttribute('aria-expanded', String(open));
+    fitMore();
     if (open) moreBody.querySelector<HTMLButtonElement>('button:not([hidden]):not(:disabled)')?.focus();
   });
   more.setAttribute('aria-controls', moreBody.id); more.setAttribute('aria-expanded', 'false'); more.dataset.stageControl = 'more';
@@ -297,6 +343,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
   header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
+  syncShortToolbar();
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: options.request,
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
@@ -444,7 +491,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!current() || generation !== routeGeneration) return;
     if (discussion?.hasUnsavedChanges()) { showMessage('Скопируйте черновик: браузер пока не смог его сохранить.'); return; }
     const next = routeWith(presentation); options.onNavigate(next); updateRoute(next);
-    if (focus) { if (presentation) discussion?.focus(); else discuss.focus(); }
+    if (focus) { if (presentation) discussion?.focus(); else focusDiscussionControl(); }
   }
   function showPanel(): void {
     const visible = !!intent.presentation;
@@ -604,7 +651,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!next.presentation) showPanel();
     else ensureDiscussion();
     void applyPresentation();
-    if (wasVisible && !next.presentation && focusedPanel) discuss.focus();
+    if (wasVisible && !next.presentation && focusedPanel) focusDiscussionControl();
   }
   async function applyPresentation(): Promise<void> {
     if (applyingPresentation) return;
@@ -668,6 +715,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }, { signal: controller.signal });
   host.ownerDocument.addEventListener('visibilitychange', showPanel, { signal: controller.signal });
   narrow.addEventListener('change', showPanel, { signal: controller.signal });
+  shortToolbar.addEventListener('change', syncShortToolbar, { signal: controller.signal });
+  view.addEventListener('resize', fitMore, { signal: controller.signal });
+  view.visualViewport?.addEventListener('resize', fitMore, { signal: controller.signal });
+  view.visualViewport?.addEventListener('scroll', fitMore, { signal: controller.signal });
   view.addEventListener('message', event => {
     if (isAppExternalRequest(event, { frameWindow: runtime.querySelector('iframe')?.contentWindow ?? null,
       origin: selectedEntry?.origin, current: current(), activated: view.navigator.userActivation?.isActive === true })) external.click();

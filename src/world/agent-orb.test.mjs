@@ -608,3 +608,37 @@ test('orb leaves browser/system shortcuts and IME arrows untouched while preserv
   const plain = new Event('keydown', { cancelable: true }); Object.assign(plain, { key: 'ArrowLeft', shiftKey: true }); f.orb.dispatchEvent(plain);
   assert.equal(plain.defaultPrevented, true); assert.equal(parseFloat(f.orb.style.left), parseFloat(style.left) - 40); f.agent.dispose();
 });
+
+test('a saved assistant position avoids the whole Stage notice and returns after it is hidden without changing its preference', () => {
+  const f = fixture({ width: 320, height: 540 });
+  const notice = f.el('aside', 'sa-stage-runtime-notice');
+  const bounds = { left: 0, top: 161, width: 320, height: 57, right: 320, bottom: 218 };
+  notice.getBoundingClientRect = () => bounds; f.main.append(notice);
+  const saved = JSON.stringify({ x: 214 / 320, y: 168 / 540 });
+  f.saved.set('soty.agent-orb.v1:A', saved); f.agent.setAccount('A');
+  const intersects = () => {
+    const orb = f.orb.getBoundingClientRect();
+    return orb.left < bounds.right && orb.right > bounds.left && orb.top < bounds.bottom && orb.bottom > bounds.top;
+  };
+  assert.equal(intersects(), false, 'text outside the details button remains readable');
+  assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved, 'automatic avoidance never saves a new preference');
+  notice.hidden = true; f.root.dispatchEvent(new Event('soty:floating-layout'));
+  assert.equal(f.orb.style.left, '214px'); assert.equal(f.orb.style.top, '168px');
+  assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved); f.agent.dispose();
+});
+
+test('an owned modal ignores the background Stage notice and closing it restores notice avoidance', () => {
+  const f = fixture({ width: 320, height: 540 });
+  const notice = f.el('aside', 'sa-stage-runtime-notice');
+  notice.getBoundingClientRect = () => ({ left: 0, top: 161, width: 320, height: 57, right: 320, bottom: 218 });
+  f.main.append(notice);
+  const saved = JSON.stringify({ x: 214 / 320, y: 168 / 540 });
+  f.saved.set('soty.agent-orb.v1:A', saved);
+  const app = f.world(), owned = app.dialog('Owned recovery');
+  assert.equal(f.orb.parentElement, owned.element);
+  assert.equal(f.orb.style.left, '214px'); assert.equal(f.orb.style.top, '168px');
+  owned.close(); f.drain();
+  const rect = f.orb.getBoundingClientRect();
+  assert.ok(rect.bottom <= 161 || rect.top >= 218, 'returning to the Stage restores avoidance');
+  assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved); f.agent.dispose();
+});

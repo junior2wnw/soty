@@ -43,7 +43,23 @@ const productCompiled = ts.transpileModule(productSource, { compilerOptions: { t
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const failure = code => Object.assign(new Error(code), { code });
+// Inline declarations used by the actual mounted controls; no layout or CSS parsing is simulated.
+function stylePort() {
+  const values = new Map();
+  const style = {
+    setProperty(name, value) { if (value == null || value === '') values.delete(name); else values.set(name, String(value)); },
+    getPropertyValue(name) { return values.get(name) ?? ''; },
+    removeProperty(name) { const previous = this.getPropertyValue(name); values.delete(name); return previous; },
+  };
+  for (const name of ['left', 'top', 'width', 'height', 'max-width', 'max-height', 'translate', 'z-index']) {
+    Object.defineProperty(style, name.replace(/-([a-z])/gu, (_match, letter) => letter.toUpperCase()), {
+      enumerable: true, get() { return style.getPropertyValue(name); }, set(value) { style.setProperty(name, value); },
+    });
+  }
+  return style;
+}
 class ElementPort {
+  style = stylePort();
   parent = null;
   handlers = new Map();
   children = []; open = true; isConnected = true; textContent = ''; changes = 0; dataset = {}; tagName = ''; className = '';
@@ -74,6 +90,19 @@ class ElementPort {
   focus() {}
   remove() { this.isConnected = false; if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); this.parent = null; }
 }
+test('ElementPort inline styles retain values across CSS names and camelCase without sharing declarations', () => {
+  const element = new ElementPort(), sibling = new ElementPort();
+  element.style.maxHeight = '120px';
+  assert.equal(element.style.getPropertyValue('max-height'), '120px'); assert.equal(sibling.style.maxHeight, '');
+  assert.equal(element.style.removeProperty('max-height'), '120px'); assert.equal(element.style.maxHeight, '');
+  assert.equal(element.style.removeProperty('max-height'), '');
+  element.style.setProperty('max-width', '240px'); assert.equal(element.style.maxWidth, '240px');
+  element.style.setProperty('max-width', ''); assert.equal(element.style.maxWidth, '');
+  element.style.translate = '8px 0px'; assert.equal(element.style.removeProperty('translate'), '8px 0px');
+  element.style.setProperty('--owned-test-value', 'one'); assert.equal(element.style.getPropertyValue('--owned-test-value'), 'one');
+  element.style.removeProperty('--owned-test-value'); assert.equal(element.style.getPropertyValue('--owned-test-value'), '');
+});
+
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
@@ -936,8 +965,6 @@ async function currentReviewWidgets() {
   const storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   Object.assign(f.view, { localStorage: storage, innerWidth: 390, innerHeight: 844 });
   const root = f.app.root, document = root.ownerDocument;
-  const style = new WeakMap();
-  if (!Object.getOwnPropertyDescriptor(ElementPort.prototype, 'style')) Object.defineProperty(ElementPort.prototype, 'style', { get() { if (!style.has(this)) style.set(this, {}); return style.get(this); } });
   ElementPort.prototype.dispatchEvent = function(event) { for (const fn of [...this.handlers.get(event.type) || []]) fn(event); return !event.defaultPrevented; };
   const make = (tagName, className = '', textContent = '') => Object.assign(new ElementPort(), { ownerDocument: document, tagName, className, textContent });
   const button = (label, _icon, className, action) => { const node = make('button', className, label); if (action) node.addEventListener('click', action); return node; };

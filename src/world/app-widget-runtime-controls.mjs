@@ -6,7 +6,7 @@ export function createWidgetRuntimeControls(options) {
   const main=options.presentation==='main';
   let disposed=false,owner=main?options.returnTarget??null:null,header=null,active=null;
   const fallback=el('div',main?'sa-stage-runtime-notice':'sa-widget-runtime-launcher');
-  const control=iconButton(main?'Подробности и действия приложения':'Действия окна приложения','more',open);
+  const control=iconButton(main?'Подробности и действия приложения':'Действия окна приложения',main?'info':'more',open);
   control.classList.add(main?'sa-stage-runtime-action':'sa-widget-runtime-action');control.dataset.stageControl=main?'runtime-details':'widget-runtime';
   const mark=el('b','sa-widget-runtime-notice-mark');mark.setAttribute('aria-hidden','true');if(!main)control.append(mark);
   if(!message.id)message.id=`${main?'stage':'widget'}-runtime-message-${view.crypto.randomUUID()}`;
