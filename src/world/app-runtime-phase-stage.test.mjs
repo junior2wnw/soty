@@ -5,6 +5,8 @@ import vm from'node:vm';
 import ts from'typescript';
 import{createAppRuntimePhaseTrace}from'./app-runtime-phase-trace.mjs';
 import{isScopedRuntimeProfile}from'./app-launch.mjs';
+import{createAppRuntimeDisplay}from'./app-runtime-display.mjs';
+import{captureSourcePin,matchesScopedCaptureContext}from'./app-project-capture.mjs';
 
 // Execute the production manual buttons, launch/watch/reset/route functions and
 // diagnostic dialog, with only DOM, network and unrelated stage sinks stubbed.
@@ -17,13 +19,13 @@ const declaration=name=>{for(const n of statements)if(ts.isVariableStatement(n))
 const compiled=ts.transpileModule(`
 exports.harness=(host,options,state)=>{
  const view=host.view,runtime=host.runtime,controller=new AbortController(),message=host.message;
- let disposed=false,runtimeStarted=false,runtimePending=false,displayEpoch=0,releaseRuntimeDisplay=null,entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0,frameGeneration=0;
+ let disposed=false,runtimeStarted=false,runtimePending=false,displayEpoch=0,releaseRuntimeDisplay=null,runtimeDisplay=null,entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0,frameGeneration=0;
  let diagnosticOpen=false,closeDiagnostic=null,renderDiagnostic=null,routeGeneration=0,intent={},presentationVersion=0;
  const current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
- const currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
+ const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{},showMessage=text=>{message.textContent=text;state.messages.push(text);};
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null};
+ const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>null};
  const button=host.button,el=host.el,emptyState=()=>host.el('div'),createDialog=host.createDialog;
  const appLaunchFailure=()=>({title:'Existing error',detail:'Existing detail'});
  ${declaration('runtimeTrace')}
@@ -62,7 +64,7 @@ function fixture(presentation){
  const el=(tag,_class,text='')=>Object.assign(new Node(tag,state),{textContent:text});
  const createDialog=(_title,onClose)=>{const dialog={element:new Node('dialog',state),body:new Node('body',state),close(){onClose();}};state.dialogs.push(dialog);return dialog;};
  const host={view,runtime,ownerDocument:doc,message:new Node('message',state),panel:Object.assign(new Node('panel',state),{hidden:true}),button,el,createDialog};
- const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
+ const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
  const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){}},state);
  const tick=ms=>{const target=now+ms;while(true){const t=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!t||t[1].at>target)break;tasks.delete(t[0]);now=t[1].at;t[1].fn();}now=target;};
  return{h,state,tasks,tick,view,host};
@@ -79,7 +81,7 @@ test('actual launch wiring observes before src/insert and preserves existing loa
  const run=async diagnostic=>{const f=fixture();if(diagnostic)f.h.api.arm();f.h.refresh();await flush();const frame=f.h.frame();assert.ok(frame);if(diagnostic){assert.ok(f.state.order.indexOf('listen:iframe:load')<f.state.order.indexOf('src'));assert.ok(f.state.order.indexOf('src')<f.state.order.lastIndexOf('insert:runtime'));}
    frame.emit('load');f.tick(12_001);assert.equal(f.state.draft,'retained discussion draft');return f;};
  const off=await run(false),on=await run(true);assert.deepEqual(on.state.calls,off.state.calls);assert.deepEqual(on.state.messages,off.state.messages);assert.equal(on.state.calls.launch,1);assert.equal(on.h.api.snapshot().events.some(x=>x.phase==='root_timeout'),false);assert.equal(on.h.api.snapshot().observation,'partial');
- const late=fixture();late.h.api.arm();late.h.refresh();await flush();late.tick(12_000);assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);late.h.frame().emit('load');assert.equal(late.state.messages.at(-1),'');assert.equal(late.h.api.snapshot().observation,'partial');
+ const late=fixture();late.h.api.arm();late.h.refresh();await flush();late.tick(12_000);assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);late.h.frame().emit('load');assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);assert.equal(late.h.api.snapshot().observation,'partial');
 });
 
 test('actual route reset rejects old peers and erases diagnostics without remounting iframe or touching drafts',async()=>{
@@ -87,17 +89,17 @@ test('actual route reset rejects old peers and erases diagnostics without remoun
  f.view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-phase.v1',phase:'boot_cookie_pending'}});assert.equal(f.h.api.snapshot(),null);
 });
 
-test('actual stage distinguishes load from a correlated Boot reply without changing transport UI or the retained draft',async()=>{
+test('actual stage distinguishes load from a correlated Boot reply and preserves visible unconfirmed recovery and the retained draft',async()=>{
  const f=fixture();f.h.api.arm();f.h.refresh();await flush();f.tick(0);const frame=f.h.frame();
- assert.equal(f.state.probes[0].data.schema,'soty.runtime-phase-watch.v2');
- const watchId=f.state.probes[0].data.watchId;
+ assert.ok(f.state.probes.some(p=>p.data.schema==='soty.runtime-phase-watch.v2'));
+ const watchId=f.state.probes.find(p=>p.data.schema==='soty.runtime-phase-watch.v2').data.watchId;
  frame.emit('load');f.tick(12_001);
  assert.equal(f.h.api.snapshot().events.at(-1).phase,'root_boot_unobserved');
- assert.equal(f.state.messages.at(-1),'');
+ assert.match(f.state.messages.at(-1),/запуск приложения не подтверждён/u);
  f.view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-phase.v2',watchId,phase:'boot_failed'}});
  assert.equal(f.h.api.snapshot().events.at(-1).phase,'boot_failed');
  assert.equal(f.h.api.snapshot().events.filter(x=>x.phase==='boot_document_ack').length,1);
- assert.equal(f.state.calls.launch,1);assert.equal(f.state.messages.at(-1),'');assert.equal(f.state.draft,'retained discussion draft');
+ assert.equal(f.state.calls.launch,1);assert.match(f.state.messages.at(-1),/запуск приложения не подтверждён/u);assert.equal(f.state.draft,'retained discussion draft');
 });
 
 test('actual diagnostic dialog arms/copies/clears only on explicit controls and never starts a launch',async()=>{

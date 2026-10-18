@@ -7,6 +7,8 @@ import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as appBootRecovery from './app-boot-recovery.mjs';
 import * as appRuntimePhaseTrace from './app-runtime-phase-trace.mjs';
+import * as appRuntimeDisplay from './app-runtime-display.mjs';
+import * as widgetRuntimeControls from './app-widget-runtime-controls.mjs';
 import * as browserAssistPilot from './browser-assist-pilot.mjs';
 import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
@@ -81,6 +83,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
+  view.MutationObserver = class { observe() {} disconnect() {} };
   const discussionCalls = { refresh: 0 };
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
@@ -95,6 +98,8 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-launch.mjs': appLaunch,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
+    './app-runtime-display.mjs': appRuntimeDisplay,
+    './app-widget-runtime-controls.mjs': widgetRuntimeControls,
     './browser-assist-pilot.mjs': browserAssistPilot,
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
@@ -556,8 +561,9 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   assert.equal(retry.hidden, false); assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
   assert.equal(separate.hidden, false, 'an unconfirmed frame exposes the existing explicit external-launch action');
   f.app.main.querySelector('iframe').emit('load'); await turn();
-  assert.equal(separate.hidden, true, 'a late document load clears the temporary fallback without launching anything');
-  assert.equal(calls, 1);
+  assert.equal(separate.hidden, false, 'a late load cannot attest Native paint or clear an unconfirmed notice');
+  assert.match(message.textContent, /не подтверждена/u);
+  assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
 });
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles transport only and keeps manual recovery after load-to-blank`, async t => {
@@ -571,10 +577,17 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles
     data: { schema: 'soty.app-slot-ready.v1', requestId: 'guessed', ready: true }, ports: [] }));
   assert.match(message.textContent, /Открываем окно/u, 'a renewal hint cannot attest this visible frame');
   frame.emit('load'); await turn();
-  assert.equal(message.hidden, true); assert.equal(message.textContent, '');
-  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  assert.equal(message.hidden, false); assert.match(message.textContent, /Открываем окно/u);
+  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'true');
   assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
-  assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+  assert.equal(calls, 1);
+  assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []);
+  const deadline = [...f.timers.values()].find(value => value.delay === 12000); assert.ok(deadline);
+  deadline.fn(); await turn();
+  assert.match(message.textContent, /запуск приложения не подтверждён/u);
+  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(calls, 1); assert.equal(f.timers.size, 0);
+  assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []);
 });
 
 test('widget transport error permits one explicit retry and ignores queued events from the replaced frame', async t => {
@@ -583,7 +596,7 @@ test('widget transport error permits one explicit retry and ignores queued event
   const first = f.app.main.querySelector('iframe'), oldEvents = [...first.handlers.get('load'), ...first.handlers.get('error')];
   first.emit('error');
   const retry = f.app.main.querySelector('.sa-recovery-retry');
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /Не удалось загрузить окно/u);
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /Не удалось подтвердить запуск приложения/u);
   assert.equal(retry.hidden, false); assert.equal(f.timers.size, 0);
   retry.emit('click'); retry.emit('click'); await turn();
   assert.equal(calls, 2); assert.equal(retry.disabled, true);
@@ -664,7 +677,14 @@ test('actual stage rejects source drift and lost ACK with a clear manual recover
 test('legacy launch response mounts its runtime without requiring new metadata or a recovery message channel', async () => {
   let calls = 0; const f = await recoveryStage(async () => { calls++; return stageResponse('/'); });
   const original = f.app.main.querySelector('iframe'); original.emit('load'); await turn();
-  assert.equal(original.contentWindow.sent.length, 0); assert.equal(calls, 1); assert.equal(f.timers.size, 0); f.app.cleanScreen();
+  assert.equal(original.contentWindow.sent.length, 0); assert.equal(calls, 1);
+  assert.deepEqual(f.requests, [], 'legacy launch does not acquire a new Source-session dependency');
+  const deadline = [...f.timers.values()].find(value => value.delay === 12000); assert.ok(deadline);
+  deadline.fn(); await turn();
+  assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 1);
+  assert.match(f.app.main.querySelector('.sa-message').textContent, /запуск приложения не подтверждён/u);
+  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  assert.equal(f.timers.size, 0); f.app.cleanScreen();
 });
 
 test('actual stage preserves a discussion through initial metadata and rename, but refreshes changed access', async () => {

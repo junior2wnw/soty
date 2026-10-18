@@ -6,6 +6,10 @@
 .sm-widget-header > button { width: 32px; min-width: 32px; min-height: 32px; padding: 5px; }
 .sm-widget-header .sm-widget-grip { flex: 1; width: auto; justify-content: flex-start; min-width: 0; overflow: hidden; cursor: grab; touch-action: none; }
 .sm-widget-grip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* One visible actions target; even a desktop widget keeps its 44px target. */
+.sm-widget-header:has(> .sa-widget-runtime-action) { height: 48px; flex-basis: 48px; }
+.sm-widget-header:has(> .sa-widget-runtime-action) > button:not(.sm-widget-grip) { width: 44px; min-width: 44px; min-height: 44px; }
+.sm-widget-header:has(> .sa-widget-runtime-action) > .sm-widget-grip { min-width: 44px; min-height: 44px; }
 .sm-widget-content { flex: 1; min-height: 0; overflow: hidden; }
 .sm-widget-content .sa-widget-stage { height: 100%; min-height: 0; padding: 0; gap: 0; }
 .sa-widget-stage > .sa-toolbar { display: none; }

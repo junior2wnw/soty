@@ -1,5 +1,6 @@
 import { roundedHexPath, hexCluster } from '../../ui/hex.mjs';
 import { createPalette } from '../../ui/palette.mjs';
+import { createBootDisplayClient } from './runtime-display-client.mjs';
 
 const html = value => String(value).replace(/[&<>"']/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const scriptData = value => JSON.stringify(value).replace(/[<>&\u2028\u2029]/gu,
@@ -99,7 +100,7 @@ body[data-framed="true"]{grid-template-rows:1fr}body[data-framed="true"] .brand{
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;
 
-function pageClient(config, allowPath) {
+function pageClient(config, allowPath, createDisplay) {
   // Clear the one-time secret synchronously before DOM work or any request.
   let ticket = '', cleanupFailed = false;
   if (config.mode === 'boot') {
@@ -111,6 +112,7 @@ function pageClient(config, allowPath) {
   const actions = document.getElementById('actions'), shell = document.getElementById('shell-action'), reset = document.getElementById('reset-action'), frameHint = document.getElementById('frame-hint');
   const nativeContinue = config.mode === 'boot' && config.scoped === true && !config.renewal ? document.getElementById('native-action') : null;
   const topLevel = window.top === window.self, controllers = new Set();
+  const bootDisplay = createDisplay(config);
   document.body.dataset.framed = String(!topLevel);
   let busy = false, navigated = false, offPage = false, generation = 0;
   let nativeGeneration = -1, cancelNavigationLoad = null;
@@ -169,8 +171,8 @@ function pageClient(config, allowPath) {
       } catch { /* Ignore malformed input without reading or serializing it. */ }
     };
     if (active) window.addEventListener('message',receive);
-    return { phase(next) { if (active && phases.includes(next)) { phase = next; send(); } },
-      close() { if (active) { phase = 'boot_inactive'; send(); stop(); } } };
+    return { phase(next) { bootDisplay.phase(next); if (active && phases.includes(next)) { phase = next; send(); } },
+      close() { bootDisplay.close(); if (active) { phase = 'boot_inactive'; send(); stop(); } } };
   })();
   let recoveryParentOrigin = '', recoveryNonce = '', recoveryApp = '', recoveryFailure = false, recoverySent = false;
   function notifyRecovery() {
@@ -308,7 +310,7 @@ function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[]
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
 <body><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
 <main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><p class="eyebrow">ПРИЛОЖЕНИЕ</p><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
-<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()});</script></body></html>`;
+<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()});</script></body></html>`;
 }
 
 export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins,scoped=false,renewal=false,parentOrigin } = {}) {
