@@ -770,3 +770,52 @@ test('an owned modal ignores the background Stage notice and closing it restores
   assert.ok(rect.bottom <= 161 || rect.top >= 218, 'returning to the Stage restores avoidance');
   assert.equal(f.saved.get('soty.agent-orb.v1:A'), saved); f.agent.dispose();
 });
+
+
+test('keyboard handover: Home cancels a drag and late pointer events cannot undock it', async () => {
+  const f = fixture({ width: 1280, height: 720 }), key = 'soty.agent-orb.v1:A';
+  f.saved.set(key, JSON.stringify({ x: .25, y: .25 })); f.agent.setAccount('A');
+  try {
+    pointer(f.orb, 'pointerdown', { clientX: 320, clientY: 180 });
+    pointer(f.orb, 'pointermove', { clientX: 360, clientY: 220 });
+    assert.equal(f.orb.hasPointerCapture(1), true); assert.equal(f.iframePointersBlocked(), true);
+    const command = event('keydown', { key: 'Home' }); f.orb.dispatchEvent(command);
+    assert.equal(command.defaultPrevented, true);
+    assert.equal(f.orb.hasPointerCapture(1), false, 'keyboard releases capture before any late pointer event');
+    assert.equal(f.iframePointersBlocked(), false, 'keyboard releases the iframe guard immediately');
+    const keyboardPosition = { ...f.orb.style };
+    pointer(f.orb, 'pointermove', { clientX: 500, clientY: 400 });
+    pointer(f.orb, 'pointerup', { clientX: 500, clientY: 400 });
+    assert.deepEqual(f.orb.style, keyboardPosition, 'late pointer events cannot replace the explicit Home command');
+    assert.equal(f.orb.dataset.docked, 'true'); assert.equal(f.saved.has(key), false);
+    assert.equal(f.orb.hasPointerCapture(1), false); assert.equal(f.iframePointersBlocked(), false);
+    assert.equal(f.click(1), false, 'the cancelled drag still suppresses its trailing pointer click');
+    assert.equal(f.dialog(), null); assert.equal(f.records.length, 0);
+    assert.equal(f.click(0), true, 'keyboard activation is not the cancelled pointer click');
+    await f.agent.flush(); assert.ok(f.dialog()); assert.equal(f.records.length, 1);
+  } finally { f.agent.dispose(); }
+});
+
+test('keyboard handover: ArrowRight cancels a drag before moving the saved position', async () => {
+  const f = fixture({ width: 1280, height: 720 }), key = 'soty.agent-orb.v1:A';
+  f.saved.set(key, JSON.stringify({ x: .25, y: .25 })); f.agent.setAccount('A');
+  try {
+    pointer(f.orb, 'pointerdown', { clientX: 320, clientY: 180 });
+    pointer(f.orb, 'pointermove', { clientX: 360, clientY: 220 });
+    assert.equal(f.orb.hasPointerCapture(1), true); assert.equal(f.iframePointersBlocked(), true);
+    const command = event('keydown', { key: 'ArrowRight' }); f.orb.dispatchEvent(command);
+    assert.equal(command.defaultPrevented, true);
+    assert.equal(parseFloat(f.orb.style.left), 336, 'keyboard starts from the saved position restored by cancellation');
+    assert.equal(parseFloat(f.orb.style.top), 180);
+    assert.equal(f.orb.hasPointerCapture(1), false, 'keyboard releases capture before any late pointer event');
+    assert.equal(f.iframePointersBlocked(), false, 'keyboard releases the iframe guard immediately');
+    const keyboardPosition = { ...f.orb.style }, saved = f.saved.get(key);
+    assert.deepEqual(JSON.parse(saved), { x: 336 / 1280, y: 180 / 720 });
+    pointer(f.orb, 'pointermove', { clientX: 500, clientY: 400 });
+    pointer(f.orb, 'pointerup', { clientX: 500, clientY: 400 });
+    assert.deepEqual(f.orb.style, keyboardPosition); assert.equal(f.saved.get(key), saved);
+    assert.equal(f.orb.hasPointerCapture(1), false); assert.equal(f.iframePointersBlocked(), false);
+    assert.equal(f.click(1), false); assert.equal(f.dialog(), null); assert.equal(f.records.length, 0);
+    assert.equal(f.click(0), true); await f.agent.flush(); assert.ok(f.dialog()); assert.equal(f.records.length, 1);
+  } finally { f.agent.dispose(); }
+});

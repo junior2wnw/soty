@@ -191,7 +191,8 @@ export function mountAgentOrb(root: HTMLElement, options: {
     if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); cancelDrag(); return; }
     const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     if (event.key !== 'Home' && !delta[event.key]) return;
-    event.preventDefault(); suppressClick = false;
+    cancelDrag();
+    event.preventDefault();
     if (event.key === 'Home') position = null;
     else { const [x, y] = delta[event.key]!; move(x * (event.shiftKey ? 40 : 16), y * (event.shiftKey ? 40 : 16)); return; }
     layout(); save();
