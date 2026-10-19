@@ -218,7 +218,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   searchInput.addEventListener('input', () => inputChanged(), { signal });
   searchInput.addEventListener('compositionstart', () => { composing = true; if (searchTimer) clearTimeout(searchTimer); }, { signal });
   searchInput.addEventListener('compositionend', () => { composing = false; inputChanged(true); }, { signal });
-  searchInput.addEventListener('keydown', event => { if (event.key === 'Escape' && searchInput.value) { event.stopPropagation(); searchInput.value = ''; inputChanged(true); } }, { signal });
+  searchInput.addEventListener('keydown', event => {
+    if (event.isComposing || composing) return;
+    if (event.key === 'Escape' && searchInput.value) { event.stopPropagation(); searchInput.value = ''; inputChanged(true); }
+  }, { signal });
   wide.addEventListener('change', placeSearch, { signal });
   function updateMineFilter(): void {
     if (!engine || mode !== 'mine') return;
