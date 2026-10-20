@@ -110,7 +110,7 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
   environment.require = specifier => { assert.equal(specifier, '../../modules/field/contract.mjs'); return strictContract; };
   const directory = module(directoryCode, 'directoryExports').createFieldDirectory({ api, accountId: 'owner', isCurrent: () => current && sourceGeneration === 1 });
   environment.directory = directory;
-  environment.metadata = new Map(refs.map(value => { const entity = environment.structuredClone(value); return [fieldEntityKey(entity), { entity, title: 'Проверяем доступ', symbol: 'lock', source: 'owner' }]; }));
+  environment.metadata = new Map(refs.map(value => { const entity = environment.structuredClone(value); return [fieldEntityKey(entity), { entity, title: 'Загрузка…', symbol: 'lock', source: 'owner' }]; }));
   const field = module(engineCode, 'engineExports').stateHarness(environment.structuredClone({ accountId: 'owner', document: doc, mode, entities: [...environment.metadata.values()], viewState: { mine: { x: 25, y: 33, scale: .7 }, mineContext: 'studio', mineFit: 'manual' } }));
   environment.engine = { ...field, element: environment.viewport, update(value) { state.updates.push(structuredClone(value)); field.update(value); } };
   const screenApi = module(screenCode, 'screenExports');
