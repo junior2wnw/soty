@@ -42,6 +42,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "app:release": "node scripts/soty-app-release.mjs",
     "app:release:test": "node --test deploy/apps/*.test.mjs",
+    "app:release:check": "node scripts/check-app-release.mjs",
     "app-art": "node scripts/app-art/cli.mjs",
     "app-art:prepare": "node scripts/app-art/cli.mjs prepare",
     "app-art:import": "node scripts/app-art/cli.mjs import",

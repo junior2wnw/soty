@@ -26,6 +26,12 @@ Digest закрепляет текущий source, проверка доступ
 Критический Caddy rewrite — uri /_soty/ingress-check? с завершающим вопросительным
 знаком. Проверить настоящий Caddy на запросах с query, а не regex шаблона.
 Cookie Сот до backend удаляется, собственный cookie приложения сохраняется.
+WebSocket аутентифицируется обычным HTTP subrequest: в forward_auth удалить
+Upgrade, Connection и Sec-WebSocket-Key/Version/Protocol/Extensions; в самом
+app proxy сохранить upgrade. Проверить настоящий 101 и обмен сообщениями,
+не только HTTP entry. Для POST/PUT/PATCH/DELETE и WebSocket проверять exact
+Origin приложения; чужой и отсутствующий Origin отвергаются. Служебный /_soty/*
+идёт первым отдельным route и сохраняет собственные guards gateway.
 Дополнительный frame-ancestors CSP не должен затереть default-src и остальные
 политики приложения. Не снимать X-Frame-Options запрет неразобранного backend.
 
@@ -34,7 +40,9 @@ Cookie Сот до backend удаляется, собственный cookie п�
     SOTY_CADDY_BIN=/usr/bin/caddy node --test deploy/apps/native-ingress.acceptance.test.mjs deploy/apps/named-zone.acceptance.test.mjs
 
 Тест поднимает отдельный loopback Caddy и synthetic upstream/gateway;
-проверяет query, cookie, CSP и отказ. Это не публикация и не проверка production.
+проверяет query, cookie, CSP, реальный WS echo, missing/foreign Origin,
+неверную сессию/source pin. Это не публикация и не проверка production.
+Пропущенный из-за отсутствия SOTY_CADDY_BIN тест не считается пройденным gate.
 На Windows переменную задавать нативным способом; не переиспользовать HOME.
 
 ## Любое применение
@@ -53,6 +61,10 @@ Cookie Сот до backend удаляется, собственный cookie п�
 4. CAS по исходному SHA → атомарный config write → reload только известного
    serving процесса → active/disk equality. Если SHA изменился — перечитать,
    не затирать параллельную работу.
+   У Caddy adapt поле file_server.hide может зависеть от имени файла кандидата.
+   Финальное active/disk сравнение делать с реальным serving path после записи;
+   не игнорировать произвольные различия и не выдавать filename-only delta за
+   доказательство неверного применённого routing.
 5. Для самой оболочки — полный pinned Docker build и deploy/connector/cli.mjs
    prepare/promote, текущие mounts/config fingerprint, drain и один writer.
    Старый serving image сохраняется stopped. Recovery не штатный обход.

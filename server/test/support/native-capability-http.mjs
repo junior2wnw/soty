@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { generateKeyPairSync, sign, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -21,6 +21,10 @@ export function good(value) { assert.equal(value.ok, true, value.error?.code); r
 export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth } = {}) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'soty-native-http-')));
   const nonce = randomUUID(), marker = join(directory, 'test-owner'); writeFileSync(marker, nonce, { flag: 'wx' });
+  // Wire/authority fixtures own their document and never depend on a stale or
+  // missing workspace build. Actual Root browser rendering is a separate gate.
+  const distDir = join(directory, 'dist'); mkdirSync(distDir);
+  writeFileSync(join(distDir, 'index.html'), '<!doctype html><title>Soty consent wire fixture</title><p>Current Connect consent</p>');
   let app, front;
   const server = createServer((req, res) => front ? front(req, res) : app ? app(req, res) : res.writeHead(503).end());
   t.after(async () => {
@@ -38,7 +42,7 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
     allowOAuthMigration: true, actorActive: () => false }).close();
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const create = enabled => createHttpApp(resolve('dist'), { dataDir: directory, connectOrigins: [origin],
+  const create = enabled => createHttpApp(distDir, { dataDir: directory, connectOrigins: [origin],
     capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
     ...(oauth ? { oauth: oauth(origin) } : {}) });
   try { app = create(enabled); }

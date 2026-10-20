@@ -4,16 +4,19 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { initAppManifest, readAppManifest, readReleaseJson, createReleasePlan, writeReleasePlan, verifyRelease, namedZoneIngress } from '../deploy/apps/release.mjs';
 import { AppDeploymentError } from '../src/world/app-deployment.mjs';
+import { diagnoseAppRelease, appAuthenticationGuide, AppReleaseGuidanceError } from '../modules/apps/deployment-guidance.mjs';
 
 // No config dump, arbitrary shell execution, credentials or automatic publication.
 const usage = 'init --project PATH --name NAME --port N [--entry-path /]\n'
   + 'plan --project PATH --deployment FILE --output NEW_DIR [--mode isolated|native] [--domain-id ID] [--gateway-port N] [--frame-origin HTTPS_ORIGIN ...]\n'
   + 'verify --plan FILE [--probes FILE] --output NEW_FILE\n'
-  + 'zone --origin HTTPS_ZONE [--retain-origin HTTPS_ZONE ...] [--gateway-port N] --output NEW_FILE\n';
+  + 'zone --origin HTTPS_ZONE [--retain-origin HTTPS_ZONE ...] [--gateway-port N] --output NEW_FILE\n'
+  + 'doctor --observations FILE --output NEW_FILE\n'
+  + 'auth-guide --mode human-oidc|private-owner|agent --output NEW_FILE\n';
 export async function main(argv) {
   const action = argv[0];
   if (action === 'help' || !action) { process.stdout.write(usage); return; }
-  const allowed = { init: ['project', 'name', 'port', 'entry-path'], plan: ['project', 'deployment', 'output', 'mode', 'domain-id', 'gateway-port', 'frame-origin'], verify: ['plan', 'probes', 'output'], zone: ['origin', 'retain-origin', 'gateway-port', 'output'] };
+  const allowed = { init: ['project', 'name', 'port', 'entry-path'], plan: ['project', 'deployment', 'output', 'mode', 'domain-id', 'gateway-port', 'frame-origin'], verify: ['plan', 'probes', 'output'], zone: ['origin', 'retain-origin', 'gateway-port', 'output'], doctor: ['observations', 'output'], 'auth-guide': ['mode', 'output'] };
   if (!allowed[action]) throw new AppDeploymentError('invalid_release_command');
   const args = {}, frameOrigins = [], additionalOrigins = [];
   for (let i = 1; i < argv.length; i += 2) {
@@ -21,10 +24,14 @@ export async function main(argv) {
     if (!argv[i]?.startsWith('--') || !allowed[action].includes(key) || !value || (!['frame-origin', 'retain-origin'].includes(key) && Object.hasOwn(args, key))) throw new AppDeploymentError('invalid_release_arguments');
     if (key === 'frame-origin') frameOrigins.push(value); else if (key === 'retain-origin') additionalOrigins.push(value); else args[key] = value;
   }
-  const required = { init: ['project', 'name', 'port'], plan: ['project', 'deployment', 'output'], verify: ['plan', 'output'], zone: ['origin', 'output'] };
+  const required = { init: ['project', 'name', 'port'], plan: ['project', 'deployment', 'output'], verify: ['plan', 'output'], zone: ['origin', 'output'], doctor: ['observations', 'output'], 'auth-guide': ['mode', 'output'] };
   if (required[action].some(key => !args[key])) throw new AppDeploymentError('missing_release_argument');
   let result;
-  if (action === 'init') {
+  if (action === 'doctor' || action === 'auth-guide') {
+    result = action === 'doctor' ? diagnoseAppRelease({ observations: await readReleaseJson(args.observations, 8192) })
+      : appAuthenticationGuide({ mode: args.mode });
+    await writeFile(resolve(args.output), JSON.stringify(result, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  } else if (action === 'init') {
     result = await initAppManifest({ project: args.project, name: args.name, port: Number(args.port), entryPath: args['entry-path'] ?? '/' });
     result = { ok: true, file: result.file, unchanged: result.unchanged };
   } else if (action === 'plan') {
@@ -50,7 +57,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   catch (error) {
     // Only explicit codes from our validators; OS/network errors may contain secrets.
     const filesystemCodes = { EEXIST: 'release_output_exists', ENOENT: 'release_file_missing', EACCES: 'release_file_denied' };
-    process.stdout.write(JSON.stringify({ ok: false, code: error instanceof AppDeploymentError ? error.code : filesystemCodes[error.code] ?? 'app_release_failed' }) + '\n');
+    process.stdout.write(JSON.stringify({ ok: false, code: error instanceof AppDeploymentError || error instanceof AppReleaseGuidanceError ? error.code : filesystemCodes[error.code] ?? 'app_release_failed' }) + '\n');
     process.exitCode = 1;
   }
 }

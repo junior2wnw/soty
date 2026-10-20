@@ -72,7 +72,7 @@ async function fixture(t, options) {
 const countNotes = f => f.sql(f.notesFile, db => db.prepare('SELECT count(*) AS n FROM note_native_creates').get().n);
 function absent(response, values) { for (const value of values) assert.equal(response.text.includes(value), false, 'private material absent'); }
 
-test('actual SDK modern discovery and legacy initialize/list expose four checked tools while execution is disabled', async t => {
+test('actual SDK modern discovery and legacy initialize/list expose checked tools while execution is disabled', async t => {
   const f = await fixture(t, { enabled: false });
   const modern = result(await wire(f, f.identity.token, envelope('server/discover')));
   assert.ok(modern._meta?.[SERVER_INFO_META_KEY]); assert.ok(modern.capabilities.tools);
@@ -83,7 +83,7 @@ test('actual SDK modern discovery and legacy initialize/list expose four checked
   for (const version of [MODERN, LEGACY]) {
     const listed = await wire(f, f.identity.token, envelope('tools/list', {}, version), { version });
     const tools = result(listed).tools;
-    assert.deepEqual(tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get']);
+    assert.deepEqual(tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
     assert.equal(listed.headers['mcp-session-id'], undefined);
     assert.equal(listed.headers['cache-control'], 'no-store');
     assert.match(listed.headers['content-type'], version === MODERN ? /^application\/json/u : /^text\/event-stream/u);
@@ -93,6 +93,18 @@ test('actual SDK modern discovery and legacy initialize/list expose four checked
     assert.equal(detail.capability.digest, '95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204');
     assert.equal(detail.capability.executionEnabled, false);
     toolError(await call(f, f.identity.token, 'notes_create_draft', input, version), 'service_unavailable');
+    const diagnosis = success(await call(f, f.identity.token, 'apps_diagnose', { observations: {
+      embedded: 'blank', document: 'stalled_before_connection', debugger: 'attached',
+    } }, version), tools[4].outputSchema);
+    assert.equal(diagnosis.liveVerified, false); assert.equal(diagnosis.findings[0].code, 'debugger_interference_suspected');
+    for (const mode of ['human-oidc', 'private-owner', 'agent']) {
+      const guide = success(await call(f, f.identity.token, 'apps_auth_guide', { mode }, version), tools[5].outputSchema);
+      assert.equal(guide.applied, false); assert.equal(guide.productionEnabled, 'not_checked');
+    }
+    for (const tool of tools.slice(4)) assert.equal(tool.annotations.readOnlyHint, true);
+    toolError(await call(f, f.identity.token, 'apps_diagnose', { observations: { url: 'DO_NOT_RETURN_SECRET' } }, version), 'invalid_input');
+    toolError(await call(f, f.identity.token, 'apps_auth_guide', { mode: 'human-oidc', token: 'DO_NOT_RETURN_SECRET' }, version), 'invalid_input');
+    assert.equal((await call(f, null, 'apps_auth_guide', { mode: 'human-oidc' }, version)).status, 401);
   }
   assert.equal(countNotes(f), 0);
 });

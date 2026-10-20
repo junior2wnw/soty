@@ -45,6 +45,11 @@ src/world/app-deployment.mjs. Экспорт не подписанный grant; 
 - zone — только snippet единого HTTPS catch-all с host expression и leaf TLS,
   не настройка DNS и не reload Caddy. --retain-origin сохраняет дополнительные
   именные/canonical зоны. Не дублировать уже существующий catch-all.
+- doctor --observations FILE --output NEW_FILE — только закрытые наблюдения
+  без URL/logs/credentials. Тот же код, что Root MCP apps_diagnose. Ответ
+  liveVerified=false/releaseReadiness=not_assessed, без команд или grants.
+- auth-guide --mode human-oidc|private-owner|agent --output NEW_FILE — тот же
+  guide, что apps_auth_guide. Не включает issuer и не регистрирует клиентов.
 
 HTTP receipt содержит httpOnly=true и browserAndDataChecksRequired=true.
 Не исправлять результат проверок переписыванием этих флагов.

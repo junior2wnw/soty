@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, appendFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { installSotyDeploySkill } from '../../scripts/install-soty-deploy-skill.mjs';
 
 test('skill installation is repeatable and protects local changes from an update', async t => {
@@ -18,4 +19,15 @@ test('skill installation is repeatable and protects local changes from an update
   const before = await readFile(file, 'utf8');
   await assert.rejects(installSotyDeploySkill(target), { code: 'skill_local_changes' });
   assert.equal(await readFile(file, 'utf8'), before);
+  // An explicit, reviewed exact baseline allows a merged update, not --force.
+  const reviewedBaseline = { schema: 'soty.skill-update-review.v1', files: {
+    'SKILL.md': createHash('sha256').update(before).digest('hex'),
+  } };
+  await appendFile(file, 'Concurrent instruction.\n');
+  await assert.rejects(installSotyDeploySkill(target, { reviewedBaseline }), { code: 'skill_review_stale' });
+  const current = await readFile(file);
+  reviewedBaseline.files['SKILL.md'] = createHash('sha256').update(current).digest('hex');
+  assert.equal((await installSotyDeploySkill(target, { reviewedBaseline })).ok, true);
+  assert.equal((await installSotyDeploySkill(target)).ok, true);
+  await assert.rejects(installSotyDeploySkill(target, { reviewedBaseline: { schema: 'soty.skill-update-review.v1', files: { '../escape': 'a'.repeat(64) } } }), { code: 'skill_review_invalid' });
 });

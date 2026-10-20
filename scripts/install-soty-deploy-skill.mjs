@@ -20,12 +20,21 @@ async function bundle(root, directory = root) {
   }
   return result;
 }
-export async function installSotyDeploySkill(target) {
+export async function installSotyDeploySkill(target, { reviewedBaseline } = {}) {
   const root = resolve(target);
   if (basename(root) !== 'soty-app-deploy') fail('skill_target_name_required');
   await mkdir(root, { recursive: true });
   if (await realpath(root) !== root) fail('skill_target_symlink');
   const files = await bundle(source), digests = Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, hash(bytes)]));
+  let reviewed = {};
+  if (reviewedBaseline !== undefined) {
+    if (!reviewedBaseline || reviewedBaseline.schema !== 'soty.skill-update-review.v1'
+      || Object.keys(reviewedBaseline).some(key => !['schema', 'files'].includes(key))
+      || !reviewedBaseline.files || typeof reviewedBaseline.files !== 'object' || Array.isArray(reviewedBaseline.files)
+      || !Object.keys(reviewedBaseline.files).length
+      || Object.entries(reviewedBaseline.files).some(([name, digest]) => !Object.hasOwn(files, name) || !/^[a-f0-9]{64}$/u.test(digest))) fail('skill_review_invalid');
+    reviewed = reviewedBaseline.files;
+  }
   const lockPath = join(root, '.install.lock'); const lock = await open(lockPath, 'wx', 0o600);
   try {
     const receiptPath = join(root, 'agents', 'install-receipt.json'), bytes = await existsFile(receiptPath);
@@ -38,7 +47,9 @@ export async function installSotyDeploySkill(target) {
       const destination = join(root, name), existing = await existsFile(destination);
       try { if (!inside(root, await realpath(destination))) fail('skill_target_symlink'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (existing && hash(existing) !== hash(value) && (!prior || prior.files[name] !== hash(existing))) fail('skill_local_changes');
+      if (Object.hasOwn(reviewed, name) && (!existing || reviewed[name] !== hash(existing))) fail('skill_review_stale');
+      if (existing && hash(existing) !== hash(value) && (!prior || prior.files[name] !== hash(existing))
+        && reviewed[name] !== hash(existing)) fail('skill_local_changes');
     }
     for (const [name, value] of Object.entries(files)) {
       const destination = join(root, name); await mkdir(dirname(destination), { recursive: true });
@@ -56,9 +67,19 @@ export async function installSotyDeploySkill(target) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   try {
     const args = process.argv.slice(2);
-    if (args.length && (args.length !== 2 || args[0] !== '--target')) fail('skill_install_arguments');
-    const target = args[1] ?? join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'skills', 'soty-app-deploy');
-    process.stdout.write(JSON.stringify(await installSotyDeploySkill(target)) + '\n');
+    const options = {};
+    for (let i = 0; i < args.length; i += 2) {
+      if (!['--target', '--reviewed-baseline'].includes(args[i]) || !args[i + 1] || Object.hasOwn(options, args[i])) fail('skill_install_arguments');
+      options[args[i]] = args[i + 1];
+    }
+    const target = options['--target'] ?? join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'skills', 'soty-app-deploy');
+    let reviewedBaseline;
+    if (options['--reviewed-baseline']) {
+      const review = await readFile(options['--reviewed-baseline']);
+      if (review.length > 131072) fail('skill_review_invalid');
+      try { reviewedBaseline = JSON.parse(review); } catch { fail('skill_review_invalid'); }
+    }
+    process.stdout.write(JSON.stringify(await installSotyDeploySkill(target, { reviewedBaseline })) + '\n');
   } catch (error) {
     process.stdout.write(JSON.stringify({ ok: false, code: /^skill_[a-z_]+$/u.test(error.code || '') ? error.code : 'skill_install_failed' }) + '\n');
     process.exitCode = 1;

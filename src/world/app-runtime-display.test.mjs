@@ -11,6 +11,21 @@ function displayFixture(answer='pending'){
  const phase=(phase,patch={})=>view.emit('message',{source:frame.contentWindow,origin:'https://frame.example',ports:[],data:{schema:'soty.runtime-display.v1',nonce:'a'.repeat(32),phase},...patch});
  return{api,frame,view,tasks,states,sent,tick,phase,calls:()=>calls,stale:()=>current=false};
 }
+
+test('legacy/native document load has a neutral loaded state without claiming authenticated readiness',async()=>{
+ const f=displayFixture('unsupported');f.frame.emit('load');await tickFlush();f.tick(12001);
+ assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.api.snapshot().message,'');
+ assert.equal(f.api.snapshot().busy,false);assert.equal(f.api.snapshot().canDismiss,false);
+ assert.equal(f.api.dismiss(),false);assert.equal(f.calls(),1);
+ f.frame.emit('error');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.calls(),1);
+});
+
+test('neutral legacy load still reports an exact current Boot failure, while unrelated messages cannot change it',async()=>{
+ const f=displayFixture('unsupported');f.frame.emit('load');await tickFlush();
+ f.phase('boot_failed',{origin:'https://wrong.example'});assert.equal(f.api.snapshot().phase,'loaded');
+ f.phase('boot_navigation');assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.calls(),1);
+ f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);
+});
 test('load-only empty-document counterexample: visible deadline survives load without authenticated readiness',async()=>{
  const f=displayFixture();f.tick(0);f.frame.emit('load');await tickFlush();assert.equal(f.api.snapshot().busy,true);f.tick(12000);
  assert.equal(f.api.snapshot().phase,'unconfirmed');assert.match(f.api.snapshot().message,/Окно загружено/u);
@@ -37,8 +52,8 @@ test('closed peer/origin/nonce/ports/extra/accessor payloads cannot take over Bo
   {data:{schema:'soty.runtime-display.v1',nonce:'a'.repeat(32),get phase(){getter++;throw Error('OWN_PRIVATE');}}}])f.phase('boot_failed',patch);
  assert.equal(f.api.snapshot().phase,'opening');assert.equal(getter,0);assert.equal(f.calls(),0);
 });
-test('explicit denial/error and unsupported legacy readiness stay honest, finite, dismissible and nonblocking',async()=>{
- for(const answer of ['denied','unsupported','unknown']){const f=displayFixture(answer);f.tick(0);f.frame.emit('load');await tickFlush();
+test('explicit denial/error and unknown readiness stay honest, finite, dismissible and nonblocking',async()=>{
+ for(const answer of ['denied','unknown']){const f=displayFixture(answer);f.tick(0);f.frame.emit('load');await tickFlush();
   if(answer==='denied')assert.equal(f.api.snapshot().phase,'denied');else{f.tick(12000);assert.equal(f.api.snapshot().phase,'unconfirmed');}
   assert.equal(f.api.dismiss(),true);assert.equal(f.api.snapshot().busy,false);}
  const e=displayFixture();e.frame.emit('error');assert.equal(e.api.snapshot().phase,'error');assert.equal(e.api.snapshot().canRetry,true);
@@ -65,8 +80,8 @@ test('late errors never reactivate disposed/stale or manually dismissed/denied d
   if(mode==='stale')f.stale();if(mode==='dispose')f.api.dispose();if(mode==='pagehide')f.view.emit('pagehide');
   const before=f.states.length;handler();assert.equal(f.states.length,before);assert.equal(f.calls(),1);
  }
- for(const answer of ['denied','unsupported']){
-  const f=displayFixture(answer);f.frame.emit('load');await tickFlush();if(answer==='unsupported')f.tick(12001);
+ for(const answer of ['denied','unknown']){
+  const f=displayFixture(answer);f.frame.emit('load');await tickFlush();if(answer==='unknown')f.tick(12001);
   f.api.dismiss();const before=f.states.length;f.frame.emit('error');assert.equal(f.states.length,before);assert.equal(f.api.snapshot().message,'');
  }
 });

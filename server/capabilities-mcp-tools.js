@@ -6,6 +6,8 @@ import { createCatalog } from '../modules/capabilities/server/catalog.mjs';
 import { AccessError, freezeDeep } from '../modules/capabilities/server/validation.mjs';
 import { DISCOVERY_LIMITS } from '../modules/capabilities/server/discovery.mjs';
 import { createExternalCapabilityOperations } from './external-capabilities.js';
+import { diagnoseAppRelease, appAuthenticationGuide, DIAGNOSE_INPUT_SCHEMA, DIAGNOSE_OUTPUT_SCHEMA,
+  AUTH_GUIDE_INPUT_SCHEMA, AUTH_GUIDE_OUTPUT_SCHEMA } from '../modules/apps/deployment-guidance.mjs';
 
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const catalog = createCatalog(), note = catalog.get('notes.createDraft', 1);
@@ -45,6 +47,10 @@ function definitions() {
       inputSchema: standalone('NativeDraftRequest', schemas), outputSchema: standalone('NativeCreateResponse', schemas), readOnly: false },
     { name: 'invocations_get', description: 'Read your historical Notes invocation status and creation receipt. This does not execute, read current Note text or prove the Note still exists.',
       inputSchema: object({ invocationId: structuredClone(schemas.NativeInvocationId) }), outputSchema: standalone('NativeReadResponse', schemas), readOnly: true },
+    { name: 'apps_diagnose', description: 'Explain reported Soty app launch observations and suggest bounded next checks. Accepts closed enums only: no URLs, logs, tokens or child DOM. Does not inspect a live browser/server, change access, execute commands or qualify a release.',
+      inputSchema: DIAGNOSE_INPUT_SCHEMA, outputSchema: DIAGNOSE_OUTPUT_SCHEMA, readOnly: true },
+    { name: 'apps_auth_guide', description: 'Read the maintained integration steps for human OIDC/BFF, a private single-owner adapter, or agent OAuth/MCP. Does not activate an issuer, configure clients, authenticate anyone or grant rights. Use human-oidc for shared multi-user app login.',
+      inputSchema: AUTH_GUIDE_INPUT_SCHEMA, outputSchema: AUTH_GUIDE_OUTPUT_SCHEMA, readOnly: true },
   ];
   return values.map(({ readOnly, ...tool }) => freezeDeep({ ...tool,
     annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: true, openWorldHint: false } }));
@@ -86,6 +92,8 @@ export function createMcpTools({ service, operations, context }) {
         let value;
         if (params.name === 'catalog_search') value = service.catalog.search(args);
         else if (params.name === 'catalog_get') value = service.catalog.get(args);
+        else if (params.name === 'apps_diagnose') value = diagnoseAppRelease(args);
+        else if (params.name === 'apps_auth_guide') value = appAuthenticationGuide(args);
         else {
           const result = params.name === 'notes_create_draft'
             ? operations.create({ actor, ...args }) : operations.read({ actor, ...args });

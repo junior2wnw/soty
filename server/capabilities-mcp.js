@@ -11,7 +11,7 @@ export const MCP_REVISIONS = Object.freeze(['2026-07-28', ...LEGACY_REVISIONS]);
 const requireValue = (value, code = 'invalid_input', protocolCode = -32600) => {
   if (!value) throw new McpIngressError(code, protocolCode);
 };
-const instructions = 'Create-only access to private Notes. Use a stable idempotencyKey for one intention; after a lost response, read its Invocation or retry identical input and key. A creation receipt is historical and does not reveal current Note text or existence. Catalog metadata is public and does not grant rights.';
+const instructions = 'Create-only access to private Notes. Use a stable idempotencyKey for one intention; after a lost response, read its Invocation or retry identical input and key. A creation receipt is historical and does not reveal current Note text or existence. Catalog metadata is public and does not grant rights. apps_diagnose and apps_auth_guide offer read-only deployment guidance, not live inspection or authorization; send only their closed observation enums, never tokens, cookies, URLs or logs.';
 // SEP-2243 HeaderMismatch is a serving-ladder constant in SDK2.2.0, not
 // included in its public ProtocolErrorCode enum.
 const protocolCodes = new Set([...Object.values(ProtocolErrorCode).filter(Number.isInteger), -32020]);

@@ -7,6 +7,7 @@ RUN npm run build
 
 FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef4d4c3f114672537d AS build
 WORKDIR /app
+COPY --from=caddy:2.11.2@sha256:25cdc846626b62d05f6b633b9b40c2c9f6ef89b515dc76133cefd920f7dbe562 /usr/bin/caddy /usr/local/bin/soty-test-caddy
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 python3-jsonschema git openssl \
@@ -21,7 +22,7 @@ RUN node scripts/verify-maintained-source-ci.mjs && pnpm run build
 # Only disposable platform-test files use this bounded build mount. Runtime
 # storage and the separate disk-backed encrypted cold-restore gate are unchanged.
 RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
-  pnpm run typecheck && pnpm run app:release:test && pnpm run connect:test \
+  pnpm run typecheck && SOTY_CADDY_BIN=/usr/local/bin/soty-test-caddy pnpm run app:release:test && pnpm run connect:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run platform:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
   && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
