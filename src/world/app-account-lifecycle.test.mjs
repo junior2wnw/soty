@@ -164,7 +164,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   let local = initial, online = true, apiError = null;
   const requests = [], personalFrames = [], dialogs = [];
   Object.assign(app, {
-    deskAccount: initial, accountGeneration: 1, requestSequence: 0, screenSequence: 1, homeRequest: 0, communityEpoch: 0, destroyed: false,
+    deskAccount: initial, accountGeneration: 1, requestSequence: 0, screenSequence: 1, homeRequest: 0, communityEpoch: 0, communityReadSequence: 0, communityAppliedReadSequence: 0, destroyed: false,
     root: makeElement('div'), main: makeElement('main'), live: makeElement('div'), dialogs: new Set(), avatars: { setContext() {} },
     appSettingsDialog: null, appSettingsRouteClose: null, field: null, homeHandle: null, notesHandle: null, assistantHandle: null, accessHandle: null, appStage: null,
     chatCleanup: null, chatTimer: null, searchTimer: null, toastTimer: null, noteActionPending: false, visibilityOpen: false,
@@ -1286,4 +1286,163 @@ test('the actual leave acknowledgement cannot mutate a controller after account 
   f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); pending.resolve({}); await leaving;
   assert.equal(closed, 0); assert.equal(navigated, 0); assert.equal(f.app.communities.length, 0);
   f.app.cleanScreen();
+});
+
+// Two successful list reads can now overlap without a local point mutation.
+// Keep the real controller/production closures and model only owned UI ports.
+function ticketInbox(f) {
+  const sequence = f.app.screenSequence, current = f.app.accountTask(), groups = f.app.communities.filter(group => group.membership?.state === 'active');
+  const screen = { isConnected: true, dispatchEvent() {} };
+  const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshInbox');
+  const parameters = ['active', 'selectedUpdate', 'document', 'groups', 'selectedId', 'visibleConversation', 'pendingPreviews', 'unsubscribers', 'previews', 'conversationRows',
+    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent'];
+  const inert = () => {};
+  const values = [() => !f.app.destroyed && current() && sequence === f.app.screenSequence && screen.isConnected, 0, { visibilityState: 'visible' }, groups, undefined, () => false,
+    new Set(), new Map(), new Map(), new Map(), inert, inert, inert, screen, { querySelector() { return null; } },
+    class { constructor(type, init) { this.type = type; Object.assign(this, init); } }];
+  return cacheBindArrow(f, declaration?.initializer, parameters, values, 'let refreshing = false');
+}
+function ticketField(f) {
+  f.app.view = 'mine';
+  f.app.unifiedField = { setMode() {}, async refresh() {}, dispose() {}, reconnect() {}, hasUnsavedChanges() { return false; } };
+  f.app.renderCurrent = f.Controller.prototype.renderCurrent;
+}
+function ticketOwnerWindow(f) {
+  f.app.appSettingsDialog = { element: { open: true }, close() { this.element.open = false; } };
+}
+function ticketFixture() {
+  const f = fixture(), older = cacheCommunity(), newer = cacheCommunity({ revision: 2, membershipRevision: 2, role: 'member', name: 'Newer confirmed list' });
+  const gates = [deferred(), deferred()], calls = [];
+  f.app.communities = [older]; f.app.profile = { profileId: 'account-A', displayName: 'Current A', revision: 1 };
+  f.app.preferences = {}; f.app.persist = () => {}; f.app.renderMessages = () => {};
+  f.app.api.request = (op, args) => {
+    if (op === 'world.profile.get') return Promise.resolve({ profile: { profileId: 'account-A', displayName: 'Current A', revision: 1 } });
+    assert.equal(op, 'world.community.list'); assert.ok(calls.length < gates.length, 'Only the two genuine list consumers may dispatch');
+    const gate = gates[calls.length]; calls.push({ op, args }); return gate.promise;
+  };
+  return { ...f, older, newer, gates, calls };
+}
+async function ticketPair(f, olderConsumer) {
+  let older, newer;
+  if (olderConsumer === 'refresh') {
+    f.app.view = 'messages'; older = f.app.refresh(); await turn();
+    newer = ticketInbox(f)();
+  } else if (olderConsumer === 'navigation') {
+    f.app.navigateReady('messages'); older = Promise.resolve();
+    ticketOwnerWindow(f); newer = f.app.refresh();
+  } else if (olderConsumer === 'personal') {
+    ticketField(f); older = f.app.loadPersonal('communities'); newer = f.app.refresh();
+  } else {
+    f.app.view = 'messages'; older = ticketInbox(f)();
+    ticketOwnerWindow(f); newer = f.app.refresh();
+  }
+  await turn(); await turn(); assert.equal(f.calls.length, 2);
+  return { older, newer };
+}
+async function ticketFinish(promise) { await promise; await turn(); await turn(); }
+function ticketAssertSnapshot(f, expected) {
+  assert.deepEqual(f.app.communities.map(group => group.communityId), expected.map(group => group.communityId));
+  if (expected.length) {
+    assert.equal(f.app.communities[0].name, expected[0].name);
+    assert.equal(f.app.communities[0].membership.revision, expected[0].membership.revision);
+    assert.equal(f.app.communities[0].membership.role, expected[0].membership.role);
+    assert.equal(f.app.communities[0].permissions.canManage, expected[0].permissions.canManage);
+  }
+}
+
+for (const olderConsumer of ['refresh', 'navigation', 'personal', 'inbox']) {
+  for (const order of ['newer first', 'older first']) {
+    test('community read ticket preserves the newer successful list for ' + olderConsumer + ' with ' + order, async () => {
+      const f = ticketFixture();
+      const next = ['refresh', 'personal'].includes(olderConsumer) ? [] : [f.newer];
+      let pair;
+      try {
+        pair = await ticketPair(f, olderConsumer);
+        if (order === 'newer first') {
+          f.gates[1].resolve({ communities: next }); await ticketFinish(pair.newer); ticketAssertSnapshot(f, next);
+          f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older);
+        } else {
+          f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older); ticketAssertSnapshot(f, [f.older]);
+          f.gates[1].resolve({ communities: next }); await ticketFinish(pair.newer);
+        }
+        ticketAssertSnapshot(f, next);
+        assert.equal(f.app.deskAccount, 'account-A'); assert.equal(f.app.accountGeneration, 1);
+      } finally {
+        f.gates.forEach(gate => gate.resolve({ communities: [] }));
+        if (pair) await Promise.allSettled([pair.older, pair.newer]); await turn(); f.app.cleanScreen();
+      }
+    });
+  }
+}
+
+for (const order of ['newer first', 'older first']) {
+  test('community read tickets retain the independent point-ack fence with ' + order, async () => {
+    const f = ticketFixture(), accepted = cacheCommunity({ revision: 3, membershipRevision: 3, role: 'moderator', name: 'Accepted point acknowledgement' });
+    let pair;
+    try {
+      pair = await ticketPair(f, 'personal'); f.app.updateCommunity(accepted);
+      if (order === 'newer first') {
+        f.gates[1].resolve({ communities: [f.newer] }); await ticketFinish(pair.newer);
+        f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older);
+      } else {
+        f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older);
+        f.gates[1].resolve({ communities: [f.newer] }); await ticketFinish(pair.newer);
+      }
+      ticketAssertSnapshot(f, [accepted]);
+      assert.equal(f.app.deskAccount, 'account-A'); assert.equal(f.app.accountGeneration, 1);
+    } finally {
+      f.gates.forEach(gate => gate.resolve({ communities: [] }));
+      if (pair) await Promise.allSettled([pair.older, pair.newer]); f.app.cleanScreen();
+    }
+  });
+
+  test('community read tickets retain account ABA rejection and allow a later current read with ' + order, async () => {
+    const f = ticketFixture(); let pair;
+    try {
+      pair = await ticketPair(f, 'personal');
+      f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
+      if (order === 'newer first') {
+        f.gates[1].resolve({ communities: [f.newer] }); await ticketFinish(pair.newer);
+        f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older);
+      } else {
+        f.gates[0].resolve({ communities: [f.older] }); await ticketFinish(pair.older);
+        f.gates[1].resolve({ communities: [f.newer] }); await ticketFinish(pair.newer);
+      }
+      assert.equal(f.app.communities.length, 0); assert.equal(f.app.profile, null);
+      f.app.view = 'notes'; f.app.renderCurrent = () => {};
+      f.app.api.request = op => op === 'world.profile.get' ? Promise.resolve({ profile: { profileId: 'account-A', displayName: 'Current after ABA', revision: 1 } })
+        : (assert.equal(op, 'world.community.list'), Promise.resolve({ communities: [f.newer] }));
+      await f.app.refresh(); ticketAssertSnapshot(f, [f.newer]); assert.equal(f.app.profile.profileId, 'account-A');
+    } finally {
+      f.gates.forEach(gate => gate.resolve({ communities: [] }));
+      if (pair) await Promise.allSettled([pair.older, pair.newer]); f.app.cleanScreen();
+    }
+  });
+}
+
+test('a devices-only personal refresh cannot restore its cached community array over a later successful real list', async () => {
+  const f = ticketFixture(), devices = deferred(); ticketField(f);
+  f.app.options.listDevices = () => devices.promise;
+  f.app.api.request = op => op === 'world.profile.get' ? Promise.resolve({ profile: { profileId: 'account-A', displayName: 'Current A', revision: 1 } })
+    : (assert.equal(op, 'world.community.list'), Promise.resolve({ communities: [f.newer] }));
+  const personal = f.app.loadPersonal('devices');
+  try {
+    await f.app.refresh(); ticketAssertSnapshot(f, [f.newer]);
+    devices.resolve([{ deviceId: 'current-device' }]); await personal;
+    ticketAssertSnapshot(f, [f.newer]); assert.equal(f.app.devices[0].deviceId, 'current-device');
+  } finally { devices.resolve([]); await personal; f.app.cleanScreen(); }
+});
+
+test('a failed newer community read does not retire an earlier successful list that is still available', async () => {
+  const f = ticketFixture(), available = cacheCommunity({ revision: 2, membershipRevision: 2, role: 'member', name: 'Available earlier response' });
+  let pair;
+  try {
+    pair = await ticketPair(f, 'navigation');
+    f.gates[1].reject(failure('NETWORK_ERROR')); await ticketFinish(pair.newer);
+    f.gates[0].resolve({ communities: [available] }); await ticketFinish(pair.older);
+    ticketAssertSnapshot(f, [available]); assert.equal(f.app.deskAccount, 'account-A');
+  } finally {
+    f.gates.forEach(gate => gate.resolve({ communities: [] }));
+    if (pair) await Promise.allSettled([pair.older, pair.newer]); await turn(); f.app.cleanScreen();
+  }
 });

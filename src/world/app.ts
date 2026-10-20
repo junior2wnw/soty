@@ -157,6 +157,8 @@ class WorldApplication {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private requestSequence = 0;
   private communityEpoch = 0;
+  private communityReadSequence = 0;
+  private communityAppliedReadSequence = 0;
   private screenSequence = 0;
   private destroyed = false;
   private agentOrb: AgentOrbHandle | null = null;
@@ -527,7 +529,7 @@ class WorldApplication {
         if (this.transitionAccount(local.accountId)) this.main.append(this.loading('Проверяем аккаунт'));
       }
       // Handle a slow optional source immediately; the verified identity unlocks the shell.
-      const communityEpoch = this.communityEpoch;
+      const communityEpoch = this.communityEpoch, communityRead = ++this.communityReadSequence;
       const mineTask = this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(
         value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
       const profile = await this.api.request<{ profile: WorldProfile }>('world.profile.get', {});
@@ -556,7 +558,9 @@ class WorldApplication {
           if (['NETWORK_ERROR', 'NETWORK_TIMEOUT'].includes(code)) { this.toast(errorText(outcome.error), true); return false; }
           throw outcome.error;
         }
-        if (communityEpoch === this.communityEpoch) this.communities = outcome.value.communities;
+        if (communityEpoch === this.communityEpoch && communityRead >= this.communityAppliedReadSequence) {
+          this.communities = outcome.value.communities; this.communityAppliedReadSequence = communityRead;
+        }
         this.homeStatus.communities = 'ready';
         this.renderNavigation();
         if (this.routeLoaded && this.view === 'messages' && !this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat);
@@ -855,8 +859,8 @@ class WorldApplication {
     if (!this.unifiedField && view === 'world') void this.search();
     if (!this.unifiedField && view === 'mine') void this.loadPersonal();
     if (view === 'messages') {
-      const sequence = this.screenSequence, communityEpoch = this.communityEpoch;
-      void this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(result => { if (!this.destroyed && this.screenSequence === sequence && this.view === 'messages' && communityEpoch === this.communityEpoch) { this.communities = result.communities; if (!this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat); } }).catch(error => this.toast(errorText(error), true));
+      const sequence = this.screenSequence, communityEpoch = this.communityEpoch, communityRead = ++this.communityReadSequence;
+      void this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(result => { if (!this.destroyed && this.screenSequence === sequence && this.view === 'messages' && communityEpoch === this.communityEpoch && communityRead >= this.communityAppliedReadSequence) { this.communities = result.communities; this.communityAppliedReadSequence = communityRead; if (!this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat); } }).catch(error => this.toast(errorText(error), true));
     }
   }
 
@@ -1808,9 +1812,9 @@ class WorldApplication {
     conversations.addEventListener('scroll', refreshVisiblePreviews, { passive: true });
     const refreshInbox = async (): Promise<void> => {
       if (refreshing || !active() || document.visibilityState === 'hidden') return; refreshing = true;
-      const updateBefore = selectedUpdate, communityEpoch = this.communityEpoch;
+      const updateBefore = selectedUpdate, communityEpoch = this.communityEpoch, communityRead = ++this.communityReadSequence;
       try {
-        const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active() || communityEpoch !== this.communityEpoch) return;
+        const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active() || communityEpoch !== this.communityEpoch || communityRead < this.communityAppliedReadSequence) return;
         const old = new Map(groups.map(group => [group.communityId, group])); const next = response.communities.filter(group => group.membership?.state === 'active');
         for (const group of next) {
           const previous = old.get(group.communityId);
@@ -1821,7 +1825,7 @@ class WorldApplication {
           // offscreen community; the existing three workers bound concurrency.
           if (group.communityId !== selectedId && (!previous || previous.unreadCount !== group.unreadCount || previous.revision !== group.revision || visibleConversation(group.communityId))) pendingPreviews.add(group.communityId);
         }
-        this.communities = response.communities; groups.splice(0, groups.length, ...next);
+        this.communities = response.communities; this.communityAppliedReadSequence = communityRead; groups.splice(0, groups.length, ...next);
         for (const [id, unsubscribe] of unsubscribers) if (!next.some(group => group.communityId === id)) { unsubscribe(); unsubscribers.delete(id); previews.delete(id); conversationRows.delete(id); pendingPreviews.delete(id); }
         subscribeDrafts(); renderList(); startPreviews();
         screen.dispatchEvent(new CustomEvent('soty:inbox-updated', { bubbles: true, detail: { communities: response.communities } }));
@@ -1837,6 +1841,7 @@ class WorldApplication {
     const sequence = this.screenSequence, request = ++this.homeRequest, accountCurrent = this.accountTask(), communityEpoch = this.communityEpoch;
     const sections: HomeSection[] = ['devices', 'apps', 'communities', 'notes'];
     const includes = (section: HomeSection): boolean => !only || only === section;
+    const communityRead = includes('communities') ? ++this.communityReadSequence : 0;
     for (const section of sections) if (includes(section)) this.homeStatus[section] = 'loading';
     this.renderPersonal();
     const results = await Promise.allSettled([
@@ -1850,7 +1855,9 @@ class WorldApplication {
     const devices = results[0]; const apps = results[1];
     if (devices.status === 'fulfilled') this.devices = devices.value;
     if (apps.status === 'fulfilled') this.apps = apps.value;
-    if (results[2].status === 'fulfilled' && communityEpoch === this.communityEpoch) this.communities = results[2].value.communities;
+    if (includes('communities') && results[2].status === 'fulfilled' && communityEpoch === this.communityEpoch && communityRead >= this.communityAppliedReadSequence) {
+      this.communities = results[2].value.communities; this.communityAppliedReadSequence = communityRead;
+    }
     if (results[3].status === 'fulfilled') this.homeNotes = results[3].value.notes;
     this.renderPersonal();
   }
