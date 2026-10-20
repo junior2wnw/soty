@@ -1,59 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVoiceOrbClient } from '../../src/platform/voice-orb-client.mjs';
-
-const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-const flush = () => new Promise(resolve => setImmediate(resolve));
-const viewStatus = { schema: 'soty.voice-orb-status.v1', configured: true, voiceModel: 'gpt-realtime-2.1', brainModel: 'zai-org/GLM-5.3-Flash' };
-class Events {
-  listeners = new Map();
-  addEventListener(type, listener) { const set = this.listeners.get(type) ?? new Set(); set.add(listener); this.listeners.set(type, set); }
-  removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-  emit(type, value = {}) { for (const listener of [...this.listeners.get(type) ?? []]) listener(value); }
-}
-class Peer extends Events {
-  iceGatheringState = 'complete'; connectionState = 'new'; closed = 0; channel = new Events();
-  constructor() { super(); this.channel.readyState = 'open'; this.channel.close = () => { this.channel.readyState = 'closed'; this.channel.emit('close'); }; this.channel.send = () => {}; }
-  addTrack() {}
-  createDataChannel(label) { assert.equal(label, 'oai-events'); return this.channel; }
-  async createOffer() { return { type: 'offer', sdp: 'synthetic_offer' }; }
-  async setLocalDescription(offer) { this.localDescription = offer; }
-  async setRemoteDescription() { this.remoteCalls = (this.remoteCalls ?? 0) + 1; await this.beforeRemote?.(); this.connectionState = 'connected'; this.message({ type: 'session.created', session: { id: this.providerId, model: 'gpt-realtime-2.1' } }); }
-  message(value) { this.channel.emit('message', { data: JSON.stringify(value) }); }
-  close() { this.closed++; this.connectionState = 'closed'; }
-}
-function fixture(t, options = {}) {
-  let mediaCalls = 0, leaseCount = 0, releases = 0, peerCount = 0, sequence = 0;
-  const calls = [], tracks = [], peers = [], views = [], local = { accountId: 'alice', deviceId: 'device_a', localRevision: 1 };
-  const audio = { muted: false, srcObject: null, pauseCount: 0, playCount: 0, pause() { this.pauseCount++; }, async play() { this.playCount++; } };
-  const client = { async getLocalState() { await options.readLocal?.(); return { ...local }; },
-    async extension(op, args, context) {
-      calls.push({ op, args: structuredClone(args), context });
-      const override = await options.rpc?.(op, args); if (override !== undefined) return override;
-      if (op === 'voice.orb.status') return args.requestId ? Promise.reject(new Error('voice_orb_unavailable')) : args.sessionId
-        ? { ...viewStatus, sessionId: args.sessionId, task: null } : { ...viewStatus, configured: options.configured !== false };
-      if (op === 'voice.orb.start') { const n = ++sequence; peers.at(-1).providerId = 'provider_' + n;
-        return { schema: 'soty.voice-orb-started.v1', sessionId: 'owned_' + n, providerSessionId: 'provider_' + n,
-          voiceModel: 'gpt-realtime-2.1', brainModel: 'zai-org/GLM-5.3-Flash', expiresAt: Date.now() + 15000, remainingDurationMs: 15000, sdp: 'synthetic_answer' }; }
-      if (op === 'voice.orb.turn') return { schema: 'soty.voice-orb-turn.v1', sessionId: args.sessionId, callId: args.callId, answer: 'Подтверждённый результат.' };
-      if (op === 'voice.orb.end') return { hangupAccepted: true, terminationVerified: false, accountingFinalized: false };
-      if (op === 'voice.orb.cancel') return { cancelRequested: true, remoteTerminationVerified: false };
-      throw new Error('unexpected_fixture_operation');
-    } };
-  const voice = createVoiceOrbClient({ client, accountId: 'alice', audio, events: new Events(), onChange: value => views.push(value),
-    acquireCaptureLease() { if (leaseCount) return null; leaseCount++; return () => { releases++; leaseCount--; }; },
-    async getUserMedia() { mediaCalls++; if (options.media) return options.media();
-      const track = { enabled: true, readyState: 'live', stops: 0, stop() { this.stops++; this.readyState = 'ended'; } }; tracks.push(track);
-      return { getTracks: () => [track], getAudioTracks: () => [track] }; },
-    makePeer() { peerCount++; const peer = new Peer(); peer.beforeRemote = options.remote; peers.push(peer); return peer; }, makeStream: value => value,
-    idFactory: () => 'request_' + (sequence + 1),
-  });
-  t.after(() => voice.dispose());
-  return { voice, audio, local, calls, tracks, peers, views,
-    counts: () => ({ mediaCalls, leaseCount, releases, peerCount }),
-    async start() { await voice.refresh(); await voice.start(); assert.equal(voice.view().phase, 'listening'); },
-  };
-}
+import {fixture,deferred,flush,viewStatus} from './support/voice-orb-controller-fixture.mjs';
+import {editorArtifact,editorReadback,voiceResult,bounded,untilEditor,gate,speak} from './support/voice-editor-fixture.mjs';
 
 test('default disabled state and construction never capture audio or create a provider session', async t => {
   const f = fixture(t, { configured: false }); assert.equal(f.calls.length, 0);
@@ -166,4 +114,64 @@ test('End during setRemoteDescription cannot install a late identity polling int
     await f.voice.refresh(); const pending = f.voice.start(); await entered.promise; await f.voice.end(); gate.resolve(); await pending;
     assert.equal(f.peers[0].remoteCalls, 1); assert.equal(intervalCalls, 0); assert.equal(f.peers[0].closed, 1);
   } finally { gate.resolve(); for (const timer of intervals) clearInterval(timer); globalThis.setInterval = original; }
+});
+
+test('editor-handoff artifact text in a transcript/function argument never supplies the host target', {timeout:5000},async t=>{
+ let opens=0;const f=fixture(t,{openProjectEditor:async()=>{opens++;return editorReadback;}});await f.start();
+ speak(f,'untrusted_call','untrusted_input',{task:'Прочитай источник',editorHandoff:editorArtifact});await untilEditor(()=>f.voice.view().answer!=='');
+ assert.equal(opens,0);assert.equal(f.voice.view().editor,undefined);
+});
+test('editor-handoff closed DTO rejects foreign call/session, malformed target and arbitrary Source data before navigation', {timeout:5000},async t=>{
+ for(const corrupt of [v=>({...v,callId:'foreign_call'}),v=>({...v,sessionId:'foreign_session'}),v=>({...v,requestId:undefined}),v=>({...v,editorHandoff:{...editorArtifact,url:'https://unknown.invalid'}}),v=>({...v,editorHandoff:undefined,evidence:[{data:{editorHandoff:editorArtifact}}]})]){
+  let opens=0;const f=fixture(t,{openProjectEditor:async()=>{opens++;return editorReadback;},rpc(op,args){if(op==='voice.orb.turn')return corrupt(voiceResult(args));}});await f.start();speak(f);await flush();await flush();await flush();assert.equal(opens,0);assert.notEqual(f.voice.view().editor?.state,'opened');await f.voice.end();
+ }
+});
+test('editor-handoff whole-session A→B→A rejects a delayed artifact without acquiring a foreground port', {timeout:5000},async t=>{
+ const held=gate(t);let opens=0;const f=fixture(t,{openProjectEditor:async()=>{opens++;return editorReadback;},async rpc(op,args){if(op==='voice.orb.turn'){held.entered.resolve();await held.release.promise;return voiceResult(args);}}});
+ await f.start();speak(f);await bounded(held.entered.promise);f.local.accountId='bob';f.local.localRevision++;f.local.accountId='alice';f.local.localRevision++;held.release.resolve();await flush();await flush();assert.equal(opens,0);assert.notEqual(f.voice.view().editor?.state,'opened');
+});
+for(const event of [{type:'input_audio_buffer.speech_started',item_id:'new_speech'},{type:'input_audio_buffer.committed',item_id:'new_commit'}])test('editor-handoff '+event.type+' aborts a pending open and rejects its late readback',{timeout:5000},async t=>{
+ const held=gate(t);let applied=0,signal;const f=fixture(t,{async openProjectEditor(a,owner){signal=owner.signal;held.entered.resolve();await held.release.promise;await owner.assertCurrent();applied++;return editorReadback;},rpc(op,args){if(op==='voice.orb.turn')return voiceResult(args);}});
+ await f.start();speak(f);await bounded(held.entered.promise);f.peers[0].message(event);assert.equal(signal.aborted,true);held.release.resolve();await flush();await flush();assert.equal(applied,0);assert.notEqual(f.voice.view().editor?.state,'opened');assert.equal(f.voice.view().active,true);
+});
+test('editor-handoff Cancel aborts the exact pending port and status recovery cannot reopen it',{timeout:5000},async t=>{
+ const held=gate(t);let opens=0,applied=0,signal;const f=fixture(t,{async openProjectEditor(a,owner){opens++;signal=owner.signal;held.entered.resolve();await held.release.promise;await owner.assertCurrent();applied++;return editorReadback;},rpc(op,args){if(op==='voice.orb.turn')return voiceResult(args);if(op==='voice.orb.status'&&args.sessionId)return {...viewStatus,task:{state:'completed',result:{answer:'Проект сохранён.',editorHandoff:editorArtifact}}};}});
+ await f.start();speak(f);await bounded(held.entered.promise);await f.voice.interrupt();assert.equal(signal.aborted,true);held.release.resolve();await flush();await f.voice.check();assert.equal(opens,1);assert.equal(applied,0);assert.equal(f.calls.filter(row=>row.op==='voice.orb.turn').length,1);assert.notEqual(f.voice.view().editor?.state,'opened');
+});
+for(const action of ['end','dispose'])test('editor-handoff '+action+' aborts pending navigation before its late completion',{timeout:5000},async t=>{
+ const held=gate(t);let applied=0,signal;const f=fixture(t,{async openProjectEditor(a,owner){signal=owner.signal;held.entered.resolve();await held.release.promise;await owner.assertCurrent();applied++;return editorReadback;},rpc(op,args){if(op==='voice.orb.turn')return voiceResult(args);}});
+ await f.start();speak(f);await bounded(held.entered.promise);await f.voice[action]();assert.equal(signal.aborted,true);held.release.resolve();await flush();await flush();assert.equal(applied,0);assert.equal(f.voice.view().active,false);assert.notEqual(f.voice.view().editor?.state,'opened');assert.equal(f.tracks[0].readyState,'ended');
+});
+test('editor-handoff wrong actual selected project or revision stays unconfirmed and never retries automatically',{timeout:5000},async t=>{
+ let opens=0;const f=fixture(t,{async openProjectEditor(){opens++;return {...editorReadback,selectedProjectId:'22222222-2222-4222-8222-222222222222'};},rpc(op,args){if(op==='voice.orb.turn')return voiceResult(args);}});
+ await f.start();speak(f);await untilEditor(()=>f.voice.view().editor?.state==='unconfirmed');await f.voice.check();assert.equal(opens,1);assert.equal(f.voice.view().active,true);assert.equal(f.calls.some(row=>row.op==='voice.orb.end'),false);
+});
+test('editor-handoff unknown signed turn followed by status/history result never triggers a second model turn or editor open',{timeout:5000},async t=>{
+ let opens=0;const f=fixture(t,{async openProjectEditor(){opens++;return editorReadback;},rpc(op,args){if(op==='voice.orb.turn')throw Error('synthetic_unknown');if(op==='voice.orb.status'&&args.sessionId)return {...viewStatus,task:{state:'completed',result:{answer:'Recovered',editorHandoff:editorArtifact}}};}});
+ await f.start();speak(f);await untilEditor(()=>f.voice.view().phase==='unknown');await f.voice.check();assert.equal(opens,0);assert.equal(f.calls.filter(row=>row.op==='voice.orb.turn').length,1);assert.equal(f.voice.view().editor,undefined);
+});
+
+// Four ownership regressions on the actual controller, same maintained fixture.
+function audioGate(t){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});t.after(()=>resolve());return{promise,resolve,reject,entered:deferred()};}
+const audioFlush=async()=>{await flush();await flush();};
+test('audio-owner late track playback rejection for A cannot mark new B blocked or notify it',{timeout:5000},async t=>{
+ const f=fixture(t),held=audioGate(t);await f.start();f.audio.play=()=>{held.entered.resolve();return held.promise;};
+ f.peers[0].emit('track',{track:{id:'remote_A'}});await held.entered.promise;await f.voice.end();await f.voice.start();
+ const count=f.views.length;held.reject(Error('old_A_play_rejected'));await audioFlush();
+ assert.equal(f.voice.view().playbackBlocked,false);assert.equal(f.voice.view().phase,'listening');assert.equal(f.views.length,count);
+});
+test('audio-owner late successful Resume A cannot clear B playback rejection',{timeout:5000},async t=>{
+ const f=fixture(t),held=audioGate(t);await f.start();f.audio.play=()=>{held.entered.resolve();return held.promise;};const pending=f.voice.resumePlayback();
+ await held.entered.promise;await f.voice.end();await f.voice.start();f.audio.play=async()=>{throw Error('current_B_play_blocked');};await f.voice.resumePlayback();assert.equal(f.voice.view().playbackBlocked,true);
+ const count=f.views.length;held.resolve();await pending;assert.equal(f.voice.view().playbackBlocked,true);assert.equal(f.views.length,count);
+});
+test('audio-owner late failed Resume A cannot add an error to B or notify it',{timeout:5000},async t=>{
+ const f=fixture(t),held=audioGate(t);await f.start();f.audio.play=()=>{held.entered.resolve();return held.promise;};const pending=f.voice.resumePlayback();
+ await held.entered.promise;await f.voice.end();await f.voice.start();const count=f.views.length;held.reject(Error('old_A_resume_rejected'));await pending;
+ assert.equal(f.voice.view().playbackBlocked,false);assert.equal(f.voice.view().phase,'listening');assert.equal(f.views.length,count);
+});
+test('audio-owner late Cancel A rejection cannot replace current B code or phase',{timeout:5000},async t=>{
+ const held=audioGate(t);const f=fixture(t,{async rpc(op){if(op==='voice.orb.cancel'){held.entered.resolve();return held.promise;}}});await f.start();const pending=f.voice.interrupt();
+ await held.entered.promise;await f.voice.end();await f.voice.start();const count=f.views.length;held.reject(Error('old_A_cancel_rejected'));await pending;
+ assert.equal(f.voice.view().code,null);assert.equal(f.voice.view().phase,'listening');assert.equal(f.views.length,count);
 });

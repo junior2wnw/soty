@@ -1,4 +1,7 @@
+import type { WorldProjectEditorPort } from '../world/types';
+import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
 export interface VoiceOrbView {
+  editor?: { artifact: OtsovProjectArtifact; state: 'opening' | 'opened' | 'unconfirmed'; readback?: EditorReadback };
   phase: 'checking' | 'disabled' | 'idle' | 'connecting' | 'listening' | 'working' | 'ending' | 'unknown';
   configured: boolean;
   missingBinding: string | null;
@@ -39,6 +42,7 @@ export function createVoiceOrbClient(options: {
   acquireCaptureLease(): (() => void) | null;
   readSelection?(): { appId: string; handle: string } | null;
   takeNotePermission?(): boolean;
+  openProjectEditor?: WorldProjectEditorPort;
   isCurrent?(): boolean;
   onChange?(state: VoiceOrbView): void;
   getUserMedia?(constraints: MediaStreamConstraints): Promise<MediaStream>;

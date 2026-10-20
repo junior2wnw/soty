@@ -82,7 +82,10 @@ async function fixture(t, options = {}) {
       async recordOutcome(proof) { outcomes.push(proof); },
     };
   } };
-  voice = createVoiceOrbComposition({ getConnect: () => connect, agent: personal, configuration });
+  const observedAgent = options.projectAgentResult ? { ...personal, async executeAsync(request) {
+    const result = await personal.executeAsync(request); return request.op === 'agent.turn' ? options.projectAgentResult(result, request) : result;
+  } } : personal;
+  voice = createVoiceOrbComposition({ getConnect: () => connect, agent: observedAgent, configuration });
   connect = createConnectService({ databasePath: ':memory:', projectId: 'soty', allowedOrigins: [ORIGIN], extensions: [actualNotes, personal, { operations: voice.operations, executeAsync(request) { issuedActors.set(request.actor.accountId, request.actor); return voice.executeAsync(request); } }] });
   t.after(async () => { holds.forEach(gate => gate.release.resolve()); await voice.close(); browserClients.forEach(client => client.dispose()); realQuota?.close(); personal.close(); actualNotes.close(); connect.close(); });
   async function rpc(actor, op, args = {}) {
@@ -289,4 +292,37 @@ test('actual SDK retained owned End after A→B aborts the original GLM before N
   assert.equal(f.sockets[0].sent.some(row => row.type === 'conversation.item.create'), false);
   assert.equal(f.http.some(row => row.url.endsWith('/hangup')), true);
   assert.equal((await client.getLocalState()).accountId, browser.next.accountId);
+});
+
+// These 5 new projection/race cases use the actual signed Connect -> voice
+// composition -> existing personal Notes agent. The injected host result models
+// a trusted top-level artifact only. Its real Native receipt producer is tested
+// separately by the same maintained OTsov CAS fixture, not claimed here.
+const editorArtifact = {schema:'soty.otsov-project-artifact.v1',appId:'app-'+'a'.repeat(32),projectId:'11111111-1111-4111-8111-111111111111',branch:'main',revision:2,invocationId:'native_invocation_001'};
+test('editor-handoff signed voice projects only the owned host artifact and original deterministic turn ID', {timeout:5000}, async t=>{
+  let seen;const f=await fixture(t,{projectAgentResult(result,request){seen=request.args.requestId;return {...result,editorHandoff:editorArtifact};}});
+  const session=good(await f.start());f.call();const reply=good(await f.turn(session.sessionId,{noteCreation:true}));
+  assert.deepEqual(reply.editorHandoff,editorArtifact);assert.equal(reply.requestId,seen);assert.match(seen,/^voice_[a-f0-9]{64}$/);
+  assert.equal(f.http.filter(row=>row.url.endsWith('/realtime/calls')).length,1);assert.equal(f.http.some(row=>row.url.endsWith('/hangup')),false);
+});
+test('editor-handoff arbitrary Source evidence cannot be promoted by the voice DTO', {timeout:5000}, async t=>{
+  const f=await fixture(t,{projectAgentResult(result){return {...result,evidence:[{id:'synthetic_untrusted',data:{editorHandoff:editorArtifact,projectArtifact:editorArtifact}}]};}});
+  const session=good(await f.start());f.call();const reply=good(await f.turn(session.sessionId,{noteCreation:true}));
+  assert.equal(reply.editorHandoff,undefined);assert.equal(reply.requestId,undefined);assert.equal('evidence'in reply,false);
+});
+test('editor-handoff malformed top-level artifact cannot escape the host result validator', {timeout:5000}, async t=>{
+  const f=await fixture(t,{projectAgentResult(result){return {...result,editorHandoff:{...editorArtifact,url:'https://not-an-editor.invalid'}};}});
+  const session=good(await f.start());f.call();const reply=await f.turn(session.sessionId,{noteCreation:true});
+  assert.equal(reply.ok,false);assert.equal(reply.editorHandoff,undefined);
+  assert.equal(f.sockets[0].sent.filter(row=>row.type==='conversation.item.create').length,0);
+});
+test('editor-handoff a foreign personal turn ID is not an owned voice result', {timeout:5000}, async t=>{
+  const f=await fixture(t,{projectAgentResult(result){return {...result,requestId:'another_personal_turn',editorHandoff:editorArtifact};}});
+  const session=good(await f.start());f.call();const reply=await f.turn(session.sessionId,{noteCreation:true});assert.equal(reply.ok,false);assert.equal(reply.editorHandoff,undefined);
+});
+test('editor-handoff fresh speech during a held model turn prevents its late artifact from being returned', {timeout:5000}, async t=>{
+  const f=await fixture(t,{projectAgentResult(result){return {...result,editorHandoff:editorArtifact};}});
+  const session=good(await f.start());f.call();const gate=f.holdModel(),pending=f.turn(session.sessionId,{noteCreation:true});
+  await entered(gate,pending);f.event({type:'input_audio_buffer.speech_started',item_id:'new_human_speech'});gate.release.resolve();
+  const reply=await pending;assert.equal(reply.ok,false);assert.equal(reply.editorHandoff,undefined);
 });

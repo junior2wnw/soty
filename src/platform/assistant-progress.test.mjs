@@ -23,6 +23,7 @@ async function fixture(status) {
   class Port extends EventTarget {
     constructor(tag,className='',text=''){super();Object.assign(this,{tagName:tag.toUpperCase(),className,children:[],dataset:{},style:{},hidden:false,disabled:false,value:'',ownerDocument:doc});this.textContent=text;nodes.push(this);}
     append(...children){for(const child of children){this.children.push(child);child.parent=this;}}
+    insertBefore(child,before){const index=this.children.indexOf(before);assert.ok(index>=0,'insertBefore target');this.children.splice(index,0,child);child.parent=this;return child;}
     replaceChildren(...children){for(const child of this.children)child.parent=null;this.children=[];this.text='';this.append(...children);}
     get textContent(){return this.text+this.children.map(child=>child.textContent).join('');}
     set textContent(text){this.text=text;this.children=[];}
@@ -45,7 +46,10 @@ async function fixture(status) {
     assert.equal(op,'agent.status');return status({id,calls,accountId});}};
   doc.hidden=false;doc.activeElement=null;const host=el('main');
   const dependencies={'../world/dom':dom,'../world/icons':{icon:()=>el('i')},'./assistant-state.mjs':state,'./device-key.mjs':device,
-    './personal-agent-client':personal,'./assistant.css':{},'./assistant-answer-note':{createAssistantAnswerNote(){throw Error('not part of polling review');}},
+    './personal-agent-client':personal,'./assistant.css':{},
+    // Voice has dedicated controller/ownership suites. Polling owns no media.
+    './voice-orb-panel':{mountVoiceOrbPanel:()=>({active:()=>false,startFromOrb:async()=>{},dispose(){}})},
+    './assistant-answer-note':{createAssistantAnswerNote(){throw Error('not part of polling review');}},
     './copy-visible-text':{},'../../modules/notes/browser/state.mjs':{createDraftStore(){throw Error('not part of polling review');}}};
   vm.runInNewContext(source,{exports,require:name=>{assert.ok(name in dependencies,name);return dependencies[name];},
     window,document:doc,HTMLElement:Port,localStorage:storage,sessionStorage:storage,crypto:globalThis.crypto,AbortController,AbortSignal,

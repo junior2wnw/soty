@@ -1,4 +1,6 @@
 import { createDialog, isDialogFocusTarget, type DialogReturnTarget } from './dialogs';
+import { createOtsovEditorHost } from './otsov-editor-handoff.mjs';
+import type { WorldProjectEditorPort } from './types';
 import { createBrowserAssistHost } from './browser-assist-pilot.mjs';
 import { mountAppInvitationCarrier } from './app-invitation-carrier.mjs';
 import './app-stage.css';
@@ -55,6 +57,7 @@ export interface AppStageHandle {
   entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void;
   assistantContext(): WorldAssistantContext | null;
   browserAssist(): import('./types').WorldBrowserAssist | null;
+  openProjectEditor:WorldProjectEditorPort;
 }
 
 export function appLaunchFailure(error: unknown): { title: string; detail: string } {
@@ -355,6 +358,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       ?{approved:true,window:frame.contentWindow,origin:selectedEntry.origin,sourceId:source.id,
         appId:app.appId,accountId,generation:frameGeneration,slot:binding.slot,title:app.name}:null;
   };
+  const editorHost=createOtsovEditorHost({view,readPeer:()=>options.presentation==='widget'||!isRootSsoWorkspacePin(launcher.scopedCapture()?.source)?null:readCapturePeer(),
+    async assertPeer(peer,signal){const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source);
+      if(signal?.aborted||!current()||!binding||!source||peer.slot!==binding.slot)return false;
+      const result=await options.api.request<unknown>('apps.scoped.context',{appId:app.appId,handle:binding.handle});
+      const fresh=readCapturePeer();return !signal?.aborted&&!!fresh&&fresh.slot===peer.slot&&fresh.window===peer.window
+        &&fresh.generation===peer.generation&&matchesScopedCaptureContext(result,{appId:app.appId,source});}
+  });
   const detachInvitation = mountAppInvitationCarrier({ view, appId: app.appId, take: initial.takeInvitation, readPeer: readCapturePeer });
   let renewalFrame:HTMLIFrameElement|null=null;
   let lastRuntimeLaunchAt=0;
@@ -730,6 +740,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     mountRuntimeControls:(header,owner)=>widgetRuntimeControls?.attach(header,owner)??false,
     browserAssist: () => current() && assistOn ? assist : null,
+    openProjectEditor:(artifact,request)=>editorHost.open(artifact,request),
     assistantContext: () => {
       if (!current() || !selectedEntry) return null;
       const binding = launcher.scopedCapture();
@@ -737,6 +748,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
     flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

@@ -14,6 +14,7 @@ import { createPersonalAgentTransport, agentError } from './personal-agent-trans
 import { createNotesConversationStore } from './personal-agent-history.js';
 import { createAppJobsExtension } from './apps-jobs.js';
 import path from 'node:path';
+import { createProjectEditorLedger } from './otsov-project-editor-ledger.js';
 
 const need = (ok, code = 'agent_invalid_input') => { if (!ok) throw agentError(code); };
 const simple = (value, required, optional = []) => {
@@ -63,7 +64,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     return getConnect().withActorAuthorityFence(actor, () => callback(getServices()));
   };
   const toolsForActor = async ({ actor, scope, turnId, selection, signal, noteCreation = false }) => {
-    const visibleSelection = selection;
+    const visibleSelection = selection, projectEditor = createProjectEditorLedger();
     let selectedScope, verifyCurrent, sourceRecovery, selectedChildContext, visibleContextAvailable = true;
     const canUseNativeTarget = contract => isSelectedNativeContract(contract)
       && (contract.appId === visibleSelection?.appId ? visibleContextAvailable : current(actor, services =>
@@ -450,12 +451,13 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
       }
       if (hasNativeWrite) {
         const writeInput = input => {
-          try { if (!validate(input, ['reference', 'input'])) return false; pinned(input.reference); captureQueryData(input.input); return true; }
+          try { if (!validate(input, ['reference', 'input'], ['openEditor']) || input.openEditor !== undefined && input.openEditor !== true) return false; pinned(input.reference); captureQueryData(input.input); return true; }
           catch { return false; }
         };
         const writeArgs = { ...schema({ reference: { type: 'object', additionalProperties: false, properties: {
           capabilityId: { type: 'string', maxLength: 160 }, version: { type: 'integer', minimum: 1, maximum: 1000000 },
-          digest: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['capabilityId', 'version', 'digest'] }, input: { type: 'object' } }),
+          digest: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['capabilityId', 'version', 'digest'] }, input: { type: 'object' },
+          openEditor:{type:'boolean',enum:[true],description:'For a current human request to create/change an OTsov project and see the result, request foreground opening after the verified commit. Respect requests to stay in background. This grants no Native permission and never means preview/publish is verified.'} }),
           required: ['reference', 'input'] };
         const selectedWrite = async (input, writeSignal) => {
           assertCurrent(); const reference = pinned(input.reference), key = keyFor(reference);
@@ -466,17 +468,19 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           need(detail.appId === selection.appId, 'agent_source_denied');
           const data = captureQueryData(input.input), digest = createHash('sha256').update(canonical({ key, data }, 65536)).digest('hex');
           selected.set(key, { reference, delegated });
-          return { reference, delegated, detail, digest, input: nativeInput(data) };
+          return { reference, delegated, detail, digest, input: nativeInput(data), editorRequested:input.openEditor===true };
         };
         const writeResult = (value, result) => {
           sourceDetail(value.reference, value.delegated); assertCurrent();
+          const editorArtifact=projectEditor.record({ detail:value.detail, input:value.input.input, invocation:result.invocation });
+          if(editorArtifact&&value.editorRequested)projectEditor.request({projectId:editorArtifact.projectId,branch:editorArtifact.branch});
           return evidence(value.detail.title, { status: result.invocation.status, effectState: result.invocation.effectState,
             invocationId: result.invocation.invocationId,
             completionVerified: result.invocation.status === 'succeeded' && result.invocation.effectState === 'committed',
             effects: result.invocation.effects, ...(result.invocation.receipt ? { receipt: result.invocation.receipt } : {}) });
         };
         tools.source_write_1 = { capability: 'source_write_1',
-          description: 'Apply an explicitly granted Native contract to its EXACT authenticated application and Native context. The visible window is not changed. Discover its schema first. An unknown result is not completion: check source_receipt_1 with the same reference/input; never repeat an unknown write.',
+          description: 'Apply an explicitly granted Native contract to its EXACT authenticated application and Native context. This Native call does not select the visible editor. Optional openEditor requests a separately verified foreground handoff for this human turn. Discover its schema first. An unknown result is not completion: check source_receipt_1 with the same reference/input; never repeat an unknown write.',
           inputSchema: writeArgs, validate: writeInput,
           async execute(input, toolSignal) {
             need(!toolSignal.aborted, 'agent_cancelled'); const value = await selectedWrite(input, toolSignal), service = getServices().capabilities.external;
@@ -502,7 +506,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
           description: 'Read/reconcile an ORIGINAL Native write receipt by its invocationId and the same reference/input. This never invokes a new mutation or switches to another ready window.',
           inputSchema: { ...writeArgs, properties: { ...writeArgs.properties, invocationId: { type: 'string', minLength: 3, maxLength: 160 } },
             required: [...writeArgs.required, 'invocationId'] },
-          validate: input => validate(input, ['reference', 'input', 'invocationId']) && writeInput({ reference: input.reference, input: input.input })
+          validate: input => validate(input, ['reference', 'input', 'invocationId'], ['openEditor']) && writeInput({ reference: input.reference, input: input.input, ...(input.openEditor===undefined?{}:{openEditor:input.openEditor}) })
             && typeof input.invocationId === 'string' && /^[A-Za-z0-9_.:-]{3,160}$/u.test(input.invocationId),
           async execute(input, toolSignal) {
             need(!toolSignal.aborted, 'agent_cancelled'); const value = await selectedWrite(input, toolSignal), service = getServices().capabilities.external;
@@ -670,7 +674,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
         }
       }
     }
-    return { tools, assertCurrent, ...(verifyCurrent ? { verifyCurrent } : {}), ...(sourceRecovery ? { sourceRecovery } : {}), ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
+    return { tools, assertCurrent, editorHandoff: () => { assertCurrent(); return projectEditor.requested(); }, ...(verifyCurrent ? { verifyCurrent } : {}), ...(sourceRecovery ? { sourceRecovery } : {}), ...(historyEnabled ? { contextStore: createNotesConversationStore({ actor, scope, turnId,
       // The module wraps every context callback in its fresh Connect fence. Do not nest that fence here.
       io: (op, args) => getServices().notes.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } }) }) } : {}) };
   };

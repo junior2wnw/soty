@@ -71,6 +71,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
         return peer ? peer.dispatch(command, signal, guard) : Promise.reject(Error('assist_permission_closed')); },
       revoke: () => mountContext?.browserAssist?.()?.revoke(),
     },
+    ...(mountContext?.openProjectEditor ? { openProjectEditor: mountContext.openProjectEditor } : {}),
     isCurrent: () => !disposed && mountCurrent(), readSelection: () => mountContext?.context()?.selection ?? null,
     onChange: () => { if (!disposed && mountCurrent() && mode === 'personal') { if (!personal?.view().answer) welcome(); updateControls(); watchPersonal(); } } });
   let selected: AssistantTarget | null = null, activeJob: Job | null = null, continuable = false, generation = 0, refreshGeneration = 0, deviceRefreshGeneration = 0;
@@ -150,7 +151,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const voiceHost = el('div'); pane.insertBefore(voiceHost, target);
   const voicePanel = mountVoiceOrbPanel(voiceHost, { client: options.client, accountId,
     isCurrent: () => !disposed && mountCurrent(), acquireCaptureLease: () => options.acquireVoiceCapture?.() ?? null,
-    readSelection: () => mountContext?.context()?.selection ?? null });
+    readSelection: () => mountContext?.context()?.selection ?? null, ...(mountContext?.openProjectEditor ? { openProjectEditor: mountContext.openProjectEditor } : {}) });
 
   function watchPersonal(): void {
     if (personalTimer) clearTimeout(personalTimer);
@@ -310,6 +311,11 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
               : saved.phase === 'unavailable' ? 'Не удалось проверить аккаунт. Ответ остаётся здесь; попробуйте ещё раз.' : '';
         }
         renderNote(); noteActions.append(copyAnswer, saveNote, openNote); response.append(noteActions, copyStatus, noteStatus);
+        if(state.editor){const editorStatus=el('p','sw-muted',state.editor.state==='opened'
+          ?`Проект открыт в редакторе · версия ${state.editor.readback?.revision}`
+          :state.editor.state==='opening'?'Открываем проект…':'Проект сохранён. Открытие редактора не подтверждено.');editorStatus.setAttribute('role','status');
+          const openProject=button('Открыть проект','external','sw-button-quiet',()=>{void conversation().openEditor().catch(()=>{}).finally(()=>{if(!disposed&&mountCurrent())welcome();});});
+          openProject.disabled=state.editor.state==='opening';response.append(editorStatus,openProject);}
         if (state.sources.length) {
           const disclosure = el('details', 'sw-assistant-sources');
           disclosure.append(el('summary', '', `Источники (${state.sources.length})`));

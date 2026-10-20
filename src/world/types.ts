@@ -1,3 +1,4 @@
+import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
 import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
@@ -93,7 +94,9 @@ export interface WorldBrowserAssist {
   dispatch(command: unknown, signal: AbortSignal, guard?: () => Promise<void>): Promise<unknown>;
   revoke(): void;
 }
-export interface WorldAssistantMountContext { browserAssist?(): WorldBrowserAssist | null; context(): WorldAssistantContext | null; isCurrent(): boolean }
+export interface WorldProjectEditorRequest { requestId:string;signal:AbortSignal;assertCurrent():Promise<void> }
+export type WorldProjectEditorPort = (artifact:OtsovProjectArtifact,request:WorldProjectEditorRequest)=>Promise<EditorReadback>;
+export interface WorldAssistantMountContext { openProjectEditor?:WorldProjectEditorPort; browserAssist?(): WorldBrowserAssist | null; context(): WorldAssistantContext | null; isCurrent(): boolean }
 export interface WorldHumanCallState {
   state: string;
   microphone: 'off' | 'permission' | 'publishing' | 'on';

@@ -1,5 +1,5 @@
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
-import type { WorldAssistantSelection } from '../world/types';
+import type { WorldAssistantSelection, WorldProjectEditorPort } from '../world/types';
 import { button, el } from '../world/dom';
 import { createVoiceOrbClient, type VoiceOrbView } from './voice-orb-client.mjs';
 
@@ -7,6 +7,7 @@ export function mountVoiceOrbPanel(host: HTMLElement, options: {
   client: ConnectClient; accountId: string; isCurrent(): boolean;
   acquireCaptureLease(): (() => void) | null;
   readSelection(): WorldAssistantSelection | null;
+  openProjectEditor?: WorldProjectEditorPort;
 }) {
   const root = el('section', 'sw-voice-orb'); root.setAttribute('aria-label', 'Голосовой помощник');
   const title = el('h2', '', 'Поговорим?'), state = el('p', 'sw-muted'); state.setAttribute('role', 'status');
@@ -23,7 +24,8 @@ export function mountVoiceOrbPanel(host: HTMLElement, options: {
   permission.append(allowNote, el('span', '', 'Разрешить записку в следующем голосовом поручении'));
   const captions = el('div', 'sw-voice-orb-captions'), input = el('p'), output = el('p'), result = el('p');
   input.setAttribute('aria-label', 'Ваша речь'); output.setAttribute('aria-label', 'Речь помощника'); result.setAttribute('aria-label', 'Результат поручения');
-  captions.append(input, output, result); actions.append(start, mute, interrupt, resume, check, end);
+  const editorStatus = el('p', 'sw-muted'); editorStatus.setAttribute('role', 'status');
+  captions.append(input, output, result, editorStatus); actions.append(start, mute, interrupt, resume, check, end);
   root.append(title, state, disclosure, actions, permission, audio, captions); host.append(root);
   const assign = (node: HTMLElement, text: string): void => { if (node.textContent !== text) node.textContent = text; };
   const changed = (value: VoiceOrbView): void => {
@@ -41,6 +43,8 @@ export function mountVoiceOrbPanel(host: HTMLElement, options: {
     allowNote.disabled = !value.active || value.phase === 'working' || value.phase === 'ending'; permission.hidden = !value.configured;
     if (!value.active) allowNote.checked = false;
     audio.hidden = !value.active; disclosure.hidden = !value.configured;
+    assign(editorStatus, value.editor?.state === 'opened' ? 'Проект открыт в редакторе.'
+      : value.editor?.state === 'opening' ? 'Открываем проект…' : value.editor ? 'Открытие редактора не подтверждено.' : '');
     assign(input, value.input ? `Вы: ${value.input}` : ''); assign(output, value.output ? `Помощник: ${value.output}` : ''); assign(result, value.answer);
     host.ownerDocument.dispatchEvent(new CustomEvent('soty:voice-orb-state', { detail: {
       accountId: options.accountId, active: value.active, phase: value.phase, microphone: value.microphone,
