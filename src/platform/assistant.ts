@@ -6,6 +6,7 @@ import { createAssistantState, type AssistantTarget } from './assistant-state.mj
 import { deviceKey as keyOf, resolveDeviceKey } from './device-key.mjs';
 import { createPersonalAgentConversation } from './personal-agent-client';
 import { createAssistantAnswerNote } from './assistant-answer-note';
+import { mountVoiceOrbPanel } from './voice-orb-panel';
 import { copyVisibleText } from './copy-visible-text';
 import { createDraftStore } from '../../modules/notes/browser/state.mjs';
 import './assistant.css';
@@ -15,7 +16,7 @@ interface Task extends Host { id: string; threadId: string; text: string; cwd: s
 interface Job { id: string; threadId: string; status: string; cancelRequested: boolean; executionUncertain: boolean;
   result?: { text: string; textTruncated?: boolean } | null }
 interface ReadResult { job: Job; task?: { text: string; cwd: string; appCreation: boolean; canContinue: boolean }; events?: { seq: number; text: string; type: string }[]; cursor?: number; done?: boolean; more?: boolean }
-interface Options { client: ConnectClient; connectDevice(): void | Promise<void>; createApp(): void | Promise<void>; resumeApp(target: AssistantTarget): void | Promise<void> }
+interface Options { client: ConnectClient; connectDevice(): void | Promise<void>; createApp(): void | Promise<void>; resumeApp(target: AssistantTarget): void | Promise<void>; acquireVoiceCapture?(): (() => void) | null }
 const finished = (status: string) => ['succeeded', 'failed', 'cancelled'].includes(status);
 const sourceStatusLabel = (status: string) => status === 'current' ? 'Данные на момент ответа'
   : status === 'stale' ? 'Данные устарели' : status === 'unavailable' ? 'Источник недоступен' : 'Актуальность неизвестна';
@@ -77,7 +78,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   let historyState: 'loading' | 'ready' | 'error' = 'loading';
   const abort = new AbortController(), tasks = new Map<string, Task>();
   const lock = () => {
-    if (disposed) return; disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer);
+    if (disposed) return; disposed = true; personal?.dispose(); answerNote?.dispose(); voicePanel.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer);
     const message = el('div', 'sw-assistant'); message.append(el('h2', '', 'Аккаунт изменился'), el('p', 'sw-muted', 'Содержимое закрыто. Откройте помощника в текущем профиле.'), button('Открыть заново', 'refresh', '', () => location.reload())); host.replaceChildren(message);
   };
   const current = async () => {
@@ -145,6 +146,11 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const privilegeText = el('p', '', 'Работает с правами вашего пользователя на выбранном устройстве.');
   privilege.append(el('summary', '', 'Возможности и доступ'), privilegeText);
   pane.append(notice, target, thread, status, events, resultArea, stop, checkPersonal, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
+
+  const voiceHost = el('div'); pane.insertBefore(voiceHost, target);
+  const voicePanel = mountVoiceOrbPanel(voiceHost, { client: options.client, accountId,
+    isCurrent: () => !disposed && mountCurrent(), acquireCaptureLease: () => options.acquireVoiceCapture?.() ?? null,
+    readSelection: () => mountContext?.context()?.selection ?? null });
 
   function watchPersonal(): void {
     if (personalTimer) clearTimeout(personalTimer);
@@ -536,7 +542,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   }, { signal: abort.signal });
   welcome(); updateControls(); void refresh();
   if (draft.lastJob && !draft.pending) follow(draft.lastJob);
-  return { dispose() { disposed = true; personal?.dispose(); answerNote?.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer); host.replaceChildren(); }, refresh,
+  return { dispose() { disposed = true; personal?.dispose(); answerNote?.dispose(); voicePanel.dispose(); generation++; abort.abort(); if (timer) clearTimeout(timer); if (personalTimer) clearTimeout(personalTimer); host.replaceChildren(); }, refresh, startVoice: () => voicePanel.startFromOrb(),
     async flush() { drafts.flush(); await answerNote?.flush(); if (mode === 'personal' && !conversation().view().requestId) conversation().saveDraft(prompt.value); },
-    hasUnsavedChanges: () => sending || Boolean(answerNote?.hasUnsavedChanges()) || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
+    hasUnsavedChanges: () => sending || voicePanel.active() || Boolean(answerNote?.hasUnsavedChanges()) || drafts.hasUnsavedChanges() || mode === 'personal' && conversation().view().draft !== prompt.value };
 }

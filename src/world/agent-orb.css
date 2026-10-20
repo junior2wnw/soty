@@ -28,6 +28,7 @@
   .sa-stage:has(>.sw-agent-orb)>.sa-toolbar>.sa-title { padding-inline-end: 56px; }
 }
 .sw-agent-orb.sw-icon-button { position: fixed; z-index: 120; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 10px; border: 1px solid var(--sw-control-border); border-radius: 50%; background: var(--sw-action); color: var(--sw-action-ink); box-shadow: 0 3px 12px #0002; touch-action: none; user-select: none; cursor: grab; }
+.sw-agent-orb[data-voice-active=true]::after { content: ''; position: absolute; right: 3px; top: 3px; width: 8px; height: 8px; border: 1px solid var(--sw-action-ink); border-radius: 50%; background: var(--sw-focus); }
 .sw-agent-orb:active { cursor: grabbing; }
 .sw-agent-orb[popover] { inset: auto; margin: 0; }
 .sw-agent-orb[popover]::backdrop { background: none; pointer-events: none; }

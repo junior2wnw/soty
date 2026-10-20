@@ -6,6 +6,9 @@ import {
 import { createIndexedDbStorage, emptyState, validateState } from './storage.mjs';
 import { capturePlatformInvitation } from './platform-invitation.mjs';
 
+// Fixed voice ports leave the local queue but retain account and generation fences.
+const detachedVoiceOperations = new Set(['voice.orb.status', 'voice.orb.start', 'voice.orb.turn', 'voice.orb.cancel', 'voice.orb.end']);
+
 const parallelMetadataReads = new Set([
   'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
   'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
@@ -43,17 +46,18 @@ function normalizeOptions(options) {
   }
   const fetcher = options.fetch || globalThis.fetch?.bind(globalThis);
   if (typeof fetcher !== 'function') throw new ConnectError('FETCH_UNAVAILABLE', 'A fetch implementation is required.');
+  if(options.scopedVoiceCleanup!==undefined && typeof options.scopedVoiceCleanup!=='boolean')throw new ConnectError('INVALID_ARGUMENT','Invalid private voice cleanup profile.');
   if(options.scopedAppCleanup!==undefined && typeof options.scopedAppCleanup!=='boolean')throw new ConnectError('INVALID_ARGUMENT','Invalid private cleanup profile.');
   return { ...options, projectId, endpoint: endpoint.href, fetcher };
 }
 
 function publicLocalState(state) {
-  if (!state) return { schema: 'connect.local-view.v1', accountId: null, deviceId: null, label: null, current: null, profiles: [], pendingEnrollment: null, pendingRecovery: null, recoveryPrepared: false };
+  if (!state) return { schema: 'connect.local-view.v1', localRevision: null, accountId: null, deviceId: null, label: null, current: null, profiles: [], pendingEnrollment: null, pendingRecovery: null, recoveryPrepared: false };
   const describe = item => ({ accountId: item.accountId, deviceId: item.deviceId, label: item.label, active: item.deviceId === state.activeDeviceId,
     revoked: item.revoked, vaultRevision: item.vaultRevision, createdAt: item.createdAt });
   const active = state.installations.find(item => item.deviceId === state.activeDeviceId);
   return {
-    schema: 'connect.local-view.v1', accountId: active?.accountId ?? null, deviceId: active?.deviceId ?? null, label: active?.label ?? null, current: active ? describe(active) : null,
+    schema: 'connect.local-view.v1', localRevision: state.localRevision, accountId: active?.accountId ?? null, deviceId: active?.deviceId ?? null, label: active?.label ?? null, current: active ? describe(active) : null,
     profiles: state.installations.filter(item => item.accountId !== null).map(describe),
     pendingEnrollment: state.pendingEnrollment ? { requestId: state.pendingEnrollment.requestId, label: state.pendingEnrollment.label, expiresAt: state.pendingEnrollment.expiresAt } : null,
     pendingRecovery: state.pendingRecovery ? { accountId: state.pendingRecovery.accountId, recoveryId: state.pendingRecovery.recoveryId, label: state.pendingRecovery.label } : null,
@@ -78,6 +82,7 @@ export function createClientWithStorage(options, storage) {
   let queue = Promise.resolve();
   const enrollmentPreviews = new Map();
   const appCleanupReplies = new WeakMap(), appCleanups = new Set();
+  const voiceCleanupReplies = new WeakMap(), voiceCleanups = new Set();
   let disposed = false, notificationError = null, lastNotifiedRevision = -1;
   const view = state => ({ ...publicLocalState(state), notificationError: notificationError ? { code: notificationError.code, message: notificationError.message } : null });
   const serialize = task => {
@@ -169,9 +174,10 @@ export function createClientWithStorage(options, storage) {
   }
   async function post(body) {
     let response;
-    // Only the signed long-running turn receives a longer transport deadline.
+    // Only fixed signed work ports receive longer bounded deadlines.
     // Challenges, cancellation and all other RPCs retain the normal bound.
-    const timeoutMs = body.op === 'agent.turn' && body.proof ? 120_000 : 20_000;
+    const timeoutMs = !body.proof ? 20_000 : body.op === 'agent.turn' || body.op === 'voice.orb.turn' ? 120_000
+      : body.op === 'voice.orb.start' ? 90_000 : body.op === 'voice.orb.end' ? 45_000 : 20_000;
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       response = await fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonicalJson({ protocol: 1, ...body }),
@@ -229,6 +235,40 @@ export function createClientWithStorage(options, storage) {
     state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
     appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
   }
+  function releaseVoiceCleanup(state) {
+    clearTimeout(state.timer); state.timer = null; state.actor = null; state.finished = true; voiceCleanups.delete(state);
+  }
+  async function performVoiceCleanup(state) {
+    if (state.finished) return state.reply;
+    if (Date.now() >= state.expiresAt) { releaseVoiceCleanup(state); throw new ConnectError('CLEANUP_EXPIRED', 'The owned voice cleanup expired.'); }
+    if (state.pending) return state.pending;
+    const action = (async () => {
+      const actor = state.actor, current = await installation(actor.deviceId);
+      if (cleanupCredential(current) !== state.credential) throw new ConnectError('CLEANUP_CREDENTIAL_CHANGED', 'The original installation changed.');
+      // This retained signer can ONLY end this one original voice session.
+      // The Root authority/revocation fence still verifies the original actor.
+      // No caller-selected operation, target, new task or profile is accepted.
+      const reply = await rpc('voice.orb.end', state.args, actor, false);
+      state.reply = reply; releaseVoiceCleanup(state); return reply;
+    })();
+    state.pending = action;
+    try { return await action; } catch (error) { state.pending = null; throw error; }
+  }
+  async function captureVoiceCleanup(result, capture) {
+    if (!capture) return null;
+    if (result.schema !== 'soty.voice-orb-started.v1' || typeof result.sessionId !== 'string'
+      || !/^[A-Za-z0-9_.:-]{1,160}$/u.test(result.sessionId)) throw new ConnectError('INVALID_SERVER_RESPONSE', 'Invalid owned voice cleanup reply.');
+    const duration = Number.isSafeInteger(result.remainingDurationMs) && result.remainingDurationMs > 0 && result.remainingDurationMs <= 900000
+      ? result.remainingDurationMs : 30000;
+    const state = { actor: capture.actor, credential: capture.credential, args: Object.freeze({ sessionId: result.sessionId }),
+      expiresAt: Date.now() + duration + 90000, finished: false, pending: null, reply: undefined, timer: null };
+    for (const old of voiceCleanups) if (Date.now() >= old.expiresAt) releaseVoiceCleanup(old);
+    if (voiceCleanups.size >= 256) { await performVoiceCleanup(state); throw new ConnectError('CLEANUP_CAPACITY', 'Too many owned voice sessions.'); }
+    const callback = (...parameters) => parameters.length
+      ? Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Voice cleanup takes no arguments.')) : performVoiceCleanup(state);
+    state.timer = setTimeout(() => releaseVoiceCleanup(state), duration + 90000); state.timer.unref?.();
+    voiceCleanups.add(state); voiceCleanupReplies.set(result, Object.freeze({ callback, state })); return state;
+  }
   async function rpc(op, args, identity, requireCurrent = !identity, checkCurrent = assertCurrent) {
     if (op === 'card.resolve') return post({ op, args });
     const actor = identity || await installation();
@@ -237,6 +277,8 @@ export function createClientWithStorage(options, storage) {
     // await. The caller receives no signer object or generic retained RPC port.
     const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew'].includes(op)
       ?Object.freeze({actor,credential:cleanupCredential(actor),startedAt:Date.now()}):null;
+    const voiceCapture=normalized.scopedVoiceCleanup===true && op==='voice.orb.start'
+      ?Object.freeze({actor,credential:cleanupCredential(actor)}):null;
     const digest = await sha256(canonicalJson(args));
     const challenge = await post({ op: 'challenge', args: { operation: op, digest } });
     responseId(challenge.challengeId, 'challenge ID');
@@ -257,9 +299,11 @@ export function createClientWithStorage(options, storage) {
     const proof = { challengeId: challenge.challengeId, publicJwk: actor.signingPublicJwk, signature: await signMessage(actor, challenge.message) };
     const result = await post({ op, args, proof });
     const cleanup=captureAppCleanup(result,cleanupCapture,args);
+    const voiceCleanup=await captureVoiceCleanup(result,voiceCapture);
     if (requireCurrent && op !== 'bootstrap') {
       try {await checkCurrent(actor);} catch(error) {
         if(cleanup){try{await performCleanup(cleanup);}catch{/* Original failure wins; no rights or automatic effect retry. */}}
+        if(voiceCleanup){try{await performVoiceCleanup(voiceCleanup);}catch{/* Fixed owned end only; original fence error wins. */}}
         throw error;
       }
     }
@@ -308,6 +352,7 @@ export function createClientWithStorage(options, storage) {
   const client = {
     /** Private host effect cleanup. JSON clones cannot obtain a capability. */
     appSlotCleanup: reply => !disposed && reply && typeof reply==='object' ? appCleanupReplies.get(reply)?.callback ?? null : null,
+    voiceSessionCleanup: reply => !disposed && reply && typeof reply==='object' ? voiceCleanupReplies.get(reply)?.callback ?? null : null,
     getLocalState: () => serialize(async () => { const state = await read(); if (publicLocalState(state).accountId) platformInvitation?.clear(); return view(state); }),
     extension: (operation, args = {}, context) => {
       if (typeof operation !== 'string' || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
@@ -325,8 +370,11 @@ export function createClientWithStorage(options, storage) {
           expectedAccountId = requiredString(context.expectedAccountId, 'Expected account ID');
         } catch (error) { return Promise.reject(error); }
       }
-      if (expectedAccountId !== undefined && parallelMetadataReads.has(operation)) {
-        // Bind one local generation, then let independent signed reads leave the state queue.
+      if (detachedVoiceOperations.has(operation) && expectedAccountId === undefined) {
+        return Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Voice controls require the displayed account context.'));
+      }
+      if (expectedAccountId !== undefined && (parallelMetadataReads.has(operation) || detachedVoiceOperations.has(operation))) {
+        // Bind one local generation, then let these fixed signed operations leave the state queue.
         return serialize(async () => {
           if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
           const localRevision = (await read())?.localRevision;
@@ -368,7 +416,8 @@ export function createClientWithStorage(options, storage) {
         return rpc(operation, payload, actor, true);
       });
     },
-    dispose: () => { disposed = true; channel?.close(); channel = null;for(const state of appCleanups)releaseCleanup(state); },
+    dispose: () => { disposed = true; channel?.close(); channel = null;for(const state of appCleanups)releaseCleanup(state);
+      for(const state of voiceCleanups)void performVoiceCleanup(state).catch(()=>releaseVoiceCleanup(state)); },
     bootstrap: (label, { invitationToken } = {}) => serialize(async () => {
       label = deviceLabel(label);
       let state = await read();

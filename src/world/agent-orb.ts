@@ -45,6 +45,13 @@ export function mountAgentOrb(root: HTMLElement, options: {
     const visible = view.visualViewport;
     return { width: visible?.width ?? view.innerWidth, height: visible?.height ?? view.innerHeight, left: visible?.offsetLeft ?? 0, top: visible?.offsetTop ?? 0 };
   };
+  doc.addEventListener('soty:voice-orb-state', event => {
+    const state = (event as CustomEvent).detail;
+    if (!state || state.accountId !== account) return;
+    const active = state.active === true; orb.dataset.voiceActive = String(active);
+    orb.setAttribute('aria-label', active ? 'Помощник: голосовой разговор' : 'Помощник');
+    orb.title = active ? 'Голосовой разговор · открыть управление' : 'Помощник · можно перемещать';
+  }, { signal: abort.signal });
   const storage = (): Storage | null => { try { return view.localStorage; } catch { return null; } };
   function raise(): void {
     if (disposed) return;
@@ -89,6 +96,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
     orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
     orb.dataset.projected = String(point.x !== preferred.x || point.y !== preferred.y);
     orb.hidden = !account; orb.dataset.docked = String(!position);
+    if (!account) { delete orb.dataset.voiceActive; orb.setAttribute('aria-label', 'Помощник'); }
     if (typeof orb.showPopover === 'function') {
       try {
         if (!account && orb.matches(':popover-open')) orb.hidePopover();
@@ -141,9 +149,13 @@ export function mountAgentOrb(root: HTMLElement, options: {
     return mounting;
   }
   function open(): void {
-    if (disposed || !account || dialog?.element.open || !modal && options.focusExisting()) return;
+    if (disposed || !account || dialog?.element.open) return;
     const owner = account, generation = epoch, screen = sessionEpoch;
     const current = (): boolean => !disposed && account === owner && epoch === generation && sessionEpoch === screen;
+    if (!modal && options.focusExisting()) {
+      void (mounting ?? Promise.resolve()).then(() => { if (current()) return handle?.startVoice?.(); }).catch(() => {});
+      return;
+    }
     const parent = modal?.isConnected && modal.open ? modal : expandedStage?.isConnected ? expandedStage : doc.body;
     const next = createDialog('Помощник', () => {
       if (host) parking.append(host);
@@ -162,7 +174,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
       actions.append(button(label, symbol, 'sw-button-quiet', () => { if (current()) move(x, y); }));
     actions.append(button('Вернуть в угол', 'grid', 'sw-button-quiet', () => { if (current()) { position = null; layout(); save(); } }));
     placement.append(summary, actions); next.body.append(placement);
-    void ensure(next.body);
+    void ensure(next.body).then(() => { if (current()) return handle?.startVoice?.(); }).catch(() => {});
   }
   orb.addEventListener('click', event => { if (suppressClick && event.detail > 0) { suppressClick = false; event.preventDefault(); return; } suppressClick = false; open(); }, { signal: abort.signal });
   orb.addEventListener('pointerdown', event => {
