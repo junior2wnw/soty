@@ -64,7 +64,8 @@ export function createGonkaProxy({
   const authenticateRequest = async (req, res, authenticateToken) => {
     if (!ready) { respondJson(res, 503, { error: { message: "model-proxy-unavailable", type: "server_configuration" } }); return false; }
     const token = bearerToken(req);
-    const authenticatedAs = token ? await (authenticateToken || (candidate => store.authenticateModelToken(candidate)))(token) : false;
+    const authenticatedAs = token ? await (authenticateToken || (candidate => typeof store.captureModelAuthorization === 'function'
+      ? store.captureModelAuthorization(candidate) : store.authenticateModelToken(candidate)))(token) : false;
     if (!authenticatedAs) respondJson(res, 401, { error: { message: "connector-auth-failed", type: "authentication_error" } });
     return authenticatedAs;
   };
@@ -102,9 +103,10 @@ export function createGonkaProxy({
         respondJson(res, 413, { error: { message: "model-request-too-large", type: "invalid_request_error" } });
         return;
       }
-      const identity = typeof authenticatedAs === "string"
-        ? authenticatedAs
-        : createHash("sha256").update(token).digest("hex");
+      const authorization = authenticatedAs && typeof authenticatedAs === 'object'
+        && typeof authenticatedAs.assertCurrent === 'function' && typeof authenticatedAs.subscribe === 'function' ? authenticatedAs : null;
+      const identity = authorization?.identity || (typeof authenticatedAs === "string"
+        ? authenticatedAs : createHash("sha256").update(token).digest("hex"));
       const installation = `${client}:${identity}`;
       const running = active.get(installation) || 0;
       if (running >= maxConcurrentPerInstallation) {
@@ -115,8 +117,14 @@ export function createGonkaProxy({
       const controller = new AbortController();
       const abort = () => { if (!res.writableEnded) controller.abort(new Error("model-client-disconnected")); };
       res.once("close", abort);
+      const revoked = () => Object.assign(new Error('model-authorization-revoked'), { publicCode: 'model-authorization-revoked', httpStatus: 403, retryable: false });
+      const assertCurrent = () => { if (authorization && authorization.assertCurrent() !== true) throw revoked(); };
+      let unsubscribe;
       try {
-        await relays.get(body.model).forward({ body, res, signal: controller.signal });
+        assertCurrent();
+        unsubscribe = authorization?.subscribe(() => controller.abort(revoked()));
+        assertCurrent();
+        await relays.get(body.model).forward({ body, res, signal: controller.signal, assertCurrent });
       } catch (error) {
         if (!res.headersSent && !res.destroyed) {
           respondJson(res, error?.httpStatus || 502, { error: { message: error?.publicCode || "model-upstream-unavailable", type: "upstream_error" } });
@@ -127,7 +135,7 @@ export function createGonkaProxy({
           res.end();
         }
       } finally {
-        res.removeListener("close", abort);
+        unsubscribe?.(); res.removeListener("close", abort);
         const remaining = (active.get(installation) || 1) - 1;
         if (remaining > 0) active.set(installation, remaining);
         else active.delete(installation);

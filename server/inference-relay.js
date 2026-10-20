@@ -77,7 +77,7 @@ export function createInferenceRelay({
   return {
     snapshot: () => states.map((state) => ({ name: state.name, ...state.queue.snapshot(),
       unavailable: state.cooldownUntil > Date.now(), recovering: state.probing })),
-    async forward({ body, res, signal }) {
+    async forward({ body, res, signal, assertCurrent = () => {} }) {
       const requestId = randomUUID();
       const started = performance.now();
       const deadline = new AbortController();
@@ -101,7 +101,7 @@ export function createInferenceRelay({
         if (providerStrategy === "race") {
           await raceProviders({ states, body, res, signal: requestSignal, fetchImpl, firstTokenTimeoutMs,
             idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emit, requestId, started,
-            failureThreshold, cooldownMs, emptyToolFallback });
+            failureThreshold, cooldownMs, emptyToolFallback, assertCurrent });
           return;
         }
         for (const state of states) {
@@ -113,10 +113,11 @@ export function createInferenceRelay({
           const attemptStart = performance.now();
           try {
             release = await state.queue.acquire(requestSignal);
+            assertCurrent();
             if (!recovering && state.cooldownUntil > Date.now()) continue;
             attempts++;
             const metrics = await compatibleAttempt({ state, body, res, signal: requestSignal, fetchImpl,
-              firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emptyToolFallback,
+              firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emptyToolFallback, assertCurrent,
               onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
             state.failures = 0; state.cooldownUntil = 0;
             emit({ event: "inference_complete", requestId, provider: state.name, attempts,
@@ -154,7 +155,7 @@ export function createInferenceRelay({
 }
 
 async function raceProviders({ states, body, res, signal, fetchImpl, firstTokenTimeoutMs, idleTimeoutMs,
-  internalStream, normalizeTools, onFirstOutput, emit, requestId, started, failureThreshold, cooldownMs, emptyToolFallback }) {
+  internalStream, normalizeTools, onFirstOutput, emit, requestId, started, failureThreshold, cooldownMs, emptyToolFallback, assertCurrent }) {
   const candidates = states.filter(state => state.cooldownUntil <= Date.now() && !state.probing)
     .map(state => ({ state, controller: new AbortController() }));
   let winner = null, winnerError, attempts = 0;
@@ -176,11 +177,12 @@ async function raceProviders({ states, body, res, signal, fetchImpl, firstTokenT
     const attemptStart = performance.now();
     try {
       release = await state.queue.acquire(attemptSignal);
+      assertCurrent();
       if (!recovering && state.cooldownUntil > Date.now()) throw failure("model-upstream-cooling-down", 503);
       attempts++;
       const metrics = await compatibleAttempt({ state, body, res, signal: attemptSignal, fetchImpl,
         firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput,
-        beforeOutput: () => select(candidate), emptyToolFallback,
+        beforeOutput: () => select(candidate), emptyToolFallback, assertCurrent,
         onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
       state.failures = 0; state.cooldownUntil = 0;
       emit({ event: "inference_complete", requestId, provider: state.name, strategy: "race", attempts,
@@ -273,7 +275,7 @@ async function compatibleAttempt(options) {
 }
 
 async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTimeoutMs, idleTimeoutMs,
-  internalStream, normalizeTools, onFirstOutput, beforeOutput = () => {} }) {
+  internalStream, normalizeTools, onFirstOutput, beforeOutput = () => {}, assertCurrent = () => {} }) {
   const controller = new AbortController();
   const attemptSignal = AbortSignal.any([signal, controller.signal]);
   const started = performance.now();
@@ -292,12 +294,14 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     timeout.unref?.();
   };
   const accept = () => {
+    assertCurrent();
     if (firstOutputMs !== null) return;
     beforeOutput();
     firstOutputMs = Math.round(performance.now() - started);
     onFirstOutput();
   };
   const header = (stream) => {
+    assertCurrent();
     res.status(200);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -306,11 +310,13 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     if (stream) res.setHeader("X-Accel-Buffering", "no");
   };
   const write = async (text) => {
+    assertCurrent();
     if (res.destroyed || attemptSignal.aborted) throw abortError(attemptSignal);
     if (!res.write(text)) await once(res, "drain", { signal: attemptSignal });
   };
   try {
     const outgoing = internalStream ? { ...body, stream: true, stream_options: { ...body.stream_options, include_usage: true } } : body;
+    assertCurrent();
     upstream = await abortable(fetchImpl(new URL("chat/completions", `${state.baseUrl}/`), {
       method: "POST", redirect: "error", signal: attemptSignal,
       headers: { Authorization: `Bearer ${state.apiKey}`, "Content-Type": "application/json",

@@ -3,6 +3,7 @@ import { ConnectorPersistence, metadata, connectorStoreClosed } from "./connecto
 import path from "node:path";
 import { statSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { captureConnectorModelAuthorization, recheckConnectorModelAuthorizations } from './connector-model-authorization.js';
 
 // Keep v2 so the current production rollback image can still read connectors
 // and jobs. Older code safely drops the additive accessGrants collection.
@@ -59,6 +60,7 @@ class ConnectorStore {
   close() {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
+    this.events.emit('model-authorization-close');
     this.closePromise = (async () => {
       await this.writeQueue.catch(() => undefined);
       await this.persistence.close();
@@ -117,13 +119,14 @@ class ConnectorStore {
     return Boolean(link && this.state.connectors.some((item) => item.linkId === link && now - item.lastSeenAt <= connectorFreshMs));
   }
 
-  async authenticateModelToken(token) {
-    await this.readable();
-    const secret = safeToken(token);
-    if (!secret) return false;
-    const tokenHash = hashToken(secret);
-    return this.state.connectors.some((item) => item.protocol === 2 && sameHash(item.tokenHash, tokenHash));
+  async captureModelAuthorization(token) {
+    await this.writeQueue; await this.readable();
+    const secret = safeToken(token); if (!secret) return false;
+    return captureConnectorModelAuthorization(this, hashToken(secret), { sameHash, hashToken, changeKey, freshMs: connectorFreshMs });
   }
+
+  async authenticateModelToken(token) { return Boolean(await this.captureModelAuthorization(token)); }
+  recheckModelAuthorizations() { recheckConnectorModelAuthorizations(this); }
 
   async createAccessGrant(ownerLinkId, input) {
     const linkId = safeLinkId(ownerLinkId);

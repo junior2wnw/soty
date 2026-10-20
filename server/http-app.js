@@ -302,7 +302,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience });
     app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
     app.locals.humanIdentityStatus = attachHumanIdentity(app, { profile: humanProfile, service: human, distDir });
-    unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
+    unsubscribeRevocations = connect.subscribeRevocations(event => {
+      apps.invalidateAccess(event); connectors.store.recheckModelAuthorizations();
+    });
     // Timers start only after actual Connect and provider admission. Disabled
     // issuance still permits bounded keyless cleanup and committed recovery.
     nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
