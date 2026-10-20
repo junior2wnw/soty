@@ -16,7 +16,7 @@ const portsCode=ts.transpileModule(`exports.create=(state,runtime)=>{let display
 
 // Real production createDialog/visibility algorithm and exact app-stage capture
 // callbacks. The native platform/DOM below are deterministic ports, not browser QA.
-function fixture(){
+function fixture(configuration={}){
  const tasks=[],listeners=new Map(),intervals=new Map(),observers=[],modalEvents=[];let next=0,document;
  class Node extends EventTarget{
   constructor(tag,cls='',text=''){super();Object.assign(this,{tagName:tag.toUpperCase(),className:cls,textContent:text,children:[],parentElement:null,attributes:new Map(),dataset:{},hidden:false,disabled:false,open:false,ownerDocument:null,displayNone:false});this.classList={add:(...v)=>{this.className=[...new Set([...this.className.split(' '),...v])].join(' ');},remove:(...v)=>{this.className=this.className.split(' ').filter(n=>!v.includes(n)).join(' ');},contains:v=>this.className.split(' ').includes(v)};}
@@ -44,9 +44,9 @@ function fixture(){
  const button=(text,_icon,cls,act)=>{const n=el('button',cls,text);if(act)n.addEventListener('click',act);return n;},iconButton=(text,icon,act)=>button(text,icon,'sw-icon-button',act);
  const globals={document,HTMLElement:Node,getComputedStyle:()=>({visibility:'visible'}),crypto:{randomUUID:()=>String(++next)},Event,exports:{},require:n=>n==='./dom'?{el,button,iconButton}: {}};
  vm.runInNewContext(dialogsCompiled,globals);const dialogs=globals.exports;
- const view={crypto:globals.crypto,setInterval(fn){const id=++next;intervals.set(id,fn);return id;},clearInterval:id=>intervals.delete(id),MutationObserver:class{constructor(fn){this.fn=fn;this.connected=true;observers.push(this);}observe(){}disconnect(){this.connected=false;}}};
+ const view={crypto:globals.crypto,setInterval(fn){const id=++next;intervals.set(id,fn);return id;},clearInterval:id=>intervals.delete(id),MutationObserver:class{constructor(fn){this.fn=fn;this.connected=true;this.targets=[];observers.push(this);}observe(target,options){this.targets.push({target,options});}disconnect(){this.connected=false;}}};
  document.defaultView=view;
- const screen=el('section'),header=el('header'),grip=button('grip'),message=el('p','','Запуск не подтверждён'),runtime=el('div'),runtimeActions=el('div'),frame=el('iframe'),name=el('h2');name.displayNone=true;name.tabIndex=-1;
+ const screen=el('section'),header=el('header'),grip=button('grip'),message=el('p','','Запуск не подтверждён'),runtime=el('div'),runtimeActions=el('div'),frame=el('iframe'),name=el('h2');name.displayNone=configuration.main!==true;name.tabIndex=-1;
  header.append(grip);runtime.append(frame);screen.append(name,message,runtimeActions,runtime);document.body.append(header,screen);
  const counts={retry:0,external:0,dismiss:0,currentEntry:0},sequence=[];
  const state={current:true,ownerCurrent:true,binding:{slot:{},handle:'TEST_HANDLE',source:{id:'fixture.source',version:1,digest:'f'.repeat(64)}}};
@@ -55,17 +55,43 @@ function fixture(){
  const external=button('external','','',()=>{counts.external++;sequence.push('popup-sync');});
  const dismiss=button('dismiss','','',()=>{counts.dismiss++;message.textContent='';message.hidden=true;name.focus();});
  const currentEntry=button('current','','',()=>{counts.currentEntry++;});currentEntry.hidden=true;
- runtimeActions.append(retry,currentEntry,external,dismiss);
- const options={view,screen,message,runtime,runtimeActions,current:()=>state.current,...stagePorts,createDialog:dialogs.createDialog,iconButton,button,el,isFocusTarget:dialogs.isDialogFocusTarget,retry,currentEntry,external,dismiss,onModalChange:(_d,open)=>{modalEvents.push(open);if(!open)sequence.push('dialog-closed');}};
- const api=createWidgetRuntimeControls(options),control=screen.querySelector('.sa-widget-runtime-action');
+ const externalRecovery=button('Открыть в новой вкладке','external','',()=>external.click());externalRecovery.hidden=!configuration.main||configuration.notice===true;
+ runtimeActions.append(retry,currentEntry,external,dismiss,externalRecovery);
+ if(configuration.main){runtimeActions.displayNone=true;if(configuration.notice!==true){message.textContent='';message.hidden=true;retry.hidden=true;dismiss.hidden=true;}}
+ const options={view,screen,message,runtime,runtimeActions,current:()=>state.current,...stagePorts,createDialog:dialogs.createDialog,iconButton,button,el,isFocusTarget:dialogs.isDialogFocusTarget,retry,currentEntry,external,dismiss,
+  ...(configuration.main?{presentation:'main',returnTarget:{isCurrent:()=>state.current,resolve:()=>name},externalRecovery}:{}),
+  onModalChange:(_d,open)=>{modalEvents.push(open);if(!open)sequence.push('dialog-closed');}};
+ const api=createWidgetRuntimeControls(options),control=screen.querySelector(configuration.main?'.sa-stage-runtime-action':'.sa-widget-runtime-action');
  const attach=()=>api.attach(header,{isCurrent:()=>state.ownerCurrent,resolve:()=>grip});
  const open=()=>{control.focus();control.click();return document.querySelectorAll('dialog[open]')[0]??null;};
  const action=(d,label)=>d.querySelectorAll('button').find(n=>n.textContent===label);
  const flush=()=>{while(tasks.length)tasks.shift()();};
- return{api,options,state,screen,header,grip,frame,runtime,message,runtimeActions,name,control,counts,sequence,modalEvents,document,el,button,attach,open,action,flush,stagePorts,intervals,
-  mutate(){for(const o of observers)if(o.connected)o.fn();},tick(){for(const fn of [...intervals.values()])fn();}};
+ return{api,options,state,screen,header,grip,frame,runtime,message,runtimeActions,name,control,counts,sequence,modalEvents,document,el,button,attach,open,action,flush,stagePorts,intervals,externalRecovery,
+  mutate(target){for(const o of observers)if(o.connected&&(!target||o.targets.some(record=>record.target===target)))o.fn();},tick(){for(const fn of [...intervals.values()])fn();}};
 }
 
+test('neutral main moves the same external action out of its CSS-hidden group and preserves the Native frame',()=>{
+ const f=fixture({main:true}),fallback=f.screen.querySelector('.sa-stage-runtime-notice');
+ assert.equal(f.runtimeActions.displayNone,true);assert.equal(f.externalRecovery.parentElement,fallback);
+ assert.equal(fallback.hidden,false);assert.equal(f.externalRecovery.getClientRects().length,1);
+ assert.equal(f.message.hidden,true);assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.counts.external,0);
+ f.externalRecovery.click();assert.equal(f.counts.external,1);assert.deepEqual(f.sequence,['popup-sync']);
+ assert.equal(f.frame.parentElement,f.runtime);f.api.dispose();assert.equal(f.externalRecovery.parentElement,f.runtimeActions);
+ assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.intervals.size,0);
+});
+test('the observed neutral external hidden state controls its own main fallback without a message or launch',()=>{
+ const f=fixture({main:true}),fallback=f.screen.querySelector('.sa-stage-runtime-notice');assert.equal(fallback.hidden,false);
+ f.externalRecovery.hidden=true;f.mutate(f.externalRecovery);assert.equal(fallback.hidden,true);assert.equal(f.control.getClientRects().length,0);
+ f.externalRecovery.hidden=false;f.mutate(f.externalRecovery);assert.equal(fallback.hidden,false);assert.equal(f.externalRecovery.getClientRects().length,1);
+ assert.equal(f.message.hidden,true);assert.equal(f.counts.external,0);assert.equal(f.counts.retry,0);f.api.dispose();
+});
+test('closing the main action dialog preserves the neutral external target and its keyboard return focus',()=>{
+ const f=fixture({main:true}),d=f.open();assert.ok(d);const action=f.action(d,'Открыть в новой вкладке');
+ action.click();f.flush();assert.equal(f.counts.external,1);assert.equal(f.document.activeElement,f.control);
+ assert.equal(f.externalRecovery.parentElement,f.screen.querySelector('.sa-stage-runtime-notice'));
+ assert.equal(f.control.getClientRects().length,1);assert.equal(f.externalRecovery.getClientRects().length,1);
+ action.click();assert.equal(f.counts.external,1);assert.equal(f.frame.parentElement,f.runtime);f.api.dispose();
+});
 test('one compact fallback; attaching moves one control and never the Native iframe',()=>{const f=fixture();assert.equal(f.control.parentElement.className,'sa-widget-runtime-launcher');assert.equal(f.attach(),true);assert.equal(f.control.parentElement,f.header);assert.equal(f.screen.querySelector('.sa-widget-runtime-launcher').hidden,true);assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.api.attach(f.header,{isCurrent:()=>true,resolve:()=>f.grip}),false);f.api.dispose();});
 test('actual createDialog cleanup returns Dismiss focus to visible owner grip; no launch',()=>{const f=fixture();f.attach();const d=f.open();f.action(d,'Скрыть сообщение').click();f.flush();assert.equal(f.document.activeElement,f.grip);assert.equal(f.counts.dismiss,1);assert.equal(f.counts.retry,0);assert.equal(f.frame.parentElement,f.runtime);assert.deepEqual(f.modalEvents,[true,false]);});
 test('actual native cancel/queued close restores visible grip with no action, cleanup-before-return',()=>{const f=fixture();f.attach();const d=f.open();d.requestClose();f.flush();assert.equal(f.document.activeElement,f.grip);assert.deepEqual(f.counts,{retry:0,external:0,dismiss:0,currentEntry:0});assert.equal(f.intervals.size,0);});

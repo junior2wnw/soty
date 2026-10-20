@@ -1,3 +1,3 @@
-export type RuntimeDisplayState={readonly phase:'opening'|'boot'|'authenticating'|'ready'|'unconfirmed'|'denied'|'error';readonly message:string;readonly busy:boolean;readonly canRetry:boolean;readonly canExternal:boolean;readonly canDismiss:boolean};
+export type RuntimeDisplayState={readonly phase:'opening'|'boot'|'authenticating'|'loaded'|'ready'|'unconfirmed'|'denied'|'error';readonly message:string;readonly busy:boolean;readonly canRetry:boolean;readonly canExternal:boolean;readonly canDismiss:boolean};
 export type RuntimeDisplayHandle={snapshot():RuntimeDisplayState;dismiss():boolean;dispose():void};
 export function createAppRuntimeDisplay(options:{view:Window;frame:HTMLIFrameElement;origin:string;isCurrent():boolean;readiness():Promise<'ready'|'pending'|'denied'|'unknown'|'unsupported'>;onChange?(state:RuntimeDisplayState):void;timeoutMs?:12000}):RuntimeDisplayHandle;

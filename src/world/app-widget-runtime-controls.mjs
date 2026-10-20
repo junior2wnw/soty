@@ -4,13 +4,14 @@ export function createWidgetRuntimeControls(options) {
   const {view,screen,message,runtime,runtimeActions,current,capture,matchesCapture,canAct,
     createDialog,iconButton,button,el,isFocusTarget,retry,currentEntry,external,dismiss,onModalChange=()=>{}}=options;
   const main=options.presentation==='main';
+  const neutralExternal=main?options.externalRecovery??null:null;
   let disposed=false,owner=main?options.returnTarget??null:null,header=null,active=null;
   const fallback=el('div',main?'sa-stage-runtime-notice':'sa-widget-runtime-launcher');
   const control=iconButton(main?'Подробности и действия приложения':'Действия окна приложения',main?'info':'more',open);
   control.classList.add(main?'sa-stage-runtime-action':'sa-widget-runtime-action');control.dataset.stageControl=main?'runtime-details':'widget-runtime';
   const mark=el('b','sa-widget-runtime-notice-mark');mark.setAttribute('aria-hidden','true');if(!main)control.append(mark);
   if(!message.id)message.id=`${main?'stage':'widget'}-runtime-message-${view.crypto.randomUUID()}`;
-  message.after(fallback);if(main)fallback.append(message,control);else fallback.append(control);
+  message.after(fallback);if(main)fallback.append(message,...(neutralExternal?[neutralExternal]:[]),control);else fallback.append(control);
   screen.classList.add(main?'has-stage-runtime-controls':'has-widget-runtime-controls');
   if(main){control.setAttribute('aria-haspopup','dialog');control.setAttribute('aria-expanded','false');}
   const live=()=>!disposed&&current()&&(!owner||owner.isCurrent());
@@ -25,10 +26,13 @@ export function createWidgetRuntimeControls(options) {
     // createDialog owns synchronous cleanup, native close, Escape and focus.
     record.dialog.close({restoreFocus});
   }
+  function syncMainFallback(){
+    if(main)fallback.hidden=(message.hidden||!message.textContent)&&(!neutralExternal||neutralExternal.hidden);
+  }
   function sync(){
     if(disposed)return;
     const notice=!message.hidden&&!!message.textContent;
-    if(main){fallback.hidden=!notice;message.title=message.textContent;}
+    if(main){syncMainFallback();message.title=message.textContent;}
     control.dataset.notice=notice?'visible':'none';
     mark.hidden=!notice;mark.textContent=runtime.getAttribute('aria-busy')==='true'?'…':'!';
     control.title=main?'Подробности и действия приложения':notice?'Сообщение и действия окна приложения':'Действия окна приложения';
@@ -71,8 +75,8 @@ export function createWidgetRuntimeControls(options) {
       record.allowReturn=true;
       try{original.click();}finally{if(active===record){
         // Native close may restore its opener before MutationObserver runs.
-        // A main notice dismissed by this action must already be unfocusable.
-        if(main)fallback.hidden=message.hidden||!message.textContent;
+        // Keep a neutral external action visible; an empty notice has no target otherwise.
+        syncMainFallback();
         close(live());
       }}
     }
@@ -88,6 +92,7 @@ export function createWidgetRuntimeControls(options) {
   const observer=new view.MutationObserver(sync);
   observer.observe(message,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   observer.observe(runtimeActions,{subtree:true,attributes:true,attributeFilter:['hidden','disabled']});
+  if(neutralExternal)observer.observe(neutralExternal,{attributes:true,attributeFilter:['hidden','disabled']});
   observer.observe(runtime,{childList:true,attributes:true,attributeFilter:['aria-busy']});
   sync();
   return Object.freeze({
@@ -97,7 +102,8 @@ export function createWidgetRuntimeControls(options) {
       owner=returnOwner;header=target;target.append(control);fallback.hidden=true;return true;
     },
     dispose(){
-      if(disposed)return;disposed=true;observer.disconnect();close(false);control.remove();if(main&&message.parentElement===fallback)fallback.after(message);fallback.remove();
+      if(disposed)return;disposed=true;observer.disconnect();close(false);control.remove();if(main&&message.parentElement===fallback)fallback.after(message);
+      if(neutralExternal?.parentElement===fallback)runtimeActions.append(neutralExternal);fallback.remove();
       screen.classList.remove(main?'has-stage-runtime-controls':'has-widget-runtime-controls');owner=header=null;
     },
   });

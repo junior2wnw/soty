@@ -23,13 +23,12 @@ const portsCode=compile(`exports.create=(state,runtime)=>{let displayEpoch=1,run
 // Reuse the already established deterministic platform port unchanged, while
 // running actual production createDialog and the actual main Stage fences.
 // This is a component/Source test, never a browser geometry or native focus claim.
-const widgetTest=readFileSync(path.join(HERE,'app-widget-runtime-controls.test.mjs'),'utf8');
-const from=widgetTest.indexOf('function fixture(){'),to=widgetTest.indexOf('\ntest(',from);
-let fixtureText=widgetTest.slice(from,to)
- .replace("name.displayNone=true","name.displayNone=false")
- .replace('const options={view,screen,message,',"const options={presentation:'main',returnTarget:{isCurrent:()=>state.current,resolve:()=>name},view,screen,message,")
- .replace("control=screen.querySelector('.sa-widget-runtime-action')","control=screen.querySelector('.sa-stage-runtime-action')??screen.querySelector('.sa-widget-runtime-action')");
-const fixtureFor=factory=>new Function('createWidgetRuntimeControls','portsCode','dialogsCompiled','vm','captureSourcePin','Event','EventTarget',fixtureText+';return fixture;')(factory,portsCode,dialogsCompiled,vm,captureSourcePin,Event,EventTarget)();
+const widgetTest=readFileSync(process.env.SOTY_MAIN_RUNTIME_WIDGET_FIXTURE_SOURCE??path.join(HERE,'app-widget-runtime-controls.test.mjs'),'utf8');
+const widgetAst=ts.createSourceFile('widget-runtime-controls.test.mjs',widgetTest,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+const fixtureNode=widgetAst.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='fixture');
+assert.ok(fixtureNode?.body,'the maintained widget test must declare its actual shared fixture');
+const fixtureText=fixtureNode.getText(widgetAst);
+const fixtureFor=factory=>new Function('createWidgetRuntimeControls','portsCode','dialogsCompiled','vm','captureSourcePin','Event','EventTarget',fixtureText+';return fixture;')(factory,portsCode,dialogsCompiled,vm,captureSourcePin,Event,EventTarget)({main:true,notice:true});
 const fixture=()=>fixtureFor(createWidgetRuntimeControls);
 const css=readFileSync(path.join(HERE,'app-stage.css'),'utf8');
 const applyStyles=f=>{
@@ -50,7 +49,33 @@ test('actual Stage wiring preserves widget ports and routes main controls into t
  assert.equal(callback(mainProps,'presentation'),"'main'");
  for(const name of ['capture','matchesCapture','canAct'])assert.equal(callback(mainProps,name),callback(widgetProps,name),name);
  assert.equal(widget.initializer.whenFalse.getText(stageAst),'null');
- for(const text of ["let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';","else if(state==='ready'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');","if (!message.textContent || messageOwner === 'runtime') showMessage(state.message, 'runtime');"]){assert(stageText.includes(text));}
+ for(const text of ["let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';","else if(state==='ready'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');"]){assert(stageText.includes(text));}
+ const nodes=(node,predicate)=>{const result=[];const visit=value=>{if(predicate(value))result.push(value);ts.forEachChild(value,visit);};visit(node);return result;};
+ const bare=node=>{while(ts.isParenthesizedExpression(node))node=node.expression;return node;};
+ const named=(node,name)=>ts.isIdentifier(node)&&node.text===name;
+ const member=(node,owner,name)=>ts.isPropertyAccessExpression(node)&&named(node.expression,owner)&&node.name.text===name;
+ const calls=nodes(mount,node=>ts.isCallExpression(node)&&named(node.expression,'createAppRuntimeDisplay'));
+ assert.equal(calls.length,1,'inspect the actual runtime-display callback');
+ const properties=calls[0].arguments[0];assert(ts.isObjectLiteralExpression(properties));
+ const change=properties.properties.find(node=>ts.isPropertyAssignment(node)&&named(node.name,'onChange'))?.initializer;
+ assert(change&&ts.isArrowFunction(change)&&ts.isBlock(change.body));
+ const guards=change.body.statements.filter(node=>{
+   if(!ts.isIfStatement(node))return false;const condition=bare(node.expression);
+   if(!ts.isBinaryExpression(condition)||condition.operatorToken.kind!==ts.SyntaxKind.BarBarToken)return false;
+   const empty=bare(condition.left),owner=bare(condition.right);
+   return ts.isPrefixUnaryExpression(empty)&&empty.operator===ts.SyntaxKind.ExclamationToken&&member(bare(empty.operand),'message','textContent')
+     &&ts.isBinaryExpression(owner)&&owner.operatorToken.kind===ts.SyntaxKind.EqualsEqualsEqualsToken&&named(bare(owner.left),'messageOwner')
+     &&ts.isStringLiteral(bare(owner.right))&&bare(owner.right).text==='runtime';
+ });
+ assert.equal(guards.length,1,'one message-owner guard must own both message and recovery controls');
+ const block=guards[0].thenStatement;assert(ts.isBlock(block));
+ const messages=nodes(change.body,node=>ts.isCallExpression(node)&&named(node.expression,'showMessage'));
+ assert.equal(messages.length,1);assert.equal(messages[0].parent.parent,block);
+ assert(member(messages[0].arguments[0],'state','message'));assert.equal(messages[0].arguments[1]?.text,'runtime');
+ for(const control of ['recoveryRetry','externalRecovery','dismissRuntimeNotice']){
+   const writes=nodes(change.body,node=>ts.isBinaryExpression(node)&&node.operatorToken.kind===ts.SyntaxKind.EqualsToken&&member(node.left,control,'hidden'));
+   assert.equal(writes.length,1,control);assert.equal(writes[0].parent.parent,block,control+' stays under the same ownership guard');
+ }
 });
 test('main notice keeps actual full status visible, one compact action and same iframe; no widget masquerade',()=>{
  const f=fixture();try{const notice=f.screen.querySelector('.sa-stage-runtime-notice');applyStyles(f);assert(notice);assert.equal(f.message.parentElement,notice);assert.equal(f.message.hidden,false);assert.equal(f.message.textContent,'Запуск не подтверждён');assert.equal(f.message.title,f.message.textContent);assert.equal(f.screen.classList.contains('has-widget-runtime-controls'),false);assert.equal(f.screen.querySelector('.sa-widget-runtime-action'),null);assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.runtime.querySelectorAll('iframe').length,1);assert.equal(f.api.attach(f.header,{isCurrent:()=>true,resolve:()=>f.grip}),false);const model=rect(f);assert.equal(model.noticeHeight,57);assert.equal(model.inlineActions,0);assert.deepEqual(f.counts,{retry:0,external:0,dismiss:0,currentEntry:0});}finally{f.api.dispose();}
