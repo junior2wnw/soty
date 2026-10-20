@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createServer as createViteServer } from 'vite';
+import { createDevelopmentLifecycle, awaitDevelopment } from './dev-lifecycle.mjs';
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const platformEnvironment = ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP', 'COMSPEC', 'ComSpec', 'PATHEXT'];
@@ -47,55 +48,35 @@ export async function startDevelopment(input = {}) {
   options.origin = `http://${options.host}:${options.port}`;
   await mkdir(options.dataDir, { recursive: true });
 
-  let vite, closing, childExited = false, settleDone;
-  const done = new Promise(resolveDone => { settleDone = resolveDone; });
+  let vite;
   const api = fork(join(rootDir, 'server', 'index.js'), [], {
     cwd: rootDir, env: developmentEnvironment(options), execArgv: [], windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
-  const exited = new Promise(resolveExit => api.once('exit', (code, signal) => {
-    childExited = true; resolveExit();
-    if (!closing) void close(new Error(`Development API stopped (${signal || code || 'unknown'})`));
-  }));
+  const lifecycle = createDevelopmentLifecycle({ api, frontend: () => vite, signal: input.signal });
+  const { close, done } = lifecycle;
   if (input.quiet) { api.stdout.resume(); api.stderr.resume(); }
   else { api.stdout.pipe(process.stdout, { end: false }); api.stderr.pipe(process.stderr, { end: false }); }
-  const onAbort = () => { void close(); };
-  input.signal?.addEventListener('abort', onAbort, { once: true });
-
-  function close(error) {
-    if (closing) return closing;
-    closing = (async () => {
-      input.signal?.removeEventListener('abort', onAbort);
-      await vite?.close();
-      if (!childExited) {
-        if (api.connected) api.disconnect();
-        else api.kill('SIGTERM');
-        let timer;
-        await Promise.race([exited, new Promise(resolveWait => { timer = setTimeout(resolveWait, 2000); timer.unref(); })]);
-        clearTimeout(timer);
-        if (!childExited) { api.kill('SIGKILL'); await exited; }
-      }
-      settleDone(error || null);
-    })();
-    return closing;
-  }
-
   try {
-    if (input.signal?.aborted) throw new Error('Development startup cancelled');
+    if (input.signal?.aborted) throw input.signal.reason;
     await new Promise((resolveReady, reject) => {
       const timer = setTimeout(() => finish(new Error('Development API startup timed out')), 15_000);
       const onMessage = message => { if (message?.type === 'soty:ready' && message.port === options.apiPort) finish(); };
       const onError = () => finish(new Error('Cannot start development API'));
       const onExit = () => finish(new Error('Cannot start development API; check the API port and server output'));
+      const onAbort = () => finish(input.signal?.aborted ? input.signal.reason : new Error('Cannot start development API; startup stopped'));
       function finish(error) {
         clearTimeout(timer); api.off('message', onMessage); api.off('error', onError); api.off('exit', onExit);
+        lifecycle.signal.removeEventListener('abort', onAbort);
         if (error) reject(error); else resolveReady();
       }
       api.on('message', onMessage); api.once('error', onError); api.once('exit', onExit);
+      lifecycle.signal.addEventListener('abort', onAbort, { once: true });
+      if (lifecycle.signal.aborted) onAbort();
     });
-    const health = await fetch(`http://127.0.0.1:${options.apiPort}/health`, { signal: AbortSignal.timeout(3000) });
+    const health = await fetch(`http://127.0.0.1:${options.apiPort}/health`, { signal: AbortSignal.any([lifecycle.signal, AbortSignal.timeout(3000)]) });
     if (!health.ok || (await health.json()).ok !== true) throw new Error('Development API health check failed');
-    vite = await createViteServer({
+    vite = await awaitDevelopment(createViteServer({
       root: rootDir, configFile: join(rootDir, 'vite.config.ts'),
       envDir: false, envPrefix: 'SOTY_DEV_PUBLIC_',
       logLevel: input.quiet ? 'silent' : 'info',
@@ -118,9 +99,9 @@ export async function startDevelopment(input = {}) {
           },
         },
       },
-    });
-    if (closing) { await vite.close(); throw new Error('Development API stopped during startup'); }
-    await vite.listen();
+    }).then(async server => { vite = server; await lifecycle.adoptFrontend(server); return server; }), lifecycle.signal);
+    if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
+    await awaitDevelopment(vite.listen(), lifecycle.signal);
     if (!input.quiet) {
       console.log(`\nСоты: ${options.origin}`);
       console.log(`API и приложения: 127.0.0.1:${options.apiPort}; данные: ${options.dataDir}`);
@@ -156,7 +137,7 @@ async function main() {
     running = await startDevelopment({ host: values.host, port: values.port, apiPort: values['api-port'], connectorPort: values['connector-port'], dataDir: values['data-dir'], namedApps: values['named-apps'], signal: controller.signal });
     const error = await running.done;
     if (error) throw error;
-  } catch (error) { if (!controller.signal.aborted) throw error; }
+  } catch (error) { if (!controller.signal.aborted || error !== controller.signal.reason) throw error; }
   finally { process.off('SIGINT', stop); process.off('SIGTERM', stop); }
 }
 
