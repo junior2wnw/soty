@@ -103,3 +103,30 @@ test('actual card shows public link glyph without lock and keeps independent com
   const groupNodes = all(createApplicationCard({ ...options, app: { ...app, grants: { accountIds: [], communityIds: ['team'] } }, communities: [group] }));
   for (const label of ['Именные ссылки: всем', 'Actual community', 'Чат сообщества Actual community']) assert.ok(groupNodes.some(node => node.textContent === label), label);
 });
+
+
+test('explicit audience badges state the effective four modes without presenting dormant grants as active', () => {
+  for (const [mode, label] of [['private', 'Только вы'], ['friends', 'Друзьям'], ['link', 'По ссылке'], ['public', 'Всем']]) {
+    const value = { ...app, grants: { accountIds: ['dormant-person'], communityIds: ['dormant-group'] }, publication: {
+      audience: mode, launchPolicy: ['link', 'public'].includes(mode) ? 'anyone' : 'restricted', listed: mode === 'public', activeNamedAddressCount: 2 } };
+    const view = audience.describeAppAudience(value, owner); assert.equal(view.label, label);
+    assert.equal(view.publicNamed, ['link', 'public'].includes(mode));
+    assert.equal(view.details.some(text => text.includes('выбранным')), false);
+    assert.deepEqual(audience.describeAppAudience(value, 'other'), { label: 'Вам доступно', icon: 'app', publicNamed: false, details: [] });
+  }
+});
+
+test('explicit audience inspection projection retains the authority mode and listing flag through the existing summary helper', () => {
+  const snapshot = { app: { state: 'enabled' }, publication: { audience: 'friends', listed: false, launchPolicy: 'restricted', activeDomainIds: ['one'] },
+    addresses: { aliases: [{ id: 'one', active: true, state: 'bound' }] } };
+  assert.deepEqual(audience.publicationFromInspection(snapshot), { audience: 'friends', listed: false, launchPolicy: 'restricted', activeNamedAddressCount: 1 });
+});
+
+test('explicit audience badges refuse inconsistent mode-policy metadata and unavailable named links', () => {
+  for (const publication of [{ audience: 'friends', launchPolicy: 'anyone', listed: false, activeNamedAddressCount: 1 },
+    { audience: 'public', launchPolicy: 'anyone', listed: false, activeNamedAddressCount: 1 },
+    { audience: 'link', launchPolicy: 'anyone', listed: false, activeNamedAddressCount: 0 },
+    { audience: 'circle', launchPolicy: 'restricted', listed: false, activeNamedAddressCount: 1 }]) {
+    assert.equal(audience.describeAppAudience({ ...app, publication }, owner).label, 'Ваше приложение');
+  }
+});

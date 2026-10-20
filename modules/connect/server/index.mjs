@@ -195,6 +195,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   const db = new DatabaseSync(file);
   try { migrateDatabase(db, projectId, { supportedVersion: initializePlatformInvitations ? SCHEMA_VERSION : 3 }); } catch (error) { db.close(); throw error; }
   let closed = false, transactionActive = false, activeActorRef = null, actorFenceActive = false, actorFenceActor = null;
+  let hostAuthorityFrame = null, currentContactFrame = null;
   // Only actor objects emitted by this signed dispatcher can enter the private
   // subject projection fence. Matching JSON fields do not carry this authority.
   const issuedActors = new WeakSet();
@@ -238,13 +239,18 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       db.exec('PRAGMA busy_timeout=100');
       return transaction(() => {
         entered = true;
-        const result = action();
-        if (result && typeof result.then === 'function') {
-          // Consume a rejected Promise without treating it as synchronous work.
-          void Promise.resolve(result).catch(() => {});
-          fail('connect_authority_callback_async');
-        }
-        return result;
+        // Private lifetime witness for already authenticated host session DTOs.
+        // A transaction alone carries no host identity or contact authority.
+        const previous = hostAuthorityFrame; hostAuthorityFrame = {};
+        try {
+          const result = action();
+          if (result && typeof result.then === 'function') {
+            // Consume a rejected Promise without treating it as synchronous work.
+            void Promise.resolve(result).catch(() => {});
+            fail('connect_authority_callback_async');
+          }
+          return result;
+        } finally { hostAuthorityFrame = previous; }
       });
     } catch (error) {
       hasPrimaryFailure = true;
@@ -334,6 +340,67 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   function pair(left, right) { return [left, right].sort(); }
   function currentRelationship(left, right) {
     return get("SELECT * FROM relationships WHERE first_id=? AND second_id=? AND state='active'", ...pair(left, right));
+  }
+  // Host-only current reciprocal contacts. Signed dispatchers may join only
+  // their original account/device; validated HTTP/MCP session DTOs are checked
+  // afresh under this connection's private synchronous host fence.
+  function withCurrentContacts(actor, callback) {
+    assert(!closed, 'service_closed');
+    const accountId = textId(actor?.accountId), deviceId = textId(actor?.deviceId);
+    assert(typeof callback === 'function' && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(callback.constructor?.name),
+      'connect_authority_callback_invalid');
+    const invoke = view => {
+      const value = callback(view);
+      if (value && typeof value.then === 'function') {
+        void Promise.resolve(value).catch(() => {}); fail('connect_authority_callback_async');
+      }
+      return value;
+    };
+    const current = () => assert(authenticated(deviceId).account.id === accountId, 'connect_authority_actor_mismatch');
+    if (currentContactFrame) {
+      const frame = currentContactFrame;
+      assert(frame.accountId === accountId && frame.deviceId === deviceId, 'connect_authority_actor_mismatch');
+      frame.live(); const value = invoke(frame.view); frame.live(); return value;
+    }
+    const observe = () => {
+      current(); const token = {}; let active = true, peers = null, peerSet = null;
+      const live = () => {
+        assert(active && currentContactFrame?.token === token && transactionActive && db.isTransaction,
+          'connect_contact_authority_expired'); current();
+      };
+      const view = Object.freeze({ accountId, deviceId,
+        has(peerAccountId) {
+          live(); const peerId = textId(peerAccountId);
+          return peerSet ? peerSet.has(peerId) : Boolean(currentRelationship(accountId, peerId) && !blocked(accountId, peerId));
+        },
+        accountIds() {
+          live();
+          if (!peers) {
+            peers = Object.freeze(all(`WITH peers AS (
+              SELECT CASE WHEN first_id=? THEN second_id ELSE first_id END AS peer_id
+              FROM relationships WHERE state='active' AND (first_id=? OR second_id=?))
+              SELECT peer_id FROM peers WHERE NOT EXISTS(SELECT 1 FROM blocks b
+                WHERE (b.owner_id=? AND b.peer_id=peers.peer_id) OR (b.owner_id=peers.peer_id AND b.peer_id=?))
+              ORDER BY peer_id`, accountId, accountId, accountId, accountId, accountId).map(row => row.peer_id));
+            peerSet = new Set(peers);
+          }
+          return peers;
+        },
+      });
+      currentContactFrame = { token, accountId, deviceId, view, live };
+      try { const value = invoke(view); live(); return value; }
+      finally { active = false; currentContactFrame = null; }
+    };
+    if (transactionActive || db.isTransaction) {
+      assert(transactionActive && db.isTransaction, 'connect_authority_actor_mismatch');
+      const original = activeActorRef ?? actorFenceActor;
+      if (original) {
+        assert(issuedActors.has(original) && original.accountId === accountId && original.deviceId === deviceId,
+          'connect_authority_actor_mismatch');
+      } else assert(hostAuthorityFrame, 'connect_authority_actor_mismatch');
+      return observe();
+    }
+    return withAuthorityFence(observe);
   }
   function enrolment(id, timestamp, { allowFinished = false } = {}) {
     const item = get('SELECT * FROM enrollments WHERE id=?', textId(id));
@@ -698,6 +765,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       const peerId = textId(peerAccountId);
       return Boolean(currentRelationship(actor.accountId, peerId) && !blocked(actor.accountId, peerId));
     },
+    withCurrentContacts,
     /** Host-only check for sessions created by a signed extension operation. */
     isActorActive(actor) {
       if (closed || !actor || typeof actor.accountId !== 'string' || typeof actor.deviceId !== 'string') return false;

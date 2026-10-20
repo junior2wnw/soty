@@ -1,4 +1,4 @@
-import type { AppInspection, AppSourceTarget, SettingsDraft, SettingsPending, SettingsResponse } from './app-settings.types';
+import type { AppAudience, AppInspection, AppSourceTarget, SettingsDraft, SettingsPending, SettingsResponse } from './app-settings.types';
 import type { WorldApi } from './types';
 export interface AppSettingsState {
   key: string;
@@ -18,7 +18,7 @@ export function dispatchAppSettingsIntent(options: { state: AppSettingsState; ap
   | { op?: undefined; expectedPending: SettingsPending; args?: never; expectedSource?: never; beforeCreate?: never }
 )): Promise<{ status: 'accepted' | 'stale' | 'superseded'; pending?: SettingsPending; response?: SettingsResponse }>;
 export function appSettingsUpdateArgs(snapshot: AppInspection, draft: Pick<SettingsDraft, 'name' | 'communityIds'>, kind: 'name' | 'grants', accountId: string): Record<string, unknown>;
-export function appPublicationArgs(snapshot: AppInspection, draft: Pick<SettingsDraft, 'launchPolicy' | 'activeDomainIds' | 'exposureConfirmed'> & { listed?: boolean }, accountId: string): Record<string, unknown>;
+export function appPublicationArgs(snapshot: AppInspection, draft: Pick<SettingsDraft, 'launchPolicy' | 'activeDomainIds' | 'exposureConfirmed'> & { listed?: boolean; audience?: AppAudience | null }, accountId: string): Record<string, unknown>;
 export function appSettingsObservationRemaining(snapshot: AppInspection, requestElapsedMs: number): number;
 export function createAppSettingsDraftState(initial: AppInspection): {
   read(): { snapshot: AppInspection; draft: SettingsDraft; nameDirty: boolean; grantsDirty: boolean; publicationDirty: boolean; nameConflict: boolean; grantsConflict: boolean; publicationConflict: boolean; unavailableDomainIds: string[] };
@@ -28,3 +28,5 @@ export function createAppSettingsDraftState(initial: AppInspection): {
   reset(): void;
   resetPublication(): void;
 };
+
+export function appAudiencePublicationFields(audience: AppAudience | null): { audience: AppAudience | null; launchPolicy?: 'restricted' | 'anyone'; listed?: boolean };

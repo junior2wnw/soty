@@ -244,3 +244,24 @@ test('two actual SQLite writers can commit only one source change at the same po
     await Promise.all(workers.map(worker => worker.terminate()));
   }
 });
+
+
+test('an explicit friends audience rejects incompatible Source policy atomically and compatible promotion keeps exact v1 receipt intent', async t => {
+  const f = await fixture(t); migrateAppsSchema(f.db, { allowAudienceMigration: true });
+  const current = f.get();
+  f.publications.execute({ op: 'apps.publication.update', actor: owner, args: { appId: appA, requestId: 'audience-friends',
+    expectedPolicyEpoch: current.policyEpoch, expectedTargetRevision: current.activeTargetRevision, audience: 'friends',
+    launchPolicy: 'restricted', listed: false, activeDomainIds: [alias] } });
+  const prepared = await f.prepare(), before = stateRows(f.db);
+  const incompatible = f.intent(prepared, 'audience-incompatible-source', { launchPolicy: 'anyone', listed: true,
+    exposureAck: { scope: 'whole-port', targetRevision: prepared.target.revision, targetDigest: prepared.target.digest, profile: prepared.target.profile } });
+  assert.throws(() => f.promote(incompatible), code('invalid_app_audience_policy'));
+  assert.deepEqual(stateRows(f.db), before, 'runtime target, binding floor and every durable receipt roll back together');
+  assert.equal(f.get().audience, 'friends'); assert.equal(requiredBindingVersion(f.db, appA), 1);
+  const result = f.promote(f.intent(prepared, 'audience-compatible-source'));
+  assert.equal(result.current.audience, 'friends'); assert.equal(result.current.activeTargetRevision, prepared.target.revision);
+  assert.equal(result.receipt.schema, 'soty.app-source-receipt.v1'); assert.equal(result.receipt.launchPolicy, 'restricted');
+  assert.equal(result.receipt.listed, false); assert.equal(result.receipt.exposureAck, null);
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_source_receipts').get().n, 1);
+  const reloaded = f.open(); assert.equal(reloaded.publications.execute({ op: 'apps.publication.get', actor: owner, args: { appId: appA } }).audience, 'friends');
+});

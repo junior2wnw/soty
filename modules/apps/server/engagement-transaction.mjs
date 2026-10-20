@@ -39,7 +39,7 @@ export function createEngagementTransaction({ db, assertActor, withAuthorityFenc
           if (Number.isInteger(error?.errcode) && [5, 6].includes(error.errcode & 255)) throw new AppsError(busyCode, 503);
           throw error;
         } finally { db.exec(`PRAGMA busy_timeout=${priorTimeout}`); }
-      });
+      }, captured);
       synchronous(value, 'apps_authority_fence_invalid');
       assertApps(entered, 'apps_authority_fence_invalid', 500);
       return outcome;

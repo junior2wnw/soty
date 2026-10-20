@@ -2,6 +2,7 @@ import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:
 import { AppsError, assertApps, appId, cleanGrants, textId } from './protocol.mjs';
 import { createLaunchPath } from './launch-path.mjs';
 import { readDiscussionAudience } from './schema.mjs';
+import { hasAudienceSchema, readConversationAudience, writeHeadAudience, materializeConversationAudience } from './audience.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 
 export const discussionOperations = new Set(['context', 'history', 'changes', 'archives', 'send', 'remove'].map(name => `apps.discussion.${name}`));
@@ -36,13 +37,15 @@ export function syncDiscussionAudienceInTransaction(db, id, at) {
   assertApps(head.owner_account_id === current.ownerAccountId, 'apps_registry_corrupt', 500);
   if (head.audience_hash === current.hash) return false;
   assertApps(head.generation < Number.MAX_SAFE_INTEGER, 'apps_discussion_generation_exhausted', 409);
+  const nextId = freshId('conv');
   db.prepare(`UPDATE app_discussion_heads SET current_id=?,generation=generation+1,mode=?,grants_json=?,audience_hash=?,updated_at=? WHERE app_id=?`)
-    .run(freshId('conv'), current.mode, JSON.stringify(current.grants), current.hash, timestamp(at), id);
+    .run(nextId, current.mode, JSON.stringify(current.grants), current.hash, timestamp(at), id);
+  writeHeadAudience(db, id, nextId, current.audience);
   return true;
 }
 
 export function createDiscussionRegistry({ db, now = Date.now, assertActor, withAuthorityFence, resolveEntry,
-  canUse, readCommunityAuthority, authorLabel, limits: configured = {} }) {
+  canUse, isCurrentFriend = () => false, readCommunityAuthority, authorLabel, limits: configured = {} }) {
   assertApps(db && [now, assertActor, resolveEntry, canUse, authorLabel].every(value => typeof value === 'function'),
     'apps_discussion_dependencies_required', 500);
   exact(configured, Object.keys(DISCUSSION_LIMITS));
@@ -66,6 +69,7 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
         .run(id, freshId('conv'), 1, audience.ownerAccountId, audience.mode, JSON.stringify(audience.grants), audience.hash, 0, 0, 0, at, 15000, at);
       db.prepare('UPDATE app_discussion_usage SET head_count=head_count+1 WHERE id=1').run();
       head = db.prepare('SELECT * FROM app_discussion_heads WHERE app_id=?').get(id);
+      writeHeadAudience(db, id, head.current_id, audience.audience);
     }
     assertApps(!head || (head.audience_hash === audience.hash && head.owner_account_id === audience.ownerAccountId), 'apps_registry_corrupt', 500);
     return head;
@@ -99,7 +103,8 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
   }
   function authority(base, rows) {
     if (base.administrative || base.actor.accountId === base.app.owner_account_id) return () => true;
-    const candidates = [...new Set(rows.flatMap(row => cleanGrants(JSON.parse(row.grants_json)).communityIds))];
+    const candidates = [...new Set(rows.filter(row => readConversationAudience(db, row) === null)
+      .flatMap(row => cleanGrants(JSON.parse(row.grants_json)).communityIds))];
     assertApps(candidates.length <= 65536, 'apps_registry_corrupt', 500);
     let communities = new Set();
     if (candidates.length) {
@@ -112,6 +117,9 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     }
     let currentGrant;
     return row => {
+      const audience = readConversationAudience(db, row);
+      if (audience === 'private') return false;
+      if (audience === 'friends') return synchronous(isCurrentFriend(base.actor, base.app.owner_account_id), 'apps_async_authority') === true;
       if (row.mode === 'anyone') return true;
       if (currentGrant === undefined) currentGrant = synchronous(canUse(base.actor, base.app), 'apps_async_authority') === true;
       if (!currentGrant) return false;
@@ -130,7 +138,9 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const grants = cleanGrants(JSON.parse(row.grants_json));
     return { appId: base.app.id, entry: base.entry, conversationId: row.id,
       mode: current && !base.administrative && base.app.state === 'enabled' ? 'current' : 'archive', isCurrent: current,
-      ownerAdministrative: base.administrative, audience: row.mode === 'anyone' ? 'public'
+      ownerAdministrative: base.administrative,
+      ...(hasAudienceSchema(db) ? { audienceMode: readConversationAudience(db, row) } : {}),
+      audience: readConversationAudience(db, row) === 'friends' ? 'shared' : readConversationAudience(db, row) === 'private' ? 'owner' : row.mode === 'anyone' ? 'public'
         : grants.accountIds.length || grants.communityIds.length ? 'shared' : 'owner',
       canPost: current && !base.administrative && base.app.state === 'enabled', canModerate: owner };
   }
@@ -277,9 +287,11 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     assertApps(typeof label === 'string' && label === label.trim() && label.length > 0 && label.length <= 80 && label.isWellFormed()
       && !/[\u0000-\u001f\u007f]/u.test(label), 'apps_discussion_author_invalid', 500);
     const seq = conversation.message_seq + 1, change = conversation.change_seq + 1, id = freshId('msg');
-    if (materialize) db.prepare('INSERT INTO app_discussion_conversations VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(conversation.id, input.appId, base.head.generation, base.head.owner_account_id, base.head.mode, base.head.grants_json, base.head.audience_hash, at, seq, change);
-    else db.prepare('UPDATE app_discussion_conversations SET message_seq=?,change_seq=? WHERE id=?').run(seq, change, conversation.id);
+    if (materialize) {
+      db.prepare('INSERT INTO app_discussion_conversations VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(conversation.id, input.appId, base.head.generation, base.head.owner_account_id, base.head.mode, base.head.grants_json, base.head.audience_hash, at, seq, change);
+      materializeConversationAudience(db, conversation);
+    } else db.prepare('UPDATE app_discussion_conversations SET message_seq=?,change_seq=? WHERE id=?').run(seq, change, conversation.id);
     db.prepare('INSERT INTO app_discussion_messages VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(id, input.appId, conversation.id, seq, actor.accountId, label, requestKey, fingerprint, input.body, size, input.replyTo ?? null, at, null, null);
     db.prepare('INSERT INTO app_discussion_changes VALUES (?,?,?,?,?)').run(conversation.id, change, id, 'message', at);

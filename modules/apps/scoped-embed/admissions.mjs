@@ -46,9 +46,9 @@ export function createScopedAdmissionRegistry({ db, profiles = [], clock = Date.
       return item;
     },
     commit(target) {
-      need(db.isTransaction && ['v7','v8'].includes(inspectAppsSchema(db)), 'app_scoped_transaction_required', 500);
+      need(db.isTransaction && ['v7','v8','v10','v11'].includes(inspectAppsSchema(db)), 'app_scoped_transaction_required', 500);
       const item = verifyTarget(target);
-      need(item.profile.schema !== 'soty.selected-human-embed.v2' || inspectAppsSchema(db) === 'v8', 'app_scoped_migration_required', 503);
+      need(item.profile.schema !== 'soty.selected-human-embed.v2' || ['v8','v11'].includes(inspectAppsSchema(db)), 'app_scoped_migration_required', 503);
       const existing = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.appId, target.revision);
       if (existing) { read(target); return; }
       db.prepare('INSERT INTO app_scoped_embed_admissions VALUES(?,?,?,?,?,?)')

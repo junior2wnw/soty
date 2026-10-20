@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { assertApps, appId, textId } from './protocol.mjs';
 import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE, supportedRuntimeProfile, targetExposureScope, validExposureAck } from './schema.mjs';
 import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
+import { hasAudienceSchema, readAppAudience, writeAppAudience, normalizeAppAudience, audienceMatchesPolicy } from './audience.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
 export const PUBLICATION_RECEIPTS_PER_APP = 64;
@@ -12,7 +13,7 @@ const exact = (value, keys) => assertApps(value && typeof value === 'object' && 
 const positive = value => { assertApps(Number.isSafeInteger(value) && value >= 1, 'invalid_publication_revision'); return value; };
 const domainId = value => { assertApps(typeof value === 'string' && /^dom_[a-f0-9]{32}$/u.test(value), 'invalid_app_domain_id'); return value; };
 
-export function createPublicationRegistry({ db, now = Date.now, assertActor, canUse, onChanged = () => {} }) {
+export function createPublicationRegistry({ db, now = Date.now, assertActor, canUse, withContactAuthority = (_actor, callback) => callback(), onChanged = () => {} }) {
   assertApps(typeof assertActor === 'function' && typeof canUse === 'function' && typeof onChanged === 'function', 'apps_policy_validator_required', 500);
   const decisions = new WeakSet();
   const appRow = id => db.prepare('SELECT * FROM local_apps WHERE id=?').get(id);
@@ -52,6 +53,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     const { policy, target, requiredBindingVersion } = state(app);
     return { schema: 'soty.app-publication.v1', appId: app.id, appState: app.state,
       launchPolicy: policy.launch_policy, listed: Boolean(policy.listed), policyEpoch: policy.policy_epoch,
+      ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, app.id) } : {}),
       activeTargetRevision: target.revision, requiredBindingVersion, activeDomainIds: activeIds(app.id),
       target: { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entry_path },
       updatedAt: policy.updated_at, runtimeReady: false, receiptRetention: { perApp: PUBLICATION_RECEIPTS_PER_APP } };
@@ -66,14 +68,17 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     return { appId: id, policyEpoch: current.policy_epoch + 1 };
   }
   function normalize(args) {
-    exact(args, ['appId', 'requestId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'activeDomainIds', 'exposureAck']);
+    exact(args, ['appId', 'requestId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'activeDomainIds', 'exposureAck', 'audience']);
+    const audienceSpecified = Object.hasOwn(args, 'audience'), audience = audienceSpecified ? normalizeAppAudience(args.audience) : null;
+    assertApps(!audienceSpecified || hasAudienceSchema(db), 'apps_audience_migration_required', 503);
     const id = appId(args.appId), requestId = textId(args.requestId), epoch = positive(args.expectedPolicyEpoch), targetRevision = positive(args.expectedTargetRevision);
     assertApps(['restricted', 'anyone'].includes(args.launchPolicy) && typeof args.listed === 'boolean', 'invalid_publication_policy');
     assertApps(!args.listed || args.launchPolicy === 'anyone', 'invalid_publication_listing');
+    assertApps(!audienceSpecified || audienceMatchesPolicy(audience, args.launchPolicy, args.listed), 'invalid_app_audience_policy');
     assertApps(Array.isArray(args.activeDomainIds) && args.activeDomainIds.length <= maxActiveDomains, 'invalid_publication_domains');
     const activeDomainIds = args.activeDomainIds.map(domainId).sort();
     assertApps(new Set(activeDomainIds).size === activeDomainIds.length, 'invalid_publication_domains');
-    assertApps(!args.listed || activeDomainIds.length > 0, 'app_publication_domain_required');
+    assertApps((!args.listed && !['link', 'public'].includes(audience)) || activeDomainIds.length > 0, 'app_publication_domain_required');
     let exposureAck = null;
     if (args.launchPolicy === 'anyone') {
       assertApps(args.exposureAck && typeof args.exposureAck === 'object' && !Array.isArray(args.exposureAck), 'app_exposure_ack_required');
@@ -84,9 +89,10 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
           || args.exposureAck.scope === 'authenticated-workspace' && args.exposureAck.profile === 'soty.selected-human-embed.v2'), 'app_exposure_ack_required');
       exposureAck = { scope: args.exposureAck.scope, targetRevision, targetDigest: args.exposureAck.targetDigest, profile: args.exposureAck.profile };
     } else assertApps(args.exposureAck === undefined || args.exposureAck === null, 'unexpected_exposure_ack');
-    const normalized = { id, requestId, epoch, targetRevision, launchPolicy: args.launchPolicy, listed: args.listed, activeDomainIds, exposureAck };
-    return { ...normalized, requestKey: digest(requestId), intentHash: digest(JSON.stringify(['apps.publication.update.v1', id, epoch,
-      targetRevision, args.launchPolicy, args.listed, activeDomainIds, exposureAck])) };
+    const normalized = { id, requestId, epoch, targetRevision, launchPolicy: args.launchPolicy, listed: args.listed, activeDomainIds, exposureAck, audienceSpecified, audience };
+    const intent = ['apps.publication.update.v1', id, epoch, targetRevision, args.launchPolicy, args.listed, activeDomainIds, exposureAck];
+    if (audienceSpecified) { intent[0] = 'apps.publication.update.v2'; intent.push(audience); }
+    return { ...normalized, requestKey: digest(requestId), intentHash: digest(JSON.stringify(intent)) };
   }
   function update(actor, args) {
     const intent = normalize(args);
@@ -103,6 +109,9 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       assertApps(policy.policy_epoch === intent.epoch, 'app_publication_revision_conflict', 409);
       assertApps(target.revision === intent.targetRevision, 'app_publication_target_conflict', 409);
       assertApps(app.state === 'enabled', 'app_revoked', 409);
+      const effectiveAudience = intent.audienceSpecified ? intent.audience : readAppAudience(db, app.id);
+      assertApps(audienceMatchesPolicy(effectiveAudience, intent.launchPolicy, intent.listed), 'invalid_app_audience_policy');
+      assertApps(!['link', 'public'].includes(effectiveAudience) || intent.activeDomainIds.length > 0, 'app_publication_domain_required');
       if (intent.exposureAck) {
         const scope = targetExposureScope(db, target);
         assertApps(scope !== null, 'app_scoped_private_required', 403);
@@ -114,6 +123,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
           && domain.role === 'alias' && domain.state === 'bound', 'app_publication_domain_unavailable', 409);
       }
       const timestamp = now(), changed = bumpEpoch(app.id, timestamp);
+      if (intent.audienceSpecified) writeAppAudience(db, app.id, intent.audience);
       db.prepare(`UPDATE app_publications SET launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)
         .run(intent.launchPolicy, Number(intent.listed), intent.exposureAck ? target.revision : null,
           intent.exposureAck ? JSON.stringify(intent.exposureAck) : null, app.id);
@@ -122,7 +132,9 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       for (const id of intent.activeDomainIds) insert.run(app.id, id, actor.accountId);
       syncDiscussionAudienceInTransaction(db, app.id, timestamp);
       const current = view(app);
-      const receipt = { schema: 'soty.app-publication-receipt.v1', namespace: 'apps.publication.update.v1', requestKeyHash: intent.requestKey,
+      const receipt = { schema: intent.audienceSpecified ? 'soty.app-publication-receipt.v2' : 'soty.app-publication-receipt.v1',
+        namespace: intent.audienceSpecified ? 'apps.publication.update.v2' : 'apps.publication.update.v1', requestKeyHash: intent.requestKey,
+        ...(intent.audienceSpecified ? { audience: intent.audience } : {}),
         appId: app.id, policyEpoch: changed.policyEpoch, launchPolicy: current.launchPolicy, listed: current.listed,
         activeDomainIds: [...intent.activeDomainIds], targetRevision: target.revision, targetDigest: target.digest,
         profile: target.profile, exposureAck: intent.exposureAck, committedAt: timestamp };
@@ -170,21 +182,21 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     decisions.add(result); return result;
   }
   function decideAccess({ domainId, origin, actor, ttlMs = publicTtl }) {
-    return snapshot(() => {
+    return withContactAuthority(actor, () => snapshot(() => {
       const value = loadAccess({ domainId, origin, actor });
       return brand(value, now() + ttl(ttlMs, value.subject));
-    });
+    }));
   }
   function recheckAccess(decision, options = {}) {
     assertApps(decisions.has(decision), 'app_access_decision_required', 403);
     exact(options, ['ttlMs']);
-    return snapshot(() => {
+    return withContactAuthority(decision.actor, () => snapshot(() => {
       const timestamp = now(); assertApps(decision.expiresAt > timestamp, 'app_access_expired', 403);
       const fresh = loadAccess({ domainId: decision.domainId, origin: decision.origin, actor: decision.actor }, decision.accessBasis);
       assertApps(['subject', 'accessBasis', 'appId', 'domainId', 'origin', 'policyEpoch', 'targetRevision', 'targetDigest', 'profile', 'requiredBindingVersion']
         .every(key => fresh[key] === decision[key]), 'app_access_changed', 403);
       return brand(fresh, options.ttlMs === undefined ? decision.expiresAt : timestamp + ttl(options.ttlMs, fresh.subject));
-    });
+    }));
   }
   return {
     execute({ op, actor, args = {} }) {
@@ -212,6 +224,8 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
         exact(exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
         assertApps(validExposureAck(exposureAck, target, scope), 'app_exposure_ack_required');
       } else assertApps(exposureAck === null || exposureAck === undefined, 'unexpected_exposure_ack');
+      const audience = readAppAudience(db, id);
+      assertApps(audienceMatchesPolicy(audience, launchPolicy, listed), 'invalid_app_audience_policy');
       const changed = bumpEpoch(id);
       db.prepare(`UPDATE app_publications SET active_target_revision=?,launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)
         .run(targetRevision, launchPolicy, Number(listed), exposureAck ? targetRevision : null, exposureAck ? JSON.stringify(exposureAck) : null, id);
@@ -226,6 +240,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     revokeInTransaction(id) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500); appId(id);
       const changed = bumpEpoch(id);
+      if (readAppAudience(db, id) !== null) writeAppAudience(db, id, 'private');
       db.prepare("UPDATE app_publications SET launch_policy='restricted',listed=0,exposure_ack_revision=NULL,exposure_ack_json=NULL WHERE app_id=?").run(id);
       db.prepare('DELETE FROM app_publication_domains WHERE app_id=?').run(id);
       syncDiscussionAudienceInTransaction(db, id, now());
@@ -236,7 +251,14 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       const result = db.prepare('DELETE FROM app_publication_domains WHERE app_id=? AND domain_id=?').run(id, retiringId);
       if (!result.changes) return null;
       const changed = bumpEpoch(id);
-      if (activeIds(id).length === 0) db.prepare('UPDATE app_publications SET listed=0 WHERE app_id=?').run(id);
+      if (activeIds(id).length === 0) {
+        const audience = readAppAudience(db, id);
+        if (['link', 'public'].includes(audience)) {
+          writeAppAudience(db, id, 'private');
+          db.prepare("UPDATE app_publications SET launch_policy='restricted',listed=0,exposure_ack_revision=NULL,exposure_ack_json=NULL WHERE app_id=?").run(id);
+        } else db.prepare('UPDATE app_publications SET listed=0 WHERE app_id=?').run(id);
+      }
+      syncDiscussionAudienceInTransaction(db, id, now());
       return changed;
     },
     notifyChanged: onChanged,

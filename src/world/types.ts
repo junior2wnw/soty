@@ -58,6 +58,8 @@ export interface WorldSearch { people: WorldProfile[]; communities: WorldCommuni
 export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
 export interface WorldAppPublication {
+  audience?: 'private' | 'friends' | 'link' | 'public' | null;
+  listed?: boolean;
   launchPolicy: 'restricted' | 'anyone';
   activeNamedAddressCount: number;
 }
