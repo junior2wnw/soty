@@ -164,7 +164,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   let local = initial, online = true, apiError = null;
   const requests = [], personalFrames = [], dialogs = [];
   Object.assign(app, {
-    deskAccount: initial, accountGeneration: 1, requestSequence: 0, screenSequence: 1, homeRequest: 0, destroyed: false,
+    deskAccount: initial, accountGeneration: 1, requestSequence: 0, screenSequence: 1, homeRequest: 0, communityEpoch: 0, destroyed: false,
     root: makeElement('div'), main: makeElement('main'), live: makeElement('div'), dialogs: new Set(), avatars: { setContext() {} },
     appSettingsDialog: null, appSettingsRouteClose: null, field: null, homeHandle: null, notesHandle: null, assistantHandle: null, accessHandle: null, appStage: null,
     chatCleanup: null, chatTimer: null, searchTimer: null, toastTimer: null, noteActionPending: false, visibilityOpen: false,
@@ -1039,4 +1039,251 @@ test('temporary external recovery closes its unfinished popup on account change 
   currentReviewFind(f.app.main, node => node.dataset?.stageControl === 'external-recovery').emit('click'); await turn();
   f.app.transitionAccount('account-B'); gate.resolve(stageResponse('/')); await turn();
   assert.equal(popup.closed, true); assert.equal(navigated, null); assert.equal(launches, 2);
+});
+
+
+test('progressive actual controller keeps a newly opened Notes editor after a late optional-source network error', async () => {
+  const f = fixture(), communities = deferred(), original = f.app.api.request;
+  let fieldDisposed = 0, notesDisposed = 0;
+  const noteScreen = new ElementPort();
+  const notes = { dispose() { notesDisposed++; }, hasUnsavedChanges() { return false; } };
+  // Rendering ports supply only owned UI resources; real renderCurrent,
+  // navigateReady and cleanScreen retain all controller lifecycle decisions.
+  f.app.renderCurrent = f.Controller.prototype.renderCurrent;
+  f.app.renderUnifiedField = function () {
+    this.unifiedField = { async refresh() {}, dispose() { fieldDisposed++; },
+      hasUnsavedChanges() { return false; }, reconnect() {} };
+  };
+  f.app.renderNotes = function () { this.notesHandle = notes; this.main.replaceChildren(noteScreen); };
+  f.app.preferences = {};
+  f.app.persist = () => {};
+  f.app.communities = [];
+  f.app.api.request = (op, args) => op === 'world.community.list' ? communities.promise : original(op, args);
+  const refreshing = f.app.refresh();
+  try {
+    await turn();
+    const fieldShownBeforeOptional = Boolean(f.app.unifiedField);
+    const fieldScreen = f.app.screenSequence;
+    f.app.navigateReady('notes');
+    const editorScreen = f.app.screenSequence;
+    communities.reject(failure('NETWORK_ERROR'));
+    await refreshing;
+    assert.equal(fieldShownBeforeOptional, true);
+    assert.ok(editorScreen > fieldScreen, 'real navigation increments the screen generation');
+    assert.equal(fieldDisposed, 1, 'the field is disposed only by the intentional navigation');
+    assert.equal(notesDisposed, 0);
+    assert.equal(f.app.notesHandle, notes);
+    assert.equal(f.app.main.children[0], noteScreen);
+    assert.equal(f.app.screenSequence, editorScreen);
+    assert.equal(f.location.hash, '#notes');
+    assert.equal(f.app.homeStatus.communities, 'error');
+  } finally {
+    communities.resolve({ communities: [] });
+    await refreshing;
+    f.app.cleanScreen();
+  }
+});
+
+test('progressive actual refresh and openRoute retain a cold conversation link until membership is available', async () => {
+  const id = 'chat-cold-requested';
+  const f = fixture({ hash: `#messages/${id}` }), communities = deferred(), original = f.app.api.request;
+  const navigations = [];
+  f.app.routeLoaded = false;
+  f.app.communities = [];
+  f.app.openRoute = f.Controller.prototype.openRoute;
+  // Observe the navigation boundary instead of copying renderMessages selection
+  // logic. Dispatching while membership is pending is the regression trigger.
+  f.app.navigate = function (view, chatId) {
+    navigations.push({ view, chatId, status: this.homeStatus.communities,
+      membershipKnown: this.communities.some(value => value.communityId === chatId) });
+  };
+  f.app.api.request = (op, args) => op === 'world.community.list' ? communities.promise : original(op, args);
+  const refreshing = f.app.refresh();
+  try {
+    await turn();
+    const earlyNavigations = navigations.length;
+    const earlyRoute = f.location.hash;
+    communities.resolve({ communities: [{ communityId: id, membership: { state: 'active' } }] });
+    await refreshing;
+    assert.equal(earlyNavigations, 0, 'do not resolve a cold message route against an empty pending list');
+    assert.equal(earlyRoute, `#messages/${id}`);
+    assert.deepEqual(navigations, [{ view: 'messages', chatId: id, status: 'ready', membershipKnown: true }]);
+    assert.equal(f.location.hash, `#messages/${id}`);
+    assert.equal(f.app.routeLoaded, true);
+  } finally {
+    communities.resolve({ communities: [] });
+    await refreshing;
+    f.app.cleanScreen();
+  }
+});
+
+// Progressive transport permits a read to finish after a later accepted write.
+// Execute the actual full controller and exact production closures below.
+function cacheCommunity({ revision = 1, membershipRevision = 1, role = 'owner', name = 'Older community' } = {}) {
+  return { communityId: 'cache-group', name, revision, description: '', topics: [], joinPolicy: 'open', showcase: '', symbol: 'people', color: 'honey',
+    memberCount: 3, previewMembers: [], unreadCount: 2, membership: { state: 'active', role, pinned: false, muted: false, showInProfile: true, revision: membershipRevision },
+    permissions: { canManage: role === 'owner', canModerate: role === 'owner', canWrite: true } };
+}
+const cacheAst = ts.createSourceFile('app.ts', source, ts.ScriptTarget.Latest, true);
+function cacheFind(root, predicate) {
+  if (predicate(root)) return root;
+  for (const child of root.getChildren(cacheAst)) { const found = cacheFind(child, predicate); if (found) return found; }
+  return null;
+}
+function cacheBindArrow(f, node, parameters = [], values = [], declarations = '') {
+  assert.ok(node && ts.isArrowFunction(node), 'The actual production arrow exists');
+  const exported = {};
+  const code = ts.transpileModule('exports.bind = function(' + parameters.join(',') + ') { ' + declarations + '; return ' + node.getText(cacheAst) + '; };', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  vm.runInNewContext(code, { exports: exported });
+  return exported.bind.call(f.app, ...values);
+}
+function cacheLeave(f, group, dialog) {
+  const request = cacheFind(cacheAst, node => ts.isCallExpression(node) && node.arguments.length && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'world.membership.leave');
+  assert.ok(request, 'The genuine leave request exists');
+  let arrow = request.parent; while (arrow && !ts.isArrowFunction(arrow)) arrow = arrow.parent;
+  return cacheBindArrow(f, arrow, ['group', 'dialog', 'accountCurrent'], [group, dialog, f.app.accountTask()]);
+}
+function cacheInboxEvent(f) {
+  const registration = cacheFind(cacheAst, node => ts.isCallExpression(node) && node.arguments.length && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'soty:inbox-updated');
+  return cacheBindArrow(f, registration?.arguments[1]);
+}
+
+test('full refresh cannot roll back an accepted profile rename while a newer server revision still replaces it', async () => {
+  for (const incomingRevision of [1, 3]) {
+    const f = fixture(), pending = deferred(), original = f.app.api.request;
+    f.app.view = 'notes'; f.app.profile = { profileId: 'account-A', displayName: 'Before', revision: 1 };
+    f.app.api.request = (op, args) => {
+      if (op === 'world.profile.get') return pending.promise;
+      if (op === 'world.profile.update') {
+        assert.equal(args.expectedRevision, 1); assert.equal(args.displayName, 'Accepted rename');
+        return Promise.resolve({ profile: { profileId: 'account-A', displayName: 'Accepted rename', revision: 2 } });
+      }
+      return original(op, args);
+    };
+    const refresh = f.app.refresh(); await turn();
+    await f.app.updateProfile({ displayName: 'Accepted rename' });
+    assert.equal(f.app.profile.revision, 2); assert.equal(f.app.profile.displayName, 'Accepted rename');
+    pending.resolve({ profile: { profileId: 'account-A', displayName: 'Read revision ' + incomingRevision, revision: incomingRevision } });
+    await refresh;
+    assert.equal(f.app.profile.revision, Math.max(2, incomingRevision));
+    assert.equal(f.app.profile.displayName, incomingRevision < 2 ? 'Accepted rename' : 'Read revision 3');
+    assert.equal(f.app.deskAccount, 'account-A'); assert.equal(f.app.accountGeneration, 1);
+    f.app.cleanScreen();
+  }
+});
+
+test('full refresh preserves a newer accepted membership projection and community name after an older whole-list reply', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request;
+  const older = cacheCommunity(), accepted = cacheCommunity({ revision: 2, membershipRevision: 2, role: 'member', name: 'Accepted current name' });
+  f.app.view = 'world'; f.app.group = older; f.app.communities = [older]; f.app.results.communities = [older];
+  f.app.openGroup = async () => {}; f.app.renderGroup = () => {};
+  f.app.api.request = (op, args) => op === 'world.community.list' ? pending.promise
+    : op === 'world.membership.preferences' ? Promise.resolve({ community: accepted }) : original(op, args);
+  const refresh = f.app.refresh(); await turn();
+  await f.app.mutateMembership('world.membership.preferences', { pinned: true });
+  assert.equal(f.app.communities[0].membership.role, 'member'); assert.equal(f.app.communities[0].name, accepted.name);
+  pending.resolve({ communities: [older] }); await refresh;
+  assert.equal(f.app.communities[0].membership.revision, 2); assert.equal(f.app.communities[0].membership.role, 'member');
+  assert.equal(f.app.communities[0].permissions.canManage, false); assert.equal(f.app.communities[0].name, accepted.name);
+  assert.equal(f.app.results.communities[0].name, accepted.name); assert.equal(f.app.homeStatus.communities, 'ready');
+  f.app.cleanScreen();
+});
+
+test('full refresh cannot restore a community removed by its actual accepted leave callback', async () => {
+  const f = fixture(), pending = deferred(), original = f.app.api.request, older = cacheCommunity({ role: 'member' });
+  let closed = 0, navigated = 0, leaves = 0;
+  f.app.view = 'world'; f.app.group = older; f.app.communities = [older]; f.app.openGroup = async () => {};
+  f.app.navigate = () => { navigated++; };
+  f.app.api.request = (op, args) => op === 'world.community.list' ? pending.promise
+    : op === 'world.membership.leave' ? (leaves++, assert.equal(args.communityId, older.communityId), Promise.resolve({})) : original(op, args);
+  const refresh = f.app.refresh(); await turn();
+  await cacheLeave(f, older, { close() { closed++; } })();
+  assert.equal(leaves, 1); assert.equal(closed, 1); assert.equal(navigated, 1); assert.equal(f.app.communities.length, 0);
+  pending.resolve({ communities: [older] }); await refresh;
+  assert.equal(f.app.communities.length, 0, 'A successful old list cannot revive confirmed leave absence');
+  f.app.cleanScreen();
+});
+
+test('message navigation cannot overwrite a newer point acknowledgement with its held whole-list reply', async () => {
+  const f = fixture(), pending = deferred(), older = cacheCommunity(), accepted = cacheCommunity({ membershipRevision: 2, role: 'member' });
+  f.app.communities = [older]; f.app.preferences = {}; f.app.persist = () => {};
+  let rendered = 0; f.app.renderMessages = () => { rendered++; };
+  f.app.api.request = op => { assert.equal(op, 'world.community.list'); return pending.promise; };
+  f.app.navigateReady('messages'); f.app.updateCommunity(accepted);
+  pending.resolve({ communities: [older] }); await turn(); await turn();
+  assert.equal(f.app.communities[0].membership.role, 'member'); assert.equal(f.app.communities[0].membership.revision, 2);
+  assert.equal(rendered, 0, 'The retired list cannot rebuild the conversation selection');
+  f.app.cleanScreen();
+});
+
+test('full personal loader keeps a newer accepted community while still settling its other resources', async () => {
+  const f = fixture(), pending = deferred(), older = cacheCommunity(), accepted = cacheCommunity({ membershipRevision: 2, role: 'member' });
+  f.app.communities = [older]; const devices = f.app.devices, apps = f.app.apps;
+  f.app.api.request = op => { assert.equal(op, 'world.community.list'); return pending.promise; };
+  const loading = f.app.loadPersonal('communities'); f.app.updateCommunity(accepted);
+  pending.resolve({ communities: [older] }); await loading;
+  assert.equal(f.app.communities[0].membership.role, 'member'); assert.equal(f.app.communities[0].membership.revision, 2);
+  assert.equal(f.app.devices, devices); assert.equal(f.app.apps, apps); assert.equal(f.app.homeStatus.communities, 'ready');
+  f.app.cleanScreen();
+});
+
+test('actual inbox refresh closure retires its held list after a newer controller acknowledgement', async () => {
+  const f = fixture(), pending = deferred(), older = cacheCommunity(), accepted = cacheCommunity({ membershipRevision: 2, role: 'member' });
+  const events = [], groups = [older];
+  f.app.communities = [older]; f.app.api.request = op => { assert.equal(op, 'world.community.list'); return pending.promise; };
+  const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshInbox');
+  const parameters = ['active', 'selectedUpdate', 'document', 'groups', 'selectedId', 'visibleConversation', 'pendingPreviews', 'unsubscribers', 'previews', 'conversationRows',
+    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent'];
+  const inert = () => {};
+  const values = [() => true, 0, { visibilityState: 'visible' }, groups, undefined, () => false, new Set(), new Map(), new Map(), new Map(),
+    inert, inert, inert, { dispatchEvent(event) { events.push(event); } }, { querySelector() { return null; } }, class { constructor(type, init) { this.type = type; Object.assign(this, init); } }];
+  const refreshInbox = cacheBindArrow(f, declaration?.initializer, parameters, values, 'let refreshing = false');
+  const refreshing = refreshInbox(); f.app.updateCommunity(accepted);
+  pending.resolve({ communities: [older] }); await refreshing;
+  assert.equal(f.app.communities[0].membership.role, 'member'); assert.equal(f.app.communities[0].membership.revision, 2);
+  assert.equal(events.length, 0, 'A retired poll must not broadcast its old roles to widgets');
+  assert.equal(groups[0], older, 'The retired poll must not rebuild its conversation collection');
+  f.app.cleanScreen();
+});
+
+test('actual bubbled inbox handler only updates unread counts for existing IDs and cannot restore old roles or a left community', async () => {
+  const f = fixture(), older = cacheCommunity(), accepted = cacheCommunity({ membershipRevision: 2, role: 'member', name: 'Accepted current name' });
+  const unknown = { ...older, communityId: 'unknown-old-widget-group' };
+  let notifications = 0; f.app.updateNavUnread = () => { notifications++; };
+  f.app.communities = [older]; f.app.updateCommunity(accepted);
+  const event = cacheInboxEvent(f);
+  event({ detail: { communities: [{ ...older, unreadCount: 11 }, unknown] } });
+  assert.equal(f.app.communities.length, 1); assert.equal(f.app.communities[0].communityId, accepted.communityId);
+  assert.equal(f.app.communities[0].membership.role, 'member'); assert.equal(f.app.communities[0].name, accepted.name);
+  assert.equal(f.app.communities[0].unreadCount, 11); assert.equal(notifications, 1);
+  f.app.api.request = op => { assert.equal(op, 'world.membership.leave'); return Promise.resolve({}); };
+  f.app.navigate = () => {};
+  await cacheLeave(f, accepted, { close() {} })();
+  event({ detail: { communities: [older, unknown] } });
+  assert.equal(f.app.communities.length, 0); assert.equal(notifications, 2);
+  f.app.cleanScreen();
+});
+
+test('a fresh whole-list read dispatched after an acknowledgement can still replace the collection normally', async () => {
+  const f = fixture(), original = f.app.api.request;
+  const accepted = cacheCommunity({ membershipRevision: 2, role: 'member' }), fresh = cacheCommunity({ revision: 3, membershipRevision: 3, role: 'moderator', name: 'Current server list' });
+  const added = { ...fresh, communityId: 'freshly-found-community' };
+  f.app.view = 'notes'; f.app.communities = []; f.app.updateCommunity(accepted);
+  f.app.api.request = (op, args) => op === 'world.community.list' ? Promise.resolve({ communities: [fresh, added] }) : original(op, args);
+  await f.app.refresh();
+  assert.deepEqual(f.app.communities.map(value => value.communityId), [fresh.communityId, added.communityId]);
+  assert.equal(f.app.communities[0].membership.revision, 3); assert.equal(f.app.communities[0].name, fresh.name);
+  f.app.cleanScreen();
+});
+
+test('the actual leave acknowledgement cannot mutate a controller after account A to B to A', async () => {
+  const f = fixture(), pending = deferred(), group = cacheCommunity({ role: 'member' }); let closed = 0, navigated = 0;
+  f.app.communities = [group]; f.app.navigate = () => { navigated++; };
+  f.app.api.request = op => { assert.equal(op, 'world.membership.leave'); return pending.promise; };
+  const leaving = cacheLeave(f, group, { close() { closed++; } })();
+  f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); pending.resolve({}); await leaving;
+  assert.equal(closed, 0); assert.equal(navigated, 0); assert.equal(f.app.communities.length, 0);
+  f.app.cleanScreen();
 });

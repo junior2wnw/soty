@@ -15,7 +15,7 @@ const source = readFileSync(new URL('./unified-field-screen.ts', import.meta.url
 const parsed = ts.createSourceFile('unified-field-screen.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const production = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedFieldScreen');
 const printer = ts.createPrinter();
-const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'applyPersistence'].map(name => {
+const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'applyPersistence'].map(name => {
   const found = production.body.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(found, `Actual production ${name} exists`); return printer.printNode(ts.EmitHint.Unspecified, found, parsed);
 });
@@ -35,7 +35,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
   let liveGeneration = 1, disposed = false, currentDocument = document();
   const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0, listCloses: [] };
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
-    mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
+    mineBusy: false, queuedMine: null, mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
     emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
     metadata: new Map([[fieldEntityKey(ref), { entity: ref, title: 'Проверяем доступ', source: 'owner' }]]),
     current: () => !disposed && liveGeneration === 1,
@@ -110,10 +110,10 @@ test('an older reentrant resolve cannot replace newer names or settle the newer 
   const a = deferred(), b = deferred(); let request = 0;
   const h = harness({ resolve: () => ++request === 1 ? a.promise : b.promise, load: async () => page([]) });
   const older = h.api.loadMine(), newer = h.api.loadMine();
-  b.resolve(resolved([{ ...item, title: 'HIVE · новый' }])); await newer;
-  const count = h.state.updates.length;
   a.resolve(resolved([{ ...item, title: 'Чужой старый ответ' }])); await older;
-  assert.equal(h.state.updates.length, count); assert.equal(h.state.pages, 1);
+  assert.equal(h.state.updates.length, 0, 'The superseded active pass cannot publish while the latest load waits for its slot');
+  b.resolve(resolved([{ ...item, title: 'HIVE · новый' }])); await newer;
+  assert.equal(h.state.pages, 1);
   assert.equal(h.environment.mineResolvedGeneration, 2); assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'HIVE · новый');
   assert.equal(h.environment.empty.hidden, true); assert.equal(h.environment.element.dataset.mineState, 'ready');
 });
@@ -313,19 +313,65 @@ test('fresh HIVE refs admit a HIVE-only layout during or after an unrelated avai
   }
 });
 
-test('a newer load resets ref confirmation and an older page rejection cannot admit cached matches or stamp the current generation', async () => {
+test('a previously confirmed match stays admitted through a queued retry without letting the old page stamp the newer generation', async () => {
   const oldPage = deferred(), newRefs = deferred(); let resolves = 0, pages = 0;
   const h = harness({ resolve: () => ++resolves === 1 ? Promise.resolve(resolved()) : newRefs.promise,
     load: () => ++pages === 1 ? oldPage.promise : Promise.resolve(page()) }), f = withField(h);
   const older = h.api.loadMine();
   for (let turn = 0; turn < 8 && pages === 0; turn++) await new Promise(done => setImmediate(done));
-  assert.equal(h.environment.mineConfirmedGeneration, 1);
-  const newer = h.api.loadMine(); assert.equal(h.environment.mineConfirmedGeneration, -1);
+  assert.equal(pages, 1); assert.equal(h.environment.mineConfirmedGeneration, 1);
+  assert.equal(h.environment.mineFilterAdmitted, true, 'The first fresh HIVE batch has already admitted the filter');
+  assert.equal(h.environment.mineKnownRefs.has(fieldEntityKey(ref)), true);
+  const documentBefore = JSON.stringify(f.engine.snapshot()), cameraBefore = JSON.stringify(f.engine.state().camera);
+  const newer = h.api.loadMine();
+  assert.equal(h.environment.mineGeneration, 2); assert.equal(h.environment.mineConfirmedGeneration, -1);
   oldPage.reject(Object.assign(new Error('Synthetic old available-page rejection'), { code: 'directory_network_unavailable' }));
   await assert.rejects(older, { code: 'directory_network_unavailable' });
-  h.api.updateMineFilter(); assert.equal(h.environment.mineFilterAdmitted, false); assert.equal(h.environment.mineConfirmedGeneration, -1);
-  assert.equal(f.engine.state().focusContextId, 'studio');
-  newRefs.resolve(resolved()); await newer;
-  assert.equal(h.environment.mineConfirmedGeneration, 2); assert.equal(h.environment.mineFilterAdmitted, true);
+  assert.equal(resolves, 2, 'The latest queued pass owns the current ref request');
+  h.api.updateMineFilter();
+  assert.equal(h.environment.mineFilterAdmitted, true, 'Refreshing cannot retract a filter admitted by an earlier genuine batch');
+  assert.equal(h.environment.mineConfirmedGeneration, -1); assert.equal(h.environment.mineResolvedGeneration, -1);
+  assert.equal(h.environment.element.dataset.mineState, 'loading', 'The stale rejection cannot overwrite the retry status');
+  assert.equal(h.environment.empty.hidden, true); assert.equal(f.engine.state().focusContextId, 'studio');
+  assert.equal(JSON.stringify(f.engine.snapshot()), documentBefore); assert.equal(JSON.stringify(f.engine.state().camera), cameraBefore);
   assert.equal(f.engine.getLayout().nodes.length, 1); assert.equal(f.engine.getLayout().nodes[0].entity.title, 'HIVE');
+  newRefs.resolve(resolved()); await newer;
+  assert.equal(h.environment.mineConfirmedGeneration, 2); assert.equal(h.environment.mineResolvedGeneration, 2);
+  assert.equal(h.environment.mineFilterAdmitted, true); assert.equal(h.environment.element.dataset.mineState, 'ready');
+  assert.equal(f.engine.state().focusContextId, 'studio'); assert.equal(JSON.stringify(f.engine.snapshot()), documentBefore);
+});
+
+test('unknown or failed first refs cannot admit cached matches while a newer fresh ref request is pending', async () => {
+  for (const firstSource of ['unknown', 'error']) {
+    const oldRefs = deferred(), oldPage = deferred(), newRefs = deferred(); let resolves = 0, pages = 0;
+    const h = harness({ resolve: () => ++resolves === 1 ? oldRefs.promise : newRefs.promise,
+      load: () => ++pages === 1 && firstSource === 'unknown' ? oldPage.promise : Promise.resolve(page()) });
+    h.environment.metadata.set(fieldEntityKey(ref), { ...item, title: 'HIVE · неподтверждённое имя из кэша' });
+    const f = withField(h), documentBefore = JSON.stringify(f.engine.snapshot()), cameraBefore = JSON.stringify(f.engine.state().camera);
+    h.api.updateMineFilter(); assert.equal(h.environment.mineFilterAdmitted, false, 'A cached matching title is not a fresh ref');
+    const older = h.api.loadMine();
+    if (firstSource === 'unknown') {
+      oldRefs.resolve(resolved([], [ref], [{ source: 'apps', code: 'directory_network_unavailable' }]));
+      for (let turn = 0; turn < 8 && pages === 0; turn++) await new Promise(done => setImmediate(done));
+      assert.equal(pages, 1); assert.equal(h.environment.mineKnownRefs.has(fieldEntityKey(ref)), false);
+      assert.equal(h.environment.mineFilterAdmitted, false, 'An unknown source cannot provide a confirmed name');
+    }
+    const newer = h.api.loadMine();
+    const failure = Object.assign(new Error('Synthetic older source failure'), { code: 'directory_network_unavailable' });
+    if (firstSource === 'unknown') oldPage.reject(failure); else oldRefs.reject(failure);
+    await assert.rejects(older, { code: 'directory_network_unavailable' });
+    assert.equal(resolves, 2); h.api.updateMineFilter();
+    assert.equal(h.environment.mineGeneration, 2); assert.equal(h.environment.mineConfirmedGeneration, -1);
+    assert.equal(h.environment.mineResolvedGeneration, -1); assert.equal(h.environment.mineFilterAdmitted, false);
+    assert.equal(h.environment.mineKnownRefs.has(fieldEntityKey(ref)), false);
+    assert.equal(h.environment.element.dataset.mineState, 'loading'); assert.equal(h.environment.empty.hidden, true);
+    assert.equal(f.engine.state().focusContextId, 'studio'); assert.equal(f.engine.state().selectedShortcutId, '');
+    assert.equal(JSON.stringify(f.engine.snapshot()), documentBefore); assert.equal(JSON.stringify(f.engine.state().camera), cameraBefore);
+    assert.equal(f.engine.getLayout().nodes.length, 1, 'Pending confirmation cannot erase the existing placement');
+    newRefs.resolve(resolved()); await newer;
+    assert.equal(h.environment.mineConfirmedGeneration, 2); assert.equal(h.environment.mineResolvedGeneration, 2);
+    assert.equal(h.environment.mineFilterAdmitted, true); assert.equal(h.environment.element.dataset.mineState, 'ready');
+    assert.equal(f.engine.state().focusContextId, 'studio'); assert.equal(JSON.stringify(f.engine.snapshot()), documentBefore);
+    assert.equal(f.engine.getLayout().nodes.length, 1); assert.equal(f.engine.getLayout().nodes[0].entity.title, 'HIVE');
+  }
 });

@@ -156,6 +156,7 @@ class WorldApplication {
   private readonly chatDrafts = createChatDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) });
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private requestSequence = 0;
+  private communityEpoch = 0;
   private screenSequence = 0;
   private destroyed = false;
   private agentOrb: AgentOrbHandle | null = null;
@@ -257,7 +258,15 @@ class WorldApplication {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
       if(!group)return;const known=this.communities.find(value=>value.communityId===group.communityId);if(known)known.unreadCount=group.unreadCount;this.updateNavUnread();
     },{signal:this.controller.signal});
-    root.addEventListener('soty:inbox-updated',event=>{const groups=(event as CustomEvent<{communities:WorldCommunity[]}>).detail?.communities;if(Array.isArray(groups)){this.communities=groups;this.updateNavUnread();}},{signal:this.controller.signal});
+    root.addEventListener('soty:inbox-updated', event => {
+      const groups = (event as CustomEvent<{ communities: WorldCommunity[] }>).detail?.communities;
+      if (!Array.isArray(groups)) return;
+      for (const group of groups) {
+        const known = this.communities.find(value => value.communityId === group.communityId);
+        if (known) known.unreadCount = group.unreadCount;
+      }
+      this.updateNavUnread();
+    }, { signal: this.controller.signal });
     document.addEventListener('keydown', event => {
       if ((event.ctrlKey || event.metaKey) && (event.code === 'KeyK' || event.key.toLowerCase() === 'k') && !event.isComposing && !document.querySelector('dialog[open]')) { event.preventDefault(); if (this.unifiedField) this.unifiedField.focusSearch(); else this.openQuickActions(); return; }
       if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement).tagName) && !document.querySelector('dialog[open]')) {
@@ -517,10 +526,11 @@ class WorldApplication {
         if (!local.accountId) throw Object.assign(new Error('No local identity'), { code: 'authentication_required' });
         if (this.transitionAccount(local.accountId)) this.main.append(this.loading('Проверяем аккаунт'));
       }
-      const [profile, mine] = await Promise.all([
-        this.api.request<{ profile: WorldProfile }>('world.profile.get', {}),
-        this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}),
-      ]);
+      // Handle a slow optional source immediately; the verified identity unlocks the shell.
+      const communityEpoch = this.communityEpoch;
+      const mineTask = this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(
+        value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+      const profile = await this.api.request<{ profile: WorldProfile }>('world.profile.get', {});
       if (this.destroyed || sequence !== this.requestSequence) return;
       if (this.options.localAccount) {
         const local = await this.options.localAccount();
@@ -528,20 +538,52 @@ class WorldApplication {
         if (!local.accountId || local.accountId !== profile.profile.profileId) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
       }
       const sameAccount = !this.transitionAccount(profile.profile.profileId);
-      this.profile = profile.profile; this.communities = mine.communities; this.homeStatus.communities = 'ready';
+      // A completed profile write can be newer than this in-flight read.
+      if (!(sameAccount && this.profile && this.profile.revision > profile.profile.revision)) this.profile = profile.profile;
+      this.homeStatus.communities = 'loading';
+      const accountCurrent = this.accountTask();
+      const settleCommunities = async (): Promise<boolean> => {
+        const outcome = await mineTask;
+        if (!accountCurrent() || sequence !== this.requestSequence) return false;
+        if (this.options.localAccount) {
+          const local = await this.options.localAccount();
+          if (!accountCurrent() || sequence !== this.requestSequence) return false;
+          if (local.accountId !== profile.profile.profileId) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
+        }
+        if (!outcome.ok) {
+          this.homeStatus.communities = 'error';
+          const code = typeof outcome.error === 'object' && outcome.error && 'code' in outcome.error ? String(outcome.error.code) : '';
+          if (['NETWORK_ERROR', 'NETWORK_TIMEOUT'].includes(code)) { this.toast(errorText(outcome.error), true); return false; }
+          throw outcome.error;
+        }
+        if (communityEpoch === this.communityEpoch) this.communities = outcome.value.communities;
+        this.homeStatus.communities = 'ready';
+        this.renderNavigation();
+        if (this.routeLoaded && this.view === 'messages' && !this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat);
+        return true;
+      };
       this.syncFieldOutbox();
       this.renderNavigation();
+      // A chat deep link needs its membership result; other screens can render now.
+      if (!this.routeLoaded && /^#messages(?:\/|\?|$)/u.test(location.hash)) {
+        const requestedRoute = location.hash;
+        const membershipReady = await settleCommunities();
+        if (!accountCurrent() || sequence !== this.requestSequence || location.hash !== requestedRoute) return;
+        if (!membershipReady) {
+          this.main.replaceChildren(emptyState('Чаты ждут подключения', 'Ссылка на разговор сохранена. Повторите подключение.', button('Повторить', 'refresh', 'sw-button-primary', () => { void this.refresh(); })));
+          return;
+        }
+      }
       // A same-account shell refresh is not navigation. The owner window and
       // its running app keep their draft, selection and existing connection.
-      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)) { this.routeLoaded = true; return; }
+      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
-      if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; return; }
-      if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) return; }
-      if (this.group) { await this.openGroup(this.group.communityId, this.groupTab); return; }
+      if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; await settleCommunities(); return; }
+      if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) { await settleCommunities(); return; } }
+      if (this.group) { const opening = this.openGroup(this.group.communityId, this.groupTab); await Promise.all([opening, settleCommunities()]); return; }
       this.renderCurrent();
-      if (this.unifiedField) await this.unifiedField.refresh();
-      else if (this.view === 'world') await this.search();
-      else if (this.view === 'mine') await this.loadPersonal();
+      const content = this.unifiedField ? this.unifiedField.refresh() : this.view === 'world' ? this.search() : this.view === 'mine' ? this.loadPersonal() : Promise.resolve();
+      await Promise.all([content, settleCommunities()]);
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
@@ -813,8 +855,8 @@ class WorldApplication {
     if (!this.unifiedField && view === 'world') void this.search();
     if (!this.unifiedField && view === 'mine') void this.loadPersonal();
     if (view === 'messages') {
-      const sequence = this.screenSequence;
-      void this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(result => { if (!this.destroyed && this.screenSequence === sequence && this.view === 'messages') { this.communities = result.communities; if (!this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat); } }).catch(error => this.toast(errorText(error), true));
+      const sequence = this.screenSequence, communityEpoch = this.communityEpoch;
+      void this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}).then(result => { if (!this.destroyed && this.screenSequence === sequence && this.view === 'messages' && communityEpoch === this.communityEpoch) { this.communities = result.communities; if (!this.main.querySelector('.sw-chat')) this.renderMessages(this.selectedChat); } }).catch(error => this.toast(errorText(error), true));
     }
   }
 
@@ -1261,6 +1303,7 @@ class WorldApplication {
   }
 
   private updateCommunity(group: WorldCommunity): void {
+    this.communityEpoch++;
     const replace = (items: WorldCommunity[]): WorldCommunity[] => items.map(item => item.communityId === group.communityId ? group : item);
     this.communities = replace(this.communities); this.results.communities = replace(this.results.communities);
     if (group.membership?.state === 'active' && !this.communities.some(item => item.communityId === group.communityId)) this.communities.push(group);
@@ -1765,9 +1808,9 @@ class WorldApplication {
     conversations.addEventListener('scroll', refreshVisiblePreviews, { passive: true });
     const refreshInbox = async (): Promise<void> => {
       if (refreshing || !active() || document.visibilityState === 'hidden') return; refreshing = true;
-      const updateBefore = selectedUpdate;
+      const updateBefore = selectedUpdate, communityEpoch = this.communityEpoch;
       try {
-        const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active()) return;
+        const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active() || communityEpoch !== this.communityEpoch) return;
         const old = new Map(groups.map(group => [group.communityId, group])); const next = response.communities.filter(group => group.membership?.state === 'active');
         for (const group of next) {
           const previous = old.get(group.communityId);
@@ -1791,7 +1834,7 @@ class WorldApplication {
   }
 
   private async loadPersonal(only?: HomeSection): Promise<void> {
-    const sequence = this.screenSequence, request = ++this.homeRequest, accountCurrent = this.accountTask();
+    const sequence = this.screenSequence, request = ++this.homeRequest, accountCurrent = this.accountTask(), communityEpoch = this.communityEpoch;
     const sections: HomeSection[] = ['devices', 'apps', 'communities', 'notes'];
     const includes = (section: HomeSection): boolean => !only || only === section;
     for (const section of sections) if (includes(section)) this.homeStatus[section] = 'loading';
@@ -1807,7 +1850,7 @@ class WorldApplication {
     const devices = results[0]; const apps = results[1];
     if (devices.status === 'fulfilled') this.devices = devices.value;
     if (apps.status === 'fulfilled') this.apps = apps.value;
-    if (results[2].status === 'fulfilled') this.communities = results[2].value.communities;
+    if (results[2].status === 'fulfilled' && communityEpoch === this.communityEpoch) this.communities = results[2].value.communities;
     if (results[3].status === 'fulfilled') this.homeNotes = results[3].value.notes;
     this.renderPersonal();
   }
@@ -2546,7 +2589,7 @@ class WorldApplication {
           }); visibleRow.append(visibleCopy, visible); preferences.append(visibleRow);
           const muted = button(group.membership.muted ? 'Включить уведомления' : 'Отключить уведомления', 'bell', 'sw-button-quiet', () => { void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, muted: !group.membership?.muted }).then(result => { this.updateCommunity(result.community); this.group = result.community; dialog.close(); this.renderGroup(); }).catch(reason => { error.textContent = errorText(reason); }); });
           preferences.append(muted);
-          if (group.membership.role !== 'owner') preferences.append(button('Выйти из сообщества', 'exit', 'sw-button-quiet sw-button-danger', () => this.confirmAction('Выйти из сообщества?', 'Чат и приложения группы станут недоступны.', 'Выйти', async () => { await this.api.request('world.membership.leave', { communityId: group.communityId }); dialog.close(); this.communities = this.communities.filter(item => item.communityId !== group.communityId); this.group = null; this.navigate('world'); })));
+          if (group.membership.role !== 'owner') preferences.append(button('Выйти из сообщества', 'exit', 'sw-button-quiet sw-button-danger', () => this.confirmAction('Выйти из сообщества?', 'Чат и приложения группы станут недоступны.', 'Выйти', async () => { await this.api.request('world.membership.leave', { communityId: group.communityId }); if (!accountCurrent()) return; this.communityEpoch++; dialog.close(); this.communities = this.communities.filter(item => item.communityId !== group.communityId); this.group = null; this.navigate('world'); })));
           else preferences.append(el('p', 'sw-small-note', 'Чтобы выйти, передайте сообщество другому участнику через его меню.'));
           body.append(el('hr', 'sw-rule'), preferences);
         }

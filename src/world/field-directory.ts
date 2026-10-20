@@ -17,6 +17,7 @@ export interface DirectoryContact { kind: 'contact'; relationshipId: string; pee
 export type DirectoryPerson = Pick<WorldProfile, 'profileId' | 'displayName' | 'avatarColor' | 'revision'> & Partial<WorldProfile>;
 export type DirectoryRecord = WorldProfile | DirectoryPerson | WorldCommunity | DirectoryApp | DirectoryDevice | DirectoryContact;
 export interface DirectoryPage { items: DirectoryEntity[]; cursor: string | null; status: 'ready' | 'partial' | 'offline'; errors: { source: string; code: string }[] }
+export interface DirectoryProgress { source: DirectorySource; items: DirectoryEntity[]; errors: DirectoryPage['errors'] }
 interface WorldPage { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null }
 interface AppPage { apps: DirectoryApp[]; nextCursor: string | null }
 type DirectorySource = 'communities' | 'people' | 'apps' | 'contacts' | 'devices';
@@ -95,8 +96,8 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
         || !item || typeof item.done !== 'boolean' || !(item.cursor === null || typeof item.cursor === 'string'))) fail('invalid_directory_cursor');
     return parsed;
   }
-  async function page({ query = '', kinds = ['app', 'person', 'community'], cursor, limit = 30, mode }:
-    { query?: string; kinds?: string[]; cursor?: string; limit?: number; mode: 'mine' | 'search' }): Promise<DirectoryPage> {
+  async function page({ query = '', kinds = ['app', 'person', 'community'], cursor, limit = 30, mode, onProgress }:
+    { query?: string; kinds?: string[]; cursor?: string; limit?: number; mode: 'mine' | 'search'; onProgress?: (progress: DirectoryProgress) => void }): Promise<DirectoryPage> {
     check();
     if (typeof query !== 'string' || query.length > 100 || /[\uD800-\uDFFF]/u.test(query) || !Number.isSafeInteger(limit) || limit < 1 || limit > 60
       || !Array.isArray(kinds) || !kinds.length || kinds.some(kind => !['app', 'person', 'community', 'device'].includes(kind))) fail('invalid_directory_query');
@@ -110,12 +111,13 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
     if (Object.keys(continuation.sources).length !== sources.length || sources.some(source => !continuation.sources[source])) fail('invalid_directory_cursor');
     const items: DirectoryEntity[] = [], errors: DirectoryPage['errors'] = [...continuation.errors];
     const order = sources.map((_, index) => (continuation.next + index) % sources.length);
-    for (let position = 0; position < order.length && items.length < limit; position++) {
-      const index = order[position]!, source = sources[index]!, entry = continuation.sources[source]!;
-      if (entry.done) continue;
-      const remainingSources = order.slice(position).filter(next => !continuation.sources[sources[next]!]!.done).length;
-      const budget = Math.max(1, Math.floor((limit - items.length) / remainingSources));
-      const after = entry.cursor ?? undefined;
+    type Batch = DirectoryProgress & { cursor: string | null; done: boolean };
+    let accepting = true;
+    let contactValues: ReturnType<typeof contacts> | undefined, deviceValues: ReturnType<typeof devices> | undefined;
+    async function readSource(source: DirectorySource, cursor: string | null, budget: number): Promise<Batch> {
+      check();
+      const entry = { cursor, done: false }, after = cursor ?? undefined;
+      const items: DirectoryEntity[] = [], errors: DirectoryPage['errors'] = [];
       try {
         if (source === 'communities' || source === 'people') {
           const result = await request<WorldPage>('world.directory.search', { query: normalized, kind: source, scope: mode === 'mine' ? 'mine' : 'all',
@@ -127,7 +129,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
             limit: budget, ...(after ? { cursor: after } : {}) });
           items.push(...result.apps.map(app)); entry.cursor = result.nextCursor; entry.done = result.nextCursor === null;
         } else if (source === 'contacts') {
-          const values = await contacts();
+          const values = await (contactValues ??= contacts());
           let priorContact: { createdAt: number; relationshipId: string } | null = null;
           if (after) { try { priorContact = JSON.parse(after) as { createdAt: number; relationshipId: string }; } catch { fail('invalid_directory_cursor'); } }
           if (priorContact && (!Number.isSafeInteger(priorContact.createdAt) || typeof priorContact.relationshipId !== 'string')) fail('invalid_directory_cursor');
@@ -140,7 +142,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
         } else {
           // The devices operation itself enforces ownership. Device names never
           // enter public search or an app's public/member projection.
-          const available = await devices();
+          const available = await (deviceValues ??= devices());
           const offset = after === undefined ? 0 : Number(after);
           if (!Number.isSafeInteger(offset) || offset < 0) fail('invalid_directory_cursor');
           const batch = available.slice(offset, offset + budget); items.push(...batch);
@@ -148,10 +150,45 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
         }
       } catch (error) {
         check(); if (code(error) === 'invalid_directory_cursor' || /account|PROFILE_CHANGED/u.test(code(error))) throw error;
-        errors.push({ source, code: code(error).slice(0, 128) }); continuation.errors = [...errors]; entry.done = true;
+        errors.push({ source, code: code(error).slice(0, 128) }); entry.done = true;
       }
-      continuation.next = (index + 1) % sources.length;
+      check();
+      if (items.length > budget) fail('invalid_directory_page');
+      const batch = { source, items, errors, cursor: entry.cursor, done: entry.done };
+      if (accepting && onProgress) onProgress({ source, items: [...items], errors: [...errors] });
+      return batch;
     }
+    const prefetched = new Map<DirectorySource, Promise<{ value: Batch } | { error: unknown }>>();
+    try {
+      // Keep final fairness/order, while ready sources can publish their reserved share immediately.
+      const pending = order.map(index => sources[index]!).filter(source => !continuation.sources[source]!.done);
+      const minimum = Math.max(1, Math.floor(limit / Math.max(1, pending.length)));
+      const eligible = pending.slice(0, Math.min(pending.length, limit));
+      const preloadOrder = eligible.includes('apps') ? ['apps' as const, ...eligible.filter(source => source !== 'apps')] : eligible;
+      if (onProgress) for (const source of preloadOrder.slice(0, 3)) {
+        prefetched.set(source, readSource(source, continuation.sources[source]!.cursor, minimum)
+          .then(value => ({ value }), error => { accepting = false; return { error }; }));
+      }
+      for (let position = 0; position < order.length && items.length < limit; position++) {
+        const index = order[position]!, source = sources[index]!, entry = continuation.sources[source]!;
+        if (entry.done) continue;
+        check();
+        const remainingSources = order.slice(position).filter(next => !continuation.sources[sources[next]!]!.done).length;
+        const budget = Math.max(1, Math.floor((limit - items.length) / remainingSources));
+        const preload = prefetched.get(source);
+        const captured = preload ? await preload : { value: await readSource(source, entry.cursor, budget) };
+        if ('error' in captured) throw captured.error;
+        const batch = captured.value;
+        items.push(...batch.items); errors.push(...batch.errors); entry.cursor = batch.cursor; entry.done = batch.done;
+        // A short page with a cursor may hit the server's scan bound; do not treat it as EOF or scan past it here.
+        if (preload && !entry.done && batch.items.length === minimum && budget > batch.items.length) {
+          const extra = await readSource(source, entry.cursor, budget - batch.items.length);
+          items.push(...extra.items); errors.push(...extra.errors); entry.cursor = extra.cursor; entry.done = extra.done;
+        }
+        continuation.next = (index + 1) % sources.length;
+      }
+      continuation.errors = [...errors];
+    } finally { accepting = false; await Promise.allSettled([...prefetched.values()]); }
     check();
     return { items, cursor: sources.some(source => !continuation.sources[source]!.done) ? encode(continuation) : null,
       status: errors.length ? items.length ? 'partial' : 'offline' : 'ready', errors };
@@ -201,9 +238,9 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
     check(); return { items, unavailable, errors };
   }
   return Object.freeze({
-    search: (options: { query?: string; kinds?: string[]; cursor?: string; limit?: number } = {}) => page({ ...options, mode: 'search' }),
-    async loadMine({ document, cursor, limit = 30 }: { document?: FieldDocument; cursor?: string; limit?: number } = {}): Promise<DirectoryPage> {
-      const result = await page({ mode: 'mine', kinds: ['community', 'app', 'person', 'device'], limit, ...(cursor ? { cursor } : {}) });
+    search: (options: { query?: string; kinds?: string[]; cursor?: string; limit?: number; onProgress?: (progress: DirectoryProgress) => void } = {}) => page({ ...options, mode: 'search' }),
+    async loadMine({ document, cursor, limit = 30, onProgress }: { document?: FieldDocument; cursor?: string; limit?: number; onProgress?: (progress: DirectoryProgress) => void } = {}): Promise<DirectoryPage> {
+      const result = await page({ mode: 'mine', kinds: ['community', 'app', 'person', 'device'], limit, ...(cursor ? { cursor } : {}), ...(onProgress ? { onProgress } : {}) });
       if (document && !cursor) {
         const resolved = await resolve(document.shortcuts.map(shortcut => shortcut.entity));
         const merged = new Map([...result.items, ...resolved.items].map(item => [fieldEntityKey(item.entity), item]));
