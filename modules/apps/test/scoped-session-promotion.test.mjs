@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';
-import {createScopedGatewayFixture,renewalSourceAvailable,diagnosticPhase} from './support/scoped-gateway-fixture.mjs';
+import {createScopedGatewayFixture,renewalSourceAvailable,diagnosticPhase,safeFixtureHttp,safeFixturePrivateCounts} from './support/scoped-gateway-fixture.mjs';
 import {createClientWithStorage} from '../../connect/browser/client.mjs';
 
 const random=()=>randomBytes(32).toString('base64url');
@@ -10,8 +10,11 @@ async function ready(t,{long=true}={}){
   assert.equal(renewalSourceAvailable,true,'Explicit maintained Source renewal package required');
   const f=await createScopedGatewayFixture({t,renewal:true});
   const initial=await diagnosticPhase('ready.apps.launch',()=>f.launch());
-  await diagnosticPhase('ready.nativeConsent',async()=>f.nativeConsent(await f.login(f.reader,long)));
-  assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,200);
+  const consent=await diagnosticPhase('ready.nativeConsent',async()=>f.nativeConsent(await f.login(f.reader,long)));
+  const initialState=await f.wire.request(f.embedded+'/api/embed/state');
+  t.diagnostic(JSON.stringify({schema:'soty.scoped-fixture-diagnostic.v1',phase:'promotion.initialReady',
+    consent:safeFixtureHttp(consent),state:safeFixtureHttp(initialState),sourceCounts:safeFixturePrivateCounts(f.planner())}));
+  assert.equal(initialState.status,200);
   return{f,initial};
 }
 function holdContinuation(f){

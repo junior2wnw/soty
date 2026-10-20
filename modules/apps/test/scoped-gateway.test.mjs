@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createScopedGatewayFixture,sourceAvailable} from './support/scoped-gateway-fixture.mjs';
+import {errorMonitor} from 'node:events';
+import {createScopedGatewayFixture,sourceAvailable,safeFixtureHttp,safeFixturePrivateCounts} from './support/scoped-gateway-fixture.mjs';
 import {readStorageFormat} from '../../../deploy/connector/storage-probe.mjs';
 import {assertStorageCompatible,currentStorageReaders,storageReaderLabel} from '../../../deploy/connector/storage-guard.mjs';
 import {join} from 'node:path';
@@ -110,14 +111,17 @@ test('actual Source prepare committed behind an unknown HTTP ACK can be cancelle
   const f=await createScopedGatewayFixture({t});await f.launch();
   const preparation=await f.wire.request(f.embedded+'/api/embed/login',{headers:{accept:'application/json'}});
   assert.equal(preparation.status,200);
-  let state,intercepted=false;
+  let state,intercepted=false,endCalled=false,parseFailed=false,responseClosed=false,responseError=false,writes=0,bodyBytes=0,observed=null;
   const loseAck=(request,response)=>{
     if(intercepted || request.method!=='POST' || request.url!=='/api/embed/login' || request.headers.host!==new URL(f.embedded).host)return;
     intercepted=true;const parts=[];
-    response.write=(chunk,encoding,callback)=>{parts.push(Buffer.from(chunk));const done=typeof encoding==='function'?encoding:callback;if(done)queueMicrotask(done);return true;};
+    response.once('close',()=>{responseClosed=true;});response.once(errorMonitor,()=>{responseError=true;});
+    response.write=(chunk,encoding,callback)=>{writes++;parts.push(Buffer.from(chunk));const done=typeof encoding==='function'?encoding:callback;if(done)queueMicrotask(done);return true;};
     response.end=(chunk)=>{
-      if(chunk)parts.push(Buffer.from(chunk));
-      const committed=JSON.parse(Buffer.concat(parts).toString('utf8'));
+      endCalled=true;if(chunk)parts.push(Buffer.from(chunk));
+      const bytes=Buffer.concat(parts);bodyBytes=bytes.length;let committed;
+      try{committed=JSON.parse(bytes.toString('utf8'));}catch(error){parseFailed=true;throw error;}
+      observed=safeFixtureHttp({status:response.statusCode,body:committed});
       assert.equal(committed.schema,'planner.embed-login-authorization.v1');
       state=new URL(committed.authorizationUrl).searchParams.get('state');
       response.destroy();return response;
@@ -125,6 +129,9 @@ test('actual Source prepare committed behind an unknown HTTP ACK can be cancelle
   };
   f.server.prependListener('request',loseAck);t.after(()=>f.server.off('request',loseAck));
   await assert.rejects(f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:preparation.body.csrf}}));
+  t.diagnostic(JSON.stringify({schema:'soty.scoped-fixture-diagnostic.v1',phase:'unknownACK.afterRejectedWire',
+    intercepted,endCalled,parseFailed,responseClosed,responseError,writes,bodyBytes,statePresent:Boolean(state),observed,
+    sourceCounts:safeFixturePrivateCounts(f.planner())}));
   assert.equal(intercepted,true);assert.ok(state,'the real Source committed its one-use OIDC state before the response was lost');
   assert.equal((await f.wire.request(f.embedded+'/api/embed/login',{body:{csrf:preparation.body.csrf,cancel:true}})).status,200);
   assert.equal((await f.wire.request(f.embedded+'/api/embed/callback?state='+encodeURIComponent(state)+'&code=synthetic',{withoutAppCookie:true})).status,403);
