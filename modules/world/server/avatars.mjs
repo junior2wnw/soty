@@ -120,7 +120,7 @@ export function avatarOperation(m, op, args, actor, now) {
   const batch = op === 'world.profile.avatars';
   exact(args, batch ? ['profileIds'] : ['profileId'], ['communityId']);
   if (args.communityId !== undefined) m.requireMember(identifier(args.communityId), actor.accountId);
-  const allowed = profile => profile && (profile.account_id === actor.accountId || profile.discoverable || args.communityId && (
+  const allowed = profile => profile && (m.canViewFullProfile(profile, actor.accountId) || batch && args.communityId && (
     m.membership(args.communityId, profile.account_id)?.state === 'active'
     || m.get('SELECT 1 FROM messages WHERE community_id=? AND author_id=? LIMIT 1', args.communityId, profile.account_id)));
   function image(profileId, thumbnail) {

@@ -4,6 +4,6 @@ export function describeAppAudience(app: Pick<WorldAppRecord, 'status' | 'ownerA
   accountId: string | null | undefined): { label: string; icon: string; publicNamed: boolean; details: string[] };
 export function publicationFromInspection(snapshot: {
   app: { state: string };
-  publication: { launchPolicy: 'restricted' | 'anyone'; activeDomainIds: string[] };
+  publication: { launchPolicy: 'restricted' | 'anyone'; audience?: 'private' | 'friends' | 'link' | 'public' | null; listed?: boolean; activeDomainIds: string[] };
   addresses: { aliases: { id: string; state: string; active: boolean }[] };
 }): WorldAppPublication;

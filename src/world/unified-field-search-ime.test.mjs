@@ -21,7 +21,7 @@ const genuine = new vm.Script(block, { filename: 'actual-unified-field-search-wi
 
 function harness(mode = 'search', value = 'Москва 東京') {
   const listeners = new Map(), timers = new Map();
-  const calls = { closeList: 0, closePreview: 0, filters: 0, routes: [], requests: 0, run: 0, timers: 0, clears: 0 };
+  const calls = { closeList: 0, closePreview: 0, closeSearch: 0, filters: 0, routes: [], requests: 0, run: 0, timers: 0, clears: 0 };
   let nextTimer = 1;
   const searchInput = { value, addEventListener(type, listener) { listeners.set(type, listener); } };
   const context = {
@@ -29,6 +29,7 @@ function harness(mode = 'search', value = 'Москва 東京') {
     clear: { hidden: false }, element: { dataset: { query: 'active' } },
     searchTimer: null, searchGeneration: 0, searchCursor: 'cursor', more: { hidden: false }, searchLimit: { hidden: false },
     closeList() { calls.closeList++; }, closePreview() { calls.closePreview++; },
+    closeSearch: { click() { calls.closeSearch++; } },
     route() { calls.routes.push({ mode: context.mode, query: context.queries[context.mode] }); },
     updateMineFilter() { calls.filters++; },
     searchDirectory() { calls.requests++; return Promise.resolve(); }, run() { calls.run++; },
@@ -81,10 +82,11 @@ test('event.isComposing alone protects a composing Escape without a delivered co
   assert.deepEqual(h.snapshot(), before); assert.deepEqual(effect, { stopped: 0, prevented: 0 });
 });
 
-test('empty ordinary Escape still does nothing', () => {
+test('empty ordinary Escape closes the search without changing its query or dispatching a request', () => {
   const h = harness('search', ''); const before = h.snapshot();
   const effect = h.emit('keydown', { key: 'Escape' });
-  assert.deepEqual(h.snapshot(), before); assert.deepEqual(effect, { stopped: 0, prevented: 0 });
+  before.calls.closeSearch++;
+  assert.deepEqual(h.snapshot(), before); assert.deepEqual(effect, { stopped: 1, prevented: 0 });
 });
 
 test('another key during composition remains untouched', () => {

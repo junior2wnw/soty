@@ -44,6 +44,40 @@ const appDiscussions = {
   app_discussion_usage: 'id,head_count,conversation_count,message_count,body_bytes',
   app_discussion_rates: 'account_id,at,credit',
 };
+// Frozen independent audience layouts: base6/7/8 remain separate formats.
+// Pins include every non-SQLite table, index and trigger, including history guards.
+const appAudience = {
+  app_audiences: 'app_id,audience',
+  app_discussion_head_audiences: 'app_id,current_id,audience',
+  app_discussion_conversation_audiences: 'conversation_id,app_id,audience',
+};
+const appAudienceGuards = {
+  app_discussion_audience_no_update: { table: 'app_discussion_conversation_audiences', sql: "CREATE TRIGGER app_discussion_audience_no_update BEFORE UPDATE ON app_discussion_conversation_audiences BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END" },
+  app_discussion_audience_no_delete: { table: 'app_discussion_conversation_audiences', sql: "CREATE TRIGGER app_discussion_audience_no_delete BEFORE DELETE ON app_discussion_conversation_audiences BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END" },
+  app_discussion_audience_no_replace: { table: 'app_discussion_conversation_audiences', sql: "CREATE TRIGGER app_discussion_audience_no_replace BEFORE INSERT ON app_discussion_conversation_audiences WHEN EXISTS(SELECT 1 FROM app_discussion_conversation_audiences WHERE conversation_id=NEW.conversation_id) BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END" },
+};
+const appAudienceLayouts = Object.freeze({
+  9: { base: 6, objects: 69, digest: 'a181c0c53950ba57c93734fc7beda957561b3cf5e383a1a311d6c348684ef2e4' },
+  10: { base: 7, objects: 73, digest: '100da3faa8bb105ce2f16640ad9837c59a57373dec02d1e76f967fa04caa3d64' },
+  11: { base: 8, objects: 73, digest: 'd1f7a5f101e0436737733cdc2d8f21781e6f202c4a3307cf2d885c3c776c067d' },
+});
+const appAudienceObjects = new Set([...Object.keys(appAudience), ...Object.keys(appAudienceGuards)]);
+function readAudienceApps(db, format) {
+  const pin = appAudienceLayouts[format];
+  if (!pin) fail('storage_format_unreadable');
+  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(pin.objects + 1);
+  if (rows.length !== pin.objects || rows.some(row => typeof row.sql !== 'string' || row.sql.length > 32768)
+    || sha(JSON.stringify(rows.map(row => [row.type, row.name, row.tbl_name, normalized(row.sql)]))) !== pin.digest
+    || db.prepare('PRAGMA foreign_key_check').get()) fail('storage_format_unreadable');
+  if (db.prepare(`SELECT 1 FROM app_audiences a JOIN app_publications p ON p.app_id=a.app_id
+    WHERE (a.audience IN ('private','friends') AND (p.launch_policy<>'restricted' OR p.listed<>0 OR p.exposure_ack_json IS NOT NULL OR p.exposure_ack_revision IS NOT NULL))
+      OR (a.audience IN ('link','public') AND (p.launch_policy<>'anyone' OR p.listed<>(a.audience='public') OR NOT EXISTS(
+        SELECT 1 FROM app_publication_domains active JOIN app_domains d ON d.id=active.domain_id AND d.app_id=active.app_id AND d.owner_account_id=active.owner_account_id
+        JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named' WHERE active.app_id=a.app_id AND d.state='bound' AND d.role='alias'))) LIMIT 1`).get()) fail('storage_format_unreadable');
+  if (db.prepare(`SELECT 1 FROM app_discussion_head_audiences a JOIN app_discussion_heads h ON h.app_id=a.app_id
+    WHERE a.current_id<>h.current_id LIMIT 1`).get()) fail('storage_format_unreadable');
+}
+
 // Literal Apps7 profile/admission format. Deliberately independent of the
 // candidate application's schema and profile parser; this file runs alone.
 const appScoped = { app_scoped_embed_admissions: 'app_id,target_revision,target_digest,profile_digest,approved_pin_json,created_at' };
@@ -462,10 +496,11 @@ function profile(value, target) {
       && (new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace) && value.parentOrigin !== value.embedOrigin;
   } catch { return false; }
 }
-function readScopedApps8(db) {
-  refuse(Number(db.prepare('PRAGMA user_version').get().user_version) === 8
-    && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === 'soty.apps-registry.v8');
-  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT 68").all();
+function readScopedApps8(db, audience = false) {
+  refuse(Number(db.prepare('PRAGMA user_version').get().user_version) === (audience ? 11 : 8)
+    && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === (audience ? 'soty.apps-registry.v11' : 'soty.apps-registry.v8'));
+  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(audience ? 74 : 68)
+    .filter(row => !audience || !appAudienceObjects.has(row.name));
   refuse(rows.length === 67 && rows.every(value => typeof value.sql === 'string' && value.sql.length <= 32768));
   refuse(sha(JSON.stringify(rows.map(row => [row.type, row.name, row.tbl_name, normalized(row.sql)]))) === layoutPin);
   refuse(db.prepare('PRAGMA foreign_key_check').get() === undefined);
@@ -511,12 +546,14 @@ async function readAppsFormat(dataDir) {
             : markers[0].value === 'soty.apps-registry.v5' && version === 5 ? 5
               : markers[0].value === 'soty.apps-registry.v6' && version === 6 ? 6
                 : markers[0].value === 'soty.apps-registry.v7' && version === 7 ? 7
-                  : markers[0].value === 'soty.apps-registry.v8' && version === 8 ? 8 : null;
+                  : markers[0].value === 'soty.apps-registry.v8' && version === 8 ? 8
+                    : [9,10,11].includes(version) && markers[0].value === 'soty.apps-registry.v' + version ? version : null;
     if (!format) fail('storage_format_unknown');
-    const projections = { ...appCore, ...(format >= 2 ? appDomains : {}), ...(format >= 3 ? appPublications : {}),
-      ...(format >= 4 ? appSources : {}), ...(format >= 5 ? appSaved : {}), ...(format >= 6 ? appDiscussions : {}), ...(format >= 7 ? appScoped : {}) };
-    const guards = { ...(format >= 3 ? appTargetGuards : {}), ...(format >= 4 ? appSourceGuards : {}),
-      ...(format >= 5 ? appSavedGuards : {}), ...(format >= 6 ? appDiscussionGuards : {}), ...(format >= 7 ? appScopedGuards : {}) };
+    const audience = format >= 9, base = audience ? format - 3 : format;
+    const projections = { ...appCore, ...(base >= 2 ? appDomains : {}), ...(base >= 3 ? appPublications : {}),
+      ...(base >= 4 ? appSources : {}), ...(base >= 5 ? appSaved : {}), ...(base >= 6 ? appDiscussions : {}), ...(base >= 7 ? appScoped : {}), ...(audience ? appAudience : {}) };
+    const guards = { ...(base >= 3 ? appTargetGuards : {}), ...(base >= 4 ? appSourceGuards : {}),
+      ...(base >= 5 ? appSavedGuards : {}), ...(base >= 6 ? appDiscussionGuards : {}), ...(base >= 7 ? appScopedGuards : {}), ...(audience ? appAudienceGuards : {}) };
     if (objects.length !== Object.keys(projections).length + Object.keys(guards).length || objects.some(row =>
       row.type === 'table' ? !Object.hasOwn(projections, row.name)
         : row.type !== 'trigger' || !Object.hasOwn(guards, row.name) || row.tbl_name !== guards[row.name].table
@@ -524,7 +561,7 @@ async function readAppsFormat(dataDir) {
     // Independent format recognition, not row/constraint integrity attestation.
     // Every identifier below is a trusted constant, never database contents.
     for (const [table, columns] of Object.entries(projections)) db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();
-    if(format===7) {
+    if(base===7) {
       if(normalizedSql(objects.find(row=>row.name==='app_scoped_embed_admissions')?.sql)!==normalizedSql(appScopedDdl)
         || db.prepare('PRAGMA foreign_key_check').all().length) fail('storage_format_unreadable');
       const columns=db.prepare('PRAGMA table_info(app_scoped_embed_admissions)').all();
@@ -546,7 +583,8 @@ async function readAppsFormat(dataDir) {
       }
       if(Number(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n)!==selected)fail('storage_format_unreadable');
     }
-    if (format === 8) { try { readScopedApps8(db); } catch { fail('storage_format_unreadable'); } }
+    if (audience) readAudienceApps(db, format);
+    if (base === 8) { try { readScopedApps8(db, audience); } catch { fail('storage_format_unreadable'); } }
     if (format >= 2) {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template' LIMIT 2").all();
       if (pinned.length !== 1 || typeof pinned[0].value !== 'string') fail('storage_format_unreadable');

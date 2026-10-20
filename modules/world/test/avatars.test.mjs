@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createWorldService, SCHEMA_VERSION } from '../server/index.mjs';
-import { removeDiscoveryProjection } from './schema-fixtures.mjs';
+import { removeAudienceProjection, removeDiscoveryProjection } from './schema-fixtures.mjs';
 import { validateAvatar, AVATAR_LIMITS } from '../server/avatars.mjs';
 import { pngFixture, pngChunk, asDataUrl, jpegFixture, webpFixture } from './avatar-fixtures.mjs';
 
@@ -17,7 +17,7 @@ const limits = { maximumBytes: AVATAR_LIMITS.imageBytes, maximumPixels: AVATAR_L
 function denied(fn, code) { assert.throws(fn, error => error.code === code, code); }
 function fixture(t) {
   const base = resolve(tmpdir()), dir = mkdtempSync(join(base, 'soty-avatars-test-')), path = join(dir, 'world.sqlite'); const services = [];
-  const open = () => { const service = createWorldService({ databasePath: path, projectId: 'avatars' }); services.push(service); return service; };
+  const open = (options = {}) => { const service = createWorldService({ databasePath: path, projectId: 'avatars', ...options }); services.push(service); return service; };
   const service = open(); const call = (actor, op, args = {}) => service.execute({ actor, op: 'world.' + op, args });
   [alice, bob, outsider].forEach(actor => call(actor, 'profile.get'));
   t.after(() => { services.forEach(item => item.close()); assert.equal(dirname(resolve(dir)), base); assert.ok(resolve(dir).startsWith(join(base, 'soty-avatars-test-'))); rmSync(dir, { recursive: true, force: true }); });
@@ -95,9 +95,9 @@ test('schema v1 upgrades additively and active-community lookup changes immediat
   f.call(bob, 'membership.join', { communityId }); assert.deepEqual(f.service.activeCommunityIds(bob.accountId), [communityId]);
   f.call(bob, 'membership.leave', { communityId }); assert.deepEqual(f.service.activeCommunityIds(bob.accountId), []);
   f.service.close(); const db = new DatabaseSync(f.path);
-  removeDiscoveryProjection(db);
+  removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("DROP TABLE profile_avatars; ALTER TABLE profiles DROP COLUMN avatar_revision; PRAGMA user_version=1; UPDATE world_meta SET value='1' WHERE key='schema_version';"); db.close();
-  const migrated = f.open(); assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
+  const migrated = f.open({ allowAudienceMigration: true }); assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
   assert.equal(migrated.execute({ actor: alice, op: 'world.profile.get' }).profile.avatarRevision, null);
   assert.equal(migrated.execute({ actor: alice, op: 'world.community.get', args: { communityId } }).community.name, 'Сохраняется');
   migrated.execute({ actor: alice, op: 'world.community.archive', args: { communityId, expectedRevision: 1 } });

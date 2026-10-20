@@ -1,7 +1,42 @@
 import { DISCOVERY_MIGRATION } from './discovery.mjs';
 
-export const SCHEMA_VERSION = 3;
+// Version4 is reserved for the separate attachment reader; it is not this layout.
+export const SCHEMA_VERSION = 5;
 const LINEAGE = 'soty.world.sqlite.v1';
+const AUDIENCE_COLUMN = "audience TEXT NOT NULL DEFAULT 'private' CHECK(audience IN('private','friends','link','public'))";
+const PROFILE_INSERT = `CREATE TRIGGER world_profile_directory_ai AFTER INSERT ON profiles WHEN new.audience='public' BEGIN
+  INSERT INTO world_directory(kind,entity_id,name,search_text) VALUES('person',new.account_id,new.display_name,new.search_text);
+END`;
+const PROFILE_UPDATE = `CREATE TRIGGER world_profile_directory_au AFTER UPDATE OF audience,display_name,search_text ON profiles BEGIN
+  DELETE FROM world_directory WHERE kind='person' AND entity_id=old.account_id AND new.audience<>'public';
+  INSERT INTO world_directory(kind,entity_id,name,search_text)
+    SELECT 'person',new.account_id,new.display_name,new.search_text WHERE new.audience='public'
+    ON CONFLICT(kind,entity_id) DO UPDATE SET name=excluded.name,search_text=excluded.search_text;
+END`;
+const PROFILE_DELETE = `CREATE TRIGGER world_profile_directory_ad AFTER DELETE ON profiles BEGIN
+  DELETE FROM world_directory WHERE kind='person' AND entity_id=old.account_id;
+END`;
+const normalized = sql => String(sql ?? '').replace(/\s+/gu, '').replace(/;$/u, '');
+function assertAudienceSchema(db) {
+  const columns = db.prepare('PRAGMA table_info(profiles)').all();
+  const names = ['account_id','display_name','bio','interests','search_text','discoverable','show_presence','show_memberships',
+    'contact_policy','avatar_color','revision','created_at','updated_at','avatar_revision','audience'];
+  const audience = columns.at(-1);
+  const table = db.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name='profiles'").get();
+  const trigger = name => db.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?").get(name)?.sql;
+  const triggers = db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name='profiles' ORDER BY name").all();
+  if (columns.length !== names.length || columns.some((column, index) => column.name !== names[index])
+    || audience?.type !== 'TEXT' || audience.notnull !== 1 || audience.dflt_value !== "'private'" || audience.pk !== 0
+    || !normalized(table?.sql).endsWith(normalized(AUDIENCE_COLUMN) + ')')
+    || normalized(trigger('world_profile_directory_ai')) !== normalized(PROFILE_INSERT)
+    || normalized(trigger('world_profile_directory_au')) !== normalized(PROFILE_UPDATE)
+    || normalized(trigger('world_profile_directory_ad')) !== normalized(PROFILE_DELETE)
+    || JSON.stringify(triggers.map(row => row.name)) !== JSON.stringify(['world_profile_directory_ad','world_profile_directory_ai','world_profile_directory_au'])
+    || db.prepare("SELECT 1 FROM sqlite_schema WHERE name IN('chat_attachments','chat_attachment_chunks') LIMIT 1").get()
+    || db.prepare("SELECT 1 FROM profiles WHERE discoverable<>(audience='public') LIMIT 1").get()) {
+    throw new Error('world_schema_metadata_mismatch');
+  }
+}
 const SCHEMA = `
 CREATE TABLE world_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE profiles (
@@ -60,18 +95,25 @@ CREATE INDEX world_audit_target ON world_audit(target_id,seq);
 CREATE TABLE world_rate_limits (key TEXT PRIMARY KEY, bucket INTEGER NOT NULL, count INTEGER NOT NULL);
 `;
 
-export function migrateWorld(db, projectId) {
-  db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+export function migrateWorld(db, projectId, { allowAudienceMigration = false } = {}) {
+  if (typeof allowAudienceMigration !== 'boolean') throw new Error('invalid_audience_migration_mode');
+  const initialVersion = Number(db.prepare('PRAGMA user_version').get().user_version);
+  if (!Number.isInteger(initialVersion) || initialVersion < 0 || initialVersion === 4 || initialVersion > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+  // Default reader startup must not change an existing format before independent release admission.
+  if (initialVersion > 0 && initialVersion < SCHEMA_VERSION && !allowAudienceMigration) throw new Error('world_audience_migration_required');
+  db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
   db.exec('BEGIN IMMEDIATE');
   try {
     let version = Number(db.prepare('PRAGMA user_version').get().user_version);
+    if (!Number.isInteger(version) || version < 0 || version === 4 || version > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+    if (version > 0 && version < SCHEMA_VERSION && !allowAudienceMigration) throw new Error('world_audience_migration_required');
     if (version === 0) {
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new Error('world_schema_metadata_mismatch');
       db.exec(SCHEMA);
       const insert = db.prepare('INSERT INTO world_meta(key,value) VALUES (?,?)');
       insert.run('project_id', projectId); insert.run('lineage', LINEAGE); insert.run('schema_version', '1');
       db.exec('PRAGMA user_version=1'); version = 1;
-    } else if (!Number.isInteger(version) || version < 1 || version > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+    }
     const meta = Object.fromEntries(db.prepare('SELECT key,value FROM world_meta').all().map(row => [row.key, row.value]));
     if (meta.project_id !== projectId) throw new Error('world_project_mismatch');
     if (meta.lineage !== LINEAGE || meta.schema_version !== String(version)) throw new Error('world_schema_metadata_mismatch');
@@ -87,8 +129,23 @@ export function migrateWorld(db, projectId) {
       db.exec(DISCOVERY_MIGRATION);
       db.exec('PRAGMA user_version=3');
       db.prepare("UPDATE world_meta SET value='3' WHERE key='schema_version'").run();
+      version = 3;
     }
+    if (version < 5) {
+      db.exec(`ALTER TABLE profiles ADD COLUMN ${AUDIENCE_COLUMN};
+        UPDATE profiles SET audience=CASE WHEN discoverable=1 THEN 'public' ELSE 'private' END;
+        DROP TRIGGER world_profile_directory_ai;
+        DROP TRIGGER world_profile_directory_au;
+        ${PROFILE_INSERT};
+        ${PROFILE_UPDATE};
+        PRAGMA user_version=5;`);
+      db.prepare("UPDATE world_meta SET value='5' WHERE key='schema_version'").run();
+    }
+    assertAudienceSchema(db);
     if (db.prepare('PRAGMA quick_check').all().some(row => row.quick_check !== 'ok') || db.prepare('PRAGMA foreign_key_check').get()) throw new Error('world_storage_corrupt');
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
+  // Admission/schema committed. A WAL setup failure is surfaced as an error;
+  // it cannot undo the committed format and must not be reported as rollback.
+  db.exec('PRAGMA journal_mode=WAL;');
 }

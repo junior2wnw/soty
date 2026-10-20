@@ -31,21 +31,23 @@ function outsideModule(file) {
 
 /** Trusted service boundary only. Mount as a Connect extension after proof/device/account verification.
  * Do not expose execute directly as an HTTP handler and do not construct actor from request arguments. */
-export function createWorldService({ databasePath, projectId, clock = Date.now } = {}) {
+export function createWorldService({ databasePath, projectId, clock = Date.now, withCurrentContacts, allowAudienceMigration = false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof clock === 'function', 'invalid_clock');
+  assert(withCurrentContacts === undefined || typeof withCurrentContacts === 'function', 'invalid_contacts_authority');
+  assert(typeof allowAudienceMigration === 'boolean', 'invalid_audience_migration_mode');
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') {
     assert(outsideModule(file), 'database_must_be_outside_module');
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
   const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false;
-  try { migrateWorld(db, projectId); migrateField(db); } catch (error) { db.close(); throw error; }
+  try { migrateWorld(db, projectId, { allowAudienceMigration }); migrateField(db); } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
   db.function('world_directory_match', { deterministic: true }, directoryMatches);
-  const subscribers = new Set(); let events = [];
-  const m = createModel(db, event => { events.push(Object.freeze(event)); });
+  const subscribers = new Set(); let events = [], currentContactView = null;
+  const m = createModel(db, event => { events.push(Object.freeze(event)); }, () => currentContactView);
   const operations = new Set(WORLD_OPERATIONS);
   return {
     projectId, schemaVersion: SCHEMA_VERSION, operations,
@@ -82,34 +84,43 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
     execute({ op, args = {}, actor } = {}) {
       assert(!closed, 'service_closed'); assert(operations.has(op), 'unsupported_operation');
       assert(!authorityFenceActive, 'world_authority_mutation_forbidden');
-      const now = clock(); assert(Number.isSafeInteger(now) && now >= 0, 'invalid_clock');
-      events = [];
-      // Existing profiles use a read snapshot for polling/discovery. They do not contend for
-      // SQLite's writer lock; first-use provisioning and mutations acquire it up front.
-      const known = actor && typeof actor.accountId === 'string' && m.person(actor.accountId);
-      db.exec(READ_OPERATIONS.has(op) && known ? 'BEGIN' : 'BEGIN IMMEDIATE');
-      let result;
-      try {
-        m.ensurePerson(actor, now);
-        if (PROFILE_OPERATIONS.includes(op)) result = profileOperation(m, op, args, actor, now);
-        else if (COMMUNITY_OPERATIONS.includes(op)) result = communityOperation(m, op, args, actor, now);
-        else if (CHAT_OPERATIONS.includes(op)) result = chatOperation(m, op, args, actor, now);
-        else if (DIRECTORY_OPERATIONS.includes(op)) result = directoryOperation(m, op, args, actor);
-        else if (FIELD_OPERATIONS.includes(op)) result = fieldOperation(m, op, args, actor, now);
-        else result = avatarOperation(m, op, args, actor, now);
-        if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
-          const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);
-          result = { ...result, community: row ? m.community(m.visibleGroup(row.id, actor.accountId), actor.accountId) : null };
-        }
-        assert(result !== undefined, 'unsupported_operation');
-        db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); events = []; throw error; }
-      const committed = events; events = [];
-      for (const event of committed) for (const listener of subscribers) {
-        try { const pending = listener(event); if (pending && typeof pending.catch === 'function') pending.catch(() => {}); }
-        catch { /* State is already durable. A failing consumer cannot undo revocation. */ }
-      }
-      return result;
+      const perform = contacts => {
+        if (withCurrentContacts) assert(contacts && contacts.accountId === actor?.accountId && contacts.deviceId === actor?.deviceId
+          && typeof contacts.has === 'function' && typeof contacts.accountIds === 'function', 'world_contacts_actor_mismatch');
+        const priorContactView = currentContactView; currentContactView = contacts;
+        try {
+          const now = clock(); assert(Number.isSafeInteger(now) && now >= 0, 'invalid_clock');
+          events = [];
+          // Existing profiles use a read snapshot for polling/discovery. They do not contend for
+          // SQLite's writer lock; first-use provisioning and mutations acquire it up front.
+          const known = actor && typeof actor.accountId === 'string' && m.person(actor.accountId);
+          db.exec(READ_OPERATIONS.has(op) && known ? 'BEGIN' : 'BEGIN IMMEDIATE');
+          let result;
+          try {
+            m.ensurePerson(actor, now);
+            if (PROFILE_OPERATIONS.includes(op)) result = profileOperation(m, op, args, actor, now);
+            else if (COMMUNITY_OPERATIONS.includes(op)) result = communityOperation(m, op, args, actor, now);
+            else if (CHAT_OPERATIONS.includes(op)) result = chatOperation(m, op, args, actor, now);
+            else if (DIRECTORY_OPERATIONS.includes(op)) result = directoryOperation(m, op, args, actor);
+            else if (FIELD_OPERATIONS.includes(op)) result = fieldOperation(m, op, args, actor, now);
+            else result = avatarOperation(m, op, args, actor, now);
+            if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
+              const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);
+              result = { ...result, community: row ? m.community(m.visibleGroup(row.id, actor.accountId), actor.accountId) : null };
+            }
+            assert(result !== undefined, 'unsupported_operation');
+            db.exec('COMMIT');
+          } catch (error) { db.exec('ROLLBACK'); events = []; throw error; }
+          const committed = events; events = [];
+          for (const event of committed) for (const listener of subscribers) {
+            try { const pending = listener(event); if (pending && typeof pending.catch === 'function') pending.catch(() => {}); }
+            catch { /* State is already durable. A failing consumer cannot undo revocation. */ }
+          }
+          return result;
+        } finally { currentContactView = priorContactView; }
+      };
+      // The live Connect fence is entered before taking any World snapshot or writer lock.
+      return withCurrentContacts ? withCurrentContacts(actor, perform) : perform(null);
     },
     canAccessCommunity(accountId, communityId) {
       assert(!closed, 'service_closed'); identifier(accountId); identifier(communityId);

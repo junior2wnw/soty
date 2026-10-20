@@ -9,6 +9,7 @@ import type { WorldProfile, WorldCommunity, WorldMessage, WorldAppRecord, WorldA
 if (!import.meta.env.DEV)
     throw new Error('UI fixture is development-only');
 const params = new URLSearchParams(location.search);
+const oneFieldFixture = params.get('layout') === 'one-field';
 // An explicit, development-only specimen for normal assistant composition.
 // It never calls a model, a computer or the production capabilities endpoint.
 const assistantSpecimen = params.get('assistant');
@@ -22,8 +23,10 @@ if (assistantSpecimen === 'personal' || assistantSpecimen === 'device') {
 }
 const palette = params.get('theme') === 'light' ? 'light' : 'dark';
 localStorage.setItem('soty.world.ui.v1', JSON.stringify({ themeMode: palette, themeBrightness: 50, view: 'mine', presentation: 'field', homePresentation: 'list' }));
-const self: WorldProfile = { profileId: 'qa-field4-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true };
+const self: WorldProfile = { profileId: oneFieldFixture ? 'qa-onefield-anna' : 'qa-field4-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true,
+    ...(oneFieldFixture ? { audience: 'public' as const, audienceWriteVersion: 1 as const } : {}) };
 const people: WorldProfile[] = [self, { ...self, profileId: 'qa-person-tim', displayName: 'Тим', avatarColor: '#c4b0d8' }, { ...self, profileId: 'qa-person-mira', displayName: 'Мира', avatarColor: '#dba99b' }, { ...self, profileId: 'qa-person-sasha', displayName: 'Саша', avatarColor: '#b3c6a8' }, { ...self, profileId: 'qa-person-kirill', displayName: 'Кирилл', avatarColor: '#c7b995' }];
+for (const person of people.slice(1)) delete person.audienceWriteVersion;
 const qaPortraits = ['/src/world/fixtures/portraits/qa-anya.ce799ce936e5.webp', '/src/world/fixtures/portraits/qa-tim.879f6cbb19af.webp', '/src/world/fixtures/portraits/qa-mira.9e9577679d25.webp', '/src/world/fixtures/portraits/qa-sasha.4ba368e9d3be.webp', '/src/world/fixtures/portraits/qa-kirill.067cbf835a8d.webp'];
 for (const [index, person] of people.entries()) person.avatarUrl = qaPortraits[index]!;
 const groups: WorldCommunity[] = [
@@ -39,6 +42,30 @@ const apps: WorldAppRecord[] = [
     { appId: 'app-44444444444444444444444444444444', name: 'Pulse', description: 'Главное в ваших цифрах', coverKey: 'pulse', symbol: 'activity', status: 'ready', ownerAccountId: self.profileId, communityId: 'qa-studio' }
 ];
 apps[2] = { ...apps[2]!, name: 'Canvas', coverKey: 'canvas', symbol: 'brush', communityId: 'qa-studio' };
+// Explicit synthetic UI state only. Real authorization, receipt and SQLite
+// behavior are checked against Connect/World/Apps, outside this specimen.
+type FixtureAudience = 'private' | 'friends' | 'link' | 'public';
+const fixtureAudienceKey = 'soty.qa.one-field.audiences.v1';
+const profileReceipts = new Map<string, { body: string; receipt: Record<string, unknown> }>();
+const publicationReceipts = new Map<string, { body: string; result: Record<string, unknown> }>();
+const fixturePublications = new Map<string, { audience: FixtureAudience | null; policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number }>();
+for (const app of apps) fixturePublications.set(app.appId, { audience: 'private', policyEpoch: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [], activeTargetRevision: 1 });
+if (oneFieldFixture) {
+    try {
+        const raw = localStorage.getItem(fixtureAudienceKey);
+        if (raw && raw.length < 64_000) {
+            const value = JSON.parse(raw);
+            if (['private', 'friends', 'link', 'public'].includes(value.profile?.audience) && Number.isSafeInteger(value.profile.revision) && value.profile.revision >= 1)
+                Object.assign(self, value.profile, { profileId: self.profileId, audienceWriteVersion: 1 });
+            for (const [key, entry] of Array.isArray(value.profileReceipts) ? value.profileReceipts.slice(-30) : []) profileReceipts.set(key, entry);
+            for (const [key, entry] of Array.isArray(value.publicationReceipts) ? value.publicationReceipts.slice(-30) : []) publicationReceipts.set(key, entry);
+            for (const [key, entry] of Array.isArray(value.publications) ? value.publications : []) if (fixturePublications.has(key) && (entry.audience === null || ['private', 'friends', 'link', 'public'].includes(entry.audience)) && Number.isSafeInteger(entry.policyEpoch) && entry.policyEpoch >= 1) fixturePublications.set(key, entry);
+        }
+    } catch { /* No production state or authority exists in this DEV fixture. */ }
+}
+const persistFixtureAudience = (): void => {
+    localStorage.setItem(fixtureAudienceKey, JSON.stringify({ profile: { audience: self.audience, revision: self.revision, discoverable: self.discoverable }, profileReceipts: [...profileReceipts].slice(-30), publicationReceipts: [...publicationReceipts].slice(-30), publications: [...fixturePublications] }));
+};
 const preset = createFieldDocument();
 preset.contexts = [{ contextId: 'studio', title: 'Студия', x: 0, y: 0 }, { contextId: 'close', title: 'Близкие', x: 640, y: -80 }, { contextId: 'evening', title: 'После работы', x: 520, y: 340 }];
 const shortcut = (id: string, entity: { kind: 'app' | 'person' | 'builtin' | 'device'; id: string }, contextId: string, slot: [number, number]): void => { preset.shortcuts.push({ shortcutId: id, entity, contextId, slot }); };
@@ -54,14 +81,14 @@ shortcut('evening-music', { kind: 'app', id: apps[0]!.appId }, 'evening', [0, 0]
 shortcut('evening-chess', { kind: 'builtin', id: 'chess' }, 'evening', [19, 0]);
 shortcut('evening-kirill', { kind: 'person', id: people[4]!.profileId }, 'evening', [35, -1]);
 const sha = async (value: unknown): Promise<string> => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value))))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-const fixtureFieldKey = 'soty.qa.unified-field.v4';
+const fixtureFieldKey = oneFieldFixture ? 'soty.qa.one-field.v1' : 'soty.qa.unified-field.v4';
 let fixtureField: { revision: number; document: FieldDocument; contentHash: string; updatedAt: number } | null = null;
 const fieldReceipts = new Map<string, { revision: number; contentHash: string; committedAt: number }>();
 // A loopback-only peer keeps the real launch boundary in UI checks. These
 // deterministic specimen tickets carry no account or production authority.
 const fixtureRuntime = new URL(new URLSearchParams(location.search).get('appOrigin') ?? 'http://127.0.0.1:5324');
 if (fixtureRuntime.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(fixtureRuntime.hostname) || fixtureRuntime.origin === location.origin || fixtureRuntime.href !== fixtureRuntime.origin + '/') throw new Error('Invalid UI fixture peer');
-const fixtureApp = (app: WorldAppRecord) => ({ id: app.appId, name: app.name, ownerAccountId: app.ownerAccountId ?? self.profileId, state: 'ready', createdAt: 1, updatedAt: 1, access: 'owner', canManage: true, entry: { appId: app.appId, domainId: `dom_${app.appId.slice(4)}`, origin: fixtureRuntime.origin, path: '/' } });
+const fixtureApp = (app: WorldAppRecord) => ({ id: app.appId, name: app.name, ownerAccountId: app.ownerAccountId ?? 'qa-peer-owner', state: 'ready', createdAt: 1, updatedAt: 1, access: app.ownerAccountId === self.profileId ? 'owner' : 'public', canManage: app.ownerAccountId === self.profileId, ...(oneFieldFixture ? { publication: { ...fixturePublications.get(app.appId), activeNamedAddressCount: 0 } } : {}), entry: { appId: app.appId, domainId: `dom_${app.appId.slice(4)}`, origin: fixtureRuntime.origin, path: '/' } });
 const fixtureEntry = (args: Record<string, unknown>) => {
     if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture account changed'), { code: 'authentication_required' });
     const app = apps.find(value => value.appId === args.appId);
@@ -111,7 +138,17 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
             case 'contacts.list': result = { contacts: [], requests: { incoming: [], outgoing: [] }, blocked: [], invitations: [] }; break;
             case 'world.field.get': {
                 if (!fixtureField) {
-                    if (!preset.shortcuts.some(value => value.shortcutId === 'studio-notebook')) shortcut('studio-notebook', { kind: 'device', id: `device-${await sha(['qa-notebook', 'qa-connector'])}` }, 'studio', [-17, 34]);
+                    if (oneFieldFixture) {
+                        preset.contexts = [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }]; preset.shortcuts = [];
+                        const refs = [
+                            { kind: 'app', id: apps[2]!.appId }, { kind: 'person', id: self.profileId },
+                            { kind: 'builtin', id: 'notes' }, { kind: 'app', id: apps[1]!.appId },
+                            { kind: 'device', id: `device-${await sha(['qa-notebook', 'qa-connector'])}` },
+                            { kind: 'builtin', id: 'chess' }, { kind: 'builtin', id: 'assistant' },
+                        ] as const;
+                        const slots: [number, number][] = [[0, 0], [0, -21], [21, -21], [-21, 0], [21, 0], [-21, 21], [0, 21]];
+                        refs.forEach((ref, index) => shortcut(`one-field-${index}`, ref, 'personal', slots[index]!));
+                    } else if (!preset.shortcuts.some(value => value.shortcutId === 'studio-notebook')) shortcut('studio-notebook', { kind: 'device', id: `device-${await sha(['qa-notebook', 'qa-connector'])}` }, 'studio', [-17, 34]);
                     const saved = localStorage.getItem(fixtureFieldKey);
                     try { if (saved) { const value = JSON.parse(saved); fixtureField = { ...value, document: validateFieldDocument(value.document) }; } } catch { /* Isolated controlled fixture only. */ }
                     fixtureField ??= { revision: 1, document: preset, contentHash: await sha(preset), updatedAt: 1 };
@@ -141,13 +178,27 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
             case 'world.profile.get':
                 result = { profile: self };
                 break;
-            case 'world.profile.update':
-                Object.assign(self, args, { revision: self.revision + 1 });
-                result = { profile: self };
-                break;
-            case 'world.profile.view':
-                result = { profile: people.find(item => item.profileId === args.profileId) || self, communities: groups, canRequestContact: true };
-                break;
+            case 'world.profile.update': {
+                if (args.requestId !== undefined || args.expectedAccountId !== undefined) {
+                    if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture account changed'), { code: 'profile_account_changed' });
+                    const requestId = String(args.requestId), body = JSON.stringify(args), previous = profileReceipts.get(requestId);
+                    if (previous) {
+                        if (previous.body !== body) throw Object.assign(new Error('Fixture request conflict'), { code: 'profile_request_conflict' });
+                        result = { profile: self, receipt: previous.receipt, replayed: true }; break;
+                    }
+                    if (args.expectedRevision !== self.revision) throw Object.assign(new Error('Fixture revision changed'), { code: 'revision_conflict' });
+                    if (!['private', 'friends', 'link', 'public'].includes(String(args.audience))) throw Object.assign(new Error('Fixture audience invalid'), { code: 'invalid_choice' });
+                    self.audience = args.audience as FixtureAudience; self.discoverable = self.audience === 'public'; self.revision++;
+                    const receipt = { schema: 'soty.world-profile-audience.receipt.v1', requestId, accountId: self.profileId, audience: self.audience, expectedRevision: args.expectedRevision, acceptedRevision: self.revision };
+                    profileReceipts.set(requestId, { body, receipt }); persistFixtureAudience(); result = { profile: self, receipt, replayed: false }; break;
+                }
+                Object.assign(self, args, { revision: self.revision + 1 }); result = { profile: self }; break;
+            }
+            case 'world.profile.view': {
+                const profile = people.find(item => item.profileId === args.profileId);
+                if (!profile) throw Object.assign(new Error('Fixture profile absent'), { code: 'profile_not_found' });
+                result = { profile, communities: groups, canRequestContact: profile !== self }; break;
+            }
             case 'world.community.list':
                 result = { communities: params.get('chats') === 'empty' ? [] : groups };
                 break;
@@ -216,10 +267,26 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 result = { schema: 'soty.app-inspection.v1', checkedAt: Date.now(),
                     app: { id: app.appId, name: app.name, state: 'enabled', revision: 1, grants: app.grants || { accountIds: [], communityIds: [] } },
                     addresses: { revision: 1, claimOrigin: null, canonical: null, aliases: [], limits: { perApp: 8, perAccount: 80, usedByApp: 0, usedByAccount: 0 } },
-                    publication: { policyEpoch: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [], activeTargetRevision: 1 },
+                    publication: oneFieldFixture ? fixturePublications.get(app.appId)! : { policyEpoch: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [], activeTargetRevision: 1 },
                     source: { hostDeviceId: 'qa-notebook', connectorId: 'qa-connector', deviceName: 'Мой ноутбук', port: 5324, entryPath: '/', revision: 1, digest: 'a'.repeat(64), profile: 'soty.relay-restricted.v1', observation: { state: 'unknown', observedAt: null, freshUntil: null, evidence: null } },
-                    actions: { canEdit: app.ownerAccountId === self.profileId, canPublish: false, canPreview: false, canReserveName: false } };
+                    actions: { canEdit: app.ownerAccountId === self.profileId, canPublish: oneFieldFixture && app.ownerAccountId === self.profileId, canPreview: false, canReserveName: false } };
                 break;
+            }
+            case 'apps.publication.update': {
+                const app = apps.find(value => value.appId === args.appId), publication = app && fixturePublications.get(app.appId);
+                if (!oneFieldFixture || !app || !publication || app.ownerAccountId !== self.profileId || args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Fixture app authority absent'), { code: 'app_owner_required' });
+                const requestId = String(args.requestId), key = app.appId + ':' + requestId, body = JSON.stringify(args), previous = publicationReceipts.get(key);
+                if (previous) {
+                    if (previous.body !== body) throw Object.assign(new Error('Fixture request conflict'), { code: 'app_publication_request_conflict' });
+                    result = { ...previous.result, replayed: true, current: { ...publication, appId: app.appId } }; break;
+                }
+                if (args.expectedPolicyEpoch !== publication.policyEpoch || args.expectedTargetRevision !== 1) throw Object.assign(new Error('Fixture policy changed'), { code: 'app_policy_conflict' });
+                if (!['private', 'friends', null].includes(args.audience as 'private' | 'friends' | null) || args.launchPolicy !== 'restricted' || args.listed !== false || !Array.isArray(args.activeDomainIds) || args.activeDomainIds.length) throw Object.assign(new Error('Локальный пример не выдаёт публичные адреса'), { code: 'app_publication_domain_unavailable' });
+                Object.assign(publication, { audience: args.audience, policyEpoch: publication.policyEpoch + 1 });
+                const requestKeyHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestId)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+                const receipt = { schema: 'soty.app-publication-receipt.v2', namespace: 'apps.publication.update.v2', appId: app.appId, requestKeyHash, ...publication, targetRevision: 1, targetDigest: 'a'.repeat(64), profile: 'soty.relay-restricted.v1', exposureAck: null, committedAt: Date.now() };
+                const accepted = { requestId, replayed: false, receipt, current: { ...publication, appId: app.appId } };
+                result = accepted; publicationReceipts.set(key, { body, result: structuredClone(accepted) }); persistFixtureAudience(); break;
             }
             case 'apps.register': {
                 const body = JSON.stringify(args), existing = registrations.find(value => value.port === Number(args.port));

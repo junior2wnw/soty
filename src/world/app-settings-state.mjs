@@ -9,6 +9,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const check = (ok, code = 'app_settings_invalid_intent') => { if (!ok) fail(code); };
 const operations = ['apps.publication.update', 'apps.domains.claim', 'apps.domains.retire', 'apps.source.promote'];
+const audienceModes = ['private', 'friends', 'link', 'public'];
+export function appAudiencePublicationFields(audience) {
+  check(audience === null || audienceModes.includes(audience), 'invalid_app_audience');
+  return audience === null ? { audience } : { audience, launchPolicy: ['link', 'public'].includes(audience) ? 'anyone' : 'restricted', listed: audience === 'public' };
+}
 function uniqueIds(value, pattern = null, code = 'app_settings_invalid_intent') {
   check(Array.isArray(value) && value.length <= 100 && value.every(item => pattern ? typeof item === 'string' && pattern.test(item) : id(item)), code);
   check(new Set(value).size === value.length, code); return [...value].sort();
@@ -17,17 +22,20 @@ function normalize(op, args, includeRequest = false) {
   check(operations.includes(op) && args && typeof args === 'object' && !Array.isArray(args));
   const fields = ['appId', 'expectedAccountId', ...(includeRequest ? ['requestId'] : []),
     ...(op === 'apps.publication.update' || op === 'apps.source.promote' ? ['expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'exposureAck',
-      ...(op === 'apps.source.promote' ? ['preparationId'] : ['activeDomainIds'])]
+      ...(op === 'apps.source.promote' ? ['preparationId'] : ['activeDomainIds', 'audience'])]
       : ['expectedDomainsRevision', op === 'apps.domains.claim' ? 'slug' : 'domainId'])];
   check(Object.keys(args).every(key => fields.includes(key)) && typeof args.appId === 'string' && appIdPattern.test(args.appId) && id(args.expectedAccountId));
   if (includeRequest) check(id(args.requestId));
   const base = { appId: args.appId, expectedAccountId: args.expectedAccountId };
   if (op === 'apps.publication.update' || op === 'apps.source.promote') {
-    const source = op === 'apps.source.promote';
+    const source = op === 'apps.source.promote', audienceSpecified = !source && Object.hasOwn(args, 'audience');
+    const audience = audienceSpecified ? appAudiencePublicationFields(args.audience) : null;
+    if (audience && audience.audience !== null) check(args.launchPolicy === audience.launchPolicy && args.listed === audience.listed, 'invalid_app_audience_policy');
     check(positive(args.expectedPolicyEpoch) && positive(args.expectedTargetRevision)
       && ['restricted', 'anyone'].includes(args.launchPolicy) && typeof args.listed === 'boolean');
     const activeDomainIds = source ? null : uniqueIds(args.activeDomainIds, domainIdPattern);
     check(!args.listed || (args.launchPolicy === 'anyone' && (source || activeDomainIds.length > 0)));
+    if (audience && ['link', 'public'].includes(audience.audience)) check(activeDomainIds.length > 0, 'app_publication_domain_required');
     if (source) check(typeof args.preparationId === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(args.preparationId), 'invalid_source_preparation');
     let exposureAck;
     if (args.launchPolicy === 'anyone') {
@@ -40,7 +48,7 @@ function normalize(op, args, includeRequest = false) {
     } else check(args.exposureAck === undefined || args.exposureAck === null);
     Object.assign(base, { expectedPolicyEpoch: args.expectedPolicyEpoch, expectedTargetRevision: args.expectedTargetRevision,
       launchPolicy: args.launchPolicy, listed: args.listed, ...(source ? { preparationId: args.preparationId } : { activeDomainIds }),
-      ...(exposureAck ? { exposureAck } : {}) });
+      ...(exposureAck ? { exposureAck } : {}), ...(audienceSpecified ? { audience: args.audience } : {}) });
   } else {
     check(revision(args.expectedDomainsRevision)); base.expectedDomainsRevision = args.expectedDomainsRevision;
     if (op === 'apps.domains.claim') { check(typeof args.slug === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{1,46}[A-Za-z0-9]$/u.test(args.slug), 'invalid_app_slug'); base.slug = args.slug.toLowerCase(); }
@@ -69,7 +77,10 @@ async function verifyReceipt(pending, response) {
     && receipt && typeof receipt === 'object' && !Array.isArray(receipt) && receipt.appId === args.appId
     && receipt.requestKeyHash === await requestHash(args.requestId), 'app_settings_invalid_receipt');
   if (pending.op === 'apps.publication.update') {
-    check(receipt.schema === 'soty.app-publication-receipt.v1' && receipt.namespace === 'apps.publication.update.v1'
+    const audienceSpecified = Object.hasOwn(args, 'audience');
+    check(receipt.schema === (audienceSpecified ? 'soty.app-publication-receipt.v2' : 'soty.app-publication-receipt.v1')
+      && receipt.namespace === (audienceSpecified ? 'apps.publication.update.v2' : 'apps.publication.update.v1')
+      && (audienceSpecified ? receipt.audience === args.audience : !Object.hasOwn(receipt, 'audience'))
       && receipt.policyEpoch === args.expectedPolicyEpoch + 1 && receipt.targetRevision === args.expectedTargetRevision
       && receipt.launchPolicy === args.launchPolicy && receipt.listed === args.listed
       && same(uniqueIds(receipt.activeDomainIds, domainIdPattern, 'app_settings_invalid_receipt'), args.activeDomainIds)
@@ -77,7 +88,8 @@ async function verifyReceipt(pending, response) {
       && typeof receipt.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.targetDigest) && supportedAppSourceProfile(receipt.profile)
       && (!args.exposureAck || (receipt.targetDigest === args.exposureAck.targetDigest && receipt.profile === args.exposureAck.profile))
       && response.current?.appId === args.appId && positive(response.current.policyEpoch)
-      && response.current.policyEpoch >= receipt.policyEpoch, 'app_settings_invalid_receipt');
+      && response.current.policyEpoch >= receipt.policyEpoch
+      && (!audienceSpecified || response.current.policyEpoch > receipt.policyEpoch || response.current.audience === args.audience), 'app_settings_invalid_receipt');
   } else if (pending.op === 'apps.source.promote') {
     const target = pending.expectedSource;
     check(receipt.schema === 'soty.app-source-receipt.v1' && receipt.namespace === 'apps.source.promote.v1'
@@ -214,6 +226,7 @@ export function appPublicationArgs(snapshot, draft, accountId) {
   return normalize('apps.publication.update', { appId: snapshot.app.id, expectedAccountId: accountId,
     expectedPolicyEpoch: snapshot.publication.policyEpoch, expectedTargetRevision: snapshot.source.revision,
     launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? (draft.listed ?? snapshot.publication.listed) : false, activeDomainIds,
+    ...(Object.hasOwn(draft, 'audience') ? { audience: draft.audience } : {}),
     ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: appSourceExposureScope(snapshot.source.profile), targetRevision: snapshot.source.revision,
       targetDigest: snapshot.source.digest, profile: snapshot.source.profile } } : {}),
   });
@@ -224,12 +237,14 @@ export function appPublicationArgs(snapshot, draft, accountId) {
 export function createAppSettingsDraftState(initial) {
   let snapshot = clone(initial), nameBase = clone(initial), grantsBase = clone(initial), publicationBase = clone(initial);
   const freshDraft = value => ({ name: value.app.name, communityIds: [...value.app.grants.communityIds],
-    launchPolicy: value.publication.launchPolicy, listed: value.publication.listed, activeDomainIds: [...value.publication.activeDomainIds], exposureConfirmed: false, slug: '' });
+    launchPolicy: value.publication.launchPolicy, listed: value.publication.listed, activeDomainIds: [...value.publication.activeDomainIds], exposureConfirmed: false, slug: '',
+    ...(Object.hasOwn(value.publication, 'audience') ? { audience: value.publication.audience } : {}) });
   let draft = freshDraft(initial);
   const idsEqual = (a, b) => same([...a].sort(), [...b].sort());
   const nameDirty = () => draft.name !== nameBase.app.name;
   const grantsDirty = () => !idsEqual(draft.communityIds, grantsBase.app.grants.communityIds);
-  const publicationDirty = () => draft.launchPolicy !== publicationBase.publication.launchPolicy
+  const publicationDirty = () => draft.audience !== publicationBase.publication.audience
+    || draft.launchPolicy !== publicationBase.publication.launchPolicy
     || (draft.launchPolicy === 'anyone' && draft.listed !== publicationBase.publication.listed)
     || !idsEqual(draft.activeDomainIds, publicationBase.publication.activeDomainIds);
   const unavailableDomainIds = () => draft.activeDomainIds.filter(id => !snapshot.addresses.aliases.some(alias => alias.id === id && alias.state === 'bound'));
@@ -242,14 +257,16 @@ export function createAppSettingsDraftState(initial) {
         || publicationBase.source.revision !== snapshot.source.revision || publicationBase.source.digest !== snapshot.source.digest)) }); },
     base(kind) { check(['name', 'grants', 'publication'].includes(kind)); return clone(kind === 'name' ? nameBase : kind === 'grants' ? grantsBase : publicationBase); },
     patch(value) {
-      check(value && Object.keys(value).every(key => ['name', 'communityIds', 'launchPolicy', 'listed', 'activeDomainIds', 'exposureConfirmed', 'slug'].includes(key)));
-      draft = { ...draft, ...clone(value) };
+      check(value && Object.keys(value).every(key => ['name', 'communityIds', 'launchPolicy', 'listed', 'activeDomainIds', 'exposureConfirmed', 'slug', 'audience'].includes(key)));
+      draft = { ...draft, ...clone(value), ...(Object.hasOwn(value, 'audience') ? appAudiencePublicationFields(value.audience) : {}) };
     },
     observe(next, completed) {
       check(next?.app?.id === snapshot.app.id, 'app_settings_invalid_scope');
       const nameDone = completed?.kind === 'name' && draft.name.trim() === completed.args.name;
       const grantsDone = completed?.kind === 'grants' && idsEqual(draft.communityIds, completed.args.grants.communityIds);
-      const pubDone = completed?.kind === 'publication' && draft.launchPolicy === completed.args.launchPolicy
+      const pubDone = completed?.kind === 'publication'
+        && (Object.hasOwn(completed.args, 'audience') ? draft.audience === completed.args.audience : draft.audience === publicationBase.publication.audience)
+        && draft.launchPolicy === completed.args.launchPolicy
         && (draft.launchPolicy !== 'anyone' || draft.listed === completed.args.listed)
         && idsEqual(draft.activeDomainIds, completed.args.activeDomainIds)
         && (draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && publicationBase.source.digest === completed.args.exposureAck?.targetDigest));
@@ -258,12 +275,16 @@ export function createAppSettingsDraftState(initial) {
       if (!nameDirty() || nameDone) { nameBase = clone(next); draft.name = next.app.name; }
       if (!grantsDirty() || grantsDone) { grantsBase = clone(next); draft.communityIds = [...next.app.grants.communityIds]; }
       if (!publicationDirty() || pubDone) {
-        publicationBase = clone(next); draft.launchPolicy = next.publication.launchPolicy; draft.listed = next.publication.listed; draft.activeDomainIds = [...next.publication.activeDomainIds]; draft.exposureConfirmed = false;
+        publicationBase = clone(next);
+        if (Object.hasOwn(next.publication, 'audience')) draft.audience = next.publication.audience; else delete draft.audience;
+        draft.launchPolicy = next.publication.launchPolicy; draft.listed = next.publication.listed; draft.activeDomainIds = [...next.publication.activeDomainIds]; draft.exposureConfirmed = false;
       } else publicationBase.addresses = clone(next.addresses); // New claims are selectable; the policy/target CAS is not rebased.
       snapshot = clone(next);
     },
     reset() { const slug = draft.slug; nameBase = clone(snapshot); grantsBase = clone(snapshot); publicationBase = clone(snapshot); draft = { ...freshDraft(snapshot), slug }; },
-    resetPublication() { publicationBase = clone(snapshot); draft.launchPolicy = snapshot.publication.launchPolicy;
+    resetPublication() { publicationBase = clone(snapshot);
+      if (Object.hasOwn(snapshot.publication, 'audience')) draft.audience = snapshot.publication.audience; else delete draft.audience;
+      draft.launchPolicy = snapshot.publication.launchPolicy;
       draft.listed = snapshot.publication.listed;
       draft.activeDomainIds = [...snapshot.publication.activeDomainIds]; draft.exposureConfirmed = false; },
   };

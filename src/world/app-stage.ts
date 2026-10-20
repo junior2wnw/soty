@@ -29,6 +29,7 @@ import {captureSourcePin,matchesScopedCaptureContext} from './app-project-captur
 import {createScopedSlotRenewal,attachScopedRenewalLoads,attachRootSsoWakeRecovery,attachSourceFrameRefresh,isRootSsoWorkspacePin,type ScopedRenewReply} from './app-scoped-renewal.mjs';
 
 export interface AppStageOptions {
+  minimalChrome?: boolean;
   presentation?: 'widget';
   /** Stable UI locator only; Root binds it to the authenticated app/person/device. */
   instanceId?: string;
@@ -141,6 +142,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
   const shortToolbar = view.matchMedia('(max-height: 480px)');
+  const compactToolbar = (): boolean => options.minimalChrome === true || shortToolbar.matches;
   function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
     moreBody.hidden = true; more.setAttribute('aria-expanded', 'false'); if (focus && current()) more.focus();
@@ -149,8 +151,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (options.presentation === 'widget') return;
     if (!current()) { closeMore(); return; }
     const active = host.ownerDocument.activeElement;
-    if (shortToolbar.matches && active?.closest('.sw-topbar,.sw-mobile-nav') && !active.getClientRects().length) more.focus();
-    if (!shortToolbar.matches || moreBody.hidden) {
+    if (compactToolbar() && active?.closest('.sw-topbar,.sw-mobile-nav') && !active.getClientRects().length) more.focus();
+    if (!compactToolbar() || moreBody.hidden) {
       for (const property of ['max-height', 'max-width', 'translate']) moreBody.style.removeProperty(property);
       return;
     }
@@ -171,10 +173,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function syncShortToolbar(): void {
     if (options.presentation === 'widget' || !current()) return;
-    const controls = [field, report, discuss], target = shortToolbar.matches ? moreBody : header;
+    const controls = [field, report, discuss], target = compactToolbar() ? moreBody : header;
     if (controls.some(control => control.parentElement !== target)) {
       const restoreFocus = controls.some(control => control.contains(host.ownerDocument.activeElement));
-      if (shortToolbar.matches) moreBody.prepend(...controls);
+      if (compactToolbar()) moreBody.prepend(...controls);
       else for (const control of controls) header.insertBefore(control, expand);
       if (restoreFocus) closeMore(true);
     }
@@ -183,7 +185,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function focusDiscussionControl(): void {
     (discuss.parentElement === moreBody && moreBody.hidden ? more : discuss).focus();
   }
-  const back = iconButton('Назад', 'back', () => { if (current()) options.onBack(); });
+  const back = iconButton(options.minimalChrome ? 'Вернуться на поле' : 'Назад', options.minimalChrome ? 'close' : 'back', () => { if (current()) options.onBack(); });
+  if (options.minimalChrome) { screen.classList.add('of-app-surface'); back.classList.add('of-app-close'); }
   const discuss = iconButton('Обсуждение приложения', 'chat', () => {
     if (current()) { closeMore(); void navigatePresentation(intent.presentation ? undefined : { panel: 'discussion' }, true); }
   });
@@ -441,6 +444,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }):null;
   const mainRuntimeControls = options.presentation === 'widget' ? null : createWidgetRuntimeControls({
     presentation:'main',returnTarget:{isCurrent:current,resolve:()=>name},
+    ...(options.minimalChrome ? {mainControlHost:moreBody} : {}),
     view,screen,message,runtime,runtimeActions,current,externalRecovery,
     capture:()=>{
       const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
@@ -721,9 +725,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!moreBody.hidden && event.target instanceof view.Node && !moreHost.contains(event.target)) closeMore();
   }, { signal: controller.signal });
   host.ownerDocument.addEventListener('keydown', event => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !current()) return;
     if (!moreBody.hidden) { event.preventDefault(); closeMore(true); return; }
-    if (runtimeActions.contains(host.ownerDocument.activeElement) && runtimeDisplay?.dismiss()) { event.preventDefault(); name.focus(); }
+    if (runtimeActions.contains(host.ownerDocument.activeElement) && runtimeDisplay?.dismiss()) { event.preventDefault(); name.focus(); return; }
+    if (options.minimalChrome && !host.ownerDocument.querySelector('dialog[open]') && !screen.matches(':fullscreen') && !screen.classList.contains('is-window-expanded')
+      && !(event.target instanceof view.Element && event.target.closest('input,textarea,select,[contenteditable]:not([contenteditable=false])'))) {
+      event.preventDefault(); options.onBack();
+    }
   }, { signal: controller.signal });
   host.ownerDocument.addEventListener('visibilitychange', showPanel, { signal: controller.signal });
   narrow.addEventListener('change', showPanel, { signal: controller.signal });

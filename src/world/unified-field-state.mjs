@@ -1,35 +1,47 @@
 import { createFieldDocument, validateFieldDocument, validateFieldEntity } from '../../modules/field/contract.mjs';
 import { hexSpiral } from '../geometry/hex.mjs';
-import { fieldSlotToPoint, fieldFootprint, fieldPolygonsOverlap, fieldBounds, fieldBoundsOverlap } from './unified-field-layout.mjs';
+import { fieldSlotToPoint, fieldFootprint, fieldPolygonsOverlap, fieldBounds, fieldBoundsOverlap, UNIFIED_FIELD_METRICS } from './unified-field-layout.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const preferred = Object.freeze({ app: [[0, 0], [-25, 19], [6, 19]], builtin: [[0, 0], [-25, 19], [6, 19]],
-  person: [[-24, -3], [29, 5], [-34, 19], [40, 19]], device: [[-17, 34], [-41, 34], [7, 34]], community: [[0, 0], [-25, 19], [6, 19]] });
-const candidates = hexSpiral(12).map(([q, r]) => [q * 24, r * 24]);
+const preferred = Object.freeze([[0, 0], [0, -21], [21, -21], [-21, 0], [21, 0], [-21, 21], [0, 21]].map(Object.freeze));
+const candidates = hexSpiral(12).map(([q, r]) => [q * 21, r * 21]);
 
-export function nextFieldSlot(document, contextId, kind = 'app') {
+export function nextFieldSlot(document, contextId, kind = 'app', metrics = UNIFIED_FIELD_METRICS) {
   const context = document.contexts.find(context => context.contextId === contextId);
   if (!context) fail('field_context_missing');
   const existing = document.shortcuts.filter(shortcut => shortcut.contextId === contextId);
   const occupied = new Set(existing.map(shortcut => shortcut.slot.join(',')));
   const contexts = new Map(document.contexts.map(value => [value.contextId, value]));
-  const worldPoint = (slot, origin) => { const point = fieldSlotToPoint(slot); return { x: origin.x + point.x, y: origin.y + point.y }; };
+  const worldPoint = (slot, origin) => { const point = fieldSlotToPoint(slot, metrics); return { x: origin.x + point.x, y: origin.y + point.y }; };
   const footprints = document.shortcuts.map(shortcut => {
     const origin = contexts.get(shortcut.contextId); if (!origin) fail('field_context_missing');
-    const polygon = fieldFootprint(shortcut.entity.kind, worldPoint(shortcut.slot, origin)); return { polygon, bounds: fieldBounds(polygon) };
+    const polygon = fieldFootprint(shortcut.entity.kind, worldPoint(shortcut.slot, origin), metrics); return { polygon, bounds: fieldBounds(polygon) };
   });
-  const slot = [...(preferred[kind] ?? preferred.app), ...candidates].find(value => {
+  const slot = [...preferred, ...candidates].find(value => {
     if (occupied.has(value.join(','))) return false;
-    const polygon = fieldFootprint(kind, worldPoint(value, context)), bounds = fieldBounds(polygon);
+    const polygon = fieldFootprint(kind, worldPoint(value, context), metrics), bounds = fieldBounds(polygon);
     return !footprints.some(other => fieldBoundsOverlap(bounds, other.bounds, 10) && fieldPolygonsOverlap(polygon, other.polygon, 10));
   });
   if (!slot) fail('field_context_full');
   return [...slot];
 }
 
+/** Detached preview only. The caller explicitly applies one existing restore
+ * command after confirming this exact prior document. Never moves other spaces. */
+export function compactFieldContext(value, contextId, metrics = UNIFIED_FIELD_METRICS) {
+  const before = validateFieldDocument(value), document = structuredClone(before);
+  if (!document.contexts.some(context => context.contextId === contextId)) fail('field_context_missing');
+  const own = document.shortcuts.filter(shortcut => shortcut.contextId === contextId);
+  document.shortcuts = document.shortcuts.filter(shortcut => shortcut.contextId !== contextId);
+  for (const shortcut of own) document.shortcuts.push({ ...shortcut, slot: nextFieldSlot(document, contextId, shortcut.entity.kind, metrics) });
+  const placed = new Map(document.shortcuts.map(shortcut => [shortcut.shortcutId, shortcut]));
+  document.shortcuts = before.shortcuts.map(shortcut => placed.get(shortcut.shortcutId));
+  return validateFieldDocument(document);
+}
+
 /** A command has no authority-bearing operation: every result is only a detached field document. */
-export function applyFieldCommand(value, command) {
+export function applyFieldCommand(value, command, metrics = UNIFIED_FIELD_METRICS) {
   const before = validateFieldDocument(value), document = structuredClone(before);
   if (!command || typeof command !== 'object') fail('field_command_invalid');
   if (command.expected && !same(command.expected, before)) fail('field_conflict');
@@ -53,7 +65,7 @@ export function applyFieldCommand(value, command) {
   } else if (command.type === 'add-shortcut') {
     context(command.contextId);
     document.shortcuts.push({ shortcutId: command.shortcutId, entity: validateFieldEntity(command.entity), contextId: command.contextId,
-      slot: command.slot ? [...command.slot] : nextFieldSlot(document, command.contextId, command.entity.kind) });
+      slot: command.slot ? [...command.slot] : nextFieldSlot(document, command.contextId, command.entity.kind, metrics) });
     affected.push(command.shortcutId);
   } else if (command.type === 'remove-shortcut') {
     shortcut(command.shortcutId); affected.push(command.shortcutId);

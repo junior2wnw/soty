@@ -1,3 +1,10 @@
+/** Test-only rollback of the audience fragment before constructing a genuine v1/v2 fixture. */
+export function removeAudienceProjection(db) {
+  db.exec(`DROP TRIGGER IF EXISTS world_profile_directory_ai;
+    DROP TRIGGER IF EXISTS world_profile_directory_au;
+    ALTER TABLE profiles DROP COLUMN audience;`);
+}
+
 /** Test-only rollback of the additive v3 projection, leaving the authoritative v2 records intact. */
 export function removeDiscoveryProjection(db) {
   db.exec(`

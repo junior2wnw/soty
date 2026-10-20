@@ -1465,3 +1465,115 @@ test('a failed newer community read does not retire an earlier successful list t
     if (pair) await Promise.allSettled([pair.older, pair.newer]); await turn(); f.app.cleanScreen();
   }
 });
+
+
+// These callbacks come from the real WorldApplication methods compiled above.
+// Reuse the established platform ports; only the full Notes renderer is outside
+// this test's boundary. Actual openNotes/writeRoute/cleanScreen/flush/account
+// transition methods run. No copied menu callback or copied exit guard.
+const notesMenuEntries = [
+  { name: 'Work / Notes', method: 'openWorkMenu', label: 'Записки', noteId: null, route: '#notes' },
+  { name: 'Create / Note', method: 'openAddMenu', label: 'Записку', noteId: 'new', route: '#notes/new' },
+];
+function notesMenuDraftFixture(entry) {
+  const f = fixture({ hash: '#notes/current-note' }), pending = deferred(), mounts = [];
+  let dirty = true, flushes = 0, disposals = 0;
+  const draft = {
+    hasUnsavedChanges: () => dirty,
+    flush() { flushes++; return pending.promise; },
+    dispose() { disposals++; },
+  };
+  Object.assign(f.app, {
+    view: 'notes', preferences: { view: 'notes' }, notesHandle: draft,
+    unifiedField: null,
+    // Restore the actual method: fixture's general read-only openNotes port is
+    // deliberately insufficient for proving destructive route/cleanup behavior.
+    openNotes: f.Controller.prototype.openNotes,
+    persist() {},
+    renderNotes(noteId) { mounts.push({ accountId: this.deskAccount, noteId: noteId ?? null }); },
+  });
+  f.app.main.append(new ElementPort());
+  f.app[entry.method]();
+  const menu = f.dialogs.at(-1);
+  const buttons = node => [node, ...node.children.flatMap(child => child instanceof ElementPort ? buttons(child) : [])]
+    .filter(child => child.tagName === 'button');
+  const matches = buttons(menu.body).filter(button => button.textContent === entry.label);
+  assert.equal(matches.length, 1, 'click one actual menu entry, selected by its visible label');
+  return { ...f, pending, draft, mounts, menu,
+    click() { matches[0].emit('click'); },
+    setDurable() { dirty = false; },
+    get flushes() { return flushes; }, get disposals() { return disposals; },
+  };
+}
+for (const entry of notesMenuEntries) {
+  test(`actual Notes menu draft guard: ${entry.name} clean positive reaches real Notes route exactly once`, () => {
+    const f = notesMenuDraftFixture(entry), sequence = f.app.screenSequence;
+    f.setDurable(); f.click();
+    assert.equal(f.flushes, 0);
+    assert.equal(f.menu.element.open, false);
+    assert.equal(f.location.hash, entry.route);
+    assert.equal(f.app.activeRoute, entry.route);
+    assert.equal(f.app.screenSequence, sequence + 1);
+    assert.equal(f.disposals, 1);
+    assert.deepEqual(f.mounts, [{ accountId: 'account-A', noteId: entry.noteId }]);
+  });
+  test(`actual Notes menu draft guard: ${entry.name} holds a dirty editor until successful flush and mounts once`, async () => {
+    const f = notesMenuDraftFixture(entry), sequence = f.app.screenSequence, route = f.location.hash;
+    f.click(); f.click();
+    assert.equal(f.flushes, 1, 'repeated activation shares the existing pending exit');
+    assert.equal(f.menu.element.open, false);
+    assert.equal(f.location.hash, route);
+    assert.equal(f.app.screenSequence, sequence);
+    assert.equal(f.app.notesHandle, f.draft);
+    assert.equal(f.disposals, 0);
+    assert.equal(f.mounts.length, 0);
+    f.setDurable(); f.pending.resolve(); await turn();
+    assert.equal(f.location.hash, entry.route);
+    assert.equal(f.app.screenSequence, sequence + 1);
+    assert.equal(f.disposals, 1);
+    assert.equal(f.app.noteActionPending, false);
+    assert.deepEqual(f.mounts, [{ accountId: 'account-A', noteId: entry.noteId }]);
+  });
+  test(`actual Notes menu draft guard: ${entry.name} rejected local flush preserves draft and current route`, async () => {
+    const f = notesMenuDraftFixture(entry), sequence = f.app.screenSequence, route = f.location.hash;
+    f.click();
+    assert.equal(f.flushes, 1);
+    f.pending.reject(failure('notes_local_unavailable')); await turn();
+    assert.equal(f.location.hash, route);
+    assert.equal(f.app.screenSequence, sequence);
+    assert.equal(f.app.notesHandle, f.draft);
+    assert.equal(f.disposals, 0);
+    assert.equal(f.mounts.length, 0);
+    assert.equal(f.app.noteActionPending, false);
+    assert.match(f.app.lastToast, /не сохранены/u);
+  });
+  test(`actual Notes menu draft guard: ${entry.name} resolved flush with undurable data still cannot leave`, async () => {
+    const f = notesMenuDraftFixture(entry), sequence = f.app.screenSequence, route = f.location.hash;
+    f.click(); f.pending.resolve(); await turn();
+    assert.equal(f.flushes, 1);
+    assert.equal(f.location.hash, route);
+    assert.equal(f.app.screenSequence, sequence);
+    assert.equal(f.app.notesHandle, f.draft);
+    assert.equal(f.disposals, 0);
+    assert.equal(f.mounts.length, 0);
+    assert.match(f.app.lastToast, /сохраните/u);
+  });
+  for (const accounts of [['account-B'], ['account-B', 'account-A']]) {
+    test(`actual Notes menu draft guard: ${entry.name} held exit cannot navigate after ${accounts.join(' -> ')}`, async () => {
+      const f = notesMenuDraftFixture(entry), generation = f.app.accountGeneration;
+      f.click(); assert.equal(f.flushes, 1);
+      for (const account of accounts) f.app.transitionAccount(account);
+      assert.ok(f.app.accountGeneration > generation);
+      assert.equal(f.app.deskAccount, accounts.at(-1));
+      assert.equal(f.disposals, 1, 'the real account transition disposes the previous owner once');
+      const currentSequence = f.app.screenSequence, currentRoute = f.location.hash;
+      f.setDurable(); f.pending.resolve(); await turn();
+      assert.equal(f.app.screenSequence, currentSequence);
+      assert.equal(f.location.hash, currentRoute);
+      assert.equal(f.app.notesHandle, null);
+      assert.equal(f.disposals, 1);
+      assert.equal(f.mounts.length, 0, 'the old menu must not mount Notes in the current account generation');
+      assert.equal(f.app.lastToast, undefined);
+    });
+  }
+}

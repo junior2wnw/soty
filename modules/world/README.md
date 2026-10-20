@@ -5,8 +5,10 @@ World adds account-scoped communities to Soty. It does not migrate, reinterpret 
 ## Integration boundary
 
 ```js
-const world = createWorldService({ databasePath: '/persistent/world.sqlite', projectId: 'soty' });
-const connect = createConnectService({
+let connect;
+const world = createWorldService({ databasePath: '/persistent/world.sqlite', projectId: 'soty',
+  withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback) });
+connect = createConnectService({
   databasePath: '/persistent/connect.sqlite', projectId: 'soty', allowedOrigins,
   extensions: [world],
   canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId),
@@ -26,8 +28,8 @@ Every method below has the `world.` prefix. All writes reject unknown properties
 | Method | Arguments | Result |
 | --- | --- | --- |
 | `profile.get` | `{}` | `{profile}` including own visibility/preferences |
-| `profile.update` | `{expectedRevision, displayName?, bio?, interests?, discoverable?, showPresence?, showMemberships?, contactPolicy?, avatarColor?}` | `{profile}` |
-| `profile.view` | `{profileId}` | `{profile,communities,canRequestContact}`; unavailable when hidden outside own profile |
+| `profile.update` | `{expectedRevision, displayName?, bio?, interests?, audience?:'private'|'friends'|'link'|'public', discoverable?, showPresence?, showMemberships?, contactPolicy?, avatarColor?}` | `{profile}` |
+| `profile.view` | `{profileId}` | `{profile,communities,canRequestContact}`; current full-profile audience, no anonymous API |
 | `profile.avatar.set` | `{expectedRevision,avatarUrl,thumbnailUrl}` | `{profile}`; own raster upload, both null to remove |
 | `profile.avatar.read` | `{profileId,communityId?}` | `{profileId,avatarUrl,avatarRevision}`; one authorized full image or null |
 | `profile.avatars` | `{profileIds: string[1..24],communityId?}` | `{avatars:[{profileId,avatarUrl,avatarRevision}]}`; thumbnails only, unavailable items omitted |
@@ -59,11 +61,19 @@ DTO declarations are in `index.d.ts`. Paged lists are limited to 60 items per pa
 
 Contact discovery uses the signed core Connect method `contacts.requestAccount({accountId:profile.profileId})`; it never exports a card ID. Its host policy callback applies the World visibility/contact policy, after which normal Connect blocking, contact requests and acceptance remain authoritative.
 
+## Durable audience changes
+
+An own profile advertises `audienceWriteVersion:1` only on the receipt-capable reader. Its closed durable update is `profile.update({expectedAccountId,requestId,expectedRevision,audience})`; all four fields are required together and extra metadata fields are rejected on this branch. Existing updates without either ID retain the legacy argument/reply contract. A current account mismatch gives `profile_account_changed`; a reused ID with different args gives `profile_request_conflict`; a new stale request retains `revision_conflict`.
+
+The durable reply is `{profile,replayed,receipt}`. The immutable receipt contains `{schema:'soty.world-profile-audience.receipt.v1',requestId,accountId,audience,expectedRevision,acceptedRevision}`, with accepted revision exactly base+1. Its intent digest, profile mutation, audit and receipt row commit in the same existing World transaction. Same-intent replay is checked before CAS and returns that historical receipt together with the current own profile, never an old full-profile snapshot. Current Connect device/account authentication still precedes replay.
+
+Clients must durably retain the exact intent before dispatch and retry that same ID/body after an unknown result. An unchanged GET is not proof that a delayed request cannot still commit. A newer deliberate audience change uses a fresh intent after resolving the earlier one; a late original delivery then replays its receipt and cannot overwrite the newer profile. A receipt reports accepted history, while the returned/read-back own profile reports current state. Neither is an application or agent capability grant.
+
 ## Privacy and role rules
 
-- Initial profiles are hidden until the person enables discovery. SQL filters visibility before pagination, including account-ID search. Hiding removes the directory row and its FTS entry within the same SQLite transaction, so it takes effect on the next request without an asynchronous indexing delay.
+- Profiles start `private`. Owner always reads the full profile. `friends` permits only current accepted reciprocal, unblocked Connect contacts; `link` permits exact signed profile/resolve/avatar reads but never global name/ID search; `public` enters global discovery. A profile locator is an account ID, not a password or grant. Legacy `discoverable:false/true` means `private/public`; conflicting simultaneous audience/boolean fields reject without writes.
 - Public group previews require profile discovery + profile membership publication + this membership publication + group member-preview setting. Exact group size may include hidden members; names do not.
-- Active group members still see fellow members and message authors, including hidden profiles. Private mute/pin preferences are never returned in another member's listing.
+- Active group members still see fellow members and message authors, including hidden profiles, through explicit `WorldIdentity` only: profile ID, display name, avatar color/revision and profile revision. Chat send/list/replay/tombstones, every roster state and public member previews omit bio/interests. Shared membership grants no full profile. Private mute/pin preferences are never returned in another member's listing.
 - Invite-only groups cannot be discovered or retrieved by guessed ID. Only active members and explicitly invited recipients see their preview. Recipients cannot read chat until accepting.
 - Open groups require an explicit join. Request groups require approval. A ban prevents join/invite until explicitly lifted. Removing a member kicks them; in an open group they can join again unless banned.
 - A moderator can moderate regular members. Only the owner changes roles or join policy, transfers ownership or archives. An owner cannot leave an active group without transferring or archiving it.
@@ -75,7 +85,7 @@ Schema 2 adds private BLOB storage for raster avatars. Existing profiles migrate
 
 The frontend decodes and crops a selected photo, then exports a full image (at most 512×512 pixels and 96 KiB) and a thumbnail (192×192 and 8 KiB). PNG, JPEG and WebP data URLs must use canonical base64. The server checks MIME against the binary format, container structure, bounds, PNG CRCs and dimensions. Animated content, SVG, arbitrary external URLs and opaque/EXIF metadata are rejected. This is a bounded raster/container validator, not a complete codec decoder or a malware scanner; data is displayed only through `img`, never injected as markup.
 
-Signed thumbnail batches contain at most 24 images, roughly 260 KiB including base64. They read only thumbnail columns from storage. A full-image read is separate. Each request rechecks visibility: own profile or currently discoverable; with an explicit community context, an active viewer may also retrieve a hidden current member or historical message author's avatar. Leaving or removal ends that context access. A batch omits unavailable profiles without distinguishing hidden from absent. No unauthenticated asset path or permanent capability URL bypasses these checks.
+Signed thumbnail batches contain at most 24 images, roughly 260 KiB including base64. They read only thumbnail columns from storage. Full-image reads use the current full-profile audience. Only the thumbnail batch has a separate community exception: an active viewer may retrieve a hidden current member or historical message author's thumbnail in an explicit community context. That exception never returns a full image. Leaving or removal ends the viewer's context access. A batch omits unavailable profiles without distinguishing hidden from absent. No unauthenticated asset path or permanent capability URL bypasses these checks.
 
 Client avatar caches belong only to memory and the active account/community context. Clear them on navigation, profile/visibility refresh or membership loss; discard pending requests from an older context. Responses omitted from a fresh batch must not reuse an old image.
 
@@ -91,7 +101,9 @@ Upload error codes: `invalid_avatar_mime`, `invalid_avatar_data`, `avatar_too_la
 
 ## Storage and reliability
 
-The database is project-bound and kept outside the replaceable module. Migrations fail closed on metadata/schema disagreement. WAL + FULL synchronization protect committed writes. Read-only requests use a snapshot without acquiring a writer lock; writes use `BEGIN IMMEDIATE`, prepared statements, foreign keys and uniqueness constraints. Owner transfer, membership changes and associated audit record are one transaction.
+The database is project-bound and kept outside the replaceable module. Migrations fail closed on metadata/schema disagreement. WAL + FULL synchronization protect committed writes. World read-only requests use a World snapshot; writes use `BEGIN IMMEDIATE`, prepared statements, foreign keys and uniqueness constraints. When configured, the synchronous Connect current-contact writer fence is acquired first, before the World transaction, and expires when the call returns. Missing contact authority denies friends full reads. Owner transfer, membership changes and associated audit record are one World transaction.
+
+Root audience storage uses format5. Version4 is reserved for the separate M02 attachment format and is explicitly rejected by this reader. Fresh format0 starts5. Existing1/2/3 refuse startup with `world_audience_migration_required` before journal/transaction/schema writes unless the trusted host explicitly supplies `allowAudienceMigration:true`. That option is not set by the ordinary HTTP factory and is not a replacement for release admission or a backup. The explicit migration adds the closed audience column, seeds private/public from legacy discovery, and replaces only profile indexing triggers with audience-based public indexing. IDs, content, revisions and existing public projection sequence numbers stay intact. Format5 admission checks the exact audience column, profile trigger inventory/definitions and legacy projection consistency; attachment fragments and old readers are rejected. The current independent deploy/storage probe covers Apps, not World5: these module reader tests do not qualify a production pre-START deployment. M02 attachment+audience migration is separate and remains pending; do not run this Root reader on its store or downgrade a migrated store.
 
 Connect and World are separate stores. Creation and ownership transfer persist request receipts; message IDs are unique per author/client request. A proof retry after an ambiguous outer Connect commit cannot duplicate those effects. Receipts retain identities and re-project current permissions/visibility rather than returning stale full objects. Audit rows store identifiers and action names, not message bodies or credentials.
 
@@ -109,13 +121,13 @@ The suite includes file-backed restart tests, privacy projections, role boundari
 
 The new directory and field operations require `expectedAccountId` to match the verified Connect actor. Browser controllers also pass the captured account to `client.extension(op,args,{expectedAccountId})`; the RPC argument and the browser admission context have different responsibilities. No new operation accepts a request-supplied actor or bypasses Connect. The operation map and result types are exported in `index.d.ts`.
 
-`directory.search` retains public person privacy and adds currently active/invited private groups only for their participant. `scope:'mine'` includes active/requested/invited own communities; `public` excludes invitation-only groups even for a member. It returns no global private counts. Its seek cursor binds account, installation, normalized query, kind and scope. Page limits are1–60; always follow `nextCursor`, not a guessed total. Public profile discovery stays opt-in. A known hidden person may resolve only while the actor currently has active roster access through a shared active community; that resolver returns name/avatar revision only, without bio, interests or shared-group identities. Invitation does not permit chat until membership is active. Unknown and unauthorized identities have the same unavailable result.
+`directory.search` retains public person privacy and adds the caller's own profile, current friends who chose `friends`, and currently active/invited private groups for their participant. `scope:'mine'` includes that own/friends set and active/requested/invited own communities; `public` excludes private profiles and invitation-only groups even for a member. Link profiles are not name-search candidates. There are no global private counts. The seek cursor binds account, installation, normalized query, kind and scope; every continuation rechecks live contacts. Page limits are1–60; always follow `nextCursor`, not a guessed total. Exact `directory.resolve` uses the same full-profile predicate as `profile.view` and full avatars. A known hidden person may also resolve to minimal identity while the actor has active roster access through a shared active community, without bio, interests or shared-group identities. Invitation does not permit chat until membership is active. Unknown and unauthorized identities have the same unavailable result.
 
 The field document is `{schema:'soty.field.v1',contexts:[{contextId,title,x,y}],shortcuts:[{shortcutId,entity:{kind,id},contextId,slot:[q,r]}]}`. The shared strict validator is [Field contract](../field/contract.mjs):24 contexts,256 shortcuts,128KiB UTF-8. `kind` is app/person/community/device/builtin. Two shortcuts may reference the same entity, but a context slot has only one occupant. A shortcut stores an opaque reference, not a cached profile, device credential, membership or grant. Adding, moving, removing, copying and undoing shortcuts have **no admission or publication effect**.
 
 `field.put` uses expected revision0 for the first document; each new accepted request increments it. The server computes a canonical document hash and checks an optional caller hash. Retry the same requestId, expectedRevision and document after an uncertain response. The immutable receipt is returned before a stale-version check for an identical retry. Changing the intent under that ID is rejected. `receipt.revision` describes that accepted intent; `current` may describe a newer arrangement from another device and must not be replaced with the earlier document. Field state is private account data stored under normal server access controls; it is not end-to-end encrypted.
 
-Storage is an additive `field_schema_version=1` extension with `world_field_documents` and immutable `world_field_receipts` in the same SQLite file. World remains schema3. Its unchanged v3 migrator opens the extended database and preserves the extra metadata/tables; no old rows or existing receipts are rewritten. New readers refuse unknown field epochs, missing guards or invalid document hashes rather than resetting the layout. Existing file snapshots include these tables automatically.
+Field storage is an additive `field_schema_version=1` extension with `world_field_documents` and immutable `world_field_receipts` in the same SQLite file. Root World5 preserves these documents/receipts. The frozen pre-audience schema3 reader refuses format5 rather than opening a new privacy format. New readers refuse unknown field epochs, missing guards or invalid document hashes rather than resetting the layout. Existing file snapshots include these tables automatically.
 
 The product adapter uses account-scoped IndexedDB transactions for its bounded durable outbox before dispatch. Lost ACKs replay the original intent; quota errors dispatch nothing. Other-window conflicts preserve pending changes and require an explicit version choice. Only an undurable local buffer triggers the navigation guard. `discardVolatile` restores the latest durable baseline and does not delete any window's outbox. These client guarantees require real-browser verification in addition to API tests.
 
@@ -141,7 +153,7 @@ Directory/field operations do not execute tools or models, extend capability gra
 
 ### Field verification
 
-`node --test modules/world/test/field-directory.test.mjs modules/world/test/field-migration.acceptance.test.mjs server/test/field-directory-http.test.mjs src/world/field-directory.test.mjs src/world/field-persistence.test.mjs` checks domain CAS/actual frozen old-reader preservation, signed HTTP/connector enrollment, and independently controlled client failure ordering. Client outbox unit tests replace IDB with an atomic memory port; they do not claim browser IDB coverage. No production data or model calls are used.
+`node --test modules/world/test/field-directory.test.mjs modules/world/test/field-migration.acceptance.test.mjs server/test/field-directory-http.test.mjs src/world/field-directory.test.mjs src/world/field-persistence.test.mjs` checks domain CAS/current field preservation and old-schema refusal, signed HTTP/connector enrollment, and independently controlled client failure ordering. The audience suites additionally cover actual signed Connect contacts, full-profile read paths, minimal identities and literal reader admission. Client outbox unit tests replace IDB with an atomic memory port; they do not claim browser IDB coverage. No production data or model calls are used.
 
 ## Scale observations
 

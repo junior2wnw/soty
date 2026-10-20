@@ -4,6 +4,7 @@ export function createWidgetRuntimeControls(options) {
   const {view,screen,message,runtime,runtimeActions,current,capture,matchesCapture,canAct,
     createDialog,iconButton,button,el,isFocusTarget,retry,currentEntry,external,dismiss,onModalChange=()=>{}}=options;
   const main=options.presentation==='main';
+  const mainControlHost=main?options.mainControlHost??null:null;
   const neutralExternal=main?options.externalRecovery??null:null;
   let disposed=false,owner=main?options.returnTarget??null:null,header=null,active=null;
   const fallback=el('div',main?'sa-stage-runtime-notice':'sa-widget-runtime-launcher');
@@ -11,7 +12,7 @@ export function createWidgetRuntimeControls(options) {
   control.classList.add(main?'sa-stage-runtime-action':'sa-widget-runtime-action');control.dataset.stageControl=main?'runtime-details':'widget-runtime';
   const mark=el('b','sa-widget-runtime-notice-mark');mark.setAttribute('aria-hidden','true');if(!main)control.append(mark);
   if(!message.id)message.id=`${main?'stage':'widget'}-runtime-message-${view.crypto.randomUUID()}`;
-  message.after(fallback);if(main)fallback.append(message,...(neutralExternal?[neutralExternal]:[]),control);else fallback.append(control);
+  message.after(fallback);if(main){fallback.append(message,...(neutralExternal?[neutralExternal]:[]));(mainControlHost??fallback).append(control);}else fallback.append(control);
   screen.classList.add(main?'has-stage-runtime-controls':'has-widget-runtime-controls');
   if(main){control.setAttribute('aria-haspopup','dialog');control.setAttribute('aria-expanded','false');}
   const live=()=>!disposed&&current()&&(!owner||owner.isCurrent());
@@ -27,7 +28,7 @@ export function createWidgetRuntimeControls(options) {
     record.dialog.close({restoreFocus});
   }
   function syncMainFallback(){
-    if(main)fallback.hidden=(message.hidden||!message.textContent)&&(!neutralExternal||neutralExternal.hidden);
+    if(main)fallback.hidden=(message.hidden||!message.textContent)&&(Boolean(mainControlHost)||!neutralExternal||neutralExternal.hidden);
   }
   function sync(){
     if(disposed)return;

@@ -4,7 +4,7 @@ export const CHAT_OPERATIONS = ['world.chat.list', 'world.chat.send', 'world.cha
 export function chatOperation(m, op, args, actor, now) {
   function message(row) {
     return { messageId: row.id, seq: row.seq, text: row.deleted_at === null ? row.text : '',
-      author: m.profile(m.person(row.author_id)), createdAt: row.created_at,
+      author: m.identity(m.person(row.author_id)), createdAt: row.created_at,
       replyTo: row.reply_to, removed: row.deleted_at !== null };
   }
   if (op === 'world.chat.list') {

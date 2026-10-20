@@ -208,3 +208,85 @@ test('array-valued receipt IDs, private target digest and nested active IDs neve
     assert.deepEqual(state.read().pending, pending);
   }
 });
+
+
+test('four audience helpers preserve explicit mode, exact publication pair and source-bound exposure without choosing an alias', async () => {
+  const { appAudiencePublicationFields } = await import('./app-settings-state.mjs');
+  assert.equal(typeof appAudiencePublicationFields, 'function');
+  const value = inspection(); value.publication.audience = 'private';
+  for (const mode of ['private', 'friends', 'link', 'public', null]) {
+    const model = createAppSettingsDraftState(value); model.patch({ audience: mode, exposureConfirmed: true });
+    const input = appPublicationArgs(model.base('publication'), model.read().draft, 'owner');
+    assert.equal(input.audience, mode); assert.deepEqual(input.activeDomainIds, [first]);
+    assert.equal(input.launchPolicy, ['link', 'public'].includes(mode) ? 'anyone' : 'restricted');
+    assert.equal(input.listed, mode === 'public');
+    assert.equal(Object.hasOwn(input, 'exposureAck'), ['link', 'public'].includes(mode));
+    assert.equal(model.read().draft.audience, mode);
+  }
+  for (const mode of ['circle', ['friends'], undefined]) assert.throws(() => appAudiencePublicationFields(mode), { code: 'invalid_app_audience' });
+});
+
+test('legacy pending commands retain exact bytes and v1 identity across reload; an audience edit cannot replace an unknown intent', async () => {
+  const values = new Map(), storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  const create = () => createAppSettingsState({ accountId: 'owner', appId, storage, randomId: () => 'frozen-legacy-request', locks: { request: async (_key, fn) => fn() } });
+  const state = create(), args = appPublicationArgs(inspection(), draft(inspection()), 'owner');
+  const pending = await state.prepare({ op: 'apps.publication.update', args }); const raw = storage.getItem(state.key);
+  assert.equal(Object.hasOwn(pending.args, 'audience'), false); const reloaded = create(); assert.deepEqual(reloaded.read().pending, pending);
+  assert.equal(storage.getItem(state.key), raw); assert.deepEqual(await reloaded.prepare({ op: pending.op, args }), pending);
+  await assert.rejects(reloaded.prepare({ op: pending.op, args: { ...args, audience: 'friends' } }), { code: 'app_settings_pending_unconfirmed' });
+  assert.equal(storage.getItem(state.key), raw);
+});
+
+function audienceReceipt(pending, value, audience = pending.args.audience) {
+  return { requestId: pending.args.requestId, replayed: false, current: { appId, policyEpoch: 10, audience },
+    receipt: { schema: 'soty.app-publication-receipt.v2', namespace: 'apps.publication.update.v2', appId, audience,
+      requestKeyHash: createHash('sha256').update(pending.args.requestId).digest('hex'), policyEpoch: 10, targetRevision: 2,
+      targetDigest: value.source.digest, profile: value.source.profile, launchPolicy: pending.args.launchPolicy, listed: pending.args.listed,
+      activeDomainIds: pending.args.activeDomainIds, exposureAck: pending.args.exposureAck ?? null } };
+}
+
+test('audience journal survives reload and settles only an exact v2 receipt, never a different mode or mixed v1 envelope', async () => {
+  const value = inspection(); value.publication.audience = 'private';
+  const model = createAppSettingsDraftState(value); model.patch({ audience: 'friends' });
+  const args = appPublicationArgs(value, model.read().draft, 'owner'), values = new Map();
+  const create = () => createAppSettingsState({ accountId: 'owner', appId, randomId: () => 'friends-request',
+    storage: { getItem: key => values.get(key) ?? null, setItem: (key, data) => values.set(key, data) }, locks: { request: async (_key, fn) => fn() } });
+  const firstState = create(), pending = await firstState.prepare({ op: 'apps.publication.update', args });
+  const reloaded = create(); assert.deepEqual(await reloaded.pendingForDispatch(pending), pending);
+  const response = audienceReceipt(pending, value);
+  for (const wrong of [audienceReceipt(pending, value, 'private'), { ...response, current: { ...response.current, audience: 'private' } },
+    { ...response, receipt: { ...response.receipt, schema: 'soty.app-publication-receipt.v1', namespace: 'apps.publication.update.v1' } }]) {
+    await assert.rejects(reloaded.acknowledge(pending, wrong), { code: 'app_settings_invalid_receipt' }); assert.deepEqual(reloaded.read().pending, pending);
+  }
+  assert.equal(await reloaded.acknowledge(pending, response), true); assert.equal(reloaded.read().pending, null);
+});
+
+test('an exact historical audience receipt can settle its own request while current newer policy remains a separate readback', async () => {
+  const value = inspection(); value.publication.audience = 'private'; const model = createAppSettingsDraftState(value); model.patch({ audience: 'friends' });
+  const state = localState(), pending = await state.prepare({ op: 'apps.publication.update', args: appPublicationArgs(value, model.read().draft, 'owner') });
+  const response = audienceReceipt(pending, value); response.replayed = true; response.current = { appId, policyEpoch: 11, audience: 'private' };
+  assert.equal(await state.acknowledge(pending, response), true); assert.equal(response.current.audience, 'private');
+});
+
+test('same-policy audience edits remain dirty across observations, CAS conflicts and older command completion', () => {
+  const value = inspection(); value.publication.audience = 'private'; const model = createAppSettingsDraftState(value);
+  model.patch({ audience: 'friends' }); const args = appPublicationArgs(model.base('publication'), model.read().draft, 'owner');
+  assert.equal(model.read().publicationDirty, true);
+  const next = structuredClone(value); next.publication.policyEpoch++; model.observe(next);
+  assert.equal(model.read().draft.audience, 'friends'); assert.equal(model.base('publication').publication.policyEpoch, 9); assert.equal(model.read().publicationConflict, true);
+  model.patch({ audience: null }); next.publication.audience = 'friends'; model.observe(next, { kind: 'publication', args });
+  assert.equal(model.read().draft.audience, null); assert.equal(model.base('publication').publication.policyEpoch, 9);
+  model.resetPublication(); assert.equal(model.read().draft.audience, 'friends'); assert.equal(model.read().publicationConflict, false);
+});
+
+test('explicit link and public modes keep the existing exact exposure and bound-address requirements', () => {
+  const value = inspection(); value.publication.audience = 'private';
+  for (const mode of ['link', 'public']) {
+    const model = createAppSettingsDraftState(value); model.patch({ audience: mode });
+    assert.throws(() => appPublicationArgs(value, model.read().draft, 'owner'), { code: 'app_exposure_ack_required' });
+    model.patch({ exposureConfirmed: true, activeDomainIds: [] });
+    assert.throws(() => appPublicationArgs(value, model.read().draft, 'owner'), { code: 'app_exposure_ack_required' });
+    model.patch({ activeDomainIds: [first] }); const args = appPublicationArgs(value, model.read().draft, 'owner');
+    assert.equal(args.audience, mode); assert.equal(args.exposureAck.targetDigest, value.source.digest); assert.equal(args.exposureAck.targetRevision, value.source.revision);
+  }
+});

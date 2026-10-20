@@ -55,11 +55,11 @@ test('positions only, account fence and invalid hash never mutate accepted layou
   assert.deepEqual(f.directoryCall(member, 'world.field.get'), before);
 });
 
-test('additive tables are preserved by the unchanged World v3 migrator and receipts cannot be changed/replaced/deleted', t => {
+test('the current World reader preserves additive field tables and receipts cannot be changed/replaced/deleted', t => {
   const f = fixture(t), accepted = f.directoryCall(member, 'world.field.put', { expectedRevision: 0, requestId: 'field_old_reader', document: document(72) });
   f.close(); const db = new DatabaseSync(f.databasePath);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
     const rows = db.prepare('SELECT * FROM world_field_receipts').all();
     migrateWorld(db, 'field-tests');
     assert.deepEqual(db.prepare('SELECT * FROM world_field_receipts').all(), rows);

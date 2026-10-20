@@ -51,17 +51,16 @@ export function directoryOperation(m, op, args, actor) {
       if (ref.kind === 'person') {
         const row = m.person(ref.id);
         if (!row) return { ref, available: false };
-        if (row.account_id === actor.accountId || row.discoverable) {
+        if (m.canViewFullProfile(row, actor.accountId)) {
           return { ref, available: true, person: m.profile(row, row.account_id === actor.accountId),
-            access: row.account_id === actor.accountId ? 'owner' : 'public' };
+            access: row.account_id === actor.accountId ? 'owner' : row.audience };
         }
         const roster = m.get(`SELECT 1 FROM memberships mine JOIN memberships target ON target.community_id=mine.community_id
           JOIN communities c ON c.id=mine.community_id WHERE mine.account_id=? AND target.account_id=?
           AND mine.state='active' AND target.state='active' AND c.state='active' LIMIT 1`, actor.accountId, ref.id);
         // Same authority as membership.list(active), but do not disclose the
         // shared group's identity or hidden bio/interests to this resolver.
-        return roster ? { ref, available: true, access: 'member', person: { profileId: row.account_id,
-          displayName: row.display_name, avatarColor: row.avatar_color, avatarRevision: row.avatar_revision ?? null, revision: row.revision } }
+        return roster ? { ref, available: true, access: 'member', person: m.identity(row) }
           : { ref, available: false };
       }
       const row = visibleCommunity(m, ref.id, actor.accountId);
@@ -77,15 +76,18 @@ export function directoryOperation(m, op, args, actor) {
   const size = limit(args.limit), terms = tokens(query);
   const scope = digest([schema, actor.accountId, actor.deviceId, query, kind, visibility]);
   const after = readCursor(args.cursor, scope);
-  // Only the existing discoverable index and this caller's memberships enter the
-  // candidate set. The seek predicate uses immutable identities, not page offsets.
+  // Private candidates are this actor's own profile, current contacts and joined groups.
+  // The contact view and SQL snapshot share the enclosing synchronous Connect fence.
   const match = terms.length ? `search_text : (${terms.map(term => `"${term}"*`).join(' AND ')})` : '';
   const publicQuery = !query ? '1' : match
     ? '(d.entity_id=? OR d.seq IN (SELECT rowid FROM world_directory_fts WHERE world_directory_fts MATCH ?))'
     : 'd.entity_id=?';
   const privateQuery = !query ? '1' : terms.length ? '(c.id=? OR world_directory_match(c.search_text,?)=1)' : 'c.id=?';
+  const peopleQuery = !query ? '1' : terms.length ? '(p.account_id=? OR world_directory_match(p.search_text,?)=1)' : 'p.account_id=?';
   const publicArgs = !query ? [] : match ? [query, match] : [query];
   const privateArgs = !query ? [] : terms.length ? [query, query] : [query];
+  const peopleArgs = !query ? [] : terms.length ? [query, query] : [query];
+  const friendIds = visibility === 'public' || kind === 'communities' ? [] : m.friendAccountIds();
   const rows = m.all(`SELECT * FROM (
       SELECT d.kind,d.entity_id FROM world_directory d
         WHERE (? IS NULL OR d.kind=?) AND ${publicQuery}
@@ -96,9 +98,15 @@ export function directoryOperation(m, op, args, actor) {
         WHERE member.account_id=? AND member.state IN('active','invited') AND c.state='active' AND c.join_policy='invite'
           AND (? IS NULL OR ?='community') AND ${privateQuery}
           AND ?<>'public'
+      UNION
+      SELECT 'person' AS kind,p.account_id AS entity_id FROM profiles p
+        WHERE (p.account_id=? OR (p.audience IN('friends','public') AND p.account_id IN(SELECT value FROM json_each(?))))
+          AND (? IS NULL OR ?='person') AND ${peopleQuery} AND ?<>'public'
     ) WHERE (kind>? OR (kind=? AND entity_id>?)) ORDER BY kind,entity_id LIMIT ?`,
   entityKind, entityKind, ...publicArgs, visibility, actor.accountId,
-  actor.accountId, entityKind, entityKind, ...privateArgs, visibility, after.kind, after.kind, after.id, size + 1);
+   actor.accountId, entityKind, entityKind, ...privateArgs, visibility,
+   actor.accountId, JSON.stringify(friendIds), entityKind, entityKind, ...peopleArgs, visibility,
+   after.kind, after.kind, after.id, size + 1);
   const page = rows.slice(0, size);
   return { schema,
     people: page.filter(row => row.kind === 'person').map(row => m.profile(m.person(row.entity_id))),

@@ -1,6 +1,12 @@
+const audienceModes = ['private', 'friends', 'link', 'public'];
 function publicationView(value) {
   if (!value || !['restricted', 'anyone'].includes(value.launchPolicy)
     || !Number.isSafeInteger(value.activeNamedAddressCount) || value.activeNamedAddressCount < 0) return null;
+  if (value.audience !== undefined && value.audience !== null) {
+    const named = ['link', 'public'].includes(value.audience);
+    if (!audienceModes.includes(value.audience) || value.launchPolicy !== (named ? 'anyone' : 'restricted')
+      || value.listed !== (value.audience === 'public') || named && value.activeNamedAddressCount < 1) return null;
+  }
   return value;
 }
 
@@ -16,6 +22,15 @@ export function describeAppAudience(app, accountId) {
   const directDetail = app.grants ? `Личные допуски: ${direct}.` : 'Личные допуски: состояние не проверено.';
   if (!publication) return { label: 'Ваше приложение', icon: 'app', publicNamed: false,
     details: ['Именные ссылки: состояние не проверено.', directDetail] };
+  if (publication.audience !== undefined && publication.audience !== null) {
+    const mode = publication.audience;
+    return { label: ({ private: 'Только вы', friends: 'Друзьям', link: 'По ссылке', public: 'Всем' })[mode],
+      icon: mode === 'private' ? 'lock' : mode === 'friends' ? 'people' : 'external',
+      publicNamed: mode === 'link' || mode === 'public',
+      details: mode === 'private' ? ['Доступ только у вас.'] : mode === 'friends' ? ['Доступ есть у ваших текущих друзей.']
+        : mode === 'link' ? ['Открывается по именной ссылке.', 'В общем каталоге не показывается.']
+          : ['Доступно по именной ссылке и в общем каталоге.'] };
+  }
   const publicNamed = publication.launchPolicy === 'anyone' && publication.activeNamedAddressCount > 0;
   return {
     label: publicNamed ? 'Именные ссылки: всем' : communities && accounts ? 'Выбранным участникам'
@@ -31,6 +46,7 @@ export function describeAppAudience(app, accountId) {
 /** The owner inspection has already resolved the active set and domain ownership. */
 export function publicationFromInspection(snapshot) {
   const policy = snapshot.publication, active = new Set(policy.activeDomainIds);
-  return { launchPolicy: policy.launchPolicy, activeNamedAddressCount: snapshot.app.state === 'enabled'
+  return { launchPolicy: policy.launchPolicy,
+    ...(Object.hasOwn(policy, 'audience') ? { audience: policy.audience, listed: policy.listed } : {}), activeNamedAddressCount: snapshot.app.state === 'enabled'
     ? snapshot.addresses.aliases.filter(alias => alias.state === 'bound' && alias.active && active.has(alias.id)).length : 0 };
 }

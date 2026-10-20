@@ -4,14 +4,19 @@ export type { FieldDocument, FieldEntityRef } from '../field/contract.mjs';
 export type CommunityJoinPolicy = 'open' | 'request' | 'invite';
 export type CommunityRole = 'owner' | 'moderator' | 'member';
 export type MembershipState = 'active' | 'requested' | 'invited' | 'left' | 'removed' | 'banned' | 'declined';
-export interface WorldProfile {
+export type WorldProfileAudience = 'private' | 'friends' | 'link' | 'public';
+export interface WorldIdentity {
   profileId: string;
   displayName: string;
-  bio: string;
-  interests: string[];
   avatarColor: string;
   avatarRevision: number | null;
   revision: number;
+}
+export interface WorldProfile extends WorldIdentity {
+  bio: string;
+  interests: string[];
+  audience?: WorldProfileAudience;
+  audienceWriteVersion?: 1;
   discoverable?: boolean;
   showPresence?: boolean;
   showMemberships?: boolean;
@@ -43,7 +48,7 @@ export interface WorldCommunity {
   color: string;
   revision: number;
   memberCount: number;
-  previewMembers: WorldProfile[];
+  previewMembers: WorldIdentity[];
   membership: WorldMembership | null;
   permissions: { canManage: boolean; canModerate: boolean; canWrite: boolean };
   unreadCount: number;
@@ -54,7 +59,7 @@ export interface WorldMessage {
   messageId: string;
   seq: number;
   text: string;
-  author: WorldProfile;
+  author: WorldIdentity;
   createdAt: number;
   replyTo: string | null;
   removed: boolean;
@@ -65,7 +70,29 @@ export interface WorldSearchResult {
   nextCursor: string | null;
   totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean };
 }
+export interface WorldMember {
+  profile: WorldIdentity;
+  state: MembershipState;
+  role: CommunityRole;
+  revision: number;
+  joinedAt: number | null;
+}
 export interface WorldActor { accountId: string; deviceId: string; label: string }
+export interface WorldProfileAudienceUpdateArgs {
+  expectedAccountId: string;
+  requestId: string;
+  expectedRevision: number;
+  audience: WorldProfileAudience;
+}
+export interface WorldProfileAudienceReceipt {
+  schema: 'soty.world-profile-audience.receipt.v1';
+  requestId: string;
+  accountId: string;
+  audience: WorldProfileAudience;
+  expectedRevision: number;
+  acceptedRevision: number;
+}
+export interface WorldProfileAudienceUpdateResult { profile: WorldProfile; replayed: boolean; receipt: WorldProfileAudienceReceipt }
 export interface WorldFieldGetArgs { expectedAccountId: string }
 export interface WorldFieldPutArgs extends WorldFieldGetArgs { expectedRevision: number; requestId: string; document: FieldDocument; contentHash?: string }
 export interface WorldFieldEnvelope { revision: number; document: FieldDocument; contentHash: string; updatedAt: number }
@@ -75,8 +102,8 @@ export interface WorldDirectorySearchResult { schema: 'soty.world-directory.v1';
 export type WorldDirectoryRef = Pick<FieldEntityRef, 'id'> & { kind: 'person' | 'community' };
 export interface WorldDirectoryResolveArgs { expectedAccountId: string; entities: WorldDirectoryRef[] }
 export type WorldDirectoryResolveItem = { ref: WorldDirectoryRef; available: false }
-  | { ref: WorldDirectoryRef; available: true; access: 'owner' | 'public'; person: WorldProfile }
-  | { ref: WorldDirectoryRef; available: true; access: 'member'; person: Pick<WorldProfile, 'profileId' | 'displayName' | 'avatarColor' | 'avatarRevision' | 'revision'> }
+  | { ref: WorldDirectoryRef; available: true; access: 'owner' | 'friends' | 'link' | 'public'; person: WorldProfile }
+  | { ref: WorldDirectoryRef; available: true; access: 'member'; person: WorldIdentity }
   | { ref: WorldDirectoryRef; available: true; community: WorldCommunity };
 export interface WorldDirectoryResolveResult { schema: 'soty.world-directory.v1'; items: WorldDirectoryResolveItem[] }
 export interface WorldFieldOperationMap {
@@ -86,6 +113,12 @@ export interface WorldFieldOperationMap {
   'world.directory.resolve': { args: WorldDirectoryResolveArgs; result: WorldDirectoryResolveResult };
 }
 export interface MembershipEvent { communityId: string; profileId: string | null; state: MembershipState | 'archived'; revision: number }
+export interface WorldCurrentContacts {
+  readonly accountId: string;
+  readonly deviceId: string;
+  has(peerAccountId: string): boolean;
+  accountIds(): readonly string[];
+}
 export interface WorldService {
   projectId: string;
   schemaVersion: number;
@@ -103,4 +136,6 @@ export interface WorldService {
   subscribeMembership(listener: (event: MembershipEvent) => unknown): () => void;
   close(): void;
 }
-export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number }): WorldService;
+export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number;
+  allowAudienceMigration?: boolean;
+  withCurrentContacts?: <T>(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, callback: (view: Readonly<WorldCurrentContacts>) => T) => T }): WorldService;

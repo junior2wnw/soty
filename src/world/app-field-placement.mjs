@@ -14,7 +14,7 @@ const initialApps = ids => {
 export function createPersonalFieldDocument({ includeBuiltins = true, initialAppIds = [] } = {}) {
   const document = createFieldDocument();
   document.contexts.push({ contextId: 'personal', title: 'Личное', x: 0, y: 0 });
-  if (includeBuiltins) for (const id of ['notes', 'chess']) {
+  if (includeBuiltins) for (const id of ['notes', 'chess', 'assistant']) {
     document.shortcuts.push({ shortcutId: `builtin-${id}`, entity: { kind: 'builtin', id }, contextId: 'personal',
       slot: nextFieldSlot(document, 'personal', 'builtin') });
   }

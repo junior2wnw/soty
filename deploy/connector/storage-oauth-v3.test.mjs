@@ -203,7 +203,7 @@ test('all twelve independent store pairs are read-only; current image reads3 whi
   const declared = JSON.parse(currentStorageReaders);
   assert.equal(declared.version, 6);
   assert.deepEqual(declared.readers.connect, [3, 4]);
-  assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   const independent = JSON.parse(reader3).readers;
   for (const key of ['rooms', 'notes', 'capabilities']) assert.deepEqual(declared.readers[key], independent[key]);
   for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {

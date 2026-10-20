@@ -1,4 +1,5 @@
 import type { FieldDocument, FieldEntityRef, FieldEntityKind } from '../../modules/field/contract.mjs';
+import type {UnifiedFieldMetrics} from './unified-field-layout.mjs';
 export type FieldCommand = {expected?:FieldDocument} & (
   {type:'add-context';contextId:string;title:string;x:number;y:number} |
   {type:'rename-context';contextId:string;title:string} |
@@ -10,8 +11,9 @@ export type FieldCommand = {expected?:FieldDocument} & (
   {type:'restore';document:FieldDocument});
 export interface FieldChange {before:FieldDocument;document:FieldDocument;changed:boolean;affected:string[];type:FieldCommand['type']}
 export interface FieldHistory {limit:number;entries:{before:FieldDocument;after:FieldDocument}[]}
-export function nextFieldSlot(document:FieldDocument,contextId:string,kind?:FieldEntityKind):[number,number];
-export function applyFieldCommand(document:FieldDocument,command:FieldCommand):FieldChange;
+export function nextFieldSlot(document:FieldDocument,contextId:string,kind?:FieldEntityKind,metrics?:UnifiedFieldMetrics):[number,number];
+export function compactFieldContext(document:FieldDocument,contextId:string,metrics?:UnifiedFieldMetrics):FieldDocument;
+export function applyFieldCommand(document:FieldDocument,command:FieldCommand,metrics?:UnifiedFieldMetrics):FieldChange;
 export function createFieldHistory(limit?:number):FieldHistory;
 export function recordFieldHistory(history:FieldHistory,change:FieldChange):void;
 export function undoFieldHistory(history:FieldHistory,current:FieldDocument):FieldChange|null;

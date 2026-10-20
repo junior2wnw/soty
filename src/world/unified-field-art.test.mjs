@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { resolveAppArt } from './app-art.mjs';
+import { fieldEntityKey } from '../../modules/field/contract.mjs';
 
 // Execute the actual node renderer and URL policy. These are DOM-port tests,
 // not a claim that browser typography or the visual composition was reviewed.
@@ -47,7 +48,7 @@ const art = (extra = {}) => ({ key: null, status: 'fallback', src: null, srcset:
 const entity = (id = 'app-unknown-001', title = 'Приложение без обложки', extra = {}) => ({ entity: { kind: 'app', id }, title, symbol: 'music', source: 'owner', ...extra });
 function harness(resolveArt = () => art(), cachedImage) {
   const target = new Port('button');
-  const env = { exports: {}, options: { resolveArt }, resolveAppArt, metrics: { radius: 120 },
+  const env = { exports: {}, options: { resolveArt }, resolveAppArt, fieldEntityKey, metrics: { radius: 120 },
     document: { baseURI: 'https://soty.fixture.invalid/' }, location: { origin: 'https://soty.fixture.invalid' }, URL, queueMicrotask,
     el(tag, className, copy) { const node = new Port(tag, className, copy); if (tag === 'img' && cachedImage) Object.assign(node, cachedImage); return node; },
     icon(name, className) { const node = new Port('svg', className); node.symbol = name; node.setAttribute('aria-hidden', 'true'); return node; },

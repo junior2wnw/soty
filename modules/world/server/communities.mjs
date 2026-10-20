@@ -119,7 +119,7 @@ export function communityOperation(m, op, args, actor, now) {
     const rows = m.all(`SELECT p.*,member.role,member.state,member.revision AS membership_revision,member.joined_at,
       member.show_in_profile,member.pinned,member.muted FROM memberships member JOIN profiles p ON p.account_id=member.account_id
       WHERE member.community_id=? AND member.state=? ORDER BY member.joined_at,p.account_id LIMIT ? OFFSET ?`, row.id, state, size + 1, offset);
-    return { members: rows.slice(0, size).map(item => ({ profile: m.profile(item), role: item.role, state: item.state,
+    return { members: rows.slice(0, size).map(item => ({ profile: m.identity(item), role: item.role, state: item.state,
       revision: item.membership_revision, joinedAt: item.joined_at })),
       nextCursor: rows.length > size ? nextCursor(offset + size, scope) : null };
   }

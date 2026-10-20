@@ -5,6 +5,7 @@ import { createLaunchPath } from './launch-path.mjs';
 import { canonical } from '../scoped-embed/profile.mjs';
 import { approvedEmbedProfile } from '../scoped-embed/profile-dispatch.mjs';
 import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
+import { AUDIENCE_FORMATS, baseAppsSchema, audienceColumns, audienceDdl, audienceGuards, hasAudienceSchema, readAppAudience, readConversationAudience, audienceMatchesPolicy } from './audience.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
 export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
@@ -106,17 +107,20 @@ export function inspectAppsSchema(db) {
       : schema === v4Schema && version === 4 ? 'v4' : schema === v5Schema && version === 5 ? 'v5'
         : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6'
           : schema === APPS_SCOPED_REGISTRY_SCHEMA && version === 7 ? 'v7'
-            : schema === APPS_RESOURCE_REGISTRY_SCHEMA && version === 8 ? 'v8' : '';
+            : schema === APPS_RESOURCE_REGISTRY_SCHEMA && version === 8 ? 'v8'
+              : Object.entries(AUDIENCE_FORMATS).find(([, item]) => item.version === version && item.marker === schema)?.[0] ?? '';
   assertApps(state, 'apps_schema_unsupported');
-  const modern = ['v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(state), sourceVersion = ['v4', 'v5', 'v6', 'v7', 'v8'].includes(state), savedVersion = ['v5', 'v6', 'v7', 'v8'].includes(state);
-  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
-    ...(savedVersion ? saved : {}), ...(['v6', 'v7', 'v8'].includes(state) ? discussions : {}), ...(['v7', 'v8'].includes(state) ? scopedAdmissions : {}) };
-  const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
-    ...(modern ? [...definitions(publicationDdl(['v7', 'v8'].includes(state), state === 'v8')), ...definitions(targetGuards())] : []),
+  const base = baseAppsSchema(state), audienceVersion = Boolean(AUDIENCE_FORMATS[state]);
+  const modern = ['v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(base), sourceVersion = ['v4', 'v5', 'v6', 'v7', 'v8'].includes(base), savedVersion = ['v5', 'v6', 'v7', 'v8'].includes(base);
+  const expected = base === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
+    ...(savedVersion ? saved : {}), ...(audienceVersion ? audienceColumns : {}), ...(['v6', 'v7', 'v8'].includes(base) ? discussions : {}), ...(['v7', 'v8'].includes(base) ? scopedAdmissions : {}) };
+  const sqlDefinitions = new Map([...definitions(coreDdl()), ...(base !== 'v1' ? definitions(domainDdl()) : []),
+    ...(modern ? [...definitions(publicationDdl(['v7', 'v8'].includes(base), base === 'v8')), ...definitions(targetGuards())] : []),
     ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
     ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
-    ...(['v6', 'v7', 'v8'].includes(state) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
-    ...(['v7', 'v8'].includes(state) ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : [])]);
+    ...(['v6', 'v7', 'v8'].includes(base) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
+    ...(['v7', 'v8'].includes(base) ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : []),
+    ...(audienceVersion ? [...definitions(audienceDdl()), ...definitions(audienceGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
@@ -124,6 +128,8 @@ export function inspectAppsSchema(db) {
     assertApps(JSON.stringify(actual.map(item => item.name)) === JSON.stringify(columns), 'apps_schema_unsupported');
     const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
       : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts'].includes(name) ? ['account_id', 'request_key']
+        : name === 'app_discussion_conversation_audiences' ? ['conversation_id']
+          : ['app_audiences', 'app_discussion_head_audiences'].includes(name) ? ['app_id']
         : name === 'app_saved_entries' ? ['account_id', 'app_id'] : ['app_saved_heads', 'app_discussion_rates'].includes(name) ? ['account_id']
           : name === 'app_scoped_embed_admissions' ? ['app_id', 'target_revision']
           : name === 'app_discussion_changes' ? ['conversation_id', 'seq']
@@ -336,9 +342,13 @@ function discussionGuards() {
   ];
 }
 
-export function discussionAudienceDigest(ownerAccountId, mode, grants) {
+export function discussionAudienceDigest(ownerAccountId, mode, grants, audience = null) {
   textId(ownerAccountId); assertApps(['restricted', 'anyone'].includes(mode), 'apps_registry_corrupt', 500);
   const normalized = cleanGrants(grants);
+  if (audience !== null) {
+    assertApps(audienceMatchesPolicy(audience, mode, audience === 'public'), 'apps_registry_corrupt', 500);
+    return digest(JSON.stringify(['soty.app-discussion.audience.v2', ownerAccountId, mode, audience]));
+  }
   return digest(JSON.stringify(['soty.app-discussion.audience.v1', ownerAccountId, mode, normalized.accountIds, normalized.communityIds]));
 }
 
@@ -347,8 +357,9 @@ export function readDiscussionAudience(db, id) {
   const policy = db.prepare('SELECT owner_account_id,launch_policy FROM app_publications WHERE app_id=?').get(id);
   assertApps(app && policy?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
   let grants; try { grants = cleanGrants(JSON.parse(app.grants_json)); } catch { throw new AppsError('apps_registry_corrupt', 500); }
-  return { app, ownerAccountId: app.owner_account_id, mode: policy.launch_policy, grants,
-    hash: discussionAudienceDigest(app.owner_account_id, policy.launch_policy, grants) };
+  const audience = readAppAudience(db, id);
+  return { app, ownerAccountId: app.owner_account_id, mode: policy.launch_policy, grants, audience,
+    hash: discussionAudienceDigest(app.owner_account_id, policy.launch_policy, grants, audience) };
 }
 
 function validateDiscussionRows(db) {
@@ -360,7 +371,7 @@ function validateDiscussionRows(db) {
     textId(row.owner_account_id); let grants;
     try { grants = cleanGrants(JSON.parse(row.grants_json)); } catch { throw new AppsError('apps_registry_corrupt', 500); }
     assertApps(JSON.stringify(grants) === row.grants_json && Buffer.byteLength(row.grants_json, 'utf8') <= 32768
-      && discussionAudienceDigest(row.owner_account_id, row.mode, grants) === row.audience_hash, 'apps_registry_corrupt', 500);
+      && discussionAudienceDigest(row.owner_account_id, row.mode, grants, readConversationAudience(db, row)) === row.audience_hash, 'apps_registry_corrupt', 500);
   }
   const usage = db.prepare('SELECT * FROM app_discussion_usage').all();
   assertApps(usage.length === 1 && usage[0].id === 1, 'apps_registry_corrupt', 500);
@@ -476,8 +487,8 @@ export function ensureInitialPublication(db, app) {
 
 function validateSourceRows(db, { historical = false } = {}) {
   const marker = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
-  const resources = marker === APPS_RESOURCE_REGISTRY_SCHEMA;
-  const scoped = resources || marker === APPS_SCOPED_REGISTRY_SCHEMA;
+  const resources = marker === APPS_RESOURCE_REGISTRY_SCHEMA || marker === AUDIENCE_FORMATS.v11.marker;
+  const scoped = resources || marker === APPS_SCOPED_REGISTRY_SCHEMA || marker === AUDIENCE_FORMATS.v10.marker;
   assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
   for (const app of db.prepare('SELECT * FROM local_apps').iterate()) {
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
@@ -675,7 +686,7 @@ function migrateLegacyAndScopedAppsSchema(db, { legacyTemplate = '', now = Date.
 
 /** Explicit startup-only Apps8 upgrade. The generic resource shape does not
  * add a format epoch for each subsequent reviewed Source route adapter. */
-export function migrateAppsSchema(db, options = {}) {
+function migrateBaseAppsSchema(db, options = {}) {
   const { legacyTemplate = '', now = Date.now, allowScopedEmbedMigration = false, allowSelectedResourceMigration = false } = options;
   assertApps(typeof allowScopedEmbedMigration === 'boolean' && typeof allowSelectedResourceMigration === 'boolean',
     'apps_scoped_migration_configuration_invalid', 503);
@@ -714,4 +725,74 @@ export function migrateAppsSchema(db, options = {}) {
     return { schema: APPS_RESOURCE_REGISTRY_SCHEMA, migrated: true, legacyTemplate: previous.legacyTemplate };
   } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
   finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
+}
+
+
+function validateAudienceRows(db) {
+  assertApps(hasAudienceSchema(db) && !db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
+  for (const row of db.prepare(`SELECT a.*,p.launch_policy,p.listed,p.exposure_ack_json,p.exposure_ack_revision
+    FROM app_audiences a JOIN app_publications p ON p.app_id=a.app_id`).iterate()) {
+    assertApps(audienceMatchesPolicy(row.audience, row.launch_policy, Boolean(row.listed)), 'apps_registry_corrupt', 500);
+    if (['private', 'friends'].includes(row.audience))
+      assertApps(row.exposure_ack_json === null && row.exposure_ack_revision === null, 'apps_registry_corrupt', 500);
+    else assertApps(db.prepare(`SELECT 1 FROM app_publication_domains p JOIN app_domains d
+      ON d.id=p.domain_id AND d.app_id=p.app_id AND d.owner_account_id=p.owner_account_id
+      JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+      WHERE p.app_id=? AND d.role='alias' AND d.state='bound' LIMIT 1`).get(row.app_id), 'apps_registry_corrupt', 500);
+  }
+  assertApps(!db.prepare(`SELECT 1 FROM app_discussion_head_audiences a LEFT JOIN app_discussion_heads h ON h.app_id=a.app_id
+    WHERE h.app_id IS NULL OR h.current_id<>a.current_id LIMIT 1`).get(), 'apps_registry_corrupt', 500);
+  assertApps(!db.prepare(`SELECT 1 FROM app_discussion_conversation_audiences a JOIN app_discussion_heads h ON h.app_id=a.app_id
+    JOIN app_discussion_conversations c ON c.app_id=a.app_id AND c.id=a.conversation_id
+    LEFT JOIN app_discussion_head_audiences current ON current.app_id=h.app_id
+    WHERE c.id=h.current_id AND (current.current_id IS NULL OR current.current_id<>c.id OR current.audience<>a.audience) LIMIT 1`).get(), 'apps_registry_corrupt', 500);
+}
+
+/** Startup-only audience format. 9/10/11 retain distinct base6/7/8 runtime
+ * admissions; publication never enables another scoped/resource profile. */
+export function migrateAppsSchema(db, options = {}) {
+  const { allowAudienceMigration = false, legacyTemplate = '', allowScopedEmbedMigration = false, allowSelectedResourceMigration = false } = options;
+  assertApps(typeof allowAudienceMigration === 'boolean' && typeof allowScopedEmbedMigration === 'boolean'
+    && typeof allowSelectedResourceMigration === 'boolean', 'apps_audience_migration_configuration_invalid', 503);
+  function existing(state, migrated = false) {
+    const format = AUDIENCE_FORMATS[state];
+    const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
+    assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
+    assertApps(!(format.base === 'v6' && (allowScopedEmbedMigration || allowSelectedResourceMigration))
+      && !(format.base === 'v7' && allowSelectedResourceMigration), 'apps_audience_base_upgrade_required', 503);
+    const snapshot = !db.isTransaction;
+    if (snapshot) db.exec('BEGIN');
+    try {
+      validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
+      if (snapshot) db.exec('COMMIT');
+      return { schema: format.marker, migrated, legacyTemplate: pinned.value };
+    } catch (error) { if (snapshot && db.isTransaction) db.exec('ROLLBACK'); throw error; }
+  }
+  const initial = inspectAppsSchema(db);
+  if (AUDIENCE_FORMATS[initial]) return existing(initial);
+  let previous;
+  try { previous = migrateBaseAppsSchema(db, options); }
+  catch (error) {
+    // Another new reader may have committed the audience migration while this
+    // connection waited for the pre-existing base migration's writer fence.
+    let current; try { current = inspectAppsSchema(db); } catch { throw error; }
+    if (AUDIENCE_FORMATS[current]) return existing(current);
+    throw error;
+  }
+  const afterBase = inspectAppsSchema(db);
+  if (AUDIENCE_FORMATS[afterBase]) return existing(afterBase);
+  if (!allowAudienceMigration) return previous;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const state = inspectAppsSchema(db);
+    if (AUDIENCE_FORMATS[state]) { const result = existing(state); db.exec('COMMIT'); return result; }
+    const [next, format] = Object.entries(AUDIENCE_FORMATS).find(([, value]) => value.base === state) ?? [];
+    assertApps(format, 'apps_schema_unsupported');
+    validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
+    db.exec(audienceDdl()); for (const statement of audienceGuards()) db.exec(statement);
+    db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(format.marker);
+    db.exec(`PRAGMA user_version=${format.version}`);
+    assertApps(inspectAppsSchema(db) === next, 'apps_audience_migration_invalid', 500);
+    const result = existing(next, true); db.exec('COMMIT'); return result;
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
 }

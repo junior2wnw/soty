@@ -4,7 +4,7 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":6,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8],"notes":[1,2],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3],"connect":[3,4]}}';
+export const currentStorageReaders = '{"version":6,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6,7,8,9,10,11],"notes":[1,2],"capabilities":[1,2,3],"appRegistration":[1],"feedback":[1],"humanIdentity":[1,2,3],"connect":[3,4]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -14,7 +14,7 @@ const keys = (value, expected) => value !== null && typeof value === 'object' &&
 const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
 // Parser knowledge is separate from the current image declaration above. Only
 // an actual image's explicit reader declaration may admit its formats before START.
-const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4] };
+const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4] };
 const legacyStores = ['rooms', 'apps', 'notes', 'capabilities'], universalStores = [...legacyStores, 'appRegistration', 'feedback'], stores = Object.keys(supported);
 const storesFor = version => version === 3 ? legacyStores : version === 4 ? universalStores : version === 5 ? stores.filter(store => store !== 'connect') : stores;
 const formatVersion = schema => schema === 'soty.storage-format.v3' ? 3 : schema === 'soty.storage-format.v4' ? 4 : schema === 'soty.storage-format.v5' ? 5 : schema === 'soty.storage-format.v6' ? 6 : null;

@@ -72,7 +72,7 @@ test('pure placement preserves one app reference and unrelated layout; same spac
 });
 
 test('first-use seed is shared and closed; existing missing space never becomes a new workspace', () => {
-  const seed = createPersonalFieldDocument(); assert.deepEqual(seed.shortcuts.map(value => value.entity.id), ['notes', 'chess']);
+  const seed = createPersonalFieldDocument(); assert.deepEqual(seed.shortcuts.map(value => value.entity.id), ['notes', 'chess', 'assistant']);
   assert.throws(() => ensureFieldEntityPlacement(document(), { entity, contextId: 'missing', shortcutId: 'new', initializePersonal: true }), { code: 'field_context_missing' });
   assert.throws(() => ensureFieldEntityPlacement(document(), { entity: { ...entity, url: 'https://example.invalid' }, contextId: 'work', shortcutId: 'new' }), { code: 'field_document_invalid' });
 });
@@ -100,7 +100,7 @@ test('deep-entry first Add seeds builtins once in a single field mutation', asyn
   const f = fixture(t, null), { controller } = f.create(), view = await controller.load();
   assert.equal(f.current().revision, 0); assert.equal(view.contexts[0].willCreate, true);
   const added = await controller.place(select(view, 'personal')); assert.equal(added.status, 'saved');
-  assert.equal(f.current().revision, 1); assert.deepEqual(f.current().document.shortcuts.map(value => value.entity.id), ['notes', 'chess', APP]);
+  assert.equal(f.current().revision, 1); assert.deepEqual(f.current().document.shortcuts.map(value => value.entity.id), ['notes', 'chess', 'assistant', APP]);
   assert.equal(f.calls.filter(call => call.op === 'world.field.put').length, 1);
 });
 
@@ -113,7 +113,7 @@ test('a deliberately emptied existing field adds a space without re-adding delet
 test('first deep-entry Add retains this account legacy pins exactly once, without a duplicate target', async t => {
   const f = fixture(t, null), { controller } = f.create({ initialAppIds: [APP, OTHER_APP, APP] }), view = await controller.load();
   const added = await controller.place(select(view, 'personal')); assert.equal(added.status, 'saved');
-  assert.deepEqual(f.current().document.shortcuts.map(value => value.entity.id), ['notes', 'chess', APP, OTHER_APP]);
+  assert.deepEqual(f.current().document.shortcuts.map(value => value.entity.id), ['notes', 'chess', 'assistant', APP, OTHER_APP]);
   assert.equal(appPlacements(f.current().document).length, 1); assert.equal(added.shortcutId, `migrated-${APP}`);
   f.remoteWrite({ schema: 'soty.field.v1', contexts: [], shortcuts: [] });
   const later = f.create({ initialAppIds: [OTHER_APP] }), emptyView = await later.controller.load();

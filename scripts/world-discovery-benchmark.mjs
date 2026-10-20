@@ -39,7 +39,7 @@ try {
       service.execute({ op: 'world.profile.get', actor: owner }); call('profile.get');
       db = new DatabaseSync(databasePath); db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; BEGIN IMMEDIATE');
       const started = performance.now();
-      const profile = db.prepare('INSERT INTO profiles(account_id,display_name,bio,interests,search_text,discoverable,created_at,updated_at) VALUES(?,?,?,?,?,1,1,1)');
+      const profile = db.prepare("INSERT INTO profiles(account_id,display_name,bio,interests,search_text,audience,discoverable,created_at,updated_at) VALUES(?,?,?,?,?,'public',1,1,1)");
       const community = db.prepare("INSERT INTO communities(id,owner_id,name,description,search_text,join_policy,created_at,updated_at) VALUES(?,?,?,?,?,'open',1,1)");
       const member = db.prepare("INSERT INTO memberships(community_id,account_id,role,state,joined_at,updated_at) VALUES(?,?,?,'active',?,1)");
       let groupCount = 0;

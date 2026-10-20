@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createWorldService, SCHEMA_VERSION } from '../server/index.mjs';
-import { removeDiscoveryProjection } from './schema-fixtures.mjs';
+import { removeAudienceProjection, removeDiscoveryProjection } from './schema-fixtures.mjs';
 import { asDataUrl, pngFixture } from './avatar-fixtures.mjs';
 
 const owner = { accountId: 'acct_directory_owner', deviceId: 'dev_directory_owner', label: 'Владелец' };
@@ -18,7 +18,7 @@ function fixture(t) {
   const base = resolve(tmpdir()), dir = mkdtempSync(join(base, 'soty-directory-test-'));
   const databasePath = join(dir, 'world.sqlite'), services = [];
   let now = 1_800_000_000_000, serial = 0;
-  const open = () => { const service = createWorldService({ databasePath, projectId: 'directory-tests', clock: () => now }); services.push(service); return service; };
+  const open = (options = {}) => { const service = createWorldService({ databasePath, projectId: 'directory-tests', clock: () => now, ...options }); services.push(service); return service; };
   let service = open();
   const call = (actor, operation, args = {}) => service.execute({ actor, op: 'world.' + operation, args });
   [owner, reader].forEach(actor => call(actor, 'profile.get'));
@@ -37,7 +37,7 @@ function fixture(t) {
     rmSync(dir, { recursive: true, force: true });
   });
   return { get service() { return service; }, databasePath, call, update, person, group, changeGroup, search,
-    open: () => { service = open(); return service; }, advance: milliseconds => { now += milliseconds; } };
+    open: (options = {}) => { service = open(options); return service; }, advance: milliseconds => { now += milliseconds; } };
 }
 
 test('visibility, invitation-only policy and archive immediately remove search rows, FTS hits and public counts', t => {
@@ -132,7 +132,7 @@ test('popular FTS totals are explicitly lower bounds while exact directory count
   const f = fixture(t), db = new DatabaseSync(f.databasePath), count = 1005;
   try {
     db.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE');
-    const profile = db.prepare('INSERT INTO profiles(account_id,display_name,search_text,discoverable,created_at,updated_at) VALUES(?,?,?,1,1,1)');
+    const profile = db.prepare("INSERT INTO profiles(account_id,display_name,search_text,audience,discoverable,created_at,updated_at) VALUES(?,?,?,'public',1,1,1)");
     const community = db.prepare("INSERT INTO communities(id,owner_id,name,search_text,join_policy,created_at,updated_at) VALUES(?,?,?,?,'open',1,1)");
     const membership = db.prepare("INSERT INTO memberships(community_id,account_id,role,state,joined_at,updated_at) VALUES(?,?,'owner','active',1,1)");
     for (let index = 0; index < count; index++) {
@@ -147,7 +147,7 @@ test('popular FTS totals are explicitly lower bounds while exact directory count
     assert.deepEqual(f.search({ query: 'катал', kind: 'communities' }).totals, { people: 0, communities: 1000, communitiesExact: false });
     assert.deepEqual(f.search({}).totals, { people: count, communities: count });
     // Exact boundary is truthful: 1000 matches are exact; a 1001st match makes it a lower bound.
-    db.exec("UPDATE communities SET state='archived' WHERE CAST(substr(id,12) AS INTEGER)>=1000; UPDATE profiles SET discoverable=0 WHERE CAST(substr(account_id,11) AS INTEGER)>=1000");
+    db.exec("UPDATE communities SET state='archived' WHERE CAST(substr(id,12) AS INTEGER)>=1000; UPDATE profiles SET audience='private',discoverable=0 WHERE CAST(substr(account_id,11) AS INTEGER)>=1000");
     assert.deepEqual(f.search({ query: 'катал' }).totals, { people: 1000, communities: 1000 });
   } finally { db.close(); }
 });
@@ -170,7 +170,7 @@ test('directory and FTS query plans use their indexes and do not allocate tempor
   } finally { db.close(); }
 });
 
-test('v2 database upgrades to v3 without changing profiles, avatars, groups, chat or receipts; reopening is idempotent', t => {
+test('v2 database upgrades to the current reader without changing profile content, avatars, groups, chat or receipts; reopening is idempotent', t => {
   const f = fixture(t); f.update(owner, { discoverable: true, displayName: 'Миграция Ирина', bio: 'Сохраняется' });
   const image = asDataUrl(pngFixture());
   f.call(owner, 'profile.avatar.set', { expectedRevision: f.call(owner, 'profile.get').profile.revision, avatarUrl: image, thumbnailUrl: image });
@@ -179,9 +179,9 @@ test('v2 database upgrades to v3 without changing profiles, avatars, groups, cha
   f.service.close(); const db = new DatabaseSync(f.databasePath);
   const tables = ['profiles', 'profile_avatars', 'communities', 'memberships', 'messages', 'receipts', 'world_audit'];
   const before = Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
-  removeDiscoveryProjection(db);
+  removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("PRAGMA user_version=2; UPDATE world_meta SET value='2' WHERE key='schema_version'"); db.close();
-  const migrated = f.open(); assert.equal(SCHEMA_VERSION, 3); assert.equal(migrated.schemaVersion, 3);
+  const migrated = f.open({ allowAudienceMigration: true }); assert.equal(SCHEMA_VERSION, 5); assert.equal(migrated.schemaVersion, 5);
   assert.deepEqual(f.search({ query: 'миграц' }).totals, { people: 1, communities: 1 });
   assert.equal(f.search({ query: privateGroup.communityId }).communities.length, 0);
   assert.equal(f.call(owner, 'profile.avatar.read', { profileId: owner.accountId }).avatarUrl, image);
@@ -191,7 +191,7 @@ test('v2 database upgrades to v3 without changing profiles, avatars, groups, cha
     for (const table of tables) assert.deepEqual(reopenedDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), before[table], table);
     sequence = reopenedDb.prepare('SELECT seq,kind,entity_id FROM world_directory ORDER BY seq').all();
     assert.equal(reopenedDb.prepare('PRAGMA foreign_key_check').get(), undefined);
-    assert.equal(reopenedDb.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(reopenedDb.prepare('PRAGMA user_version').get().user_version, 5);
   } finally { reopenedDb.close(); }
   migrated.close(); f.open();
   assert.deepEqual(f.search({}).totals, { people: 1, communities: 1 });

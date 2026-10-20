@@ -4,6 +4,7 @@ import { errorText } from './dialogs';
 import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateArgs, createAppSettingsDraftState, createAppSettingsState, dispatchAppSettingsIntent } from './app-settings-state.mjs';
 import { createAppSourceState, appSourceExposureScope } from './app-source-state.mjs';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
+import { createAudienceControl } from './audience-control';
 import { deviceKey } from '../platform/device-key.mjs';
 import { exportAppDeployment, preferredInspectionEntry } from './app-deployment.mjs';
 import type { AppInspection, AppSettingsOptions, SettingsPending } from './app-settings.types';
@@ -88,8 +89,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let confirmation: Confirmation | null = null, confirmTrigger: HTMLElement | null = null;
   let copyFallback: string | null = null, observationDeadline = 0, inspectionGeneration = 0, refreshGeneration = 0, copyGeneration = 0;
   let observationTimer: ReturnType<typeof setTimeout> | null = null;
+  let quickDetails: HTMLDetailsElement | null = null;
   const current = (): boolean => !disposed && options.isCurrent();
-  const sourceCurrent = (): boolean => current() && document.visibilityState === 'visible' && sourceDetails.open;
+  const sourceCurrent = (): boolean => current() && document.visibilityState === 'visible' && (!quickDetails || quickDetails.open) && advanced.open && sourceDetails.open;
   const hasUnsavedDraft = (): boolean => { const state = model?.read(); return Boolean(sourceModel?.read().dirty || (state && (state.nameDirty || state.grantsDirty || state.publicationDirty || state.draft.slug.trim()))); };
   const call = <T>(op: string, args: Record<string, unknown>): Promise<T> => api.request<T>(op, { ...args, expectedAccountId: accountId });
   const getPending = (): { pending: SettingsPending | null; storageError: string } => {
@@ -374,20 +376,34 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let claimInitialised = false;
   claimDetails.append(claimSummary, claimForm, claimCount); addresses.append(aliasList, noAliases, claimDetails);
 
-  const access = section('Доступ');
+  const access = section('Доступ'); access.classList.add('sw-app-settings-access');
+  const audience = createAudienceControl({ value: null, descriptions: {
+    private: 'Приложение открываете только вы.',
+    friends: 'Приложение доступно вашим текущим взаимным контактам.',
+    link: 'Приложение открывается по ссылке и не появляется в общем списке.',
+    public: 'Приложение видно всем в мире Сот и открывается по ссылке.',
+  }, onChange: value => { if (!model || !current() || busy) return; model.patch({ audience: value, exposureConfirmed: false }); render(); } });
+  const audienceUnavailable = el('p', 'sw-muted', 'Для четырёх режимов видимости требуется обновление сервера. Действующий доступ показан ниже.');
   const policy = keyed(el('select', 'sw-select'), 'policy'); policy.setAttribute('aria-label', 'Кому открыт доступ');
   for (const [value, label] of [['restricted', 'Владелец и выбранные люди'], ['anyone', 'Все по ссылке']] as const) { const option = el('option', '', label); option.value = value; policy.append(option); }
-  policy.addEventListener('change', () => { model?.patch({ launchPolicy: policy.value === 'anyone' ? 'anyone' : 'restricted', exposureConfirmed: false }); render(); });
+  policy.addEventListener('change', () => { model?.patch({ ...(model && Object.hasOwn(model.read().snapshot.publication, 'audience') ? { audience: null } : {}), launchPolicy: policy.value === 'anyone' ? 'anyone' : 'restricted', exposureConfirmed: false }); render(); });
   const publicDetails = el('div', 'sw-app-settings-public'), ack = el('label', 'sw-app-settings-ack');
   const ackInput = keyed(el('input'), 'public-ack'), ackText = el('span'); ackInput.type = 'checkbox';
   ackInput.addEventListener('change', () => { model?.patch({ exposureConfirmed: ackInput.checked }); render(); }); ack.append(ackInput, ackText);
   const noPublicAliases = el('p', 'sw-muted', 'Сначала отметьте хотя бы один именной адрес.');
+  const chooseAddress = button('Выбрать ссылку', 'link', 'sw-button-quiet', () => {
+    if (!current() || !model) return;
+    if (quickDetails) quickDetails.open = true;
+    advanced.open = true;
+    if (!model.read().snapshot.addresses.aliases.length) claimDetails.open = true;
+    addresses.tabIndex = -1; addresses.scrollIntoView({ block: 'nearest' }); addresses.focus({ preventScroll: true });
+  });
   const listing = el('label', 'sw-app-settings-ack'), listingInput = keyed(el('input'), 'public-listing'); listingInput.type = 'checkbox';
-  listingInput.addEventListener('change', () => { model?.patch({ listed: listingInput.checked }); render(); });
+  listingInput.addEventListener('change', () => { model?.patch({ ...(model && Object.hasOwn(model.read().snapshot.publication, 'audience') ? { audience: null } : {}), listed: listingInput.checked }); render(); });
   listing.append(listingInput, el('span', '', 'Показывать всем в разделе приложений Сот'));
-  publicDetails.append(el('p', 'sw-muted', 'Открыть сможет любой, кто узнает или угадает адрес.'), listing, ack, noPublicAliases);
+  publicDetails.append(el('p', 'sw-muted', 'Открыть сможет любой, кто узнает или угадает адрес.'), listing, ack, noPublicAliases, chooseAddress);
   const legacyListed = el('p', 'sw-muted sw-app-settings-hint');
-  const publish = keyed(button('Сохранить доступ по адресам', 'check', 'sw-button-primary', () => {
+  const publish = keyed(button('Сохранить доступ', 'check', 'sw-button-primary', () => {
     if (!model) return; void perform(async () => { const args = appPublicationArgs(model!.base('publication'), model!.read().draft, accountId); await mutation('apps.publication.update', args); });
   }), 'publish');
   const groups = keyed(el('details', 'sw-app-settings-details'), 'groups');
@@ -397,7 +413,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const saveGrants = keyed(button('Сохранить выбранные группы', 'check', 'sw-button-quiet', () => {
     if (!model) return; void perform(async () => { const args = appSettingsUpdateArgs(model!.base('grants'), model!.read().draft, 'grants', accountId); await api.request('apps.update', args); if (!current()) return; staleInspection = true; notice = 'Изменение групп подтверждено. Контакты сохранены.'; await inspect({ kind: 'grants', args }); });
   }), 'save-grants');
-  groups.append(groupsSummary, contactsHint, publicGroupsHint, choices, noGroups, saveGrants); access.append(policy, publicDetails, legacyListed, publish, groups);
+  const customAudience = button('Выбрать людей и группы вручную', 'sliders', 'sw-button-quiet', () => {
+    if (!model || !current() || busy) return;
+    model.patch({ audience: null, launchPolicy: 'restricted', listed: false, exposureConfirmed: false }); groups.open = true; render();
+  });
+  groups.append(groupsSummary, customAudience, policy, contactsHint, publicGroupsHint, choices, noGroups, saveGrants);
+  access.append(audience.element, audienceUnavailable, publicDetails, legacyListed, publish, groups);
 
   const source = section('Источник'), sourceState = el('p', 'sw-app-settings-observation'), sourceInfo = el('dl', 'sw-app-settings-source');
   const sourceDevice = el('dd'), sourcePort = el('dd'), sourcePath = el('dd', 'sw-app-settings-path'), sourceTime = el('p', 'sw-muted sw-app-settings-hint');
@@ -511,7 +532,15 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const danger = keyed(el('details', 'sw-app-settings-details'), 'danger'); danger.append(el('summary', '', 'Закрыть приложение в Сотах'));
   const revoke = keyed(button('Закрыть все ссылки приложения', 'lock', 'sw-button-quiet sw-button-danger', () => confirm({ kind: 'revoke' }, revoke)), 'revoke');
   danger.append(el('p', 'sw-muted', 'Отдельное действие: закрывает весь доступ через Соты. Для смены аудитории используйте настройки выше.'), revoke);
-  content.append(identity, addresses, access, source, danger); host.append(loading, summary, topActions, messages, content);
+  const advanced = el('details', 'sw-app-settings-details sw-app-settings-advanced');
+  advanced.append(el('summary', '', 'Адреса и источник'), addresses, source, danger);
+  advanced.addEventListener('toggle', () => { if (!advanced.open) sourceDetails.open = false; });
+  if (options.compactAccess) {
+    const more = el('details', 'sw-app-settings-details'); more.append(el('summary', '', 'Все настройки'), identity, groups, topActions, advanced);
+    quickDetails = more;
+    more.addEventListener('toggle', () => { if (!more.open) { advanced.open = false; sourceDetails.open = false; } });
+    content.append(access, more); host.append(loading, summary, messages, content);
+  } else { content.append(access, identity, advanced); host.append(loading, summary, topActions, messages, content); }
 
   function renderSource(blocked: boolean, pending: SettingsPending | null, storageError: string): void {
     if (!model || !sourceModel) return;
@@ -646,7 +675,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (confirmation) {
       const value = confirmation;
       text(confirmTitle, value.kind === 'leave' ? 'Выйти без сохранения правок?' : value.kind === 'retire' ? 'Закрыть этот адрес навсегда?' : value.kind === 'revoke' ? 'Закрыть приложение в Сотах?' : value.kind === 'reset' ? 'Заменить ваши правки текущими настройками?' : value.kind === 'source-reset' ? 'Заменить ввод текущим источником?' : value.kind === 'publication-reset' ? 'Отменить правки доступа?' : 'Завершить проверку запроса?');
-      text(confirmText, value.kind === 'leave' ? 'Несохранённый ввод будет потерян. Уже отправленное действие может завершиться после выхода. Сохранённые запросы останутся для проверки.' : value.kind === 'retire' ? `${value.origin}. Ссылка перестанет открываться. Имя останется закреплённым и не станет свободным.` : value.kind === 'revoke' ? 'Все ссылки и доступ через Соты закроются. Сам проект останется на вашем устройстве.' : value.kind === 'reset' ? 'Несохранённые название и настройки доступа будут заменены. Уже отправленный запрос это не отменяет.' : value.kind === 'source-reset' ? 'Ввод устройства, порта, страницы и доступа источника будет заменён. Остальные правки сохранятся.' : value.kind === 'publication-reset' ? 'Аудитория и выбранные адреса вернутся к текущему состоянию. Название, группы и новое имя адреса сохранятся.' : 'Это не отмена на сервере: действие могло уже выполниться или ещё завершиться. Сначала читаем текущее состояние, затем убираем только локальный запрос.');
+      text(confirmText, value.kind === 'leave' ? (pending || busy ? 'Правки ещё не сохранены. Отправленное изменение продолжит выполняться; его можно проверить при следующем открытии.' : 'Ваши изменения ещё не сохранены. Выйти и потерять эти правки?') : value.kind === 'retire' ? `${value.origin}. Ссылка перестанет открываться. Имя останется закреплённым и не станет свободным.` : value.kind === 'revoke' ? 'Все ссылки и доступ через Соты закроются. Сам проект останется на вашем устройстве.' : value.kind === 'reset' ? 'Несохранённые название и настройки доступа будут заменены. Уже отправленный запрос это не отменяет.' : value.kind === 'source-reset' ? 'Ввод устройства, порта, страницы и доступа источника будет заменён. Остальные правки сохранятся.' : value.kind === 'publication-reset' ? 'Аудитория и выбранные адреса вернутся к текущему состоянию. Название, группы и новое имя адреса сохранятся.' : 'Это не отмена на сервере: действие могло уже выполниться или ещё завершиться. Сначала читаем текущее состояние, затем убираем только локальный запрос.');
       text(confirmYes.querySelector('span')!, value.kind === 'leave' ? (value.preview ? 'Открыть без этих правок' : 'Выйти без сохранения') : value.kind === 'reset' || value.kind === 'source-reset' ? 'Взять текущие' : value.kind === 'publication-reset' ? 'Отменить правки доступа' : value.kind === 'abandon' ? 'Проверить и завершить' : 'Закрыть доступ');
       text(confirmNo.querySelector('span')!, value.kind === 'leave' ? 'Продолжить редактирование' : 'Оставить как есть');
     }
@@ -690,18 +719,29 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     text(claimPreview, proposedOrigin || (snapshot.addresses.claimOrigin ? '3–48 латинских букв, цифр и дефисов' : 'Новые именные адреса пока недоступны.'));
     disable(claim, blocked || !snapshot.actions.canReserveName); disable(nameCheck, blocked || !snapshot.actions.canReserveName);
     text(claimCount, `Закреплено имён: ${snapshot.addresses.limits.usedByApp} из ${snapshot.addresses.limits.perApp}.`);
-    if (policy.value !== draft.launchPolicy) policy.value = draft.launchPolicy; policy.disabled = !snapshot.actions.canPublish;
+    const fourAudiences = Object.hasOwn(snapshot.publication, 'audience');
+    audience.element.hidden = !fourAudiences; audienceUnavailable.hidden = fourAudiences;
+    audience.update(draft.audience ?? null, blocked || !snapshot.actions.canPublish || !fourAudiences);
+    const custom = !fourAudiences || draft.audience == null;
+    const manualConfirmed = !fourAudiences || snapshot.publication.audience == null;
+    const manualReady = custom && manualConfirmed;
+    customAudience.hidden = !fourAudiences || custom; customAudience.disabled = blocked || !snapshot.actions.canPublish;
+    if (policy.value !== draft.launchPolicy) policy.value = draft.launchPolicy; policy.disabled = blocked || !snapshot.actions.canPublish || !custom;
+    policy.hidden = !custom;
     publicDetails.hidden = draft.launchPolicy !== 'anyone'; ackInput.checked = draft.exposureConfirmed; ackInput.disabled = !snapshot.actions.canPublish;
     const base = model.base('publication');
     text(ackText, appSourceExposureScope(base.source.profile) === 'authenticated-workspace'
       ? 'Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.'
       : `Открыть всем весь проект на устройстве «${base.source.deviceName}», порт ${base.source.port}, включая его страницы и API.`);
     noPublicAliases.hidden = draft.activeDomainIds.length > 0;
-    listingInput.checked = draft.listed; listingInput.disabled = !snapshot.actions.canPublish;
+    chooseAddress.hidden = draft.activeDomainIds.length > 0; disable(chooseAddress, blocked);
+    if (draft.launchPolicy === 'anyone' && !draft.activeDomainIds.length) advanced.open = true;
+    listing.hidden = !custom;
+    listingInput.checked = draft.listed; listingInput.disabled = blocked || !snapshot.actions.canPublish || !custom;
     legacyListed.hidden = !snapshot.publication.listed; text(legacyListed, draft.launchPolicy === 'restricted' ? 'Приложение исчезнет из общего списка после сохранения ограниченного доступа.' : 'Приложение опубликовано в общем списке.');
     disable(publish, blocked || !snapshot.actions.canPublish || !state.publicationDirty || state.publicationConflict || (draft.launchPolicy === 'anyone' && (!draft.exposureConfirmed || !draft.activeDomainIds.length)));
     text(groupsSummary, `Выбранные люди и группы · ${snapshot.app.grants.accountIds.length + snapshot.app.grants.communityIds.length}`);
-    text(contactsHint, snapshot.app.grants.accountIds.length ? `Контактов с доступом: ${snapshot.app.grants.accountIds.length}. Их доступ сохраняется.` : 'Доступ владельца сохраняется всегда.'); publicGroupsHint.hidden = snapshot.publication.launchPolicy !== 'anyone';
+    text(contactsHint, manualReady ? snapshot.app.grants.accountIds.length ? `Контактов с доступом: ${snapshot.app.grants.accountIds.length}. Их доступ сохраняется.` : 'Доступ владельца сохраняется всегда.' : custom ? 'Сначала сохраните изменение видимости. До подтверждения ручные допуски не действуют.' : 'Ручные допуски сохранены и сейчас не действуют. Их можно включить отдельным выбором.'); publicGroupsHint.hidden = snapshot.publication.launchPolicy !== 'anyone' || !manualConfirmed;
     const names = new Map(options.communities.filter(value => value.membership?.state === 'active' && value.permissions.canModerate).map(value => [value.communityId, value.name]));
     for (const id of [...model.base('grants').app.grants.communityIds, ...snapshot.app.grants.communityIds, ...draft.communityIds]) if (!names.has(id)) names.set(id, options.communities.find(value => value.communityId === id)?.name ?? 'Ранее выбранная группа');
     for (const [id, view] of grants) if (!names.has(id)) { view.row.remove(); grants.delete(id); }
@@ -712,9 +752,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
         check.addEventListener('change', () => { if (!model) return; const values = new Set(model.read().draft.communityIds); check.checked ? values.add(id) : values.delete(id); model.patch({ communityIds: [...values] }); render(); });
         row.append(check, labelNode); choices.append(row); view = { row, input: check, label: labelNode }; grants.set(id, view);
       }
-      text(view.label, label); view.input.checked = draft.communityIds.includes(id); view.input.disabled = !snapshot.actions.canEdit;
+      text(view.label, label); view.input.checked = draft.communityIds.includes(id); view.input.disabled = blocked || !snapshot.actions.canEdit || !manualReady;
     }
-    noGroups.hidden = names.size > 0; disable(saveGrants, blocked || !snapshot.actions.canEdit || !state.grantsDirty || state.grantsConflict);
+    noGroups.hidden = names.size > 0; disable(saveGrants, blocked || !snapshot.actions.canEdit || !manualReady || !state.grantsDirty || state.grantsConflict);
     renderSource(blocked, pending, storageError);
     disable(revoke, busy || Boolean(confirmation) || !snapshot.actions.canEdit);
     // Only restore when this update actually hid the focused control. Never

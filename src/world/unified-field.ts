@@ -2,7 +2,7 @@ import { createFieldDocument, fieldEntityKey, validateFieldDocument, validateFie
 import { el, initials, nounCount, safeImageUrl } from './dom';
 import { icon } from './icons';
 import { roundedHexPath, SQRT3 } from '../geometry/hex.mjs';
-import { applyFieldCommand, createFieldHistory, nextFieldSlot, recordFieldHistory, undoFieldHistory, type FieldCommand } from './unified-field-state.mjs';
+import { applyFieldCommand, compactFieldContext, createFieldHistory, nextFieldSlot, recordFieldHistory, undoFieldHistory, type FieldCommand } from './unified-field-state.mjs';
 import { fieldLevelOfDetail, fieldScreenToWorld, fitFieldCamera, normalizeFieldCamera, zoomFieldCamera, type FieldCamera, type FieldPoint } from './unified-field-camera.mjs';
 import { createFieldSpatialIndex, fieldBounds, fieldBoundsOverlap, fieldMovePreview, fieldPointToSlot, fieldSlotToPoint, layoutUnifiedField,
   nearestFieldNode, UNIFIED_FIELD_METRICS, type FieldDirectoryEntity, type FieldMovePreview, type FieldMoveTarget,
@@ -73,6 +73,8 @@ export interface UnifiedFieldOptions {
   mode?: UnifiedFieldMode;
   viewState?: UnifiedFieldViewState;
   metrics?: Partial<UnifiedFieldMetrics>;
+  readableMobileFocus?: boolean;
+  dimNonMatches?: boolean;
   commit?: (document: FieldDocument, context: { expectedRevision: number; requestId: string }) => Promise<FieldCommitResult>;
   onActivate?: (entity: FieldDirectoryEntity, shortcutId?: string) => void;
   onInspect?: (entity: FieldDirectoryEntity, shortcutId: string) => void;
@@ -101,6 +103,7 @@ export interface UnifiedField {
   removeContext(contextId: string, options?: { removeShortcuts?: boolean }): Promise<FieldCommitResult | null>;
   addShortcut(entity: FieldEntityRef, contextId: string): Promise<FieldCommitResult | null>;
   removeShortcut(shortcutId: string): Promise<FieldCommitResult | null>;
+  compactContext(contextId: string, expected: FieldDocument): Promise<FieldCommitResult | null>;
   moveShortcut(shortcutId: string, target: FieldMoveTarget): Promise<FieldCommitResult | null>;
   moveContext(contextId: string, point: FieldPoint): Promise<FieldCommitResult | null>;
   beginMove(shortcutId: string): void;
@@ -165,8 +168,8 @@ function compactOverviewTitles(contexts: UnifiedFieldLayout['contexts'], nodes: 
     : Math.max(size / 2 + 8, Math.min(extent - size / 2 - 8, value));
   type Rect = { left: number; right: number; top: number; bottom: number };
   const occupied: Rect[] = nodes.map(node => {
-    const w = Math.max(44, node.kind === 'device' ? 44 : node.width * camera.scale);
-    const h = Math.max(44, node.kind === 'device' ? 44 : node.height * camera.scale);
+    const w = Math.max(44, node.width * camera.scale);
+    const h = Math.max(44, node.height * camera.scale);
     const x = projectX(node.cx), y = projectY(node.y + node.height / 2);
     return { left: x - w / 2 - gap, right: x + w / 2 + gap, top: y - h / 2 - gap, bottom: y + h / 2 + gap };
   });
@@ -241,11 +244,12 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   const history = createFieldHistory(30), nodeElements = new Map<string, HTMLButtonElement>(), contextElements = new Map<string, HTMLElement>(), inspectElements = new Map<string, HTMLButtonElement>();
   let exposedDocument: FieldDocument = structuredClone(fieldDocument), exposedSource = fieldDocument;
   let moving: { shortcutId: string; preview: FieldMovePreview; start: FieldDocument } | null = null;
-  type Gesture = { pointerId: number; x: number; y: number; camera: FieldCamera; type: 'press' | 'pan' | 'move' | 'context'; shortcutId: string; contextId: string; moved: boolean; point: FieldPoint; timer?: ReturnType<typeof setTimeout> };
+  type Gesture = { pointerId: number; x: number; y: number; camera: FieldCamera; type: 'press' | 'pan' | 'move' | 'context' | 'inspect'; shortcutId: string; contextId: string; moved: boolean; point: FieldPoint; timer?: ReturnType<typeof setTimeout> };
   let gesture: Gesture | null = null, contextPreview: { document: FieldDocument; layout: UnifiedFieldLayout; valid: boolean; point: FieldPoint; contextId: string } | null = null;
   const pointers = new Map<number, FieldPoint>();
   type Pinch = { distance: number; world: FieldPoint; camera: FieldCamera };
   let pinch: Pinch | null = null;
+  let lastInspection: { shortcutId: string; until: number } | null = null;
   let pendingPointer: { gesture: Gesture; point: FieldPoint } | { pinch: Pinch } | null = null, inPointerFrame = false;
   const viewportSize = () => ({ width: viewport.clientWidth || 900, height: viewport.clientHeight || 650 });
   const camera = () => cameras[mode];
@@ -268,19 +272,30 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   }
   function setCamera(next: FieldCamera, fit: CameraFit = 'manual'): void { if (destroyed) return; cameraFit[mode] = fit; cameras[mode] = normalizeFieldCamera(next); initialized[mode] = true; remember(); schedule(); emit(); }
   function fitOverview(): void {
-    contextFocus[mode] = ''; setCamera(fitFieldCamera(layout.bounds, viewportSize(), { padding: 60, maxScale: 1 }), 'overview');
+    const view = viewportSize();
+    contextFocus[mode] = ''; setCamera(fitFieldCamera(layout.bounds, view, { padding: 60, maxScale: view.width >= 720 ? 1.15 : 1 }), 'overview');
   }
   function focusContext(contextId: string): void {
     const context = layout.contexts.find(item => item.contextId === contextId); if (!context) return;
     const view = viewportSize(), compact = view.width < 720;
     const members = layout.nodes.filter(node => node.contextId === contextId);
     const bounds = compact && members.length ? fieldBounds(members.flatMap(node => node.footprint), 16) : context.bounds;
-    contextFocus[mode] = contextId; setCamera(fitFieldCamera(bounds, view, { padding: compact ? 24 : 44, maxScale: 1, minScale: compact ? .2 : .45 }), 'context');
+    const readableWidth = Math.min(144, view.width * .37, Math.max(1, view.height - 48) * Math.sqrt(3) / 2);
+    const minScale = compact ? options.readableMobileFocus && members.length ? Math.max(.2, readableWidth / (Math.sqrt(3) * metrics.radius)) : .2 : .45;
+    const fitted = fitFieldCamera(bounds, view, { padding: compact ? 24 : 44, maxScale: compact ? 1 : 1.15, minScale });
+    if (compact && options.readableMobileFocus && members.length && !members.some(node =>
+      Math.abs((node.cx - fitted.x) * fitted.scale) + node.width * fitted.scale / 2 <= view.width / 2 - 24
+      && Math.abs((node.cy - fitted.y) * fitted.scale) + node.height * fitted.scale / 2 <= view.height / 2 - 24)) {
+      const anchor = members.find(node => node.shortcutId === selectedId) ?? members.reduce((nearest, node) =>
+        (node.cx - fitted.x) ** 2 + (node.cy - fitted.y) ** 2 < (nearest.cx - fitted.x) ** 2 + (nearest.cy - fitted.y) ** 2 ? node : nearest);
+      fitted.x = anchor.cx; fitted.y = anchor.cy;
+    }
+    contextFocus[mode] = contextId; setCamera(fitted, 'context');
   }
   function rebuild(): void {
     const priorFocus = document.activeElement instanceof HTMLElement && plane.contains(document.activeElement) ? document.activeElement : null;
     layout = layoutUnifiedField(scene(), entities, metrics);
-    if (mode === 'mine' && (filter || visibleKinds?.length)) {
+    if (!options.dimNonMatches && mode === 'mine' && (filter || visibleKinds?.length)) {
       const query = filter.trim().toLocaleLowerCase('ru'), matchingContexts = new Set(layout.contexts.filter(context => context.title.toLocaleLowerCase('ru').includes(query)).map(context => context.contextId));
       layout.nodes = layout.nodes.filter(node => (!visibleKinds?.length || visibleKinds.includes(node.kind) || node.kind === 'builtin' && visibleKinds.includes('app'))
         && (!query || matchingContexts.has(node.contextId) || `${node.entity.title} ${node.entity.description ?? ''}`.toLocaleLowerCase('ru').includes(query)));
@@ -289,7 +304,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         .map(context => ({ ...context, children: context.children.filter(id => kept.has(id)) }));
     }
     index = createFieldSpatialIndex(layout.nodes);
-    if (!layout.nodes.some(node => node.shortcutId === selectedId)) selectedId = '';
+    if (!layout.nodes.some(node => node.shortcutId === selectedId && (!options.dimNonMatches || matchesMineFilter(node)))) selectedId = '';
     if (contextFocus[mode] && !layout.contexts.some(context => context.contextId === contextFocus[mode])) {
       contextFocus[mode] = '';
       if (cameraFit[mode] === 'manual') remember(); else initialized[mode] = false;
@@ -306,11 +321,19 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (priorFocus && !priorFocus.isConnected) (plane.querySelector<HTMLButtonElement>('.uf-node:not(:disabled)[tabindex="0"]') ?? plane.querySelector<HTMLButtonElement>('.uf-context-title'))?.focus({ preventScroll: true });
   }
   function schedule(): void { if (!raf && !destroyed && !inPointerFrame) raf = requestAnimationFrame(() => { raf = 0; flushPointerSample(); render(); }); }
-  function available(shortcutId: string): FieldNode | undefined { return layout.nodes.find(node => node.shortcutId === shortcutId); }
-  function activeNode(shortcutId: string): FieldNode | undefined { return activeLayout().nodes.find(node => node.shortcutId === shortcutId); }
+  function matchesMineFilter(node: FieldNode): boolean {
+    if (mode !== 'mine') return true;
+    if (visibleKinds?.length && !visibleKinds.includes(node.kind) && !(node.kind === 'builtin' && visibleKinds.includes('app'))) return false;
+    const query = filter.trim().toLocaleLowerCase('ru');
+    return !query || `${node.entity.title} ${node.entity.description ?? ''}`.toLocaleLowerCase('ru').includes(query)
+      || Boolean(layout.contexts.find(context => context.contextId === node.contextId)?.title.toLocaleLowerCase('ru').includes(query));
+  }
+  function available(shortcutId: string): FieldNode | undefined { return layout.nodes.find(node => node.shortcutId === shortcutId && (!options.dimNonMatches || matchesMineFilter(node))); }
+  function activeNode(shortcutId: string): FieldNode | undefined { return activeLayout().nodes.find(node => node.shortcutId === shortcutId && (!options.dimNonMatches || matchesMineFilter(node))); }
 
   function renderNode(target: HTMLButtonElement, node: FieldNode): void {
     const entity = node.entity, kind = entity.entity.kind;
+    target.dataset.entityId = fieldEntityKey(entity.entity);
     target.className = `uf-node uf-node-${kind}`; target.replaceChildren();
     if (kind === 'person') {
       const face = el('span', 'uf-avatar'), src = safeImageUrl(entity.avatarUrl) ?? localImage(entity.avatarUrl);
@@ -320,14 +343,14 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (!src && entity.avatarRevision && entity.avatarRevision > 0) {
         face.classList.add('sw-avatar'); face.dataset.profileId = entity.entity.id; face.dataset.avatarRevision = String(entity.avatarRevision); face.dataset.avatarLabel = initials(entity.title);
       }
-      const label = el('span', 'uf-label uf-person-label'); label.append(el('span', 'uf-label-text', entity.title)); target.append(face, label);
+      const label = el('span', 'uf-label uf-person-label'); label.append(el('span', 'uf-label-text', entity.title)); target.append(face, label, hexFrame(metrics.radius));
     } else if (kind === 'device') {
       const inner = el('span', 'uf-device-inner'), label = el('span', 'uf-label'); label.append(el('span', 'uf-label-text', entity.title)); inner.append(icon(entity.symbol || 'laptop', 'uf-device-icon'), label);
       // An online signal without a recent observation is not a live presence claim.
       if (typeof entity.updatedAt === 'number' && Date.now() - entity.updatedAt >= 0 && Date.now() - entity.updatedAt <= 45_000 && typeof entity.online === 'boolean') {
         const status = el('span', `uf-status ${entity.online ? 'is-online' : 'is-offline'}`); status.setAttribute('aria-label', entity.online ? 'Устройство в сети' : 'Устройство не в сети'); inner.append(status);
       }
-      target.append(inner);
+      target.append(inner, hexFrame(metrics.radius));
     } else {
       let art: FieldVisualArt | null = null; try { art = options.resolveArt?.(entity) ?? null; } catch { /* Icon fallback remains usable. */ }
       const fallback = resolveAppArt({ appId: entity.entity.id });
@@ -376,7 +399,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const visible = (moving || contextPreview ? createFieldSpatialIndex(current.nodes) : index).query(bounds, 100);
     const retained = new Set(visible.map(node => node.shortcutId));
     if (selectedId) retained.add(selectedId); if (moving) retained.add(moving.shortcutId);
-    const overviewIds = new Set(current.contexts.flatMap(context => context.children.slice(0, 3)));
+    const overviewIds = new Set(current.contexts.flatMap(context => options.dimNonMatches
+      ? [...context.children.slice(0, 3), ...context.children.filter(id => available(id)).slice(0, 3)] : context.children.slice(0, 3)));
     const nodes = current.nodes.filter(node => (!mobileContext || node.contextId === mobileContext) && retained.has(node.shortcutId) && (level !== 'overview' || overviewIds.has(node.shortcutId) || node.shortcutId === selectedId));
     const compactOverview = view.width < 720 && level === 'overview';
     viewport.dataset.compactOverview = String(compactOverview);
@@ -416,7 +440,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       title.tabIndex = level === 'overview' ? 0 : -1;
     }
     for (const [id, element] of contextElements) if (!contextKeep.has(id)) { element.remove(); contextElements.delete(id); }
-    const keep = new Set(nodes.map(node => node.shortcutId)), activeId = selectedId && keep.has(selectedId) ? selectedId : nodes[0]?.shortcutId;
+    const keep = new Set(nodes.map(node => node.shortcutId)), activeId = selectedId && keep.has(selectedId) ? selectedId : nodes.find(node => !options.dimNonMatches || matchesMineFilter(node))?.shortcutId;
     for (const node of nodes) {
       let target = nodeElements.get(node.shortcutId);
       if (!target) {
@@ -430,40 +454,53 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
           else options.onActivate?.(item.entity, item.shortcutId);
         }, { signal }); nodeElements.set(node.shortcutId, target); plane.append(target);
         target.addEventListener('contextmenu', event => { const current = available(node.shortcutId); if (!current) return;
-          if ((event.currentTarget as HTMLButtonElement).dataset.preview === 'true') { event.preventDefault(); focusPreview(current); return; }
-          if (options.onInspect) { event.preventDefault(); selectedId = current.shortcutId; remember(); options.onInspect(current.entity, current.shortcutId); } }, { signal });
+          if (pinch || gesture && !['press', 'inspect'].includes(gesture.type) || performance.now() < suppressClickUntil) { event.preventDefault(); return; }
+          if (lastInspection?.shortcutId === current.shortcutId && performance.now() < lastInspection.until) { event.preventDefault(); return; }
+          if (!inspectShortcut(current.shortcutId)) return;
+          event.preventDefault();
+          if (gesture?.shortcutId === current.shortcutId && gesture.type === 'press') {
+            if (gesture.timer) clearTimeout(gesture.timer); delete gesture.timer; gesture.moved = true; gesture.type = 'inspect';
+            if (lastInspection) lastInspection.until = Infinity;
+          } }, { signal });
       }
       const signature = JSON.stringify(node.entity);
       if (target.dataset.signature !== signature) { renderNode(target, node); target.dataset.signature = signature; }
       target.style.left = `${node.x}px`; target.style.top = `${node.y}px`; target.style.width = `${node.width}px`; target.style.height = `${node.height}px`;
-      if (node.kind === 'device') {
-        target.style.left = `${node.cx - node.width / cam.scale / 2}px`; target.style.top = `${node.cy - node.height / cam.scale / 2}px`;
-        target.style.width = `${node.width / cam.scale}px`; target.style.height = `${node.height / cam.scale}px`;
-      } else if (node.kind === 'person') target.style.height = `${Math.max(node.height, 44 / cam.scale)}px`;
-      const screenWidth = node.kind === 'device' ? node.width : node.width * cam.scale, screenHeight = node.kind === 'device' ? node.height : node.height * cam.scale;
+      const screenWidth = node.width * cam.scale, screenHeight = node.height * cam.scale;
       // A saved or manually zoomed-out context can be just as small as the
       // overview. Its thumbnails must not grow full-size captions/actions.
       const preview = !arranging && Math.min(screenWidth, screenHeight) < 44;
       target.dataset.preview = String(preview);
       target.style.setProperty('--uf-node-screen-width', `${screenWidth}px`); target.style.setProperty('--uf-node-screen-height', `${screenHeight}px`);
+      const centreX = (node.cx - cam.x) * cam.scale + view.width / 2;
+      const halfCaption = screenWidth * (node.kind === 'device' ? .4 : .32);
+      const readableCaption = options.readableMobileFocus && view.width < 720;
+      const captionLeft = Math.max(8, centreX - halfCaption), captionRight = Math.min(view.width - 8, centreX + halfCaption);
+      target.style.setProperty('--uf-caption-width', `${readableCaption ? Math.max(0, captionRight - captionLeft) : screenWidth * .82}px`);
+      target.style.setProperty('--uf-caption-offset', `${readableCaption ? ((captionLeft + captionRight) / 2 - centreX) / cam.scale : 0}px`);
       const caption = screenWidth < 135 ? 'compact' : 'full'; if (target.dataset.caption !== caption) target.dataset.caption = caption;
       // Search and overview remain navigable. Read-only describes layout changes, never inspection/opening.
-      target.disabled = false;
+      target.disabled = Boolean(options.dimNonMatches && !matchesMineFilter(node));
+      target.dataset.muted = String(target.disabled); target.setAttribute('aria-hidden', String(target.disabled));
       target.dataset.interactive = String(!target.disabled);
       if (options.onInspect && mode === 'mine' && !target.disabled && !preview) {
         let action = inspectElements.get(node.shortcutId);
         if (!action) { action = el('button', 'uf-inspect'); action.type = 'button'; action.dataset.shortcutId = node.shortcutId; action.append(icon('more'));
           action.addEventListener('click', () => { const current = available(node.shortcutId); if (current) { selectedId = current.shortcutId; remember(); options.onInspect?.(current.entity, current.shortcutId); } }, { signal }); plane.append(action); inspectElements.set(node.shortcutId, action); }
-        const left = node.kind === 'device' ? node.cx + node.width / cam.scale / 2 : node.x + node.width;
-        const top = node.kind === 'device' ? node.cy - node.height / cam.scale / 2 : node.y;
-        action.style.left = `${left - 22 / cam.scale}px`; action.style.top = `${top + Math.min(node.height * .2, 32) - 22 / cam.scale}px`;
+        const left = node.x + node.width;
+        const top = node.y;
+        if (options.readableMobileFocus && view.width < 720) {
+          const point = fieldScreenToWorld({ x: Math.max(30, Math.min(view.width - 30, centreX + screenWidth * .25)),
+            y: (node.cy - cam.y) * cam.scale + view.height / 2 - screenHeight * .18 }, cam, view);
+          action.style.left = `${point.x - 22}px`; action.style.top = `${point.y - 22}px`;
+        } else { action.style.left = `${left - 22 / cam.scale}px`; action.style.top = `${top + Math.min(node.height * .2, 32) - 22 / cam.scale}px`; }
         action.style.setProperty('--uf-node-screen-width', `${screenWidth}px`); action.style.setProperty('--uf-label-scale', String(1 / cam.scale));
         action.setAttribute('aria-label', `Действия: ${node.entity.title}`); action.tabIndex = node.shortcutId === activeId ? 0 : -1; action.classList.toggle('is-selected', node.shortcutId === selectedId);
       } else { inspectElements.get(node.shortcutId)?.remove(); inspectElements.delete(node.shortcutId); }
       target.classList.toggle('is-selected', node.shortcutId === selectedId); target.classList.toggle('is-moving', node.shortcutId === moving?.shortcutId);
       target.setAttribute('aria-label', preview ? contextFocus[mode] === node.contextId ? `Приблизить: ${node.entity.title}`
         : `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
-      target.tabIndex = level === 'overview' && !arranging ? -1 : node.shortcutId === activeId ? 0 : -1;
+      target.tabIndex = target.disabled || level === 'overview' && !arranging ? -1 : node.shortcutId === activeId ? 0 : -1;
     }
     for (const [id, target] of nodeElements) if (!keep.has(id)) { target.remove(); nodeElements.delete(id); inspectElements.get(id)?.remove(); inspectElements.delete(id); }
     for (const [id, action] of inspectElements) if (mode !== 'mine') { action.remove(); inspectElements.delete(id); }
@@ -527,7 +564,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
   }
   async function execute(command: FieldCommand, record = true): Promise<FieldCommitResult | null> {
     if (destroyed || mode !== 'mine' || !options.commit) throw Object.assign(new Error('field_read_only'), { code: 'field_read_only' });
-    const change = applyFieldCommand(fieldDocument, command); if (!change.changed) return null;
+    const change = applyFieldCommand(fieldDocument, command, metrics); if (!change.changed) return null;
     cancel(); // A changed document invalidates every preview, including while its ACK is offline.
     if (record) recordFieldHistory(history, change);
     fieldDocument = change.document; persistence = 'saving'; localDurable = false; rebuild(); emit();
@@ -573,19 +610,30 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const minScale = node.kind === 'device' ? .45 : Math.max(.45, 44 / Math.max(1, Math.min(node.width, node.height)));
     if (cam.scale < minScale) { x = node.cx; y = node.cy; contextFocus[mode] = node.contextId; }
     if (view.width < 720 && contextFocus[mode] !== node.contextId) { contextFocus[mode] = node.contextId; x = node.cx; y = node.cy; }
-    cameras[mode] = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(minScale, cam.scale) }); remember(); render(); emit(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
+    const next = normalizeFieldCamera({ ...cam, x, y, scale: Math.max(minScale, cam.scale) });
+    if (next.x !== cam.x || next.y !== cam.y || next.scale !== cam.scale) cameraFit[mode] = 'manual';
+    cameras[mode] = next; remember(); render(); emit(); nodeElements.get(shortcutId)?.focus({ preventScroll: true });
   }
   function perform(task: Promise<unknown>): void { void task.catch(error => { if (!destroyed && persistence !== 'error') announce(errorText(error)); }); }
   confirm.addEventListener('click', () => perform(commitMove()), { signal }); cancelButton.addEventListener('click', () => { cancel(); announce('Перенос отменён.'); focusNode(selectedId); }, { signal });
   contextSelect.addEventListener('change', () => { if (moving) { previewMove({ contextId: contextSelect.value, slot: nextFieldSlot(fieldDocument, contextSelect.value, available(moving.shortcutId)?.kind), swap: false }); if (viewport.clientWidth < 720) focusContext(contextSelect.value); } }, { signal });
+
+  function inspectShortcut(shortcutId: string): boolean {
+    const current = available(shortcutId); if (!current) return false;
+    const preview = nodeElements.get(current.shortcutId)?.dataset.preview === 'true';
+    if (!preview && !options.onInspect) return false;
+    lastInspection = { shortcutId: current.shortcutId, until: performance.now() + 300 }; suppressClickUntil = performance.now() + 300;
+    if (preview) focusPreview(current);
+    else { selectedId = current.shortcutId; remember(); options.onInspect?.(current.entity, current.shortcutId); }
+    return true;
+  }
 
   plane.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.isComposing || (event.target as HTMLElement).closest('input,textarea,select,[contenteditable]')) return;
     if (event.altKey) return; // Alt+Left/Right belongs to browser history.
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey && mode === 'mine') { event.preventDefault(); perform(undo()); return; }
     if (event.ctrlKey || event.metaKey) return;
-    if (event.shiftKey && event.key === 'F10' && options.onInspect) { const current = available(selectedId); if (current) { event.preventDefault();
-      if (nodeElements.get(current.shortcutId)?.dataset.preview === 'true') focusPreview(current); else options.onInspect(current.entity, current.shortcutId); } return; }
+    if ((event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') && options.onInspect) { if (inspectShortcut(selectedId)) event.preventDefault(); return; }
     if (event.key === 'Escape') { if (moving || contextPreview) { event.preventDefault(); cancel(); announce('Перенос отменён.'); } else if (arranging) setArrange(false); else fitOverview(); return; }
     if (event.key === ' ' && arranging) { event.preventDefault(); if (!moving) beginMove(selectedId); return; }
     if (event.key === 'Enter' && moving) { event.preventDefault(); perform(commitMove()); return; }
@@ -602,7 +650,8 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       const shift = delta[event.key]!, target = moving.preview.target;
       previewMove({ contextId: target.contextId, slot: [target.slot[0] + shift[0], target.slot[1] + shift[1]], swap: true }); return;
     }
-    const next = event.key === 'Home' ? layout.nodes[0] : event.key === 'End' ? layout.nodes.at(-1) : nearestFieldNode(layout.nodes, selectedId, directions[event.key]!);
+    const navigable = options.dimNonMatches ? layout.nodes.filter(matchesMineFilter) : layout.nodes;
+    const next = event.key === 'Home' ? navigable[0] : event.key === 'End' ? navigable.at(-1) : nearestFieldNode(navigable, selectedId, directions[event.key]!);
     if (next) focusNode(next.shortcutId);
   }, { signal });
   viewport.addEventListener('wheel', event => {
@@ -650,6 +699,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (cancelled) pendingPointer = null; else flushPointerSample();
     const current = gesture; gesture = null; if (current?.timer) clearTimeout(current.timer);
     if (current?.moved) suppressClickUntil = performance.now() + 300;
+    if (current?.type === 'inspect' && lastInspection?.shortcutId === current.shortcutId) lastInspection.until = performance.now() + 300;
     if (releaseCapture && current && viewport.hasPointerCapture(current.pointerId)) viewport.releasePointerCapture(current.pointerId);
     if (cancelled) { cancel(); return; }
     if (current?.type === 'move') perform(commitMove());
@@ -673,8 +723,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     catch { resetPointers(); return false; }
   }
   viewport.addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
+    lastInspection = null; // A fresh right click or press is a new explicit action.
     suppressClickUntil = 0; // A new deliberate press is not the previous drag's trailing click.
+    if (event.button !== 0) return;
     if ((event.target as HTMLElement).closest('.uf-move-tools,.uf-inspect')) return;
     const point = localPoint(event); pointers.set(event.pointerId, point);
     if (pointers.size > 1) {
@@ -686,10 +737,11 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-shortcut-id]'), header = (event.target as HTMLElement).closest<HTMLElement>('.uf-context-title');
     gesture = { pointerId: event.pointerId, x: point.x, y: point.y, camera: { ...camera() }, type: 'press', shortcutId: target?.dataset.shortcutId ?? '', contextId: header?.dataset.contextId ?? '', moved: false,
       point: fieldScreenToWorld(point, camera(), viewportSize()) };
-    if (mode === 'mine' && gesture.shortcutId && options.commit && !arranging && target?.dataset.preview !== 'true') {
+    if (gesture.shortcutId && options.onInspect && !arranging && target?.dataset.preview !== 'true') {
       const captured = gesture; captured.timer = setTimeout(() => { if (gesture !== captured || captured.moved || destroyed) return;
-        captured.moved = true; if (!capturePointer(captured.pointerId)) return;
-        arranging = true; beginMove(captured.shortcutId); captured.type = 'move'; suppressClickUntil = performance.now() + 300; emit(); }, 450);
+        delete captured.timer; if (!capturePointer(captured.pointerId)) return;
+        captured.moved = true; captured.type = 'inspect';
+        if (inspectShortcut(captured.shortcutId) && lastInspection) lastInspection.until = Infinity; }, 450);
     }
   }, { signal });
   viewport.addEventListener('pointermove', event => {
@@ -699,7 +751,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     if (pinch && pointers.size >= 2) {
       pendingPointer = { pinch }; schedule(); return;
     }
-    const current = gesture; if (!current || current.pointerId !== event.pointerId) return;
+    const current = gesture; if (!current || current.pointerId !== event.pointerId || current.type === 'inspect') return;
     const distance = Math.hypot(point.x - current.x, point.y - current.y);
     if (!current.moved && distance > 7) {
       current.moved = true; if (current.timer) clearTimeout(current.timer); if (!capturePointer(event.pointerId)) return;
@@ -731,6 +783,14 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (context) previewMove({ contextId: context.contextId, slot: fieldPointToSlot({ x: world.x - context.x, y: world.y - context.y }, metrics), swap: true });
     }
   }, { capture: true, signal });
+  viewport.addEventListener('dblclick', event => {
+    if (event.defaultPrevented || event.button !== 0 || arranging || gesture || pinch || performance.now() < suppressClickUntil) return;
+    const target = event.target instanceof Element ? event.target : viewport;
+    if (target.closest('button,a,input,textarea,select,[contenteditable],.uf-node,.uf-context-title,.uf-move-tools,.uf-inspect,.uf-pan-controls')) return;
+    if (shouldYieldFieldWheel(target, viewport, { deltaX: 0, deltaY: 0, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false })) return;
+    const rect = viewport.getBoundingClientRect();
+    event.preventDefault(); setCamera(zoomFieldCamera(camera(), camera().scale * 1.6, { x: event.clientX - rect.left, y: event.clientY - rect.top }, viewportSize()));
+  }, { signal });
   let lastWidth = 0, lastHeight = 0;
   const resize = new ResizeObserver(() => {
     const width = viewport.clientWidth, height = viewport.clientHeight;
@@ -800,6 +860,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     removeContext: (contextId, remove = {}) => execute({ type: 'remove-context', contextId, removeShortcuts: remove.removeShortcuts === true }),
     addShortcut: (entity, contextId) => execute({ type: 'add-shortcut', shortcutId: crypto.randomUUID(), entity, contextId }),
     removeShortcut: shortcutId => execute({ type: 'remove-shortcut', shortcutId }), moveShortcut, moveContext, beginMove, previewMove, commitMove, undo, cancel,
+    async compactContext(contextId, expected) {
+      return execute({ type: 'restore', document: compactFieldContext(expected, contextId, metrics), expected });
+    },
     hasUnsavedChanges: () => persistence !== 'saved' && !localDurable,
     async flush() {
       await tail.catch(() => undefined);

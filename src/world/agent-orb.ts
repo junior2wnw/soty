@@ -1,5 +1,5 @@
 import { button, el, emptyState, iconButton } from './dom';
-import { createDialog, type WorldDialog } from './dialogs';
+import { createDialog, isDialogFocusTarget, type WorldDialog } from './dialogs';
 import { clampOrb, dockOrb, readOrbPosition, writeOrbPosition, type OrbPoint, type OrbViewport } from './agent-orb-position';
 import type { WorldAssistantContext, WorldBrowserAssist, WorldAssistantHandle, WorldAppOptions, WorldProjectEditorPort } from './types';
 import './agent-orb.css';
@@ -7,6 +7,7 @@ import { holdIframePointers } from './iframe-pointer-guard';
 import { floatingObstacles, placeFloatingControl } from './floating-layout';
 
 export interface AgentOrbHandle {
+  open(opener?: HTMLElement): void;
   setAccount(accountId: string): void;
   setStage(stage: HTMLElement, expanded: boolean): void;
   setModal(modal: HTMLDialogElement | null): void;
@@ -122,7 +123,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
     }).finally(() => { if (current()) mounting = null; });
     return mounting;
   }
-  function open(): void {
+  function open(opener?: HTMLElement): void {
     if (disposed || !account || dialog?.element.open) return;
     const owner = account, generation = epoch, screen = sessionEpoch;
     const current = (): boolean => !disposed && account === owner && epoch === generation && sessionEpoch === screen;
@@ -135,7 +136,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
       if (host) parking.append(host);
       if (dialog === next) dialog = null;
       orb.setAttribute('aria-expanded', 'false');
-    }, { isCurrent: current, resolve: () => orb }, parent);
+    }, { isCurrent: current, resolve: () => isDialogFocusTarget(opener ?? null) ? opener! : isDialogFocusTarget(orb) ? orb : root.querySelector<HTMLElement>('main[tabindex]') }, parent);
     dialog = next; next.element.classList.add('sw-agent-dialog'); orb.setAttribute('aria-expanded', 'true');
     next.element.addEventListener('keydown', event => {
       if (event.key !== 'Escape') return;
@@ -200,6 +201,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   changes?.observe(doc.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style'] });
   layout();
   return {
+    open,
     setAccount(next) { if (next === account) return; epoch++; clearModal(); resetSession(); account = next;
       const store = storage(); position = store ? readOrbPosition(store, account, viewport()) : null; layout(); },
     setStage(stage, expanded) { if (disposed) return; cancelDrag(); closeDialog(false); expandedStage = expanded ? stage : null; placeOrb(); },

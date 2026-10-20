@@ -1,11 +1,11 @@
 // Frozen World reader from 5166b3b, normalized original SHA-256: 95f3a6bdffd0efae4730339fc091929a6e6a5e81f9d8c56a962a505dee4b5934
-// Only relative imports are redirected to unchanged domain dependencies; no field operations exist here.
+// The pre-audience schema dependency is frozen separately; no field operations exist here.
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assert, identifier, folded, WorldError } from '../../server/validation.mjs';
-import { migrateWorld, SCHEMA_VERSION } from '../../server/schema.mjs';
+import { migrateWorld, SCHEMA_VERSION } from './legacy-world-schema-v3.mjs';
 import { createModel } from '../../server/model.mjs';
 import { PROFILE_OPERATIONS, profileOperation } from '../../server/profiles.mjs';
 import { COMMUNITY_OPERATIONS, communityOperation } from '../../server/communities.mjs';

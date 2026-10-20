@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { createFieldSpatialIndex, layoutUnifiedField, UNIFIED_FIELD_METRICS, fieldBounds, fieldBoundsOverlap } from './unified-field-layout.mjs';
 import { fitFieldCamera, fieldScreenToWorld, fieldWorldToScreen, fieldLevelOfDetail, normalizeFieldCamera } from './unified-field-camera.mjs';
 import { resolveAppArt } from './app-art.mjs';
+import { fieldEntityKey } from '../../modules/field/contract.mjs';
 
 // Actual production geometry, rendering and event callbacks, with inert DOM ports.
 // These tests do not measure browser typography or claim a real application launch.
@@ -18,7 +19,7 @@ const statement = name => production.body.statements.find(node => ts.isFunctionD
 const titles = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'compactOverviewTitles');
 assert.ok(titles && statement('render') && statement('renderNode'));
 const compile = value => ts.transpileModule(value, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const compiled = compile([[titles, statement('renderNode'), statement('render'), statement('focusPreview')].filter(Boolean).map(print).join('\n'),
+const compiled = compile([[titles, statement('renderNode'), statement('render'), statement('focusPreview'), statement('inspectShortcut')].filter(Boolean).map(print).join('\n'),
   'exports.titles = compactOverviewTitles; exports.render = render;'].join('\n'));
 const callback = (owner, event) => {
   let result;
@@ -84,10 +85,11 @@ function harness(width, height, { scale, focus = '' } = {}) {
   if (scale !== undefined) camera.scale = scale;
   const calls = { activate: [], inspect: [], focus: [], nodeFocus: [], remember: 0 }, plane = new Port(), viewport = new Port();
   const environment = { exports: {}, destroyed: false, inPointerFrame: false, activeLayout: () => data.layout,
+    gesture: null, pinch: null, lastInspection: null, suppressClickUntil: 0, performance, clearTimeout,
     viewportSize: () => view, camera: () => camera, cameraFit: { mine: focus ? 'context' : 'overview' },
     contextFocus: { mine: focus }, mode: 'mine', arranging: false, moving: null, contextPreview: null,
     viewport, plane, signal: new AbortController().signal, document: { createElementNS: (_, tag) => new Port(tag) }, window: { innerWidth: width },
-    metrics: UNIFIED_FIELD_METRICS, SVG_NS: 'svg', fieldBoundsOverlap, fieldScreenToWorld, fieldLevelOfDetail,
+    metrics: UNIFIED_FIELD_METRICS, SVG_NS: 'svg', fieldEntityKey, fieldBoundsOverlap, fieldScreenToWorld, fieldLevelOfDetail,
     createFieldSpatialIndex, index: createFieldSpatialIndex(data.layout.nodes),
     nodeElements: new Map(), contextElements: new Map(), inspectElements: new Map(), selectedId: '', persistence: 'saved',
     options: { resolveArt: () => null, onActivate: (...args) => calls.activate.push(args), onInspect: (...args) => calls.inspect.push(args) },
@@ -348,4 +350,239 @@ test('visible portrait categories use the same 44px select in Mine and Search, w
   assert.equal(cascade('select', desktop).display, 'none'); assert.notEqual(cascade('button', desktop).display, 'none');
   const landscape = { ...desktop, width: 844, height: 390 };
   assert.equal(cascade('select', landscape).display, 'block'); assert.equal(cascade('button', landscape).display, 'none');
+});
+
+
+// Additional component checks reuse the established DOM port and execute actual
+// AST methods/callbacks. The ports below hold data and dispatch events; they do
+// not copy camera, fit, rebuild, matching, keyboard or resize decisions.
+const { nearestFieldNode: actualNearestFieldNode } = await import('./unified-field-layout.mjs');
+const mobileFlowNames = ['setCamera', 'fitOverview', 'focusContext', 'focusNode', 'available', 'activeNode',
+  'matchesMineFilter', 'rebuild', 'remember', 'summary', 'emit'];
+for (const name of mobileFlowNames) assert.ok(statement(name), `actual field method ${name}`);
+const mobileFlowCode = compile(mobileFlowNames.map(name => print(statement(name))).join('\n')
+  + '\n' + mobileFlowNames.map(name => `exports.${name} = ${name};`).join('\n'));
+const resizeDeclaration = production.body.statements.filter(ts.isVariableStatement)
+  .flatMap(node => [...node.declarationList.declarations]).find(node => node.name.getText(parsed) === 'resize');
+assert.ok(resizeDeclaration && ts.isNewExpression(resizeDeclaration.initializer)
+  && resizeDeclaration.initializer.expression.getText(parsed) === 'ResizeObserver');
+const mobileResizeCode = compile('exports.actualViewportResize = ' + print(resizeDeclaration.initializer.arguments[0]) + ';');
+const mobileKeyboardCode = callback('plane', 'keydown');
+function mobileFlower() {
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }], shortcuts: [] };
+  const entities = [], slots = [[0, 0], [0, -21], [21, -21], [-21, 0], [21, 0], [-21, 21], [0, 21]];
+  for (let n = 0; n < slots.length; n++) {
+    const entity = n === 1 ? { kind: 'person', id: 'person-one' } : n === 2 ? { kind: 'device', id: 'device-two' }
+      : n === 3 ? { kind: 'builtin', id: 'notes' } : app(n + 1);
+    document.shortcuts.push({ shortcutId: 'flower-' + n, entity, contextId: 'personal', slot: [...slots[n]] });
+    entities.push({ entity, title: n ? 'Сота ' + n : 'Центральная сота', source: 'owner' });
+  }
+  return { document, entities, layout: layoutUnifiedField(document, entities) };
+}
+function mobileFlow(width, height, configuration = {}) {
+  const h = harness(width, height), e = h.environment, data = configuration.data ?? mobileFlower();
+  const savedViews = [], commits = [];
+  Object.assign(e, {
+    layout: data.layout, index: createFieldSpatialIndex(data.layout.nodes), entities: data.entities, fieldDocument: data.document, exposedSource: data.document, exposedDocument: data.document,
+    scene: () => data.document, activeLayout: () => e.layout, layoutUnifiedField,
+    cameras: { mine: { ...h.camera } }, camera: () => e.cameras.mine,
+    contextFocus: { mine: '' }, cameraFit: { mine: 'overview' }, initialized: { mine: true }, selections: { mine: '' }, viewState: {},
+    normalizeFieldCamera, fitFieldCamera, fieldBounds, nearestFieldNode: actualNearestFieldNode,
+    localDurable: true, revision: 1, history: { entries: [] }, message: '', filter: '', visibleKinds: undefined,
+    HTMLElement: Port, lastWidth: width, lastHeight: height, pointers: new Map(), resetPointers() { throw new Error('no active gesture in this resize test'); },
+  });
+  e.document.activeElement = null;
+  e.viewport.clientWidth = width; e.viewport.clientHeight = height;
+  e.options.commit = (document, context) => { commits.push({ document, context }); throw new Error('a view action must not commit a field document'); };
+  e.options.onViewStateChange = value => savedViews.push(structuredClone(value));
+  if (Object.hasOwn(configuration, 'readableMobileFocus')) e.options.readableMobileFocus = configuration.readableMobileFocus;
+  if (Object.hasOwn(configuration, 'dimNonMatches')) e.options.dimNonMatches = configuration.dimNonMatches;
+  new vm.Script(mobileFlowCode).runInContext(e);
+  new vm.Script(mobileResizeCode).runInContext(e);
+  new vm.Script(mobileKeyboardCode).runInContext(e);
+  const keydown = e.exports.handler;
+  return { ...h, data, savedViews, commits,
+    cameraNow: () => ({ ...e.camera() }),
+    geometry: () => JSON.stringify([data.document, data.entities.map(item => item.entity),
+      e.layout.nodes.map(({ shortcutId, contextId, slot, cx, cy, width, height }) => ({ shortcutId, contextId, slot, cx, cy, width, height }))]),
+    key(key) {
+      const event = { key, defaultPrevented: false, isComposing: false, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+        target: { closest: () => null }, preventDefault() { this.defaultPrevented = true; } };
+      keydown(event); return event;
+    },
+    resizeTo(nextWidth, nextHeight) {
+      h.view.width = nextWidth; h.view.height = nextHeight;
+      e.viewport.clientWidth = nextWidth; e.viewport.clientHeight = nextHeight;
+      e.exports.actualViewportResize();
+    },
+  };
+}
+const nearPixel = (actual, expected) => assert.ok(Math.abs(actual - expected) < .001, `${actual}px must be ${expected}px`);
+
+test('readable mobile focus: actual 320/390 context cameras produce 118.4/144px uniform cells without changing placements or entities', () => {
+  for (const [width, expected] of [[320, 118.4], [390, 144]]) {
+    const h = mobileFlow(width, 844, { readableMobileFocus: true }), e = h.environment, before = h.geometry();
+    e.focusContext('personal'); h.render();
+    assert.equal(e.cameraFit.mine, 'context'); assert.equal(e.contextFocus.mine, 'personal');
+    for (const node of e.layout.nodes) {
+      nearPixel(node.width * e.camera().scale, expected);
+      const target = e.nodeElements.get(node.shortcutId); assert.ok(target, 'all seven canonical cells have actual render nodes');
+      nearPixel(Number.parseFloat(target.style['--uf-node-screen-width']), expected);
+    }
+    assert.equal(e.nodeElements.get('flower-0').dataset.caption, width === 320 ? 'compact' : 'full');
+    assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+  }
+});
+
+test('readable mobile focus: the actual floor bounds one full cell inside a short viewport height', () => {
+  const h = mobileFlow(390, 160, { readableMobileFocus: true }), e = h.environment, before = h.geometry();
+  e.focusContext('personal'); h.render();
+  nearPixel(e.layout.nodes[0].height * e.camera().scale, 112);
+  assert.ok(e.layout.nodes[0].width * e.camera().scale < 144);
+  assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+});
+
+test('readable mobile focus: omitted/false keeps original fit and the desktop context camera is unchanged', () => {
+  const a = mobileFlow(390, 844), b = mobileFlow(390, 844, { readableMobileFocus: false }), c = mobileFlow(390, 844, { readableMobileFocus: true });
+  for (const h of [a, b, c]) h.environment.focusContext('personal');
+  assert.deepEqual(a.cameraNow(), b.cameraNow()); assert.ok(c.cameraNow().scale > a.cameraNow().scale);
+  const desktopOff = mobileFlow(1280, 800, { readableMobileFocus: false }), desktopOn = mobileFlow(1280, 800, { readableMobileFocus: true });
+  desktopOff.environment.focusContext('personal'); desktopOn.environment.focusContext('personal');
+  assert.deepEqual(desktopOn.cameraNow(), desktopOff.cameraNow());
+  for (const h of [a, b, c, desktopOff, desktopOn]) assert.deepEqual(h.commits, []);
+});
+
+test('readable mobile focus: explicit overview still fits the complete geometry and clears focus without the floor', () => {
+  const on = mobileFlow(390, 844, { readableMobileFocus: true }), off = mobileFlow(390, 844), before = on.geometry();
+  on.environment.focusContext('personal'); on.environment.fitOverview(); on.render();
+  off.environment.fitOverview(); off.render();
+  assert.deepEqual(on.cameraNow(), off.cameraNow()); assert.equal(on.environment.contextFocus.mine, ''); assert.equal(on.environment.cameraFit.mine, 'overview');
+  assert.ok(on.environment.layout.nodes[0].width * on.cameraNow().scale < 144);
+  for (const node of on.environment.layout.nodes) {
+    const a = fieldWorldToScreen({ x: node.bounds.left, y: node.bounds.top }, on.cameraNow(), on.view);
+    const b = fieldWorldToScreen({ x: node.bounds.right, y: node.bounds.bottom }, on.cameraNow(), on.view);
+    assert.ok(a.x >= 0 && b.x <= on.view.width && a.y >= 0 && b.y <= on.view.height);
+  }
+  assert.equal(on.geometry(), before); assert.deepEqual(on.commits, []);
+});
+
+test('readable mobile focus: explicit manual zoom-out survives actual metadata rebuild and resize', () => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true }), e = h.environment, before = h.geometry();
+  e.focusContext('personal'); e.setCamera({ x: 73, y: 41, scale: .18 }); const manual = h.cameraNow();
+  e.entities = e.entities.map(item => ({ ...item, description: 'Обновлённые сведения' })); e.rebuild();
+  assert.deepEqual(h.cameraNow(), manual); assert.equal(e.cameraFit.mine, 'manual');
+  h.resizeTo(450, 940); assert.deepEqual(h.cameraNow(), manual); assert.equal(h.savedViews.at(-1).mineFit, 'manual');
+  assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+});
+
+test('readable mobile focus: actual off-centre keyboard pan marks manual and is not undone by metadata/resize', () => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true }), e = h.environment, before = h.geometry();
+  e.focusContext('personal'); e.selectedId = 'flower-0'; h.render(); const initial = h.cameraNow();
+  assert.equal(h.key('ArrowRight').defaultPrevented, true);
+  const selected = e.layout.nodes.find(node => node.shortcutId === e.selectedId); assert.ok(selected && selected.cx > 0);
+  assert.notDeepEqual(h.cameraNow(), initial); assert.equal(e.cameraFit.mine, 'manual');
+  const manual = h.cameraNow(), top = fieldWorldToScreen({ x: selected.bounds.left, y: selected.bounds.top }, manual, h.view), bottom = fieldWorldToScreen({ x: selected.bounds.right, y: selected.bounds.bottom }, manual, h.view);
+  assert.ok(top.x >= 40 && bottom.x <= h.view.width - 40 && top.y >= 40 && bottom.y <= h.view.height - 40);
+  e.entities = e.entities.map(item => ({ ...item, description: 'Новая информация' })); e.rebuild();
+  assert.deepEqual(h.cameraNow(), manual); h.resizeTo(450, 940); assert.deepEqual(h.cameraNow(), manual);
+  assert.equal(h.savedViews.at(-1).mineFit, 'manual'); assert.equal(h.geometry(), before);
+  assert.equal(h.calls.activate.length, 0); assert.equal(h.calls.inspect.length, 0); assert.deepEqual(h.commits, []);
+});
+
+test('readable mobile focus: keyboard selection without camera movement keeps context fitting on the next resize', () => {
+  const h = mobileFlow(390, 844, { readableMobileFocus: true }), e = h.environment, before = h.geometry();
+  e.focusContext('personal'); const centred = h.cameraNow(); h.render();
+  assert.equal(h.key('Home').defaultPrevented, true); assert.equal(e.selectedId, 'flower-0');
+  assert.deepEqual(h.cameraNow(), centred); assert.equal(e.cameraFit.mine, 'context');
+  e.rebuild(); assert.deepEqual(h.cameraNow(), centred); h.resizeTo(320, 844);
+  assert.equal(e.cameraFit.mine, 'context'); nearPixel(e.layout.nodes[0].width * e.camera().scale, 118.4);
+  assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+});
+
+test('dim matching: actual filter/available/render keep geometry while nonmatching cells cannot activate or inspect', () => {
+  const h = mobileFlow(1280, 900, { data: specimen(), dimNonMatches: true }), e = h.environment;
+  e.focusContext('studio'); const before = h.geometry(), camera = h.cameraNow();
+  e.filter = 'HIVE'; e.rebuild(); h.render();
+  assert.equal(h.geometry(), before); assert.deepEqual(h.cameraNow(), camera);
+  const hive = e.nodeElements.get('hive'); assert.ok(hive); assert.equal(hive.disabled, false); assert.equal(hive.dataset.muted, 'false');
+  assert.ok(e.available('hive')); assert.equal(e.available('canvas'), undefined); assert.ok(e.inspectElements.has('hive'));
+  for (const [id, target] of e.nodeElements) if (id !== 'hive') {
+    assert.equal(target.disabled, true, id); assert.equal(target.dataset.muted, 'true', id); assert.equal(target.getAttribute('aria-hidden'), 'true', id);
+    assert.equal(e.inspectElements.has(id), false, id); target.dispatch('click'); target.dispatch('contextmenu');
+  }
+  assert.equal(h.calls.activate.length, 0); assert.equal(h.calls.inspect.length, 0); assert.deepEqual(h.commits, []);
+});
+
+test('dim matching: clearing the actual query restores the same cells/coordinates/camera and activation', () => {
+  const h = mobileFlow(1280, 900, { data: specimen(), dimNonMatches: true }), e = h.environment;
+  e.focusContext('studio'); const before = h.geometry(), camera = h.cameraNow();
+  e.filter = 'HIVE'; e.rebuild(); h.render();
+  const canvas = e.nodeElements.get('canvas'); assert.ok(canvas); assert.equal(canvas.disabled, true); canvas.dispatch('click');
+  assert.equal(h.calls.activate.length, 0);
+  e.filter = ''; e.rebuild(); h.render();
+  assert.equal(h.geometry(), before); assert.deepEqual(h.cameraNow(), camera);
+  assert.equal(e.nodeElements.get('canvas'), canvas, 'the existing DOM node is updated, never re-created for a query');
+  assert.equal(canvas.disabled, false); assert.equal(canvas.dataset.muted, 'false'); assert.ok(e.available('canvas'));
+  canvas.dispatch('click'); assert.equal(h.calls.activate.length, 1); assert.equal(h.calls.activate[0][0].entity.id, app(2).id);
+  assert.deepEqual(h.commits, []);
+});
+
+
+function completeVisibleCells(h, padding = 24) {
+  return h.environment.layout.nodes.filter(node => {
+    const a = fieldWorldToScreen({ x: node.bounds.left, y: node.bounds.top }, h.cameraNow(), h.view);
+    const b = fieldWorldToScreen({ x: node.bounds.right, y: node.bounds.bottom }, h.cameraNow(), h.view);
+    return a.x >= padding - .001 && b.x <= h.view.width - padding + .001
+      && a.y >= padding - .001 && b.y <= h.view.height - padding + .001;
+  });
+}
+function sparsePair() {
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Личное', x: 0, y: 0 }], shortcuts: [] };
+  const entities = [];
+  for (const [n, slot] of [[0, [-42, 0]], [1, [42, 0]]]) {
+    const entity = app(n + 1);
+    document.shortcuts.push({ shortcutId: 'sparse-' + n, entity, contextId: 'personal', slot });
+    entities.push({ entity, title: n ? 'Правая сота' : 'Левая сота', source: 'owner' });
+  }
+  return { document, entities, layout: layoutUnifiedField(document, entities) };
+}
+
+test('readable mobile focus: sparse saved cells keep at least one full real cell visible, prefer the selected cell and never move data', () => {
+  for (const selected of ['', 'sparse-1']) {
+    const h = mobileFlow(390, 844, { readableMobileFocus: true, data: sparsePair() }), e = h.environment, before = h.geometry();
+    e.selectedId = selected; e.focusContext('personal'); h.render();
+    assert.ok(completeVisibleCells(h).length >= 1, 'a readable focus cannot consist only of blank space between sparse real cells');
+    nearPixel(e.layout.nodes[0].width * h.cameraNow().scale, 144);
+    if (selected) {
+      const node = e.layout.nodes.find(item => item.shortcutId === selected);
+      nearPixel(h.cameraNow().x, node.cx); nearPixel(h.cameraNow().y, node.cy);
+      assert.ok(completeVisibleCells(h).some(item => item.shortcutId === selected));
+    }
+    assert.equal(h.geometry(), before); assert.deepEqual(h.commits, []);
+  }
+  const old = mobileFlow(390, 844, { data: sparsePair() }), off = mobileFlow(390, 844, { data: sparsePair(), readableMobileFocus: false });
+  old.environment.focusContext('personal'); off.environment.focusContext('personal');
+  assert.deepEqual(old.cameraNow(), off.cameraNow()); assert.equal(completeVisibleCells(off).length, 2);
+});
+
+test('dim matching: actual overview retains a fourth-position match, its explicit zoom and matching-only Home/Arrow navigation', () => {
+  const h = mobileFlow(320, 338, { data: specimen(), dimNonMatches: true, readableMobileFocus: true }), e = h.environment;
+  const before = h.geometry(); e.filter = 'Аня'; e.rebuild(); h.render();
+  assert.equal(e.viewport.dataset.lod, 'overview'); assert.equal(e.contextFocus.mine, '');
+  const anna = e.nodeElements.get('anna'); assert.ok(anna, 'the fourth studio child must not be omitted by the three-thumbnail overview');
+  assert.equal(anna.disabled, false); assert.equal(anna.dataset.muted, 'false'); assert.equal(anna.dataset.preview, 'true');
+  assert.ok(e.available('anna')); assert.equal(e.available('hive'), undefined);
+  for (const [id, target] of e.nodeElements) if (id !== 'anna') {
+    assert.equal(target.disabled, true, id); target.dispatch('click'); target.dispatch('contextmenu');
+  }
+  assert.equal(h.calls.activate.length, 0); assert.equal(h.calls.inspect.length, 0);
+  const overview = h.cameraNow(); anna.dispatch('click'); h.render();
+  assert.equal(e.contextFocus.mine, 'studio'); assert.ok(h.cameraNow().scale > overview.scale);
+  assert.ok(e.available('anna')); assert.equal(e.nodeElements.get('anna').disabled, false); assert.equal(h.calls.activate.length, 0);
+  // A second matching person arrives through the ordinary entity metadata port;
+  // Home and ArrowRight must traverse these real matches rather than dim cells.
+  e.entities = e.entities.map(item => item.entity.id === 'tim' ? { ...item, title: 'Аня и Тим' } : item); e.rebuild();
+  assert.equal(h.key('Home').defaultPrevented, true); assert.equal(e.selectedId, 'anna');
+  assert.equal(h.key('ArrowRight').defaultPrevented, true); assert.equal(e.selectedId, 'tim'); assert.ok(e.available(e.selectedId));
+  assert.equal(h.geometry(), before); assert.equal(h.calls.activate.length, 0); assert.equal(h.calls.inspect.length, 0); assert.deepEqual(h.commits, []);
 });

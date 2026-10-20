@@ -4,7 +4,7 @@ export interface WidgetRuntimeControls {
   dispose():void;
 }
 export function createWidgetRuntimeControls(options:{
-  presentation?:'main';returnTarget?:DialogReturnTarget;
+  presentation?:'main';returnTarget?:DialogReturnTarget;mainControlHost?:HTMLElement;
   view:Window;screen:HTMLElement;message:HTMLElement;runtime:HTMLElement;runtimeActions:HTMLElement;
   externalRecovery?:HTMLButtonElement;
   current():boolean;capture():unknown;matchesCapture(value:any):boolean;canAct():boolean;

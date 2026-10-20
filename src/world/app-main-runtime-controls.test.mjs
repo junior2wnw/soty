@@ -17,7 +17,7 @@ const declarations=mount.body.statements.filter(ts.isVariableStatement).flatMap(
 const main=declarations.find(n=>n.name.getText(stageAst)==='mainRuntimeControls');
 const widget=declarations.find(n=>n.name.getText(stageAst)==='widgetRuntimeControls');
 const mainProps=main.initializer.whenFalse.arguments[0].properties,widgetProps=widget.initializer.whenTrue.arguments[0].properties;
-const callback=(props,name)=>props.find(n=>n.name.getText(stageAst)===name).initializer.getText(stageAst);
+const callback=(props,name)=>props.find(n=>n.name?.getText(stageAst)===name).initializer.getText(stageAst);
 const portsCode=compile(`exports.create=(state,runtime)=>{let displayEpoch=1,runtimePending=false;const current=()=>state.current,launcher={scopedCapture:()=>state.binding};return {
  capture:${callback(mainProps,'capture')},matchesCapture:${callback(mainProps,'matchesCapture')},canAct:${callback(mainProps,'canAct')},epoch(){displayEpoch++},pending(v){runtimePending=v}};};`);
 // Reuse the already established deterministic platform port unchanged, while
@@ -31,6 +31,11 @@ const fixtureText=fixtureNode.getText(widgetAst);
 const fixtureFor=factory=>new Function('createWidgetRuntimeControls','portsCode','dialogsCompiled','vm','captureSourcePin','Event','EventTarget',fixtureText+';return fixture;')(factory,portsCode,dialogsCompiled,vm,captureSourcePin,Event,EventTarget)({main:true,notice:true});
 const fixture=()=>fixtureFor(createWidgetRuntimeControls);
 const css=readFileSync(path.join(HERE,'app-stage.css'),'utf8');
+const compactFixture=()=>{
+ let slot;
+ const f=fixtureFor(options=>{slot=options.el('div','local-compact-runtime-slot');options.screen.append(slot);return createWidgetRuntimeControls({...options,mainControlHost:slot});});
+ return{...f,slot};
+};
 const applyStyles=f=>{
  const main=f.screen.classList.contains('has-stage-runtime-controls');
  f.runtimeActions.displayNone=main&&css.includes('.sa-stage.has-stage-runtime-controls > .sa-runtime-actions { display: none; }');
@@ -44,6 +49,27 @@ const rect=f=>{
  assert.match(rule,/padding: 6px 12px/u);assert.match(rule,/gap: 8px/u);assert.match(messageRule,/max-height: 36px/u);assert.match(controlRule,/height: 44px/u);
  return{noticeHeight:Math.max(36,44)+6+6+1,inlineActions:f.runtimeActions.getClientRects().length?4:0,kind:'CSS budget model, not native pixels'};
 };
+
+test('compact main shell keeps recovery in its visible actions slot and removes the empty external-action row',()=>{
+ const f=compactFixture();try{
+  const notice=f.screen.querySelector('.sa-stage-runtime-notice');
+  f.message.hidden=true;f.message.textContent='';f.externalRecovery.hidden=false;f.mutate();
+  assert.equal(notice.hidden,true);assert.equal(f.control.parentElement,f.slot);assert.equal(f.control.getClientRects().length,1);
+  const dialog=f.open();f.action(dialog,'Открыть в новой вкладке').click();
+  assert.equal(f.counts.external,1);assert.deepEqual(f.sequence,['popup-sync','dialog-closed']);
+  assert.equal(f.frame.parentElement,f.runtime);assert.equal(f.runtime.querySelectorAll('iframe').length,1);
+ }finally{f.api.dispose();}
+});
+
+test('compact recovery retains the full failure and refuses an action from an obsolete runtime',()=>{
+ const f=compactFixture();try{
+  const notice=f.screen.querySelector('.sa-stage-runtime-notice');assert.equal(notice.hidden,false);assert.equal(f.message.parentElement,notice);
+  const dialog=f.open(),retry=f.action(dialog,'Открыть приложение заново');
+  assert.equal(dialog.querySelector('.sa-stage-runtime-copy').textContent,'Запуск не подтверждён');
+  f.stagePorts.epoch();retry.click();f.flush();assert.equal(f.counts.retry,0);assert.equal(f.frame.parentElement,f.runtime);
+ }finally{f.api.dispose();}
+ assert.equal(f.slot.children.length,0);assert.equal(f.externalRecovery.parentElement,f.runtimeActions);
+});
 
 test('actual Stage wiring preserves widget ports and routes main controls into their explicit mode',()=>{
  assert.equal(callback(mainProps,'presentation'),"'main'");

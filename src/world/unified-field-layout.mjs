@@ -38,23 +38,14 @@ export function fieldPolygonsOverlap(a, b, gap = 0) {
 
 export function fieldFootprint(kind, point, metrics = UNIFIED_FIELD_METRICS) {
   const { x: cx, y: cy } = point;
-  if (kind === 'person') return rectPoints({ left: cx - metrics.personLabelWidth / 2, top: cy - metrics.person / 2,
-    right: cx + metrics.personLabelWidth / 2, bottom: cy + metrics.person / 2 + metrics.personLabel });
-  if (kind === 'device') return rectPoints({ left: cx - metrics.deviceWidth / 2, top: cy - metrics.deviceHeight / 2,
-    right: cx + metrics.deviceWidth / 2, bottom: cy + metrics.deviceHeight / 2 });
   return hexVertices(metrics.radius).map(p => ({ x: cx - p.y, y: cy + p.x }));
 }
 function nodeGeometry(shortcut, context, entity, metrics) {
   const local = fieldSlotToPoint(shortcut.slot, metrics), cx = context.x + local.x, cy = context.y + local.y;
   const kind = entity.entity.kind;
-  let width = metrics.radius * SQRT3, height = metrics.radius * 2;
-  if (kind === 'person') {
-    width = metrics.personLabelWidth; height = metrics.person + metrics.personLabel;
-  } else if (kind === 'device') {
-    width = metrics.deviceWidth; height = metrics.deviceHeight;
-  }
+  const width = metrics.radius * SQRT3, height = metrics.radius * 2;
   const footprint = fieldFootprint(kind, { x: cx, y: cy }, metrics);
-  const top = kind === 'person' ? cy - metrics.person / 2 : cy - height / 2;
+  const top = cy - height / 2;
   return { shortcutId: shortcut.shortcutId, entity, contextId: context.contextId, slot: [...shortcut.slot], kind,
     cx, cy, x: cx - width / 2, y: top, width, height, footprint, bounds: fieldBounds(footprint) };
 }

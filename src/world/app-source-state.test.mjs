@@ -424,3 +424,89 @@ test('authenticated workspace consent persists the bounded entry scope through l
     exposureAck: { ...pending.args.exposureAck, scope: 'whole-port' } } }), { code: 'app_settings_invalid_receipt' });
   assert.equal(await recovered.acknowledge(pending, receipt(pending)), true);
 });
+
+// Component-methods-under-ports: execute the actual settings handler, durable
+// dispatcher and real Source state. This is not a full mount or browser test.
+async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDetails) {
+  const [{ readFile }, { default: ts }, { default: vm }] = await Promise.all([
+    import('node:fs/promises'), import('typescript'), import('node:vm'),
+  ]);
+  const source = await readFile(new URL('./app-settings.ts', import.meta.url), 'utf8');
+  const file = ts.createSourceFile('app-settings.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const mount = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'mountAppSettings');
+  assert.ok(mount?.body, 'actual mountAppSettings must exist');
+  const functions = ['perform', 'promoteSource', 'mutation'].map(name => {
+    const matches = mount.body.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert.equal(matches.length, 1, `actual ${name} declaration`); return matches[0].getText(file);
+  });
+  const declarations = mount.body.statements.filter(ts.isVariableStatement).flatMap(node => [...node.declarationList.declarations]);
+  const guards = declarations.filter(node => ts.isIdentifier(node.name) && node.name.text === 'sourceCurrent');
+  assert.equal(guards.length, 1, 'actual sourceCurrent declaration');
+  let guard = `const ${guards[0].getText(file)};`;
+  if (process.env.SOTY_QUICK_SOURCE_OUTER_GUARD === 'off') {
+    const term = ' && (!quickDetails || quickDetails.open)';
+    assert.equal(guard.split(term).length, 2, 'negative control removes only the actual outer disclosure term');
+    guard = guard.replace(term, '');
+  }
+  const code = `module.exports = ports => {
+    const { sourceModel, api, store, quickDetails, dispatchAppSettingsIntent } = ports;
+    const document = { visibilityState: 'visible' }, advanced = { open: true }, sourceDetails = { open: true };
+    const current = () => true, sourcePromote = {}, sourceHistory = { open: false }, model = null;
+    const disabled = () => false, render = () => {}, settingsError = reason => String(reason?.code ?? reason);
+    let busy = false, refreshing = false, refreshGeneration = 0, inspectionGeneration = 0, copyGeneration = 0;
+    let error = '', copyFallback = null, sourcePrimaryAction = 'recheck', sourceGeneration = 0;
+    let sourceError = '', sourceNotice = '', sourceRechecking = false, hadPreparation = true;
+    let staleInspection = false, sourceReadbackNotice = null, notice = '', readbacks = 0;
+    const inspect = async () => { readbacks++; return true; };
+    const loadSourceHistory = () => { throw new Error('unexpected history request'); };
+    ${guard}
+    ${functions.join('\n')}
+    return { invoke: promoteSource, parents: { advanced, sourceDetails },
+      read: () => ({ sourceError, error, readbacks, busy, sourceNotice }) };
+  };`;
+  const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(compiled, { module, exports: module.exports });
+  return module.exports({ sourceModel, api, store, quickDetails, dispatchAppSettingsIntent });
+}
+
+async function sourceDisclosureCase(quickDetails) {
+  const f = fixture(), saved = storeFixture(), gate = deferred(), calls = []; let heldArgs;
+  f.change(); await f.prepare(); f.setTime(30_100);
+  assert.equal(f.source.read().canRecheckPromote, true, 'a real expired reviewed candidate admits the explicit recheck action');
+  const api = { request(op, args) {
+    calls.push({ op, args: copy(args) });
+    if (op === 'apps.source.prepare') { heldArgs = args; return gate.promise; }
+    assert.equal(op, 'apps.source.promote', 'only the actual durable source effect may follow recheck');
+    return Promise.resolve(receipt(saved.state.read().pending));
+  } };
+  const methods = await compactSourceMethodsUnderPorts(f.source, api, saved.state, quickDetails);
+  const invoking = methods.invoke();
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.source.prepare');
+  if (quickDetails) quickDetails.open = false;
+  // Native toggle is a later task. Nested disclosures deliberately stay open
+  // while the held promise resolves, so their toggle handlers cannot hide a bug.
+  assert.equal(methods.parents.advanced.open, true); assert.equal(methods.parents.sourceDetails.open, true);
+  const beforeRelease = calls.length;
+  f.setTime(30_300); gate.resolve(prepared(heldArgs, target(), { preparationId: 'n'.repeat(43), checkedAt: 200_000, expiresAt: 229_900 }));
+  await invoking;
+  return { f, saved, methods, calls, afterRelease: calls.slice(beforeRelease) };
+}
+
+test('component methods: closing compact All settings before its native toggle fences a held Source recheck without a new prepare, promotion or journal', async () => {
+  const result = await sourceDisclosureCase({ open: true });
+  assert.deepEqual(result.afterRelease, [], 'closed outer disclosure must suppress the actual handler continuation');
+  assert.equal(result.calls.filter(value => value.op === 'apps.source.prepare').length, 1, 'only the already-held preparation was sent');
+  assert.equal(result.calls.filter(value => value.op === 'apps.source.promote').length, 0);
+  assert.equal(result.saved.state.read().pending, null); assert.equal(result.saved.values.size, 0);
+  assert.equal(result.methods.read().readbacks, 0); assert.equal(result.methods.read().sourceError, '');
+  assert.equal(result.methods.read().busy, false); assert.equal(result.f.source.read().preparation, null);
+});
+
+test('component methods: full settings without an outer disclosure still rechecks and uses its existing durable Source dispatcher', async () => {
+  const result = await sourceDisclosureCase(null);
+  assert.deepEqual(result.calls.map(value => value.op), ['apps.source.prepare', 'apps.source.promote']);
+  assert.equal(result.methods.read().readbacks, 1); assert.equal(result.methods.read().sourceError, '');
+  assert.equal(result.methods.read().busy, false); assert.equal(result.saved.state.read().pending, null);
+  assert.equal(result.afterRelease[0].args.preparationId, 'n'.repeat(43));
+});

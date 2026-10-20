@@ -1,6 +1,7 @@
 import { assertApps, appId, cleanGrants, textId } from './protocol.mjs';
 import { runtimeTargetDigest, supportedRuntimeProfile, selectedRuntimeProfile } from './schema.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
+import { hasAudienceSchema, readAppAudience } from './audience.mjs';
 
 /** Host-only port: signed Connect owns the outer installation fence. World and
  * Apps remain locked through a synchronous downstream commit. A runtime tuple
@@ -38,11 +39,13 @@ export function createAppAuthorityPort({ db, assertActor, withAuthorityFence, re
         synchronous(requireScopedTarget({appId:id,revision:target.revision,ownerAccountId:target.owner_account_id,
           connectorKey:target.connector_key,port:target.port,entryPath:target.entry_path,profile:target.profile,digest:target.digest}),'apps_async_authority');
       }
-      const grants = cleanGrants(JSON.parse(app.grants_json));
+      const audience = readAppAudience(db, id);
+      const grants = audience === null ? cleanGrants(JSON.parse(app.grants_json)) : { accountIds: [], communityIds: [] };
       Object.freeze(grants.accountIds); Object.freeze(grants.communityIds); Object.freeze(grants);
       const snapshot = Object.freeze({ appId: id, ownerId: app.owner_account_id, accountId: actor.accountId,
         appRevision: app.revision, policyEpoch: policy.policy_epoch, title: app.name,
         visibility: policy.launch_policy === 'anyone' ? 'public' : 'private', grants,
+        ...(hasAudienceSchema(db) ? { audience } : {}),
         target: Object.freeze({ revision: target.revision, digest: target.digest, profile: target.profile }),
         entry: Object.freeze({ appId: id, domainId: entry.domainId, origin: entry.origin, path: entry.path }),
         canManage: actor.accountId === app.owner_account_id });

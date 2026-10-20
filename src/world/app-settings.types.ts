@@ -1,4 +1,5 @@
 import type { WorldApi, WorldCommunity } from './types';
+export type AppAudience = 'private' | 'friends' | 'link' | 'public';
 export interface AppInspection {
   schema: 'soty.app-inspection.v1';
   checkedAt: number;
@@ -9,7 +10,7 @@ export interface AppInspection {
     aliases: { id: string; slug: string; origin: string; state: 'bound' | 'tombstone'; active: boolean; shareUrl: string | null; createdAt: number; retiredAt: number | null }[];
     limits: { perApp: number; perAccount: number; usedByApp: number; usedByAccount: number };
   };
-  publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
+  publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; audience?: AppAudience | null; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
     launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
@@ -18,7 +19,7 @@ export interface AppInspection {
     observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' | 'connector-v2-observation' } };
   actions: { canReserveName: boolean; canEdit: boolean; canPublish: boolean; canPreview: boolean };
 }
-export interface SettingsDraft { name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
+export interface SettingsDraft { audience?: AppAudience | null; name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
 export interface AppSourceTarget {
   revision: number; digest: string; profile: 'soty.relay-restricted.v1' | 'soty.selected-human-embed.v1' | 'soty.selected-human-embed.v2'; hostDeviceId: string; connectorId: string;
   deviceName: string; port: number; entryPath: string;
@@ -39,8 +40,9 @@ export type SettingsPending = {
   op: 'apps.source.promote'; args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string };
   expectedSource: AppSourceTarget;
 };
-export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; launchPolicy: string; activeDomainIds: string[]; appState: string } }
+export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; audience?: AppAudience | null; launchPolicy: string; activeDomainIds: string[]; appState: string } }
 export interface AppSettingsOptions {
+  compactAccess?: boolean;
   host: HTMLElement; accountId: string; appId: string; api: WorldApi; communities: WorldCommunity[];
   isCurrent(): boolean; onChanged(snapshot: AppInspection): void;
   onPreview(target: { domainId: string; path: string }): void;

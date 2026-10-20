@@ -1,6 +1,6 @@
 import { accountClient, observeAccount } from '../core/connect-client';
 import { mountWorldApp, type WorldAppHandle } from '../world/app';
-import type { WorldAppOptions, WorldProfile, WorldHumanCallPort, WorldHumanCallState, WorldIncomingCall } from '../world/types';
+import type { WorldAppOptions, WorldIdentity, WorldHumanCallPort, WorldHumanCallState, WorldIncomingCall } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
 import { bindCallIdentity, type CallIdentityLifecycle } from './call-identity';
@@ -215,7 +215,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
         await accountClient.rename(displayName, accountId);
         if (!current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
       },
-      requestContact: async (profile: WorldProfile) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
+      requestContact: async (profile: WorldIdentity) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
     });
   };
   world = mount(activeAccount);

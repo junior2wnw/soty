@@ -32,6 +32,8 @@ import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURC
 import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource, isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { hash as scopedHash, capture as scopedCapture, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
+import { hasAudienceSchema, readAppAudience } from './audience.mjs';
+import { synchronous } from './engagement-transaction.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
@@ -41,9 +43,44 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
-  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
+  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  assertApps(withCurrentContacts === undefined || typeof withCurrentContacts === 'function'
+    && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(withCurrentContacts.constructor?.name), 'apps_contact_authority_invalid', 503);
+  let contactsFrame = null;
+  function withContactAuthority(actor, callback) {
+    if (actor === undefined || withCurrentContacts === undefined) return callback();
+    assertActor(actor);
+    if (contactsFrame) {
+      assertApps(contactsFrame.accountId === actor.accountId && contactsFrame.deviceId === actor.deviceId, 'apps_contact_authority_invalid', 503);
+      return synchronous(callback(), 'apps_async_authority');
+    }
+    let active = true, entered = false, outcome;
+    try {
+      synchronous(withCurrentContacts(actor, view => {
+        assertApps(active && !entered && view?.accountId === actor.accountId && view?.deviceId === actor.deviceId
+          && typeof view.has === 'function' && typeof view.accountIds === 'function', 'apps_contact_authority_invalid', 503);
+        entered = true; contactsFrame = view;
+        try { outcome = synchronous(callback(), 'apps_async_authority'); return outcome; }
+        finally { contactsFrame = null; }
+      }), 'apps_async_authority');
+      assertApps(entered, 'apps_contact_authority_invalid', 503); return outcome;
+    } finally { active = false; }
+  }
+  const withAuthorityFence = (callback, actor) => {
+    assertApps(typeof withWorldAuthorityFence === 'function' && withWorldAuthorityFence.constructor?.name !== 'AsyncFunction',
+      'apps_authority_fence_required', 503);
+    return withContactAuthority(actor, () => withWorldAuthorityFence(callback));
+  };
+  function isCurrentFriend(actor, ownerAccountId) {
+    if (!contactsFrame || contactsFrame.accountId !== actor.accountId || contactsFrame.deviceId !== actor.deviceId) return false;
+    return contactsFrame.has(ownerAccountId) === true;
+  }
+  function currentContactIds(actor) {
+    if (!contactsFrame || contactsFrame.accountId !== actor.accountId || contactsFrame.deviceId !== actor.deviceId) return [];
+    return contactsFrame.accountIds();
+  }
   // Trusted host/test settings may shorten deadlines, never disable or widen
   // the bounded transport profile. Reject invalid settings before opening data.
   const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
@@ -73,9 +110,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
-    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration });
-    publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
+    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
+    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration, allowAudienceMigration });
+    publications = createPublicationRegistry({ db, now, assertActor, canUse, withContactAuthority, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, namedCanonical, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
       onPolicyChanged: publications.notifyChanged });
@@ -144,8 +181,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       });
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
-    directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, canUse, resolveEntry });
-    discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse,
+    directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry });
+    discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse, isCurrentFriend,
       readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
         assertApps(typeof readCommunityAuthority === 'function', 'apps_authority_fence_required', 503);
         return readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds);
@@ -276,6 +313,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function canUse(actor, app) {
     if (!app || app.state !== 'enabled' || actorActive(actor) !== true) return false;
     if (app.owner_account_id === actor.accountId) return true;
+    const audience = readAppAudience(db, app.id);
+    if (audience !== null) return audience === 'friends' && isCurrentFriend(actor, app.owner_account_id);
     const grants = JSON.parse(app.grants_json);
     return grants.accountIds.includes(actor.accountId) || grants.communityIds.some(id => canAccessCommunity(actor.accountId, id) === true && isGroupAdmin(app.owner_account_id, id) === true);
   }
@@ -321,7 +360,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const observed = inspectSource({ app, target });
       apps.push({ id: app.id, name: app.name, ownerAccountId: app.owner_account_id,
         state: ({ offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' })[observed.state],
-        publication: { launchPolicy: 'anyone', activeNamedAddressCount: 1 },
+        publication: { launchPolicy: 'anyone', activeNamedAddressCount: 1,
+          ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, app.id), listed: true } : {}) },
         entry: { domainId: address.id, origin: address.origin, path: target.entryPath } });
     }
     return { schema: 'soty.app-catalog.v1', apps };
@@ -331,7 +371,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // A candidates row can predate another writer's revoke or source change.
     const current = db.prepare(`SELECT a.*,t.connector_key AS target_connector_key,t.revision AS target_revision,
       t.digest AS target_digest,t.port AS target_port,t.entry_path AS target_entry_path,t.profile AS target_profile,
-      d.identity_json,d.name AS device_name,p.launch_policy,
+      d.identity_json,d.name AS device_name,p.launch_policy,p.listed,
       CASE WHEN a.state='enabled' THEN (SELECT count(*) FROM app_publication_domains pd
         JOIN app_domains ad ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id
         JOIN app_domain_zones z ON z.id=ad.zone_id AND z.kind='named'
@@ -367,7 +407,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       state, createdAt: current.created_at, updatedAt: current.updated_at,
       ...(actor.accountId === current.owner_account_id ? { connectorId: identity.connectorId, deviceName: current.device_name,
         port: current.target_port, entryPath: current.target_entry_path, grants: JSON.parse(current.grants_json),
-        publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count },
+        publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count,
+          ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, current.id), listed: Boolean(current.listed) } : {}) },
         ...(entry ? { entry } : {}) } : {}) };
   }
   // Navigation metadata only. Launch/instance creation still recheck the exact
@@ -537,7 +578,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       .map(app => ({ id: app.id, port: app.port, entryPath: app.entry_path }));
     send(channel, { type: 'sync', apps });
   }
-  function execute({ op, args = {}, actor }) {
+  function execute(request) { return withContactAuthority(request.actor, () => executeCurrent(request)); }
+  function executeCurrent({ op, args = {}, actor }) {
     if (directoryOperations.includes(op)) assertApps(Object.hasOwn(args, 'expectedAccountId'), 'apps_directory_account_required');
     args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
     if (directoryOperations.includes(op)) return directory.execute({ op, actor, args });
@@ -566,11 +608,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (op === 'apps.list') {
       exact(args, ['communityId']); const community = args.communityId === undefined ? '' : textId(args.communityId);
       if (community) assertApps(canAccessCommunity(actor.accountId, community) === true, 'apps_access_denied', 403);
+      const audienceCandidates = hasAudienceSchema(db);
       const candidates = typeof activeCommunityIds === 'function' ? db.prepare(`SELECT * FROM local_apps WHERE id IN (
         SELECT id FROM local_apps WHERE owner_account_id=? UNION
-        SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=? UNION
-        SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN (SELECT value FROM json_each(?))) ORDER BY created_at`)
-        .all(actor.accountId, actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId))) : db.prepare('SELECT * FROM local_apps ORDER BY created_at').all();
+        SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=?
+          ${audienceCandidates ? 'AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=local_app_grants.app_id)' : ''} UNION
+        SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN (SELECT value FROM json_each(?))
+          ${audienceCandidates ? 'AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=local_app_grants.app_id)' : ''}
+        ${audienceCandidates ? `UNION SELECT a.id FROM local_apps a JOIN app_audiences mode ON mode.app_id=a.id
+          WHERE mode.audience='friends' AND a.owner_account_id IN(SELECT value FROM json_each(?))` : ''}) ORDER BY created_at`)
+        .all(actor.accountId, actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId)),
+          ...(audienceCandidates ? [JSON.stringify(currentContactIds(actor))] : [])) : db.prepare('SELECT * FROM local_apps ORDER BY created_at').all();
       return { configured: Boolean(template || readNamedOrigins(db).length), apps: candidates.filter(app =>
         (canUse(actor, app) || app.owner_account_id === actor.accountId) && (!community || JSON.parse(app.grants_json).communityIds.includes(community))).map(app => publicApp(app, actor)) };
     }

@@ -1,7 +1,7 @@
 import './unified-field.css';
 import { createFieldDocument, fieldEntityKey, type FieldDocument, type FieldEntityRef } from '../../modules/field/contract.mjs';
 import { createUnifiedField, type FieldDirectoryEntity, type UnifiedField, type UnifiedFieldMode, type UnifiedFieldSummary, type UnifiedFieldViewState } from './unified-field';
-import { nextFieldSlot } from './unified-field-state.mjs';
+import { compactFieldContext, nextFieldSlot } from './unified-field-state.mjs';
 import { createPersonalFieldDocument, ensureFieldEntityPlacement } from './app-field-placement.mjs';
 import { layoutUnifiedField, fieldBounds, rectPoints } from './unified-field-layout.mjs';
 import { fitFieldCamera } from './unified-field-camera.mjs';
@@ -10,7 +10,7 @@ import { createFieldDirectory, type DirectoryApi, type DirectoryApp, type Direct
 import { createFieldPersistence, type FieldPersistenceState } from './field-persistence';
 import { resolveFieldAppArt } from './field-art.mjs';
 import { avatar, button, el, iconButton, labeledField, nounCount, textInput } from './dom';
-import { createDialog, errorText, type WorldDialog } from './dialogs';
+import { createDialog, errorText, isDialogFocusTarget, type WorldDialog } from './dialogs';
 import { icon } from './icons';
 import type { WorldCommunity } from './types';
 
@@ -25,6 +25,7 @@ export interface UnifiedFieldScreenOptions {
   onOpen(entity: DirectoryEntity, record: DirectoryRecord | null): void;
   onCreate(kind: 'app' | 'community' | 'device' | 'person' | 'assistant'): void;
   onAppSettings?: (app: DirectoryApp) => void;
+  onInspectOwn?: (entity: DirectoryEntity, record: DirectoryRecord | null, openPlacement?: () => void) => boolean;
   onMessage(message: string, error?: boolean): void;
   onContextChange?(contextId: string): void;
   resolveArt?: (entity: FieldDirectoryEntity) => import('./app-art.mjs').AppArt | null;
@@ -35,12 +36,14 @@ export interface UnifiedFieldScreen {
   attachHeaderSearch(header: HTMLElement): void;
   addEntity(ref: FieldEntityRef): Promise<void>;
   focusSearch(): void; focusContext(contextId: string): void; openAdd(): void; refresh(options?: { preserveView?: boolean }): Promise<void>;
+  openView(): void; openList(): void; arrange(): void;
   hasUnsavedChanges(): boolean; flush(): Promise<void>; reconnect(): void; dispose(): void;
 }
 
 const BUILTINS: DirectoryEntity[] = [
   { entity: { kind: 'builtin', id: 'notes' }, title: 'Записки', symbol: 'note', coverKey: 'notes', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'chess' }, title: 'Шахматы', symbol: 'chess', coverKey: 'chess', source: 'builtin' },
+  { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', source: 'builtin' },
 ];
 const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Сообщества', device: 'Устройства' };
 const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Сообщество', device: 'Моё устройство' })[kind];
@@ -70,6 +73,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   searchInput.type = 'search'; searchInput.setAttribute('aria-label', 'Найти в моих сотах'); searchInput.autocomplete = 'off';
   const clear = iconButton('Очистить поиск', 'close', () => { searchInput.value = ''; queries[mode] = ''; inputChanged(); searchInput.focus(); });
   clear.classList.add('uf-search-clear'); search.append(icon('search'), searchInput, clear);
+  const closeSearch = iconButton('Закрыть поиск', 'close', () => {
+    if (searchInput.value || queries[mode]) { searchInput.value = ''; inputChanged(true); }
+    element.dataset.search = 'closed';
+    focusFieldControl();
+  });
+  closeSearch.classList.add('uf-search-close'); search.append(closeSearch);
   const listButton = button('Список', 'list', 'uf-list-button', () => openList());
   listButton.setAttribute('aria-haspopup', 'dialog'); listButton.setAttribute('aria-label', 'Соты списком');
   const localSearch = el('div', 'uf-local-search'); localSearch.append(search, listButton);
@@ -137,8 +146,57 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let viewPercent: HTMLOutputElement | null = null;
   const report = (error: unknown): void => { if (current()) options.onMessage(errorText(error), true); };
   const run = (promise: Promise<unknown> | undefined): void => { if (promise) void promise.catch(report); };
-  function dialog(name: string): WorldDialog {
-    const instance = createDialog(name, () => dialogs.delete(instance)); dialogs.add(instance); return instance;
+  function dialog(name: string, onClose?: () => void): WorldDialog {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const instance = createDialog(name, () => { dialogs.delete(instance); onClose?.(); }, {
+      isCurrent: current,
+      resolve: () => isDialogFocusTarget(opener) ? opener : fieldControl(),
+    }); dialogs.add(instance); return instance;
+  }
+  function fieldControl(): HTMLElement | null {
+    return [header?.querySelector<HTMLElement>('[data-field-search]'), element.closest('.sw-app')?.querySelector<HTMLElement>('.sw-mobile-nav .of-menu-button'), element.querySelector<HTMLElement>('.uf-node.is-selected')]
+      .find(node => isDialogFocusTarget(node ?? null)) ?? null;
+  }
+  function focusFieldControl(): void { fieldControl()?.focus({ preventScroll: true }); }
+  function openCompactPreview(): void {
+    if (!engine || mode !== 'mine') return;
+    if (!state || state.state !== 'saved' || state.pendingCount || !state.localDurable || persistence.hasUnsavedChanges() || engine.hasUnsavedChanges()) {
+      options.onMessage('Сначала дождитесь сохранения поля или проверьте его состояние.', true); return;
+    }
+    const owner = engine, expected = owner.snapshot();
+    if (!expected.contexts.length) return;
+    let previewField: UnifiedField | null = null;
+    const disposePreview = (): void => { previewField?.destroy(); previewField = null; };
+    const instance = dialog('Собрать рядом', disposePreview), context = el('select', 'sw-select');
+    context.setAttribute('aria-label', 'Какое пространство собрать');
+    for (const space of expected.contexts) { const option = el('option', '', space.title); option.value = space.contextId; context.append(option); }
+    context.value = summary?.focusContextId || expected.contexts[0]!.contextId;
+    const previewHost = el('div', 'of-compact-preview'), error = el('p', 'sw-error'); error.setAttribute('role', 'alert');
+    previewHost.inert = true; previewHost.setAttribute('aria-hidden', 'true');
+    const apply = button('Собрать рядом', 'check', 'sw-button-primary');
+    const render = (): void => {
+      previewField?.destroy(); previewField = null; error.textContent = '';
+      try {
+        const candidate = compactFieldContext(expected, context.value);
+        previewField = createUnifiedField({ accountId: options.accountId, document: candidate, entities: allMetadata(),
+          viewState: { mineContext: context.value, mineFit: 'context' },
+          resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }),
+        });
+        previewHost.replaceChildren(previewField.element); apply.disabled = false;
+      } catch (reason) { previewHost.replaceChildren(); error.textContent = errorText(reason); apply.disabled = true; }
+    };
+    context.addEventListener('change', render, { signal });
+    apply.addEventListener('click', () => {
+      if (!current() || engine !== owner || mode !== 'mine' || apply.disabled) return;
+      apply.disabled = true; context.disabled = true; error.textContent = '';
+      void owner.compactContext(context.value, expected).then(result => {
+        if (!current() || engine !== owner || !instance.element.open) return;
+        if (result?.status === 'conflict') { error.textContent = 'Поле изменилось. Закройте предпросмотр и проверьте версии.'; return; }
+        instance.close(); options.onMessage(!result ? 'Соты уже собраны рядом.' : result.status === 'saved' ? 'Соты собраны. Действие можно отменить.' : 'Новая расстановка сохранена на устройстве и ждёт подтверждения.');
+      }).catch(reason => { if (current() && instance.element.open) error.textContent = errorText(reason); });
+    }, { signal });
+    instance.body.append(el('p', 'sw-muted', 'Так будут расположены соты в выбранном пространстве. Остальные пространства сохранят свои места. После применения можно нажать «Отменить».'),
+      labeledField('Пространство', context), previewHost, error, apply); render();
   }
   function openViewTools(): void {
     const instance = dialog('Вид поля'); instance.element.classList.add('uf-view-dialog');
@@ -164,6 +222,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     });
     panToggle.setAttribute('aria-expanded', String(!panControls.hidden));
     instance.body.append(panToggle, el('p', 'uf-input-help', 'Тяните поле или прокручивайте трекпадом. Для масштаба — два пальца, Ctrl + колесо или кнопки − и +.'));
+    instance.body.append(button('Соты списком', 'list', 'sw-button-wide', () => { instance.close({ restoreFocus: false }); openList(); }));
+    if (mode === 'mine') instance.body.append(button(summary?.arranging ? 'Закончить расстановку' : 'Расставить соты', 'move', 'sw-button-wide', () => { instance.close(); engine?.setArrange(!summary?.arranging); }));
+    if (mode === 'mine') instance.body.append(button('Собрать рядом', 'cells', 'sw-button-wide', () => { instance.close({ restoreFocus: false }); openCompactPreview(); }));
     if (mode === 'mine') instance.body.append(button('Мои пространства', 'layers', 'sw-button-wide', () => { instance.close(); manageContexts(); }));
   }
   function merge(items: readonly DirectoryEntity[]): void { for (const item of items) metadata.set(fieldEntityKey(item.entity), item); metadataRevision++; }
@@ -177,16 +238,16 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     return [...metadata.values()].filter(item => needed.has(fieldEntityKey(item.entity)));
   }
   function placeSearch(): void {
-    searchInput.placeholder = wide.matches ? mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества' : 'Поиск';
-    const placeholder = header?.querySelector('.sx-global-search');
-    if (wide.matches && header) { placeholder?.replaceWith(search); if (search.parentElement !== header) header.insertBefore(search, header.querySelector('.sx-mobile-profile')); sides.after(listButton); }
-    else { if (search.parentElement !== localSearch) localSearch.prepend(search); if (listButton.parentElement !== localSearch) localSearch.append(listButton); placeholder?.remove(); }
+    searchInput.placeholder = mode === 'mine' ? 'Найти на моём поле' : 'Приложения, люди, сообщества';
+    if (search.parentElement !== localSearch) localSearch.prepend(search);
+    if (listButton.parentElement !== localSearch) localSearch.append(listButton);
   }
   function updateChrome(): void {
     const focused = document.activeElement;
     element.dataset.mode = mode; element.dataset.filter = filter; title.textContent = mode === 'mine' ? 'Мои соты' : 'Найти своё';
     if (mode !== 'search') searchLimit.hidden = true;
     element.dataset.query = queries[mode] ? 'active' : 'empty';
+    if (queries[mode]) element.dataset.search = 'open';
     element.setAttribute('aria-label', mode === 'mine' ? 'Мои соты' : 'Поиск в Сотах');
     mineButton.setAttribute('aria-pressed', String(mode === 'mine')); searchButton.setAttribute('aria-pressed', String(mode === 'search'));
     searchInput.value = queries[mode]; searchInput.placeholder = mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества';
@@ -221,7 +282,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   searchInput.addEventListener('compositionend', () => { composing = false; inputChanged(true); }, { signal });
   searchInput.addEventListener('keydown', event => {
     if (event.isComposing || composing) return;
-    if (event.key === 'Escape' && searchInput.value) { event.stopPropagation(); searchInput.value = ''; inputChanged(true); }
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      if (searchInput.value) { searchInput.value = ''; inputChanged(true); }
+      else closeSearch.click();
+    }
   }, { signal });
   wide.addEventListener('change', placeSearch, { signal });
   function updateMineFilter(): void {
@@ -276,6 +341,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
     }
     summary = next; arrange.setAttribute('aria-pressed', String(next.arranging)); arrange.querySelector('span')!.textContent = next.arranging ? 'Готово' : 'Расставить';
+    element.dataset.arranging = String(next.arranging);
     element.dataset.focusContext = next.focusContextId;
     arrangeHint.hidden = !next.arranging;
     const zoomValue = `${Math.round(next.camera.scale * 100)}%`; if (percent.value !== zoomValue) percent.value = zoomValue;
@@ -503,7 +569,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (restore) {
       const target = selected?.shortcutId ? element.querySelector<HTMLButtonElement>(`[data-shortcut-id="${CSS.escape(selected.shortcutId)}"]`) : previewOpener;
       if (target?.isConnected && target.getClientRects().length && getComputedStyle(target).visibility !== 'hidden') target.focus({ preventScroll: true });
-      if (!target || document.activeElement !== target) searchInput.focus({ preventScroll: true });
+      if (!target || document.activeElement !== target) focusFieldControl();
     }
     previewOpener = null;
     selected = null;
@@ -561,6 +627,17 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     copy.append(actions); panel.append(close, copy); element.append(panel); element.dataset.preview = 'open'; preview = panel;
     panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closePreview(); } }, { signal });
     panel.focus({ preventScroll: true });
+  }
+  function inspect(item: DirectoryEntity, shortcutId: string): void {
+    if (!current()) return;
+    closePreview(false);
+    const capturedEngine = engine, capturedMode = mode, entityKey = fieldEntityKey(item.entity);
+    const placement = capturedMode === 'mine' ? (): void => {
+      if (!current() || !capturedEngine || engine !== capturedEngine || mode !== capturedMode
+        || !capturedEngine.snapshot().shortcuts.some(value => value.shortcutId === shortcutId && fieldEntityKey(value.entity) === entityKey)) return;
+      const fresh = metadata.get(fieldEntityKey(item.entity)); if (fresh) openPreview(fresh, shortcutId);
+    } : undefined;
+    if (!options.onInspectOwn?.(item, directory.getRecord(item.entity), placement)) openPreview(item, shortcutId);
   }
   function closeList(restoreFocus = true): void {
     const instance = listDialog; listDialog = null; instance?.close({ restoreFocus });
@@ -747,9 +824,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (loaded.document.contexts.length) firstResolve = false;
     for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Загрузка…', symbol: 'lock', source: 'owner' });
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
-      mode, entities: allMetadata(), ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
+      mode, entities: allMetadata(), readableMobileFocus: true, dimNonMatches: true, ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
       onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
-      onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) openPreview(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
+      onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) inspect(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
   }
@@ -777,7 +854,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   return {
     element, ready,
     setMode(next, query, nextFilter) { if (!current()) return; closeList(false); if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
-    attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { searchInput.focus(); },
+    attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { element.dataset.search = 'open'; searchInput.focus(); },
+    openView: openViewTools, openList, arrange() { engine?.setArrange(!summary?.arranging); },
     async addEntity(ref) {
       await ready; if (!current()) return;
       // A caller supplies an identity, never display metadata or authority.

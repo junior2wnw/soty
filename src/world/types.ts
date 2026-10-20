@@ -2,15 +2,20 @@ import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-e
 import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
-export interface WorldProfile {
+export type WorldProfileAudience = 'private' | 'friends' | 'link' | 'public';
+export interface WorldIdentity {
   profileId: string;
   displayName: string;
-  bio: string;
-  interests: string[];
   avatarColor: string;
   avatarUrl?: string;
   avatarRevision?: number | null;
   revision: number;
+}
+export interface WorldProfile extends WorldIdentity {
+  bio: string;
+  interests: string[];
+  audience?: WorldProfileAudience;
+  audienceWriteVersion?: 1;
   discoverable?: boolean;
   showPresence?: boolean;
   showMemberships?: boolean;
@@ -35,7 +40,7 @@ export interface WorldCommunity {
   color: string;
   revision: number;
   memberCount: number;
-  previewMembers: WorldProfile[];
+  previewMembers: WorldIdentity[];
   membership: WorldMembership | null;
   permissions: { canManage: boolean; canModerate: boolean; canWrite: boolean };
   unreadCount: number;
@@ -45,17 +50,19 @@ export interface WorldMessage {
   messageId: string;
   seq: number;
   text: string;
-  author: WorldProfile;
+  author: WorldIdentity;
   createdAt: number;
   replyTo: string | null;
   removed: boolean;
 }
-export interface WorldMember extends WorldMembership { profile: WorldProfile }
+export interface WorldMember extends WorldMembership { profile: WorldIdentity }
 export interface WorldSearch { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null; totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean } }
 export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
 export interface WorldAppPublication {
   launchPolicy: 'restricted' | 'anyone';
+  audience?: 'private' | 'friends' | 'link' | 'public' | null;
+  listed?: boolean;
   activeNamedAddressCount: number;
 }
 export interface WorldAppRecord {
@@ -137,7 +144,7 @@ export interface WorldAppOptions {
   openAssistant?: (host: HTMLElement, context?: WorldAssistantMountContext) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null }>;
-  requestContact?: (profile: WorldProfile) => void | Promise<void>;
+  requestContact?: (profile: WorldIdentity) => void | Promise<void>;
   listDevices?: () => Promise<WorldDevice[]>;
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;
   addApp?: (communityId?: string) => void | Promise<void>;
@@ -145,7 +152,7 @@ export interface WorldAppOptions {
   /** Trusted RAM cleanup of an original signed launch reply, no RPC selector. */
   appSlotCleanup?: (reply: unknown) => (() => Promise<void>) | null;
 }
-export type WorldEntity = { type: 'community'; value: WorldCommunity } | { type: 'person'; value: WorldProfile };
+export type WorldEntity = { type: 'community'; value: WorldCommunity } | { type: 'person'; value: WorldIdentity };
 
 export function entityId(entity: WorldEntity): string { return entity.type === 'community' ? `community:${entity.value.communityId}` : `person:${entity.value.profileId}`; }
 export function entityName(entity: WorldEntity): string { return entity.type === 'community' ? entity.value.name : entity.value.displayName; }

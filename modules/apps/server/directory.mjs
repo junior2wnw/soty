@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { appId, assertApps, AppsError, textId } from './protocol.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
+import { hasAudienceSchema } from './audience.mjs';
 
 export const directoryOperations = Object.freeze(['apps.directory.search', 'apps.directory.resolve']);
 const schema = 'soty.app-directory.v1';
@@ -22,7 +23,7 @@ function afterCursor(value, scope) {
 }
 
 /** No connector identities, grants, ports, private group IDs, tickets or human presence. */
-export function createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, canUse, resolveEntry }) {
+export function createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds = () => [], canUse, resolveEntry }) {
   const run = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 128 * 1024,
     busyCode: 'apps_directory_busy', timeoutCode: 'apps_directory_timeout_invalid', responseCode: 'apps_directory_response_too_large' });
   db.function('apps_directory_match', { deterministic: true }, (name, rawQuery) => {
@@ -70,6 +71,8 @@ export function createAppDirectory({ db, assertActor, withAuthorityFence, active
     const query = rawQuery.normalize('NFC').trim(), scope = digest([schema, actor.accountId, actor.deviceId, query, visibility]);
     let after = afterCursor(args.cursor, scope), scanned = 0, exhausted = false;
     const apps = [], groups = typeof activeCommunityIds === 'function' ? activeCommunityIds(actor.accountId) : [];
+    const audienceCandidates = hasAudienceSchema(db);
+    const friends = audienceCandidates && visibility !== 'public' ? currentContactIds(actor) : [];
     // Each call examines at most256 candidate rows. A short page can still have
     // a cursor when current authority removes candidates; never treat length as EOF.
     while (apps.length < pageSize && scanned < 256 && !exhausted) {
@@ -77,13 +80,16 @@ export function createAppDirectory({ db, assertActor, withAuthorityFence, active
       const rows = db.prepare(`SELECT a.* FROM local_apps a WHERE a.state='enabled'
         AND (? IS NULL OR a.created_at<? OR (a.created_at=? AND a.id>?))
         AND (?='' OR a.id=? OR apps_directory_match(a.name,?)=1)
-        AND ((?<>'public' AND (a.owner_account_id=? OR a.id IN (
+        AND ((?<>'public' AND (a.owner_account_id=? OR (a.id IN (
           SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=?
-          UNION SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN(SELECT value FROM json_each(?)))))
+          UNION SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN(SELECT value FROM json_each(?)))
+          ${audienceCandidates ? `AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=a.id)` : ''})))
+          ${audienceCandidates ? `OR (?<>'public' AND EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=a.id
+            AND mode.audience='friends' AND a.owner_account_id IN(SELECT value FROM json_each(?))))` : ''}
         OR (?<>'mine' AND EXISTS(SELECT 1 FROM app_publications p WHERE p.app_id=a.id AND p.launch_policy='anyone' AND p.listed=1)))
         ORDER BY a.created_at DESC,a.id LIMIT ?`).all(after?.createdAt ?? null, after?.createdAt ?? null,
       after?.createdAt ?? null, after?.id ?? '', query, query, query, visibility, actor.accountId, actor.accountId,
-      JSON.stringify(groups), visibility, batchSize + 1);
+      JSON.stringify(groups), ...(audienceCandidates ? [visibility, JSON.stringify(friends)] : []), visibility, batchSize + 1);
       const batch = rows.slice(0, batchSize);
       for (let index = 0; index < batch.length; index++) {
         const row = batch[index]; scanned++; after = { createdAt: row.created_at, id: row.id };

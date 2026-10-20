@@ -1,6 +1,6 @@
 import { assert, identifier, text, folded } from './validation.mjs';
 
-export function createModel(db, emit) {
+export function createModel(db, emit, currentContacts = () => null) {
   const statements = new Map();
   const statement = sql => {
     let value = statements.get(sql);
@@ -19,10 +19,18 @@ export function createModel(db, emit) {
     run(`INSERT OR IGNORE INTO profiles(account_id,display_name,search_text,created_at,updated_at) VALUES (?,?,?,?,?)`, actor.accountId, name, folded(name), now, now);
     return person(actor.accountId);
   }
+  function identity(row) {
+    return { profileId: row.account_id, displayName: row.display_name, avatarColor: row.avatar_color,
+      avatarRevision: row.avatar_revision ?? null, revision: row.revision };
+  }
+  function canViewFullProfile(row, actorId) {
+    return Boolean(row && (row.account_id === actorId || row.audience === 'public' || row.audience === 'link'
+      || row.audience === 'friends' && currentContacts()?.has(row.account_id)));
+  }
+  function friendAccountIds() { return currentContacts()?.accountIds() ?? []; }
   function profile(row, own = false) {
-    const result = { profileId: row.account_id, displayName: row.display_name, bio: row.bio,
-      interests: JSON.parse(row.interests), avatarColor: row.avatar_color, avatarRevision: row.avatar_revision ?? null, revision: row.revision };
-    if (own) Object.assign(result, { discoverable: Boolean(row.discoverable), showPresence: Boolean(row.show_presence),
+    const result = { ...identity(row), bio: row.bio, interests: JSON.parse(row.interests) };
+    if (own) Object.assign(result, { audience: row.audience, audienceWriteVersion: 1, discoverable: row.audience === 'public', showPresence: Boolean(row.show_presence),
       showMemberships: Boolean(row.show_memberships), contactPolicy: row.contact_policy });
     return result;
   }
@@ -69,7 +77,7 @@ export function createModel(db, emit) {
     const manager = active && ['owner', 'moderator'].includes(participation.role);
     const previews = row.show_members ? all(`SELECT p.* FROM memberships m JOIN profiles p ON p.account_id=m.account_id
       WHERE m.community_id=? AND m.state='active' AND m.show_in_profile=1 AND p.discoverable=1 AND p.show_memberships=1
-      ORDER BY m.joined_at,p.account_id LIMIT 6`, row.id).map(item => profile(item)) : [];
+      ORDER BY m.joined_at,p.account_id LIMIT 6`, row.id).map(item => identity(item)) : [];
     return { communityId: row.id, name: row.name, description: row.description, topics: JSON.parse(row.topics),
       joinPolicy: row.join_policy, showMembers: Boolean(row.show_members), showcase: row.showcase, symbol: row.symbol, color: row.color,
       revision: row.revision, memberCount: get("SELECT COUNT(*) AS n FROM memberships WHERE community_id=? AND state='active'", row.id).n,
@@ -91,6 +99,6 @@ export function createModel(db, emit) {
     const current = membership(communityId, profileId);
     emit({ communityId, profileId, state: current.state, revision: current.revision });
   }
-  return { db, get, all, run, person, ensurePerson, profile, membership, member, group, visibleGroup, requireMember, requireManager,
+  return { db, get, all, run, person, ensurePerson, identity, profile, canViewFullProfile, friendAccountIds, membership, member, group, visibleGroup, requireMember, requireManager,
     canAccess, canRequestContact, unread, community, audit, rate, changed, emit };
 }
