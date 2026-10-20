@@ -160,3 +160,28 @@ export function wireHttp(port,path,{host,cookie,origin,method,body,fields,header
   const request=httpRequest({hostname:'127.0.0.1',port,path,method:method||(bytes===null?'GET':'POST'),agent:false,headers:{...(host?{host}:{}),...(cookie?{cookie}:{}),...(origin?{origin}:{}),
     ...(bytes!==null?{'content-type':fields?'application/x-www-form-urlencoded':'application/json','content-length':Buffer.byteLength(bytes)}:{}),...headers},signal:AbortSignal.timeout(timeoutMs)},response=>{
     const chunks=[];let size=0;response.on('data',part=>{size+=part.length;if(size>4194304)response.destroy();else chunks.push(part);});response.on('error',reject);response.on('end',()=>{const text=Buffer.concat(chunks).toString('utf8');let body=null;try{body=JSON.parse(text);}catch{}resolve({status:response.statusCode,headers:response.headers,text,body});});});request.on('error',reject);request.end(bytes);});}
+
+
+// Diagnostics for three genuine maintained Source failures. Never print URL,
+// cookies, state/intent, subject, request payload, error message or raw body.
+const fixtureHttpCodes=new Set([...sourceDiagnosticCodes,'embed_session_required','embed_csrf_invalid','embed_profile_changed','embed_provider_unavailable',
+  'embed_proof_expired','embed_binding_changed','embed_link_required','embed_transport_denied','embed_resume_unavailable','embed_login_preparation_unavailable',
+  'app_upstream_failed','app_bad_head','app_bad_data','app_bad_end','app_bad_frame','app_scoped_auth_invalid','app_scoped_auth_binding_invalid',
+  'app_scoped_auth_binding_conflict','app_scoped_context_closed','app_binding_pending','app_binding_changed','app_access_revoked','app_offline',
+  'app_idle_timeout','app_response_timeout','app_stream_closed','app_client_closed','app_invalid_request','app_authentication_required',
+  'scoped_embed_auth_invalid','scoped_embed_cookie_invalid','scoped_embed_authority_changed','scoped_embed_source_unconfirmed','scoped_embed_continue_invalid']);
+const fixtureHttpSchemas=new Set(['planner.embed-login-preparation.v1','planner.embed-login-authorization.v1','planner.embed-login-cancelled.v1',
+  'soty.source-session-continuation.v1']);
+export function safeFixtureHttp(response){
+  const body=response?.body,code=body?.code??body?.error?.code??body?.error;
+  return{status:Number.isInteger(response?.status)?response.status:null,json:Boolean(body&&typeof body==='object'),
+    code:code===undefined?'none':fixtureHttpCodes.has(code)?code:'unmatched_static_code',
+    schema:body?.schema===undefined?'none':fixtureHttpSchemas.has(body.schema)?body.schema:'unmatched_schema',
+    ready:typeof body?.ready==='boolean'?body.ready:null};
+}
+export function safeFixturePrivateCounts(planner){
+  const counts={prepared:0,intents:0,sessions:0};
+  for(const row of planner.store.db.prepare("SELECT kind,count(*) AS n FROM planner_soty_private WHERE kind IN ('prepare','intent','session') GROUP BY kind").all())
+    counts[row.kind==='prepare'?'prepared':row.kind==='intent'?'intents':'sessions']=Number(row.n);
+  return counts;
+}

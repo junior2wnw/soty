@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';
-import {createScopedGatewayFixture,renewalSourceAvailable,until} from './support/scoped-gateway-fixture.mjs';
+import {createScopedGatewayFixture,renewalSourceAvailable,until,safeFixtureHttp,safeFixturePrivateCounts} from './support/scoped-gateway-fixture.mjs';
 const random=()=>randomBytes(32).toString('base64url');
 async function ready(t){const f=await createScopedGatewayFixture({t,renewal:true});await f.launch();const page=await f.login();
   const consent=await f.nativeConsent(page);assert.equal(consent.status,200);return f;}
@@ -149,6 +149,9 @@ test('actual Basic300 cannot restore cookie onto a fresh/foreign Root slot or af
   assert.equal((await f.wire.request(f.embedded+'/api/embed/state')).status,401);
   await f.restartSource();await f.restartRoot();
   await until(async()=>{try{return(await f.reader.client.extension('apps.list')).apps.find(app=>app.id===f.appId)?.state==='ready';}catch{return false;}},60000);
-  const relaunched=await f.reader.client.extension('apps.launch',{appId:f.appId});assert.equal((await continuation(f,relaunched)).response.body?.ready,false);
+  const relaunched=await f.reader.client.extension('apps.launch',{appId:f.appId}),afterRestart=await continuation(f,relaunched);
+  t.diagnostic(JSON.stringify({schema:'soty.scoped-fixture-diagnostic.v1',phase:'basic300.afterSourceAndRootRestart',
+    boot:safeFixtureHttp(afterRestart.session),continuation:safeFixtureHttp(afterRestart.response),sourceCounts:safeFixturePrivateCounts(f.planner())}));
+  assert.equal(afterRestart.response.body?.ready,false);
   assert.equal(f.planner().store.db.prepare('SELECT count(*) AS n FROM planner_soty_rp_anchors').get().n,0);
 });
