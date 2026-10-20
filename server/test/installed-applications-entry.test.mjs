@@ -44,9 +44,9 @@ test('installed operator code can compose the existing OTsov tools without issui
   const config = await f.code(`export default async api => ({...await api.loadInstalledExistingApplications({
     createRegistry: () => api.createSelectedOtsovSourceApplications(${JSON.stringify(scope)}) }), close() {}});`);
   const installed = await loadInstalledApplicationsEntry(config); t.after(() => installed.close());
-  assert.equal(installed.sourceReferences.length, 3);
+  assert.equal(installed.sourceReferences.length, 5);
   assert.equal(installed.sourceCredentialFor, undefined, 'registry metadata is not a delegated user credential');
-  assert.deepEqual(installed.httpOptions.externalApplications.map(row => row.catalog.effects), [[], [], ['create']]);
+  assert.deepEqual(installed.httpOptions.externalApplications.map(row => row.catalog.effects), [[], [], ['create'], [], ['update']]);
 });
 test('installed operator code can append bounded HIVE workspace2 tools without a delegated credential', async t => {
   const f = await fixture(t), appId = 'app-' + 'c'.repeat(32), scope = {

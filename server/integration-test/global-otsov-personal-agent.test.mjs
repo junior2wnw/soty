@@ -23,8 +23,8 @@ const { PERMISSIONS } = await nativeImport('server/contracts.mjs');
 const { createDefaultDocument } = await nativeImport('src/visual/index.ts');
 const payload = { name: 'Synthetic counter without UI navigation', files: [{ path: 'index.html', content: '<!doctype html><button id="n">0</button><script>n.onclick=()=>n.textContent=+n.textContent+1</script>' }] };
 
-async function fixture(t) {
-  let entries, target, phase = 'create', boundary, rounds = 0, invokeCount = 0, hideReceipt = false, lastInvocation, forcedReference;
+async function fixture(t, { editSources = false } = {}) {
+  let entries, target, phase = 'create', boundary, rounds = 0, invokeCount = 0, hideReceipt = false, lastInvocation, forcedReference, exactSourceInput;
   const credentials = new Map(), receipts = new Map(), requests = [], tenant = 'synthetic_headless_otsov', keyRef = {};
   const diagnostics = [];
   const f = await createOrdinaryInstalledFixture(t, { workspace: true, sourceProfile: sdk.STANDARD_ROOT_WORKSPACE_SOURCE,
@@ -71,17 +71,27 @@ async function fixture(t) {
         fetchImpl: async (_url, init) => {
           const request = JSON.parse(init.body); requests.push(request); rounds++;
           let name, args;
-          if (request.messages.at(-1).role !== 'tool') { name = 'source_catalog'; args = {}; }
+          if (request.messages.at(-1).role !== 'tool') {
+            name = 'source_catalog'; args = exactSourceInput ? { query: target.appId + ' ' + exactSourceInput.operation }
+              : editSources ? { query: target.appId } : {};
+          }
           else {
             const last = JSON.parse(request.messages.at(-1).content), evidence = last.evidence;
             if (Array.isArray(evidence?.[0]?.data?.items)) {
               const create = entries.find(row => row.appId === target.appId && row.catalog.capabilityId.endsWith(':otsov.project.create'));
-              assert.equal(evidence[0].data.items.some(item => item.reference.capabilityId === create.contract.capabilityId), true);
+              if (!exactSourceInput) assert.equal(evidence[0].data.items.some(item => item.reference.capabilityId === create.contract.capabilityId), true);
               await boundary?.();
               name = phase === 'receipt' ? 'source_receipt_1' : phase === 'list' ? 'source_read_1' : 'source_write_1';
               const reference = phase === 'list' ? entries.find(row => row.appId === target.appId && row.catalog.capabilityId.endsWith(':otsov.projects.list')).contract : create.contract;
               args = { reference: forcedReference ?? reference, input: phase === 'list' ? { operation: 'otsov.projects.list', representation: 'compact' }
                 : { operation: 'otsov.project.create', payload }, ...(phase === 'receipt' ? { invocationId: lastInvocation } : {}) };
+              if (exactSourceInput) {
+                const exact = entries.find(row => row.appId === target.appId
+                  && row.catalog.capabilityId.endsWith(':' + exactSourceInput.operation));
+                assert.ok(exact, 'The exact installed source capability exists');
+                name = exact.readonly ? 'source_read_1' : 'source_write_1';
+                args = { reference: exact.contract, input: structuredClone(exactSourceInput) };
+              }
               if (phase === 'prepared_create') {
                 const item = evidence[0].data.items.find(item => item.reference.capabilityId === create.contract.capabilityId);
                 assert.ok(item.guidance?.length);
@@ -111,19 +121,21 @@ async function fixture(t) {
   const apps = f.root().locals.appsService, originalOpen = apps.openScopedSourceContext;
   apps.openScopedSourceContext = async (...args) => { try { return await originalOpen(...args); }
     catch(error) { diagnostics.push({ route: 'host-only-open', code: /^[a-z_]{1,96}$/.test(error.code ?? '') ? error.code : 'unclassified' }); throw error; } };
-  for (const kind of ['current_context', 'otsov.projects.list', 'otsov.project.create']) for (const realm of f.realms) {
+  for (const kind of ['current_context', 'otsov.projects.list', 'otsov.project.create',
+    ...(editSources ? ['otsov.project.context', 'otsov.project.operations'] : [])]) for (const realm of f.realms) {
     const rows = entries.filter(row => row.appId === realm.appId && row.catalog.capabilityId.endsWith(':' + kind));
     const principal = (await f.reader.client.extension('access.principals.create', { expectedAccountId: f.reader.account.accountId, label: 'Synthetic ' + kind })).principal;
     const grant = (await f.reader.client.extension('access.grants.issue', { expectedAccountId: f.reader.account.accountId, principalId: principal.id,
       capabilities: rows.map(row => ({ capabilityId: row.contract.capabilityId, version: 1 })), resources: [...new Set(rows.flatMap(row => row.catalog.resources))],
-      effects: kind.endsWith('create') ? ['create'] : [], recipients: [...new Set(rows.flatMap(row => row.catalog.recipients))], expiresAt: Date.now() + 600000,
+      effects: rows[0].catalog.effects, recipients: [...new Set(rows.flatMap(row => row.catalog.recipients))], expiresAt: Date.now() + 600000,
       budget: { unit: 'invocations', limit: 30 } })).grant;
     const credential = await f.reader.client.extension('access.credentials.issue', { expectedAccountId: f.reader.account.accountId, grantId: grant.id, audience: f.origin });
     for (const row of rows) credentials.set(row.contract.capabilityId, { token: credential.token, audience: f.origin });
     issued.set(kind + ':' + realm.appId, grant); if (realm.index === 0) issued.set(kind, grant);
   }
   return { ...f, target, entries, requests, issued, credentials, invokeCount: () => invokeCount,
-    setTarget: realm => { target = realm; }, setPhase: next => { phase = next; }, afterDiscovery: callback => { boundary = callback; },
+    setTarget: realm => { target = realm; }, setPhase: next => { phase = next; exactSourceInput = undefined; },
+    setSourceInput: input => { exactSourceInput = structuredClone(input); phase = 'exact_source'; }, afterDiscovery: callback => { boundary = callback; },
     hideReceipt: value => { hideReceipt = value; }, invocation: () => lastInvocation,
     forceReference: reference => { forcedReference = reference; },
     async expireCredential(realm, kind = 'current_context') {
@@ -240,4 +252,68 @@ test('a nonmatching installed reference and an expired target grant never admit 
   assert.equal(f.invokeCount(), 0); assert.equal(f.count(f.realms[0]), 13);
   f.forceReference(undefined); await f.expireCredential(f.realms[0], 'otsov.project.create'); await assert.rejects(f.turn('expired_target'));
   assert.equal(f.invokeCount(), 0); assert.equal(f.count(f.realms[0]), 13);
+});
+
+
+// The existing fixture keeps real Root/Source/Native storage and original CAS;
+// only the provider replies and explicit test identities/grants are synthetic.
+// These turns intentionally stay headless: a persisted source is not a UI preview.
+test('signed OTsov context and CAS put update the same existing project and independently read back its new revision', { timeout: 120000 }, async t => {
+  const f = await fixture(t, { editSources: true }), created = await f.turn('cas_create');
+  const projectId = created.evidence.at(-1).data.receipt.artifacts.find(item => item.type === 'otsov-project').id;
+  const context = { operation: 'otsov.project.context', projectId, paths: ['index.html'] };
+  f.setSourceInput(context); const beforeTurn = await f.turn('cas_read');
+  const before = beforeTurn.evidence.at(-1).data;
+  assert.equal(before.projectId, projectId); assert.equal(before.file.text, payload.files[0].content);
+  assert.equal(before.file.truncated, false); assert.ok(before.file.version >= 1);
+  assert.equal(Object.hasOwn(before, 'actor'), false); assert.equal(Object.hasOwn(before, 'tokens'), false);
+  const content = '<!doctype html><title>Saved through original OTsov CAS</title><h1>Updated</h1>';
+  const updateInput = { operation: 'otsov.project.operations', projectId,
+    payload: { fileOps: [{ kind: 'put', path: 'index.html', expectedVersion: before.file.version, content }] } };
+  f.setSourceInput(updateInput); const updated = await f.turn('cas_update');
+  const proof = updated.evidence.at(-1).data;
+  assert.equal(proof.completionVerified, true); assert.equal(proof.effects[0].kind, 'updated');
+  assert.equal(proof.receipt.artifacts[0].id, projectId); assert.equal(proof.receipt.artifacts[0].revision, before.revision + 1);
+  assert.equal(f.count(f.realms[0]), 14); assert.equal(f.count(f.realms[1]), 13);
+  f.setSourceInput(context); const readback = (await f.turn('cas_readback')).evidence.at(-1).data;
+  assert.equal(readback.file.text, content); assert.equal(readback.file.version, before.file.version + 1);
+  assert.equal(readback.revision, before.revision + 1); assert.notEqual(readback.contentHash, before.contentHash);
+  assert.notEqual(readback.file.hash, before.file.hash); assert.equal(readback.projectId, projectId);
+  assert.equal(f.invokeCount(), 2); assert.equal(f.realms.some(realm => realm.lastLaunch), false);
+
+  // This scenario already consumed ten current-context invocations (3+2+3+2).
+  // Respect the real existing 10/min per-principal admission policy. Never
+  // rewrite its clock/ledger or replace a principal to make the CAS test pass.
+  const ownerHistory = await f.reader.client.extension('access.invocations.list', {
+    expectedAccountId: f.reader.account.accountId, limit: 50 });
+  assert.equal(ownerHistory.nextCursor, null, 'This bounded owned fixture history is complete');
+  const contextCapability = f.entries.find(row => row.appId === f.target.appId
+    && row.catalog.capabilityId.endsWith(':current_context')).contract.capabilityId;
+  const contexts = ownerHistory.invocations.filter(row => row.capabilityId === contextCapability);
+  assert.equal(contexts.length, 10, 'Create/read/update/readback must have used the real ten context probes');
+  assert.ok(contexts.every(row => row.status === 'succeeded' && row.effectState === 'none'));
+  const allowAfter = Math.max(...contexts.map(row => row.createdAt)) + 60050;
+  console.log(JSON.stringify({ syntheticCasRateWindow: { currentContextInvocations: contexts.length,
+    nativeInvokeCount: f.invokeCount(), waitMs: Math.max(0, allowAfter - Date.now()), productionLimitChanged: false } }));
+  while (Date.now() < allowAfter) await new Promise(done => setTimeout(done, Math.min(1000, allowAfter - Date.now())));
+
+  // A new request with an obsolete captured file version must not overwrite it.
+  f.setSourceInput({ ...updateInput, payload: { fileOps: [{ ...updateInput.payload.fileOps[0], content: 'MUST_NOT_REPLACE' }] } });
+  const stale = await f.turn('cas_stale').then(value => ({ value }), error => ({ error }));
+  if (stale.value) assert.notEqual(stale.value.evidence.at(-1).data.completionVerified, true);
+  assert.equal(f.invokeCount(), 3, 'The stale put must actually reach Native; a pre-admission rate denial is not a CAS regression');
+  f.setSourceInput(context); const afterConflict = (await f.turn('cas_after_conflict')).evidence.at(-1).data;
+  assert.deepEqual(afterConflict, readback, 'Native rejects stale CAS without changing bytes, revision or file version');
+
+  // Installed availability does not renew the explicitly issued update grant.
+  await f.reader.client.extension('access.grants.revoke', { expectedAccountId: f.reader.account.accountId,
+    grantId: f.issued.get('otsov.project.operations').id });
+  const invokes = f.invokeCount();
+  f.setSourceInput({ ...updateInput, payload: { fileOps: [{ ...updateInput.payload.fileOps[0], expectedVersion: readback.file.version,
+    content: 'MUST_NOT_APPLY_AFTER_REVOCATION' }] } });
+  const revoked = await f.turn('cas_revoked').then(value => ({ value }), error => ({ error }));
+  if (revoked.value) assert.notEqual(revoked.value.evidence.at(-1).data.completionVerified, true);
+  assert.equal(f.invokeCount(), invokes, 'A revoked signed update grant stops before the Native mutation');
+  f.setSourceInput(context); const afterRevocation = (await f.turn('cas_after_revocation')).evidence.at(-1).data;
+  assert.deepEqual(afterRevocation, readback); assert.equal(f.realms.some(realm => realm.lastLaunch), false);
 });
