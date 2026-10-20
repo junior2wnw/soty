@@ -5,7 +5,7 @@ type Client = {
   getLocalState(): Promise<{ accountId?: string | null }>;
   extension<T>(op: string, args: Record<string, unknown>, options: { expectedAccountId: string }): Promise<T>;
 };
-type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection; browser?: Record<string, unknown> };
+type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection; browser?: Record<string, unknown>; noteCreation?: true };
 type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string };
 export type PersonalAgentView = { phase: 'draft' | 'running' | 'complete' | 'unknown' | 'cancel_requested'; draft: string;
   contextId?: string; requestId?: string; question?: string; answer?: string; sources: SourcePresentation[]; unconfirmed: number;
@@ -77,7 +77,8 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId']) || parsed.schema !== saved.schema
       || typeof parsed.draft !== 'string' || parsed.draft.length > 8000 || !Array.isArray(parsed.pending) || parsed.pending.length > 8
       || parsed.contextId !== undefined && !context(parsed.contextId)
-      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection', 'browser']) || !requestId(item.requestId)
+      || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection', 'browser', 'noteCreation']) || !requestId(item.requestId)
+        || item.noteCreation !== undefined && item.noteCreation !== true
         || item.selection !== undefined && !validSelection(item.selection)
         || typeof item.prompt !== 'string' || !item.prompt.trim() || item.prompt.length > 8000 || item.contextId !== undefined && !context(item.contextId))
       || new Set(parsed.pending.map(item => item.requestId)).size !== parsed.pending.length
@@ -106,7 +107,9 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     saveDraft(text: string) { if (disposed || running || saved.active) return; if (text.length > 8000) throw failure('agent_invalid_input'); persist({ ...saved, draft: text }); },
     startNew() { if (disposed || running) throw failure('assistant_conversation_busy');
       persist({ schema: saved.schema, draft: '', pending: saved.pending }); phase = 'draft'; question = undefined; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined; notify(); },
-    async turn(text: string, metadata?: WorldAssistantContext | null) {
+    async turn(text: string, metadata?: WorldAssistantContext | null, permissions: { noteCreation?: true } = {}) {
+      if (!own(permissions, ['noteCreation']) || permissions.noteCreation !== undefined && permissions.noteCreation !== true) throw failure('agent_invalid_input');
+      const noteCreation = permissions.noteCreation === true;
       if (running || saved.active) throw failure('agent_reconcile_required');
       if (!text.trim() || text.length > 8000 || saved.pending.length >= 8) throw failure('agent_capacity');
       const prompt = promptWithAppContext(text, metadata);
@@ -128,7 +131,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       const id = idFactory(); if (!requestId(id) || saved.pending.some(item => item.requestId === id)) throw failure('agent_invalid_input');
       browser = browserAssist?.binding();
       if (browser && (!metadata || browser.appId !== metadata.appId)) throw failure('agent_source_denied');
-      const intent: Request = { requestId: id, prompt, ...(browser ? { browser } : {}), ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
+      const intent: Request = { requestId: id, prompt, ...(noteCreation ? { noteCreation: true as const } : {}), ...(browser ? { browser } : {}), ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
       // A storage failure precedes dispatch. Preserve the exact prompt, ID and context before asking the server.
       persist({ ...saved, draft: text, pending: [...saved.pending, intent], active: id });
       question = text; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined; phase = 'running'; running = true; notify();
