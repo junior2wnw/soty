@@ -136,7 +136,10 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const form = el('form', 'sw-assistant-composer'), prompt = el('textarea', 'sw-input');
   prompt.rows = 3; prompt.maxLength = 16_000; prompt.value = draft.text; prompt.placeholder = 'Что хотите сделать?'; prompt.setAttribute('aria-label', 'Задача помощнику');
   const controls = el('div', 'sw-assistant-composer-controls'), saved = el('span', 'sw-muted'), send = button('Отправить', 'arrow', 'sw-button-primary'); send.type = 'submit';
-  controls.append(saved, send); form.append(prompt, controls);
+  const notePermission = el('label', 'sw-assistant-note-permission'), allowNoteCreation = el('input');
+  allowNoteCreation.type = 'checkbox'; allowNoteCreation.checked = false;
+  notePermission.append(allowNoteCreation, el('span', '', 'Разрешить создать записку в этом поручении'));
+  controls.append(saved, send); form.append(prompt, notePermission, controls);
   const error = el('p', 'sw-error'); error.setAttribute('role', 'alert');
   const privilege = el('details', 'sw-muted sw-assistant-privilege');
   const privilegeText = el('p', '', 'Работает с правами вашего пользователя на выбранном устройстве.');
@@ -165,7 +168,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     if (disposed || sending || mode === 'device' && drafts.read().pending) return;
     try {
       const text = next === 'personal' ? conversation().view().draft : drafts.read().text;
-      saveDraft(); modeChosen = true; mode = next; generation++; if (timer) clearTimeout(timer);
+      saveDraft(); modeChosen = true; mode = next; allowNoteCreation.checked = false; generation++; if (timer) clearTimeout(timer);
       if (personalTimer) clearTimeout(personalTimer); personalTimer = undefined;
       prompt.value = text; error.textContent = ''; welcome(); updateControls();
       if (next === 'personal') watchPersonal();
@@ -175,6 +178,8 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
 
   function updateControls(): void {
     target.hidden = mode === 'personal'; history.hidden = mode === 'personal';
+    notePermission.hidden = mode !== 'personal';
+    allowNoteCreation.disabled = sending || Boolean(mode === 'personal' && personal?.view().requestId);
     personalMode.setAttribute('aria-pressed', String(mode === 'personal')); deviceMode.setAttribute('aria-pressed', String(mode === 'device'));
     personalMode.disabled = deviceMode.disabled = sending || Boolean(mode === 'device' && drafts.read().pending);
     if (mode === 'personal') {
@@ -324,7 +329,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     intro.append(starters); thread.append(intro);
   }
   async function reset(): Promise<void> {
-    if (mode === 'personal') { if (sending || !await current()) return; answerNote?.dispose(); answerNote = undefined; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
+    if (mode === 'personal') { if (sending || !await current()) return; answerNote?.dispose(); answerNote = undefined; allowNoteCreation.checked = false; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
     if (!await current() || sending || drafts.read().pending) return;
     try { draft = drafts.select({ conversationId: crypto.randomUUID(), cwd: cwd.value, deviceKey: hosts.value }); }
     catch (cause) { error.textContent = friendly(cause); return; }
@@ -417,8 +422,10 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     if (mode === 'personal') {
       if (sending || !personalReady || !await current()) return;
       answerNote?.dispose(); answerNote = undefined;
+      const permissions = allowNoteCreation.checked ? { noteCreation: true as const } : {};
+      allowNoteCreation.checked = false;
       sending = true; personalStatusFailures = 0; error.textContent = ''; updateControls();
-      try { const state = await conversation().turn(prompt.value, mountContext?.context()); if (!await current()) return;
+      try { const state = await conversation().turn(prompt.value, mountContext?.context(), permissions); if (!await current()) return;
         prompt.value = state.draft; welcome(); }
       catch (cause) { if (!disposed) { const message = friendly(cause); error.textContent = conversation().view().requestId && message === genericFailure
         ? 'Ответ не подтверждён. Проверьте соединение и нажмите «Проверить выполнение». Исходная отправка сохранена.' : message; } }

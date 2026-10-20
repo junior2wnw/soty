@@ -131,7 +131,8 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       return { schema: 'soty.personal-agent-cancel.v1', requestId: turnId, cancelRequested, remoteTerminationVerified: false };
     }
     requireValue(op === 'agent.turn');
-    fields(args, ['requestId', 'prompt'], ['contextId', 'selection', 'browser']);
+    fields(args, ['requestId', 'prompt'], ['contextId', 'selection', 'browser', 'noteCreation']);
+    requireValue(args.noteCreation === undefined || args.noteCreation === true);
     requireValue(args.browser === undefined || browserPilot, 'agent_source_denied');
     let selection;
     if (args.selection !== undefined) {
@@ -172,7 +173,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
     };
     try {
       if (args.browser !== undefined) browserTurn = browserPilot.openTurn({ actor, requestId: turnId, binding: args.browser, signal: turn.abort.signal });
-      bundle = await toolsForActor({ actor, scope: frameScope, turnId, selection, signal: turn.abort.signal }); currentActor(actor);
+      bundle = await toolsForActor({ actor, scope: frameScope, turnId, selection, signal: turn.abort.signal, noteCreation: args.noteCreation === true }); currentActor(actor);
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
       requireValue(bundle.verifyCurrent === undefined || typeof bundle.verifyCurrent === 'function', 'agent_source_unavailable');
       requireValue(bundle.sourceRecovery === undefined || typeof bundle.sourceRecovery === 'function', 'agent_source_unavailable');
