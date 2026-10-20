@@ -126,6 +126,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
   let mineFilterAdmitted = false;
   let activeSearches = 0, queuedSearch: ((admitted: boolean) => void) | null = null;
+  let mineBusy = false, queuedMine: ((admitted: boolean) => void) | null = null;
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
   let previewOpener: HTMLElement | null = null;
   let listDialog: WorldDialog | null = null;
@@ -348,32 +349,47 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (mode !== 'search') return;
     closeList(false);
     const generation = ++searchGeneration, query = queries.search, selectedFilter = filter;
-    const freshScope = searchResponseScope !== `${query}:${selectedFilter}` || searchItems.length === 0;
-    const restoreView = !searchResponseScope && options.viewState?.search && options.viewState.searchScope === `${query}:${selectedFilter}`;
-    more.disabled = true; element.dataset.searchState = 'loading'; empty.hidden = true; searchLimit.hidden = true;
-    if (!await searchSlot()) return;
-    try {
-      if (!current() || generation !== searchGeneration || mode !== 'search' || query !== queries.search || selectedFilter !== filter) return;
-      const page = await directory.search({ query, kinds: selectedFilter === 'all' ? ['app', 'person', 'community'] : [selectedFilter], ...(append && searchCursor ? { cursor: searchCursor } : {}), limit: 36 });
-      if (!current() || generation !== searchGeneration || mode !== 'search' || query !== queries.search || selectedFilter !== filter) return;
-      const builtins = selectedFilter === 'all' || selectedFilter === 'app' ? BUILTINS.filter(item => matches(item, query, 'app')) : [];
-      const combined = append ? [...new Map([...searchItems, ...page.items].map(item => [fieldEntityKey(item.entity), item])).values()] : [...builtins, ...page.items];
-      searchItems = combined.slice(0, 256);
-      searchLimit.hidden = !(combined.length > 256 || Boolean(page.cursor) && searchItems.length >= 256);
-      if (!append && selected) closePreview(false);
-      merge(page.items); searchCursor = page.cursor; more.hidden = !searchCursor || searchItems.length >= 256;
-      searchResponseScope = `${query}:${selectedFilter}`; pruneMetadata();
-      const scene = searchPlacement.update(`${query}:${selectedFilter}`, searchItems, allMetadata()); activeSearchScene = scene;
-      engine?.update({ entities: allMetadata(), searchDocument: scene, scope: `${query}:${selectedFilter}` });
-      if (!preserveView && !restoreView && freshScope && engine && scene.contexts.length) {
-        if (!wide.matches) engine.focusContext(scene.contexts[0]!.contextId);
-        else {
-          const layout = layoutUnifiedField(scene, allMetadata()), visibleContexts = layout.contexts.slice(0, 2);
-          const bounds = fieldBounds(visibleContexts.flatMap(context => rectPoints(context.bounds)));
-          const viewport = engine.element;
-          engine.setCamera(fitFieldCamera(bounds, { width: viewport.clientWidth, height: viewport.clientHeight }, { padding: 30, maxScale: 1 }));
+    const scope = `${query}:${selectedFilter}`;
+    const freshScope = searchResponseScope !== scope || searchItems.length === 0;
+    const restoreView = !searchResponseScope && options.viewState?.search && options.viewState.searchScope === scope;
+    const builtins = selectedFilter === 'all' || selectedFilter === 'app' ? BUILTINS.filter(item => matches(item, query, 'app')) : [];
+    const arriving = new Map((append || !freshScope ? searchItems : builtins).map(item => [fieldEntityKey(item.entity), item]));
+    let fitted = false, resultSize = 0;
+    const live = (): boolean => current() && generation === searchGeneration && mode === 'search' && query === queries.search && selectedFilter === filter;
+    const display = (items: DirectoryEntity[], progress = false): void => {
+      if (!live()) return;
+      const combined = progress ? [...arriving.values()] : append ? [...new Map([...searchItems, ...items].map(item => [fieldEntityKey(item.entity), item])).values()] : [...builtins, ...items];
+      if (progress && !combined.length) return;
+      resultSize = combined.length;
+      const next = combined.slice(0, 256), changed = searchResponseScope !== scope || JSON.stringify(next) !== JSON.stringify(searchItems);
+      if (selected && (searchResponseScope !== scope || !progress && !append && !combined.some(item => fieldEntityKey(item.entity) === fieldEntityKey(selected!.item.entity)))) closePreview(false);
+      searchItems = next; merge(items); searchResponseScope = scope; pruneMetadata();
+      if (changed) {
+        const scene = searchPlacement.update(scope, searchItems, allMetadata()); activeSearchScene = scene;
+        engine?.update({ entities: allMetadata(), searchDocument: scene, scope });
+        if (!fitted && !preserveView && !restoreView && freshScope && engine && scene.contexts.length) {
+          fitted = true;
+          if (!wide.matches) { engine.focusContext(scene.contexts[0]!.contextId); if (progress) engine.setCamera(engine.getCamera()); }
+          else {
+            const layout = layoutUnifiedField(scene, allMetadata()), visibleContexts = layout.contexts.slice(0, 2);
+            const bounds = fieldBounds(visibleContexts.flatMap(context => rectPoints(context.bounds)));
+            const viewport = engine.element;
+            engine.setCamera(fitFieldCamera(bounds, { width: viewport.clientWidth, height: viewport.clientHeight }, { padding: 30, maxScale: 1 }));
+          }
         }
       }
+      if (progress) { element.dataset.searchState = 'partial'; empty.hidden = true; }
+    };
+    more.disabled = true; element.dataset.searchState = 'loading'; element.dataset.searchPending = 'true'; empty.hidden = true; searchLimit.hidden = true;
+    if (!await searchSlot()) return;
+    try {
+      if (!live()) return;
+      const page = await directory.search({ query, kinds: selectedFilter === 'all' ? ['app', 'person', 'community'] : [selectedFilter], ...(append && searchCursor ? { cursor: searchCursor } : {}), limit: 36,
+        onProgress: progress => { if (!live()) return; for (const item of progress.items) arriving.set(fieldEntityKey(item.entity), item); display(progress.items, true); } });
+      if (!live()) return;
+      display(page.items);
+      searchLimit.hidden = !(resultSize > 256 || Boolean(page.cursor) && searchItems.length >= 256);
+      searchCursor = page.cursor; more.hidden = !searchCursor || searchItems.length >= 256;
       element.dataset.searchState = page.status;
       empty.hidden = searchItems.length > 0;
       if (!searchItems.length) {
@@ -384,28 +400,75 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       else if (page.status === 'partial') options.onMessage('Часть результатов временно недоступна. Можно повторить поиск.');
       if (summary) { contextKey = ''; updateSummary(summary); }
     } catch (error) {
-      if (!current() || generation !== searchGeneration || query !== queries.search || selectedFilter !== filter) return;
+      if (!live()) return;
       element.dataset.searchState = 'offline'; empty.hidden = false;
       empty.replaceChildren(el('h2', '', 'Не удалось обновить поиск'), el('p', '', 'Попробуйте ещё раз. Ваша расстановка сохранена отдельно.'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(searchDirectory()))); throw error;
-    } finally { releaseSearchSlot(); if (current() && generation === searchGeneration && query === queries.search && selectedFilter === filter) more.disabled = false; }
+    } finally { releaseSearchSlot(); if (live()) { more.disabled = false; element.dataset.searchPending = 'false'; } }
   }
   async function loadMine(): Promise<void> {
-    if (!engine) return; closeList(false); const generation = ++mineGeneration;
+    if (!engine || !current()) return; closeList(false); const generation = ++mineGeneration;
+    mineConfirmedGeneration = -1; empty.hidden = true; element.dataset.mineState = 'loading';
+    if (mineBusy) {
+      queuedMine?.(false);
+      if (!await new Promise<boolean>(resolve => { queuedMine = resolve; })) return;
+    } else mineBusy = true;
+    try { if (current() && generation === mineGeneration && engine) await loadMinePass(generation); }
+    finally {
+      if (queuedMine) { const next = queuedMine; queuedMine = null; next(true); }
+      else mineBusy = false;
+    }
+  }
+  async function loadMinePass(generation: number): Promise<void> {
+    if (!engine) return;
     const resolvedUnavailableRefs = new Set<string>();
+    let accepting = true;
+    const live = (): boolean => accepting && current() && generation === mineGeneration;
+    const view = (): string => JSON.stringify({ camera: engine!.getCamera(), context: summary?.focusContextId, selection: summary?.selectedShortcutId, fit: options.viewState?.mineFit });
+    const firstView = firstResolve ? view() : null;
     mineConfirmedGeneration = -1;
     empty.hidden = true; element.dataset.mineState = 'loading';
     mineKnownRefs = new Set(BUILTINS.map(item => fieldEntityKey(item.entity)));
-    try {
-      const resolved = await directory.resolve(engine.snapshot().shortcuts.map(shortcut => shortcut.entity));
-      if (!current() || generation !== mineGeneration) return;
-      for (const ref of resolved.unavailable) resolvedUnavailableRefs.add(fieldEntityKey(ref));
-      // Removing authority drops display metadata, while retaining the user's own shortcut for recovery/removal.
-      for (const ref of resolved.unavailable) metadata.set(fieldEntityKey(ref), { entity: ref, title: resolved.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner' }); merge(resolved.items);
-      mineKnownRefs = new Set([...BUILTINS.map(item => fieldEntityKey(item.entity)), ...resolved.items.map(item => fieldEntityKey(item.entity)),
-        ...(resolved.errors.length ? [] : resolved.unavailable.map(ref => fieldEntityKey(ref)))]);
+    const refs = [...new Map(engine.snapshot().shortcuts.map(shortcut => [fieldEntityKey(shortcut.entity), shortcut.entity])).values()];
+    const resolved = { items: [] as DirectoryEntity[], unavailable: [] as FieldEntityRef[], errors: [] as { source: string; code: string }[] };
+    const accept = (batch: typeof resolved): void => {
+      if (!live()) return;
+      for (const ref of batch.unavailable) {
+        const key = fieldEntityKey(ref); resolvedUnavailableRefs.add(key);
+        metadata.set(key, { entity: ref, title: batch.errors.length ? 'Ждёт подключения' : 'Недоступно', symbol: 'lock', source: 'owner' });
+        if (!batch.errors.length) mineKnownRefs.add(key);
+      }
+      merge(batch.items); for (const item of batch.items) mineKnownRefs.add(fieldEntityKey(item.entity));
+      resolved.items.push(...batch.items); resolved.unavailable.push(...batch.unavailable); resolved.errors.push(...batch.errors);
       mineConfirmedGeneration = generation;
-      const first = await directory.loadMine({ limit: 60 });
-      if (!current() || generation !== mineGeneration) return;
+      engine!.update({ entities: allMetadata() }); updateMineFilter(); loading.hidden = true;
+      if (selected && batch.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
+    };
+    try {
+      // Independent sources publish confirmed batches without moving the user's saved shortcuts.
+      let failed = false, firstError: unknown;
+      await Promise.allSettled([
+        refs.filter(ref => ref.kind === 'person' || ref.kind === 'community'),
+        refs.filter(ref => ref.kind === 'app'),
+        refs.filter(ref => ref.kind === 'device'),
+      ].map(async sourceRefs => {
+        try {
+          for (let offset = 0; offset < sourceRefs.length; offset += 60) {
+            if (!live()) return;
+            const batch = await directory.resolve(sourceRefs.slice(offset, offset + 60));
+            if (!live()) return;
+            accept(batch);
+          }
+        } catch (error) { accepting = false; if (!failed) { failed = true; firstError = error; } throw error; }
+      }));
+      if (failed) throw firstError;
+      if (!live()) return;
+      mineConfirmedGeneration = generation;
+      const first = await directory.loadMine({ limit: 60, onProgress: progress => {
+        if (!live()) return;
+        available = [...new Map([...available, ...progress.items].map(item => [fieldEntityKey(item.entity), item])).values()];
+        merge(progress.items); engine!.update({ entities: allMetadata() }); updateMineFilter();
+      } });
+      if (!live()) return;
       available = first.items; availableCursor = first.cursor; merge(first.items); pruneMetadata();
       mineResolvedGeneration = generation;
       element.dataset.mineState = engine.snapshot().shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))) ? 'unknown' : 'ready';
@@ -415,7 +478,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         if (!latest || resolved.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
         else if (JSON.stringify(latest) !== JSON.stringify(selected.item)) openPreview(latest, selected.shortcutId);
       }
-      if (firstResolve && mode === 'mine') { firstResolve = false; if (wide.matches) engine.fitOverview(); else engine.focusContext(engine.snapshot().contexts[0]?.contextId ?? ''); }
+      if (firstResolve && mode === 'mine') {
+        firstResolve = false;
+        if (!selected && options.viewState?.mineFit !== 'manual' && firstView === view()) {
+          if (wide.matches) engine.fitOverview(); else engine.focusContext(engine.snapshot().contexts[0]?.contextId ?? '');
+        }
+      }
     } catch (error) {
       if (current() && generation === mineGeneration) {
         for (const shortcut of engine.snapshot().shortcuts) if (!mineKnownRefs.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Ждёт подключения', symbol: 'lock', source: 'owner' });
@@ -425,6 +493,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       }
       throw error;
     } finally {
+      accepting = false;
       if (current() && generation === mineGeneration) { loading.hidden = true; if (mineResolvedGeneration !== generation) element.dataset.mineState = 'error'; }
     }
   }
@@ -546,7 +615,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         });
         const copy = el('span', 'uf-list-copy'); copy.append(el('strong', '', row.title), el('small', '', row.detail)); action.replaceChildren(icon(row.contextId ? 'layers' : 'next'), copy); list.append(action);
       }
-      const pending = mode === 'mine' ? mineConfirmedGeneration !== mineGeneration || element.dataset.mineState !== 'ready' : element.dataset.searchState === 'loading' || element.dataset.searchState === 'offline' || searchResponseScope !== `${queries.search}:${filter}`;
+      const pending = mode === 'mine' ? mineConfirmedGeneration !== mineGeneration || element.dataset.mineState !== 'ready' : element.dataset.searchPending === 'true' || element.dataset.searchState === 'loading' || element.dataset.searchState === 'offline' || searchResponseScope !== `${queries.search}:${filter}`;
       status.textContent = rows.length ? `${rows.length} в списке${pending ? ' · доступ к части сот ещё не подтверждён' : ''}` : pending ? 'Доступ к сотам пока не подтверждён. Закройте список и обновите поле.' : find.value.trim() ? 'В этом списке ничего не найдено.' : 'В текущем разделе нет сот.';
     };
     find.addEventListener('input', render, { signal });
@@ -699,7 +768,9 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const receipt = await persistence.commit(initial, { expectedRevision: 0, requestId: crypto.randomUUID() }); if (!current()) return;
       engine!.update({ document: receipt.document, revision: receipt.revision, entities: allMetadata() });
     }
-    await loadMine(); if (!current()) return; if (mode === 'search') await searchDirectory();
+    const mineTask = loadMine();
+    if (mode === 'search') await Promise.all([mineTask, searchDirectory()]); else await mineTask;
+    if (!current()) return;
     if (current()) { element.dataset.ready = 'ready'; loading.hidden = true; }
   })().catch(error => { if (current()) { element.dataset.ready = 'error'; loading.hidden = true; } report(error); });
   updateChrome();
@@ -716,10 +787,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       merge([item]); engine?.update({ entities: allMetadata() }); addToContext(item);
     },
     focusContext(contextId) { if (current()) engine?.focusContext(contextId); }, openAdd,
-    async refresh(refreshOptions) { await ready; if (!current()) return; await loadMine(); if (mode === 'search') await searchDirectory(false, refreshOptions?.preserveView === true); },
+    async refresh(refreshOptions) {
+      await ready; if (!current()) return;
+      const mineTask = loadMine();
+      if (mode === 'search') await Promise.all([mineTask, searchDirectory(false, refreshOptions?.preserveView === true)]); else await mineTask;
+    },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },
     reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); },
-    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
+    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
   };
 }

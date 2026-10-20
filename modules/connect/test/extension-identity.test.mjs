@@ -87,11 +87,12 @@ test('real signed legacy calls reproduce the coalesced A → B → A transaction
   assert.equal(f.observed.includes(f.b), false, 'queued state notices can miss the intermediate account');
 });
 
-test('expected account rejects the second ABA read before any B challenge or signature', async t => {
+test('expected account rejects a read queued behind a legacy read before any B challenge or signature', async t => {
   const f = await fixture(t), context = { expectedAccountId: f.a };
   f.afterResponse(body => { if (body.op === 'world.profile.get') f.store.nextRead(() => f.other.switchProfile(f.b)); });
   const results = await Promise.allSettled([
-    f.primary.extension('world.profile.get', {}, context),
+    // A legacy read keeps this deliberate transaction-snapshot queue boundary.
+    f.primary.extension('world.profile.get', {}),
     f.primary.extension('world.community.list', {}, context),
   ]);
   assert.equal(results[0].status, 'fulfilled'); assert.equal(results[0].value.accountId, f.a);
@@ -138,11 +139,11 @@ test('malformed or mismatched context dispatches no challenge; two-argument API 
   assert.equal((await f.primary.extension('world.echo', { text: 'legacy' })).text, 'legacy');
 });
 
-test('profile rename rejects a queued A action before any B challenge in the coalesced ABA race', async t => {
+test('profile rename rejects an A action queued behind a legacy read before any B challenge in the coalesced ABA race', async t => {
   const f = await fixture(t);
   f.afterResponse(body => { if (body.op === 'world.profile.get') f.store.nextRead(() => f.other.switchProfile(f.b)); });
   const results = await Promise.allSettled([
-    f.primary.extension('world.profile.get', {}, { expectedAccountId: f.a }),
+    f.primary.extension('world.profile.get', {}),
     f.primary.rename('New A', f.a),
   ]);
   assert.equal(results[0].status, 'fulfilled');

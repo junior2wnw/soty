@@ -6,6 +6,11 @@ import {
 import { createIndexedDbStorage, emptyState, validateState } from './storage.mjs';
 import { capturePlatformInvitation } from './platform-invitation.mjs';
 
+const parallelMetadataReads = new Set([
+  'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
+  'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
+]);
+
 function requiredString(value, name, max = 256) {
   if (typeof value !== 'string' || !value.length || value.length > max) throw new ConnectError('INVALID_ARGUMENT', name + ' is required.');
   return value;
@@ -224,10 +229,10 @@ export function createClientWithStorage(options, storage) {
     state.timer=setTimeout(()=>releaseCleanup(state),Math.max(1,deadline-Date.now()));state.timer.unref?.();
     appCleanups.add(state);appCleanupReplies.set(result,Object.freeze({callback,state}));return state;
   }
-  async function rpc(op, args, identity, requireCurrent = !identity) {
+  async function rpc(op, args, identity, requireCurrent = !identity, checkCurrent = assertCurrent) {
     if (op === 'card.resolve') return post({ op, args });
     const actor = identity || await installation();
-    if (requireCurrent) await assertCurrent(actor);
+    if (requireCurrent) await checkCurrent(actor);
     // Capture the real authenticated local signer before any challenge/network
     // await. The caller receives no signer object or generic retained RPC port.
     const cleanupCapture=normalized.scopedAppCleanup===true && ['apps.launch','apps.scoped.renew'].includes(op)
@@ -248,12 +253,12 @@ export function createClientWithStorage(options, storage) {
         globalThis.location?.origin && message.origin !== globalThis.location.origin) {
       throw new ConnectError('INVALID_CHALLENGE', 'The challenge is bound to another request, project or browser.');
     }
-    if (requireCurrent) await assertCurrent(actor);
+    if (requireCurrent) await checkCurrent(actor);
     const proof = { challengeId: challenge.challengeId, publicJwk: actor.signingPublicJwk, signature: await signMessage(actor, challenge.message) };
     const result = await post({ op, args, proof });
     const cleanup=captureAppCleanup(result,cleanupCapture,args);
     if (requireCurrent && op !== 'bootstrap') {
-      try {await assertCurrent(actor);} catch(error) {
+      try {await checkCurrent(actor);} catch(error) {
         if(cleanup){try{await performCleanup(cleanup);}catch{/* Original failure wins; no rights or automatic effect retry. */}}
         throw error;
       }
@@ -319,6 +324,25 @@ export function createClientWithStorage(options, storage) {
           }
           expectedAccountId = requiredString(context.expectedAccountId, 'Expected account ID');
         } catch (error) { return Promise.reject(error); }
+      }
+      if (expectedAccountId !== undefined && parallelMetadataReads.has(operation)) {
+        // Bind one local generation, then let independent signed reads leave the state queue.
+        return serialize(async () => {
+          if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+          const localRevision = (await read())?.localRevision;
+          const actor = await installation(); assertExpectedAccount(actor, expectedAccountId);
+          return { actor, localRevision };
+        }).then(async ({ actor, localRevision }) => {
+          const checkReadCurrent = async () => {
+            if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+            const state = await read();
+            if (disposed) throw new ConnectError('CLIENT_DISPOSED', 'This browser client has been disposed.');
+            if (state?.activeDeviceId !== actor.deviceId || state.localRevision !== localRevision) {
+              throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The local profile changed while this read was running. Its result was not applied.');
+            }
+          };
+          return rpc(operation, payload, actor, true, checkReadCurrent);
+        });
       }
       if (operation === 'agent.turn' || operation === 'agent.cancel' || operation === 'voice.agent.turn' || operation === 'voice.agent.cancel') {
         // Capture the displayed account and actual private installation in the normal state queue.
