@@ -175,3 +175,80 @@ test('audio-owner late Cancel A rejection cannot replace current B code or phase
  await held.entered.promise;await f.voice.end();await f.voice.start();const count=f.views.length;held.reject(Error('old_A_cancel_rejected'));await pending;
  assert.equal(f.voice.view().code,null);assert.equal(f.voice.view().phase,'listening');assert.equal(f.views.length,count);
 });
+
+test('Notes mode snapshots explicit Start options before async identity and resets on ordinary restart', { timeout: 5000 }, async t => {
+  const held = deferred(), entered = deferred(); let reads = 0;
+  const f = fixture(t, { async readLocal() { if (++reads === 3) { entered.resolve(); await held.promise; } } });
+  t.after(() => held.resolve());
+  await f.voice.refresh(); const options = { notesMode: true }, pending = f.voice.start(options);
+  await entered.promise; delete options.notesMode; held.resolve(); await pending;
+  assert.equal(f.calls.find(row => row.op === 'voice.orb.start').args.notesMode, true);
+  assert.equal(f.voice.view().notesMode, true);
+  await f.voice.end(); assert.equal(f.voice.view().notesMode, false);
+  await f.voice.start();
+  assert.equal(f.calls.filter(row => row.op === 'voice.orb.start').at(-1).args.notesMode, undefined);
+  assert.equal(f.voice.view().notesMode, false); assert.equal(f.voice.view().phase, 'listening');
+});
+
+test('mutating ordinary Start options during async identity cannot enable Notes mode', { timeout: 5000 }, async t => {
+  const held = deferred(), entered = deferred(); let reads = 0;
+  const f = fixture(t, { async readLocal() { if (++reads === 3) { entered.resolve(); await held.promise; } } });
+  t.after(() => held.resolve()); await f.voice.refresh(); const options = {}, pending = f.voice.start(options);
+  await entered.promise; options.notesMode = true; held.resolve(); await pending;
+  assert.equal(f.calls.find(row => row.op === 'voice.orb.start').args.notesMode, undefined);
+  assert.equal(f.voice.view().notesMode, false);
+});
+
+test('invalid Notes mode Start options never acquire a microphone or signed start', { timeout: 5000 }, async t => {
+  const f = fixture(t); await f.voice.refresh();
+  for (const options of [{ notesMode: false }, { notesMode: 'true' }, { notesMode: {} }, { notesMode: true, accountId: 'bob' }])
+    await assert.rejects(f.voice.start(options), error => error.code === 'voice_orb_invalid');
+  assert.equal(f.counts().mediaCalls, 0); assert.equal(f.counts().leaseCount, 0);
+  assert.equal(f.calls.filter(row => row.op === 'voice.orb.start').length, 0);
+});
+
+test('End clears the visible Notes mode before hangup is known and a late response cannot restore it', { timeout: 5000 }, async t => {
+  const held = deferred(), entered = deferred();
+  const f = fixture(t, { async rpc(op) { if (op === 'voice.orb.end') { entered.resolve(); await held.promise;
+    return { hangupAccepted: false, terminationVerified: false, accountingFinalized: false }; } } });
+  t.after(() => held.resolve()); await f.voice.refresh(); await f.voice.start({ notesMode: true });
+  assert.equal(f.voice.view().notesMode, true); const pending = f.voice.end(); await entered.promise;
+  assert.equal(f.voice.view().notesMode, false); assert.equal(f.voice.view().active, false);
+  held.resolve(); await pending;
+  assert.equal(f.voice.view().phase, 'unknown'); assert.equal(f.voice.view().notesMode, false);
+  assert.equal(f.voice.view().remoteTerminationVerified, false); assert.equal(f.voice.view().accountingFinalized, false);
+});
+
+test('End during Notes mode microphone startup prevents even a later signed mode activation', { timeout: 5000 }, async t => {
+  const held = deferred(), entered = deferred();
+  const track = { enabled: true, readyState: 'live', stops: 0, stop() { this.stops++; this.readyState = 'ended'; } };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const f = fixture(t, { media() { entered.resolve(); return held.promise; } });
+  t.after(() => held.resolve(stream)); await f.voice.refresh(); const pending = f.voice.start({ notesMode: true });
+  await entered.promise;
+  try {
+    assert.equal(f.voice.view().notesMode, true); await f.voice.end(); assert.equal(f.voice.view().notesMode, false);
+  } finally { held.resolve(stream); await pending; }
+  assert.equal(track.stops, 1); assert.equal(f.calls.some(row => row.op === 'voice.orb.start'), false);
+  assert.equal(f.counts().releases, 1); assert.equal(f.voice.view().notesMode, false);
+});
+
+test('Cancel interrupts the current task without removing this conversation Notes mode', { timeout: 5000 }, async t => {
+  const f = fixture(t); await f.voice.refresh(); await f.voice.start({ notesMode: true });
+  await f.voice.interrupt(); assert.equal(f.voice.view().notesMode, true); assert.equal(f.voice.view().active, true);
+  assert.equal(f.calls.filter(row => row.op === 'voice.orb.cancel').length, 1);
+  assert.equal(f.calls.filter(row => row.op === 'voice.orb.end').length, 0);
+  await f.voice.end(); assert.equal(f.voice.view().notesMode, false);
+});
+
+test('Notes mode cannot cross account A to B to A revision changes before delegation', { timeout: 5000 }, async t => {
+  const f = fixture(t); await f.voice.refresh(); await f.voice.start({ notesMode: true });
+  f.local.accountId = 'bob'; f.local.deviceId = 'device_b'; f.local.localRevision++;
+  f.local.accountId = 'alice'; f.local.deviceId = 'device_a'; f.local.localRevision++;
+  f.peers[0].message({ type: 'input_audio_buffer.committed', item_id: 'notes_after_aba' });
+  f.peers[0].message({ type: 'response.done', response: { status: 'completed', metadata: { soty_input: 'notes_after_aba' },
+    output: [{ type: 'function_call', status: 'completed', name: 'delegate_to_agent', call_id: 'notes_after_aba_call',
+      arguments: JSON.stringify({ task: 'Создай записку.', noteIntent: 'create_my_note' }) }] } });
+  await flush(); await flush(); assert.equal(f.calls.filter(row => row.op === 'voice.orb.turn').length, 0);
+  await f.voice.end(); assert.equal(f.voice.view().notesMode, false);
+});

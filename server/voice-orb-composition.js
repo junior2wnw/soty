@@ -139,8 +139,9 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
     need(functions.length === 1, 'voice_orb_unknown'); const call = functions[0];
     need(call.status === 'completed' && call.name === 'delegate_to_agent' && id(call.call_id)
       && text(call.arguments, 16000) && Buffer.byteLength(call.arguments) <= 32000, 'voice_orb_unknown');
-    const args = JSON.parse(call.arguments); fields(args, ['task']);
+    const args = JSON.parse(call.arguments); fields(args, ['task'], ['noteIntent']);
     need(text(args.task, 8000) && args.task.trim() && Buffer.byteLength(args.task) <= 16000, 'voice_orb_unknown');
+    need(args.noteIntent === undefined || args.noteIntent === 'create_my_note', 'voice_orb_unknown');
     const issued = frame.issued.get(response.metadata?.soty_turn);
     need(issued && (!issued.responseId || issued.responseId === response.id), 'voice_orb_expired');
     issued.responseId = response.id;
@@ -148,13 +149,14 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
     // traffic. Ignore its task instead of ending the new conversation.
     if (issued.userItemId !== frame.latestUserItem || issued.inputGeneration !== frame.inputGeneration
       || issued.controlGeneration !== frame.controlGeneration || frame.speaking || frame.clearAwaiting || frame.requireFreshSpeech) return;
-    const intent = hash({ responseId: response.id, task: args.task, userItemId: frame.latestUserItem });
+    const noteIntent = args.noteIntent === 'create_my_note' ? args.noteIntent : undefined;
+    const intent = hash({ responseId: response.id, task: args.task, userItemId: frame.latestUserItem, ...(noteIntent ? { noteIntent } : {}) });
     if (frame.calls.has(call.call_id)) { need(frame.calls.get(call.call_id).intent === intent, 'voice_orb_unknown'); return; }
     // No recursive GLM/tool work from the speech response to a previous tool.
     // Every new delegation consumes one newly committed user input item.
     need(!frame.speaking && frame.latestUserItem && frame.latestUserItem !== frame.consumedUserItem, 'voice_orb_unknown');
     frame.consumedUserItem = frame.latestUserItem;
-    frame.calls.set(call.call_id, { callId: call.call_id, task: args.task, intent, userItemId: frame.latestUserItem, inputGeneration: frame.inputGeneration, controlGeneration: frame.controlGeneration });
+    frame.calls.set(call.call_id, { callId: call.call_id, task: args.task, ...(noteIntent ? { noteIntent } : {}), intent, userItemId: frame.latestUserItem, inputGeneration: frame.inputGeneration, controlGeneration: frame.controlGeneration });
   }
   async function taskFor(frame, callId) {
     const deadline = Date.now() + 1500;
@@ -176,27 +178,30 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
         }
         const located = args.requestId === undefined ? args.sessionId : attempts.get(actorKey(actor) + ':' + args.requestId)?.frame.id;
         need(located, 'voice_orb_unavailable'); const frame = own(actor, located); let task = null;
-        if (frame.turn) { const observed = await agent.executeAsync({ op: 'agent.status', args: { requestId: frame.turn.requestId }, actor }); current(actor);
-          task = { callId: frame.turn.callId, state: observed.state, ...(observed.result ? { result: observed.result } : {}),
-            delivery: frame.turn.delivery, playbackVerified: false }; }
+        const observedTurn = frame.turn && Object.freeze({ requestId: frame.turn.requestId, callId: frame.turn.callId, delivery: frame.turn.delivery });
+        if (observedTurn) { const observed = await agent.executeAsync({ op: 'agent.status', args: { requestId: observedTurn.requestId }, actor }); current(actor);
+          task = { callId: observedTurn.callId, state: observed.state, ...(observed.result ? { result: observed.result } : {}),
+            delivery: observedTurn.delivery, playbackVerified: false }; }
         return { ...status(), sessionId: frame.id, state: frame.state, task, hangupAccepted: frame.proof?.hangupAccepted ?? false, terminationVerified: frame.proof?.terminationVerified ?? false, accountingFinalized: false };
       }
       need(configured && !closed && agent.status()?.configured === true, 'voice_orb_unavailable');
       if (op === 'voice.orb.start') {
-        fields(args, ['requestId', 'sdp']); need(id(args.requestId) && args.requestId.length >= 8 && text(args.sdp, 65536)
+        fields(args, ['requestId', 'sdp'], ['notesMode']); need(args.notesMode === undefined || args.notesMode === true);
+        need(id(args.requestId) && args.requestId.length >= 8 && text(args.sdp, 65536)
           && args.sdp.trim() && Buffer.byteLength(args.sdp) <= 65536);
+        const start = Object.freeze({ requestId: args.requestId, sdp: args.sdp, ...(args.notesMode === true ? { notesMode: true } : {}) });
         need(modelEligible(actor), 'voice_orb_denied');
-        const key = actorKey(actor) + ':' + args.requestId, digest = hash(args), previous = attempts.get(key);
+        const key = actorKey(actor) + ':' + start.requestId, digest = hash(start), previous = attempts.get(key);
         if (previous) throw voiceOrbError(previous.digest === digest ? 'voice_orb_reconcile_required' : 'voice_orb_intent_conflict');
         compact(); need(attempts.size < 128 && ![...sessions.values()].some(row => row.actorKey === actorKey(actor) && row.state !== 'ended'), 'voice_orb_busy');
-        const frame = { id: randomUUID(), actor, actorKey: actorKey(actor), abort: new AbortController(), state: 'starting', transportAttempted: false,
+        const frame = { id: randomUUID(), actor, actorKey: actorKey(actor), notesMode: start.notesMode === true, abort: new AbortController(), state: 'starting', transportAttempted: false,
           calls: new Map(), responses: new Map(), issued: new Map(), usage: new Map(), userItems: new Set(), latestUserItem: null, consumedUserItem: null,
           inputGeneration: 0, controlGeneration: 0, speaking: false, requireFreshSpeech: false, clearAwaiting: false, turns: new Map(), turn: null, contextId: null, expiresAt: Date.now() + maxDurationMs };
         attempts.set(key, { digest, frame }); sessions.set(frame.id, frame);
         frame.timer = setTimeout(() => { void stop(frame, 'duration_limit'); }, maxDurationMs); frame.timer.unref?.();
         frame.unsubscribe = getConnect().subscribeRevocations(event => { if (event.deviceId === actor.deviceId) void stop(frame, 'identity_revoked'); });
         try {
-          frame.admission = Promise.resolve().then(() => configuration.admitQuota({ actor, requestId: args.requestId, intentDigest: digest,
+          frame.admission = Promise.resolve().then(() => configuration.admitQuota({ actor, requestId: start.requestId, intentDigest: digest,
             sessionId: frame.id, voiceModel: VOICE_ORB_MODEL, brainModel: GLM_MODEL, maxDurationMs, signal: frame.abort.signal }));
           frame.quota = await frame.admission; current(actor);
           need(!frame.abort.signal.aborted && frame.state === 'starting', 'voice_orb_expired');
@@ -208,7 +213,7 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
           frame.transportAttempted = true;
           frame.transportResult = Promise.resolve().then(() => {
             if (configuration.connectProjectId !== undefined) { current(actor); need(modelEligible(actor), 'voice_orb_denied'); }
-            return configuration.transport.start({ actor, sdp: args.sdp, signal: frame.abort.signal,
+            return configuration.transport.start({ actor, sdp: start.sdp, signal: frame.abort.signal,
               onEvent: event => { try { providerEvent(frame, event); } catch { void stop(frame, 'provider_event_invalid'); } } });
           });
           frame.remote = await frame.transportResult; current(actor);
@@ -225,17 +230,28 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
         if (frame.remote && frame.state === 'active') try { frame.remote.interrupt({ clearInput: true }); } catch {}
         return { schema: 'soty.voice-orb-cancel.v1', sessionId: frame.id, cancelRequested: result.cancelRequested === true,
           remoteTerminationVerified: false, playbackVerified: false }; }
-      need(op === 'voice.orb.turn' && id(args.callId)); need(args.selection === undefined || selected(args.selection)); need(args.noteCreation === undefined || args.noteCreation === true);
+      need(op === 'voice.orb.turn' && id(args.callId)); need(args.noteCreation === undefined || args.noteCreation === true);
+      if (args.selection !== undefined) fields(args.selection, ['appId', 'handle']);
+      const turnArgs = Object.freeze({ sessionId: args.sessionId, callId: args.callId,
+        ...(args.selection ? { selection: Object.freeze({ appId: args.selection.appId, handle: args.selection.handle }) } : {}),
+        ...(args.noteCreation === true ? { noteCreation: true } : {}) });
+      need(turnArgs.selection === undefined || selected(turnArgs.selection));
       active(frame); need(!frame.taskUnknown, 'voice_orb_reconcile_required'); need(!frame.turn || frame.turn.settled, 'voice_orb_busy');
-      need(!frame.turns.has(args.callId), 'voice_orb_reconcile_required'); const call = await taskFor(frame, args.callId); active(frame);
-      need(!frame.turn || frame.turn.settled, 'voice_orb_busy'); need(!frame.turns.has(args.callId), 'voice_orb_reconcile_required');
-      const requestId = 'voice_' + hash({ sessionId: frame.id, callId: args.callId }).slice(0, 64);
-      const turn = { requestId, callId: args.callId, cancelled: false, settled: false, delivery: 'not_sent' };
-      frame.turns.set(args.callId, turn); frame.turn = turn;
+      need(!frame.turns.has(turnArgs.callId), 'voice_orb_reconcile_required'); const call = await taskFor(frame, turnArgs.callId); active(frame);
+      need(!frame.speaking && !frame.clearAwaiting && !frame.requireFreshSpeech && call.userItemId === frame.latestUserItem && call.inputGeneration === frame.inputGeneration
+        && call.controlGeneration === frame.controlGeneration, 'voice_orb_expired');
+      need(!frame.taskUnknown, 'voice_orb_reconcile_required');
+      need(!frame.turn || frame.turn.settled, 'voice_orb_busy'); need(!frame.turns.has(turnArgs.callId), 'voice_orb_reconcile_required');
+      // A model labels the current request; only this actor's signed session opt-in
+      // or the existing explicit one-turn permission can authorize one new Note.
+      const noteCreation = turnArgs.noteCreation === true || (frame.notesMode && call.noteIntent === 'create_my_note');
+      const requestId = 'voice_' + hash({ sessionId: frame.id, callId: turnArgs.callId }).slice(0, 64);
+      const turn = { requestId, callId: turnArgs.callId, cancelled: false, settled: false, delivery: 'not_sent' };
+      frame.turns.set(turnArgs.callId, turn); frame.turn = turn;
       try {
         active(frame);
         const result = await agent.executeAsync({ op: 'agent.turn', actor, args: { requestId, prompt: call.task,
-          ...(frame.contextId ? { contextId: frame.contextId } : {}), ...(args.selection ? { selection: args.selection } : {}), ...(args.noteCreation ? { noteCreation: true } : {}) } });
+          ...(frame.contextId ? { contextId: frame.contextId } : {}), ...(turnArgs.selection ? { selection: turnArgs.selection } : {}), ...(noteCreation ? { noteCreation: true } : {}) } });
         active(frame); need(!turn.cancelled && frame.turn === turn && call.inputGeneration === frame.inputGeneration && call.controlGeneration === frame.controlGeneration, 'voice_orb_expired');
         need(result.schema === 'soty.personal-agent-turn.v1' && result.status === 'complete' && text(result.answer, 8000)
           && result.answer.trim() && Array.isArray(result.accounting) && result.accounting.length > 0, 'voice_orb_unknown');
@@ -245,11 +261,17 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
         need(editorHandoff === undefined || validArtifact(editorHandoff) && result.requestId === requestId
           && (result.ok === undefined || result.ok === true), 'voice_orb_unknown');
         frame.contextId = result.contextId; turn.outputDigest = hash({ status: 'complete', answer: result.answer });
-        turn.delivery = 'function_output_attempted'; frame.remote.deliver({ callId: args.callId, answer: result.answer });
-        return { schema: 'soty.voice-orb-turn.v1', sessionId: frame.id, callId: args.callId, answer: result.answer,
+        turn.delivery = 'function_output_attempted'; frame.remote.deliver({ callId: turnArgs.callId, answer: result.answer });
+        return { schema: 'soty.voice-orb-turn.v1', sessionId: frame.id, callId: turnArgs.callId, answer: result.answer,
           contextId: result.contextId, delivery: turn.delivery, playbackVerified: false,
           ...(editorHandoff ? { requestId, editorHandoff: copyArtifact(editorHandoff) } : {}) };
-      } catch (error) { frame.taskUnknown = true; throw error; } finally { turn.settled = true; }
+      } catch (error) {
+        // A cancelled call remains spent in turns, with no verified outcome.
+        // Only fresh committed speech can issue a different current call. Other
+        // unknown failures still close task dispatch for this conversation.
+        if (!turn.cancelled) frame.taskUnknown = true;
+        throw error;
+      } finally { turn.settled = true; }
     },
     async close() { if (closed) return; closed = true; await Promise.allSettled([...sessions.values()].map(frame => stop(frame, 'host_closed'))); },
   });

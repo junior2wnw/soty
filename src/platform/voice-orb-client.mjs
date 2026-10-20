@@ -20,7 +20,7 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
   const views = new Set();
   const view = () => ({ phase, configured, missingBinding, microphone: Boolean(frame?.tracks.some(track => track.enabled && track.readyState !== 'ended')),
     muted: frame?.muted ?? false, outputMuted: audio.muted === true, playbackBlocked, input, output, answer, code,
-    active: Boolean(frame && !frame.cleaned), hangupAccepted: frame?.hangupAccepted ?? false,
+    active: Boolean(frame && !frame.cleaned), notesMode: Boolean(frame?.notesMode && !frame.cleaned), hangupAccepted: frame?.hangupAccepted ?? false,
     remoteTerminationVerified: frame?.terminationVerified ?? false, accountingFinalized: false, playbackVerified: false,
     ...(editor ? { editor: { artifact: copyArtifact(editor.artifact), state: editor.state, ...(editor.readback ? { readback: { ...editor.readback } } : {}) } } : {}) });
   const notify = () => {
@@ -215,11 +215,14 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
       } catch { if (!fresh()) return view(); configured = false; phase = 'disabled'; code = 'voice_orb_unavailable'; }
       notify(); return view();
     },
-    async start() {
+    async start(options = {}) {
+      const requestedNotesMode = options?.notesMode;
+      if (!closed(options, ['notesMode']) || requestedNotesMode !== undefined && requestedNotesMode !== true) throw failure('voice_orb_invalid');
+      const notesMode = requestedNotesMode === true;
       if (!localCurrent() || !configured || phase === 'ending' || frame && !frame.cleaned) return;
       const permission = acquireCaptureLease();
       if (typeof permission !== 'function') { code = 'voice_orb_busy'; notify(); return; }
-      const owned = { generation: ++generation, requestId: idFactory(), release: permission, tracks: [], capturePending: false,
+      const owned = { generation: ++generation, requestId: idFactory(), notesMode, release: permission, tracks: [], capturePending: false,
         cleaned: false, ready: false, stopping: false, inputGeneration: 0, controlGeneration: 0, calls: new Map(), hangupAccepted: false, terminationVerified: false };
       frame = owned; editor = undefined; phase = 'connecting'; code = null; input = output = answer = ''; playbackBlocked = false; audio.muted = false; notify();
       try {
@@ -267,7 +270,7 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
         owned.bootstrapAttempted = true;
         // Adopt a returned owned handle before presentation checks; an unmount
         // or early End cannot make a late paid session disappear.
-        const result = await client.extension('voice.orb.start', { requestId: owned.requestId, sdp }, { expectedAccountId: accountId });
+        const result = await client.extension('voice.orb.start', { requestId: owned.requestId, sdp, ...(owned.notesMode ? { notesMode: true } : {}) }, { expectedAccountId: accountId });
         if (result.schema !== 'soty.voice-orb-started.v1' || !id(result.sessionId) || !id(result.providerSessionId)
           || result.voiceModel !== 'gpt-realtime-2.1' || result.brainModel !== 'zai-org/GLM-5.3-Flash' || typeof result.sdp !== 'string') throw failure('voice_orb_unknown');
         owned.sessionId = result.sessionId; owned.providerSessionId = result.providerSessionId;

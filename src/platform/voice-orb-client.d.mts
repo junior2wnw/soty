@@ -14,6 +14,7 @@ export interface VoiceOrbView {
   answer: string;
   code: string | null;
   active: boolean;
+  notesMode: boolean;
   hangupAccepted: boolean;
   remoteTerminationVerified: boolean;
   accountingFinalized: false;
@@ -23,7 +24,7 @@ export interface VoiceOrbHandle {
   view(): VoiceOrbView;
   subscribe(listener: (state: VoiceOrbView) => void): () => void;
   refresh(): Promise<VoiceOrbView>;
-  start(): Promise<void>;
+  start(options?: { notesMode?: true }): Promise<void>;
   mute(): void;
   interrupt(): Promise<void>;
   resumePlayback(): Promise<void>;
