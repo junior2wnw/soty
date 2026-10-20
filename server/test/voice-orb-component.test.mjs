@@ -62,7 +62,7 @@ async function fixture(t, options = {}) {
     } } });
   const transport = createOpenAiOrbTransport({ resolveApiKey: async () => 'synthetic-openai-no-real-account-key', timeoutMs: 100,
     fetchImpl: async (url, init) => {
-      http.push({ url, method: init.method });
+      http.push({ url, method: init.method, ...(init.body instanceof FormData ? { sdp: init.body.get('sdp') } : {}) });
       if (url.endsWith('/hangup')) return new Response(null, { status: options.hangupStatus ?? 200 });
       assert.equal(url, 'https://api.openai.com/v1/realtime/calls'); assert.ok(init.body instanceof FormData);
       const session = JSON.parse(init.body.get('session')); assert.equal(session.model, 'gpt-realtime-2.1'); assert.equal(session.type, 'realtime');
@@ -82,8 +82,11 @@ async function fixture(t, options = {}) {
       async recordOutcome(proof) { outcomes.push(proof); },
     };
   } };
-  const observedAgent = options.projectAgentResult ? { ...personal, async executeAsync(request) {
-    const result = await personal.executeAsync(request); return request.op === 'agent.turn' ? options.projectAgentResult(result, request) : result;
+  const observedAgent = options.projectAgentResult || options.observeAgentRequest || options.afterAgentStatus ? { ...personal, async executeAsync(request) {
+    options.observeAgentRequest?.(request);
+    const result = await personal.executeAsync(request);
+    if (request.op === 'agent.status') await options.afterAgentStatus?.(request, result);
+    return request.op === 'agent.turn' && options.projectAgentResult ? options.projectAgentResult(result, request) : result;
   } } : personal;
   voice = createVoiceOrbComposition({ getConnect: () => connect, agent: observedAgent, configuration });
   connect = createConnectService({ databasePath: ':memory:', projectId: 'soty', allowedOrigins: [ORIGIN], extensions: [actualNotes, personal, { operations: voice.operations, executeAsync(request) { issuedActors.set(request.actor.accountId, request.actor); return voice.executeAsync(request); } }] });
@@ -99,9 +102,9 @@ async function fixture(t, options = {}) {
     JSON.stringify({ accountId: actor.account.accountId, deviceId: actor.account.deviceId }), Object.freeze({ ...actor.account,
       tenantId: 'synthetic_owned_scale', authorizationId: 'synthetic_scale_authorization', expiresAt: Date.now() + 86400000, maxStarts: 1000 }),
   ])) });
-  const response = (callId = 'call_fixture_one', task = 'Создай записку: позвонить в мастерскую.', responseId = 'response_fixture_one', status = 'completed') => ({
+  const response = (callId = 'call_fixture_one', task = 'Создай записку: позвонить в мастерскую.', responseId = 'response_fixture_one', status = 'completed', noteIntent) => ({
     type: 'response.done', response: { id: responseId, status, output: [{ id: 'item_' + callId, type: 'function_call', status: 'completed',
-      name: 'delegate_to_agent', call_id: callId, arguments: JSON.stringify({ task }) }], usage: { total_tokens: 5, input_tokens: 3, output_tokens: 2 }, metadata: { ...sockets.at(-1)?.sent.filter(row => row.type === 'response.create' && row.response?.metadata?.soty_turn).at(-1)?.response.metadata } },
+      name: 'delegate_to_agent', call_id: callId, arguments: JSON.stringify({ task, ...(noteIntent === undefined ? {} : { noteIntent }) }) }], usage: { total_tokens: 5, input_tokens: 3, output_tokens: 2 }, metadata: { ...sockets.at(-1)?.sent.filter(row => row.type === 'response.create' && row.response?.metadata?.soty_turn).at(-1)?.response.metadata } },
   });
   return { alice, bob, rpc, voice, http, sockets, admissions, outcomes, modelCalls, puts, response,
     async hostActor() { good(await rpc(alice, 'voice.orb.status')); return issuedActors.get(alice.account.accountId); },
@@ -120,13 +123,13 @@ async function fixture(t, options = {}) {
       const state = await storage.read(), saved = await otherStorage.read(); await storage.compareAndSwap(state.localRevision, { ...state, localRevision: state.localRevision + 1, installations: [...state.installations, ...saved.installations] });
       return { client, owner, next };
     },
-    start: (requestId = 'synthetic_voice_start_one', actor = alice) => rpc(actor, 'voice.orb.start', { requestId, sdp: 'synthetic_offer' }),
+    start: (requestId = 'synthetic_voice_start_one', actor = alice, extra = {}) => rpc(actor, 'voice.orb.start', { requestId, sdp: 'synthetic_offer', ...extra }),
     list: async (actor = alice) => good(await rpc(actor, 'notes.list', { expectedAccountId: actor.account.accountId })).notes,
     event(value) { sockets.at(-1).event(value); },
-    call(callId = 'call_fixture_one', task, responseId = 'response_fixture_one', userItemId = 'user_fixture_one') {
+    call(callId = 'call_fixture_one', task, responseId = 'response_fixture_one', userItemId = 'user_fixture_one', noteIntent) {
       const socket = sockets.at(-1); socket.event({ type: 'input_audio_buffer.speech_started', item_id: userItemId });
       socket.event({ type: 'input_audio_buffer.committed', item_id: userItemId });
-      socket.event({ type: 'response.created', response: { id: responseId } }); socket.event(response(callId, task, responseId));
+      socket.event({ type: 'response.created', response: { id: responseId } }); socket.event(response(callId, task, responseId, 'completed', noteIntent));
     },
     turn(sessionId, extra = {}, actor = alice) { return rpc(actor, 'voice.orb.turn', { sessionId, callId: 'call_fixture_one', ...extra }); },
     holdModel() { const gate = { entered: deferred(), release: deferred() }; modelHold = gate; holds.push(gate); return gate; },
@@ -325,4 +328,284 @@ test('editor-handoff fresh speech during a held model turn prevents its late art
   const session=good(await f.start());f.call();const gate=f.holdModel(),pending=f.turn(session.sessionId,{noteCreation:true});
   await entered(gate,pending);f.event({type:'input_audio_buffer.speech_started',item_id:'new_human_speech'});gate.release.resolve();
   const reply=await pending;assert.equal(reply.ok,false);assert.equal(reply.editorHandoff,undefined);
+});
+
+test('public composition captures start requestId and SDP before its quota microtask', { timeout: 5000 }, async t => {
+  const f = await fixture(t), actor = await f.hostActor();
+  const args = { requestId: 'captured_public_start', sdp: 'captured_sdp_offer' };
+  const pending = f.voice.executeAsync({ op: 'voice.orb.start', actor, args });
+  args.requestId = 'mutated_public_start'; args.sdp = 'mutated_sdp_offer'; args.notesMode = true;
+  const started = await pending;
+  assert.equal(f.admissions[0].requestId, 'captured_public_start');
+  assert.equal(f.http.find(row => row.url.endsWith('/realtime/calls')).sdp, 'captured_sdp_offer');
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  assert.equal((await f.turn(started.sessionId)).ok, false);
+  assert.equal(f.modelCalls.length, 1); assert.equal(f.modelCalls[0].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 0);
+});
+
+test('public composition cannot acquire per-turn Notes permission by mutating args while its completed call is pending', { timeout: 5000 }, async t => {
+  const f = await fixture(t), actor = await f.hostActor(), started = good(await f.start());
+  const args = { sessionId: started.sessionId, callId: 'call_fixture_one' };
+  const pending = f.voice.executeAsync({ op: 'voice.orb.turn', actor, args }).then(value => ({ value }), error => ({ error }));
+  await flush(); args.noteCreation = true; f.call();
+  const result = await pending; assert.equal(result.value, undefined); assert.ok(result.error);
+  assert.equal(f.modelCalls.length, 1); assert.equal(f.modelCalls[0].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 0); assert.equal((await f.list()).length, 0);
+});
+
+test('public composition retains the captured call ID after awaiting the authoritative completed call', { timeout: 5000 }, async t => {
+  const f = await fixture(t), actor = await f.hostActor(), started = good(await f.start());
+  const args = { sessionId: started.sessionId, callId: 'call_fixture_one', noteCreation: true };
+  const pending = f.voice.executeAsync({ op: 'voice.orb.turn', actor, args });
+  await flush(); args.callId = 'mutated_call_id'; f.call();
+  const result = await pending; assert.equal(result.callId, 'call_fixture_one'); assert.equal(f.puts.length, 1);
+  const output = f.sockets[0].sent.find(row => row.type === 'conversation.item.create');
+  assert.equal(output.item.call_id, 'call_fixture_one');
+});
+
+test('public composition copies validated selection before awaiting the authoritative call', { timeout: 5000 }, async t => {
+  const seen = [], f = await fixture(t, { observeAgentRequest(request) { if (request.op === 'agent.turn') seen.push(request.args); } });
+  const actor = await f.hostActor(), started = good(await f.start());
+  const selection = { appId: 'app-' + 'a'.repeat(32), handle: 'a'.repeat(43) };
+  const args = { sessionId: started.sessionId, callId: 'call_fixture_one', selection };
+  const pending = f.voice.executeAsync({ op: 'voice.orb.turn', actor, args }).catch(() => undefined);
+  await flush(); selection.appId = 'app-' + 'b'.repeat(32); selection.handle = 'b'.repeat(43); f.call();
+  await pending; assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].selection, { appId: 'app-' + 'a'.repeat(32), handle: 'a'.repeat(43) });
+  assert.notEqual(seen[0].selection, selection); assert.equal(f.puts.length, 0);
+});
+
+test('new speech between call resolution and dispatch invalidates the captured user generation before GLM', { timeout: 5000 }, async t => {
+  const f = await fixture(t), actor = await f.hostActor(), started = good(await f.start()); f.call();
+  const pending = f.voice.executeAsync({ op: 'voice.orb.turn', actor,
+    args: { sessionId: started.sessionId, callId: 'call_fixture_one', noteCreation: true } }).then(value => ({ value }), error => ({ error }));
+  f.event({ type: 'input_audio_buffer.speech_started', item_id: 'new_before_dispatch' });
+  const result = await pending; assert.equal(result.value, undefined); assert.ok(result.error);
+  assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+});
+
+test('cancelled held Notes turn stays unknown and spent while a fresh committed task can create one Note', { timeout: 5000 }, async t => {
+  const agentTurns = [], f = await fixture(t, { observeAgentRequest(request) { if (request.op === 'agent.turn') agentTurns.push(request.args.requestId); } });
+  const started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  const oldCompleted = f.response(undefined, undefined, undefined, 'completed', 'create_my_note');
+  const held = f.holdModel(), pending = f.turn(started.sessionId); await entered(held, pending);
+  const cancelled = good(await f.rpc(f.alice, 'voice.orb.cancel', { sessionId: started.sessionId }));
+  assert.equal(cancelled.remoteTerminationVerified, false); held.release.resolve();
+  assert.equal((await pending).ok, false); assert.equal(f.puts.length, 0);
+  const observed = good(await f.rpc(f.alice, 'voice.orb.status', { sessionId: started.sessionId }));
+  assert.equal(observed.task.state, 'unknown'); assert.equal(observed.task.delivery, 'not_sent'); assert.equal(observed.task.playbackVerified, false);
+  assert.equal((await f.turn(started.sessionId)).error.code, 'voice_orb_reconcile_required');
+  f.event({ type: 'input_audio_buffer.cleared' });
+  f.call('fresh_after_cancel', 'Создай новую записку после отмены.', 'fresh_cancel_response', 'fresh_cancel_user', 'create_my_note');
+  f.event(oldCompleted);
+  good(await f.turn(started.sessionId, { callId: 'fresh_after_cancel' }));
+  assert.equal(f.puts.length, 1); assert.equal((await f.list()).length, 1); assert.equal(f.modelCalls.length, 3);
+  assert.equal((await f.turn(started.sessionId)).error.code, 'voice_orb_reconcile_required');
+  assert.equal(f.sockets[0].sent.filter(row => row.type === 'conversation.item.create').length, 1);
+  assert.equal(f.sockets[0].sent.find(row => row.type === 'conversation.item.create').item.call_id, 'fresh_after_cancel');
+  const oldStatus = good(await f.rpc(f.alice, 'agent.status', { requestId: agentTurns[0] }));
+  assert.equal(oldStatus.state, 'unknown'); assert.equal(oldStatus.result, undefined); assert.notEqual(agentTurns[0], agentTurns[1]);
+});
+
+test('cancelled queued Notes call and late old completion cannot replace a new current committed call', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  const oldCompleted = f.response(undefined, undefined, undefined, 'completed', 'create_my_note');
+  good(await f.rpc(f.alice, 'voice.orb.cancel', { sessionId: started.sessionId }));
+  const responses = f.sockets[0].sent.filter(row => row.type === 'response.create').length;
+  f.event({ type: 'input_audio_buffer.committed', item_id: 'uncleared_cancel_input' });
+  assert.equal(f.sockets[0].sent.filter(row => row.type === 'response.create').length, responses);
+  assert.equal((await f.turn(started.sessionId)).ok, false); assert.equal(f.modelCalls.length, 0);
+  f.event({ type: 'input_audio_buffer.cleared' });
+  f.call('fresh_queued_call', 'Создай новую личную записку.', 'fresh_queued_response', 'fresh_queued_user', 'create_my_note');
+  f.event(oldCompleted);
+  good(await f.turn(started.sessionId, { callId: 'fresh_queued_call' }));
+  assert.equal(f.puts.length, 1); assert.equal(f.modelCalls.length, 2);
+  assert.equal((await f.turn(started.sessionId)).ok, false); assert.equal(f.puts.length, 1);
+});
+
+test('invalid session Notes values are refused before quota or provider dispatch', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  for (const notesMode of [false, 'true', {}, ['create_my_note']]) assert.equal((await f.start(undefined, f.alice, { notesMode })).ok, false);
+  assert.equal(f.admissions.length, 0); assert.equal(f.http.length, 0); assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+});
+
+test('a completed function cannot enable session Notes mode or use a broader Note intent', { timeout: 5000 }, async t => {
+  for (const extra of [{ notesMode: true }, { noteIntent: true }, { noteIntent: 'edit_note' }, { noteIntent: 'create_my_note', accountId: 'foreign' }]) {
+    const f = await fixture(t), started = good(await f.start());
+    f.event({ type: 'input_audio_buffer.speech_started', item_id: 'literal_user' });
+    f.event({ type: 'input_audio_buffer.committed', item_id: 'literal_user' });
+    const event = f.response(); event.response.output[0].arguments = JSON.stringify({ task: 'Создай записку.', ...extra }); f.event(event);
+    assert.equal((await f.turn(started.sessionId)).ok, false); assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+  }
+});
+
+// Session Notes permission is signed human opt-in. The Realtime label alone
+// remains powerless; these cases use the same real Connect/Notes/accounting path.
+test('Notes mode creates and reads one owned Note without a per-turn checkbox permission', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  const result = good(await f.turn(started.sessionId));
+  assert.equal(result.callId, 'call_fixture_one'); assert.equal(result.playbackVerified, false);
+  assert.equal(f.modelCalls.length, 2); assert.equal(f.modelCalls[0].tools.some(row => row.function.name === 'create_my_note'), true);
+  assert.deepEqual(f.modelCalls[1].tools.map(row => row.function.name), ['finish_answer']);
+  assert.equal(f.puts.length, 1); assert.equal(f.puts[0].args.expectedRevision, 0);
+  const notes = await f.list(); assert.equal(notes.length, 1); assert.equal(notes[0].revision, 1);
+  const actual = good(await f.rpc(f.alice, 'notes.get', { noteId: notes[0].noteId, expectedAccountId: f.alice.account.accountId })).note;
+  assert.equal(actual.title, 'Список голосом'); assert.equal(actual.body, 'Позвонить в мастерскую.');
+  assert.equal((await f.list(f.bob)).length, 0);
+  const output = f.sockets[0].sent.find(row => row.type === 'conversation.item.create');
+  assert.equal(output.item.call_id, 'call_fixture_one'); assert.equal(JSON.parse(output.item.output).answer, result.answer);
+});
+
+test('a completed Note label cannot grant Notes mode to the model itself', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start());
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  assert.equal((await f.turn(started.sessionId)).ok, false);
+  assert.equal(f.modelCalls.length, 1); assert.equal(f.modelCalls[0].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 0); assert.equal((await f.list()).length, 0);
+});
+
+test('Notes mode alone cannot offer a Note write for a task with no current Note intent', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, 'Объясни фразу «создай записку», ничего не создавай.');
+  assert.equal((await f.turn(started.sessionId)).ok, false);
+  assert.equal(f.modelCalls.length, 1); assert.equal(f.modelCalls[0].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 0); assert.equal((await f.list()).length, 0);
+});
+
+test('the signed Notes mode participates in start replay and intent-conflict checks', { timeout: 5000 }, async t => {
+  const f = await fixture(t); good(await f.start(undefined, f.alice, { notesMode: true }));
+  assert.equal((await f.start(undefined, f.alice, { notesMode: true })).error.code, 'voice_orb_reconcile_required');
+  assert.equal((await f.start()).error.code, 'voice_orb_intent_conflict');
+  assert.equal(f.http.filter(row => row.url.endsWith('/realtime/calls')).length, 1);
+  assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+});
+
+test('one Notes conversation permits one Note per fresh explicit task, never a duplicate call', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  for (let n = 1; n <= 2; n++) {
+    const callId = 'mode_call_' + n;
+    f.call(callId, 'Создай новую личную записку.', 'mode_response_' + n, 'mode_user_' + n, 'create_my_note');
+    good(await f.turn(started.sessionId, { callId }));
+    assert.equal((await f.turn(started.sessionId, { callId })).error.code, 'voice_orb_reconcile_required');
+  }
+  const notes = await f.list(); assert.equal(notes.length, 2); assert.equal(new Set(notes.map(row => row.noteId)).size, 2);
+  assert.equal(notes.every(row => row.revision === 1), true); assert.equal(f.puts.length, 2); assert.equal(f.modelCalls.length, 4);
+});
+
+test('a prior Note intent cannot make the next fresh non-Note task writable', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note'); good(await f.turn(started.sessionId));
+  f.call('read_after_note', 'Объясни прошлую записку, не создавай новую.', 'response_after_note', 'user_after_note');
+  assert.equal((await f.turn(started.sessionId, { callId: 'read_after_note' })).ok, false);
+  assert.equal(f.modelCalls.length, 3); assert.equal(f.modelCalls[2].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 1); assert.equal((await f.list()).length, 1);
+});
+
+test('End removes Notes mode and an ordinary new conversation cannot inherit it', { timeout: 5000 }, async t => {
+  const f = await fixture(t), first = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note'); good(await f.turn(first.sessionId));
+  good(await f.rpc(f.alice, 'voice.orb.end', { sessionId: first.sessionId }));
+  const second = good(await f.start('ordinary_after_notes')); assert.notEqual(second.sessionId, first.sessionId);
+  f.call('ordinary_note_call', undefined, 'ordinary_note_response', 'ordinary_note_user', 'create_my_note');
+  assert.equal((await f.turn(second.sessionId, { callId: 'ordinary_note_call' })).ok, false);
+  assert.equal(f.modelCalls.length, 3); assert.equal(f.modelCalls[2].tools.some(row => row.function.name === 'create_my_note'), false);
+  assert.equal(f.puts.length, 1); assert.equal((await f.list()).length, 1);
+});
+
+test('the Notes session and its Note remain owned by the original signed account', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  assert.equal((await f.turn(started.sessionId, {}, f.bob)).ok, false); assert.equal(f.modelCalls.length, 0);
+  good(await f.turn(started.sessionId)); assert.equal((await f.list(f.alice)).length, 1); assert.equal((await f.list(f.bob)).length, 0);
+});
+
+for (const action of ['cancel', 'fresh_speech', 'end', 'revoke']) test('Notes mode ' + action + ' before a held model completes prevents its Note commit', { timeout: 5000 }, async t => {
+  const f = await fixture(t); if (action === 'revoke') await f.secondDevice();
+  const started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  const gate = f.holdModel(), pending = f.turn(started.sessionId); await entered(gate, pending);
+  if (action === 'fresh_speech') f.event({ type: 'input_audio_buffer.speech_started', item_id: 'mode_new_speech' });
+  else if (action === 'revoke') good(await f.rpc(f.alice, 'device.revoke', { deviceId: f.alice.account.deviceId }));
+  else good(await f.rpc(f.alice, 'voice.orb.' + action, { sessionId: started.sessionId }));
+  gate.release.resolve(); assert.equal((await pending).ok, false); assert.equal(f.puts.length, 0);
+  assert.equal(f.sockets[0].sent.some(row => row.type === 'conversation.item.create'), false);
+});
+
+test('ASR, captions, partial functions and status cannot consume a Notes session permission', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  for (const event of [
+    { type: 'session.input_transcript.delta', delta: 'Создай записку' },
+    { type: 'response.output_audio_transcript.delta', delta: 'Создаю записку' },
+    { type: 'response.function_call_arguments.delta', call_id: 'mode_partial', delta: '{"task":"Создай записку","noteIntent":"create_my_note"}' },
+  ]) f.event(event);
+  good(await f.rpc(f.alice, 'voice.orb.status', { sessionId: started.sessionId }));
+  assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note'); good(await f.turn(started.sessionId));
+  assert.equal(f.puts.length, 1);
+});
+
+test('a browser cannot supply the authoritative Note intent on the signed turn', { timeout: 5000 }, async t => {
+  const f = await fixture(t), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call();
+  for (const extra of [{ noteIntent: 'create_my_note' }, { notesMode: true }]) assert.equal((await f.turn(started.sessionId, extra)).ok, false);
+  assert.equal(f.modelCalls.length, 0); assert.equal(f.puts.length, 0);
+});
+
+test('Notes mode cannot bypass unknown accounting or changed Notes readback and status never retries', { timeout: 5000 }, async t => {
+  for (const options of [{ receiptStatus: 'usage_pending' }, { corruptReadback: true }]) {
+    const f = await fixture(t, options), started = good(await f.start(undefined, f.alice, { notesMode: true }));
+    f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+    assert.equal((await f.turn(started.sessionId)).ok, false);
+    const models = f.modelCalls.length, writes = f.puts.length;
+    assert.equal(writes, options.corruptReadback ? 1 : 0);
+    good(await f.rpc(f.alice, 'voice.orb.status', { sessionId: started.sessionId }));
+    assert.equal((await f.turn(started.sessionId)).error.code, 'voice_orb_reconcile_required');
+    assert.equal(f.modelCalls.length, models); assert.equal(f.puts.length, writes);
+    assert.equal(f.sockets[0].sent.some(row => row.type === 'conversation.item.create'), false);
+    f.call('new_after_unknown', 'Создай новую записку.', 'new_after_unknown_response', 'new_after_unknown_user', 'create_my_note');
+    assert.equal((await f.turn(started.sessionId, { callId: 'new_after_unknown' })).error.code, 'voice_orb_reconcile_required');
+    assert.equal(f.modelCalls.length, models); assert.equal(f.puts.length, writes);
+  }
+});
+
+test('status A snapshot cannot be relabelled as fresh current B after the real A observation awaits', { timeout: 5000 }, async t => {
+  const statusGate = { entered: deferred(), release: deferred() }, agentTurns = []; let holdA = true;
+  t.after(() => statusGate.release.resolve());
+  const f = await fixture(t, {
+    observeAgentRequest(request) { if (request.op === 'agent.turn') agentTurns.push(request.args.requestId); },
+    async afterAgentStatus(request, result) {
+      if (holdA && request.args.requestId === agentTurns[0]) {
+        holdA = false; assert.equal(result.state, 'unknown'); assert.equal(result.result, undefined);
+        statusGate.entered.resolve(); await statusGate.release.promise;
+      }
+    },
+  });
+  const started = good(await f.start(undefined, f.alice, { notesMode: true }));
+  f.call(undefined, undefined, undefined, undefined, 'create_my_note');
+  const modelGate = f.holdModel(), pendingA = f.turn(started.sessionId); await entered(modelGate, pendingA);
+  good(await f.rpc(f.alice, 'voice.orb.cancel', { sessionId: started.sessionId }));
+  modelGate.release.resolve(); assert.equal((await pendingA).ok, false); assert.equal(f.puts.length, 0);
+  const pendingStatusA = f.rpc(f.alice, 'voice.orb.status', { sessionId: started.sessionId });
+  await entered(statusGate, pendingStatusA);
+  f.event({ type: 'input_audio_buffer.cleared' });
+  const callB = 'status_current_B';
+  f.call(callB, 'Создай новую записку Б.', 'status_B_response', 'status_B_user', 'create_my_note');
+  const completedB = good(await f.turn(started.sessionId, { callId: callB }));
+  assert.equal(completedB.callId, callB); assert.equal(f.modelCalls.length, 3); assert.equal(f.puts.length, 1);
+  const count = { models: f.modelCalls.length, writes: f.puts.length,
+    outputs: f.sockets[0].sent.filter(row => row.type === 'conversation.item.create').length };
+  statusGate.release.resolve(); const lateA = good(await pendingStatusA);
+  assert.equal(lateA.task.callId, 'call_fixture_one'); assert.equal(lateA.task.state, 'unknown');
+  assert.equal(lateA.task.result, undefined); assert.equal(lateA.task.delivery, 'not_sent'); assert.equal(lateA.task.playbackVerified, false);
+  assert.deepEqual({ models: f.modelCalls.length, writes: f.puts.length,
+    outputs: f.sockets[0].sent.filter(row => row.type === 'conversation.item.create').length }, count);
+  const currentB = good(await f.rpc(f.alice, 'voice.orb.status', { sessionId: started.sessionId }));
+  assert.equal(currentB.task.callId, callB); assert.equal(currentB.task.state, 'completed');
+  assert.equal(currentB.task.result.requestId, agentTurns[1]); assert.equal(currentB.task.result.answer, completedB.answer);
+  assert.equal((await f.turn(started.sessionId)).error.code, 'voice_orb_reconcile_required');
+  assert.equal(f.modelCalls.length, 3); assert.equal(f.puts.length, 1); assert.equal((await f.list()).length, 1);
 });
