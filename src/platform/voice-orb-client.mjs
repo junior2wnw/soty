@@ -1,3 +1,5 @@
+import { validArtifact, copyArtifact, validReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
+const closed = (value, names) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => names.includes(key));
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/u.test(value);
 const failure = code => Object.assign(new Error(code), { code });
 const safeSelection = value => value && /^app-[a-f0-9]{32}$/u.test(value.appId) && /^[A-Za-z0-9_-]{43}$/u.test(value.handle)
@@ -8,18 +10,19 @@ const sameSelection = (a, b) => a?.appId === b?.appId && a?.handle === b?.handle
  * happens on construction. Server sideband owns completed function/task/usage authority;
  * browser metadata is a trigger, never task text or a permission grant. */
 export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureLease, readSelection = () => null,
-  takeNotePermission = () => false, isCurrent = () => true, onChange = () => {},
+  takeNotePermission = () => false, openProjectEditor, isCurrent = () => true, onChange = () => {},
   getUserMedia = value => navigator.mediaDevices.getUserMedia(value),
   makePeer = () => new RTCPeerConnection(), makeStream = tracks => new MediaStream(tracks),
   idFactory = () => crypto.randomUUID(), events = globalThis.window } = {}) {
   if (!client || !audio || typeof acquireCaptureLease !== 'function') throw TypeError('voice_orb_ports_required');
   let phase = 'checking', configured = false, missingBinding = null, disposed = false, generation = 0;
-  let frame = null, input = '', output = '', answer = '', code = null, playbackBlocked = false, refreshVersion = 0;
+  let frame = null, input = '', output = '', answer = '', code = null, playbackBlocked = false, refreshVersion = 0, editor;
   const views = new Set();
   const view = () => ({ phase, configured, missingBinding, microphone: Boolean(frame?.tracks.some(track => track.enabled && track.readyState !== 'ended')),
     muted: frame?.muted ?? false, outputMuted: audio.muted === true, playbackBlocked, input, output, answer, code,
     active: Boolean(frame && !frame.cleaned), hangupAccepted: frame?.hangupAccepted ?? false,
-    remoteTerminationVerified: frame?.terminationVerified ?? false, accountingFinalized: false, playbackVerified: false });
+    remoteTerminationVerified: frame?.terminationVerified ?? false, accountingFinalized: false, playbackVerified: false,
+    ...(editor ? { editor: { artifact: copyArtifact(editor.artifact), state: editor.state, ...(editor.readback ? { readback: { ...editor.readback } } : {}) } } : {}) });
   const notify = () => {
     if (disposed) return;
     try { onChange(view()); } catch {}
@@ -53,8 +56,13 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
     if (!owned.cleaned || owned.capturePending || owned.cleanupFailed) return;
     owned.release?.(); owned.release = null;
   }
+  function abortEditor(owned) {
+    const opening = owned?.editorOpen; if (!opening) return;
+    owned.editorOpen = null; opening.abort.abort();
+    if (frame === owned && editor === opening.presentation) editor = { artifact: opening.presentation.artifact, state: 'unconfirmed' };
+  }
   function cleanup(owned) {
-    if (owned.cleaned) return;
+    abortEditor(owned); if (owned.cleaned) return;
     owned.cleaned = true; clearTimeout(owned.readyTimer); clearTimeout(owned.durationTimer); clearTimeout(owned.closeTimer); clearInterval(owned.identityTimer);
     for (const track of owned.tracks) {
       try { track.enabled = false; track.stop(); if (track.readyState !== 'ended') owned.cleanupFailed = true; }
@@ -115,18 +123,46 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
     if (!belongs(owned) || !owned.ready || owned.stopping || owned.channel?.readyState !== 'open') throw failure('voice_orb_unknown');
     owned.channel.send(JSON.stringify(value));
   }
+  async function presentEditor(owned, callId, result, callCurrent) {
+    if (result.editorHandoff === undefined || !callCurrent()) return;
+    const artifact = copyArtifact(result.editorHandoff), presentation = { artifact, state: 'opening' };
+    abortEditor(owned); editor = presentation;
+    const opening = { callId, presentation, abort: new AbortController() }; owned.editorOpen = opening; notify();
+    const assertCurrent = async () => {
+      if (!callCurrent() || opening.abort.signal.aborted || owned.editorOpen !== opening) throw failure('voice_orb_denied');
+      await current(owned);
+      if (!callCurrent() || opening.abort.signal.aborted || owned.editorOpen !== opening) throw failure('voice_orb_denied');
+    };
+    try {
+      if (typeof openProjectEditor !== 'function') throw failure('voice_orb_editor_unavailable');
+      await assertCurrent();
+      const readback = await openProjectEditor(artifact, { requestId: result.requestId, signal: opening.abort.signal, assertCurrent });
+      await assertCurrent(); if (!validReadback(readback, artifact)) throw failure('voice_orb_unknown');
+      if (editor === presentation) editor = { artifact, state: 'opened', readback: { ...readback } };
+    } catch { if (editor === presentation) editor = { artifact, state: 'unconfirmed' }; }
+    finally { if (owned.editorOpen === opening) owned.editorOpen = null; if (belongs(owned)) notify(); }
+  }
   async function delegate(owned, callId) {
     if (!belongs(owned) || owned.stopping || owned.calls.has(callId)) return;
-    const selected = safeSelection(readSelection());
+    const selected = safeSelection(readSelection()), userItem = owned.latestUserItem;
+    const inputGeneration = owned.inputGeneration, controlGeneration = owned.controlGeneration;
+    const callCurrent = () => belongs(owned) && !owned.stopping && !owned.speaking && owned.latestCallId === callId
+      && owned.latestUserItem === userItem && owned.inputGeneration === inputGeneration && owned.controlGeneration === controlGeneration;
     const noteCreation = takeNotePermission() === true;
     const intent = { sessionId: owned.sessionId, callId, ...(selected ? { selection: selected } : {}), ...(noteCreation ? { noteCreation: true } : {}) };
-    owned.calls.set(callId, intent); owned.latestCallId = callId; phase = 'working'; code = null; notify();
+    abortEditor(owned); editor = undefined; owned.calls.set(callId, intent); owned.latestCallId = callId; phase = 'working'; code = null; notify();
     try {
       const result = await rpc('voice.orb.turn', intent, owned);
-      if (!belongs(owned) || owned.stopping || owned.latestCallId !== callId || !sameSelection(selected, safeSelection(readSelection()))) return;
-      if (result.schema !== 'soty.voice-orb-turn.v1' || result.sessionId !== owned.sessionId || result.callId !== callId
-        || typeof result.answer !== 'string' || result.answer.length > 8000) throw failure('voice_orb_unknown');
+      if (!callCurrent() || !sameSelection(selected, safeSelection(readSelection()))) return;
+      if (!closed(result, ['ok', 'schema', 'sessionId', 'callId', 'answer', 'contextId', 'delivery', 'playbackVerified', 'requestId', 'editorHandoff'])
+        || result.ok !== undefined && result.ok !== true || result.schema !== 'soty.voice-orb-turn.v1'
+        || result.sessionId !== owned.sessionId || result.callId !== callId
+        || typeof result.answer !== 'string' || result.answer.length > 8000
+        || result.editorHandoff !== undefined && (!validArtifact(result.editorHandoff) || !id(result.requestId))) throw failure('voice_orb_unknown');
       answer = result.answer; phase = 'listening'; notify();
+      // Selection may intentionally change while the existing host opens the editor.
+      // The current voice call/account fence and exact host-frame guards remain active.
+      await presentEditor(owned, callId, result, callCurrent);
     } catch {
       // Read-only status is the only recovery path. No second turn/model POST.
       if (belongs(owned) && !owned.stopping && owned.latestCallId === callId) { phase = 'unknown'; code = 'voice_orb_unknown'; notify(); }
@@ -142,9 +178,13 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
       }
       owned.ready = true; clearTimeout(owned.readyTimer); phase = 'listening'; notify();
     } else if (event.type === 'input_audio_buffer.speech_started') {
-      owned.speaking = true; owned.latestCallId = null;
+      abortEditor(owned); editor = undefined; owned.inputGeneration++;
+      owned.speaking = true; owned.latestCallId = null; notify();
     } else if (event.type === 'input_audio_buffer.committed') {
-      if (id(event.item_id)) { owned.latestUserItem = event.item_id; owned.speaking = false; }
+      if (id(event.item_id)) {
+        if (event.item_id !== owned.latestUserItem) { abortEditor(owned); editor = undefined; owned.inputGeneration++; owned.latestCallId = null; }
+        owned.latestUserItem = event.item_id; owned.speaking = false; notify();
+      }
     } else if (event.type === 'response.output_audio_transcript.delta') {
       if (typeof event.delta === 'string' && event.delta.length <= 8000) { output = (output + event.delta).slice(-8000); notify(); }
     } else if (event.type === 'response.done' && owned.ready && !owned.speaking && event.response?.status === 'completed'
@@ -180,8 +220,8 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
       const permission = acquireCaptureLease();
       if (typeof permission !== 'function') { code = 'voice_orb_busy'; notify(); return; }
       const owned = { generation: ++generation, requestId: idFactory(), release: permission, tracks: [], capturePending: false,
-        cleaned: false, ready: false, stopping: false, calls: new Map(), hangupAccepted: false, terminationVerified: false };
-      frame = owned; phase = 'connecting'; code = null; input = output = answer = ''; playbackBlocked = false; audio.muted = false; notify();
+        cleaned: false, ready: false, stopping: false, inputGeneration: 0, controlGeneration: 0, calls: new Map(), hangupAccepted: false, terminationVerified: false };
+      frame = owned; editor = undefined; phase = 'connecting'; code = null; input = output = answer = ''; playbackBlocked = false; audio.muted = false; notify();
       try {
         const state = await client.getLocalState();
         if (!localCurrent() || state.accountId !== accountId || !id(state.deviceId) || !Number.isSafeInteger(state.localRevision)) throw failure('voice_orb_denied');
@@ -191,7 +231,7 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
         owned.peer.addEventListener('track', event => {
           if (!belongs(owned) || owned.stopping) return;
           audio.srcObject = makeStream([event.track]);
-          void audio.play().catch(() => { playbackBlocked = true; notify(); });
+          void audio.play().catch(() => { if (!belongs(owned) || owned.stopping) return; playbackBlocked = true; notify(); });
         });
         owned.peer.addEventListener('connectionstatechange', () => {
           if (belongs(owned) && !owned.stopping && ['closed', 'failed', 'disconnected'].includes(owned.peer.connectionState)) void endOwned(owned, 'connection_lost');
@@ -256,26 +296,33 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
     },
     async interrupt() {
       const owned = frame; if (!owned || owned.cleaned) return;
-      owned.latestCallId = null; audio.pause(); audio.muted = true; notify();
+      owned.controlGeneration++; abortEditor(owned); owned.latestCallId = null; audio.pause(); audio.muted = true; notify();
       try { if (owned.sessionId) await rpc('voice.orb.cancel', { sessionId: owned.sessionId }, owned); }
-      catch { code = 'voice_orb_unknown'; notify(); }
+      catch { if (!belongs(owned) || owned.stopping) return; code = 'voice_orb_unknown'; notify(); }
       // A cancel or buffer-clear ACK is not permission to resume stale queued audio.
       // Playback stays muted until the person explicitly selects play/resume.
     },
     async resumePlayback() {
-      if (!frame || frame.cleaned || frame.stopping) return;
+      const owned = frame; if (!owned || !belongs(owned) || owned.stopping) return;
       audio.muted = false;
-      try { await audio.play(); playbackBlocked = false; } catch { playbackBlocked = true; }
+      try { await audio.play(); if (!belongs(owned) || owned.stopping) return; playbackBlocked = false; }
+      catch { if (!belongs(owned) || owned.stopping) return; playbackBlocked = true; }
       notify();
     },
     async check() {
       const owned = frame; if (!owned?.sessionId || owned.cleaned) return;
+      const callId = owned.latestCallId ?? null, inputGeneration = owned.inputGeneration, controlGeneration = owned.controlGeneration;
+      const checkingCurrent = () => belongs(owned) && !owned.stopping && (owned.latestCallId ?? null) === callId
+        && owned.inputGeneration === inputGeneration && owned.controlGeneration === controlGeneration;
       try {
         const result = await rpc('voice.orb.status', { sessionId: owned.sessionId }, owned);
-        if (!belongs(owned) || owned.stopping) return;
-        if (result.task?.state === 'completed' && typeof result.task.result?.answer === 'string') { answer = result.task.result.answer; phase = 'listening'; }
-        code = result.task?.state === 'unknown' ? 'voice_orb_unknown' : null;
-      } catch { if (!belongs(owned) || owned.stopping) return; code = 'voice_orb_unknown'; }
+        if (!checkingCurrent()) return;
+        if (result.schema !== 'soty.voice-orb-status.v1' || result.sessionId !== owned.sessionId) throw failure('voice_orb_unknown');
+        if (!result.task) return;
+        if (!id(callId) || result.task.callId !== callId) throw failure('voice_orb_unknown');
+        if (result.task.state === 'completed' && typeof result.task.result?.answer === 'string') { answer = result.task.result.answer; phase = 'listening'; }
+        code = result.task.state === 'unknown' ? 'voice_orb_unknown' : null;
+      } catch { if (!checkingCurrent()) return; code = 'voice_orb_unknown'; }
       notify();
     },
     async end() { if (frame && !frame.cleaned) return endOwned(frame); },

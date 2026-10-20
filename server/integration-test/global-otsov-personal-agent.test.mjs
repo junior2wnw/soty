@@ -23,7 +23,7 @@ const { PERMISSIONS } = await nativeImport('server/contracts.mjs');
 const { createDefaultDocument } = await nativeImport('src/visual/index.ts');
 const payload = { name: 'Synthetic counter without UI navigation', files: [{ path: 'index.html', content: '<!doctype html><button id="n">0</button><script>n.onclick=()=>n.textContent=+n.textContent+1</script>' }] };
 
-async function fixture(t, { editSources = false } = {}) {
+async function fixture(t, { editSources = false, editorHandoff = false } = {}) {
   let entries, target, phase = 'create', boundary, rounds = 0, invokeCount = 0, hideReceipt = false, lastInvocation, forcedReference, exactSourceInput;
   const credentials = new Map(), receipts = new Map(), requests = [], tenant = 'synthetic_headless_otsov', keyRef = {};
   const diagnostics = [];
@@ -111,6 +111,7 @@ async function fixture(t, { editSources = false } = {}) {
               name = 'finish_answer'; args = { answer: 'Synthetic Native result verified', selectedEvidenceIds: evidence.map(row => row.id), claims: [] };
             }
           }
+          if(editorHandoff&&name==='source_write_1')args.openEditor=true;
           const id = randomUUID(); receipts.set(id, { id, status: 'completed', model_requested: GLM_MODEL, model_resolved: GLM_MODEL,
             input_tokens: 3, output_tokens: 2, charge_urub: '0' });
           return Response.json({ id: 'synthetic_headless', model: GLM_MODEL, choices: [{ index: 0, finish_reason: 'tool_calls', message: {
@@ -259,12 +260,17 @@ test('a nonmatching installed reference and an expired target grant never admit 
 // only the provider replies and explicit test identities/grants are synthetic.
 // These turns intentionally stay headless: a persisted source is not a UI preview.
 test('signed OTsov context and CAS put update the same existing project and independently read back its new revision', { timeout: 120000 }, async t => {
-  const f = await fixture(t, { editSources: true }), created = await f.turn('cas_create');
+  const f = await fixture(t, { editSources: true, editorHandoff:true }), created = await f.turn('cas_create');
   const projectId = created.evidence.at(-1).data.receipt.artifacts.find(item => item.type === 'otsov-project').id;
+  assert.equal(f.realms.some(realm=>realm.lastLaunch),false,'A typed requested handoff is not a background UI launch');
   const context = { operation: 'otsov.project.context', projectId, paths: ['index.html'] };
   f.setSourceInput(context); const beforeTurn = await f.turn('cas_read');
+  assert.equal(beforeTurn.editorHandoff,undefined,'Source read data cannot mint a trusted editor artifact');
   const before = beforeTurn.evidence.at(-1).data;
   assert.equal(before.projectId, projectId); assert.equal(before.file.text, payload.files[0].content);
+  // Independent actual Native context query above confirms the creation revision;
+  // prior template projects may make it larger than1. Do not infer it from the receipt.
+  assert.deepEqual(created.editorHandoff,{schema:'soty.otsov-project-artifact.v1',appId:f.realms[0].appId,projectId,branch:'main',revision:before.revision,invocationId:created.evidence.at(-1).data.invocationId});
   assert.equal(before.file.truncated, false); assert.ok(before.file.version >= 1);
   assert.equal(Object.hasOwn(before, 'actor'), false); assert.equal(Object.hasOwn(before, 'tokens'), false);
   const content = '<!doctype html><title>Saved through original OTsov CAS</title><h1>Updated</h1>';
@@ -273,6 +279,8 @@ test('signed OTsov context and CAS put update the same existing project and inde
   f.setSourceInput(updateInput); const updated = await f.turn('cas_update');
   const proof = updated.evidence.at(-1).data;
   assert.equal(proof.completionVerified, true); assert.equal(proof.effects[0].kind, 'updated');
+  assert.deepEqual(updated.editorHandoff,{schema:'soty.otsov-project-artifact.v1',appId:f.realms[0].appId,projectId,branch:'main',revision:before.revision+1,invocationId:proof.invocationId});
+  assert.equal(f.realms.some(realm=>realm.lastLaunch),false,'Foreground handoff is left to the current human browser port');
   assert.equal(proof.receipt.artifacts[0].id, projectId); assert.equal(proof.receipt.artifacts[0].revision, before.revision + 1);
   assert.equal(f.count(f.realms[0]), 14); assert.equal(f.count(f.realms[1]), 13);
   f.setSourceInput(context); const readback = (await f.turn('cas_readback')).evidence.at(-1).data;
@@ -300,7 +308,7 @@ test('signed OTsov context and CAS put update the same existing project and inde
   // A new request with an obsolete captured file version must not overwrite it.
   f.setSourceInput({ ...updateInput, payload: { fileOps: [{ ...updateInput.payload.fileOps[0], content: 'MUST_NOT_REPLACE' }] } });
   const stale = await f.turn('cas_stale').then(value => ({ value }), error => ({ error }));
-  if (stale.value) assert.notEqual(stale.value.evidence.at(-1).data.completionVerified, true);
+  if (stale.value) {assert.notEqual(stale.value.evidence.at(-1).data.completionVerified, true);assert.equal(stale.value.editorHandoff,undefined,'Failed/stale CAS must not request an opened editor');}
   assert.equal(f.invokeCount(), 3, 'The stale put must actually reach Native; a pre-admission rate denial is not a CAS regression');
   f.setSourceInput(context); const afterConflict = (await f.turn('cas_after_conflict')).evidence.at(-1).data;
   assert.deepEqual(afterConflict, readback, 'Native rejects stale CAS without changing bytes, revision or file version');

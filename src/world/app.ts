@@ -1,3 +1,4 @@
+import type { WorldProjectEditorPort } from './types';
 import './world.css';
 import './product.css';
 import './shell.css';
@@ -196,7 +197,8 @@ class WorldApplication {
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
     root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
-    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, context: () => this.widgets?.hasActiveWidget() ? this.widgets.assistantContext() : this.appStage?.assistantContext?.() ?? null,
+
+    this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, openProjectEditor:this.openProjectEditor, context: () => this.widgets?.hasActiveWidget() ? this.widgets.assistantContext() : this.appStage?.assistantContext?.() ?? null,
       browserAssist: () => this.widgets?.hasActiveWidget() ? null : this.appStage?.browserAssist() ?? null,
       focusExisting: () => {
         if (this.view !== 'assistant' || this.assistantMode !== 'chat' || !this.assistantHandle) return false;
@@ -2019,6 +2021,25 @@ class WorldApplication {
       parent.replaceChildren(stack);
     } catch (error) { if (current()) parent.replaceChildren(emptyState('Приложения пока недоступны', errorText(error), button('Повторить', 'refresh', 'sw-button-quiet', () => { void this.renderApps(parent, group); }), 'grid')); }
   }
+
+  private openProjectEditor:WorldProjectEditorPort = async (artifact,request) => {
+    const accountCurrent=this.accountTask(),accountId=this.deskAccount;let expectedScreen=this.screenSequence;
+    const guard=async()=>{if(!accountCurrent()||this.screenSequence!==expectedScreen||request.signal.aborted)throw Error('editor_handoff_stale');await request.assertCurrent();
+      if(!accountCurrent()||this.screenSequence!==expectedScreen||request.signal.aborted)throw Error('editor_handoff_stale');};
+    await guard();await this.flushScreen();await guard();
+    if(this.notesHandle?.hasUnsavedChanges()||this.unifiedField?.hasUnsavedChanges()||this.appPlacementController?.hasUnsavedChanges()
+      ||this.accessHandle?.hasUnsavedChanges?.()||this.appStage?.hasUnsavedChanges())throw Error('editor_draft_blocked');
+    let stage=this.appStage;
+    if(!stage||stage.entry()?.appId!==artifact.appId){
+      const apps=await this.loadApps(undefined,false);await guard();const app=apps.find(value=>value.appId===artifact.appId);
+      if(!app)throw Error('editor_app_unavailable');
+      // Ordinary signed Apps admission resolves the exact current entry. No guessed project URL.
+      const opening=this.openApplication(app);expectedScreen=this.screenSequence;await opening;await guard();stage=this.appStage;
+    }
+    if(!stage||stage.entry()?.appId!==artifact.appId||this.deskAccount!==accountId)throw Error('editor_app_unavailable');
+    const owner=stage;return owner.openProjectEditor(artifact,{...request,assertCurrent:async()=>{
+      await guard();if(this.appStage!==owner)throw Error('editor_handoff_stale');}});
+  };
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;

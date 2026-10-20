@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { validArtifact, copyArtifact } from '../modules/otsov-editor-handoff/wire.mjs';
 import { types } from 'node:util';
 import { createGlmProvider, providerFailureDiagnostic } from '../modules/personal-agent/provider/index.mjs';
 import { boundedPolicy, canonical, fields, freeze, identifier, string } from '../modules/personal-agent/provider/validation.mjs';
@@ -31,6 +32,7 @@ const terminalArguments = value => {
 function recoverableAnswer(result, requestId) {
   if (typeof result.answer !== 'string' || !result.answer.trim() || result.answer.length > 8000
     || typeof result.contextId !== 'string' || !/^ctx_[A-Za-z0-9_-]{16,124}$/u.test(result.contextId)) return undefined;
+  if (result.editorHandoff !== undefined && !validArtifact(result.editorHandoff)) return undefined;
   const evidence = result.evidence ?? [];
   if (!Array.isArray(evidence) || evidence.length > 32) return undefined;
   const projected = [];
@@ -45,7 +47,8 @@ function recoverableAnswer(result, requestId) {
     projected.push({ id: source.id, title: source.title, observedAt: source.observedAt, sourceStatus: source.sourceStatus });
   }
   return Object.freeze({ schema: 'soty.personal-agent-turn.v1', status: 'complete', requestId,
-    answer: result.answer, contextId: result.contextId, evidence: projected });
+    answer: result.answer, contextId: result.contextId, evidence: projected,
+    ...(result.editorHandoff ? { editorHandoff:copyArtifact(result.editorHandoff) } : {}) });
 }
 function recoveryPointers(value) {
   requireValue(Array.isArray(value) && value.length <= 8, 'agent_output_invalid');
@@ -177,6 +180,7 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       requireValue(bundle && typeof bundle.assertCurrent === 'function' && bundle.tools && typeof bundle.tools === 'object', 'agent_source_unavailable');
       requireValue(bundle.verifyCurrent === undefined || typeof bundle.verifyCurrent === 'function', 'agent_source_unavailable');
       requireValue(bundle.sourceRecovery === undefined || typeof bundle.sourceRecovery === 'function', 'agent_source_unavailable');
+      requireValue(bundle.editorHandoff === undefined || typeof bundle.editorHandoff === 'function', 'agent_source_unavailable');
       turn.sourceRecovery = bundle.sourceRecovery;
       assertCurrent();
       const bound = transport.bind({ actor, scope: frameScope, turnId, assertCurrent }); bound.guard();
@@ -237,9 +241,13 @@ export function createPersonalAgentModule({ getConnect, runtime, transport, tool
       // Keep the complete runtime below the browser's signed-turn transport deadline.
       const result = await runtime.runTurn({ timeoutMs: 90_000, adapter, role: 'human', prompt, contextStore, contextId: args.contextId, tools, provider });
       assertCurrent(); requireValue(result.status === 'complete', 'agent_output_invalid');
-      turn.result = recoverableAnswer(result, turnId);
+      const editorHandoff = bundle.editorHandoff ? syncResult(bundle.editorHandoff()) : null;
+      requireValue(editorHandoff === null || validArtifact(editorHandoff), 'agent_output_invalid');
+      const { editorHandoff:_discardedRuntimeHandoff, ...runtimeResult } = result;
+      const presented = { ...runtimeResult, ...(editorHandoff ? { editorHandoff:copyArtifact(editorHandoff) } : {}) };
+      turn.result = recoverableAnswer(presented, turnId);
       turn.state = 'completed';
-      return { schema: 'soty.personal-agent-turn.v1', requestId: turnId, ...result, accounting: turn.receipts };
+      return { schema: 'soty.personal-agent-turn.v1', requestId: turnId, ...presented, accounting: turn.receipts };
     } catch (error) {
       turn.state = 'unknown';
       if (agentErrorCode(error) !== 'agent_model_unknown') {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { validArtifact, copyArtifact } from '../modules/otsov-editor-handoff/wire.mjs';
 import { fields, canonical } from '../modules/personal-agent/provider/validation.mjs';
 import { GLM_MODEL } from '../modules/personal-agent/provider/index.mjs';
 import { VOICE_ORB_MODEL, voiceOrbError, voiceOrbFailure, isVoiceOrbTransport } from './voice-orb-transport.js';
@@ -214,10 +215,16 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
         active(frame); need(!turn.cancelled && frame.turn === turn && call.inputGeneration === frame.inputGeneration && call.controlGeneration === frame.controlGeneration, 'voice_orb_expired');
         need(result.schema === 'soty.personal-agent-turn.v1' && result.status === 'complete' && text(result.answer, 8000)
           && result.answer.trim() && Array.isArray(result.accounting) && result.accounting.length > 0, 'voice_orb_unknown');
+        // Only the owned personal-agent host may supply this typed committed artifact.
+        // Browser captions, function arguments and arbitrary Source evidence never mint it.
+        const editorHandoff = result.editorHandoff;
+        need(editorHandoff === undefined || validArtifact(editorHandoff) && result.requestId === requestId
+          && (result.ok === undefined || result.ok === true), 'voice_orb_unknown');
         frame.contextId = result.contextId; turn.outputDigest = hash({ status: 'complete', answer: result.answer });
         turn.delivery = 'function_output_attempted'; frame.remote.deliver({ callId: args.callId, answer: result.answer });
         return { schema: 'soty.voice-orb-turn.v1', sessionId: frame.id, callId: args.callId, answer: result.answer,
-          contextId: result.contextId, delivery: turn.delivery, playbackVerified: false };
+          contextId: result.contextId, delivery: turn.delivery, playbackVerified: false,
+          ...(editorHandoff ? { requestId, editorHandoff: copyArtifact(editorHandoff) } : {}) };
       } catch (error) { frame.taskUnknown = true; throw error; } finally { turn.settled = true; }
     },
     async close() { if (closed) return; closed = true; await Promise.allSettled([...sessions.values()].map(frame => stop(frame, 'host_closed'))); },

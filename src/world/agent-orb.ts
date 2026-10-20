@@ -1,7 +1,7 @@
 import { button, el, emptyState, iconButton } from './dom';
 import { createDialog, type WorldDialog } from './dialogs';
 import { clampOrb, dockOrb, readOrbPosition, writeOrbPosition, type OrbPoint, type OrbViewport } from './agent-orb-position';
-import type { WorldAssistantContext, WorldBrowserAssist, WorldAssistantHandle, WorldAppOptions } from './types';
+import type { WorldAssistantContext, WorldBrowserAssist, WorldAssistantHandle, WorldAppOptions, WorldProjectEditorPort } from './types';
 import './agent-orb.css';
 import { holdIframePointers } from './iframe-pointer-guard';
 import { floatingObstacles, placeFloatingControl } from './floating-layout';
@@ -24,6 +24,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
   mount: WorldAppOptions['openAssistant'];
   context(): WorldAssistantContext | null;
   browserAssist?(): WorldBrowserAssist | null;
+  openProjectEditor?:WorldProjectEditorPort;
   focusExisting(): boolean;
 }): AgentOrbHandle {
   const doc = root.ownerDocument, view = doc.defaultView!;
@@ -111,7 +112,7 @@ export function mountAgentOrb(root: HTMLElement, options: {
     target.replaceChildren(el('p', 'sw-muted', 'Открываем помощника…'));
     mounting = Promise.resolve().then(() => {
       if (!current()) return null;
-      return options.mount!(target, { context: () => current() ? options.context() : null, browserAssist: () => current() ? options.browserAssist?.() ?? null : null, isCurrent: current });
+      return options.mount!(target, { ...(options.openProjectEditor ? { openProjectEditor: options.openProjectEditor } : {}), context: () => current() ? options.context() : null, browserAssist: () => current() ? options.browserAssist?.() ?? null : null, isCurrent: current });
     }).then(result => {
       if (!result) return;
       if (!current()) { result.dispose(); return; }
