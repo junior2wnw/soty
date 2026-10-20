@@ -34,6 +34,32 @@ export function loadVoiceOrbConfiguration(env = process.env, { dataDir, fetchImp
     if (flag !== '1') return { voiceOrb: { enabled: false }, close() {} };
     need(typeof dataDir === 'string' && path.isAbsolute(dataDir));
     const value = privateFile(env.SOTY_VOICE_ORB_CONFIG_FILE);
+    // V2 is an explicitly installed operator service, never a reinterpretation
+    // of V1 user profiles. The previous reader rejects this closed schema.
+    if (value?.schema === 'soty.voice-orb-installed.v2') {
+      fields(value, ['schema', 'service', 'admission'], ['maxDurationMs']);
+      const maxDurationMs = value.maxDurationMs ?? 180000;
+      need(Number.isSafeInteger(maxDurationMs) && maxDurationMs >= 15000 && maxDurationMs <= 900000);
+      fields(value.admission, ['policy', 'connectProjectId']);
+      need(value.admission.policy === 'soty-authenticated-accounts' && value.admission.connectProjectId === 'soty');
+      const entry = value.service;
+      fields(entry, ['tenantId', 'serviceId', 'apiKey', 'projectId', 'authorizationId', 'validUntil', 'maxStarts', 'maxAccountStarts']);
+      need(['tenantId', 'serviceId', 'authorizationId'].every(name => id(entry[name]))
+        && typeof entry.apiKey === 'string' && /^[^\s\u0000-\u001f]{20,512}$/u.test(entry.apiKey)
+        && typeof entry.projectId === 'string' && /^proj_[A-Za-z0-9_-]{1,150}$/u.test(entry.projectId)
+        && Number.isSafeInteger(entry.maxStarts) && entry.maxStarts >= 1 && entry.maxStarts <= 1000000
+        && Number.isSafeInteger(entry.maxAccountStarts) && entry.maxAccountStarts >= 1 && entry.maxAccountStarts <= entry.maxStarts);
+      const expiresAt = Date.parse(entry.validUntil);
+      need(typeof entry.validUntil === 'string' && Number.isFinite(expiresAt) && expiresAt > Date.now());
+      // tenantId is this operator's billing namespace. It grants no app-data
+      // tenant membership, model change, Notes permission or spending approval.
+      quota = createVoiceOrbQuota({ databasePath: path.join(dataDir, 'voice-orb-quota.sqlite'), service: Object.freeze({ ...entry, expiresAt }) });
+      const own = actor => quota.profileFor(actor);
+      const transport = createOpenAiOrbTransport({ resolveApiKey: async ({ actor }) => own(actor).apiKey,
+        resolveProject: async ({ actor }) => own(actor).projectId, fetchImpl, ...(socketFactory ? { socketFactory } : {}) });
+      return { voiceOrb: { enabled: true, maxDurationMs, transport, connectProjectId: value.admission.connectProjectId,
+        admitQuota: intent => quota.admit(intent), quotaStatus: ({ actor }) => quota.statusFor(actor) }, close: () => quota.close() };
+    }
     fields(value, ['schema', 'profiles'], ['maxDurationMs']); need(value.schema === 'soty.voice-orb-installed.v1');
     const maxDurationMs = value.maxDurationMs ?? 180000;
     need(Number.isSafeInteger(maxDurationMs) && maxDurationMs >= 15000 && maxDurationMs <= 900000);
