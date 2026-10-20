@@ -23,7 +23,8 @@ const usageProjection = value => {
  * Unknown usage does not return a reserved start. Response token observations are not a final
  * invoice; a confirmed hangup is not confirmed billing. No KUF binding reused. */
 export function createVoiceOrbComposition({ getConnect, agent, configuration = {} } = {}) {
-  fields(configuration, [], ['enabled', 'transport', 'admitQuota', 'quotaStatus', 'maxDurationMs']);
+  fields(configuration, [], ['enabled', 'transport', 'admitQuota', 'quotaStatus', 'maxDurationMs', 'connectProjectId']);
+  need(configuration.connectProjectId === undefined || configuration.connectProjectId === 'soty');
   need(typeof getConnect === 'function' && typeof agent?.executeAsync === 'function' && typeof agent?.status === 'function');
   need(configuration.enabled === undefined || typeof configuration.enabled === 'boolean');
   const maxDurationMs = configuration.maxDurationMs ?? 180000;
@@ -34,7 +35,24 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
   const sessions = new Map(), attempts = new Map(); let closed = false;
   const operations = new Set(['voice.orb.status', 'voice.orb.start', 'voice.orb.turn', 'voice.orb.cancel', 'voice.orb.end']);
   const actorKey = actor => canonical({ accountId: actor.accountId, deviceId: actor.deviceId });
-  const current = actor => { need(!closed, 'voice_orb_unavailable'); getConnect().withActorAuthorityFence(actor, () => true); };
+  const current = actor => {
+    need(!closed, 'voice_orb_unavailable'); const connect = getConnect();
+    // V2 admission names the existing Connect application namespace, NOT the
+    // operator's OpenAI proj_* value or a user-data tenant from RPC arguments.
+    need(configuration.connectProjectId === undefined || connect.projectId === configuration.connectProjectId, 'voice_orb_denied');
+    connect.withActorAuthorityFence(actor, () => true);
+  };
+  const modelEligible = actor => {
+    if (configuration.connectProjectId === undefined) return true; // V1 behavior.
+    try {
+      if (typeof agent.modelEligible !== 'function') return false;
+      const result = agent.modelEligible(actor);
+      // The installed port is synchronous. Unexpected async adapters never
+      // grant admission or leave a rejected Promise unobserved.
+      if (result && typeof result.then === 'function') { void Promise.resolve(result).catch(() => {}); return false; }
+      return result === true;
+    } catch { return false; }
+  };
   const status = () => Object.freeze({ schema: 'soty.voice-orb-status.v1', configured: !closed && configured && agent.status()?.configured === true,
     missingBinding: closed ? 'closed' : missingBinding, voiceModel: VOICE_ORB_MODEL, brainModel: GLM_MODEL,
     delegation: 'completed_function_call', wholeVoiceReady: false, paidActivationVerified: false });
@@ -152,6 +170,7 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
         fields(args, [], ['sessionId', 'requestId']); need(args.sessionId === undefined || args.requestId === undefined);
         need(args.sessionId === undefined || id(args.sessionId)); need(args.requestId === undefined || id(args.requestId));
         if (args.sessionId === undefined && args.requestId === undefined) {
+          if (!modelEligible(actor)) return { ...status(), canStart: false };
           const quota = configuration.quotaStatus?.({ actor });
           return { ...status(), ...(quota ? { quota, canStart: quota.allowed === true } : {}) };
         }
@@ -166,6 +185,7 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
       if (op === 'voice.orb.start') {
         fields(args, ['requestId', 'sdp']); need(id(args.requestId) && args.requestId.length >= 8 && text(args.sdp, 65536)
           && args.sdp.trim() && Buffer.byteLength(args.sdp) <= 65536);
+        need(modelEligible(actor), 'voice_orb_denied');
         const key = actorKey(actor) + ':' + args.requestId, digest = hash(args), previous = attempts.get(key);
         if (previous) throw voiceOrbError(previous.digest === digest ? 'voice_orb_reconcile_required' : 'voice_orb_intent_conflict');
         compact(); need(attempts.size < 128 && ![...sessions.values()].some(row => row.actorKey === actorKey(actor) && row.state !== 'ended'), 'voice_orb_busy');
@@ -180,13 +200,17 @@ export function createVoiceOrbComposition({ getConnect, agent, configuration = {
             sessionId: frame.id, voiceModel: VOICE_ORB_MODEL, brainModel: GLM_MODEL, maxDurationMs, signal: frame.abort.signal }));
           frame.quota = await frame.admission; current(actor);
           need(!frame.abort.signal.aborted && frame.state === 'starting', 'voice_orb_expired');
+          need(modelEligible(actor), 'voice_orb_denied');
           need(frame.quota && typeof frame.quota.assertCurrent === 'function' && typeof frame.quota.claimTransport === 'function'
             && typeof frame.quota.recordOutcome === 'function' && frame.quota.assertCurrent() === true, 'voice_orb_denied');
           need(await frame.quota.claimTransport() === true, 'voice_orb_reconcile_required'); current(actor);
           need(!frame.abort.signal.aborted && frame.state === 'starting', 'voice_orb_expired');
           frame.transportAttempted = true;
-          frame.transportResult = Promise.resolve().then(() => configuration.transport.start({ actor, sdp: args.sdp, signal: frame.abort.signal,
-            onEvent: event => { try { providerEvent(frame, event); } catch { void stop(frame, 'provider_event_invalid'); } } }));
+          frame.transportResult = Promise.resolve().then(() => {
+            if (configuration.connectProjectId !== undefined) { current(actor); need(modelEligible(actor), 'voice_orb_denied'); }
+            return configuration.transport.start({ actor, sdp: args.sdp, signal: frame.abort.signal,
+              onEvent: event => { try { providerEvent(frame, event); } catch { void stop(frame, 'provider_event_invalid'); } } });
+          });
           frame.remote = await frame.transportResult; current(actor);
           need(!frame.abort.signal.aborted && frame.quota.assertCurrent() === true, 'voice_orb_expired'); frame.state = 'active';
           return { schema: 'soty.voice-orb-started.v1', sessionId: frame.id, providerCallId: frame.remote.callId, providerSessionId: frame.remote.sessionId,

@@ -691,6 +691,18 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     ...(configuration.capacity !== undefined ? { capacity: configuration.capacity } : {}),
     ...(configuration.clock ? { clock: configuration.clock } : {}) });
   return Object.freeze({ operations: module.operations, executeAsync: request => module.executeAsync(request),
+    // Server-internal read-only voice admission probe. Reuse the transport's
+    // exact installed authorizeActor/billingTenant/keyRef/GLM_MODEL guard, under
+    // a fresh original-actor Connect fence. No credential, request, Source
+    // context, runtime turn or public operation is created by this probe.
+    modelEligible(actor) {
+      if (closed || !module.status().configured) return false;
+      try { return current(actor, () => {
+        transport.bind({ actor, scope: null, turnId: 'voice-readonly-eligibility',
+          assertCurrent: () => need(!closed, 'agent_closed') }).guard();
+        return true;
+      }); } catch { return false; }
+    },
     status() { const status = module.status(); return Object.freeze({ ...status, configured: !closed && status.configured,
       runtimeBound: true, missingBinding: !enabled ? 'not_enabled' : !sourceBound ? 'current_source_credential' : status.configured ? null : 'approved_accounted_gateway_actor_credential_receipt',
       memory: historyEnabled ? 'owner_notes_labelled_history' : 'ephemeral_context_and_current_notes', voiceConfigured: false }); },
