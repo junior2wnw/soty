@@ -37,7 +37,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
     mineBusy: false, queuedMine: null, mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
     emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
-    metadata: new Map([[fieldEntityKey(ref), { entity: ref, title: 'Проверяем доступ', source: 'owner' }]]),
+    metadata: new Map([[fieldEntityKey(ref), { entity: ref, title: 'Загрузка…', source: 'owner' }]]),
     current: () => !disposed && liveGeneration === 1,
     element: { dataset: { ready: 'loading' } }, loading: { hidden: false },
     empty: { hidden: true, replaceChildren(...nodes) { state.emptyChildren = nodes; state.empties.push(nodes[0]?.textContent); } },
@@ -95,7 +95,7 @@ test('Back with a HIVE query never reports no results before current metadata re
   const load = h.api.loadMine(); h.api.updateMineEmpty(h.document);
   assert.deepEqual(h.state.listCloses, [false], 'Metadata loading closes the old chooser without restoring its focus');
   assert.equal(h.environment.element.dataset.mineState, 'loading'); assert.equal(h.environment.empty.hidden, true);
-  assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'Проверяем доступ');
+  assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'Загрузка…');
   pending.resolve(resolved()); await load;
   assert.equal(h.environment.loading.hidden, true); assert.equal(h.environment.element.dataset.mineState, 'ready');
   assert.equal(h.environment.empty.hidden, true); assert.equal(h.state.empties.length, 0);
@@ -123,7 +123,7 @@ test('account ABA or disposal rejects late private names and performs no display
     const pending = deferred(), h = harness({ resolve: () => pending.promise });
     const load = h.api.loadMine(); h[stop](); pending.resolve(resolved()); await load;
     assert.equal(h.state.updates.length, 0); assert.equal(h.state.pages, 0); assert.equal(h.environment.mineResolvedGeneration, -1);
-    assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'Проверяем доступ'); assert.equal(h.state.empties.length, 0);
+    assert.equal(h.environment.metadata.get(fieldEntityKey(ref)).title, 'Загрузка…'); assert.equal(h.state.empties.length, 0);
   }
 });
 
@@ -244,7 +244,7 @@ test('a genuine confirmed cross-space query keeps existing compact navigation to
   const pending = deferred(), h = harness({ query: 'HIVE', resolve: () => pending.promise, load: async () => page([item, tune]) });
   h.document.contexts.push({ contextId: 'evening', title: 'После работы', x: 520, y: 340 });
   h.document.shortcuts.push({ shortcutId: 'music', entity: music, contextId: 'evening', slot: [0, 0] });
-  h.environment.metadata.set(fieldEntityKey(music), { entity: music, title: 'Проверяем доступ', source: 'owner' });
+  h.environment.metadata.set(fieldEntityKey(music), { entity: music, title: 'Загрузка…', source: 'owner' });
   const f = withField(h); h.api.updateMineFilter(); assert.equal(f.engine.state().focusContextId, 'studio');
   const load = h.api.loadMine(); h.environment.queries.mine = 'Тавыш'; h.api.updateMineFilter();
   assert.equal(f.engine.state().focusContextId, 'studio'); pending.resolve(resolved([item, tune]));
@@ -273,7 +273,7 @@ test('initial admission honors the newer resolve generation and never admits a l
     const pending = deferred(), next = harness({ resolve: () => pending.promise }), field = withField(next);
     const load = next.api.loadMine(); next[stop](); pending.resolve(resolved()); await load;
     assert.equal(next.environment.mineFilterAdmitted, false); assert.equal(field.engine.state().focusContextId, 'studio');
-    assert.equal(field.engine.getLayout().nodes[0].entity.title, 'Проверяем доступ');
+    assert.equal(field.engine.getLayout().nodes[0].entity.title, 'Загрузка…');
   }
 });
 
@@ -281,8 +281,8 @@ test('a current known HIVE match admits real filtering despite an unrelated unkn
   const canvas = { kind: 'app', id: 'app-' + 'd'.repeat(32) }, other = { entity: canvas, title: 'Canvas', source: 'owner' }, device = { kind: 'device', id: 'unknown-device' };
   const h = harness({ resolve: async () => resolved([item, other], [device], [{ source: 'devices', code: 'directory_network_unavailable' }]), load: async () => page([item, other]) });
   h.document.shortcuts.push({ shortcutId: 'canvas', entity: canvas, contextId: 'studio', slot: [19, 0] }, { shortcutId: 'device', entity: device, contextId: 'studio', slot: [0, 19] });
-  h.environment.metadata.set(fieldEntityKey(canvas), { entity: canvas, title: 'Проверяем доступ', source: 'owner' });
-  h.environment.metadata.set(fieldEntityKey(device), { entity: device, title: 'Проверяем доступ', source: 'owner' });
+  h.environment.metadata.set(fieldEntityKey(canvas), { entity: canvas, title: 'Загрузка…', source: 'owner' });
+  h.environment.metadata.set(fieldEntityKey(device), { entity: device, title: 'Загрузка…', source: 'owner' });
   const f = withField(h); await h.api.loadMine();
   assert.equal(h.environment.mineKnownRefs.has(fieldEntityKey(device)), false); assert.equal(h.environment.element.dataset.mineState, 'unknown');
   assert.equal(h.environment.mineFilterAdmitted, true); assert.equal(f.engine.state().focusContextId, 'studio');
@@ -294,7 +294,7 @@ test('fresh HIVE refs admit a HIVE-only layout during or after an unrelated avai
     const canvas = { kind: 'app', id: 'app-' + 'e'.repeat(32) }, other = { entity: canvas, title: 'Canvas', source: 'owner' }, pendingPage = deferred();
     const h = harness({ resolve: async () => resolved([item, other]), load: () => pendingPage.promise });
     h.document.shortcuts.push({ shortcutId: 'canvas', entity: canvas, contextId: 'studio', slot: [19, 0] });
-    h.environment.metadata.set(fieldEntityKey(canvas), { entity: canvas, title: 'Проверяем доступ', source: 'owner' });
+    h.environment.metadata.set(fieldEntityKey(canvas), { entity: canvas, title: 'Загрузка…', source: 'owner' });
     const f = withField(h); h.api.updateMineFilter(); assert.equal(f.engine.state().focusContextId, 'studio');
     assert.equal(h.environment.mineFilterAdmitted, false, 'Cached titles cannot admit a named filter');
     const load = h.api.loadMine();

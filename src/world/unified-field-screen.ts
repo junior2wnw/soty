@@ -745,7 +745,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     state = loaded;
     mineFilterAdmitted = false;
     if (loaded.document.contexts.length) firstResolve = false;
-    for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Проверяем доступ', symbol: 'lock', source: 'owner' });
+    for (const shortcut of loaded.document.shortcuts) if (!metadata.has(fieldEntityKey(shortcut.entity))) metadata.set(fieldEntityKey(shortcut.entity), { entity: shortcut.entity, title: 'Загрузка…', symbol: 'lock', source: 'owner' });
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
       mode, entities: allMetadata(), ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
       onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
