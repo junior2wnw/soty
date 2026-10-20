@@ -20,6 +20,8 @@ export interface LocalProfile {
 /** Safe view only. No private keys, account data keys, recovery secrets or full QR contents. */
 export interface LocalState {
   schema: 'connect.local-view.v1';
+  /** Monotonic durable local generation; no identity credential material. */
+  localRevision: number | null;
   accountId: string | null;
   deviceId: string | null;
   label: string | null;
@@ -42,6 +44,8 @@ export interface ClientOptions {
   onError?: (error: ConnectError) => void | Promise<void>;
   /** Opt-in Root host profile; only RAM cleanup of its real admitted app slot. */
   scopedAppCleanup?: boolean;
+  /** Root host-only fixed cleanup of an actually admitted own voice session. */
+  scopedVoiceCleanup?: boolean;
   capturePlatformInvitation?: boolean;
 }
 
@@ -98,6 +102,7 @@ export interface RecoveryKit {
 }
 
 export interface ConnectClient {
+  voiceSessionCleanup?(reply: unknown): (() => Promise<unknown>) | null;
   /** Returns a fixed zero-argument cleanup only for this client's original
    * signed reply; no identity, operation or arguments can be selected. */
   appSlotCleanup(reply: unknown): (() => Promise<void>) | null;

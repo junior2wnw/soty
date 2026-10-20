@@ -11,6 +11,7 @@ import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle
 
 interface HumanLifecycle extends CallIdentityLifecycle {
   snapshot(): { state: string; microphone: WorldHumanCallState['microphone'];
+    capacity: { occupied: number; limit: number };
     scope: { accountId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
       expectedCallId?: string; expectedEpoch?: number } | null; code: string | null };
   join(target: { roomId: string; mode: 'one-to-one' | 'group'; expectedCallId?: string; expectedEpoch?: number }): Promise<{ ok: boolean; code?: string }>;
@@ -22,6 +23,13 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   const callObservers = new Set<() => void>();
   const notifyCall = () => { for (const listener of [...callObservers]) { try { void Promise.resolve(listener()).catch(() => {}); } catch {} } };
   let ownedLifecycle: HumanLifecycle | undefined;
+  let orbCaptureOwner: symbol | null = null;
+  const acquireVoiceCapture = (): (() => void) | null => {
+    const current = ownedLifecycle?.snapshot();
+    if (orbCaptureOwner || !current || !['idle', 'ended'].includes(current.state) || current.capacity.occupied) return null;
+    const owner = Symbol('voice-orb-capture'); orbCaptureOwner = owner;
+    return () => { if (orbCaptureOwner === owner) orbCaptureOwner = null; };
+  };
   const callPorts = dependencies.callLifecycle ? undefined : createHumanCallPorts({ client: accountClient,
     onInterrupted: reason => { if (reason === 'signaling') ownedLifecycle?.end(); else ownedLifecycle?.mute(); } });
   if (callPorts) ownedLifecycle = createCallLifecycle({ ...callPorts, onState: notifyCall }) as HumanLifecycle;
@@ -76,7 +84,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     openLegacy, openAccount, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
     appSlotCleanup:reply=>accountClient.appSlotCleanup(reply),
     openAppBuilder: (host: HTMLElement) => actions.mountAppBuilder(host),
-    openAssistant: (host: HTMLElement, context) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice,
+    openAssistant: (host: HTMLElement, context) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice, acquireVoiceCapture,
       createApp: () => actions.agentCreate(), resumeApp: target => actions.agentCreate(undefined, target) }, context),
     accessAvailability: async () => {
       const response = await fetch('/api/capabilities/v1/status', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
@@ -131,6 +139,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
         },
         cancelIncomingChecks() { inboxGeneration++; },
         async acceptIncoming(invitation) {
+          if (orbCaptureOwner) return { ok: false, code: 'call_active' };
           if (!current() || !accountId || !incomingInvitation || invitation.callId !== incomingInvitation.callId
             || invitation.epoch !== incomingInvitation.epoch || invitation.roomId !== incomingInvitation.roomId)
             return stale();
@@ -167,6 +176,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
           } catch { return { ok: false, code: 'human_call_stale' }; }
         },
         join(target) {
+          if (orbCaptureOwner) return Promise.resolve({ ok: false, code: 'call_active' });
           if (!current()) return Promise.resolve(stale());
           const ownerTarget = { roomId: target.roomId, mode: target.mode };
           const label = cleanDisplayLabel(target.displayLabel);

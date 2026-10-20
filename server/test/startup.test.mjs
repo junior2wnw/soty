@@ -59,6 +59,7 @@ function controlledStartup() {
     hasSingleHostHeader: () => true, fenceClosingUpgrade: () => false,
     loadCapabilityConfiguration: () => ({}), loadUniversalConfiguration: () => ({}), loadPersonalAgentConfiguration: () => ({ personalAgent: { enabled: false } }),
     loadNativeVoiceConfiguration: value => { assert.equal(value, ''); return { nativeVoice: { enabled: false } }; },
+    loadVoiceOrbConfiguration: (_env, options) => { assert.equal(path.isAbsolute(options.dataDir), true); return { voiceOrb: { enabled: false }, close() { calls.push('voice-quota.close'); if (state.failure === 'voiceQuota') throw new Error('not-public-detail'); } }; },
     loadInstalledApplicationsEntry: async () => ({ httpOptions: {}, sourceReferences: [], async close() { calls.push('installed.close'); state.installedClosed++; } }),
     startUniversalOperator: async () => ({ async close() { calls.push('operator.close'); } }), connectAllowedOrigins: () => ['https://root.invalid'], defaultGonkaProxyModel };
   const create = new Function(...Object.keys(values), code + '\nreturn createRootStartup;')(...Object.values(values));
@@ -281,4 +282,12 @@ test('actual stock startup registers browser pilot operations without enabling m
     assert.equal(root.app.locals.personalAgent.operations.has('agent.browser.reply'), true);
     await assert.rejects(root.app.locals.personalAgent.executeAsync({ op: 'agent.browser.poll', actor: {}, args: {} }), { code: 'agent_transport_unavailable' });
   } finally { await root?.close(); await rm(rootDir, { recursive: true, force: true }); }
+});
+
+
+test('actual startup closes own voice quota after services and still closes installed apps on quota failure', async () => {
+  const f = controlledStartup(); const root = await f.create({ env: { HOST: 'controlled.invalid' } }); f.state.root = root; f.state.failure = 'voiceQuota';
+  await assert.rejects(root.close(), { code: 'root_startup_cleanup_failed' });
+  assert.ok(f.calls.indexOf('voice-quota.close') > f.calls.indexOf('services.close'));
+  assert.ok(f.calls.indexOf('installed.close') > f.calls.indexOf('voice-quota.close'));
 });

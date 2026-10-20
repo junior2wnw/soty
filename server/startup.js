@@ -13,6 +13,7 @@ import { loadCapabilityConfiguration } from './capabilities-configuration.js';
 import { loadUniversalConfiguration } from './universal-configuration.js';
 import { loadPersonalAgentConfiguration } from './personal-agent-configuration.js';
 import { loadNativeVoiceConfiguration } from './native-voice-configuration.js';
+import { loadVoiceOrbConfiguration } from './voice-orb-configuration.js';
 import { loadInstalledApplicationsEntry } from './installed-applications-entry.js';
 import { startUniversalOperator } from './universal-operator.js';
 import { connectAllowedOrigins } from './connect-module.js';
@@ -58,7 +59,7 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
     createTrafficTunnelProxy({ target: env.SOTY_TRAFFIC_TUNNEL_TARGET || '', publicPath: env.SOTY_TRAFFIC_TUNNEL_PATH || '/api/traffic/tunnel' }),
     createTrafficTunnelProxy({ target: env.SOTY_TRAFFIC_WS_TARGET || '', publicPath: env.SOTY_TRAFFIC_WS_PATH || '/api/traffic/ws' }),
   ]);
-  let app, server, wss, humanWss, store, installedApplications, operator = { async close() {} }, startPromise, cancelStart, cleanup, closing = false;
+  let app, server, wss, humanWss, store, installedApplications, voiceOrbConfiguration = { close() {} }, operator = { async close() {} }, startPromise, cancelStart, cleanup, closing = false;
   function close() {
     if (cleanup) return cleanup;
     closing = true; let resolve, reject;
@@ -74,6 +75,7 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
       await attempt(() => humanWss && new Promise((done, fail) => humanWss.close(error => error ? fail(error) : done())));
       await attempt(() => operator.close());
       await attempt(() => app?.locals.closeServices());
+      await attempt(() => voiceOrbConfiguration.close());
       await attempt(() => installedApplications?.close());
       if (failed) throw Object.assign(new Error('root_startup_cleanup_failed'), { code: 'root_startup_cleanup_failed' });
     };
@@ -82,12 +84,13 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
   try {
     const capabilityConfiguration = loadCapabilityConfiguration(env), universalConfiguration = loadUniversalConfiguration(env);
     const personalAgentConfiguration = loadPersonalAgentConfiguration(env), nativeVoiceConfiguration = loadNativeVoiceConfiguration(env.SOTY_NATIVE_VOICE_CONFIG || '');
+    voiceOrbConfiguration = loadVoiceOrbConfiguration(env, { dataDir: path.resolve(dataDir) });
     installedApplications = await loadInstalledApplicationsEntry(env);
     const personalAgent = { ...personalAgentConfiguration.personalAgent, browserPilotEnabled: true,
       sourceReferences: installedApplications.sourceReferences,
       ...(installedApplications.sourceCredentialFor ? { sourceCredentialFor: installedApplications.sourceCredentialFor } : {}) };
     try { app = createHttpApp(distDir, { env, dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration,
-      ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration,
+      ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration, voiceOrb: voiceOrbConfiguration.voiceOrb,
       ...httpOptions, env, gonka: rootGonkaOptions(env) }); }
     catch (error) { await waitForRejectedHttpStart(error); throw error; }
     server = createServer(app); server.keepAliveTimeout = 65000; server.headersTimeout = 70000;

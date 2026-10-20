@@ -76,6 +76,7 @@ export interface WorldAppRecord {
 }
 export interface WorldAssistantHandle {
   dispose(): void;
+  startVoice?(): Promise<void>;
   refresh?(): void | Promise<void>;
   flush?(): Promise<void>;
   hasUnsavedChanges?(): boolean;

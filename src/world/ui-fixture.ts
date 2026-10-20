@@ -5,7 +5,7 @@ import { el, button } from './dom';
 import { createAppActions } from '../platform/local-apps';
 import { mountAssistant } from '../platform/assistant';
 import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
-import type { WorldProfile, WorldCommunity, WorldMessage, WorldAppRecord, WorldApi } from './types';
+import type { WorldProfile, WorldCommunity, WorldMessage, WorldAppRecord, WorldApi, WorldAssistantMountContext } from './types';
 if (!import.meta.env.DEV)
     throw new Error('UI fixture is development-only');
 const params = new URLSearchParams(location.search);
@@ -104,6 +104,10 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
         let result: unknown;
         const group = groups.find(item => item.communityId === args.communityId) || groups[0]!;
         switch (op) {
+            case 'voice.orb.status':
+                if (Object.keys(args).length) throw Object.assign(new Error('В локальном примере нет голосовых сессий'), { code: 'fixture_unsupported' });
+                result = { schema: 'soty.voice-orb-status.v1', configured: false, missingBinding: 'not_enabled', voiceModel: 'gpt-realtime-2.1', brainModel: 'zai-org/GLM-5.3-Flash' };
+                break;
             case 'contacts.list': result = { contacts: [], requests: { incoming: [], outgoing: [] }, blocked: [], invitations: [] }; break;
             case 'world.field.get': {
                 if (!fixtureField) {
@@ -292,9 +296,9 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
         }
         return result as T;
     } };
-const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
-const assistant = (host: HTMLElement) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
-  connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) });
+const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName, deviceId: 'qa-notebook', localRevision: 1, current: { revoked: false } }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
+const assistant = (host: HTMLElement, context?: WorldAssistantMountContext) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
+  acquireVoiceCapture: () => null, connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) }, context);
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
 mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });

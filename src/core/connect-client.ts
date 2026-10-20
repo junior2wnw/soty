@@ -10,6 +10,7 @@ export function observeAccount(listener: (state: LocalState) => void): () => voi
 export const accountClient = createConnectClient({
   projectId: 'soty', endpoint: '/api/connect/rpc', dbName: 'soty-connect-v1',
   scopedAppCleanup: true,
+  scopedVoiceCleanup: true,
   capturePlatformInvitation: true,
   onState: state => {
     const outcomes: Promise<void>[] = [];
