@@ -35,7 +35,7 @@ import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-r
 // no source regex assertions, copied transition implementation or DOM package.
 const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-const stageSource = await readFile(new URL('./app-stage.ts', import.meta.url), 'utf8');
+const stageSource = await readFile(process.env.SOTY_NEUTRAL_RUNTIME_STAGE_SOURCE ?? new URL('./app-stage.ts', import.meta.url), 'utf8');
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
 const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -117,7 +117,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const discussionCalls = { refresh: 0 };
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
-  const makeButton = (label, _icon, className, callback) => { const value = makeElement('button', className, label); if (callback) value.addEventListener('click', callback); return value; };
+  const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
   const ports = {
     './dom': { el: makeElement, button:makeButton,iconButton:(label,icon,callback)=>makeButton(label,icon,'',callback), emptyState: label => makeElement('div', '', label),
       textInput: (value = '', placeholder = '') => Object.assign(makeElement('input'), { value, placeholder }),
@@ -608,6 +608,15 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles
     data: { schema: 'soty.app-slot-ready.v1', requestId: 'guessed', ready: true }, ports: [] }));
   assert.match(message.textContent, /Открываем окно/u, 'a renewal hint cannot attest this visible frame');
   frame.emit('load'); await turn();
+  if (profile === 'legacy') {
+    assert.equal(message.hidden, true, 'a loaded legacy document has a neutral transport state, never an authenticated-paint assertion');
+    assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+    const external = f.app.main.querySelector('.sa-external-recovery');
+    assert.equal(external.hidden, false); assert.equal(external.disabled, false);
+    assert.equal(f.app.main.querySelector('iframe'), frame); assert.equal(calls, 1);
+    assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+    return;
+  }
   assert.equal(message.hidden, false); assert.match(message.textContent, /Открываем окно/u);
   assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'true');
   assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
@@ -656,7 +665,10 @@ test('actual stage uses one fresh launch per original open and offers a manual a
   const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A', instanceId: 'main' });
   bootHint(f, second)(); await turn(); assert.equal(calls.length, 2);
-  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  const actions = f.app.main.querySelector('.sa-runtime-actions'), retry = actions.querySelector('.sa-recovery-retry');
+  assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
+  assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
+  assert.equal(retry.hidden, false);
   assert.match(f.app.main.querySelector('.sa-message').textContent, /Откройте приложение заново/u);
   f.app.cleanScreen(); assert.equal(f.timers.size, 0);
 });
@@ -700,7 +712,10 @@ test('actual stage rejects source drift and lost ACK with a clear manual recover
     });
     const original = f.app.main.querySelector('iframe'); bootHint(f, original)(); await turn();
     assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2);
-    assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+    const actions = f.app.main.querySelector('.sa-runtime-actions'), retry = actions.querySelector('.sa-recovery-retry');
+    assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
+    assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
+    assert.equal(retry.hidden, false);
     assert.equal(f.app.main.querySelector('.sa-message').hidden, false); f.app.cleanScreen();
   }
 });
@@ -710,11 +725,13 @@ test('legacy launch response mounts its runtime without requiring new metadata o
   const original = f.app.main.querySelector('iframe'); original.emit('load'); await turn();
   assert.equal(original.contentWindow.sent.length, 0); assert.equal(calls, 1);
   assert.deepEqual(f.requests, [], 'legacy launch does not acquire a new Source-session dependency');
-  const deadline = [...f.timers.values()].find(value => value.delay === 12000); assert.ok(deadline);
-  deadline.fn(); await turn();
+  assert.equal(f.timers.size, 0, 'neutral transport load is not a deadline or Native readiness attestation');
   assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 1);
-  assert.match(f.app.main.querySelector('.sa-message').textContent, /запуск приложения не подтверждён/u);
-  assert.equal(f.app.main.querySelector('.sa-recovery-retry').hidden, false);
+  assert.equal(f.app.main.querySelector('.sa-message').hidden, true);
+  assert.equal(f.app.main.querySelector('.sa-runtime').getAttribute('aria-busy'), 'false');
+  const external = f.app.main.querySelector('.sa-external-recovery');
+  assert.equal(external.hidden, false); assert.equal(external.disabled, false);
+  assert.equal(external.parent, f.app.main.querySelector('.sa-stage-runtime-notice'), 'the existing action is outside the CSS-hidden actions group');
   assert.equal(f.timers.size, 0); f.app.cleanScreen();
 });
 

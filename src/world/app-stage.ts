@@ -441,7 +441,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }):null;
   const mainRuntimeControls = options.presentation === 'widget' ? null : createWidgetRuntimeControls({
     presentation:'main',returnTarget:{isCurrent:current,resolve:()=>name},
-    view,screen,message,runtime,runtimeActions,current,
+    view,screen,message,runtime,runtimeActions,current,externalRecovery,
     capture:()=>{
       const binding=launcher.scopedCapture();return {epoch:displayEpoch,frame:runtime.querySelector('iframe'),
         scoped:!!binding,slot:binding?.slot,handle:binding?.handle,source:captureSourcePin(binding?.source)};
@@ -587,9 +587,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       runtime.setAttribute('aria-busy', String(state.busy));
       // Other account/renewal errors own their message and are never erased by
       // a late transport event. All copy here is finite and contains no URL.
-      if (!message.textContent || messageOwner === 'runtime') showMessage(state.message, 'runtime');
-      recoveryRetry.hidden = options.presentation === 'widget' ? false : !state.canRetry;
-      externalRecovery.hidden = !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
+      if (!message.textContent || messageOwner === 'runtime') {
+        showMessage(state.message, 'runtime');
+        recoveryRetry.hidden = options.presentation === 'widget' ? false : !state.canRetry;
+        externalRecovery.hidden = !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
+      }
     } });
     runtimeDisplay = display;
     if (!message.textContent || messageOwner === 'runtime') showMessage(display.snapshot().message, 'runtime');

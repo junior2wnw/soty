@@ -21,7 +21,7 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
       denied:'Этот вход недоступен. Выберите нужный аккаунт или попросите владельца проверить доступ.',
       error:'Не удалось подтвердить запуск приложения. Попробуйте открыть заново.'};
     return Object.freeze({phase,message:dismissed?'':messages[phase]??'',busy:pending&&!dismissed,
-      canRetry:failed&&!dismissed,canExternal:failed&&!dismissed,canDismiss:failed&&!dismissed});
+      canRetry:failed&&!dismissed,canExternal:(failed||phase==='loaded')&&!dismissed,canDismiss:failed&&!dismissed});
   };
   const notify=()=>{if(live())onChange(snapshot());};
   const stopProbes=()=>{for(const id of probes)view.clearTimeout(id);probes.length=0;};

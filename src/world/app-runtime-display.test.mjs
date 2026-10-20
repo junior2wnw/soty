@@ -16,15 +16,17 @@ test('legacy/native document load has a neutral loaded state without claiming au
  const f=displayFixture('unsupported');f.frame.emit('load');await tickFlush();f.tick(12001);
  assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.api.snapshot().message,'');
  assert.equal(f.api.snapshot().busy,false);assert.equal(f.api.snapshot().canDismiss,false);
+ assert.equal(f.api.snapshot().canRetry,false);assert.equal(f.api.snapshot().canExternal,true);
  assert.equal(f.api.dismiss(),false);assert.equal(f.calls(),1);
- f.frame.emit('error');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.calls(),1);
+ f.frame.emit('error');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.calls(),1);
 });
 
 test('neutral legacy load still reports an exact current Boot failure, while unrelated messages cannot change it',async()=>{
  const f=displayFixture('unsupported');f.frame.emit('load');await tickFlush();
+ assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.api.snapshot().canRetry,false);
  f.phase('boot_failed',{origin:'https://wrong.example'});assert.equal(f.api.snapshot().phase,'loaded');
  f.phase('boot_navigation');assert.equal(f.api.snapshot().phase,'loaded');assert.equal(f.calls(),1);
- f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);
+ f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.calls(),1);
 });
 test('load-only empty-document counterexample: visible deadline survives load without authenticated readiness',async()=>{
  const f=displayFixture();f.tick(0);f.frame.emit('load');await tickFlush();assert.equal(f.api.snapshot().busy,true);f.tick(12000);
