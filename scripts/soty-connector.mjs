@@ -724,6 +724,9 @@ async function runShellJob(job, runtime) {
 
 function runChild(command, args, options) {
   return new Promise((resolveRun, reject) => {
+    // Setup may have awaited after cancellation. Never start a native process
+    // solely to kill it after spawn; preserve the existing cancellation result.
+    if (options.signal?.aborted) { resolveRun({ exitCode: 130, stdout: "", stderr: "" }); return; }
     let settled = false;
     let timedOut = false;
     let stdout = "";
