@@ -94,10 +94,12 @@ test('installed typed tools validate outputs, recheck revocation and expose guid
   const content = await operations.call({ actor: f.actor(), name: 'apps_guidance_get', args: { reference: REF, guidance: value.items[0].reference } });
   assert.equal(content.content, GUIDE.content);
   f.revokeSource(); assert.throws(() => operations.recheck({ actor: f.actor(), name: 'apps_guidance_list', args, value }));
+  const nativeTools = ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide'];
+  const applicationTools = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel'];
   const defaultDoc = buildCapabilitiesOpenApi({ externalConfigured: true, mcpConfigured: true });
-  assert.equal(defaultDoc['x-soty-mcp'].tools.length, 9); assert.equal(defaultDoc.paths['/api/capabilities/v1/app-actions/guidance-list'], undefined);
+  assert.deepEqual(defaultDoc['x-soty-mcp'].tools, [...nativeTools, ...applicationTools]); assert.equal(defaultDoc.paths['/api/capabilities/v1/app-actions/guidance-list'], undefined);
   const configured = buildCapabilitiesOpenApi({ externalConfigured: true, mcpConfigured: true, guidanceConfigured: true });
-  assert.equal(configured['x-soty-mcp'].tools.length, 11); assert.ok(configured.paths['/api/capabilities/v1/app-actions/guidance-get'].post);
+  assert.deepEqual(configured['x-soty-mcp'].tools, [...nativeTools, ...applicationTools, 'apps_guidance_list', 'apps_guidance_get']); assert.ok(configured.paths['/api/capabilities/v1/app-actions/guidance-get'].post);
   assert.throws(() => buildCapabilitiesOpenApi({ guidanceConfigured: true }));
 });
 

@@ -36,8 +36,10 @@ test('the composed OpenAPI names exactly the attached private operations without
 test('installed application actions share closed HTTP/MCP contracts with resolvable OpenAPI references', () => {
   const base = buildCapabilitiesOpenApi({ mcpConfigured: true }), doc = buildCapabilitiesOpenApi({ mcpConfigured: true, externalConfigured: true });
   assert.equal(Object.keys(base.paths).some(path => path.includes('/app-actions/')), false);
-  assert.equal(doc['x-soty-mcp'].tools.length, 9);
+  const nativeTools = ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide'];
   const expected = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel'];
+  assert.deepEqual(base['x-soty-mcp'].tools, nativeTools);
+  assert.deepEqual(doc['x-soty-mcp'].tools, [...nativeTools, ...expected]);
   for (const [index, route] of ['catalog', 'contract', 'invoke', 'get', 'cancel'].entries()) {
     const path = doc.paths[`${BASE}/app-actions/${route}`];
     assert.deepEqual(Object.keys(path), ['post']); assert.equal(path.post.operationId, expected[index]);
@@ -63,6 +65,7 @@ test('real HTTP responses validate with an independent JSON Schema 2020-12 imple
   assert.equal(documentResponse.status, 200); assert.ok(documentResponse.headers.etag);
   assert.equal(documentResponse.headers['cache-control'], 'public,no-cache');
   assert.equal(doc['x-soty-mcp'].endpoint, '/mcp', 'composed host documents its mounted MCP transport independently of native readiness');
+  assert.deepEqual(doc['x-soty-mcp'].tools, ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
   assert.deepEqual(doc['x-soty-mcp'].protocolVersions, ['2026-07-28', '2025-11-25']);
   assert.equal(doc['x-soty-oauth-discovery'], undefined, 'no configured AS is invented for an ordinary service host');
   assert.doesNotMatch(doc.info.description, /No OAuth, MCP/u);

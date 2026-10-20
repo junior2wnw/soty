@@ -200,7 +200,12 @@ for (const withGuidance of [false, true]) test(`real signed Apps/Connect authori
     ...(withGuidance ? {guidance:[guidance]} : {})}]};
   await f.restart(options);
   const documentResponse = await fetch(f.origin + '/api/capabilities/v1/openapi.json'), document = await documentResponse.json();
-  assert.equal(documentResponse.status, 200); assert.equal(document['x-soty-mcp'].tools.length, withGuidance ? 11 : 9);
+  const expectedApplicationTools = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel',
+    ...(withGuidance ? ['apps_guidance_list', 'apps_guidance_get'] : [])];
+  const expectedMcpTools = ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get',
+    'apps_diagnose', 'apps_auth_guide', ...expectedApplicationTools];
+  assert.equal(documentResponse.status, 200);
+  assert.deepEqual(document['x-soty-mcp'].tools, expectedMcpTools);
   assert.equal(document.paths['/api/capabilities/v1/app-actions/invoke'].post.operationId, 'apps_invoke');
   assert.equal(JSON.stringify(document).includes(f.appId), false, 'public protocol documentation does not expose the private installed application');
   const reference = f.service().locals.capabilitiesService.external.contracts[0];
@@ -231,12 +236,45 @@ for (const withGuidance of [false, true]) test(`real signed Apps/Connect authori
   await f.restart(options); const repeated=await http('invoke',args); assert.equal(repeated.status,200);
   assert.equal(repeated.data.invocation.invocationId,first.data.invocation.invocationId);assert.equal(writes,1);
   assert.equal(JSON.stringify(repeated.data).includes(args.input.title),false);
-  async function mcp(method,params) { const response=await fetch(f.origin+'/mcp',{method:'POST',headers:{authorization:'Bearer '+mcpToken,
+  async function mcp(method,params,token=mcpToken) { const response=await fetch(f.origin+'/mcp',{method:'POST',headers:{...(token?{authorization:'Bearer '+token}:{}),
     accept:'application/json, text/event-stream','content-type':'application/json','mcp-protocol-version':'2026-07-28','mcp-method':method,
     ...(method==='tools/call'?{'mcp-name':params.name}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params:{...params,_meta:{'io.modelcontextprotocol/protocolVersion':'2026-07-28',
       'io.modelcontextprotocol/clientInfo':{name:'synthetic-universal-wire',version:'1'},'io.modelcontextprotocol/clientCapabilities':{}}}})});
     return{status:response.status,data:await response.json()}; }
-  const listed=await mcp('tools/list',{});assert.equal(listed.status,200);assert.equal(listed.data.result.tools.length,withGuidance?11:9);
+  const listed=await mcp('tools/list',{});assert.equal(listed.status,200);
+  assert.deepEqual(listed.data.result.tools.map(tool=>tool.name), expectedMcpTools);
+  assert.deepEqual(listed.data.result.tools.map(tool=>tool.name), document['x-soty-mcp'].tools, 'public MCP inventory must match the mounted authenticated transport');
+  assert.equal(JSON.stringify(listed.data.result.tools).includes(f.appId),false, 'tool metadata does not reveal the installed private app');
+  for(const name of ['apps_diagnose','apps_auth_guide']) {
+    const tool=listed.data.result.tools.find(item=>item.name===name);
+    assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false});
+  }
+  // These two native MCP helpers are public guidance behind the same current
+  // MCP actor/audience gate; listing them grants no app action or human login.
+  const diagnosis=await mcp('tools/call',{name:'apps_diagnose',arguments:{observations:{document:'received',readiness:'unsupported'}}});
+  assert.equal(diagnosis.status,200);assert.notEqual(diagnosis.data.result.isError,true);
+  assert.equal(diagnosis.data.result.structuredContent.schema,'soty.app-diagnosis.v1');
+  assert.equal(diagnosis.data.result.structuredContent.basis,'reported_observations');
+  assert.equal(diagnosis.data.result.structuredContent.liveVerified,false);
+  assert.equal(diagnosis.data.result.structuredContent.releaseReadiness,'not_assessed');
+  assert.equal(diagnosis.data.result.structuredContent.findings[0].code,'readiness_not_implemented');
+  const guide=await mcp('tools/call',{name:'apps_auth_guide',arguments:{mode:'human-oidc'}});
+  assert.equal(guide.status,200);assert.notEqual(guide.data.result.isError,true);
+  assert.equal(guide.data.result.structuredContent.schema,'soty.app-auth-guide.v1');
+  assert.equal(guide.data.result.structuredContent.mode,'human-oidc');
+  assert.equal(guide.data.result.structuredContent.applied,false);
+  assert.equal(guide.data.result.structuredContent.productionEnabled,'not_checked');
+  for(const [name,args,invalid] of [
+    ['apps_diagnose',{observations:{document:'received'}},{observations:{document:'received',unexpected:'synthetic-field'}}],
+    ['apps_auth_guide',{mode:'human-oidc'},{mode:'human-oidc',unexpected:'synthetic-field'}],
+  ]) {
+    assert.equal((await mcp('tools/call',{name,arguments:args},httpToken)).status,401, 'HTTP audience cannot invoke a native MCP guidance tool');
+    assert.equal((await mcp('tools/call',{name,arguments:args},null)).status,401);
+    const rejected=await mcp('tools/call',{name,arguments:invalid});
+    assert.equal(rejected.status,200);assert.equal(rejected.data.result.isError,true);
+    assert.deepEqual(JSON.parse(rejected.data.result.content[0].text),{error:{code:'invalid_input'}});
+  }
+  assert.equal(writes,1, 'guidance and denied guidance requests perform no additional application write');
   if (withGuidance) {
     const guides=await mcp('tools/call',{name:'apps_guidance_list',arguments:{reference}}); assert.equal(guides.status,200);
     assert.deepEqual(guides.data.result.structuredContent.items[0].reference,guidanceRef);

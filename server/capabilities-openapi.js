@@ -121,7 +121,7 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
   if (mcpConfigured) document['x-soty-mcp'] = {
     endpoint: '/mcp', transport: 'streamable-http', stateless: true, methods: ['POST'],
     protocolVersions: ['2026-07-28', '2025-11-25'],
-    tools: ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get'],
+    tools: ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide'],
     description: 'A current bearer bound to the separate canonical /mcp resource is required even for initialization and tool listing. Supported revisions have distinct framing; no session, GET event channel or resumable stream is exposed.',
   };
   document.paths[NOTES_DRAFT_PATH] = { post: { ...privateOperation, operationId: 'createNoteDraft', summary: 'Create one private Note',
