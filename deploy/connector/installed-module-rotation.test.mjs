@@ -144,7 +144,7 @@ test('a concurrent HostConfig change between staging and CREATE is rejected agai
 test('canonical property order admission accepts reordered JSON reference keys without publishing anything',async t=>{
  const f=await fixture(t),permute=value=>Array.isArray(value)?value.map(permute):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).reverse().map(k=>[k,permute(value[k])])):value;
  const result=await prepareInstalledModuleRotation({...f.input,expectedOldReferences:permute(f.input.expectedOldReferences),approvedReferences:permute(f.input.approvedReferences),validateOnly:true});
- assert.equal(result.validated,true);assert.equal(result.approvedReferences,6);assert.deepEqual(f.events,[]);
+ assert.equal(result.validated,true);assert.equal(result.approvedReferences,8);assert.deepEqual(f.events,[]);
  await assert.rejects(readFile(f.input.rollbackFile),{code:'ENOENT'});assert.equal(sha(await readFile(f.source)),sha(f.oldBytes));
 });
 

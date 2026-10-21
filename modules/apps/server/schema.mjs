@@ -752,6 +752,49 @@ function validateAudienceRows(db) {
     WHERE c.id=h.current_id AND (current.current_id IS NULL OR current.current_id<>c.id OR current.audience<>a.audience) LIMIT 1`).get(), 'apps_registry_corrupt', 500);
 }
 
+/** Explicit base capability upgrade under an existing audience/cover format.
+ * Keep its outer format and all layer rows; rebuild only the target CHECK using
+ * the same known DDL/guards as base6/7/8. Flags admit DDL, never host profiles. */
+function migrateLayeredAppsBase(db, { legacyTemplate = '', allowScopedEmbedMigration = false, allowSelectedResourceMigration = false } = {}) {
+  assertApps(!db.isTransaction, 'apps_audience_base_upgrade_required', 503);
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  db.exec('PRAGMA foreign_keys=OFF;');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    const state = inspectAppsSchema(db), family = COVER_APP_FORMATS[state] ? COVER_APP_FORMATS : AUDIENCE_FORMATS;
+    const format = family[state];
+    assertApps(format, 'apps_schema_unsupported');
+    const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
+    assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
+    validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
+    const base = allowSelectedResourceMigration ? 'v8'
+      : allowScopedEmbedMigration && format.base === 'v6' ? 'v7' : format.base;
+    if (base === format.base) {
+      db.exec('COMMIT'); return { schema: format.marker, migrated: false, legacyTemplate: pinned.value };
+    }
+    const [next, nextFormat] = Object.entries(family).find(([, item]) => item.base === base) ?? [];
+    assertApps(nextFormat, 'apps_schema_unsupported');
+    const ddl = publicationDdl(true, base === 'v8').split(';').find(value => value.trim().startsWith('CREATE TABLE app_runtime_targets'));
+    assertApps(ddl, 'apps_schema_definition_invalid', 500);
+    db.exec(ddl.replace('CREATE TABLE app_runtime_targets', 'CREATE TABLE layered_runtime_targets_migration'));
+    db.exec('INSERT INTO layered_runtime_targets_migration SELECT * FROM app_runtime_targets');
+    db.exec('DROP TRIGGER app_runtime_target_no_update;DROP TRIGGER app_runtime_target_no_delete;DROP TRIGGER app_runtime_target_no_replace;DROP TABLE app_runtime_targets;');
+    db.exec(ddl);
+    db.exec('INSERT INTO app_runtime_targets SELECT * FROM layered_runtime_targets_migration;DROP TABLE layered_runtime_targets_migration;');
+    for (const statement of targetGuards()) db.exec(statement);
+    for (const statement of sourceGuards().filter(value => value.includes('CREATE TRIGGER app_runtime_target_no_replace'))) db.exec(statement);
+    if (format.base === 'v6') {
+      db.exec(scopedAdmissionDdl()); for (const statement of scopedAdmissionGuards()) db.exec(statement);
+    }
+    db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(nextFormat.marker);
+    db.exec(`PRAGMA user_version=${nextFormat.version};`);
+    assertApps(inspectAppsSchema(db) === next && !db.prepare('PRAGMA foreign_key_check').get(), 'apps_layered_migration_invalid', 500);
+    validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
+    db.exec('COMMIT'); return { schema: nextFormat.marker, migrated: true, legacyTemplate: pinned.value };
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+  finally { db.exec(`PRAGMA foreign_keys=${foreignKeys};`); }
+}
+
 /** Startup-only audience format. 9/10/11 retain distinct base6/7/8 runtime
  * admissions; publication never enables another scoped/resource profile. */
 function migrateAudienceAppsSchema(db, options = {}) {
@@ -762,8 +805,8 @@ function migrateAudienceAppsSchema(db, options = {}) {
     const format = AUDIENCE_FORMATS[state] ?? COVER_APP_FORMATS[state];
     const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
     assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
-    assertApps(!(format.base === 'v6' && (allowScopedEmbedMigration || allowSelectedResourceMigration))
-      && !(format.base === 'v7' && allowSelectedResourceMigration), 'apps_audience_base_upgrade_required', 503);
+    if (format.base === 'v6' && (allowScopedEmbedMigration || allowSelectedResourceMigration)
+      || format.base === 'v7' && allowSelectedResourceMigration) return migrateLayeredAppsBase(db, options);
     const snapshot = !db.isTransaction;
     if (snapshot) db.exec('BEGIN');
     try {
@@ -789,7 +832,11 @@ function migrateAudienceAppsSchema(db, options = {}) {
   db.exec('BEGIN IMMEDIATE');
   try {
     const state = inspectAppsSchema(db);
-    if (AUDIENCE_FORMATS[state] || COVER_APP_FORMATS[state]) { const result = existing(state); db.exec('COMMIT'); return result; }
+    if (AUDIENCE_FORMATS[state] || COVER_APP_FORMATS[state]) {
+      // A concurrent complete layer may still need an explicit base upgrade.
+      // Release this transaction before its foreign-key mode/table rebuild.
+      db.exec('COMMIT'); return existing(state);
+    }
     const [next, format] = Object.entries(AUDIENCE_FORMATS).find(([, value]) => value.base === state) ?? [];
     assertApps(format, 'apps_schema_unsupported');
     validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
