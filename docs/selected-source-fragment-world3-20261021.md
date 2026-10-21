@@ -13,13 +13,21 @@
 percent/UTF-8 и surrogate отклоняются. Навигация хранится в RAM ticket/session;
 renewal берёт её из исходной сессии, без нового клиентского селектора.
 
-Boot URL сохраняет существующий encoded `path`; его собственный hash остаётся
-одноразовым ticket. После проверки cookie boot открывает
+Boot URL содержит только `path=/embed`; document/block/invite остаются в RAM
+ticket/session и в защищённом ответе после обмена ticket. Они не попадают в
+bootstrap query и URL журналов. Собственный hash boot остаётся одноразовым
+ticket. После проверки cookie boot открывает
 `/embed?sotyFrame=FRAME#document=…&block=…&invite=…`. Root удаляет свой selector
 перед relay: настоящий Source получает только `/embed`. Hidden renewal сохраняет
 путь в своём результате, сообщает прежний ready ACK и не перемещает видимое окно.
 Invite не становится Root ticket/frame/правом доступа. Source SDK, profiles,
 pins, authority DTO, schema/migrations и конфигурация не менялись.
+
+Для дополнительного именного адреса Source сохраняет точный отказ Origin.
+Страница отказа ведёт через доверенный parentOrigin в карточку текущего
+app (`#app/…`) и свежий `apps.entry.get({appId,current:true})`, вместо повторного
+запуска заведомо неподходящего domain ID. Exact-domain launch остаётся закрытым;
+для обычных приложений прежний recovery с конкретным domain ID сохранён.
 
 Проверено на этой базе: **167/167 PASS, 0 SKIP**, включая реальный Root/Connect
 SDK/connector/Source verifier и обычный Source с Native consent/OIDC/BFF;
