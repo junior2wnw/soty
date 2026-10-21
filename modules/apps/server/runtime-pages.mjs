@@ -1,6 +1,7 @@
 import { roundedHexPath, hexCluster } from '../../ui/hex.mjs';
 import { createPalette } from '../../ui/palette.mjs';
 import { createBootDisplayClient } from './runtime-display-client.mjs';
+import { checkedScopedEntryPath } from './launch-path.mjs';
 
 const html = value => String(value).replace(/[&<>"']/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const scriptData = value => JSON.stringify(value).replace(/[<>&\u2028\u2029]/gu,
@@ -100,7 +101,7 @@ body[data-framed="true"]{grid-template-rows:1fr}body[data-framed="true"] .brand{
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 `;
 
-function pageClient(config, allowPath, createDisplay) {
+function pageClient(config, allowPath, createDisplay, allowScopedPath) {
   // Clear the one-time secret synchronously before DOM work or any request.
   let ticket = '', cleanupFailed = false;
   if (config.mode === 'boot') {
@@ -240,7 +241,7 @@ function pageClient(config, allowPath, createDisplay) {
       diagnostic.phase('boot_admission_pending');
       const issued = await requestJson('POST', body);
       if (offPage || generation !== currentGeneration) return;
-      const path = allowPath(issued.entryPath);
+      const path = config.scoped ? allowScopedPath(issued.entryPath) : allowPath(issued.entryPath);
       if (!path || typeof issued.sessionCheck !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(issued.sessionCheck)) throw { code: 'cookie_check' };
       if(issued.frame!==undefined&&(!config.scoped||typeof issued.frame!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(issued.frame)))throw{code:'cookie_check'};
       show('checking', true);
@@ -264,7 +265,8 @@ function pageClient(config, allowPath, createDisplay) {
         if(config.renewal){if(issued.renewal!==true||typeof issued.renewalRequestId!=='string')throw{code:'app_scoped_context_closed'};
           window.parent.postMessage({schema:'soty.app-slot-ready.v1',requestId:issued.renewalRequestId,ready},config.parentOrigin);return;}
       }
-      const destination = issued.frame ? path+'?sotyFrame='+issued.frame : path;
+      const at = path.indexOf('#'), requestPath = at < 0 ? path : path.slice(0, at), fragment = at < 0 ? '' : path.slice(at);
+      const destination = issued.frame ? requestPath+'?sotyFrame='+issued.frame+fragment : path;
       show('opening', true);
       if (nativeContinue) {
         nativeGeneration = currentGeneration; nativeContinue.href = destination;
@@ -310,7 +312,7 @@ function render({ mode, state, shellUrl, publicResetPath, nonce,parentOrigins=[]
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark"><title>${html(text[0])} · Соты</title><style>${styles}</style></head>
 <body><header class="brand"><svg viewBox="0 0 22 20" aria-hidden="true" focusable="false"><path d="${brand}"/></svg><span>Соты</span></header>
 <main class="entry" id="entry" data-state="${mode === 'boot' ? 'loading' : 'error'}" aria-labelledby="status-title" aria-busy="${mode === 'boot'}"><div class="visual">${emblem}</div><div class="content"><p class="eyebrow">ПРИЛОЖЕНИЕ</p><div role="status" aria-live="polite" aria-atomic="true"><h1 id="status-title">${html(text[0])}</h1><p class="detail" id="status-detail">${html(text[1])}</p></div><div class="actions" id="actions" hidden><a class="action action-primary" id="shell-action" hidden>Открыть через Соты <span aria-hidden="true">↗</span></a><button class="action" id="reset-action" type="button" hidden>Продолжить без входа</button>${nativeAction}</div><p class="frame-hint" id="frame-hint" hidden>В меню ⋯ над окном выберите „Открыть отдельно“.</p><noscript><p class="noscript">Для входа нужен JavaScript. Откройте приложение из Сот.</p></noscript></div></main>
-<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()});</script></body></html>`;
+<script${nonceAttribute(nonce)}>(${pageClient.toString()})(${scriptData(config)},${checkedLocalPath.toString()},${createBootDisplayClient.toString()},${checkedScopedEntryPath.toString()});</script></body></html>`;
 }
 
 export function renderBootPage({ shellUrl, publicResetPath, nonce, parentOrigins,scoped=false,renewal=false,parentOrigin } = {}) {

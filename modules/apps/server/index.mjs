@@ -18,7 +18,7 @@ import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
 import { createSourceRegistry } from './sources.mjs';
 import { createRuntimeBindings } from './runtime-bindings.mjs';
-import { createLaunchPath } from './launch-path.mjs';
+import { createLaunchPath, createScopedLaunchPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
@@ -218,14 +218,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const frameId=isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined;
           if(isRootSignedWorkspaceSource(first.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
           issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId,
+            entryPath:createScopedLaunchPath(previousSession?.entryPath??'/embed').entryPath,
             ...(args.shortSessionHandoff?{bindingDigest:scopedRenewalBindingDigest(first)}:{})};scopedRenewals.set(key,issued);
         }
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
-        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
-        return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
+        const {entryPath,bootPath}=createScopedLaunchPath(issued.entryPath);
+        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath,scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
+        return{launchUrl:`${decision.origin}${bootPath}&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
           runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
           scopedRenewalRequestId:args.requestId,...(issued.bindingDigest?{scopedRenewalBindingDigest:issued.bindingDigest}:{}),
-          entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:'/embed'}};
+          entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:entryPath}};
       }
       if(op==='apps.scoped.context') {
         args=authenticatedArgs(actor,args);exact(args,['appId','handle']);const id=appId(args.appId);
@@ -621,13 +623,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const savedRootEntry = args.path === '/' && decision.route.entryPath === '/embed' && selectedRuntimeProfile(decision.profile)
         && isRootSignedWorkspaceSource(scopedAdmissions.require(targetTuple(activeTarget(id))).sourceProfile);
       if (args.path === '/_soty/guide') assertApps(!selectedRuntimeProfile(decision.profile), 'app_guide_unsupported', 404);
-      const { entryPath, bootPath } = guideLaunchPath(savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath);
+      const launchPath = savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath;
+      const { entryPath, bootPath } = selectedRuntimeProfile(decision.profile) ? createScopedLaunchPath(launchPath) : guideLaunchPath(launchPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
       let scoped;
       if(selectedRuntimeProfile(decision.profile)) {
-        assertApps(scopedGateway && entryPath==='/embed','app_scoped_admission_required',503);
+        assertApps(scopedGateway,'app_scoped_admission_required',503);
         scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:args.instanceId});
         voiceSourceActors.set(scoped.record,actor);
       }
