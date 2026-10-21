@@ -56,8 +56,11 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/modules ./modules
+COPY --from=build /app/src/transport/human-call-ice.mjs ./src/transport/human-call-ice.mjs
+COPY --from=build /app/src/world/feedback-media.mjs ./src/world/feedback-media.mjs
 ARG LEGACY_UNIVERSAL_MODE=0
 RUN node -e "const fs=require('node:fs');const mode=process.env.LEGACY_UNIVERSAL_MODE;if(!['0','1'].includes(mode))process.exit(1);fs.writeFileSync('server/universal-mode.js','export const forcedLegacyMode = '+(mode==='1')+';\n')"
+RUN --network=none node --input-type=module -e "await import('./server/startup.js'); await import('./src/world/feedback-media.mjs')"
 COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
