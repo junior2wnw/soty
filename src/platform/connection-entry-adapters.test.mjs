@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { readFile } from 'node:fs/promises';
 import * as intents from './connection-intent.mjs';
+import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
 import * as navigation from './connection-navigation.mjs';
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -18,6 +19,7 @@ async function fixture(shell){
     '../core/connect-client':{accountClient:client,observeAccount:()=>()=>{}},
     './connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
     '../platform/connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
+    './native-voice-descriptor.mjs':nativeVoiceDescriptor,
     './connection-intent.mjs':intents,'../platform/connection-intent.mjs':intents,
     './connection-navigation.mjs':navigation,'../platform/connection-navigation.mjs':navigation,
     './call-identity':{bindCallIdentity(){return ()=>{detached++;};}},

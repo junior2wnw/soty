@@ -1,4 +1,5 @@
 import * as connectionIntents from './connection-intent.mjs';
+import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -102,6 +103,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     removeEventListener(type, callback) { pageListeners.get(type)?.delete(callback); } };
   const binding = await compiled('./call-identity.ts');
   const adapter = await compiled('./world-adapter.ts', {
+    './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); if (!state.accountId) throw startupError; return { state, intent: null }; } },
     '../core/connect-client': { accountClient: client, observeAccount }, './call-identity': binding,

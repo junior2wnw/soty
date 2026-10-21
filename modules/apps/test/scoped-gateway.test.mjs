@@ -12,9 +12,9 @@ import {digestArgs} from '../../connect/server/index.mjs';
 test('actual installed Apps channel → private Human subject → selected Source BFF/OIDC/native consent → scoped HTTP, close and current revoke',{
   skip:sourceAvailable?false:'Optional packaged selected Planner Source absent',timeout:90000},async t=>{
   const f=await createScopedGatewayFixture({t});
-  const format=await readStorageFormat(join(f.directory,'root'));assert.equal(format.apps,7);
+  const format=await readStorageFormat(join(f.directory,'root'));assert.equal(format.apps,13);
   const image={Id:'sha256:'+'a'.repeat(64),Config:{Labels:{[storageReaderLabel]:currentStorageReaders}}};
-  assert.equal(assertStorageCompatible(image,format).apps,7);
+  assert.equal(assertStorageCompatible(image,format).apps,13);
   const old=JSON.parse(currentStorageReaders);old.readers.apps=[1,2,3,4,5,6];
   assert.throws(()=>assertStorageCompatible({...image,Config:{Labels:{[storageReaderLabel]:JSON.stringify(old)}}},format),{code:'storage_reader_incompatible'});
   await assert.rejects(f.foreign.client.extension('apps.launch',{appId:f.appId}));

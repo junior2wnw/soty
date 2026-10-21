@@ -78,7 +78,7 @@ test('actual controller settings update and subsequent list refresh use the same
   controller.openAppSettings(controller.apps[0]);
   for (const [launchPolicy, count] of [['anyone', 2], ['anyone', 0], ['restricted', 2]]) {
     const ids = Array.from({ length: count }, (_, i) => `domain-${i}`);
-    settings.onChanged({ app: { name: app.name, state: 'enabled', grants }, source: { hostDeviceId: 'host', deviceName: 'Device', observation: { state: 'offline' } },
+    settings.onChanged({ actions: { canEdit: true }, app: { name: app.name, state: 'enabled', grants }, source: { hostDeviceId: 'host', deviceName: 'Device', observation: { state: 'offline' } },
       publication: { launchPolicy, activeDomainIds: ids }, addresses: { aliases: ids.map(id => ({ id, active: true, state: 'bound' })) } });
     const locallyUpdated = controller.apps[0];
     projection = { ...projection, publication: { launchPolicy, activeNamedAddressCount: count } };

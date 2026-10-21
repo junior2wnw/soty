@@ -1,4 +1,5 @@
 import * as connectionIntents from './connection-intent.mjs';
+import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -11,6 +12,7 @@ test('actual world adapter keeps each controller and late contact action bound t
   const module = { exports: {} }, mounts = [], calls = [];
   let accountId = 'account-A', observer, bootstraps = 0, resets = 0;
   const ports = {
+    './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
     '../core/connect-client': {

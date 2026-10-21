@@ -92,7 +92,7 @@ function fixture() {
   render();
   const opener = () => main.querySelector('[data-app-action="inspect"]');
   const chain = () => { opener().focus(); opener().click(); const inspect = [...app.dialogs][0]; const next = inspect.body.querySelectorAll('button').find(node => node.textContent === 'Название и доступ'); next.focus(); next.click(); return app.appSettingsDialog; };
-  const changed = () => settings.onChanged({ app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
+  const changed = () => settings.onChanged({ actions: { canEdit: true }, app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
   return { document, location, el, app, main, dialogs, record, opener, chain, changed, settings: () => settings,
     disposed: () => disposed, renders: () => renders, drain() { while (tasks.length) tasks.shift()(); } };
 }

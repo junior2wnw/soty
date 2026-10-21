@@ -14,6 +14,12 @@ const source=readFileSync(new URL('./app-stage.ts',import.meta.url),'utf8');
 const parsed=ts.createSourceFile('app-stage.ts',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),printer=ts.createPrinter();
 const mount=parsed.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='mountAppStage');assert.ok(mount);
 const statements=mount.body.statements,print=n=>printer.printNode(ts.EmitHint.Unspecified,n,parsed);
+// Keep the real optional voice gate in the extracted launch closure. These
+// phase-only cases have no descriptor resolver; the production default decides that path.
+const declarationIndex=name=>statements.findIndex(n=>ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>ts.isIdentifier(d.name)&&d.name.text===name));
+const voiceStart=declarationIndex('nativeVoice'),voiceEnd=declarationIndex('withVoiceAdmission');
+assert.ok(voiceStart>=0&&voiceEnd>=voiceStart,'actual voice closure anchors');
+const voiceCode=statements.slice(voiceStart,voiceEnd+1).map(print).join('\n');
 const fn=name=>{const value=statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name);assert.ok(value,name);return print(value);};
 const declaration=name=>{for(const n of statements)if(ts.isVariableStatement(n))for(const d of n.declarationList.declarations)if(d.name.getText(parsed)===name)return`const ${print(d)};`;assert.fail(name);};
 const compiled=ts.transpileModule(`
@@ -25,6 +31,9 @@ exports.harness=(host,options,state)=>{
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
+ const accountId='account-synthetic';
+ const mountRootVoiceCarrier=()=>{throw Error('unexpected voice carrier in phase-only fixture');};
+ ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
  const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>null};

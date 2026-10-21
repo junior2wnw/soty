@@ -1,4 +1,5 @@
 import * as connectionIntents from './connection-intent.mjs';
+import * as nativeVoiceDescriptor from './native-voice-descriptor.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -124,6 +125,7 @@ async function fixture(t) {
   const accountPort = { ...primary, extension: (operation, args = {}, context) => primary.extension(operation, JSON.parse(JSON.stringify(args)),
     context === undefined ? undefined : JSON.parse(JSON.stringify(context))) };
   const ports = {
+    './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
     '../core/connect-client': { accountClient: accountPort, observeAccount(callback) { observers.add(callback); return () => observers.delete(callback); } },
