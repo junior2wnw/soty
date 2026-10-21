@@ -245,6 +245,19 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       args: { appId: f.appId, domainId: wrongAddress.id, path: '/embed' } });
     assert.equal(exactOld.entry.domainId, wrongAddress.id, 'ordinary exact lookup never silently substitutes an origin');
     assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'metadata recovery does not weaken launch admission');
+    const recover = async (navigate = false) => new Promise((done, reject) => {
+      const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed',
+        headers: { Host: new URL(wrongAddress.origin).host, Accept: 'text/html',
+          ...(navigate ? { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' } : {}) } }, res => {
+        const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.once('end',()=>done({status:res.statusCode,headers:res.headers,body:Buffer.concat(chunks).toString()})); });
+      req.once('error',reject);req.end();
+    });
+    const recoveryUrl = new URL('/', f.profile.parentOrigin);recoveryUrl.hash = `app/${f.appId}?${new URLSearchParams({path:'/embed'})}`;
+    const refusal = await recover();assert.ok([401,403].includes(refusal.status));
+    assert.ok(refusal.body.includes(recoveryUrl.href.replaceAll('&','&amp;')), 'the content-free Source refusal offers the admitted current-entry route');
+    assert.doesNotMatch(refusal.body,new RegExp('#launch/'+f.appId+'/'+wrongAddress.id));assert.equal(refusal.headers['set-cookie'],undefined);
+    const redirect = await recover(true);assert.equal(redirect.status,302);assert.equal(redirect.headers.location,recoveryUrl.href);assert.equal(redirect.headers['set-cookie'],undefined);
+    assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'recovery never authorizes the other origin');
     for (const path of ['/?q=1', '/board']) assert.throws(() => call({ path }), { code: 'app_scoped_admission_required' });
     const policyResponse = await new Promise((done, reject) => {
       const req = request({ hostname: '127.0.0.1', port: server.address().port, path: '/embed',
@@ -308,10 +321,15 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
           });
         }); req.once('error', reject); req.end(bytes);
       });
-      const main = call({ instanceId: 'main' }), widget = call({ instanceId: 'widget-12345678-1234-1234-1234-123456789abc' });
+      const navigation = '/embed#document=pag_synthetic&block=hero&invite=' + 'z'.repeat(43);
+      const main = call({ instanceId: 'main', path: navigation }), widget = call({ instanceId: 'widget-12345678-1234-1234-1234-123456789abc' });
+      assert.equal(new URL(main.launchUrl).searchParams.get('path'), '/embed');
+      assert.equal(new URL(main.launchUrl).searchParams.size, 1);
+      assert.equal(main.launchUrl.includes('invite'), false, 'private invitation navigation never enters the bootstrap request URL');
       const boot = launch => browser('/_soty/session', { body: { ticket: new URL(launch.launchUrl).hash.slice(1) } });
       const mainBoot = await boot(main), widgetBoot = await boot(widget);
       assert.equal(mainBoot.status, 200); assert.equal(widgetBoot.status, 200);
+      assert.equal(mainBoot.body.entryPath, navigation, 'the authenticated ticket response retains the exact document locator');
       const mainCheck = await browser('/_soty/session', { headers: { 'x-soty-frame': mainBoot.body.scopedRequestId, 'x-soty-boot-check': mainBoot.body.sessionCheck } });
       const widgetCheck = await browser('/_soty/session', { headers: { 'x-soty-frame': widgetBoot.body.scopedRequestId, 'x-soty-boot-check': widgetBoot.body.sessionCheck } });
       assert.equal(mainCheck.status, 200, 'main keeps its own session after widget boot in the SAME browser jar');
@@ -331,7 +349,9 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       assert.equal((await browser('/embed?sotyFrame='+mainBoot.body.frame,{headers:{'x-soty-frame':widgetBoot.body.frame}})).status,403);
       assert.equal((await browser('/embed?sotyFrame='+mainBoot.body.frame+'&sotyFrame='+mainBoot.body.frame)).status,403);
       const renewed=await service.sourcePreparationExtension.executeAsync({op:'apps.scoped.renew',actor:f.owner,args:{appId:f.appId,handle:main.scopedCloseHandle,requestId:'main-frame-renewal-1'}});
+      assert.equal(new URL(renewed.launchUrl).searchParams.get('path'), '/embed');assert.equal(renewed.launchUrl.includes('invite'), false);
       const pending=await boot(renewed);assert.equal(pending.status,200);assert.equal(pending.body.frame,mainBoot.body.frame,'renewal retains the visible frame locator');
+      assert.equal(pending.body.entryPath, navigation, 'short-session renewal preserves navigation in private server state');
       assert.equal(pending.headers['set-cookie'],undefined);assert.equal(jar.get(ownCookie(mainBoot.body.frame)),mainCookie);
       assert.equal((await read(mainBoot.body.frame)).body.reference,mainBoot.body.scopedRequestId,'visible main remains current before ACK');
       const confirmed=await browser('/api/embed/session-continue',{body:{requestId:pending.body.scopedRequestId},headers:{'x-soty-frame':pending.body.frame,'x-soty-boot-check':pending.body.sessionCheck}});
