@@ -602,19 +602,20 @@ export function downloadAgentInstaller(scope: "user" | "machine" = "machine"): v
 export function downloadAgentInstallerForDevice(
   scope: "user" | "machine" = "machine",
   device: { readonly id?: string; readonly nick?: string } = {},
-  releaseVersion = ""
+  releaseVersion = "",
+  transitControlHash = ""
 ): void {
   const linkId = ensureAgentRelayId();
   const base = `${window.location.origin}/agent`;
   if (isWindowsPlatform()) {
     const revision = sanitizeRevision(releaseVersion);
-    downloadText(revision ? `install-soty-agent-${revision}.cmd` : "install-soty-agent.cmd", buildWindowsInstaller(base, linkId, device, revision), "application/bat");
+    downloadText(revision ? `install-soty-agent-${revision}.cmd` : "install-soty-agent.cmd", buildWindowsInstaller(base, linkId, device, revision, transitControlHash), "application/bat");
     return;
   }
   downloadText("install-soty-agent.sh", buildUnixInstaller(scope, base, linkId), "text/x-shellscript");
 }
 
-function buildWindowsInstaller(base: string, linkId: string, device: { readonly id?: string; readonly nick?: string }, revision: string): string {
+function buildWindowsInstaller(base: string, linkId: string, device: { readonly id?: string; readonly nick?: string }, revision: string, transitControlHash = ""): string {
   const clean = (value: string) => value.replace(/[\r\n"%']/gu, "").slice(0, 160);
   return [
     "@echo off",
@@ -625,7 +626,8 @@ function buildWindowsInstaller(base: string, linkId: string, device: { readonly 
     `set "SOTY_CONNECTOR_DEVICE_ID=${clean(device.id || "")}"`,
     `set "SOTY_CONNECTOR_DEVICE_NICK=${clean(device.nick || "")}"`,
     `set "SOTY_CONNECTOR_INSTALLER_REVISION=${revision}"`,
-    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; $dir=Join-Path $env:TEMP 'soty-connector-install'; New-Item -ItemType Directory -Force -Path $dir|Out-Null; $script=Join-Path $dir 'install-windows-machine-bootstrap.ps1'; $uri=$env:SOTY_CONNECTOR_INSTALL_BASE.TrimEnd('/')+'/install-windows-machine-bootstrap.ps1'; Invoke-WebRequest -Uri $uri -UseBasicParsing -OutFile $script -TimeoutSec 45; & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Base $env:SOTY_CONNECTOR_INSTALL_BASE -Revision $env:SOTY_CONNECTOR_INSTALLER_REVISION -RelayId $env:SOTY_CONNECTOR_LINK_ID -DeviceId $env:SOTY_CONNECTOR_DEVICE_ID -DeviceNick $env:SOTY_CONNECTOR_DEVICE_NICK; exit $LASTEXITCODE\"",
+    `set "SOTY_TRANSIT_CONTROL_HASH=${/^[a-f0-9]{64}$/u.test(transitControlHash) ? transitControlHash : ''}"`,
+    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; $dir=Join-Path $env:TEMP 'soty-connector-install'; New-Item -ItemType Directory -Force -Path $dir|Out-Null; $script=Join-Path $dir 'install-windows-machine-bootstrap.ps1'; $uri=$env:SOTY_CONNECTOR_INSTALL_BASE.TrimEnd('/')+'/install-windows-machine-bootstrap.ps1'; Invoke-WebRequest -Uri $uri -UseBasicParsing -OutFile $script -TimeoutSec 45; & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script -Base $env:SOTY_CONNECTOR_INSTALL_BASE -Revision $env:SOTY_CONNECTOR_INSTALLER_REVISION -RelayId $env:SOTY_CONNECTOR_LINK_ID -DeviceId $env:SOTY_CONNECTOR_DEVICE_ID -DeviceNick $env:SOTY_CONNECTOR_DEVICE_NICK -TransitControlHash $env:SOTY_TRANSIT_CONTROL_HASH; exit $LASTEXITCODE\"",
     "if errorlevel 1 goto fail",
     "exit /b 0",
     ":fail",

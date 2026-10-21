@@ -131,6 +131,13 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   const actions = createAppActions(accountClient, refresh, () => openAccount('devices'));
   destroyActions = () => actions.destroy();
   const openLegacy = (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => {
+    if (tool === 'internet') {
+      void import('./transit-client').then(({ openTransitClient }) => openTransitClient({ openSharedInternet: () => {
+        const shared = new URL(window.location.href); shared.search = ''; shared.hash = '';
+        shared.searchParams.set('view', 'classic'); shared.searchParams.set('tool', 'internet'); window.location.assign(shared.href);
+      } }));
+      return;
+    }
     const url = new URL(window.location.href); url.search = ''; url.hash = ''; url.searchParams.set('view', 'classic');
     if (tool) url.searchParams.set('tool', tool);
     window.location.assign(url.href);

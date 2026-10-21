@@ -8,6 +8,8 @@ param(
   [string]$RelayId = "",
   [string]$DeviceId = "",
   [string]$DeviceNick = "",
+  [ValidatePattern('^$|^[a-f0-9]{64}$')]
+  [string]$TransitControlHash = "",
   [switch]$SourceCompanion,
   [switch]$RuntimeOnly,
   [string]$RuntimeUpdatePlan = "",
@@ -1002,6 +1004,7 @@ shell.Run "$escapedCommand", 0, False
       trafficFabric = if ($existing -and $existing.trafficFabric) { $existing.trafficFabric } else { $null }
       trafficCoreSettings = if ($existing -and $existing.trafficCoreSettings) { $existing.trafficCoreSettings } else { $null }
       trafficCoreEnabled = if ($existing -and $existing.trafficCoreEnabled) { [bool]$existing.trafficCoreEnabled } else { $false }
+      transitControlHash = if ($TransitControlHash) { $TransitControlHash } elseif ($existing -and $existing.transitControlHash) { [string]$existing.transitControlHash } else { "" }
     } | ConvertTo-Json -Depth 8 | Set-Content -Path $configPath -Encoding UTF8
     Write-SotyLog "soty-agent:config-seeded"
   }
@@ -1153,6 +1156,16 @@ $nickLine
   Install-AgentRuntime
   Remove-Item -LiteralPath (Join-Path $AgentDir "soty-agent.mjs") -Force -ErrorAction SilentlyContinue
   Write-AgentConfigSeed
+  if ((-not $SourceCompanion) -and (($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'AMD64'))) {
+    Write-SotyStep "agent:transit-core"
+    $previousTransitDataDir = $env:SOTY_CONNECTOR_DATA_DIR
+    try {
+      $env:SOTY_CONNECTOR_DATA_DIR = $AgentDir
+      Invoke-SotyProcess -FilePath $NodePath -ArgumentList @($AgentPath, "transit-prepare") -TimeoutSec 180 -LogName "transit-core-prepare"
+    } catch {
+      Write-SotyLog "soty-agent:transit-core-deferred"
+    } finally { $env:SOTY_CONNECTOR_DATA_DIR = $previousTransitDataDir }
+  }
   Write-SotyStep "agent:opencode"
   Invoke-SotyProcess -FilePath $NodePath -ArgumentList @($AgentPath, "ctl", "bootstrap") -TimeoutSec 300 -LogName "opencode-bootstrap"
 

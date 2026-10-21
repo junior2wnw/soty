@@ -7689,7 +7689,8 @@ async function renderTrafficFabricModal(overlay: HTMLDialogElement, notice = "")
     trafficServerStatus().catch(() => ({ exits: [] as readonly TrafficExit[], clients: [] as readonly TrafficClient[] }))
   ]);
   const activeClients = server.clients.filter((client) => !client.revokedAt);
-  const selectedVpn = interfaces.find((item) => item.up && item.vpn) || interfaces.find((item) => item.up);
+  const selectedVpn = interfaces.find((item) => item.up && item.name === 'SotyTransit')
+    || interfaces.find((item) => item.up && item.vpn) || interfaces.find((item) => item.up);
   const active = runtime.active === true;
   const phase = active ? "Маршрут работает" : runtime.configured ? "Маршрут остановлен" : "Маршрут не настроен";
   content.innerHTML = `
@@ -7702,7 +7703,7 @@ async function renderTrafficFabricModal(overlay: HTMLDialogElement, notice = "")
       <h3>Выход</h3>
       <label class="traffic-switch-row">
         <input class="traffic-require-vpn" type="checkbox" ${selectedVpn?.vpn ? "checked" : ""} />
-        <span><b>Через VPN компьютера</b><small>Если VPN выключится, телефон не уйдёт напрямую</small></span>
+        <span><b>Через VPN компьютера</b><small>Выберите подключение, через которое работает выход</small></span>
       </label>
       <label class="traffic-field">
         <span>Сетевой интерфейс</span>

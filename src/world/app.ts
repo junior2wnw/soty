@@ -880,6 +880,7 @@ class WorldApplication {
     const tools = el('div', 'of-menu-tools');
     if (this.unifiedField) tools.append(item('Вид поля', 'sliders', () => this.unifiedField?.openView()));
     else tools.append(item('На моё поле', 'grid', () => this.navigate('mine')));
+    tools.append(item('Интернет', 'world', () => this.openCapability('internet')));
     const grip = el('button', 'of-sheet-handle'); grip.type = 'button'; grip.setAttribute('aria-label', 'Свернуть меню');
     disposeGrip = bindSheetGripDismiss(grip, () => menu.close(), {
       isCurrent: () => !this.destroyed && this.fieldMenu === menu && menu.element.open && account === this.deskAccount && accountGeneration === this.accountGeneration,

@@ -1,5 +1,12 @@
 export const trafficCoreSchema = "soty.traffic-core.v1";
 
+// Literal ranges keep this policy independent of an optional geoip.dat download.
+const nonPublicDestinations = [
+  '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
+  '172.16.0.0/12', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4',
+  '::/128', '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8',
+];
+
 export function createTrafficCoreRuntime(deps = {}) {
   const required = ["exists", "mkdir", "remove", "rename", "writeFile", "readJson", "join", "download", "extract", "sha256", "runFile", "spawnCore"];
   for (const name of required) {
@@ -177,8 +184,11 @@ export function buildTrafficBridgeConfig(settings) {
   return {
     log: { loglevel: "warning" },
     routing: {
-      domainStrategy: "IPIfNonMatch",
-      rules: [{ type: "field", inboundTag: [clean.reverseTag], outboundTag: clean.freedomTag }]
+      domainStrategy: "IPOnDemand",
+      rules: [
+        { type: "field", inboundTag: [clean.reverseTag], ip: [...nonPublicDestinations], outboundTag: clean.blockTag },
+        { type: "field", inboundTag: [clean.reverseTag], outboundTag: clean.freedomTag }
+      ]
     },
     outbounds: [
       { tag: clean.blockTag, protocol: "blackhole" },
@@ -186,7 +196,10 @@ export function buildTrafficBridgeConfig(settings) {
         tag: clean.freedomTag,
         protocol: "freedom",
         ...(clean.requireVpn ? { sendThrough: clean.vpnAddress } : {}),
-        settings: { domainStrategy: "UseIP", finalRules: [{ action: "allow", network: "tcp,udp" }] },
+        settings: { domainStrategy: "UseIP", finalRules: [
+          { action: "block", ip: [...nonPublicDestinations] },
+          { action: "allow", network: "tcp,udp" }
+        ] },
       },
       {
         tag: "soty-reverse-link",

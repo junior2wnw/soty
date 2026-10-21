@@ -3,7 +3,9 @@ param(
   [string]$Revision = "",
   [string]$RelayId = "",
   [string]$DeviceId = "",
-  [string]$DeviceNick = ""
+  [string]$DeviceNick = "",
+  [ValidatePattern('^$|^[a-f0-9]{64}$')]
+  [string]$TransitControlHash = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,6 +84,7 @@ $revisionLiteral = ConvertTo-PsSingleQuotedLiteral $Revision
 $relayLiteral = ConvertTo-PsSingleQuotedLiteral $RelayId
 $deviceLiteral = ConvertTo-PsSingleQuotedLiteral $DeviceId
 $nickLiteral = ConvertTo-PsSingleQuotedLiteral $DeviceNick
+$transitHashLiteral = ConvertTo-PsSingleQuotedLiteral $TransitControlHash
 
 $elevatedLines = @(
   '$ErrorActionPreference = ''Stop''',
@@ -96,6 +99,7 @@ $elevatedLines = @(
   '$relay = ' + $relayLiteral,
   '$device = ' + $deviceLiteral,
   '$nick = ' + $nickLiteral,
+  '$transitHash = ' + $transitHashLiteral,
   'Add-Log (''soty-agent-machine:elevated-download:'' + $revision)',
   '$uri = $base.TrimEnd(''/'') + ''/install-windows.ps1''',
   'if (-not [string]::IsNullOrWhiteSpace($revision) -and $revision -ne ''unknown'') { $uri += ''?v='' + [uri]::EscapeDataString($revision) }',
@@ -104,6 +108,7 @@ $elevatedLines = @(
   '$installArgs = @(''-NoLogo'', ''-NoProfile'', ''-ExecutionPolicy'', ''Bypass'', ''-File'', $script, ''-Base'', $base, ''-Scope'', ''Machine'', ''-LaunchAppAtLogon'')',
   'if (-not [string]::IsNullOrWhiteSpace($relay)) { $installArgs += @(''-RelayId'', $relay) }',
   'if (-not [string]::IsNullOrWhiteSpace($device)) { $installArgs += @(''-DeviceId'', $device); if (-not [string]::IsNullOrWhiteSpace($nick)) { $installArgs += @(''-DeviceNick'', $nick) } }',
+  'if (-not [string]::IsNullOrWhiteSpace($transitHash)) { $installArgs += @(''-TransitControlHash'', $transitHash) }',
   '& powershell.exe @installArgs',
   '$code = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }',
   'Add-Log (''soty-agent-machine:elevated-exit:'' + $code)',

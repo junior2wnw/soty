@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { createHash, createPublicKey, randomBytes, randomUUID, verify as verifySignature } from "node:crypto";
+import { EventEmitter } from 'node:events';
+import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createConnectorScopedFactory } from "../modules/apps/scoped-embed/connector-host.mjs";
 import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffic-fabric.mjs";
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
+import { createTransitClientRuntime, executeTransitClientAction, transitCheckedProfile, transitClientWindowsRelease } from "./agent-modules/transit-client.mjs";
 import { selectGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
@@ -18,7 +20,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.8";
+const connectorVersion = "1.4.9";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -117,7 +119,7 @@ let trafficFabricState = trafficFabric.normalizeState(persisted.trafficFabric);
 let trafficCoreSettings = normalizeBridgeSettings(refreshTrafficVpnSettings(persisted.trafficCoreSettings));
 let trafficCoreEnabled = persisted.trafficCoreEnabled === true;
 let spreadExMlState = persisted.spreadexMl && typeof persisted.spreadexMl === "object" ? persisted.spreadexMl : {};
-const trafficCoreRuntime = createTrafficCoreRuntime({
+const trafficCoreDependencies = {
   exists: existsSync,
   mkdir: async (target) => await mkdir(target, { recursive: true }),
   remove: async (target) => await rm(target, { recursive: true, force: true }),
@@ -136,6 +138,42 @@ const trafficCoreRuntime = createTrafficCoreRuntime({
   onceExit: (child) => new Promise((resolveExit) => child.once("exit", resolveExit)),
   wait: sleep,
   now: () => new Date().toISOString()
+};
+const trafficCoreRuntime = createTrafficCoreRuntime(trafficCoreDependencies);
+const transitInstaller = createTrafficCoreRuntime(trafficCoreDependencies);
+const transitRoot = join(connectorDir, 'transit-client');
+const transitProfilePath = join(transitRoot, 'profile.json');
+let transitDirectoryReady = null;
+const transitControlHash = /^[a-f0-9]{64}$/u.test(persisted.transitControlHash || '') ? persisted.transitControlHash : '';
+const transitClient = createTransitClientRuntime({
+  installCore: async () => {
+    if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('transit-platform-unsupported');
+    await ensureTransitPrivateDirectory();
+    return transitInstaller.install(transitClientWindowsRelease, join(transitRoot, 'core'));
+  },
+  verifyCore: async core => sha256(await readFile(core.executable)) === transitClientWindowsRelease.binarySha256,
+  readProfile: async () => {
+    try { return JSON.parse(await readFile(transitProfilePath, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw new Error('transit-profile-unreadable'); }
+  },
+  saveCheckedProfile: saveTransitProfile,
+  underlayInterface: transitUnderlayInterface,
+  writeRunProfile: async (_core, profile) => writeTransitPrivate('run.json', profile),
+  probe: probeTransitProfile,
+  spawnCore: (core, file) => spawn(core.executable, ['run', '-c', file], { windowsHide: true, stdio: 'ignore', cwd: core.installDir }),
+  rememberOwned: rememberTransitProcess,
+  recoverOwned: recoverTransitProcess,
+  forgetOwned: async child => {
+    const record = await readTransitProcess();
+    if (record?.pid === child.pid) await rm(join(transitRoot, 'process.json'), { force: true });
+  },
+  confirmRunning: async (_child, proof) => (await transitRoutePresent()) && proof.exitIps.includes(await transitPublicIp()),
+  confirmStopped: async () => {
+    for (let attempt = 0; attempt < 8; attempt++) { if (!(await transitRoutePresent())) return true; await sleep(250); }
+    return false;
+  },
+  wait: sleep,
+  onceExit: child => child.exitCode !== null || child.signalCode ? Promise.resolve() : new Promise(resolveExit => child.once('exit', resolveExit)),
 });
 const spreadExMl = createSpreadExMlIntegration({
   exists: existsSync,
@@ -182,7 +220,16 @@ const spreadExMl = createSpreadExMlIntegration({
   secrets: loadSpreadExMlSecrets()
 });
 
-if (process.argv[2] === "ctl") {
+if (process.argv[2] === 'transit-prepare') {
+  process.stdout.write(`${JSON.stringify({ ok: true, runtime: await transitClient.prepare() })}\n`);
+} else if (process.argv[2] === 'transit-stop') {
+  process.stdout.write(`${JSON.stringify({ ok: true, runtime: await transitClient.stop() })}\n`);
+} else if (process.argv[2] === 'transit-check') {
+  let profile;
+  try { profile = JSON.parse(await readFile(process.argv[3] || transitProfilePath, 'utf8')); }
+  catch { throw new Error('transit-profile-unreadable'); }
+  process.stdout.write(`${JSON.stringify({ ok: true, check: await transitClient.check(profile) })}\n`);
+} else if (process.argv[2] === "ctl") {
   await runControl(process.argv.slice(3));
 } else {
   await startConnector();
@@ -234,6 +281,7 @@ async function startConnector() {
     spreadExMl.stop();
     localApps.stop();
     await trafficCoreRuntime.stop().catch(() => undefined);
+    await transitClient.stop().catch(() => undefined);
     server.close(() => process.exit(process.exitCode || 0));
     const timer = setTimeout(() => process.exit(process.exitCode || 0), 2_000);
     timer.unref?.();
@@ -331,6 +379,22 @@ async function handleHttp(request, response, url) {
   }
   if (url.pathname === "/operator/traffic/fabric" && request.method === "GET") {
     sendJson(response, 200, headers, trafficStatus());
+    return;
+  }
+  if (url.pathname === '/operator/transit/client' && request.method === 'GET') {
+    sendJson(response, 200, headers, { ok: true, deviceId, controlPaired: !!transitControlHash, supported: process.platform === 'win32' && process.arch === 'x64', runtime: await transitClient.status() });
+    return;
+  }
+  if (url.pathname === '/operator/transit/client' && request.method === 'POST') {
+    try {
+      const body = await readJsonBody(request, 300_000);
+      const result = await executeTransitClientAction(body, { deviceId, runtime: transitClient,
+        verifyControlToken: token => !!transitControlHash && timingSafeEqual(Buffer.from(sha256(token), 'hex'), Buffer.from(transitControlHash, 'hex')) });
+      sendJson(response, 200, headers, { ok: true, ...result });
+    } catch (error) {
+      const code = /^transit-[a-z-]+$/u.test(error?.message || '') ? error.message : 'transit-client-failed';
+      sendJson(response, 409, headers, { ok: false, error: code });
+    }
     return;
   }
   if (url.pathname === "/operator/traffic/fabric/interfaces" && request.method === "GET") {
@@ -1237,6 +1301,178 @@ async function mutateTrafficFabric(request, response, headers, operation) {
   }
 }
 
+async function transitCommand(file, args, timeoutMs = 15_000) {
+  const result = await runChild(file, args, { timeoutMs });
+  if (result.exitCode !== 0) throw new Error('transit-command-failed');
+  return result.stdout.trim();
+}
+
+async function transitPowerShell(command) {
+  if (process.platform !== 'win32') throw new Error('transit-platform-unsupported');
+  return transitCommand(windowsBuiltInPowerShellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command]);
+}
+
+async function transitUnderlayInterface() {
+  const name = await transitPowerShell("$a=@(Get-NetAdapter -Physical | Where-Object Status -eq 'Up'); $r=Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Where-Object {$_.InterfaceIndex -in $a.ifIndex} | Sort-Object RouteMetric | Select-Object -First 1; if($r){$a | Where-Object ifIndex -eq $r.InterfaceIndex | Select-Object -First 1 -ExpandProperty Name}");
+  if (!name) throw new Error('transit-underlay-unavailable');
+  return name;
+}
+
+async function transitRoutePresent() {
+  if (process.platform !== 'win32') return false;
+  const result = await transitPowerShell("$r=@(Get-NetRoute -InterfaceAlias 'SotyTransit' -ErrorAction SilentlyContinue | Where-Object {$_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1')}); if($r.Count -gt 0){'yes'}else{'no'}");
+  return result === 'yes';
+}
+
+async function writeTransitPrivate(name, value) {
+  await ensureTransitPrivateDirectory();
+  const file = join(transitRoot, name);
+  await writeFile(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await protectSecretFile(file);
+  return file;
+}
+
+async function ensureTransitPrivateDirectory() {
+  if (!transitDirectoryReady) transitDirectoryReady = (async () => {
+    await mkdir(transitRoot, { recursive: true, mode: 0o700 });
+    if ((await lstat(transitRoot)).isSymbolicLink()) throw new Error('transit-private-storage-failed');
+    if (process.platform !== 'win32') { await chmod(transitRoot, 0o700); return; }
+    const identity = await transitCommand(windowsSystemTool('whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
+    const sid = identity.match(/S-\d-(?:\d+-)+\d+/u)?.[0];
+    if (!sid) throw new Error('transit-private-storage-failed');
+    // Restrict inheritance before the first credential is written. chmod alone
+    // does not establish a private NTFS DACL on Windows.
+    await transitCommand(windowsSystemTool('icacls.exe'), [transitRoot, '/inheritance:r', '/grant:r',
+      `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F']);
+  })().catch(() => { transitDirectoryReady = null; throw new Error('transit-private-storage-failed'); });
+  return transitDirectoryReady;
+}
+
+async function saveTransitProfile(core, profile) {
+  const staged = await writeTransitPrivate('profile.next.json', profile);
+  try {
+    await transitCommand(core.executable, ['check', '-c', staged], 20_000);
+    await rename(staged, transitProfilePath);
+  } finally { await rm(staged, { force: true }).catch(() => undefined); }
+}
+
+async function readTransitProcess() {
+  try {
+    const value = JSON.parse(await readFile(join(transitRoot, 'process.json'), 'utf8'));
+    return Number.isSafeInteger(value.pid) && value.pid > 0 && typeof value.created === 'string'
+      && /^[0-9T:.+Z-]{20,40}$/u.test(value.created) ? value : null;
+  } catch (error) { if (error.code === 'ENOENT') return null; throw new Error('transit-process-record-invalid'); }
+}
+
+function transitProcessGuard(pid, created = '') {
+  const executable = join(transitRoot, 'core', `${transitClientWindowsRelease.version}-win32-x64`, transitClientWindowsRelease.executable);
+  const file = join(transitRoot, 'run.json');
+  return `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop; if($p -and $p.ExecutablePath -eq ${psQuote(executable)} -and $p.CommandLine.Contains(${psQuote(file)})${created ? ` -and $p.CreationDate.ToUniversalTime().ToString('o') -eq ${psQuote(created)}` : ''})`;
+}
+
+async function rememberTransitProcess(child) {
+  if (!child.pid) throw new Error('transit-start-unconfirmed');
+  const created = await transitPowerShell(`${transitProcessGuard(child.pid)}{$p.CreationDate.ToUniversalTime().ToString('o')}`);
+  if (!/^[0-9T:.+Z-]{20,40}$/u.test(created)) throw new Error('transit-start-unconfirmed');
+  await writeTransitPrivate('process.json', { schema: 'soty.transit-owned-process.v1', pid: child.pid, created });
+}
+
+async function recoverTransitProcess() {
+  const record = await readTransitProcess();
+  if (!record || process.platform !== 'win32') return null;
+  const matches = () => transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{'yes'}`);
+  if ((await matches()) !== 'yes') return null;
+  // Reclaim only the exact executable, private config path and creation instant.
+  // A reused PID or another VPN is never considered our process.
+  const owned = new EventEmitter();
+  owned.pid = record.pid; owned.exitCode = null; owned.signalCode = null;
+  let checking = false;
+  const timer = setInterval(async () => {
+    if (checking) return; checking = true;
+    try {
+      if ((await matches()) !== 'yes') { clearInterval(timer); owned.exitCode = 0; owned.emit('exit', 0); }
+    } catch { /* An unreadable process is UNKNOWN until verified, never OFF. */ }
+    finally { checking = false; }
+  }, 500);
+  timer.unref();
+  owned.kill = () => {
+    void transitPowerShell(`${transitProcessGuard(record.pid, record.created)}{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}`).catch(() => undefined);
+    return true;
+  };
+  return owned;
+}
+
+async function transitPublicIp(proxy = '') {
+  const output = await transitCommand(windowsSystemTool('curl.exe'), [
+    '--silent', '--show-error', '--fail', '--max-time', '12',
+    ...(proxy ? ['--proxy', proxy] : []), 'https://api.ipify.org/',
+  ]);
+  if (!/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(output)) throw new Error('transit-probe-failed');
+  return output;
+}
+
+async function probeTransitProfile(core, profile) {
+  const leaves = profile.outbounds.filter(row => ['vless', 'hysteria2'].includes(row.type));
+  const healthy = [], exitIps = new Set();
+  let index = 0;
+  const deadline = Date.now() + 45_000;
+  // At most three processes and a bounded 32-leaf import. Do not create a TUN.
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(3, leaves.length) }, async () => {
+    while (index < leaves.length && Date.now() < deadline) {
+      const current = index++, leaf = leaves[current];
+      const candidate = structuredClone(profile);
+      candidate.outbounds = [leaf]; candidate.route.final = leaf.tag;
+      for (const server of candidate.dns.servers) if (server.detour) server.detour = leaf.tag;
+      try {
+        const proof = await probeTransitCandidate(core, candidate, `probe-${current}.json`);
+        healthy.push(leaf.tag); exitIps.add(proof.exitIp);
+      } catch (error) { if (error.message === 'transit-probe-stop-unconfirmed') throw error; }
+    }
+  }));
+  if (workers.some(row => row.status === 'rejected')) throw new Error('transit-probe-stop-unconfirmed');
+  if (!healthy.length) throw new Error('transit-probe-failed');
+  const checked = transitCheckedProfile(profile, healthy);
+  const file = await writeTransitPrivate('checked.next.json', checked);
+  try { await transitCommand(core.executable, ['check', '-c', file], 20_000); }
+  finally { await rm(file, { force: true }).catch(() => undefined); }
+  return { profile: checked, availableEntryCount: healthy.length, exitIps: [...exitIps] };
+}
+
+async function probeTransitCandidate(core, profile, fileName) {
+  const reservation = createServer();
+  await new Promise((resolveListen, reject) => { reservation.once('error', reject); reservation.listen(0, '127.0.0.1', resolveListen); });
+  const probePort = reservation.address().port;
+  await new Promise(resolveClose => reservation.close(resolveClose));
+  const file = await writeTransitPrivate(fileName, { ...profile,
+    inbounds: [{ type: 'socks', tag: 'transit-soty', listen: '127.0.0.1', listen_port: probePort }] });
+  let probe = null;
+  try {
+    await transitCommand(core.executable, ['check', '-c', file], 20_000);
+    probe = spawn(core.executable, ['run', '-c', file], { cwd: core.installDir, windowsHide: true, stdio: 'ignore' });
+    let failed = false;
+    probe.once('error', () => { failed = true; });
+    await sleep(1200);
+    if (failed || probe.exitCode !== null || probe.signalCode || !probe.pid) throw new Error('transit-probe-failed');
+    const proxy = `socks5h://127.0.0.1:${probePort}`;
+    const exitIp = await transitPublicIp(proxy);
+    const status = await transitCommand(windowsSystemTool('curl.exe'), ['--silent', '--show-error', '--fail', '--max-time', '12', '--proxy', proxy, '--output', 'NUL', '--write-out', '%{http_code}', 'https://example.com/']);
+    if (status !== '200') throw new Error('transit-probe-failed');
+    return { exitIp };
+  } catch { throw new Error('transit-probe-failed'); }
+  finally {
+    if (probe && probe.exitCode === null && !probe.signalCode && probe.pid) {
+      probe.kill();
+      await Promise.race([new Promise(resolveExit => probe.once('exit', resolveExit)), sleep(3000)]);
+      if (probe.exitCode === null && !probe.signalCode) {
+        probe.kill('SIGKILL');
+        await Promise.race([new Promise(resolveExit => probe.once('exit', resolveExit)), sleep(2000)]);
+      }
+      if (probe.exitCode === null && !probe.signalCode) throw new Error('transit-probe-stop-unconfirmed');
+    }
+    await rm(file, { force: true }).catch(() => undefined);
+  }
+}
+
 async function handleTrafficCore(request, response, headers) {
   try {
     const body = await readJsonBody(request, 64_000);
@@ -1436,7 +1672,7 @@ function trafficInterfaces() {
   for (const [name, addresses] of Object.entries(networkInterfaces())) {
     for (const address of addresses || []) {
       if (address.family !== "IPv4" || address.internal) continue;
-      items.push({ name, index: 0, address: address.address, up: true, metric: 0, vpn: /vpn|wireguard|wg\d*|tailscale|tun\d*|tap\d*|utun\d*/iu.test(name) });
+      items.push({ name, index: 0, address: address.address, up: true, metric: 0, vpn: /^SotyTransit$/iu.test(name) || /vpn|wireguard|wg\d*|tailscale|tun\d*|tap\d*|utun\d*/iu.test(name) });
     }
   }
   return items.slice(0, 64);
@@ -1744,6 +1980,7 @@ async function saveConfig() {
     trafficFabric: trafficFabricState,
     trafficCoreSettings,
     trafficCoreEnabled,
+    ...(transitControlHash ? { transitControlHash } : {}),
     spreadexMl: spreadExMlState
   };
   await mkdir(connectorDir, { recursive: true });

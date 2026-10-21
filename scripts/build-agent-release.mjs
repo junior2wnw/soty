@@ -6,6 +6,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from 'node:module';
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeReleaseManifest } from "./agent-modules/opencode-release.mjs";
+import { transitClientWindowsRelease } from './agent-modules/transit-client.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourcePath = join(root, "scripts", "soty-connector.mjs");
@@ -103,7 +104,14 @@ const manifest = {
   },
   trafficCore,
   spreadexMl,
-  windowsReinstall
+  windowsReinstall,
+  transitClient: {
+    schema: 'soty.transit-client.release.v1', engine: 'sing-box', version: transitClientWindowsRelease.version,
+    license: 'LicenseRef-sing-box-upstream',
+    sourceUrl: 'https://github.com/SagerNet/sing-box/tree/3708fa18766cda1f11b77f6ed9c7bd61688f17df',
+    platforms: { 'win32-x64': transitClientWindowsRelease },
+    installationStartsVpn: false,
+  }
 };
 
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
