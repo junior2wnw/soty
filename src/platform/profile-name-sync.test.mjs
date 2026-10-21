@@ -1,3 +1,4 @@
+import * as connectionIntents from './connection-intent.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -123,15 +124,17 @@ async function fixture(t) {
   const accountPort = { ...primary, extension: (operation, args = {}, context) => primary.extension(operation, JSON.parse(JSON.stringify(args)),
     context === undefined ? undefined : JSON.parse(JSON.stringify(context))) };
   const ports = {
+    './connection-intent.mjs': connectionIntents,
+    './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
     '../core/connect-client': { accountClient: accountPort, observeAccount(callback) { observers.add(callback); return () => observers.delete(callback); } },
     '../world/app': { mountWorldApp(_root, options) { return mount(options); } },
     './local-apps': { createAppActions() { return { connectDevice() {}, agentCreate() {}, resetAccount() {}, destroy() {} }; } },
     './assistant': { mountAssistant() {} }, './call-identity': { bindCallIdentity() { return () => {}; } },
   };
-  vm.runInNewContext(adapterCode, { module, exports: module.exports, require: name => ports[name] ?? {}, URL, AbortSignal,
-    fetch: async () => ({ ok: false, status: 503 }), window: { location: { href: `${origin}/#mine` }, addEventListener() {} },
+  vm.runInNewContext(adapterCode, { module, exports: module.exports, require: name => ports[name] ?? {}, URL, AbortSignal, AbortController,
+    fetch: async () => ({ ok: false, status: 503 }), window: { location: { href: `${origin}/#mine`, origin }, addEventListener() {}, removeEventListener() {} },
   });
-  await module.exports.startWorld({}, { callLifecycle: {} }); traffic.length = 0;
+  await module.exports.startWorld({ isConnected: true }, { callLifecycle: {} }); traffic.length = 0;
   return {
     a, b, primary, bob, otherTab, store, traffic, mounts, current: () => mounts.at(-1),
     afterResponse(callback) { afterResponse = callback; }, failRename(value) { renameFailure = value; }, loseRenameReply() { loseRenameResponse = true; },

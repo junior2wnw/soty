@@ -1,3 +1,4 @@
+import * as connectionIntents from './connection-intent.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -10,9 +11,11 @@ test('actual world adapter keeps each controller and late contact action bound t
   const module = { exports: {} }, mounts = [], calls = [];
   let accountId = 'account-A', observer, bootstraps = 0, resets = 0;
   const ports = {
+    './connection-intent.mjs': connectionIntents,
+    './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
     '../core/connect-client': {
       accountClient: {
-        async getLocalState() { return { accountId, label: 'Local profile' }; },
+        async getLocalState() { return { accountId, deviceId: accountId ? 'device-' + accountId : null, label: 'Local profile' }; },
         async bootstrap() { bootstraps++; },
         async extension(operation, args, context) { calls.push(JSON.parse(JSON.stringify({ operation, args, context }))); return {}; },
       },
@@ -28,14 +31,14 @@ test('actual world adapter keeps each controller and late contact action bound t
     '../sync': { createHumanCallPorts() { return { subscribe: () => () => {}, snapshot: () => ({ connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false }) }; } },
     '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle() { return { snapshot: () => ({ state: 'idle', microphone: 'off', scope: null, code: null }), dispose() {} }; } },
   };
-  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name], URL, AbortSignal,
+  vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name], URL, AbortSignal, AbortController,
     // This account-fence fixture exposes an unavailable capability service.
     fetch: async () => ({ ok: false, status: 503 }),
-    window: { location: { href: 'https://shell.example/#mine' }, addEventListener() {} },
+    window: { location: { href: 'https://shell.example/#mine', origin: 'https://shell.example' }, addEventListener() {}, removeEventListener() {} },
   });
-  await module.exports.startWorld({});
+  await module.exports.startWorld({ isConnected: true });
   const first = mounts[0];
-  accountId = 'account-B'; observer({ accountId });
+  accountId = 'account-B'; observer({ accountId, deviceId: accountId ? 'device-' + accountId : null });
   const second = mounts[1];
   await first.options.api.request('world.community.list', {});
   await second.options.api.request('world.profile.get');
@@ -43,7 +46,7 @@ test('actual world adapter keeps each controller and late contact action bound t
   assert.equal(first.destroyed, true); assert.equal(resets, 1); assert.equal(bootstraps, 0);
   assert.deepEqual(calls.map(value => value.context.expectedAccountId), ['account-A', 'account-B', 'account-A']);
   assert.deepEqual(calls[0].args, {}, 'client admission context does not alter strict product arguments');
-  accountId = null; observer({ accountId });
+  accountId = null; observer({ accountId, deviceId: accountId ? 'device-' + accountId : null });
   await assert.rejects(mounts[2].options.api.request('world.profile.get'), { code: 'NO_LOCAL_PROFILE' });
   assert.equal(calls.length, 3, 'a controller without identity cannot enqueue unchecked operations');
 });

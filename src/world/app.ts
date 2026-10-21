@@ -1,3 +1,4 @@
+import type { ConnectionIntent } from '../platform/connection-intent.mjs';
 import type { WorldProjectEditorPort } from './types';
 import './world.css';
 import './attachments.css';
@@ -49,12 +50,12 @@ interface HomeNote { noteId: string; title: string; preview: string; pinned: boo
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
 interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<void>; reconnect(): void; hasUnsavedChanges(): boolean; }
 
-export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void; }
+export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void; followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void>; }
 
 export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): WorldAppHandle {
   const app = new WorldApplication(root, options);
   void app.refresh();
-  return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor() };
+  return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(), followConnection: (intent, navigate) => app.followConnection(intent, navigate) };
 }
 
 class WorldApplication {
@@ -210,6 +211,8 @@ class WorldApplication {
     this.widgets = mountMicroWidgets(root, {
       mount: (host, app, intent, current, instanceId) => mountAppStage(host, { api: this.api, app, accountId: this.deskAccount, intent,
         presentation: 'widget', instanceId, isCurrent: current, ...this.appRuntime(app),
+        ...(this.options.nativeVoice ? { nativeVoice: this.options.nativeVoice } : {}),
+        ...(this.options.readNativeVoice ? { readNativeVoice: this.options.readNativeVoice } : {}),
         onNavigate: () => { /* The widget owns its route independently of the main screen. */ },
         onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
         onOpenCurrentEntry: async entry => {
@@ -782,6 +785,26 @@ class WorldApplication {
   private updateNavUnread(): void {
     const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0);
     for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread);}
+  }
+
+  async followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void> {
+    const current = this.accountTask(), sequence = this.screenSequence;
+    await Promise.all([this.flushScreen(), this.agentOrb?.flush(), this.widgets?.flush()]);
+    if (!current() || sequence !== this.screenSequence) throw Error('connection_entry_changed');
+    if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()
+      || this.chatDrafts.hasVolatile() || this.formEdits?.hasUnsavedChanges() || this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)
+      throw Error('Сохраните или закройте открытые настройки перед переходом');
+    if (intent.kind === 'profile') {
+      const response = await this.api.request<{ profile: WorldProfile }>('world.profile.view', { profileId: intent.id });
+      if (!current() || sequence !== this.screenSequence) throw Error('connection_entry_changed');
+      this.openPersonDialog(response.profile);
+    }
+    else if (intent.kind === 'community') await this.openGroup(intent.id, intent.tab);
+    else if (intent.kind === 'application') {
+      const known = this.apps.find(app => app.appId === intent.launch.target.appId);
+      await this.openApplication(known ?? { appId: intent.launch.target.appId, name: 'Приложение', status: 'unknown' }, intent.launch, !known);
+    } else if ((intent.kind === 'legacy-room' || intent.kind === 'platform-invitation') && navigate) navigate();
+    else throw Error('connection_route_unavailable');
   }
 
   private openProfileMenu(): void {
@@ -2149,6 +2172,7 @@ class WorldApplication {
     const sequence = this.screenSequence, accountId = this.deskAccount, accountGeneration = this.accountGeneration;
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
+      ...(this.options.readNativeVoice ? { readNativeVoice: this.options.readNativeVoice } : {}),
       ...this.appRuntime(app),
       onOpenCurrentEntry: async entry => {
         if (!current()) return;

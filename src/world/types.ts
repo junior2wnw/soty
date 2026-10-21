@@ -129,6 +129,7 @@ export interface WorldHumanCallPort {
 }
 export interface WorldAppOptions {
   nativeVoice?: { client:any; mount:any };
+  readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
   api: WorldApi;
   humanCalls?: WorldHumanCallPort;
   fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;

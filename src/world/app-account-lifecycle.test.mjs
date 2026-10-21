@@ -1,4 +1,6 @@
 import * as appInvitationCarrier from './app-invitation-carrier.mjs';
+import * as nativeVoiceCarrier from './native-voice-carrier.mjs';
+import { createNativeVoiceDescriptor } from '../platform/native-voice-descriptor.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -105,7 +107,7 @@ test('ElementPort inline styles retain values across CSS names and camelCase wit
 });
 
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
-  const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
+  const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
   const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, crypto, btoa,
@@ -114,7 +116,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   view.MutationObserver = class { observe() {} disconnect() {} };
-  const discussionCalls = { refresh: 0 };
+  const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [];
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
   const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
@@ -134,6 +136,11 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
+    './native-voice-carrier.mjs': { mountRootVoiceCarrier(options) {
+      const record = { options, disposed: 0 }; nativeVoiceBridges.push(record);
+      const dispose = nativeVoiceCarrier.mountRootVoiceCarrier(options);
+      return () => { record.disposed++; dispose(); };
+    } },
     './app-invitation-carrier.mjs': appInvitationCarrier,
     './app-fullscreen.mjs': appFullscreen,
     './app-deployment.mjs': appDeployment,
@@ -155,7 +162,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
   ports['./product'].saveDeskPreferences = productModule.exports.saveDeskPreferences;
   const stageModule = { exports: {} };
-  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, crypto: globalThis.crypto });
+  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, URL, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
@@ -203,7 +210,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -1465,3 +1472,312 @@ test('a failed newer community read does not retire an earlier successful list t
     if (pair) await Promise.allSettled([pair.older, pair.newer]); await turn(); f.app.cleanScreen();
   }
 });
+
+// Append to a fresh M02 app-account-lifecycle.test.mjs after applying only the
+// narrow typed-follow port. Actual controller method with context ports;
+// NOT a real World/Connect/browser or media flow; reviewer did NOT run this.
+function followGuardFixture() {
+  const f = fixture();
+  f.app.flushScreen = async () => {};
+  f.app.chatDrafts = { hasVolatile: () => false };
+  return f;
+}
+test('M02 typed follow preserves the original application invitation object', async () => {
+  const f = followGuardFixture(), opened = [];
+  const launch = appLaunch.parseAppLaunchRoute(`#app/app-${'a'.repeat(32)}?invitation=${'b'.repeat(64)}`);
+  f.app.openApplication = async (_app, intent) => { opened.push(intent); };
+  await f.app.followConnection({ kind: 'application', launch });
+  assert.equal(opened.length, 1); assert.equal(opened[0], launch); assert.equal(launch.takeInvitation(), 'b'.repeat(64));
+});
+test('M02 typed follow refuses navigation while a widget draft stays dirty', async () => {
+  const f = followGuardFixture(); let consumed = 0;
+  f.app.widgets = { async flush() {}, hasUnsavedChanges: () => true };
+  await assert.rejects(f.app.followConnection({ kind: 'platform-invitation' }, () => { consumed++; }), /Сохраните/u);
+  assert.equal(consumed, 0);
+});
+test('M02 typed follow refuses its old continuation after an account change during flush', async () => {
+  const f = followGuardFixture(), gate = deferred(); let opened = 0;
+  f.app.flushScreen = () => gate.promise; f.app.openPersonDialog = () => { opened++; };
+  const follow = f.app.followConnection({ kind: 'profile', id: 'profile123', route: '#profile/profile123' });
+  f.app.transitionAccount('account-B'); gate.resolve(); await assert.rejects(follow, /connection_entry_changed/);
+  assert.equal(opened, 0);
+});
+
+test('M02 typed profile follow passes the authorized profile to the existing dialog', async () => {
+  const f = followGuardFixture(), opened = [], profile = { profileId: 'profile123', displayName: 'Friend' };
+  f.app.api = { async request(op, args) { assert.equal(op, 'world.profile.view'); assert.equal(args.profileId, 'profile123'); return { profile }; } };
+  f.app.openPersonDialog = value => { opened.push(value); };
+  await f.app.followConnection({ kind: 'profile', id: 'profile123', route: '#profile/profile123' });
+  assert.deepEqual(opened, [profile]);
+});
+
+test('M02 typed profile follow cannot open a late profile after the account changes', async () => {
+  const f = followGuardFixture(), gate = deferred(); let opened = 0;
+  f.app.api = { request: () => gate.promise }; f.app.openPersonDialog = () => { opened++; };
+  const follow = f.app.followConnection({ kind: 'profile', id: 'profile123', route: '#profile/profile123' });
+  await turn(); f.app.transitionAccount('account-B'); gate.resolve({ profile: { profileId: 'profile123' } });
+  await assert.rejects(follow, /connection_entry_changed/); assert.equal(opened, 0);
+});
+
+
+// Actual stage + launcher + voice carrier; only UI/HTTP/client ports are controlled.
+const voiceMountFixture = (overrides = {}) => ({ scope: 'kvartalufa.voice', appId: stageAppId,
+  parentOrigin: 'https://shell.example', frameOrigin: 'https://runtime.example', nativeOrigin: 'https://runtime.example',
+  source: { id: 'voice-source', version: 1, digest: 'b'.repeat(64) }, ...overrides });
+const voiceClientFixture = f => ({ async getLocalState() { return { accountId: f.app.deskAccount, deviceId: 'device-A', current: { revoked: false } }; },
+  async extension() { throw failure('unexpected_voice_action'); } });
+async function voiceUntil(predicate) { const deadline = Date.now() + 5000; while (!predicate()) { assert.ok(Date.now() < deadline, 'bounded voice stage continuation completed'); await turn(); } }
+function voiceStageFixture(f, { readNativeVoice, nativeVoice, presentation = 'widget', host = f.app.main, reply = () => stageResponse('/soty-voice') } = {}) {
+  const original = appLaunch.parseAppLaunchRoute(`#app/${stageAppId}?invitation=${'a'.repeat(64)}`), launches = [];
+  let takes = 0;
+  const intent = Object.freeze({ ...original, takeInvitation() { takes++; return original.takeInvitation(); } });
+  const account = f.app.deskAccount, generation = f.app.accountGeneration, sequence = f.app.screenSequence;
+  if (presentation !== 'widget') f.location.hash = '#' + intent.route;
+  const stage = f.mountStage(host, { api: f.app.api, app: { appId: stageAppId, name: 'Voice' }, accountId: account, intent,
+    ...(presentation === 'widget' ? { presentation, instanceId: 'widget-11111111-1111-4111-8111-111111111111' } : {}),
+    ...(readNativeVoice ? { readNativeVoice } : {}), ...(nativeVoice ? { nativeVoice } : {}),
+    isCurrent: () => !f.app.destroyed && f.app.deskAccount === account && f.app.accountGeneration === generation && f.app.screenSequence === sequence,
+    async request(parameters) { launches.push(parameters); return reply(parameters); },
+    onNavigate(next) { if (presentation !== 'widget') f.location.hash = '#' + next.route; }, onBack() {}, async onAccount() {}, onSettings() {},
+  });
+  return { stage, host, launches, takes: () => takes, original };
+}
+function voiceWidgetFromActualConstructor(f, intent) {
+  const binder = {};
+  vm.runInNewContext(ts.transpileModule(`exports.bind = function(mountAppStage, parseAppLaunchRoute, formatAppLaunchRoute) { return ${currentReviewWidgetMount}; };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { exports: binder });
+  const mount = binder.bind.call(f.app, f.mountStage, appLaunch.parseAppLaunchRoute, appLaunch.formatAppLaunchRoute);
+  return mount(f.app.main, { appId: stageAppId, name: 'Voice' }, intent, () => !f.app.destroyed,
+    'widget-11111111-1111-4111-8111-111111111111');
+}
+for (const presentation of ['main', 'widget']) test(`actual ${presentation} stage waits for voice metadata before launch, invitation consume and bridge install`, async t => {
+  const f = fixture(), gate = deferred(); let reads = 0;
+  const v = voiceStageFixture(f, { presentation, readNativeVoice: () => { reads++; return gate.promise; } }); t.after(() => v.stage.dispose());
+  await turn();
+  try {
+    assert.equal(reads, 1); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+    assert.equal(v.host.querySelector('iframe'), null); assert.equal(f.nativeVoiceBridges.length, 0);
+  } finally { gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready; }
+  assert.equal(v.launches.length, 1); assert.equal(v.takes(), 0); assert.equal(f.nativeVoiceBridges.length, 1);
+  const frame = v.host.querySelector('iframe'); assert.ok(frame);
+  assert.equal(frame.allow, 'microphone https://runtime.example; autoplay https://runtime.example');
+  assert.equal(frame.getAttribute('sandbox'), 'allow-scripts allow-forms allow-same-origin allow-downloads');
+});
+for (const transition of ['screen', 'account ABA', 'dispose']) test(`pending voice metadata cannot install or launch after ${transition}`, async t => {
+  const f = fixture(), gate = deferred(), v = voiceStageFixture(f, { readNativeVoice: () => gate.promise }); t.after(() => v.stage.dispose());
+  await turn();
+  if (transition === 'screen') f.app.screenSequence++;
+  else if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+  else v.stage.dispose();
+  gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready;
+  assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(f.nativeVoiceBridges.length, 0); assert.equal(v.host.querySelector('iframe'), null);
+  assert.equal(v.original.takeInvitation(), 'a'.repeat(64), 'the actual cancelled carrier was not consumed');
+});
+for (const presentation of ['main', 'widget']) test(`actual ${presentation} voice stage rejects a foreign parent before signed launch or invitation consume`, async t => {
+  const f = fixture(), v = voiceStageFixture(f, { presentation, readNativeVoice: async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture({ parentOrigin: 'https://another.example' }) }) });
+  t.after(() => v.stage.dispose()); await v.stage.ready;
+  assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(v.host.querySelector('iframe'), null);
+  assert.equal(v.original.takeInvitation(), 'a'.repeat(64));
+});
+test('legacy ready voice descriptor keeps immediate admission even when a lazy resolver is also supplied', async t => {
+  const f = fixture(); let reads = 0;
+  const v = voiceStageFixture(f, { nativeVoice: { client: voiceClientFixture(f), mount: voiceMountFixture() }, readNativeVoice: async () => { reads++; throw Error('ready descriptor must not wait'); } });
+  t.after(() => v.stage.dispose()); assert.equal(v.launches.length, 1); await v.stage.ready;
+  assert.equal(reads, 0); assert.equal(f.nativeVoiceBridges.length, 1); assert.ok(v.host.querySelector('iframe'));
+});
+test('actual main application entry receives the shared descriptor resolver', async t => {
+  const f = fixture(), gate = deferred(); let reads = 0, launches = 0;
+  f.app.options.readNativeVoice = () => { reads++; return gate.promise; };
+  f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
+  const opening = f.app.openApplication({ appId: stageAppId, name: 'Voice' }); t.after(() => f.app.cleanScreen()); await turn();
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  finally { gate.resolve(null); await opening; }
+  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+});
+test('actual constructor widget entry receives the shared descriptor resolver and legacy ready voice option', async t => {
+  const f = fixture({ hash: '#world' }), gate = deferred(); let reads = 0, launches = 0;
+  f.app.options.readNativeVoice = () => { reads++; return gate.promise; };
+  f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
+  const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId }));
+  const stage = voiceWidgetFromActualConstructor(f, intent); t.after(() => stage.dispose()); await turn();
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  finally { gate.resolve(null); await stage.ready; }
+  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+  stage.dispose(); f.app.options.nativeVoice = { client: voiceClientFixture(f), mount: voiceMountFixture() };
+  const ready = voiceWidgetFromActualConstructor(f, intent); t.after(() => ready.dispose()); await ready.ready;
+  assert.equal(reads, 1, 'legacy ready widget does not reread the pending metadata port'); assert.equal(f.nativeVoiceBridges.length, 1);
+});
+test('failed voice lookup retries only through explicit UI and two stages share the same retry IO', async t => {
+  const f = fixture(), gate = deferred(); let calls = 0;
+  const resolver = createNativeVoiceDescriptor({ fetch: async () => { calls++; if (calls === 1) throw Error('synthetic network'); return gate.promise; } });
+  t.after(() => resolver.close()); await assert.rejects(resolver.read(), { code: 'native_voice_descriptor_unavailable' });
+  const readNativeVoice = async options => { const mount = await resolver.read(options); return mount ? { client: voiceClientFixture(f), mount } : null; };
+  const host = Object.assign(new ElementPort(), { ownerDocument: f.app.main.ownerDocument });
+  const a = voiceStageFixture(f, { readNativeVoice }), b = voiceStageFixture(f, { readNativeVoice, host }); t.after(() => { a.stage.dispose(); b.stage.dispose(); });
+  await Promise.all([a.stage.ready, b.stage.ready]); await turn();
+  assert.equal(calls, 1); assert.equal(a.launches.length + b.launches.length, 0); assert.equal(a.takes() + b.takes(), 0);
+  for (const v of [a, b]) { const retry = v.host.querySelector('.sa-recovery-retry'); assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); retry.emit('click'); }
+  assert.equal(calls, 2, 'concurrent explicit retries share one bounded metadata request');
+  gate.resolve({ ok: true, async json() { return { nativeVoice: null }; } }); await voiceUntil(() => a.launches.length + b.launches.length === 2);
+  assert.equal(calls, 2); assert.ok(a.host.querySelector('iframe')); assert.ok(b.host.querySelector('iframe'));
+});
+test('disposing one actual voice stage retires only its own bridge and leaves the other frame usable', async t => {
+  const f = fixture(), client = voiceClientFixture(f), nativeVoice = { client, mount: voiceMountFixture() };
+  const host = Object.assign(new ElementPort(), { ownerDocument: f.app.main.ownerDocument });
+  const a = voiceStageFixture(f, { nativeVoice }), b = voiceStageFixture(f, { nativeVoice, host }); t.after(() => { a.stage.dispose(); b.stage.dispose(); });
+  await Promise.all([a.stage.ready, b.stage.ready]); assert.equal(f.nativeVoiceBridges.length, 2);
+  const first = a.host.querySelector('iframe'), second = b.host.querySelector('iframe'); assert.ok(first); assert.ok(second);
+  const scope = (frame, requestId) => f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example', data: { schema: 'soty.kvartalufa-voice-carrier.v1', method: 'scope', requestId } }));
+  scope(first, 'scope-first-111'); scope(second, 'scope-second-111'); await turn();
+  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 1);
+  a.stage.dispose(); a.stage.dispose(); assert.equal(f.nativeVoiceBridges[0].disposed, 1); assert.equal(f.nativeVoiceBridges[1].disposed, 0);
+  scope(first, 'scope-first-222'); scope(second, 'scope-second-222'); await turn();
+  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 2); assert.equal(b.host.querySelector('iframe'), second);
+});
+
+
+test('actual scoped stage gives an invitation only to its fresh admitted frame and never replays it', async t => {
+  const f = fixture(), v = voiceStageFixture(f, { readNativeVoice: async () => null,
+    reply: () => ({ ...stageResponse('/soty-voice'), runtimeProfile: 'soty.selected-human-embed.v2',
+      scopedCloseHandle: 'h'.repeat(43), scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) }, scopedCleanup: async () => {} }) });
+  t.after(() => v.stage.dispose()); await v.stage.ready;
+  const frame = v.host.querySelector('iframe'); assert.ok(frame); assert.equal(v.takes(), 0);
+  const ready = { schema: 'soty.app-invitation-ready.v1', appId: stageAppId, requestId: 'c'.repeat(32) };
+  const emit = (source, origin = 'https://runtime.example') => f.view.dispatchEvent(Object.assign(new Event('message'), { source, origin, data: ready }));
+  emit({}); emit(frame.contentWindow, 'https://foreign.example'); assert.equal(v.takes(), 0);
+  emit(frame.contentWindow); emit(frame.contentWindow); await turn();
+  const delivered = frame.contentWindow.sent.filter(item => item.data.schema === 'soty.app-invitation.v1');
+  assert.equal(v.takes(), 1); assert.equal(delivered.length, 1); assert.equal(delivered[0].data.token, 'a'.repeat(64));
+  assert.equal(delivered[0].origin, 'https://runtime.example'); assert.equal(v.original.takeInvitation(), null);
+});
+
+// Independent P5 Source-review regression port. AppStage/launcher/carrier remain actual.
+// Only browser UI, metadata and popup ports are controlled. Never a provider/hardware proof.
+function independentP5Control(host, control) {
+  const visit = node => {
+    if (node?.dataset?.stageControl === control) return node;
+    for (const child of node?.children ?? []) { const found = visit(child); if (found) return found; }
+    return null;
+  };
+  const result = visit(host); assert.ok(result, `actual stage control ${control}`); return result;
+}
+function independentP5PopupPort(f) {
+  const opened = [], navigations = [];
+  f.view.open = (url, target) => {
+    assert.equal(url, 'about:blank'); assert.equal(target, '_blank');
+    const popup = { closed: false, opener: {}, close() { this.closed = true; },
+      location: { replace(value) { navigations.push(value); } } };
+    opened.push(popup); return popup;
+  };
+  return { opened, navigations };
+}
+for (const presentation of ['main', 'widget']) {
+  for (const phase of ['pending', 'unavailable', 'foreign parent']) {
+    test(`P5 independent external descriptor gate: ${presentation} ${phase}`, async () => {
+      const f = fixture(), gate = deferred(), popup = independentP5PopupPort(f);
+      const readNativeVoice = phase === 'pending' ? () => gate.promise
+        : phase === 'unavailable' ? async () => { throw failure('native_voice_descriptor_unavailable'); }
+        : async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture({ parentOrigin: 'https://foreign.example' }) });
+      const v = voiceStageFixture(f, { presentation, readNativeVoice });
+      try {
+        if (phase === 'pending') await turn(); else await v.stage.ready;
+        assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+        independentP5Control(v.host, 'external').emit('click'); await turn(); await turn();
+        assert.equal(v.launches.length, 0, 'external cannot issue a signed launch before a successful descriptor and parent gate');
+        assert.equal(popup.navigations.length, 0); assert.equal(v.takes(), 0);
+        if (phase !== 'pending') assert.ok(popup.opened.every(value => value.closed), 'a denied lookup closes any owned blank popup');
+      } finally {
+        // Pending has no authorized destination; dispose before releasing the late result.
+        v.stage.dispose(); gate.resolve(null); await v.stage.ready; await turn();
+      }
+    });
+  }
+  for (const transition of ['screen', 'account ABA', 'dispose']) {
+    test(`P5 independent external descriptor await: ${presentation} ${transition}`, async () => {
+      const f = fixture(), gate = deferred(), popup = independentP5PopupPort(f);
+      const v = voiceStageFixture(f, { presentation, readNativeVoice: () => gate.promise });
+      try {
+        await turn(); independentP5Control(v.host, 'external').emit('click');
+        if (transition === 'screen') f.app.screenSequence++;
+        else if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+        else v.stage.dispose();
+        gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() });
+        await v.stage.ready; await turn(); await turn();
+        assert.equal(v.launches.length, 0, 'external rechecks its original stage owner after metadata await');
+        assert.equal(popup.navigations.length, 0); assert.equal(v.takes(), 0);
+        assert.equal(f.nativeVoiceBridges.length, 0); assert.equal(v.host.querySelector('iframe'), null);
+        assert.ok(popup.opened.every(value => value.closed), 'a stale continuation closes only its owned blank popup');
+      } finally { v.stage.dispose(); gate.resolve(null); await v.stage.ready; }
+    });
+  }
+  test(`P5 independent external descriptor positive: ${presentation} ready remains usable`, async () => {
+    const f = fixture(), popup = independentP5PopupPort(f);
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture() }) });
+    try {
+      await v.stage.ready; const frame = v.host.querySelector('iframe'); assert.ok(frame); assert.equal(v.launches.length, 1);
+      independentP5Control(v.host, 'external').emit('click');
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(v.launches.length, 2); assert.equal(v.takes(), 0); assert.equal(popup.opened.length, 1);
+      assert.equal(popup.opened[0].opener, null); assert.equal(popup.opened[0].closed, false);
+      assert.equal(v.host.querySelector('iframe'), frame, 'external launch does not replace the running iframe');
+      assert.ok(v.launches.every(value => value.expectedAccountId === 'account-A'));
+      assert.equal(f.nativeVoiceBridges.length, 1, 'external continuation does not duplicate the stage bridge');
+    } finally { v.stage.dispose(); }
+  });
+}
+
+
+function p5OwnedPopupPort(f) {
+  const opened = [], navigations = []; let foreignClosed = false;
+  f.view.close = () => { foreignClosed = true; };
+  f.view.open = (url, target) => {
+    assert.equal(url, 'about:blank'); assert.equal(target, '_blank');
+    const popup = { closed: false, opener: {}, document: { title: '', body: { textContent: '' } },
+      close() { this.closed = true; }, location: { replace(value) { navigations.push(value); } } };
+    opened.push(popup); return popup;
+  };
+  return { opened, navigations, foreignClosed: () => foreignClosed };
+}
+for (const presentation of ['main', 'widget']) {
+  test(`P5 owned external popup preserves gesture and one shared metadata flight: ${presentation}`, async () => {
+    const f = fixture(), gate = deferred(), popup = p5OwnedPopupPort(f); let reads = 0;
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: () => { reads++; return gate.promise; } });
+    try {
+      await turn(); independentP5Control(v.host, 'external').emit('click');
+      independentP5Control(v.host, 'external').emit('click');
+      assert.equal(popup.opened.length, 1, 'the user gesture synchronously owns one blank popup');
+      assert.equal(popup.opened[0].opener, null); assert.equal(popup.opened[0].document.title, 'Открываем приложение');
+      assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(popup.navigations.length, 0); assert.equal(reads, 1);
+      gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready;
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(reads, 1); assert.equal(v.launches.length, 2, 'runtime and the separate external entry retain their own existing admissions');
+      assert.equal(popup.opened.length, 1); assert.equal(popup.opened[0].closed, false); assert.equal(popup.foreignClosed(), false);
+      assert.equal(f.nativeVoiceBridges.length, 1); assert.ok(v.host.querySelector('iframe')); assert.equal(v.takes(), 0);
+    } finally { v.stage.dispose(); gate.resolve(null); await v.stage.ready; }
+  });
+  test(`P5 explicit external retry shares bounded descriptor IO after unavailable: ${presentation}`, async () => {
+    const f = fixture(), gate = deferred(), popup = p5OwnedPopupPort(f); let fetches = 0;
+    const descriptor = createNativeVoiceDescriptor({ fetch: async () => { fetches++; if (fetches === 1) throw Error('synthetic metadata failure'); return gate.promise; } });
+    const readNativeVoice = async options => { const mount = await descriptor.read(options); return mount ? { client: voiceClientFixture(f), mount } : null; };
+    const v = voiceStageFixture(f, { presentation, readNativeVoice });
+    try {
+      await v.stage.ready; assert.equal(descriptor.snapshot().state, 'unavailable'); assert.equal(fetches, 1); assert.equal(v.launches.length, 0);
+      independentP5Control(v.host, 'external').emit('click');
+      assert.equal(popup.opened.length, 1); assert.equal(fetches, 2); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+      gate.resolve({ ok: true, async json() { return { nativeVoice: voiceMountFixture() }; } });
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(fetches, 2); assert.equal(v.launches.length, 1); assert.equal(popup.opened.length, 1);
+      assert.equal(popup.opened[0].closed, false); assert.equal(popup.foreignClosed(), false); assert.equal(f.nativeVoiceBridges.length, 1); assert.equal(v.takes(), 0);
+    } finally { v.stage.dispose(); descriptor.close(); gate.resolve({ ok: false }); await v.stage.ready; }
+  });
+  test(`P5 blocked external popup does not retry unavailable metadata or issue admission: ${presentation}`, async () => {
+    const f = fixture(); let opens = 0, reads = 0;
+    f.view.open = (url, target) => { assert.equal(url, 'about:blank'); assert.equal(target, '_blank'); opens++; return null; };
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: async () => { reads++; throw failure('native_voice_descriptor_unavailable'); } });
+    try {
+      await v.stage.ready; independentP5Control(v.host, 'external').emit('click'); await turn();
+      assert.equal(opens, 1); assert.equal(reads, 1); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+      assert.equal(v.host.querySelector('iframe'), null);
+    } finally { v.stage.dispose(); }
+  });
+}

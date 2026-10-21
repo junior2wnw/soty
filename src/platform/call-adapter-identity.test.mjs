@@ -1,3 +1,4 @@
+import * as connectionIntents from './connection-intent.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -96,11 +97,13 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
   const client = { getLocalState() { order.push('read'); return failRead ? Promise.reject(startupError) : Promise.resolve(current); },
     async bootstrap() { if (failBootstrap) throw startupError; throw new Error('unexpected bootstrap'); }, async extension() { return {}; } };
   const observeAccount = callback => { order.push('subscribe'); subscribers.add(callback); return () => subscribers.delete(callback); };
-  const window = { location: { href: 'https://offline.example/' },
+  const window = { location: { href: 'https://offline.example/', origin: 'https://offline.example' },
     addEventListener(type, callback) { const set = pageListeners.get(type) ?? new Set(); set.add(callback); pageListeners.set(type, set); },
     removeEventListener(type, callback) { pageListeners.get(type)?.delete(callback); } };
   const binding = await compiled('./call-identity.ts');
   const adapter = await compiled('./world-adapter.ts', {
+    './connection-intent.mjs': connectionIntents,
+    './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); if (!state.accountId) throw startupError; return { state, intent: null }; } },
     '../core/connect-client': { accountClient: client, observeAccount }, './call-identity': binding,
     '../world/app': { mountWorldApp(_root, options) { if (failMount) throw startupError; const world = { options, destroy() { world.destroyed = true; }, async refresh() {} }; mounts.push(world); return world; } },
     './local-apps': { createAppActions: () => ({ resetAccount() { resets++; }, destroy() {}, connectDevice() {} }) },
@@ -131,7 +134,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
         dispose: (...args) => createdOwner.dispose(...args),
       } : createdOwner;
     } },
-  }, { URL, window, AbortSignal,
+  }, { URL, window, AbortSignal, AbortController,
     // Capability discovery is unavailable in this isolated lifecycle fixture.
     // Never perform network I/O or advertise a native voice mount.
     fetch: async () => ({ ok: false, status: 503 }),
@@ -150,7 +153,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
 }
 
 test('actual world default owns one lazy call lifecycle with no automatic admission capture or connection', async () => {
-  const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture(); await f.adapter.startWorld({ isConnected: true }); await tick();
   assert.equal(f.subscribers(), 2); assert.equal(f.pageCount(), 3);
   assert.equal(f.authorizations(), 0); assert.equal(f.captures(), 0);
   assert.equal(f.connections(), 0); assert.equal(f.createdOwner().snapshot().state, 'idle');
@@ -160,7 +163,7 @@ test('actual world default owns one lazy call lifecycle with no automatic admiss
 });
 
 test('actual optional world binds before first await and retains owner across world remounts/BFCache', async () => {
-  const f = await worldFixture(); await f.adapter.startWorld({}, { callLifecycle: f.lifecycle }); await tick();
+  const f = await worldFixture(); await f.adapter.startWorld({ isConnected: true }, { callLifecycle: f.lifecycle }); await tick();
   assert.equal(f.order[0], 'subscribe'); assert.equal(f.subscribers(), 2); assert.equal(f.pageCount(), 3);
   await f.lifecycle.join({ roomId: 'R', mode: 'group' });
   f.emit(view('B', 'DB')); assert.equal(f.lifecycle.snapshot().state, 'ended');
@@ -170,21 +173,21 @@ test('actual optional world binds before first await and retains owner across wo
   f.dispatch('pagehide', false); assert.equal(f.lifecycle.snapshot().state, 'disposed'); assert.equal(f.subscribers(), 0);
 });
 
-test('actual optional world startup read/bootstrap/mount failure removes binding and preserves original error', async () => {
+test('actual optional world startup read/entry/mount failure removes binding and preserves original error', async () => {
   for (const options of [{ failRead: true }, { failBootstrap: true }, { failMount: true }]) {
     const f = await worldFixture(options);
-    await assert.rejects(f.adapter.startWorld({}, { callLifecycle: f.lifecycle }), error => error === f.startupError); await tick();
+    await assert.rejects(f.adapter.startWorld({ isConnected: true }, { callLifecycle: f.lifecycle }), error => error === f.startupError); await tick();
     assert.equal(f.subscribers(), 0); assert.equal(f.pageCount(), 0); assert.equal(f.lifecycle.snapshot().state, 'disposed');
     assert.equal(f.authorizations(), 0); assert.equal(f.captures(), 0);
   }
   const defaultFailure = await worldFixture({ failRead: true });
-  await assert.rejects(defaultFailure.adapter.startWorld({}), error => error === defaultFailure.startupError);
+  await assert.rejects(defaultFailure.adapter.startWorld({ isConnected: true }), error => error === defaultFailure.startupError);
   assert.equal(defaultFailure.subscribers(), 0); assert.equal(defaultFailure.pageCount(), 0);
   assert.equal(defaultFailure.lifecycle.snapshot().state, 'idle');
 });
 
 test('default World call control from an old A mount cannot adopt a later A after A-B-A', async () => {
-  const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture(); await f.adapter.startWorld({ isConnected: true }); await tick();
   const first = f.mounts[0].options.humanCalls;
   assert.equal((await first.join({ roomId: 'R', mode: 'group' })).ok, true);
   f.emit(view('B', 'DB')); f.emit(view('A', 'D')); await tick();
@@ -198,7 +201,7 @@ test('default World call control from an old A mount cannot adopt a later A afte
 });
 
 test('display labels stay presentation-only and are fenced to the current A-B-A mount and call scope', async () => {
-  const f = await worldFixture({ captureOwnerJoin: true }); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture({ captureOwnerJoin: true }); await f.adapter.startWorld({ isConnected: true }); await tick();
   const first = f.mounts[0].options.humanCalls;
   assert.equal(first.snapshot().targetLabel, null);
   assert.equal((await first.join({ roomId: 'R', mode: 'group', displayLabel: '  Старое\u0000 имя  ' })).ok, true);
@@ -219,7 +222,7 @@ test('display labels stay presentation-only and are fenced to the current A-B-A 
 
 test('a late successful join result cannot relabel a newer same-room call generation', async () => {
   const f = await worldFixture({ captureOwnerJoin: true, holdFirstOwnerJoinResult: true });
-  await f.adapter.startWorld({}); await tick();
+  await f.adapter.startWorld({ isConnected: true }); await tick();
   const call = f.mounts[0].options.humanCalls;
   const oldJoin = call.join({ roomId: 'R', mode: 'group', displayLabel: 'Старое имя' });
   await tick();
@@ -242,7 +245,7 @@ test('a late successful join result cannot relabel a newer same-room call genera
 
 test('incoming Accept passes the exact call intent through the lifecycle without treating its label as authority', async () => {
   const invitation = { callId: 'call-123', epoch: 7, roomId: 'caller-account', label: '  Контакт\u0000 Имя  ' };
-  const f = await worldFixture({ captureOwnerJoin: true, incomingInvitation: invitation }); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture({ captureOwnerJoin: true, incomingInvitation: invitation }); await f.adapter.startWorld({ isConnected: true }); await tick();
   const call = f.mounts[0].options.humanCalls;
   assert.deepEqual(JSON.parse(JSON.stringify(await call.checkIncoming())), { ...invitation, label: 'Контакт Имя' });
   assert.equal(call.snapshot().incomingCall.callId, invitation.callId);
@@ -255,7 +258,7 @@ test('incoming Accept passes the exact call intent through the lifecycle without
 
 test('late incoming poll from an old account mount is ignored and decline is scoped to the current account', async () => {
   const invitation = { callId: 'call-old', epoch: 3, roomId: 'caller-old', label: 'Собеседник' };
-  const f = await worldFixture({ incomingInvitation: invitation, holdIncomingRead: true }); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture({ incomingInvitation: invitation, holdIncomingRead: true }); await f.adapter.startWorld({ isConnected: true }); await tick();
   const old = f.mounts[0].options.humanCalls, pendingRead = old.checkIncoming(); await tick();
   f.emit(view('B', 'DB')); f.emit(view('A', 'D')); await tick();
   const current = f.mounts[2].options.humanCalls;
@@ -269,7 +272,7 @@ test('late incoming poll from an old account mount is ignored and decline is sco
 });
 
 test('default World BFCache ends voice while keeping DOM and revalidates identity without capture or rejoin', async () => {
-  const f = await worldFixture(); await f.adapter.startWorld({}); await tick();
+  const f = await worldFixture(); await f.adapter.startWorld({ isConnected: true }); await tick();
   await f.mounts[0].options.humanCalls.join({ roomId: 'R', mode: 'group' });
   f.dispatch('pagehide', true); assert.equal(f.createdOwner().snapshot().state, 'ended');
   assert.equal(f.mounts[0].destroyed, undefined); assert.equal(f.sessionCloses(), 1);

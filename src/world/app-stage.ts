@@ -33,6 +33,7 @@ export interface AppStageOptions {
   /** Stable UI locator only; Root binds it to the authenticated app/person/device. */
   instanceId?: string;
   nativeVoice?: { client:any; mount:any };
+  readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
   isCurrent(): boolean;
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
@@ -62,6 +63,8 @@ export interface AppStageHandle {
 
 export function appLaunchFailure(error: unknown): { title: string; detail: string } {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
+  if (code === 'native_voice_parent_origin_mismatch') return { title: 'Голосовое приложение недоступно на этом адресе', detail: 'Откройте его в основном адресе Сот.' };
+  if (code === 'native_voice_descriptor_unavailable') return { title: 'Не удалось проверить подключение приложения', detail: 'Проверьте соединение и попробуйте снова.' };
   if (code === 'ACTIVE_PROFILE_CHANGED') return { title: 'Аккаунт изменился', detail: 'Выберите нужный аккаунт и откройте приложение ещё раз.' };
   if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Попробуйте снова, когда устройство подключится.' };
   if (['app_scoped_admission_required','app_scoped_human_required','app_scoped_migration_required','app_scoped_key_required'].includes(code)) return {title:'Подключение пока не готово',detail:'Владелец приложения должен завершить подключение выбранного проекта.'};
@@ -104,7 +107,37 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const runtimeTrace = createAppRuntimePhaseTrace({view,isCurrent:current,getFrame:()=>runtime.querySelector('iframe'),getEpoch:()=>displayEpoch,
     canSample:()=>!diagnosticOpen,onChange:()=>renderDiagnostic?.()});
   const detachHiveBridge = mountHiveDeviceBridge({ view, getFrame: () => runtime.querySelector('iframe'), isCurrent: current });
-  const detachVoiceBridge=options.nativeVoice?mountRootVoiceCarrier({view,getFrame:()=>runtime.querySelector('iframe'),isCurrent:current,client:options.nativeVoice.client,mount:options.nativeVoice.mount,appId:app.appId,accountId}):()=>{};
+  let nativeVoice = options.nativeVoice ?? null, voiceResolved = !!options.nativeVoice || !options.readNativeVoice, voiceLookupAttempted = false;
+  let detachVoiceBridge: () => void = () => {};
+  const installVoiceBridge = () => {
+    if (nativeVoice) detachVoiceBridge = mountRootVoiceCarrier({ view, getFrame: () => runtime.querySelector('iframe'),
+      isCurrent: current, client: nativeVoice.client, mount: nativeVoice.mount, appId: app.appId, accountId });
+  };
+  if (voiceResolved) installVoiceBridge();
+  let voiceLookup: Promise<void> | null = null;
+  const voiceOriginAllowed = () => !nativeVoice || nativeVoice.mount.appId !== app.appId || nativeVoice.mount.parentOrigin === view.location.origin;
+  const resolveVoice = (): Promise<void> => {
+    if (voiceResolved) return Promise.resolve();
+    if (voiceLookup) return voiceLookup;
+    const retry = voiceLookupAttempted; voiceLookupAttempted = true;
+    const task = (async () => {
+      const value = await options.readNativeVoice!({ retry });
+      if (!current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
+      nativeVoice = value; voiceResolved = true; installVoiceBridge();
+    })();
+    voiceLookup = task;
+    const clear = () => { if (voiceLookup === task) voiceLookup = null; };
+    void task.then(clear, clear);
+    return task;
+  };
+  const withVoiceAdmission = <T>(action: () => Promise<T>): Promise<T> => {
+    const issue = () => {
+      if (!current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
+      if (!voiceOriginAllowed()) throw Object.assign(new Error('Voice is unavailable on this origin.'), { code: 'native_voice_parent_origin_mismatch' });
+      return action();
+    };
+    return voiceResolved ? issue() : resolveVoice().then(issue);
+  };
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite'); message.setAttribute('aria-atomic', 'true');
   let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';
@@ -210,7 +243,14 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!current() || external.disabled) return;
     closeMore(true); external.disabled = externalRecovery.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
     // Do not await a route, flush or API read before this user-gesture popup.
-    void launcher.openExternal(() => view.open('about:blank', '_blank')).then(result => {
+    void launcher.openExternal(() => {
+      const destination = view.open('about:blank', '_blank');
+      try {
+        if (destination) { destination.document.title = 'Открываем приложение';
+          if (destination.document.body) destination.document.body.textContent = 'Соединяем с приложением…'; }
+      } catch { /* The launcher still owns an isolated or already closed popup. */ }
+      return destination;
+    }).then(result => {
       if (!current()) return;
       captureEntry();
       if (result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
@@ -348,7 +388,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   host.replaceChildren(screen);
   syncShortToolbar();
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
-    isCurrent: expected => expected === accountId && current(), request: options.request,
+    isCurrent: expected => expected === accountId && current(), request: parameters => withVoiceAdmission(() => options.request(parameters)),
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
   });
@@ -374,7 +414,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const renewal=createScopedSlotRenewal({isCurrent:current,readBinding:readRenewBinding,
     readContext:handle=>options.api.request('apps.scoped.context',{appId:app.appId,handle}),
     async request(args){if(!options.renew)throw new Error('scoped_renewal_unavailable');
-      const reply=await options.renew({appId:app.appId,...args,expectedAccountId:accountId});return launcher.prepareRenewal(reply);},
+      const reply=await withVoiceAdmission(()=>options.renew!({appId:app.appId,...args,expectedAccountId:accountId}));return launcher.prepareRenewal(reply);},
     async bootstrap(reply:ScopedRenewReply){return new Promise<'ready'|'login_required'|'unknown'>(resolve=>{
       const hidden=el('iframe');hidden.hidden=true;hidden.setAttribute('aria-hidden','true');hidden.tabIndex=-1;
       hidden.sandbox.add('allow-scripts','allow-same-origin');renewalFrame=hidden;let finished=false;
@@ -605,10 +645,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
-    if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin!==view.location.origin){
-      runtimeStarted=true;runtime.replaceChildren(emptyState('Голосовое приложение недоступно на этом адресе',
-        'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
-    }
     resetRuntimeDisplay();
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
@@ -619,16 +655,26 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (existingFrame) showMessage('Соединяем с приложением…', 'runtime');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
+      if (!voiceResolved) {
+        showMessage('Проверяем подключение приложения…', 'runtime');
+        await resolveVoice();
+        if (!alive()) return;
+        showMessage('');
+      }
+      if (!voiceOriginAllowed()) {
+        runtime.replaceChildren(emptyState('Голосовое приложение недоступно на этом адресе',
+          'Откройте его в основном адресе Сот. Профиль и сохранённые данные остаются на прежних адресах.',undefined,'app'));return;
+      }
       const url = await launcher.launch({ requireSameBinding: automatic });
       if (!url || !alive()) return;
       captureEntry();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
-      const voiceFrame=options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin
-        &&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';
+      const voiceFrame=nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin
+        &&new URL(url).origin===nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';
       frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'+(isScopedRuntimeProfile(launcher.runtimeProfile())||voiceFrame?' allow-popups allow-popups-to-escape-sandbox':''));frame.referrerPolicy = 'no-referrer';
       runtimeTrace.attach(frame,launcher.entry()!.origin);
       frame.src = url;
-      if(options.nativeVoice?.mount.appId===app.appId&&options.nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===options.nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+options.nativeVoice.mount.frameOrigin+'; autoplay '+options.nativeVoice.mount.frameOrigin;
+      if(nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin&&new URL(url).origin===nativeVoice.mount.frameOrigin&&!isScopedRuntimeProfile(launcher.runtimeProfile()))frame.allow='microphone '+nativeVoice.mount.frameOrigin+'; autoplay '+nativeVoice.mount.frameOrigin;
       frameGeneration++;
       lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
@@ -736,7 +782,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       origin: selectedEntry?.origin, current: current(), activated: view.navigator.userActivation?.isActive === true })) external.click();
   }, { signal: controller.signal });
   updateApp(app);
-  // Start admission synchronously before the owner asks for optional metadata.
+  // A ready descriptor keeps admission synchronous; pending host voice metadata
+  // waits in this stage while the field and optional app metadata stay usable.
   const ready = initial.presentation?.administrative
     ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
