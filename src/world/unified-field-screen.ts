@@ -221,7 +221,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       (show ? panControls.querySelector<HTMLButtonElement>('button') : viewTools)?.focus({ preventScroll: true });
     });
     panToggle.setAttribute('aria-expanded', String(!panControls.hidden));
-    instance.body.append(panToggle, el('p', 'uf-input-help', 'Тяните поле или прокручивайте трекпадом. Для масштаба — два пальца, Ctrl + колесо или кнопки − и +.'));
+    instance.body.append(panToggle, el('p', 'uf-input-help', 'Тяните поле или прокручивайте. Масштаб — два пальца, Ctrl/⌘ + колесо или −/+. В фокусе поля +/− меняют масштаб, 0 показывает всё. Двойной щелчок по пустому полю приближает.'));
     instance.body.append(button('Соты списком', 'list', 'sw-button-wide', () => { instance.close({ restoreFocus: false }); openList(); }));
     if (mode === 'mine') instance.body.append(button(summary?.arranging ? 'Закончить расстановку' : 'Расставить соты', 'move', 'sw-button-wide', () => { instance.close(); engine?.setArrange(!summary?.arranging); }));
     if (mode === 'mine') instance.body.append(button('Собрать рядом', 'cells', 'sw-button-wide', () => { instance.close({ restoreFocus: false }); openCompactPreview(); }));

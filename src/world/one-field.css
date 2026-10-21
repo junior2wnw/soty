@@ -14,6 +14,10 @@
 }
 .sw-app[data-experience=one-field]>.sw-pwa-banner { grid-column: 1; grid-row: 1; }
 .sw-app[data-experience=one-field]>.sw-human-call-strip { grid-column: 1; grid-row: 2; }
+/* Status keeps its own row; floating chrome follows the existing main row. */
+.sw-app[data-experience=one-field]:has(>.sw-pwa-banner:not([hidden]))>:is(.sw-topbar,.of-connect-button,.of-field-navigation) {
+  grid-column: 1; grid-row: 3;
+}
 .sw-app[data-experience=one-field]>.sw-topbar,
 .sw-app[data-experience=one-field][data-agent-orb=ready]>.sw-topbar {
   position: absolute; inset: 40px 94px auto auto; z-index: 30;

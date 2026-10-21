@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAppLauncher, formatAppLaunchRoute, normalizeAppLaunchTarget, parseAppLaunchRoute, validateAppLaunchPath, validateAppLaunchUrl } from './app-launch.mjs';
+import { createAppLauncher, formatAppLaunchRoute, normalizeAppLaunchTarget, parseAppLaunchRoute, validateAppEntry, validateAppLaunchPath, validateAppLaunchUrl } from './app-launch.mjs';
+import { checkedScopedEntryPath, createScopedLaunchPath, createLaunchPath } from '../../modules/apps/server/launch-path.mjs';
 
 const appId = `app-${'a'.repeat(32)}`, domainId = `dom_${'b'.repeat(32)}`;
 const shellUrl = 'https://soty.example/#mine';
@@ -255,4 +256,125 @@ test('canonical guide is the sole reserved launch path and round-trips exactly',
   const value = { appId, path: '/_soty/guide' };
   assert.deepEqual(parseAppLaunchRoute(formatAppLaunchRoute(value)).target, value);
   for (const path of ['/_soty/guide?x', '/_soty/guide/', '/_soty/%67uide', '/guide/../_soty/guide', '/_soty/session', '/_soty/boot']) assert.throws(() => validateAppLaunchPath(path));
+});
+
+const privatePath='/embed#document=pag_private&block=hero&invite='+'z'.repeat(43);
+const privateOrigin='https://demo.apps.example';
+function privateReply(path=privatePath,token='A') {
+  const generated=createScopedLaunchPath(path);
+  return {...scopedReply(),url:privateOrigin+generated.bootPath+'#'+token.repeat(43),
+    entry:{appId,domainId,origin:privateOrigin,path:generated.entryPath}};
+}
+function privateFixture(path=privatePath) {
+  const state={current:true,change:()=>{},calls:[],abandoned:[]};
+  const launcher=createAppLauncher({target:{appId,domainId,path},accountId:'account-a',instanceId:'main',shellUrl,
+    isCurrent:()=>state.current,abandonScoped:value=>{state.abandoned.push(value);},request:async args=>{
+      state.calls.push(args);const result=privateReply(args.path,String.fromCharCode(64+state.calls.length));state.change(result);return result;
+    }});
+  return{state,launcher};
+}
+function privateRenewal(path=privatePath) {
+  const result=privateReply(path,'R'),url=new URL(result.url);url.searchParams.set('mode','renew');
+  return{...result,url:url.href,scopedCloseHandle:'N'.repeat(43),scopedSlotExpiresAt:Date.now()+120000,scopedRenewalRequestId:'private_renewal_0001'};
+}
+
+test('actual Source server boot and client initial/external launcher keep private navigation off URL queries',async()=>{
+  const f=privateFixture();
+  assert.equal(await f.launcher.launch(),privateReply().url);
+  assert.deepEqual(f.launcher.entry(),privateReply().entry);
+  const old=f.launcher.scopedCapture(),window=makePopup();
+  assert.equal(await f.launcher.openExternal(()=>window),'opened');
+  assert.deepEqual(window.visits,[privateReply(privatePath,'B').url]);assert.equal(window.opener,null);
+  assert.equal(f.launcher.scopedCapture().slot,old.slot,'external launch cannot replace the mounted slot');
+  assert.ok(f.state.calls.every(args=>args.path===privatePath&&args.appId===appId&&args.domainId===domainId&&args.expectedAccountId==='account-a'&&args.instanceId==='main'));
+  for(const url of window.visits){assert.equal(new URL(url).searchParams.get('path'),'/embed');assert.ok(!url.includes('invite')&&!url.includes('pag_private'));}
+  f.launcher.dispose();assert.equal(window.closed,false);
+});
+
+test('private Source launch permits omitted initial path but pins the full returned path for future launches',async()=>{
+  const calls=[];const launcher=createAppLauncher({target:{appId},accountId:'account-a',shellUrl,isCurrent:()=>true,
+    request:async args=>{calls.push(args);return privateReply();}});
+  await launcher.launch();await launcher.launch();assert.equal(calls[0].path,undefined);
+  assert.deepEqual(calls[1],{appId,domainId,path:privatePath,expectedAccountId:'account-a'});launcher.dispose();
+});
+
+test('private Source renewal uses public embed boot but retains the exact old path, source and current slot',async()=>{
+  const f=privateFixture();await f.launcher.launch();const previous=f.launcher.scopedCapture();
+  const reply=privateRenewal(),next=f.launcher.prepareRenewal(reply);
+  assert.equal(new URL(next.url).searchParams.get('path'),'/embed');assert.ok(!next.url.includes('invite'));
+  assert.equal(f.launcher.entry().path,privatePath);assert.equal(f.launcher.scopedCapture().slot,previous.slot);
+  assert.equal(f.launcher.commitRenewal(previous,next),true);assert.equal(f.launcher.scopedCapture().slot,next.slot);
+  assert.deepEqual(f.launcher.scopedCapture().source,previous.source);assert.equal(f.launcher.entry().path,privatePath);
+  assert.equal(f.launcher.commitRenewal(previous,next),false,'an old slot cannot commit again');f.launcher.dispose();
+});
+
+test('private boot matching is limited to known scoped runtime profiles and preserves ordinary full-path matching',()=>{
+  const result=privateReply(),requested={appId,domainId,path:privatePath};
+  for(const runtimeProfile of ['soty.selected-human-embed.v1','soty.selected-human-embed.v2'])
+    assert.deepEqual(validateAppEntry(result.entry,requested,shellUrl,result.url,runtimeProfile),result.entry);
+  for(const runtimeProfile of [undefined,null,'soty.relay-restricted.v1','soty.selected-human-embed.v3'])
+    assert.throws(()=>validateAppEntry(result.entry,requested,shellUrl,result.url,runtimeProfile),{code:'invalid_app_entry'});
+  const old=privateOrigin+createLaunchPath(privatePath).bootPath+'#'+'A'.repeat(43);
+  assert.deepEqual(validateAppEntry(result.entry,requested,shellUrl,old),result.entry,'relay SPA fragments still require their full boot path');
+});
+
+test('client private fragment bounds agree with actual server admission, including Unicode and opaque values',()=>{
+  for(const path of ['/embed','/embed#','/embed#раздел%20два','/embed#/reader/42?tab=comments',
+    '/embed#next=https%3A%2F%2Fother.example%2F_soty%2Fsession','/embed#'+'a'.repeat(2048),'/embed#'+'界'.repeat(2048)]){
+    const reply=privateReply(path);assert.deepEqual(validateAppEntry(reply.entry,{appId,domainId,path},shellUrl,reply.url,reply.runtimeProfile),reply.entry);
+  }
+  for(const path of ['/embed?x=1#document=pag_x','/embed?#x','/embed/#x','/other#x','/%65mbed#x','/a/../embed#x',
+    '/_soty/guide','/embed%23document=x','/embed#x#y','/embed#x\\y','/embed#x y','/embed#%00','/embed#%0a',
+    '/embed#%0D','/embed#%7f','/embed#%5c','/embed#%','/embed#%C0%AF','/embed#\ud800','/embed#'+'a'.repeat(2049)]){
+    assert.equal(checkedScopedEntryPath(path),null);
+    const entry={...privateReply().entry,path};
+    assert.throws(()=>validateAppEntry(entry,{appId,domainId,path},shellUrl,privateReply().url,'soty.selected-human-embed.v2'),{name:'AppLaunchError'},path);
+  }
+});
+
+test('private initial launches reject changed targets, destinations, ticket/query envelopes and unknown scope',async()=>{
+  for(const change of [
+    reply=>{reply.entry.path=privatePath.replace('pag_private','pag_other');},
+    reply=>{reply.entry.appId='app-'+'f'.repeat(32);},reply=>{reply.entry.domainId='dom_'+'f'.repeat(32);},
+    reply=>{reply.entry.origin='https://other.apps.example';},reply=>{reply.url=reply.url.replace('demo.apps.example','other.apps.example');},
+    reply=>{reply.url=reply.url.replace('https:','http:');},reply=>{reply.url=reply.url.slice(0,-1);},
+    reply=>{const url=new URL(reply.url);url.searchParams.append('path','/embed');reply.url=url.href;},
+    reply=>{const url=new URL(reply.url);url.searchParams.set('path','/other');reply.url=url.href;},
+    reply=>{const url=new URL(reply.url);url.searchParams.set('mode','renew');reply.url=url.href;},
+    reply=>{delete reply.runtimeProfile;delete reply.scopedCloseHandle;delete reply.scopedSource;},
+    reply=>{reply.runtimeProfile='soty.selected-human-embed.v3';}
+  ]){
+    const f=privateFixture();f.state.change=change;
+    await assert.rejects(f.launcher.launch(),{name:'AppLaunchError'});assert.equal(f.launcher.entry(),null);
+    assert.equal(f.launcher.scopedCapture(),null);f.launcher.dispose();
+  }
+});
+
+test('private external redirects cannot replace a mounted document, domain, origin or admitted path',async()=>{
+  for(const change of [reply=>{reply.entry.path=privatePath.replace('hero','other');},reply=>{reply.entry.domainId='dom_'+'e'.repeat(32);},
+    reply=>{reply.url=reply.url.replace('demo.apps.example','other.apps.example');},
+    reply=>{const url=new URL(reply.url);url.searchParams.set('path','/other');reply.url=url.href;}]){
+    const f=privateFixture();await f.launcher.launch();const old=f.launcher.scopedCapture();f.state.change=change;
+    const window=makePopup();await assert.rejects(f.launcher.openExternal(()=>window),{name:'AppLaunchError'});
+    assert.equal(window.closed,true);assert.deepEqual(window.visits,[]);assert.equal(f.launcher.scopedCapture().slot,old.slot);
+    assert.equal(f.launcher.entry().path,privatePath);assert.equal(f.state.abandoned.length,1);f.launcher.dispose();
+  }
+});
+
+test('private renewal rejects new private paths and Source/session drift even when public embed query is identical',async()=>{
+  const f=privateFixture();await f.launcher.launch();const old=f.launcher.scopedCapture();
+  for(const change of [reply=>{reply.entry.path=privatePath.replace('pag_private','pag_other');},
+    reply=>{reply.entry.appId='app-'+'f'.repeat(32);},reply=>{reply.entry.domainId='dom_'+'f'.repeat(32);},
+    reply=>{reply.entry.origin='https://other.apps.example';},reply=>{reply.runtimeProfile='soty.selected-human-embed.v1';},
+    reply=>{reply.scopedSource={...reply.scopedSource,id:'other.source'};},reply=>{reply.scopedSource={...reply.scopedSource,version:3};},
+    reply=>{reply.scopedSource={...reply.scopedSource,digest:'f'.repeat(64)};},reply=>{reply.scopedCloseHandle='bad';},
+    reply=>{reply.scopedSlotExpiresAt=Date.now()-1;},reply=>{reply.scopedSlotExpiresAt=Date.now()+400000;},
+    reply=>{reply.scopedRenewalRequestId='bad';},reply=>{reply.url=reply.url.replace('demo.apps.example','other.apps.example');},
+    reply=>{const url=new URL(reply.url);url.searchParams.set('path','/other');reply.url=url.href;},
+    reply=>{const url=new URL(reply.url);url.searchParams.append('path','/embed');reply.url=url.href;},
+    reply=>{const url=new URL(reply.url);url.searchParams.set('mode','unknown');reply.url=url.href;}]){
+    const reply=privateRenewal();change(reply);assert.throws(()=>f.launcher.prepareRenewal(reply),{name:'AppLaunchError'});
+    assert.equal(f.launcher.scopedCapture().slot,old.slot);assert.equal(f.launcher.entry().path,privatePath);
+  }
+  f.state.current=false;assert.throws(()=>f.launcher.prepareRenewal(privateRenewal()),{code:'invalid_app_scoped_launch'});f.launcher.dispose();
 });

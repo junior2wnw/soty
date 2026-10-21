@@ -73,6 +73,40 @@ const scopedResponses = (issued = {}) => [
   response({schema:'soty.source-session-continuation.v1',ready:true}),
 ];
 
+test('selected boot preserves the document fragment after the private frame query, including external top-level entry', async () => {
+  const path = '/embed#document=pag_x&block=hero&invite=opaque';
+  for (const framed of [false, true]) for (const withFrame of [false, true]) {
+    const env = browser(renderBootPage({ shellUrl, scoped: true }), { framed,
+      responses: scopedResponses({ entryPath: path, ...(withFrame ? {} : { frame: undefined }) }) });
+    await flush(); await flush();
+    assert.equal(env.context.location.hash, '');
+    assert.deepEqual(env.navigations, [withFrame ? '/embed?sotyFrame=' + 'F'.repeat(43) + path.slice(6) : path]);
+    assert.equal(env.element('native-action').href, env.navigations[0]);
+    assert.deepEqual(env.calls.map(call => call.url), ['/_soty/session', '/_soty/session', '/api/embed/session-continue']);
+    assert.equal(env.calls.some(call => JSON.stringify(call.options).includes('invite=opaque')), false);
+  }
+});
+
+test('selected renewal validates the fragment but never navigates or exports document data to the parent', async () => {
+  const env = browser(renderBootPage({ shellUrl, scoped: true, renewal: true, parentOrigin: 'https://soty.example' }), {
+    framed: true, responses: scopedResponses({ entryPath: '/embed#document=pag_x&invite=opaque',
+      renewal: true, renewalRequestId: 'fragment-renewal-request' }) });
+  await flush(); await flush();
+  assert.deepEqual(env.navigations, []);
+  assert.deepEqual(env.parentMessages, [{ origin: 'https://soty.example', data: {
+    schema: 'soty.app-slot-ready.v1', requestId: 'fragment-renewal-request', ready: true } }]);
+});
+
+test('selected boot rejects malicious response navigation before any Source request', async () => {
+  for (const path of ['/embed?next=https://other.example', '/_soty/session', '//other.example/embed',
+    '/embed#%0a', '/embed#' + 'a'.repeat(2049)]) {
+    const env = browser(renderBootPage({ shellUrl, scoped: true }), { responses: scopedResponses({ entryPath: path }) });
+    await flush();
+    assert.equal(env.calls.length, 1, path);
+    assert.deepEqual(env.navigations, []);
+  }
+});
+
 test('correlated boot observation echoes only the current watch ID and phases with the existing auth/navigation sequence',async()=>{
   const admission=pending(),cookie=pending(),continuation=pending(),watchId='a'.repeat(32);
   const env=browser(renderBootPage({shellUrl,scoped:true}),{framed:true,responses:[()=>admission.promise,()=>cookie.promise,()=>continuation.promise]});

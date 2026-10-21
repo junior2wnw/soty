@@ -18,7 +18,7 @@ import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
 import { createSourceRegistry } from './sources.mjs';
 import { createRuntimeBindings } from './runtime-bindings.mjs';
-import { createLaunchPath } from './launch-path.mjs';
+import { createLaunchPath, createScopedLaunchPath, checkedScopedEntryPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
@@ -271,14 +271,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const frameId=isRootSignedWorkspaceSource(first.sourceProfile)?previousSession?.family?.frameId:undefined;
           if(isRootSignedWorkspaceSource(first.sourceProfile)&&!frameId){scopedGateway.invalidate(scoped.record);assertApps(false,'app_scoped_context_closed',403);}
           issued={record:scoped.record,handle:scoped.closeHandle,decision,intent,accountId:actor.accountId,deviceId:actor.deviceId,frameId,
+            entryPath:createScopedLaunchPath(previousSession?.entryPath??'/embed').entryPath,
             ...(args.shortSessionHandoff?{bindingDigest:scopedRenewalBindingDigest(first)}:{})};scopedRenewals.set(key,issued);
         }
         assertActor(actor);scopedGateway.context(issued.record);const decision=publications.recheckAccess(issued.decision);assertRuntimeBinding(decision,{requireReady:true});
-        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath:'/embed',scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
-        return{launchUrl:`${decision.origin}/_soty/boot?path=/embed&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
+        const {entryPath,bootPath}=createScopedLaunchPath(issued.entryPath);
+        assertApps(tickets.size<4096,'apps_launch_busy',429);const ticket=secret();tickets.set(digest(ticket),{decision,entryPath,scopedRecord:issued.record,rebind:true,renewalRequestId:args.requestId,frameId:issued.frameId});
+        return{launchUrl:`${decision.origin}${bootPath}&mode=renew#${ticket}`,expiresAt:decision.expiresAt,
           runtimeProfile:decision.profile,scopedCloseHandle:issued.handle,scopedSlotExpiresAt:issued.record.context.expiresAt,scopedSource:{...issued.record.context.sourceProfile},
           scopedRenewalRequestId:args.requestId,...(issued.bindingDigest?{scopedRenewalBindingDigest:issued.bindingDigest}:{}),
-          entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:'/embed'}};
+          entry:{appId:id,domainId:decision.domainId,origin:decision.origin,path:entryPath}};
       }
       if(op==='apps.scoped.context') {
         args=authenticatedArgs(actor,args);exact(args,['appId','handle']);const id=appId(args.appId);
@@ -685,13 +687,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const savedRootEntry = args.path === '/' && decision.route.entryPath === '/embed' && selectedRuntimeProfile(decision.profile)
         && isRootSignedWorkspaceSource(scopedAdmissions.require(targetTuple(activeTarget(id))).sourceProfile);
       if (args.path === '/_soty/guide') assertApps(!selectedRuntimeProfile(decision.profile), 'app_guide_unsupported', 404);
-      const { entryPath, bootPath } = guideLaunchPath(savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath);
+      const launchPath = savedRootEntry ? '/embed' : args.path ?? decision.route.entryPath;
+      const { entryPath, bootPath } = selectedRuntimeProfile(decision.profile) ? createScopedLaunchPath(launchPath) : guideLaunchPath(launchPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
       let scoped;
       if(selectedRuntimeProfile(decision.profile)) {
-        assertApps(scopedGateway && entryPath==='/embed','app_scoped_admission_required',503);
+        assertApps(scopedGateway,'app_scoped_admission_required',503);
         scoped=scopedGateway.open({actor,appId:id,domainId:domain.id,target:targetTuple(activeTarget(id)),instanceId:args.instanceId});
         voiceSourceActors.set(scoped.record,actor);
       }
@@ -768,10 +771,26 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
   }
-  function shellUrlFor(app, path) {
+  function shellRecoveryFor(app, path) {
+    const target = activeTarget(app.id);
+    if (target && selectedRuntimeProfile(target.profile)) {
+      // Recover through the current admitted address, not the failing alias or
+      // an omitted domain that would resolve back to an unrelated canonical.
+      const profile = scopedAdmissions.require(targetTuple(target));
+      assertApps(origins.has(profile.parentOrigin), 'app_scoped_parent_unavailable', 503);
+      const domain = db.prepare(`SELECT ad.id FROM app_domains ad
+        WHERE ad.app_id=? AND ad.owner_account_id=? AND ad.origin=? AND ad.state='bound'
+        AND (ad.role='canonical' OR EXISTS(SELECT 1 FROM app_publication_domains pd
+          WHERE pd.app_id=ad.app_id AND pd.owner_account_id=ad.owner_account_id AND pd.domain_id=ad.id))`)
+        .get(app.id, target.owner_account_id, profile.embedOrigin);
+      assertApps(domain, 'app_unavailable', 503);
+      const url = new URL('/', profile.parentOrigin);
+      url.hash = `launch/${app.id}/${domain.id}?${new URLSearchParams({ path: checkedScopedEntryPath(path) ?? '/embed' })}`;
+      return { url: url.href, currentSource: true };
+    }
     const url = new URL('/', [...origins][0]);
     url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}${path === undefined ? '' : '?' + new URLSearchParams({ path: guidePath(path) })}`;
-    return url.href;
+    return { url: url.href, currentSource: false };
   }
   function publicResetFor(app, path) {
     try {
@@ -795,13 +814,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         const target = activeTarget(app.id);
         if (target) {
           runtimePath(target.entry_path);
-          page = { shellUrl: shellUrlFor(app), frameOrigins: [...origins] };
+          page = { shellUrl: shellRecoveryFor(app).url, frameOrigins: [...origins] };
         }
       }
       if (path) {
-        const publicResetPath = publicResetFor(app, path), shellUrl = shellUrlFor(app, path);
+        const recovery = shellRecoveryFor(app, path), shellUrl = recovery.url;
+        const publicResetPath = recovery.currentSource ? undefined : publicResetFor(app, path);
         page = { shellUrl, publicResetPath, frameOrigins: [...origins] };
-        const accessFailure = ['app_session_required', 'apps_access_denied', 'app_access_revoked', 'app_access_expired', 'app_access_changed', 'apps_authentication_required'].includes(error);
+        const accessFailure = ['app_session_required', 'apps_access_denied', 'app_access_revoked', 'app_access_expired', 'app_access_changed', 'apps_authentication_required'].includes(error)
+          || recovery.currentSource && ['app_frame_required', 'scoped_embed_source_changed'].includes(error);
         if (canRedirect && !publicResetPath && accessFailure && req.method === 'GET'
           && req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document') {
           res.statusCode = 302; res.setHeader('Location', shellUrl); res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); res.end(); return;
@@ -979,8 +1000,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
       assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path'||selected&&key==='mode') && internalUrl.searchParams.getAll('path').length <= 1
         &&internalUrl.searchParams.getAll('mode').length<=1&&(!internalUrl.searchParams.has('mode')||internalUrl.searchParams.get('mode')==='renew'),'invalid_app_path');
-      const recoveryPath = guidePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
-      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath),scoped:selected,
+      const recoveryPath = guidePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce(), recovery = shellRecoveryFor(app, recoveryPath);
+      const html = renderBootPage({ nonce, shellUrl: recovery.url, publicResetPath: recovery.currentSource ? undefined : publicResetFor(app, recoveryPath),scoped:selected,
         renewal:selected&&internalUrl.searchParams.get('mode')==='renew',parentOrigin:scopedProfile?.parentOrigin,parentOrigins:[...origins] });
       setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
