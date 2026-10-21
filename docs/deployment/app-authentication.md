@@ -70,6 +70,15 @@ verifier и ключи не выдаются JavaScript, localStorage, URL ил�
 двухпользовательской проверки; его нельзя публиковать как production BFF.
 Долговечное хранение, миграции, encryption и native ACL реализуются в Source.
 
+Для существующего Python/FastAPI можно сохранить Native сервер и использовать
+maintained OIDC SDK, например Authlib, с теми же protocol/изоляционными gates.
+Это не перенос JavaScript fixture в production и не самостоятельный JWT verifier.
+Требуйте точное совпадение исходного nonce и при optional `nonce_supported=false`;
+подпись/alg/issuer/audience/expiry проверяет SDK. Browser-local preferences/layout
+тоже разделяются по аккаунтам; смена app session/выход обновляют другие вкладки.
+Callback и персональные ответы не кешируются; authorization code не должен
+попадать в access log reverse proxy или приложения.
+
 ## 3. Провести вход и проверить текущие права
 
 1. BFF начинает Authorization Code + S256 PKCE, state и nonce.
@@ -93,6 +102,22 @@ finite renewal. Optional finite24h требует reviewed Root/client profile,
 
 Схема БД создаётся/мигрирует **до** запуска optional Telegram/agent/worker.
 Отключение необязательного канала не должно ломать первый человеческий вход.
+
+Для прежней строго private-owner установки допустима отдельная операторская
+миграция до первого human login: закрепить исходный restricted app/source,
+принадлежность единственной local row, точного Root app owner и encrypted DB
+backup/restore receipt. Только новый verified subject этого владельца получает
+прежнюю row. Остальные получают независимые accounts. Эта provenance — старая
+сторона доказательства владения, не first-login-wins и не массовое сопоставление
+по display name/email. Если прежних пользователей несколько, применяется
+обычный двусторонний account linking.
+
+Перед массовой публикацией отдельно проверьте действующие host budgets:
+finite families/account, retained rotations, artifact/SQLite bytes и userinfo
+concurrency. Встроенные conservative defaults не равны ёмкости Source users
+или Basic login. Рост одного численного лимита без нагрузки, retention и
+headroom не доказывает готовность к массовому релизу. Новый approved client
+не должен менять issuer keys/profile digests/generation прежних клиентов.
 
 ## 4. Разместить приложение
 

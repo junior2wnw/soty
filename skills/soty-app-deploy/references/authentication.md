@@ -35,3 +35,22 @@ Human OIDC не выдаёт агенту права автоматически;
 Для краткого guide: `node scripts/soty-app-release.mjs auth-guide --mode human-oidc --output NEW_FILE`
 или Root MCP `apps_auth_guide({mode:"human-oidc"})`. Другие режимы — private-owner
 и agent. Эти read-only помощники ничего не активируют и не требуют секретов.
+
+Для существующего Python/FastAPI сохраняй Native data model; maintained OIDC
+SDK (например, Authlib) проверяй теми же настоящими Root protocol gates.
+Собственный JWT verifier не нужен. Прежнюю private-owner строку можно сохранить
+только для точного исходного Root владельца по закреплённой provenance + новому
+human proof, до первого входа. Уже многопользовательская база требует отдельной
+двусторонней привязки. Не импортируй токены старого канала в браузер.
+
+Раздели также browser-local layout/preferences и обработай смену/выход во всех
+вкладках. Проверь Native API/WS с чужим user_id в payload: identity берётся из
+server session. Фильтры/избранное → очистка кеша → открытие из Native DB под
+прежним ID. Callback/private API не кешируются, auth code не пишется в access log.
+
+Перед широким выпуском проверь actual issuer budgets, active families,
+rotation/retention и storage: Source users, Basic300 и finite24 capacity не равны.
+Два тестовых пользователя или повышенный config не доказывают массовую нагрузку.
+При registration клиента сохрани keys и профили прежних clients. Если требуется
+reload Root — свежая quiescence, encrypted restore proof и same-image/config CAS;
+старый rollout из истории не воспроизводится.

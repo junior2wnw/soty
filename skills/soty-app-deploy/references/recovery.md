@@ -40,6 +40,14 @@ GitHub push отказал из-за workflow scope — проверь, нуже
 вообще. Не расширяй credential scope и не активируй старый production CD ради
 переноса исходников. Не исключай обязательный действующий CI без основания.
 
+Если сервер не может забрать приватный GitHub repo, не переноси на него личный
+GitHub token/SSH key ради deploy. Допустим Git bundle уже опубликованного
+проверенного commit через имеющийся SSH transport: закрепи base/target SHA,
+проверь hash файла, `git bundle verify`, точный FETCH_HEAD и ff-only integration
+при чистых tracked files. Bundle сохраняет Git blobs без Windows CRLF archive
+подмены. Сохрани transport receipt; приложение, volumes и прочие сервисы не
+пересоздавай из-за отказа доставки кода.
+
 Optional integrations проверять отдельно: доступность DNS, HTTP/WS, действующие
 proxy, реальный payload и freshness. Один health зелёный не доказывает все источники.
 Функции, отключённые текущим scope, должны оставаться отключёнными.
