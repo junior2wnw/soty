@@ -9,6 +9,7 @@ import { attachSotyIdentityAdapterApi } from "./soty-identity-adapter-api.js";
 import { attachTrafficControl } from "./traffic-control.js";
 import { attachConnectReleaseSource } from "./connect-release-source.js";
 import { createWorldService } from "../modules/world/server/index.mjs";
+import { createCoverDecoder } from '../modules/cover-art/server/codec.mjs';
 import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
@@ -83,6 +84,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
+  const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
@@ -186,7 +188,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
     orbVoice = createVoiceOrbComposition({ getConnect: () => connect, agent: personal, configuration: voiceOrb });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty',
-      withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback) });
+      withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback),
+      profileCoverDecoder: coverDecoder, profileCoverRegistered: operation => registeredCoverOperations.has(operation) });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
     notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty',
       verifyNativeContext: (token, mode) => {
@@ -230,7 +233,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, retainedNamedAppZones, shellOrigins,
     namedCanonical: universalEnabled,
     readAppGuide: universalEnabled ? input => universal?.registration.readGuide(input) : undefined,
-    allowScopedEmbedMigration,allowSelectedResourceMigration,allowAudienceMigration,scopedEmbedProfiles,
+    allowScopedEmbedMigration,allowSelectedResourceMigration,allowAudienceMigration,scopedEmbedProfiles,coverDecoder,
     withHumanSubjectAuthority:humanProfile?.enabled?(request,callback)=>{if(!human)throw Object.assign(new Error('app_scoped_human_required'),{status:503,code:'app_scoped_human_required'});return request.rootProfileDigest === undefined ? human.withSubjectAuthority(request,callback) : rootWorkspaceSubject(request,callback);}:undefined,
     signSourceAuthority: humanProfile?.enabled ? createSourceAuthoritySigner({ profile: humanProfile, scopedProfiles: scopedEmbedProfiles }) : undefined,
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
@@ -289,9 +292,14 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
-    app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions: [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
-      ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])],
+    const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
+    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
+      ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
+    app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
+    // Connect validates every operation and duplicate before returning. Advertise
+    // profile writes only after that exact async registry has been installed.
+    for (const extension of coverExtensions) for (const operation of extension.operations) registeredCoverOperations.add(operation);
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
     // MCP reads/replays use the existing keyless authority resolver even when

@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import {mkdtemp,writeFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -30,7 +31,7 @@ function fixture(fault={}) {
  const helper=async verb=>{events.push('helper:'+verb);fail('helper-'+verb,'before');if(verb==='enter')maintenance=true;if(verb==='leave')maintenance=false;if(verb==='rollback'){if(fault.rollbackFailure)throw new SafeError('rollback_failed');migrated=false;}
  const raced=verb==='status'&&((++statusCalls===2&&fault.race)||fault.active);fail('helper-'+verb,'after');return {ok:true,count:raced?1:0,activeJobs:raced?[{id:'raced-job',status:'queued'}]:[],maintenance,schema:'synthetic'};};
  const ready=async kind=>{events.push('ready:'+kind);if(kind==='candidate'){migrated=true;fail('readiness','before');return {ok:true,storageReady:true,maintenance:true,schema:'soty.connector-storage-ready.v1',modelProxies,applicationPolicySha256:run.args.applicationPolicy?.sha256||null};}return {ok:true,modelProxies};};
- const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
+ const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
  return {run,engine,map,events,records,get migrated(){return migrated;}};
 }
 
@@ -138,7 +139,7 @@ test('unresolved leave helper never starts a concurrent status helper or downgra
 test('v2 data rejects legacy rollback before downgrade helper, original start and automatic restart',async()=>{
  const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
  f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:3,readers:{notes:[1],capabilities:[1],rooms:[1],apps:[1,2]}});return value;};
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:f.migrated?2:1,apps:'empty'});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:f.migrated?2:1,apps:'empty'});
  await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
  assert.equal(f.run.state.failureCode,'storage_reader_incompatible');
  assert.equal(f.map.get(args.originalId).State.Running,false);
@@ -150,13 +151,14 @@ for(const previous of [1,2,3,4,5])test(`Apps${previous+1} migration rejects a ro
  const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
  f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:3,readers:{notes:[1],capabilities:[1],rooms:[1,2],apps:Array.from({length:previous},(_,i)=>i+1)}});return value;};
  f.map.get(args.originalId).Config.Labels[storageReaderLabel]=currentStorageReaders;
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:f.migrated?previous+1:previous});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:f.migrated?previous+1:previous});
  await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
  assert.equal(f.run.state.failureCode,'storage_reader_incompatible');assert.equal(f.migrated,true);
  assert.equal(f.map.get(args.originalId).State.Running,false);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
- assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v3');
+ assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v7');
+ assert.equal(f.run.state.applicationStart.storageGuard.world,'empty');
  assert.equal(f.run.state.applicationStart.storageGuard.apps,previous);
 });
 
@@ -191,7 +193,7 @@ test('the first v3 bridge cannot silently replace a serving v2-manifest image',a
 
 for(const store of ['notes','capabilities'])test(`fresh ${store} format is checked before stopping the original`,async()=>{
  const f=fixture();await f.run.prepare(args);
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:store==='capabilities'?4:3});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:store==='capabilities'?4:3});
  await assert.rejects(f.run.promote(),/storage_probe_invalid/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
@@ -202,7 +204,7 @@ for(const store of ['notes','capabilities'])test(`a serving reader1 rejects fres
  const f=fixture(),image=f.engine.image;
  f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]}}';return value;};
  await f.run.prepare(args);
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:2});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:2});
  await assert.rejects(f.run.promote(),/storage_reader_incompatible/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
@@ -213,7 +215,7 @@ for(const store of ['appRegistration','feedback'])test(`a serving v3 image rejec
  const f=fixture(),readImage=f.engine.image;
  f.engine.image=async key=>{const value=await readImage(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2,3]}}';return value;};
  await f.run.prepare(args);
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1});
+ f.run.storageProbe=async()=>currentObservation({ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1});
  await assert.rejects(f.run.promote(),/storage_reader_incompatible/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
@@ -224,8 +226,8 @@ for(const store of ['appRegistration','feedback'])test(`new ${store} storage aft
  const f=fixture({op:'readiness',when:'before'}),readImage=f.engine.image;
  f.engine.image=async key=>{const value=await readImage(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2,3]}}';return value;};
  f.run.storageProbe=async()=>f.migrated
-   ? {ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1}
-   : {ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty'};
+   ? currentObservation({ok:true,schema:'soty.storage-format.v4',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',appRegistration:'empty',feedback:'empty',[store]:1})
+   : currentObservation({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty'});
  await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
  assert.equal(f.run.state.failureCode,'storage_reader_incompatible');assert.equal(f.migrated,true);
  assert.equal(f.map.get(args.originalId).State.Running,false);

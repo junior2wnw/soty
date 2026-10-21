@@ -1,11 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId } from './protocol.mjs';
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
 import { createLaunchPath } from './launch-path.mjs';
 import { canonical } from '../scoped-embed/profile.mjs';
 import { approvedEmbedProfile } from '../scoped-embed/profile-dispatch.mjs';
 import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
-import { AUDIENCE_FORMATS, baseAppsSchema, audienceColumns, audienceDdl, audienceGuards, hasAudienceSchema, readAppAudience, readConversationAudience, audienceMatchesPolicy } from './audience.mjs';
+import { AUDIENCE_FORMATS, COVER_APP_FORMATS, baseAppsSchema, audienceAppsSchema, audienceColumns, audienceDdl, audienceGuards, hasAudienceSchema, readAppAudience, readConversationAudience, audienceMatchesPolicy } from './audience.mjs';
+import { coverSchemaStatements, coverSchemaSeed, assertCoverSchema } from '../../cover-art/server/schema.mjs';
 
 export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
 export const APPS_SCOPED_REGISTRY_SCHEMA = 'soty.apps-registry.v7';
@@ -108,9 +109,9 @@ export function inspectAppsSchema(db) {
         : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6'
           : schema === APPS_SCOPED_REGISTRY_SCHEMA && version === 7 ? 'v7'
             : schema === APPS_RESOURCE_REGISTRY_SCHEMA && version === 8 ? 'v8'
-              : Object.entries(AUDIENCE_FORMATS).find(([, item]) => item.version === version && item.marker === schema)?.[0] ?? '';
+              : Object.entries({ ...AUDIENCE_FORMATS, ...COVER_APP_FORMATS }).find(([, item]) => item.version === version && item.marker === schema)?.[0] ?? '';
   assertApps(state, 'apps_schema_unsupported');
-  const base = baseAppsSchema(state), audienceVersion = Boolean(AUDIENCE_FORMATS[state]);
+  const base = baseAppsSchema(state), audienceVersion = Boolean(AUDIENCE_FORMATS[audienceAppsSchema(state)]), coverVersion = Boolean(COVER_APP_FORMATS[state]);
   const modern = ['v3', 'v4', 'v5', 'v6', 'v7', 'v8'].includes(base), sourceVersion = ['v4', 'v5', 'v6', 'v7', 'v8'].includes(base), savedVersion = ['v5', 'v6', 'v7', 'v8'].includes(base);
   const expected = base === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
     ...(savedVersion ? saved : {}), ...(audienceVersion ? audienceColumns : {}), ...(['v6', 'v7', 'v8'].includes(base) ? discussions : {}), ...(['v7', 'v8'].includes(base) ? scopedAdmissions : {}) };
@@ -120,7 +121,8 @@ export function inspectAppsSchema(db) {
     ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
     ...(['v6', 'v7', 'v8'].includes(base) ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : []),
     ...(['v7', 'v8'].includes(base) ? [...definitions(scopedAdmissionDdl()), ...definitions(scopedAdmissionGuards())] : []),
-    ...(audienceVersion ? [...definitions(audienceDdl()), ...definitions(audienceGuards())] : [])]);
+    ...(audienceVersion ? [...definitions(audienceDdl()), ...definitions(audienceGuards())] : []),
+    ...(coverVersion ? definitions(coverSchemaStatements('app')) : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
@@ -146,6 +148,7 @@ export function inspectAppsSchema(db) {
         && column.pk === primaryKeys.indexOf(column.name) + 1, 'apps_schema_unsupported');
     }
   }
+  if (coverVersion) assertCoverSchema(db, 'app');
   return state;
 }
 
@@ -487,8 +490,9 @@ export function ensureInitialPublication(db, app) {
 
 function validateSourceRows(db, { historical = false } = {}) {
   const marker = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
-  const resources = marker === APPS_RESOURCE_REGISTRY_SCHEMA || marker === AUDIENCE_FORMATS.v11.marker;
-  const scoped = resources || marker === APPS_SCOPED_REGISTRY_SCHEMA || marker === AUDIENCE_FORMATS.v10.marker;
+  const base = baseAppsSchema(marker?.replace('soty.apps-registry.', ''));
+  const resources = base === 'v8';
+  const scoped = resources || base === 'v7';
   assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
   for (const app of db.prepare('SELECT * FROM local_apps').iterate()) {
     const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
@@ -750,12 +754,12 @@ function validateAudienceRows(db) {
 
 /** Startup-only audience format. 9/10/11 retain distinct base6/7/8 runtime
  * admissions; publication never enables another scoped/resource profile. */
-export function migrateAppsSchema(db, options = {}) {
+function migrateAudienceAppsSchema(db, options = {}) {
   const { allowAudienceMigration = false, legacyTemplate = '', allowScopedEmbedMigration = false, allowSelectedResourceMigration = false } = options;
   assertApps(typeof allowAudienceMigration === 'boolean' && typeof allowScopedEmbedMigration === 'boolean'
     && typeof allowSelectedResourceMigration === 'boolean', 'apps_audience_migration_configuration_invalid', 503);
   function existing(state, migrated = false) {
-    const format = AUDIENCE_FORMATS[state];
+    const format = AUDIENCE_FORMATS[state] ?? COVER_APP_FORMATS[state];
     const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
     assertApps(pinned?.value === normalizeLegacyTemplate(legacyTemplate), 'apps_origin_template_changed', 409);
     assertApps(!(format.base === 'v6' && (allowScopedEmbedMigration || allowSelectedResourceMigration))
@@ -769,23 +773,23 @@ export function migrateAppsSchema(db, options = {}) {
     } catch (error) { if (snapshot && db.isTransaction) db.exec('ROLLBACK'); throw error; }
   }
   const initial = inspectAppsSchema(db);
-  if (AUDIENCE_FORMATS[initial]) return existing(initial);
+  if (AUDIENCE_FORMATS[initial] || COVER_APP_FORMATS[initial]) return existing(initial);
   let previous;
   try { previous = migrateBaseAppsSchema(db, options); }
   catch (error) {
     // Another new reader may have committed the audience migration while this
     // connection waited for the pre-existing base migration's writer fence.
     let current; try { current = inspectAppsSchema(db); } catch { throw error; }
-    if (AUDIENCE_FORMATS[current]) return existing(current);
+    if (AUDIENCE_FORMATS[current] || COVER_APP_FORMATS[current]) return existing(current);
     throw error;
   }
   const afterBase = inspectAppsSchema(db);
-  if (AUDIENCE_FORMATS[afterBase]) return existing(afterBase);
+  if (AUDIENCE_FORMATS[afterBase] || COVER_APP_FORMATS[afterBase]) return existing(afterBase);
   if (!allowAudienceMigration) return previous;
   db.exec('BEGIN IMMEDIATE');
   try {
     const state = inspectAppsSchema(db);
-    if (AUDIENCE_FORMATS[state]) { const result = existing(state); db.exec('COMMIT'); return result; }
+    if (AUDIENCE_FORMATS[state] || COVER_APP_FORMATS[state]) { const result = existing(state); db.exec('COMMIT'); return result; }
     const [next, format] = Object.entries(AUDIENCE_FORMATS).find(([, value]) => value.base === state) ?? [];
     assertApps(format, 'apps_schema_unsupported');
     validateSourceRows(db); validateSavedRows(db); validateDiscussionRows(db);
@@ -794,5 +798,30 @@ export function migrateAppsSchema(db, options = {}) {
     db.exec(`PRAGMA user_version=${format.version}`);
     assertApps(inspectAppsSchema(db) === next, 'apps_audience_migration_invalid', 500);
     const result = existing(next, true); db.exec('COMMIT'); return result;
+  } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
+}
+
+/** Explicit startup-only cover upgrade; 12/13/14 retain base6/7/8 and the
+ * audience tables. New stores may request the same complete format directly. */
+export function migrateAppsSchema(db, options = {}) {
+  const { allowCoverMigration = false, allowAudienceMigration = false } = options;
+  assertApps(typeof allowCoverMigration === 'boolean' && typeof allowAudienceMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
+  const previous = migrateAudienceAppsSchema(db, { ...options,
+    allowAudienceMigration: allowAudienceMigration || allowCoverMigration });
+  if (!allowCoverMigration || COVER_APP_FORMATS[inspectAppsSchema(db)]) return previous;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const state = inspectAppsSchema(db);
+    if (COVER_APP_FORMATS[state]) { db.exec('COMMIT'); return { ...previous, schema: COVER_APP_FORMATS[state].marker }; }
+    const [next, format] = Object.entries(COVER_APP_FORMATS).find(([, value]) => value.audience === state) ?? [];
+    assertApps(format, 'apps_cover_migration_required', 503);
+    validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
+    for (const statement of coverSchemaStatements('app')) db.exec(statement);
+    db.exec(coverSchemaSeed('app', 'apps_cover_' + randomBytes(16).toString('hex')));
+    db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(format.marker);
+    db.exec(`PRAGMA user_version=${format.version}`);
+    assertApps(inspectAppsSchema(db) === next && !db.prepare('PRAGMA foreign_key_check').get(), 'apps_cover_migration_invalid', 500);
+    validateSourceRows(db); validateSavedRows(db); validateAudienceRows(db); validateDiscussionRows(db);
+    db.exec('COMMIT'); return { ...previous, schema: format.marker, migrated: true };
   } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
 }

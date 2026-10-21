@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isP2pCandidate, isP2pDescription } from './validators.js';
+import { createHumanCallIce } from './human-call-ice.js';
+import { createHumanCallVideo } from './human-call-video.js';
 
 const REF_MS = 30_000, LEASE_MS = 30_000, MAX_CALLS = 16, MAX_REFS = 128, MAX_SOCKETS = 128, MAX_PENDING_PER_CALL = 8;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/u.test(value);
@@ -15,16 +17,24 @@ function fields(value, required, optional = []) {
 /** Signed Connect extension and a bounded, process-local signaling admission.
  * Root's existing Connect/World instances supply all identity and membership.
  * No media, key store, provider or database is opened by this module. */
-export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [], clock = Date.now } = {}) {
+export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [], clock = Date.now, mediaPolicy = null } = {}) {
   check(typeof getConnect === 'function' && typeof getWorld === 'function' && typeof clock === 'function');
   check(Array.isArray(allowedOrigins) && allowedOrigins.length <= 64);
   const origins = new Set(allowedOrigins.map(value => { const url = new URL(value); check(url.origin === value); return value; }));
-  const operations = new Set(['call.join', 'call.microphone', 'call.leave', 'call.inbox', 'call.decline']);
+  if (mediaPolicy !== null) {
+    fields(mediaPolicy, ['schema', 'videoEnabled'], ['icePolicy']);
+    check(mediaPolicy.schema === 'soty.human-call-media-policy.v1' && typeof mediaPolicy.videoEnabled === 'boolean');
+  }
+  const ice = createHumanCallIce({ policy: mediaPolicy?.icePolicy ?? null, clock });
+  // A trusted explicit policy and an ICE configuration are both required.
+  const video = createHumanCallVideo({ enabled: mediaPolicy?.videoEnabled === true && ice.status().configured, clock });
+  const operations = new Set(['call.join', 'call.microphone', 'call.leave', 'call.inbox', 'call.decline',
+    'call.camera', 'call.camera.cancel', 'call.ice.get']);
   const calls = new Map(), scopes = new Map(), refs = new Map(), sockets = new Map();
   let closed = false, wss = null, timer = null, epoch = 0, unsubscribeDevice, unsubscribeMembership;
   const now = () => { const value = clock(); check(Number.isSafeInteger(value) && value >= 0); return value; };
   const publicMember = member => ({ accountId: member.actor.accountId, deviceId: member.actor.deviceId,
-    label: member.actor.label, microphone: member.microphone });
+    label: member.actor.label, microphone: member.microphone, ...video.view(member) });
   const peers = call => [...call.members.values()].filter(member => member.ws?.readyState === 1).map(publicMember);
   const send = (ws, value) => { if (ws?.readyState === 1) ws.send(JSON.stringify(value)); };
   const rejectSocket = socket => {
@@ -38,6 +48,7 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
   function drop(call, member, reason = 'human_call_ended') {
     if (call.members.get(member.actor.deviceId) !== member) return;
     call.members.delete(member.actor.deviceId); member.microphone = false;
+    video.retire(member); if (member.admission) ice.retire(member.admission.grantRef);
     for (const ref of refs.values()) if (ref.member === member) ref.state = 'retired';
     const socket = member.ws; member.ws = null;
     try { socket?.close(1000, reason); } catch { /* Local removal already committed. */ }
@@ -66,6 +77,11 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
     const member = call?.members.get(actor.deviceId);
     check(member?.actor.accountId === actor.accountId, 'human_call_denied'); return member;
   };
+  const mediaScope = (call, member) => ({ accountId: member.actor.accountId, deviceId: member.actor.deviceId,
+    callId: call.id, epoch: call.epoch, joinRef: member.admission.grantRef });
+  const activePeer = (call, member, negotiated = false) => [...call.members.values()].some(peer => peer !== member
+    && peer.ws?.readyState === 1 && peer.expiresAt > now() && (!negotiated || peer.mediaProtocol === 2)
+    && getConnect().isActorActive(peer.actor) && (call.mode !== 'group' || getWorld().canAccessCommunity(peer.actor.accountId, call.targetId)));
   const accountHasCall = (accountId, allowedCall = null) => [...calls.values()].some(call => call !== allowedCall
     && [...call.members.values()].some(member => member.actor.accountId === accountId));
   const liveCallerFor = (call, calleeAccountId) => [...call.members.values()].find(member =>
@@ -114,7 +130,8 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
       });
     }
     if (op === 'call.join') {
-      fields(args, ['requestId', 'mode', 'targetId'], ['expectedCallId', 'expectedEpoch']);
+      fields(args, ['requestId', 'mode', 'targetId'], ['expectedCallId', 'expectedEpoch', 'mediaProtocol']);
+      check(args.mediaProtocol === undefined || args.mediaProtocol === 2);
       check(validId(args.requestId) && validId(args.targetId) && ['one-to-one', 'group'].includes(args.mode));
       const expected = Object.hasOwn(args, 'expectedCallId') || Object.hasOwn(args, 'expectedEpoch');
       check(!expected || (args.mode === 'one-to-one' && validId(args.expectedCallId)
@@ -143,7 +160,8 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
         }
         const existing = call && [...call.members.values()].find(member => member.actor.accountId === actor.accountId);
         if (existing) {
-          check(existing.actor.deviceId === actor.deviceId && existing.requestId === args.requestId && !existing.ws,
+          check(existing.actor.deviceId === actor.deviceId && existing.requestId === args.requestId && !existing.ws
+            && existing.mediaProtocol === (args.mediaProtocol ?? 1),
             'human_call_active');
           const ref = [...refs.entries()].find(([, value]) => value.member === existing && value.purpose === 'join' && value.state === 'issued');
           check(ref, 'human_call_reconcile_required');
@@ -156,11 +174,45 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
           calls.set(call.id, call); scopes.set(key, call);
         }
         check(call.members.size < (args.mode === 'group' ? 4 : 2), 'human_call_full');
-        const member = { actor, requestId: args.requestId, ws: null, microphone: false, expiresAt: now() + LEASE_MS };
+        const member = { actor, requestId: args.requestId, ws: null, microphone: false, mediaProtocol: args.mediaProtocol ?? 1, expiresAt: now() + LEASE_MS };
         call.members.set(actor.deviceId, member);
-        try { member.admission = reference(call, member, 'join', args.requestId); }
+        try {
+          member.admission = reference(call, member, 'join', args.requestId);
+          video.open(member, mediaScope(call, member), member.mediaProtocol);
+          if (member.mediaProtocol === 2) member.admission = Object.freeze({ ...member.admission, mediaProtocol: 2,
+            mediaInstance: video.view(member).mediaInstance, cameraConfigured: video.status().configured, iceConfigured: ice.status().configured });
+        }
         catch (error) { drop(call, member); throw error; }
         return { ...member.admission };
+      });
+    }
+    if (['call.camera', 'call.camera.cancel', 'call.ice.get'].includes(op)) {
+      const extra = op === 'call.camera' ? ['requestId', 'expectedCameraGeneration']
+        : op === 'call.camera.cancel' ? ['grantRef', 'cameraGeneration'] : ['requestId', 'expectedRevision'];
+      fields(args, ['callId', 'epoch', 'expectedJoinRef', ...extra]);
+      check(validId(args.callId) && Number.isSafeInteger(args.epoch) && args.epoch > 0 && validId(args.expectedJoinRef));
+      const call = calls.get(args.callId); check(call && call.epoch === args.epoch, 'human_call_stale');
+      const member = memberFor(call, actor), scope = mediaScope(call, member);
+      check(member.mediaProtocol === 2 && args.expectedJoinRef === scope.joinRef, 'human_call_stale');
+      if (op === 'call.ice.get') {
+        // The synchronous issuer calls this twice, in separate fresh fences.
+        // A pending initial join may obtain ICE before opening its one socket.
+        const isCurrent = candidate => {
+          try { return current(actor, call, () => calls.get(call.id) === call && call.members.get(actor.deviceId) === member
+            && candidate.joinRef === member.admission.grantRef && member.expiresAt > now()
+            && (member.ws?.readyState === 1 || member.admission.expiresAt > now())); } catch { return false; }
+        };
+        return ice.issue(scope, { requestId: args.requestId, expectedRevision: args.expectedRevision }, isCurrent);
+      }
+      return current(actor, call, () => {
+        check(member.ws?.readyState === 1 && member.expiresAt > now(), 'human_call_not_joined');
+        if (op === 'call.camera.cancel') {
+          video.withdraw(member, scope, { grantRef: args.grantRef, cameraGeneration: args.cameraGeneration }, true);
+          broadcast(call); return { withdrawn: true, cameraGeneration: args.cameraGeneration };
+        }
+        check(activePeer(call, member, true), 'human_call_camera_waiting');
+        const admission = video.authorize(member, scope, { requestId: args.requestId, expectedCameraGeneration: args.expectedCameraGeneration });
+        broadcast(call); return admission;
       });
     }
     fields(args, ['callId', 'epoch'], op === 'call.microphone' ? ['requestId'] : ['expectedJoinRef']);
@@ -258,6 +310,37 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
             }); return;
           }
           check(bound.ws === socket && call.members.get(bound.actor.deviceId) === bound, 'human_call_stale');
+          if (['call.video.publish', 'call.video.withdraw', 'video.offer', 'video.answer', 'video.candidate'].includes(message.type)) {
+            const publication = message.type === 'call.video.publish', withdrawal = message.type === 'call.video.withdraw';
+            fields(message, ['type', 'callId', 'epoch', ...(publication ? ['grantRef', 'cameraGeneration'] : withdrawal ? ['cameraGeneration'] : ['signal'])]);
+            check(message.callId === call.id && message.epoch === call.epoch);
+            current(bound.actor, call, () => {
+              check(bound.mediaProtocol === 2 && bound.expiresAt > now(), 'human_call_stale');
+              bound.expiresAt = now() + LEASE_MS;
+              const scope = mediaScope(call, bound);
+              if (publication) {
+                if (!activePeer(call, bound, true)) {
+                  video.withdraw(bound, scope, { grantRef: message.grantRef, cameraGeneration: message.cameraGeneration }, true);
+                  broadcast(call); return;
+                }
+                const ack = video.publish(bound, scope, { grantRef: message.grantRef, cameraGeneration: message.cameraGeneration });
+                if (ack) { send(socket, ack); broadcast(call); } return;
+              }
+              if (withdrawal) {
+                video.withdraw(bound, scope, { cameraGeneration: message.cameraGeneration });
+                send(socket, { type: 'call.video.withdrawn', callId: call.id, epoch: call.epoch, cameraGeneration: message.cameraGeneration });
+                broadcast(call); return;
+              }
+              const target = call.members.get(message.signal?.targetDeviceId);
+              // A peer can leave while an otherwise valid video frame is in
+              // flight. Dropping that stale frame must not tear down audio.
+              if (!target || target === bound || target.ws?.readyState !== 1 || target.expiresAt <= now()
+                || !getConnect().isActorActive(target.actor)
+                || call.mode === 'group' && !getWorld().canAccessCommunity(target.actor.accountId, call.targetId)) return;
+              const forwarded = video.route(bound, scope, target, mediaScope(call, target), message.type, message.signal);
+              if (forwarded) send(target.ws, forwarded);
+            }); return;
+          }
           fields(message, ['type', 'callId', 'epoch'], ['signal', 'grantRef']);
           check(message.callId === call.id && message.epoch === call.epoch);
           if (message.type === 'call.publish') {
@@ -303,11 +386,11 @@ export function createHumanCallModule({ getConnect, getWorld, allowedOrigins = [
     if (closed) return; closed = true; clearInterval(timer); unsubscribeDevice?.(); unsubscribeMembership?.();
     for (const call of [...calls.values()]) for (const member of [...call.members.values()]) drop(call, member);
     for (const socket of [...sockets.keys()]) rejectSocket(socket);
-    refs.clear(); scopes.clear();
+    refs.clear(); scopes.clear(); ice.close();
   }
   return Object.freeze({ operations, execute, attachSignaling, close,
     status: () => Object.freeze({ signalingMounted: Boolean(wss) && !closed, participantLimit: 4,
       calls: calls.size, references: refs.size, ownedSockets: sockets.size,
       pendingSockets: [...sockets.values()].filter(record => !record.bound).length,
-      turnConfigured: false, remoteMediaQualified: false }) });
+      turnConfigured: ice.status().turnConfigured, videoConfigured: video.status().configured, remoteMediaQualified: false }) });
 }

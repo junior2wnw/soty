@@ -474,7 +474,7 @@ test('image modes enforce legacy v5 baseline before feature writes; copied conta
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('1'), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(baseline, { candidateImage: image(undefined), originalImage: image('0', reader3, 'b') }), failCode('universal_policy_image_mode_mismatch'));
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', reader3), originalImage: image('1', currentStorageReaders, 'b') }), failCode('universal_policy_reader_baseline_required'));
-  const future = JSON.parse(currentStorageReaders); future.version = 7;
+  const future = JSON.parse(currentStorageReaders); future.version = 8;
   assert.throws(() => assertUniversalImagePrerequisites(features, { candidateImage: image('0', JSON.stringify(future)), originalImage: image('1', currentStorageReaders, 'b') }), failCode('storage_reader_unknown'));
 });
 
@@ -500,7 +500,7 @@ test('actual host factories initialize feature stores/HTTP; storageReady alone a
     namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: true, ...loaded });
   f.beforeRemove.push(() => app.locals.closeServices());
   const dto = runtime(f, app, profile); assert.equal(assertUniversalPreparedness(handle, dto, { allowFixture: true }).ok, true);
-  const format = await readStorageFormat(data); assert.equal(format.schema, 'soty.storage-format.v6'); assert.equal(format.humanIdentity, 1);
+  const format = await readStorageFormat(data); assert.equal(format.schema, 'soty.storage-format.v7'); assert.equal(format.humanIdentity, 1);
   assert.equal(format.connect, 4);
   const connectDb = new DatabaseSync(path.join(data, 'connect', 'accounts.sqlite'), { readOnly: true });
   try {
@@ -683,7 +683,7 @@ test('reviewed installed Native consent permits explicit loopback ports and reje
   await assert.rejects(prepareUniversalPolicy(plan, f.options));
 });
 
-test('empty migration-only registry measures actual factory schema7 and feature-off factory never migrates', async t => {
+test('empty selected registry initializes Apps13/base7 while feature-off initializes Apps12/base6', async t => {
   const f = await fixture(t), source = path.join(f.root, 'selected-empty.json');
   await writeFile(source, JSON.stringify({ schema: 'soty.selected-embed-registry.v1', profiles: [] }), { mode: 0o600 });
   const plan = { ...emptyFeatures(), selected: { source, migrationConfigured: true } }, handle = await prepared(t, f, plan);
@@ -692,13 +692,13 @@ test('empty migration-only registry measures actual factory schema7 and feature-
   const app = createHttpApp(dist, { dataDir, connectOrigins: [origin], appHosting: {}, appOriginTemplate: 'https://{appId}.apps.fixture.invalid',
     namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: true, allowScopedEmbedMigration: true });
   f.beforeRemove.push(() => app.locals.closeServices());
-  assert.equal((await readStorageFormat(dataDir)).apps, 7);
+  assert.equal((await readStorageFormat(dataDir)).apps, 13); // fresh covers over preserved base7
   assert.equal(assertUniversalPreparedness(handle, app.locals.captureUniversalPreparedness(), { allowFixture: true }).ok, true);
   const offDir = path.join(f.root, 'baseline-data');
   const off = createHttpApp(dist, { dataDir: offDir, connectOrigins: [origin], appHosting: {}, appOriginTemplate: 'https://{appId}.apps.fixture.invalid',
     namedAppZone: '', discoveryOrigin: '', universalAppsEnabled: false, allowScopedEmbedMigration: true, scopedEmbedProfiles: [{}] });
   f.beforeRemove.push(() => off.locals.closeServices());
-  assert.equal((await readStorageFormat(offDir)).apps, 6);
+  assert.equal((await readStorageFormat(offDir)).apps, 12); // fresh covers over preserved base6
   assert.equal(off.locals.captureUniversalPreparedness().selected, undefined);
   const disabledPlan = { ...emptyFeatures(), selected: { source, migrationConfigured: false } };
   const disabled = await prepared(t, f, disabledPlan);

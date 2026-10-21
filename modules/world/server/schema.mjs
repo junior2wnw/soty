@@ -1,7 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { DISCOVERY_MIGRATION } from './discovery.mjs';
+import { DIRECT_SCHEMA_SQL, assertDirectSchema } from './direct-schema.mjs';
+import { coverSchemaStatements, coverSchemaSeed, assertCoverSchema } from '../../cover-art/server/schema.mjs';
+import { migrateLegacyAvatarTable, profileAvatarViewSql } from '../../cover-art/server/legacy-avatar.mjs';
 
 // Version4 is reserved for the separate attachment reader; it is not this layout.
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 const LINEAGE = 'soty.world.sqlite.v1';
 const AUDIENCE_COLUMN = "audience TEXT NOT NULL DEFAULT 'private' CHECK(audience IN('private','friends','link','public'))";
 const PROFILE_INSERT = `CREATE TRIGGER world_profile_directory_ai AFTER INSERT ON profiles WHEN new.audience='public' BEGIN
@@ -36,6 +40,48 @@ function assertAudienceSchema(db) {
     || db.prepare("SELECT 1 FROM profiles WHERE discoverable<>(audience='public') LIMIT 1").get()) {
     throw new Error('world_schema_metadata_mismatch');
   }
+}
+const LEGACY_AVATAR_SQL = `CREATE TABLE profile_avatars (account_id TEXT PRIMARY KEY REFERENCES profiles(account_id),
+  mime TEXT NOT NULL,image BLOB NOT NULL,thumbnail_mime TEXT NOT NULL,thumbnail BLOB NOT NULL)`;
+export function profileAvatarStoreId(db, projectId) {
+  if (typeof projectId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId)
+    || db.prepare("SELECT value FROM world_meta WHERE key='project_id'").get()?.value !== projectId) throw new Error('world_project_mismatch');
+  const id = db.prepare('SELECT store_id FROM profile_avatar_usage WHERE id=1').get()?.store_id;
+  if (typeof id !== 'string' || !/^world_profile_[a-f0-9]{48}$/u.test(id)) throw new Error('world_avatar_schema_mismatch');
+  return id;
+}
+function assertLegacyAvatars(db) {
+  const table = db.prepare("SELECT type,sql FROM sqlite_schema WHERE name='profile_avatars'").get();
+  if (table?.type !== 'table' || normalized(table.sql) !== normalized(LEGACY_AVATAR_SQL)
+    || db.prepare("SELECT 1 FROM sqlite_schema WHERE tbl_name='profile_avatars' AND type IN('index','trigger') AND name NOT LIKE 'sqlite_%' LIMIT 1").get()
+    || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
+      WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL) LIMIT 1`).get()) throw new Error('world_avatar_schema_mismatch');
+}
+function assertUnifiedSchema(db, projectId) {
+  assertAudienceSchema(db); assertDirectSchema(db); assertCoverSchema(db, 'profile');
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type IN('index','trigger') AND tbl_name GLOB 'world_direct_*' AND name NOT GLOB 'world_direct_*' AND name NOT LIKE 'sqlite_%' LIMIT 1").get())
+    throw new Error('world_direct_schema_mismatch');
+  const expected = coverSchemaStatements('profile').map(sql => {
+    const match = /^CREATE (?:UNIQUE )?(TABLE|INDEX|TRIGGER) ([a-z_]+)/u.exec(sql);
+    if (!match) throw new Error('world_avatar_schema_mismatch');
+    return { type: match[1].toLowerCase(), name: match[2], sql };
+  });
+  expected.push({ type: 'view', name: 'profile_avatars', sql: profileAvatarViewSql() });
+  const rows = db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name GLOB 'profile_avatar_*' OR name='profile_avatars' OR (type IN('index','trigger') AND (tbl_name GLOB 'profile_avatar_*' OR tbl_name='profile_avatars') AND name NOT LIKE 'sqlite_%') ORDER BY type,name").all();
+  expected.sort((a,b) => a.type < b.type ? -1 : a.type > b.type ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  if (rows.length !== expected.length || rows.some((row, i) => row.type !== expected[i].type || row.name !== expected[i].name || normalized(row.sql) !== normalized(expected[i].sql))
+    || !profileAvatarStoreId(db, projectId)
+    || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
+      WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL)
+        OR (p.avatar_revision IS NOT NULL AND (typeof(p.avatar_revision)<>'integer' OR p.avatar_revision<1 OR p.avatar_revision>p.revision)) LIMIT 1`).get())
+    throw new Error('world_avatar_schema_mismatch');
+}
+function admissionVersion(version) {
+  if (!Number.isInteger(version) || version < 0 || version === 4 || version > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+}
+function migrationPermission(version, allowAudienceMigration, allowWorld6Migration) {
+  if (version > 0 && version < 5 && !allowAudienceMigration) throw new Error('world_audience_migration_required');
+  if (version > 0 && version < 6 && !allowWorld6Migration) throw new Error('world6_migration_required');
 }
 const SCHEMA = `
 CREATE TABLE world_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -95,18 +141,20 @@ CREATE INDEX world_audit_target ON world_audit(target_id,seq);
 CREATE TABLE world_rate_limits (key TEXT PRIMARY KEY, bucket INTEGER NOT NULL, count INTEGER NOT NULL);
 `;
 
-export function migrateWorld(db, projectId, { allowAudienceMigration = false } = {}) {
+export function migrateWorld(db, projectId, { allowAudienceMigration = false, allowWorld6Migration = false, now = Date.now() } = {}) {
   if (typeof allowAudienceMigration !== 'boolean') throw new Error('invalid_audience_migration_mode');
+  if (typeof allowWorld6Migration !== 'boolean') throw new Error('invalid_world6_migration_mode');
+  if (!Number.isSafeInteger(now) || now < 1) throw new Error('invalid_world6_migration_time');
   const initialVersion = Number(db.prepare('PRAGMA user_version').get().user_version);
-  if (!Number.isInteger(initialVersion) || initialVersion < 0 || initialVersion === 4 || initialVersion > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
+  admissionVersion(initialVersion);
   // Default reader startup must not change an existing format before independent release admission.
-  if (initialVersion > 0 && initialVersion < SCHEMA_VERSION && !allowAudienceMigration) throw new Error('world_audience_migration_required');
+  migrationPermission(initialVersion, allowAudienceMigration, allowWorld6Migration);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
   db.exec('BEGIN IMMEDIATE');
   try {
     let version = Number(db.prepare('PRAGMA user_version').get().user_version);
-    if (!Number.isInteger(version) || version < 0 || version === 4 || version > SCHEMA_VERSION) throw new Error('world_schema_unsupported');
-    if (version > 0 && version < SCHEMA_VERSION && !allowAudienceMigration) throw new Error('world_audience_migration_required');
+    admissionVersion(version);
+    migrationPermission(version, allowAudienceMigration, allowWorld6Migration);
     if (version === 0) {
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new Error('world_schema_metadata_mismatch');
       db.exec(SCHEMA);
@@ -139,9 +187,20 @@ export function migrateWorld(db, projectId, { allowAudienceMigration = false } =
         ${PROFILE_INSERT};
         ${PROFILE_UPDATE};
         PRAGMA user_version=5;`);
-      db.prepare("UPDATE world_meta SET value='5' WHERE key='schema_version'").run();
+      db.prepare("UPDATE world_meta SET value='5' WHERE key='schema_version'").run(); version = 5;
     }
-    assertAudienceSchema(db);
+    if (version === 5) {
+      assertAudienceSchema(db); assertLegacyAvatars(db);
+      if (db.prepare("SELECT 1 FROM sqlite_schema WHERE name GLOB 'world_direct_*' OR name GLOB 'profile_avatar_*' LIMIT 1").get())
+        throw new Error('world6_partial_schema');
+      db.exec(DIRECT_SCHEMA_SQL);
+      for (const sql of coverSchemaStatements('profile')) db.exec(sql);
+      db.exec(coverSchemaSeed('profile', 'world_profile_' + randomBytes(24).toString('hex')));
+      migrateLegacyAvatarTable(db, { now });
+      db.prepare("UPDATE world_meta SET value='6' WHERE key='schema_version'").run();
+      db.exec('PRAGMA user_version=6'); version = 6;
+    }
+    assertUnifiedSchema(db, projectId);
     if (db.prepare('PRAGMA quick_check').all().some(row => row.quick_check !== 'ok') || db.prepare('PRAGMA foreign_key_check').get()) throw new Error('world_storage_corrupt');
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }

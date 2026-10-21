@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -201,9 +202,10 @@ test('literal3 has all 64 pinned SQL objects and matches the committed baseline3
 
 test('all twelve independent store pairs are read-only; current image reads3 while image2 remains incompatible', async t => {
   const declared = JSON.parse(currentStorageReaders);
-  assert.equal(declared.version, 6);
+  assert.equal(declared.version, 7);
   assert.deepEqual(declared.readers.connect, [3, 4]);
-  assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(declared.readers.apps, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(declared.readers.world, [6]);
   const independent = JSON.parse(reader3).readers;
   for (const key of ['rooms', 'notes', 'capabilities']) assert.deepEqual(declared.readers[key], independent[key]);
   for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {
@@ -211,12 +213,12 @@ test('all twelve independent store pairs are read-only; current image reads3 whi
     if (notes !== 'empty') (await database(root, notes, 'notes')).close();
     if (capabilities !== 'empty') (await database(root, capabilities)).close();
     const before = await Promise.all(['notes', 'capabilities'].map(store => persistent(root, store)));
-    const result = await readStorageFormat(root); assert.deepEqual(result, format(notes, capabilities));
+    const result = await readStorageFormat(root); assert.deepEqual(result, currentObservation(format(notes, capabilities)));
     assertStorageCompatible(image(currentStorageReaders), result);
     if (capabilities === 3) assert.throws(() => assertStorageCompatible(image(reader2), result), /storage_reader_incompatible/u);
     else assertStorageCompatible(image(reader2), result);
     assert.deepEqual(await Promise.all(['notes', 'capabilities'].map(store => persistent(root, store))), before);
-    assert.deepEqual(Object.keys(result).sort(), ['apps', 'capabilities', 'notes', 'ok', 'rooms', 'schema']);
+    assert.deepEqual(Object.keys(result).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'ok', 'rooms', 'schema', 'world']);
   }
 });
 
@@ -239,7 +241,7 @@ test('real pinned 2→3 COMMIT in WAL preserves native proofs/budgets; old host/
     const oldHandle = new DatabaseSync(file(root));
     try { assert.throws(() => old.module.initializeCapabilitiesSchema(oldHandle, { projectId: 'soty' }), { code: 'schema_version_unsupported' }); }
     finally { oldHandle.close(); }
-    assert.deepEqual(await readStorageFormat(root), format(2, 3));
+    assert.deepEqual(await readStorageFormat(root), currentObservation(format(2, 3)));
     assert.deepEqual(await persistent(root), before); assert.deepEqual(await persistent(root, 'notes'), notesBefore);
     assert.equal(latest.module.initializeCapabilitiesSchema(db, { projectId: 'soty' }).schemaVersion, 3, 'default-off, no AS key');
     assert.deepEqual(notes.prepare('SELECT * FROM note_native_creates').all(), proofs);
@@ -457,7 +459,7 @@ test('a real exited writer leaves populated main2/WAL3; host RO readers and old2
     assert.equal(oldHandle.prepare('SELECT count(*) AS n FROM cap_receipts').get().n, 1);
     assert.equal(oldHandle.prepare('SELECT count(*) AS n FROM cap_oauth_artifacts').get().n, 1);
   } finally { oldHandle.close(); }
-  assert.deepEqual(await readStorageFormat(root), format('empty', 3));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty', 3)));
   assert.deepEqual(await persistent(root), before); assert.deepEqual(await readdir(path.dirname(file(root))), names);
 });
 

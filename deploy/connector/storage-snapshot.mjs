@@ -26,7 +26,7 @@ export async function snapshotStorage(source, target, maxBytes = 192 * 1024 * 10
     observed.push([from, before]);
   }
   for await (const entry of await snapshotDir(source)) {
-    if (['connect', 'apps', 'notes', 'capabilities', 'app-registration', 'feedback', 'human-identity'].includes(entry.name) || /^rooms-v2\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.name)
+    if (['connect', 'apps', 'notes', 'capabilities', 'app-registration', 'feedback', 'human-identity', 'world'].includes(entry.name) || /^rooms-v2\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.name)
       || (!hasRoomDatabase && !ignoredJson.has(entry.name) && /^[A-Za-z0-9_-]{16,96}\.json$/.test(entry.name))) await copy(snapshotJoin(source, entry.name), snapshotJoin(target, entry.name));
   }
   for (const [file, before] of observed) {

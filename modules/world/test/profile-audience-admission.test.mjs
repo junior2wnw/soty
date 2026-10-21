@@ -36,6 +36,7 @@ test('default audience admission rereads format under the actual writer lock: in
   // Only the public prepare/get boundary is wrapped. Both reads, all DDL and
   // the competing initialization use actual DatabaseSync connections.
   const boundary = {
+    get isTransaction() { return db.isTransaction; },
     exec(sql) { return db.exec(sql); },
     prepare(sql) {
       const statement = db.prepare(sql);
@@ -55,12 +56,13 @@ test('default audience admission rereads format under the actual writer lock: in
   assert.equal(db.prepare("SELECT 1 FROM pragma_table_info('profiles') WHERE name='audience'").get(), undefined);
 });
 
-test('post-COMMIT WAL setup failure is an honest startup error with admitted5 preserved, followed by a healthy normal5 reopen', t => {
+test('post-COMMIT WAL setup failure is an honest startup error with admitted6 preserved, followed by a healthy normal6 reopen', t => {
   const directory = mkdtempSync(join(tmpdir(), 'soty-audience-admission-wal-')), databasePath = join(directory, 'world.sqlite');
   oldStore(databasePath);
   let db = new DatabaseSync(databasePath), service, rollbackCalls = 0, walAttempts = 0;
   t.after(() => { service?.close(); db?.close(); rmSync(directory, { recursive: true, force: true }); });
   const boundary = {
+    get isTransaction() { return db.isTransaction; },
     prepare(sql) { return db.prepare(sql); },
     exec(sql) {
       if (sql.includes('PRAGMA journal_mode=WAL')) { walAttempts++; throw new Error('owned_wal_setup_failure'); }
@@ -68,17 +70,17 @@ test('post-COMMIT WAL setup failure is an honest startup error with admitted5 pr
       return db.exec(sql);
     },
   };
-  assert.throws(() => migrateWorld(boundary, PROJECT, { allowAudienceMigration: true }), /owned_wal_setup_failure/u);
+  assert.throws(() => migrateWorld(boundary, PROJECT, { allowAudienceMigration: true, allowWorld6Migration: true }), /owned_wal_setup_failure/u);
   assert.equal(walAttempts, 1); assert.equal(rollbackCalls, 0);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
-  assert.equal(db.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get().value, '5');
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(db.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get().value, '6');
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
   assert.deepEqual({ ...db.prepare('SELECT audience,revision,bio FROM profiles WHERE account_id=?').get(actor.accountId) },
     { audience: 'private', revision: 17, bio: 'Существующий профиль' });
   db.close(); db = null;
   service = createWorldService({ databasePath, projectId: PROJECT });
   const profile = service.execute({ actor, op: 'world.profile.get' }).profile;
-  assert.equal(service.schemaVersion, 5); assert.equal(profile.revision, 17); assert.equal(profile.audience, 'private');
+  assert.equal(service.schemaVersion, 6); assert.equal(profile.revision, 17); assert.equal(profile.audience, 'private');
   const observer = new DatabaseSync(databasePath, { readOnly: true });
   try { assert.equal(observer.prepare('PRAGMA journal_mode').get().journal_mode, 'wal'); } finally { observer.close(); }
 });

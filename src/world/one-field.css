@@ -2,7 +2,7 @@
    runtimes remain the source of content; chrome appears on demand. */
 :root { --of-paper: var(--sw-bg); }
 :root[data-soty-theme=light] { --of-paper: color-mix(in srgb,var(--sw-bg) 50%,#fffcfa); }
-.sw-app[data-experience=one-field],.sw-app[data-experience=one-field][data-agent-orb=ready][data-field=unified] {
+.sw-app[data-experience=one-field],.sw-app[data-experience=one-field][data-agent-orb=ready],.sw-app[data-experience=one-field][data-agent-orb=ready][data-field=unified] {
   grid-template-columns: minmax(0,1fr);
   grid-template-rows: auto auto minmax(0,1fr);
   isolation: isolate;
@@ -16,7 +16,7 @@
 .sw-app[data-experience=one-field]>.sw-human-call-strip { grid-column: 1; grid-row: 2; }
 .sw-app[data-experience=one-field]>.sw-topbar,
 .sw-app[data-experience=one-field][data-agent-orb=ready]>.sw-topbar {
-  position: absolute; inset: 40px 34px auto auto; z-index: 30;
+  position: absolute; inset: 40px 94px auto auto; z-index: 30;
   display: flex; align-items: center; gap: 2px; width: max-content;
   min-height: 52px; height: 52px; width: 157px; margin: 0; padding: 3px;
   border: 1px solid var(--sw-line); border-radius: 32px;
@@ -31,6 +31,24 @@
 .sw-app[data-experience=one-field]>.sw-topbar .of-menu-button>span { display: none; }
 .sw-app[data-experience=one-field] :is(.sw-topbar,.sw-mobile-nav) .sw-icon { width: 22px; height: 22px; stroke-width: 1.5; }
 .sw-app[data-experience=one-field]>.sw-mobile-nav { display: none; }
+.sw-app[data-experience=one-field]>.of-connect-button {
+  position: absolute; inset: 40px 34px auto auto; z-index: 30;
+  display: grid; place-items: center; width: 52px; height: 52px; min-width: 44px; min-height: 44px;
+  padding: 13px; border: 1px solid var(--sw-line); border-radius: 50%; background: var(--of-paper); color: var(--sw-ink);
+}
+.sw-app[data-experience=one-field]>.of-field-navigation {
+  position: absolute; inset: 40px auto auto 34px; z-index: 30; display: flex; gap: 2px;
+  width: max-content; min-height: 52px; padding: 3px; border: 1px solid var(--sw-line); border-radius: 30px; background: var(--of-paper);
+}
+.sw-app[data-experience=one-field]>.of-field-navigation[hidden],
+.sw-app[data-experience=one-field]:has(.of-app-surface)>.of-field-navigation { display: none; }
+.of-field-mode.sw-button {
+  display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 74px; min-height: 44px;
+  margin: 0; padding: 8px 14px; border: 0; border-radius: 24px; background: transparent; color: var(--sw-muted); font-size: 14px;
+}
+.of-field-mode[aria-pressed=true] { color: var(--sw-ink); background: var(--sw-surface-subtle); }
+.of-field-mode>.sw-icon { width: 19px; height: 19px; }
+.sw-app[data-experience=one-field] :is(.of-connect-button,.of-field-mode):focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 3px; }
 .sw-app[data-experience=one-field][data-field=unified][data-assistant-shortcut=false]>.sw-agent-orb:not([data-voice-active=true]) { display: none; }
 .sw-app[data-experience=one-field] .uf-node[data-entity-id="builtin:assistant"] .uf-fallback-mark { width: 48%; height: 48%; color: var(--sw-ink); stroke-width: 1; }
 .sw-app[data-experience=one-field] .sx-skip { left: 16px; }
@@ -99,8 +117,15 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
 .of-menu-tools { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--sw-line); }
 .of-menu-tools>.sw-button { min-height: 44px; border: 0; border-radius: 24px; font-size: 12px; padding: 8px 10px; background: transparent; }
 .of-menu-tools>.sw-button>.sw-icon { width: 17px; height: 17px; }
+.of-menu-theme.sw-theme-controls { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--sw-line); }
+.of-menu-theme .sw-theme-brightness { display: none; }
+.of-menu-theme .sw-theme-modes { justify-content: center; }
+.of-menu-theme .sw-theme-modes>button { min-width: 48px; min-height: 44px; }
 .of-menu-close.sw-button { display: flex; width: max-content; min-width: 150px; min-height: 46px; justify-content: center; gap: 14px; margin: 16px auto 0; padding: 8px 22px; border: 1px solid var(--sw-line); border-radius: 30px; background: transparent; color: var(--sw-ink); }
 .of-sheet-handle { display: none; }
+.sw-app[data-experience=one-field] .sw-inbox .sw-chat-header { min-height: 76px; }
+.sw-app[data-experience=one-field] .sw-inbox .sw-chat-identity>.sw-avatar { width: 44px; height: 44px; min-width: 44px; }
+.sw-app[data-experience=one-field] .sw-inbox .sw-chat-header>.sw-icon-button { min-width: 44px; min-height: 44px; width: 44px; height: 44px; }
 .sw-audience-control { min-width: 0; margin: 0; padding: 0; border: 0; }
 .sw-audience-control>legend { margin-bottom: 10px; color: var(--sw-muted); font-size: 13px; }
 .sw-audience-track { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 3px; padding: 4px; border: 1px solid var(--sw-line); border-radius: 20px; background: var(--sw-surface-subtle); }
@@ -135,9 +160,22 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .of-menu-grid>.sw-button:hover,.of-menu-tools>.sw-button:hover,
   .sw-app[data-experience=one-field]>.sw-topbar button:hover { background: var(--sw-surface-hover); box-shadow: none; }
 }
-@media (max-width:900px) and (min-width:721px) {
-  .sw-app[data-experience=one-field] .uf-local-search { top: 104px; width: min(480px,calc(100% - 48px)); }
-  .sw-app[data-experience=one-field] .uf-search-limit { top: 164px; }
+@media (max-width:1120px) and (min-width:721px) {
+  .sw-app[data-experience=one-field] .uf-local-search { top: 112px; width: min(480px,calc(100% - 48px)); }
+  .sw-app[data-experience=one-field] .uf-search-limit { top: 172px; }
+}
+@media (min-width:721px) {
+  /* A chat already has its own search and actions. Keep the two global entry
+     points clear of those controls instead of laying a second toolbar over it. */
+  .sw-app[data-experience=one-field]:has(.sw-inbox)>.sw-topbar,
+  .sw-app[data-experience=one-field][data-agent-orb=ready]:has(.sw-inbox)>.sw-topbar { top: 16px; width: 52px; }
+  .sw-app[data-experience=one-field]:has(.sw-inbox)>.sw-topbar>.sw-icon-button { display: none; }
+  .sw-app[data-experience=one-field]:has(.sw-inbox)>.of-connect-button { top: 16px; }
+  .sw-app[data-experience=one-field] .sw-inbox .sw-chat-header { padding-inline-end: 164px; }
+}
+@media (min-width:721px) and (max-width:1000px) {
+  .sw-app[data-experience=one-field] .sw-inbox .sw-human-call-join { min-width: 44px; width: 44px; padding: 10px; }
+  .sw-app[data-experience=one-field] .sw-inbox .sw-human-call-join>span { display: none; }
 }
 @media (max-width:720px) {
   .sw-app[data-experience=one-field]>.sw-topbar,
@@ -151,16 +189,21 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
     display: flex; justify-content: center; gap: 14px; width: 148px; min-height: 48px; padding: 10px 24px;
     border: 1px solid var(--sw-line); border-radius: 30px; color: var(--sw-ink); background: var(--of-paper); font-size: 16px;
   }
-  .sw-app[data-experience=one-field]>.sw-main { padding-bottom: 88px; }
+  .sw-app[data-experience=one-field]>.of-connect-button { inset: max(16px,env(safe-area-inset-top,0px)) 16px auto auto; width: 44px; height: 44px; padding: 10px; }
+  .sw-app[data-experience=one-field]>.of-field-navigation { inset: max(16px,env(safe-area-inset-top,0px)) auto auto 16px; min-height: 44px; padding: 0; }
+  .of-field-mode.sw-button { min-width: 68px; padding: 8px 10px; gap: 6px; }
+  .sw-app[data-experience=one-field]>.sw-main { padding-top: calc(76px + env(safe-area-inset-top,0px)); padding-bottom: 88px; }
   .sw-app[data-experience=one-field][data-field=unified]>.sw-main { padding: 0; }
-  .sw-app[data-experience=one-field] .uf-local-search { top: max(16px,env(safe-area-inset-top,0px)); width: calc(100% - 32px); }
-  .sw-app[data-experience=one-field] .uf-search-limit { top: 80px; }
+  .sw-app[data-experience=one-field] .uf-local-search { top: calc(76px + env(safe-area-inset-top,0px)); width: calc(100% - 32px); }
+  .sw-app[data-experience=one-field] .uf-search-limit { top: calc(136px + env(safe-area-inset-top,0px)); }
   .sw-app[data-experience=one-field] .uf-screen[data-arranging=true] .uf-screen-arrange { bottom: 88px; right: 16px; }
   .sw-app[data-experience=one-field] .uf-move-tools { bottom: 88px; }
   .sw-app[data-experience=one-field] .uf-screen :is(.uf-node-person .uf-label,.uf-app-caption,.uf-node-device .uf-label) { font-size: 14px; line-height: 18px; }
   .sw-app[data-experience=one-field] .uf-preview { bottom: 88px; max-height: calc(100% - 104px); }
   .sw-app[data-experience=one-field] .of-app-surface { width: 100%; max-width: none; height: 100%; min-height: 0; border: 0; border-radius: 0; box-shadow: none; }
-  .sw-app[data-experience=one-field] .of-app-surface>.sa-toolbar { min-height: 56px; padding: 6px 12px; }
+  .sw-app[data-experience=one-field]>.sw-main:has(>.of-app-surface) { padding-top: 0; }
+  .sw-app[data-experience=one-field]:has(.of-app-surface)>.of-connect-button { inset: 6px 12px auto auto; }
+  .sw-app[data-experience=one-field] .of-app-surface>.sa-toolbar { min-height: 56px; padding: 6px 68px 6px 12px; }
   body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
     inset: auto 0 0; width: 100%; max-width: none; max-height: calc(var(--soty-visible-height,100dvh) - 24px);
     border-radius: 28px 28px 0 0; border-bottom: 0; box-shadow: 0 -8px 40px #00000012;

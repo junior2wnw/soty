@@ -29,7 +29,8 @@ RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
   && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
-RUN pnpm prune --prod
+RUN pnpm prune --prod \
+  && node --input-type=module -e "import sharp from 'sharp'; await import('./modules/world/server/index.mjs'); await import('./modules/apps/server/index.mjs'); const image=await sharp({create:{width:2,height:2,channels:3,background:'#334455'}}).png().toBuffer(); if((await sharp(image).metadata()).width!==2)process.exit(1)"
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS traffic-core
 ARG XRAY_VERSION=26.7.11
@@ -60,7 +61,7 @@ COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
 LABEL io.soty.universal.legacy="${LEGACY_UNIVERSAL_MODE}"
-LABEL io.soty.storage.readers="{\"version\":6,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4]}}"
+LABEL io.soty.storage.readers="{\"version\":7,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4],\"world\":[6]}}"
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]

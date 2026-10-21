@@ -1,4 +1,7 @@
 import * as appInvitationCarrier from './app-invitation-carrier.mjs';
+import * as nativeVoiceCarrier from './native-voice-carrier.mjs';
+import { createNativeVoiceDescriptor } from '../platform/native-voice-descriptor.mjs';
+import * as conversationTargets from './conversation-target.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -105,7 +108,7 @@ test('ElementPort inline styles retain values across CSS names and camelCase wit
 });
 
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
-  const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
+  const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
   const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, crypto, btoa,
@@ -114,7 +117,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   view.MutationObserver = class { observe() {} disconnect() {} };
-  const discussionCalls = { refresh: 0 };
+  const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [];
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
   const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
@@ -126,6 +129,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
+    './conversation-target.mjs': conversationTargets,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
     './app-runtime-display.mjs': appRuntimeDisplay,
@@ -134,6 +138,11 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './app-audience.mjs': appAudience,
     './app-actions.mjs': appActions,
     './hive-device-bridge.mjs': hiveDeviceBridge,
+    './native-voice-carrier.mjs': { mountRootVoiceCarrier(options) {
+      const record = { options, disposed: 0 }; nativeVoiceBridges.push(record);
+      const dispose = nativeVoiceCarrier.mountRootVoiceCarrier(options);
+      return () => { record.disposed++; dispose(); };
+    } },
     './app-invitation-carrier.mjs': appInvitationCarrier,
     './app-fullscreen.mjs': appFullscreen,
     './app-deployment.mjs': appDeployment,
@@ -155,11 +164,11 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
   ports['./product'].saveDeskPreferences = productModule.exports.saveDeskPreferences;
   const stageModule = { exports: {} };
-  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, crypto: globalThis.crypto });
+  vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, URL, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
-    document, HTMLElement: ElementPort, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    document, navigator: view.navigator, crypto: globalThis.crypto, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
   const Controller = module.exports.TestController, app = Object.create(Controller.prototype);
@@ -172,7 +181,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     chatCleanup: null, chatTimer: null, searchTimer: null, toastTimer: null, noteActionPending: false, visibilityOpen: false,
     profile: { profileId: initial, displayName: `private-${initial}` }, communities: [{ communityId: `group-${initial}` }],
     apps: [{ appId: `app-${initial}`, name: `private-${initial}` }], devices: [{ deviceId: `device-${initial}` }], homeNotes: [{ noteId: `note-${initial}` }],
-    group: null, selected: null, selectedChat: `chat-${initial}`, groupReturn: 'world', groupTab: 'apps',
+    group: null, selected: null, selectedChat: `chat-${initial}`, groupReturn: 'world', groupTab: 'apps', directThreads: [], directThreadsLoaded: false, directLabels: new Map(), directOpenSequence: 0, directProjectionEpoch: 0,
     homeState: { slots: new Map([['private-slot', initial]]), scroll: 20, fieldX: 3, fieldY: 9, communityId: 'private-group', focusId: 'private-focus', focusControl: null, lens: 'all', pinned: new Set(['old-pin']) },
     homeStatus: { devices: 'ready', apps: 'ready', communities: 'ready', notes: 'ready' },
     desk: { favorites: [`favorite-${initial}`], recent: [] }, fieldState: {}, homeFieldState: {}, discoveryApps: new Map([['private-group', [{ appId: `private-${initial}` }]]]), homeQuery: 'private apps', homeFilter: 'together', discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
@@ -203,10 +212,88 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+test('persistent field modes use the real dirty-screen guard and reflect the selected space', async () => {
+  const f = fixture(), gate = deferred(); let dirty = true;
+  Object.assign(f.app, { sidebar: new ElementPort(), header: new ElementPort(), mobileNav: new ElementPort(), fieldNavigation: new ElementPort(), updateNavUnread() {} });
+  f.app.notesHandle = { hasUnsavedChanges: () => dirty, flush: () => gate.promise };
+  const selected = []; f.app.navigateReady = view => selected.push(view);
+  f.Controller.prototype.renderNavigation.call(f.app);
+  const [mine, world] = f.app.fieldNavigation.children;
+  assert.equal(mine.textContent, 'Личное'); assert.equal(mine.getAttribute('aria-pressed'), 'true');
+  assert.equal(world.textContent, 'Мир'); assert.equal(world.getAttribute('aria-pressed'), 'false');
+  world.emit('click'); assert.deepEqual(selected, []); assert.equal(f.app.noteActionPending, true);
+  dirty = false; gate.resolve(); await turn(); assert.deepEqual(selected, ['world']);
+  f.app.view = 'world'; f.Controller.prototype.renderNavigation.call(f.app);
+  assert.equal(f.app.fieldNavigation.children[1].getAttribute('aria-pressed'), 'true');
+  f.app.appStage = {}; f.Controller.prototype.renderNavigation.call(f.app);
+  assert.equal(f.app.fieldNavigation.hidden, false, 'stage visibility belongs to its mounted surface, so a late close cannot leave field navigation hidden');
+  f.app.appStage = null;
+  f.app.group = { communityId: 'visible-group' }; f.Controller.prototype.renderNavigation.call(f.app);
+  assert.equal(f.app.fieldNavigation.hidden, true);
+  f.app.group = null; f.app.view = 'notes'; f.Controller.prototype.renderNavigation.call(f.app);
+  assert.equal(f.app.fieldNavigation.hidden, true);
+});
+
+test('connection entry calls the host hub once and ignores failures from a departed account', async () => {
+  const f = fixture(), gate = deferred(); let count = 0;
+  f.app.options.openConnections = () => { count++; return gate.promise; };
+  const pending = f.app.openConnections(); assert.equal(count, 1);
+  f.app.accountGeneration++; gate.reject(failure('expired_connection')); await pending;
+  assert.equal(f.app.lastToast, undefined);
+  f.app.options.openConnections = () => { throw failure('connection_unavailable'); };
+  await f.app.openConnections(); assert.equal(f.app.lastToast, 'connection_unavailable');
+});
+
+test('community sharing emits a canonical root link from PWA and tool entries without ambient query state', async () => {
+  const f = fixture(), links = [];
+  f.view.navigator.clipboard = { async writeText(value) { links.push(value); } };
+  for (const href of ['https://shell.example/?pwa=1#world', 'https://shell.example/tool/?unrelated=fixture#mine']) {
+    f.location.href = href; f.app.shareCommunity({ communityId: 'group-12345' }); await turn();
+  }
+  assert.deepEqual(links, ['https://shell.example/#community/group-12345/about', 'https://shell.example/#community/group-12345/about']);
+});
+
+test('contact open uses the current account and exact accepted relationship, then selects a genuine direct thread', async () => {
+  const f=fixture(), calls=[], navigation=[];f.app.profile.directMessagesVersion=1;
+  f.app.api={async request(op,args){calls.push({op,args});return {current:{threadId:'direct_fixture',relationshipId:'rel-fixture',peer:{accountId:'peer-fixture',label:null}}};}};
+  f.app.navigate=(view,id)=>navigation.push({view,id});
+  await f.app.openDirectContact({peerAccountId:'peer-fixture',relationshipId:'rel-fixture',label:'Друг'});
+  assert.equal(calls[0].op,'world.direct.open');assert.equal(calls[0].args.expectedAccountId,'account-A');assert.equal(calls[0].args.expectedRelationshipId,'rel-fixture');
+  assert.deepEqual(navigation,[{view:'messages',id:'direct_fixture'}]);assert.equal(f.app.directLabels.get('peer-fixture'),'Друг');
+  assert.equal(f.app.directThreads[0].peer.label,null,'contact presentation does not manufacture a World profile');
+});
+
+test('a late direct-open response cannot populate or navigate another account', async () => {
+  const f=fixture(), gate=deferred(), navigation=[];f.app.profile.directMessagesVersion=1;
+  f.app.api={request:()=>gate.promise};f.app.navigate=(...args)=>navigation.push(args);
+  const pending=f.app.openDirectContact({peerAccountId:'peer-fixture',relationshipId:'rel-fixture',label:'Друг'});
+  f.app.transitionAccount('account-B');gate.resolve({current:{threadId:'direct_fixture',relationshipId:'rel-fixture',peer:{accountId:'peer-fixture'}}});await pending;
+  assert.deepEqual(navigation,[]);assert.equal(f.app.directThreads.length,0);assert.equal(f.app.directLabels.size,0);
+});
+
+test('existing group chat mounts the common renderer with actual group authority and the original draft namespace', () => {
+  const f=fixture(), captured=[];
+  f.app.mountConversation=(parent,target,presentation)=>{captured.push({parent,target,presentation});return ()=>true;};
+  const group={communityId:'group-real',name:'Комната',memberCount:2,membership:{state:'active',pinned:false,muted:false},permissions:{canWrite:true,canModerate:true}};
+  const parent=new ElementPort();f.app.mountChat(parent,group,true);
+  assert.equal(captured[0].target.kind,'community');assert.equal(captured[0].target.draftKey,group.communityId);
+  assert.equal(captured[0].target.record,group);assert.equal(captured[0].target.canModerate,true);assert.equal(captured[0].presentation.showHeader,true);
+  assert.equal(captured[0].presentation.extraActions().length,2);
+});
+
+test('a closed chat cannot restore membership through a late metadata response on the same screen', async () => {
+  const f=fixture(), gate=deferred();let target, mounted=true;
+  f.app.mountConversation=(_parent,value)=>{target=value;return ()=>mounted;};
+  const group={communityId:'group-real',name:'Комната',memberCount:2,membership:{state:'active',pinned:false,muted:false},permissions:{canWrite:true,canModerate:true}};
+  f.app.api={request:()=>gate.promise};f.app.communities=[group];f.app.mountChat(new ElementPort(),group,true);
+  const pending=target.refresh();mounted=false;gate.resolve({community:{...group,revision:99}});
+  await assert.rejects(pending,{code:'conversation_changed'});assert.equal(f.app.communities[0],group);
+});
 
 test('actual shell stores its exact screen and restores the correct account workspace on a bare entry or account switch', () => {
   const f = fixture(); f.useSavedWorkspace();
@@ -1254,10 +1341,10 @@ test('actual inbox refresh closure retires its held list after a newer controlle
   f.app.communities = [older]; f.app.api.request = op => { assert.equal(op, 'world.community.list'); return pending.promise; };
   const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshInbox');
   const parameters = ['active', 'selectedUpdate', 'document', 'groups', 'selectedId', 'visibleConversation', 'pendingPreviews', 'unsubscribers', 'previews', 'conversationRows',
-    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent'];
+    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent', 'refreshDirect'];
   const inert = () => {};
   const values = [() => true, 0, { visibilityState: 'visible' }, groups, undefined, () => false, new Set(), new Map(), new Map(), new Map(),
-    inert, inert, inert, { dispatchEvent(event) { events.push(event); } }, { querySelector() { return null; } }, class { constructor(type, init) { this.type = type; Object.assign(this, init); } }];
+    inert, inert, inert, { dispatchEvent(event) { events.push(event); } }, { querySelector() { return null; } }, class { constructor(type, init) { this.type = type; Object.assign(this, init); } }, inert];
   const refreshInbox = cacheBindArrow(f, declaration?.initializer, parameters, values, 'let refreshing = false');
   const refreshing = refreshInbox(); f.app.updateCommunity(accepted);
   pending.resolve({ communities: [older] }); await refreshing;
@@ -1314,11 +1401,11 @@ function ticketInbox(f) {
   const screen = { isConnected: true, dispatchEvent() {} };
   const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshInbox');
   const parameters = ['active', 'selectedUpdate', 'document', 'groups', 'selectedId', 'visibleConversation', 'pendingPreviews', 'unsubscribers', 'previews', 'conversationRows',
-    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent'];
+    'subscribeDrafts', 'renderList', 'startPreviews', 'screen', 'room', 'CustomEvent', 'refreshDirect'];
   const inert = () => {};
   const values = [() => !f.app.destroyed && current() && sequence === f.app.screenSequence && screen.isConnected, 0, { visibilityState: 'visible' }, groups, undefined, () => false,
     new Set(), new Map(), new Map(), new Map(), inert, inert, inert, screen, { querySelector() { return null; } },
-    class { constructor(type, init) { this.type = type; Object.assign(this, init); } }];
+    class { constructor(type, init) { this.type = type; Object.assign(this, init); } }, inert];
   return cacheBindArrow(f, declaration?.initializer, parameters, values, 'let refreshing = false');
 }
 function ticketField(f) {
@@ -1576,4 +1663,405 @@ for (const entry of notesMenuEntries) {
       assert.equal(f.app.lastToast, undefined);
     });
   }
+}
+
+// Append to a FRESH candidate copy of app-account-lifecycle.test.mjs after Source fixes.
+// Uses the existing actual-controller fixture, conversationTargets and AST closure
+// binder. Controlled API/navigation ports model response order only. These cases
+// are NOT signed-service, browser, layout or network evidence, and were NOT run
+// by this reviewer. Do not append to an immutable packet or logs.
+const reviewThread = (peer = 'peer-one', relationship = 'rel-one', unread = 7) => ({
+  schema: 'soty.world-direct.v1', threadId: 'direct_' + peer, revision: 1,
+  relationshipId: relationship, peer: { accountId: peer, label: null, avatarRevision: null },
+  unreadCount: unread, preferences: { muted: false, pinned: false }, createdAt: 1,
+});
+const reviewContact = peer => ({ peerAccountId: peer, relationshipId: 'rel-' + peer, label: peer });
+function reviewDirectOpenFixture() {
+  const f = fixture(), navigation = [], errors = [], gates = new Map([['peer-A', deferred()], ['peer-B', deferred()]]);
+  f.app.profile.directMessagesVersion = 1; f.app.directOpenSequence = 0;
+  f.app.api = { request(op, args) { assert.equal(op, 'world.direct.open'); return gates.get(args.peerAccountId).promise; } };
+  f.app.navigate = (view, id) => { navigation.push({ view, id }); f.app.screenSequence++; };
+  f.app.toast = value => errors.push(value);
+  const reply = peer => ({ current: reviewThread(peer, 'rel-' + peer) });
+  return { f, gates, navigation, errors, reply };
+}
+async function reviewLatestOpenWins(first) {
+  const { f, gates, navigation, reply } = reviewDirectOpenFixture();
+  const older = f.app.openDirectContact(reviewContact('peer-A')), latest = f.app.openDirectContact(reviewContact('peer-B'));
+  gates.get(first).resolve(reply(first)); await turn();
+  const other = first === 'peer-A' ? 'peer-B' : 'peer-A'; gates.get(other).resolve(reply(other));
+  await Promise.all([older, latest]);
+  assert.deepEqual(navigation, [{ view: 'messages', id: 'direct_peer-B' }]);
+  assert.equal(f.app.directLabels.has('peer-A'), false, 'superseded opens do not change the new screen cache');
+}
+test('review F1 latest direct intent wins when the older response arrives first', async () => { await reviewLatestOpenWins('peer-A'); });
+test('review F1 latest direct intent wins when the latest response arrives first', async () => { await reviewLatestOpenWins('peer-B'); });
+test('review F1 a departed screen is not replaced by a late direct-open response', async () => {
+  const { f, gates, navigation, reply } = reviewDirectOpenFixture();
+  const opening = f.app.openDirectContact(reviewContact('peer-A')); f.app.screenSequence++;
+  gates.get('peer-A').resolve(reply('peer-A')); await opening;
+  assert.deepEqual(navigation, []); assert.equal(f.app.directThreads.length, 0); assert.equal(f.app.directLabels.size, 0);
+});
+test('review F1 a superseded direct-open failure does not surface on the selected screen', async () => {
+  const { f, gates, navigation, errors, reply } = reviewDirectOpenFixture();
+  const older = f.app.openDirectContact(reviewContact('peer-A')), latest = f.app.openDirectContact(reviewContact('peer-B'));
+  gates.get('peer-B').resolve(reply('peer-B')); await latest;
+  gates.get('peer-A').reject(failure('NETWORK_ERROR')); await older;
+  assert.equal(navigation.length, 1); assert.deepEqual(errors, []);
+});
+
+function reviewDirectPoll(f) {
+  const declaration = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'refreshDirect');
+  const inert = () => {};
+  return cacheBindArrow(f, declaration?.initializer,
+    ['directEnabled', 'active', 'document', 'accountId', 'renderList', 'refreshVisiblePreviews', 'pendingDirect', 'selectedDirect', 'selectedId', 'room', 'listStatus'],
+    [true, () => true, { visibilityState: 'visible' }, 'account-A', inert, inert, false, undefined, undefined, { querySelector() { return null; } }, { textContent: '' }],
+    'let directRefreshing = false');
+}
+function reviewMountedDirect(f, thread) {
+  let target; f.app.updateNavUnread = () => {};
+  f.app.mountConversation = (_parent, value) => { target = value; return () => true; };
+  f.app.mountDirectChat(new ElementPort(), thread); return target;
+}
+test('review F2 actual direct poll cannot restore unread counts after the actual read-ACK closure', async () => {
+  const f = fixture(), held = deferred(), before = reviewThread(), snapshot = structuredClone(before);
+  f.app.directThreads = [before];
+  f.app.api = { request(op) { if (op === 'world.direct.list') return held.promise; assert.equal(op, 'world.direct.chat.read'); return Promise.resolve({ unreadCount: 0 }); } };
+  const target = reviewMountedDirect(f, before), polling = reviewDirectPoll(f)();
+  const markRead = cacheFind(cacheAst, node => ts.isVariableDeclaration(node) && node.name.getText(cacheAst) === 'markRead');
+  const ack = cacheBindArrow(f, markRead?.initializer,
+    ['conversation', 'document', 'nearEnd', 'active', 'notifyConversation', 'closeAccess'],
+    [target, { visibilityState: 'visible' }, () => true, () => true, () => {}, () => {}],
+    'let reading = false, accessClosed = false, syncSeq = 9, lastRead = 0');
+  ack(); await turn(); assert.equal(f.app.directThreads[0].unreadCount, 0);
+  held.resolve({ threads: [snapshot], nextCursor: null }); await polling;
+  assert.equal(f.app.directThreads[0].unreadCount, 0);
+});
+test('review F2 actual direct poll cannot erase a later accepted pinned preference', async () => {
+  const f = fixture(), held = deferred(), before = reviewThread(), snapshot = structuredClone(before), accepted = structuredClone(before); accepted.preferences.pinned = true;
+  f.app.directThreads = [before];
+  f.app.api = { request(op) { if (op === 'world.direct.list') return held.promise; assert.equal(op, 'world.direct.preferences'); return Promise.resolve({ thread: accepted }); } };
+  const target = reviewMountedDirect(f, before), polling = reviewDirectPoll(f)();
+  await target.setPreference('pinned', true); assert.equal(f.app.directThreads[0].preferences.pinned, true);
+  held.resolve({ threads: [snapshot], nextCursor: null }); await polling;
+  assert.equal(f.app.directThreads[0].preferences.pinned, true);
+});
+
+test('review F3 a stale community get cannot revert a newer preference acknowledgement', async () => {
+  const held = deferred(), before = cacheCommunity(), accepted = cacheCommunity({ membershipRevision: 2 }); accepted.membership.pinned = true;
+  const target = conversationTargets.createCommunityConversation({ community: before, api: { request(op) {
+    if (op === 'world.community.get') return held.promise; assert.equal(op, 'world.membership.preferences'); return Promise.resolve({ community: accepted });
+  } } });
+  const refreshing = target.refresh(); await target.setPreference('pinned', true);
+  assert.equal(target.preferences.pinned, true); held.resolve({ community: structuredClone(before) }); await refreshing;
+  assert.equal(target.preferences.pinned, true); assert.equal(target.record.membership.revision, 2);
+});
+test('review F3 a stale direct get cannot revert a newer preference with the same thread revision', async () => {
+  const held = deferred(), before = reviewThread(), accepted = structuredClone(before); accepted.preferences.pinned = true;
+  const target = conversationTargets.createDirectConversation({ thread: before, accountId: 'account-A', api: { request(op) {
+    if (op === 'world.direct.get') return held.promise; assert.equal(op, 'world.direct.preferences'); return Promise.resolve({ thread: accepted });
+  } } });
+  const refreshing = target.refresh(); await target.setPreference('pinned', true);
+  assert.equal(target.preferences.pinned, true); held.resolve({ thread: structuredClone(before) }); await refreshing;
+  assert.equal(target.preferences.pinned, true);
+});
+
+test('actual QR application handoff preserves the one-use launch object after the draft fence', async () => {
+  const f = fixture(), opened = [];
+  f.app.chatDrafts = { hasVolatile: () => false };
+  f.app.flushScreen = async () => {}; f.app.screenHasUnsavedChanges = () => false;
+  f.app.appSettingsDialog = null; f.app.appPlacementDialog = null;
+  const launch = appLaunch.parseAppLaunchRoute(`#app/app-${'a'.repeat(32)}?invitation=${'b'.repeat(64)}`);
+  f.app.openApplication = async (record, intent) => opened.push({ record, intent });
+  await f.app.followConnection({ kind: 'application', launch });
+  assert.equal(opened.length, 1); assert.equal(opened[0].intent, launch);
+  assert.equal(opened[0].intent.takeInvitation(), 'b'.repeat(64)); assert.equal(launch.takeInvitation(), null);
+});
+test('actual QR handoff cannot leave an undurable draft', async () => {
+  const f = fixture(); let opened = 0;
+  f.app.flushScreen = async () => {}; f.app.screenHasUnsavedChanges = () => true;
+  f.app.openGroup = async () => { opened++; };
+  await assert.rejects(f.app.followConnection({ kind: 'community', id: 'community-qa', tab: 'chat' }), /Сохраните/u);
+  assert.equal(opened, 0);
+});
+test('actual QR handoff cannot adopt a changed account while the draft flush waits', async () => {
+  const f = fixture(), held = deferred(); let opened = 0;
+  f.app.flushScreen = () => held.promise; f.app.screenHasUnsavedChanges = () => false;
+  f.app.openGroup = async () => { opened++; };
+  const pending = f.app.followConnection({ kind: 'community', id: 'community-qa', tab: 'chat' });
+  f.app.accountGeneration++; held.resolve();
+  await assert.rejects(pending, /connection_entry_changed/); assert.equal(opened, 0);
+});
+
+for (const kind of ['platform-invitation','legacy-room']) test(`actual ${kind} QR handoff cannot consume navigation while a widget remains undurable`, async () => {
+  const f=fixture();let consumed=0,dirty=true;
+  f.app.chatDrafts = { hasVolatile: () => false };
+  f.app.flushScreen=async()=>{};f.app.screenHasUnsavedChanges=()=>false;
+  f.app.widgets={async flush(){},hasUnsavedChanges:()=>dirty};
+  await assert.rejects(f.app.followConnection({kind},()=>{consumed++;}),/Сохраните/u);
+  assert.equal(consumed,0);dirty=false;
+  await f.app.followConnection({kind},()=>{consumed++;});assert.equal(consumed,1);
+});
+
+
+// Actual stage + launcher + voice carrier; only UI/HTTP/client ports are controlled.
+const voiceMountFixture = (overrides = {}) => ({ scope: 'kvartalufa.voice', appId: stageAppId,
+  parentOrigin: 'https://shell.example', frameOrigin: 'https://runtime.example', nativeOrigin: 'https://runtime.example',
+  source: { id: 'voice-source', version: 1, digest: 'b'.repeat(64) }, ...overrides });
+const voiceClientFixture = f => ({ async getLocalState() { return { accountId: f.app.deskAccount, deviceId: 'device-A', current: { revoked: false } }; },
+  async extension() { throw failure('unexpected_voice_action'); } });
+async function voiceUntil(predicate) { const deadline = Date.now() + 5000; while (!predicate()) { assert.ok(Date.now() < deadline, 'bounded voice stage continuation completed'); await turn(); } }
+function voiceStageFixture(f, { readNativeVoice, nativeVoice, presentation = 'widget', host = f.app.main, reply = () => stageResponse('/soty-voice') } = {}) {
+  const original = appLaunch.parseAppLaunchRoute(`#app/${stageAppId}?invitation=${'a'.repeat(64)}`), launches = [];
+  let takes = 0;
+  const intent = Object.freeze({ ...original, takeInvitation() { takes++; return original.takeInvitation(); } });
+  const account = f.app.deskAccount, generation = f.app.accountGeneration, sequence = f.app.screenSequence;
+  if (presentation !== 'widget') f.location.hash = '#' + intent.route;
+  const stage = f.mountStage(host, { api: f.app.api, app: { appId: stageAppId, name: 'Voice' }, accountId: account, intent,
+    ...(presentation === 'widget' ? { presentation, instanceId: 'widget-11111111-1111-4111-8111-111111111111' } : {}),
+    ...(readNativeVoice ? { readNativeVoice } : {}), ...(nativeVoice ? { nativeVoice } : {}),
+    isCurrent: () => !f.app.destroyed && f.app.deskAccount === account && f.app.accountGeneration === generation && f.app.screenSequence === sequence,
+    async request(parameters) { launches.push(parameters); return reply(parameters); },
+    onNavigate(next) { if (presentation !== 'widget') f.location.hash = '#' + next.route; }, onBack() {}, async onAccount() {}, onSettings() {},
+  });
+  return { stage, host, launches, takes: () => takes, original };
+}
+function voiceWidgetFromActualConstructor(f, intent) {
+  const binder = {};
+  vm.runInNewContext(ts.transpileModule(`exports.bind = function(mountAppStage, parseAppLaunchRoute, formatAppLaunchRoute) { return ${currentReviewWidgetMount}; };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText, { exports: binder });
+  const mount = binder.bind.call(f.app, f.mountStage, appLaunch.parseAppLaunchRoute, appLaunch.formatAppLaunchRoute);
+  return mount(f.app.main, { appId: stageAppId, name: 'Voice' }, intent, () => !f.app.destroyed,
+    'widget-11111111-1111-4111-8111-111111111111');
+}
+for (const presentation of ['main', 'widget']) test(`actual ${presentation} stage waits for voice metadata before launch, invitation consume and bridge install`, async t => {
+  const f = fixture(), gate = deferred(); let reads = 0;
+  const v = voiceStageFixture(f, { presentation, readNativeVoice: () => { reads++; return gate.promise; } }); t.after(() => v.stage.dispose());
+  await turn();
+  try {
+    assert.equal(reads, 1); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+    assert.equal(v.host.querySelector('iframe'), null); assert.equal(f.nativeVoiceBridges.length, 0);
+  } finally { gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready; }
+  assert.equal(v.launches.length, 1); assert.equal(v.takes(), 0); assert.equal(f.nativeVoiceBridges.length, 1);
+  const frame = v.host.querySelector('iframe'); assert.ok(frame);
+  assert.equal(frame.allow, 'microphone https://runtime.example; autoplay https://runtime.example');
+  assert.equal(frame.getAttribute('sandbox'), 'allow-scripts allow-forms allow-same-origin allow-downloads');
+});
+for (const transition of ['screen', 'account ABA', 'dispose']) test(`pending voice metadata cannot install or launch after ${transition}`, async t => {
+  const f = fixture(), gate = deferred(), v = voiceStageFixture(f, { readNativeVoice: () => gate.promise }); t.after(() => v.stage.dispose());
+  await turn();
+  if (transition === 'screen') f.app.screenSequence++;
+  else if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+  else v.stage.dispose();
+  gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready;
+  assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(f.nativeVoiceBridges.length, 0); assert.equal(v.host.querySelector('iframe'), null);
+  assert.equal(v.original.takeInvitation(), 'a'.repeat(64), 'the actual cancelled carrier was not consumed');
+});
+for (const presentation of ['main', 'widget']) test(`actual ${presentation} voice stage rejects a foreign parent before signed launch or invitation consume`, async t => {
+  const f = fixture(), v = voiceStageFixture(f, { presentation, readNativeVoice: async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture({ parentOrigin: 'https://another.example' }) }) });
+  t.after(() => v.stage.dispose()); await v.stage.ready;
+  assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(v.host.querySelector('iframe'), null);
+  assert.equal(v.original.takeInvitation(), 'a'.repeat(64));
+});
+test('legacy ready voice descriptor keeps immediate admission even when a lazy resolver is also supplied', async t => {
+  const f = fixture(); let reads = 0;
+  const v = voiceStageFixture(f, { nativeVoice: { client: voiceClientFixture(f), mount: voiceMountFixture() }, readNativeVoice: async () => { reads++; throw Error('ready descriptor must not wait'); } });
+  t.after(() => v.stage.dispose()); assert.equal(v.launches.length, 1); await v.stage.ready;
+  assert.equal(reads, 0); assert.equal(f.nativeVoiceBridges.length, 1); assert.ok(v.host.querySelector('iframe'));
+});
+test('actual main application entry receives the shared descriptor resolver', async t => {
+  const f = fixture(), gate = deferred(); let reads = 0, launches = 0;
+  f.app.options.readNativeVoice = () => { reads++; return gate.promise; };
+  f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
+  const opening = f.app.openApplication({ appId: stageAppId, name: 'Voice' }); t.after(() => f.app.cleanScreen()); await turn();
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  finally { gate.resolve(null); await opening; }
+  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+});
+test('actual constructor widget entry receives the shared descriptor resolver and legacy ready voice option', async t => {
+  const f = fixture({ hash: '#world' }), gate = deferred(); let reads = 0, launches = 0;
+  f.app.options.readNativeVoice = () => { reads++; return gate.promise; };
+  f.app.options.openApp = async () => { launches++; return stageResponse('/'); };
+  const intent = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId }));
+  const stage = voiceWidgetFromActualConstructor(f, intent); t.after(() => stage.dispose()); await turn();
+  try { assert.equal(reads, 1); assert.equal(launches, 0); assert.equal(f.app.main.querySelector('iframe'), null); }
+  finally { gate.resolve(null); await stage.ready; }
+  assert.equal(launches, 1); assert.ok(f.app.main.querySelector('iframe'));
+  stage.dispose(); f.app.options.nativeVoice = { client: voiceClientFixture(f), mount: voiceMountFixture() };
+  const ready = voiceWidgetFromActualConstructor(f, intent); t.after(() => ready.dispose()); await ready.ready;
+  assert.equal(reads, 1, 'legacy ready widget does not reread the pending metadata port'); assert.equal(f.nativeVoiceBridges.length, 1);
+});
+test('failed voice lookup retries only through explicit UI and two stages share the same retry IO', async t => {
+  const f = fixture(), gate = deferred(); let calls = 0;
+  const resolver = createNativeVoiceDescriptor({ fetch: async () => { calls++; if (calls === 1) throw Error('synthetic network'); return gate.promise; } });
+  t.after(() => resolver.close()); await assert.rejects(resolver.read(), { code: 'native_voice_descriptor_unavailable' });
+  const readNativeVoice = async options => { const mount = await resolver.read(options); return mount ? { client: voiceClientFixture(f), mount } : null; };
+  const host = Object.assign(new ElementPort(), { ownerDocument: f.app.main.ownerDocument });
+  const a = voiceStageFixture(f, { readNativeVoice }), b = voiceStageFixture(f, { readNativeVoice, host }); t.after(() => { a.stage.dispose(); b.stage.dispose(); });
+  await Promise.all([a.stage.ready, b.stage.ready]); await turn();
+  assert.equal(calls, 1); assert.equal(a.launches.length + b.launches.length, 0); assert.equal(a.takes() + b.takes(), 0);
+  for (const v of [a, b]) { const retry = v.host.querySelector('.sa-recovery-retry'); assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); retry.emit('click'); }
+  assert.equal(calls, 2, 'concurrent explicit retries share one bounded metadata request');
+  gate.resolve({ ok: true, async json() { return { nativeVoice: null }; } }); await voiceUntil(() => a.launches.length + b.launches.length === 2);
+  assert.equal(calls, 2); assert.ok(a.host.querySelector('iframe')); assert.ok(b.host.querySelector('iframe'));
+});
+test('disposing one actual voice stage retires only its own bridge and leaves the other frame usable', async t => {
+  const f = fixture(), client = voiceClientFixture(f), nativeVoice = { client, mount: voiceMountFixture() };
+  const host = Object.assign(new ElementPort(), { ownerDocument: f.app.main.ownerDocument });
+  const a = voiceStageFixture(f, { nativeVoice }), b = voiceStageFixture(f, { nativeVoice, host }); t.after(() => { a.stage.dispose(); b.stage.dispose(); });
+  await Promise.all([a.stage.ready, b.stage.ready]); assert.equal(f.nativeVoiceBridges.length, 2);
+  const first = a.host.querySelector('iframe'), second = b.host.querySelector('iframe'); assert.ok(first); assert.ok(second);
+  const scope = (frame, requestId) => f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example', data: { schema: 'soty.kvartalufa-voice-carrier.v1', method: 'scope', requestId } }));
+  scope(first, 'scope-first-111'); scope(second, 'scope-second-111'); await turn();
+  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 1);
+  a.stage.dispose(); a.stage.dispose(); assert.equal(f.nativeVoiceBridges[0].disposed, 1); assert.equal(f.nativeVoiceBridges[1].disposed, 0);
+  scope(first, 'scope-first-222'); scope(second, 'scope-second-222'); await turn();
+  assert.equal(first.contentWindow.sent.length, 1); assert.equal(second.contentWindow.sent.length, 2); assert.equal(b.host.querySelector('iframe'), second);
+});
+
+
+test('actual scoped stage gives an invitation only to its fresh admitted frame and never replays it', async t => {
+  const f = fixture(), v = voiceStageFixture(f, { readNativeVoice: async () => null,
+    reply: () => ({ ...stageResponse('/soty-voice'), runtimeProfile: 'soty.selected-human-embed.v2',
+      scopedCloseHandle: 'h'.repeat(43), scopedSource: { id: 'soty.standard-workspace', version: 2, digest: 'a'.repeat(64) }, scopedCleanup: async () => {} }) });
+  t.after(() => v.stage.dispose()); await v.stage.ready;
+  const frame = v.host.querySelector('iframe'); assert.ok(frame); assert.equal(v.takes(), 0);
+  const ready = { schema: 'soty.app-invitation-ready.v1', appId: stageAppId, requestId: 'c'.repeat(32) };
+  const emit = (source, origin = 'https://runtime.example') => f.view.dispatchEvent(Object.assign(new Event('message'), { source, origin, data: ready }));
+  emit({}); emit(frame.contentWindow, 'https://foreign.example'); assert.equal(v.takes(), 0);
+  emit(frame.contentWindow); emit(frame.contentWindow); await turn();
+  const delivered = frame.contentWindow.sent.filter(item => item.data.schema === 'soty.app-invitation.v1');
+  assert.equal(v.takes(), 1); assert.equal(delivered.length, 1); assert.equal(delivered[0].data.token, 'a'.repeat(64));
+  assert.equal(delivered[0].origin, 'https://runtime.example'); assert.equal(v.original.takeInvitation(), null);
+});
+
+// Independent P5 Source-review regression port. AppStage/launcher/carrier remain actual.
+// Only browser UI, metadata and popup ports are controlled. Never a provider/hardware proof.
+function independentP5Control(host, control) {
+  const visit = node => {
+    if (node?.dataset?.stageControl === control) return node;
+    for (const child of node?.children ?? []) { const found = visit(child); if (found) return found; }
+    return null;
+  };
+  const result = visit(host); assert.ok(result, `actual stage control ${control}`); return result;
+}
+function independentP5PopupPort(f) {
+  const opened = [], navigations = [];
+  f.view.open = (url, target) => {
+    assert.equal(url, 'about:blank'); assert.equal(target, '_blank');
+    const popup = { closed: false, opener: {}, close() { this.closed = true; },
+      location: { replace(value) { navigations.push(value); } } };
+    opened.push(popup); return popup;
+  };
+  return { opened, navigations };
+}
+for (const presentation of ['main', 'widget']) {
+  for (const phase of ['pending', 'unavailable', 'foreign parent']) {
+    test(`P5 independent external descriptor gate: ${presentation} ${phase}`, async () => {
+      const f = fixture(), gate = deferred(), popup = independentP5PopupPort(f);
+      const readNativeVoice = phase === 'pending' ? () => gate.promise
+        : phase === 'unavailable' ? async () => { throw failure('native_voice_descriptor_unavailable'); }
+        : async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture({ parentOrigin: 'https://foreign.example' }) });
+      const v = voiceStageFixture(f, { presentation, readNativeVoice });
+      try {
+        if (phase === 'pending') await turn(); else await v.stage.ready;
+        assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+        independentP5Control(v.host, 'external').emit('click'); await turn(); await turn();
+        assert.equal(v.launches.length, 0, 'external cannot issue a signed launch before a successful descriptor and parent gate');
+        assert.equal(popup.navigations.length, 0); assert.equal(v.takes(), 0);
+        if (phase !== 'pending') assert.ok(popup.opened.every(value => value.closed), 'a denied lookup closes any owned blank popup');
+      } finally {
+        // Pending has no authorized destination; dispose before releasing the late result.
+        v.stage.dispose(); gate.resolve(null); await v.stage.ready; await turn();
+      }
+    });
+  }
+  for (const transition of ['screen', 'account ABA', 'dispose']) {
+    test(`P5 independent external descriptor await: ${presentation} ${transition}`, async () => {
+      const f = fixture(), gate = deferred(), popup = independentP5PopupPort(f);
+      const v = voiceStageFixture(f, { presentation, readNativeVoice: () => gate.promise });
+      try {
+        await turn(); independentP5Control(v.host, 'external').emit('click');
+        if (transition === 'screen') f.app.screenSequence++;
+        else if (transition === 'account ABA') { f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A'); }
+        else v.stage.dispose();
+        gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() });
+        await v.stage.ready; await turn(); await turn();
+        assert.equal(v.launches.length, 0, 'external rechecks its original stage owner after metadata await');
+        assert.equal(popup.navigations.length, 0); assert.equal(v.takes(), 0);
+        assert.equal(f.nativeVoiceBridges.length, 0); assert.equal(v.host.querySelector('iframe'), null);
+        assert.ok(popup.opened.every(value => value.closed), 'a stale continuation closes only its owned blank popup');
+      } finally { v.stage.dispose(); gate.resolve(null); await v.stage.ready; }
+    });
+  }
+  test(`P5 independent external descriptor positive: ${presentation} ready remains usable`, async () => {
+    const f = fixture(), popup = independentP5PopupPort(f);
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: async () => ({ client: voiceClientFixture(f), mount: voiceMountFixture() }) });
+    try {
+      await v.stage.ready; const frame = v.host.querySelector('iframe'); assert.ok(frame); assert.equal(v.launches.length, 1);
+      independentP5Control(v.host, 'external').emit('click');
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(v.launches.length, 2); assert.equal(v.takes(), 0); assert.equal(popup.opened.length, 1);
+      assert.equal(popup.opened[0].opener, null); assert.equal(popup.opened[0].closed, false);
+      assert.equal(v.host.querySelector('iframe'), frame, 'external launch does not replace the running iframe');
+      assert.ok(v.launches.every(value => value.expectedAccountId === 'account-A'));
+      assert.equal(f.nativeVoiceBridges.length, 1, 'external continuation does not duplicate the stage bridge');
+    } finally { v.stage.dispose(); }
+  });
+}
+
+
+function p5OwnedPopupPort(f) {
+  const opened = [], navigations = []; let foreignClosed = false;
+  f.view.close = () => { foreignClosed = true; };
+  f.view.open = (url, target) => {
+    assert.equal(url, 'about:blank'); assert.equal(target, '_blank');
+    const popup = { closed: false, opener: {}, document: { title: '', body: { textContent: '' } },
+      close() { this.closed = true; }, location: { replace(value) { navigations.push(value); } } };
+    opened.push(popup); return popup;
+  };
+  return { opened, navigations, foreignClosed: () => foreignClosed };
+}
+for (const presentation of ['main', 'widget']) {
+  test(`P5 owned external popup preserves gesture and one shared metadata flight: ${presentation}`, async () => {
+    const f = fixture(), gate = deferred(), popup = p5OwnedPopupPort(f); let reads = 0;
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: () => { reads++; return gate.promise; } });
+    try {
+      await turn(); independentP5Control(v.host, 'external').emit('click');
+      independentP5Control(v.host, 'external').emit('click');
+      assert.equal(popup.opened.length, 1, 'the user gesture synchronously owns one blank popup');
+      assert.equal(popup.opened[0].opener, null); assert.equal(popup.opened[0].document.title, 'Открываем приложение');
+      assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0); assert.equal(popup.navigations.length, 0); assert.equal(reads, 1);
+      gate.resolve({ client: voiceClientFixture(f), mount: voiceMountFixture() }); await v.stage.ready;
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(reads, 1); assert.equal(v.launches.length, 2, 'runtime and the separate external entry retain their own existing admissions');
+      assert.equal(popup.opened.length, 1); assert.equal(popup.opened[0].closed, false); assert.equal(popup.foreignClosed(), false);
+      assert.equal(f.nativeVoiceBridges.length, 1); assert.ok(v.host.querySelector('iframe')); assert.equal(v.takes(), 0);
+    } finally { v.stage.dispose(); gate.resolve(null); await v.stage.ready; }
+  });
+  test(`P5 explicit external retry shares bounded descriptor IO after unavailable: ${presentation}`, async () => {
+    const f = fixture(), gate = deferred(), popup = p5OwnedPopupPort(f); let fetches = 0;
+    const descriptor = createNativeVoiceDescriptor({ fetch: async () => { fetches++; if (fetches === 1) throw Error('synthetic metadata failure'); return gate.promise; } });
+    const readNativeVoice = async options => { const mount = await descriptor.read(options); return mount ? { client: voiceClientFixture(f), mount } : null; };
+    const v = voiceStageFixture(f, { presentation, readNativeVoice });
+    try {
+      await v.stage.ready; assert.equal(descriptor.snapshot().state, 'unavailable'); assert.equal(fetches, 1); assert.equal(v.launches.length, 0);
+      independentP5Control(v.host, 'external').emit('click');
+      assert.equal(popup.opened.length, 1); assert.equal(fetches, 2); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+      gate.resolve({ ok: true, async json() { return { nativeVoice: voiceMountFixture() }; } });
+      await voiceUntil(() => popup.navigations.length === 1);
+      assert.equal(fetches, 2); assert.equal(v.launches.length, 1); assert.equal(popup.opened.length, 1);
+      assert.equal(popup.opened[0].closed, false); assert.equal(popup.foreignClosed(), false); assert.equal(f.nativeVoiceBridges.length, 1); assert.equal(v.takes(), 0);
+    } finally { v.stage.dispose(); descriptor.close(); gate.resolve({ ok: false }); await v.stage.ready; }
+  });
+  test(`P5 blocked external popup does not retry unavailable metadata or issue admission: ${presentation}`, async () => {
+    const f = fixture(); let opens = 0, reads = 0;
+    f.view.open = (url, target) => { assert.equal(url, 'about:blank'); assert.equal(target, '_blank'); opens++; return null; };
+    const v = voiceStageFixture(f, { presentation, readNativeVoice: async () => { reads++; throw failure('native_voice_descriptor_unavailable'); } });
+    try {
+      await v.stage.ready; independentP5Control(v.host, 'external').emit('click'); await turn();
+      assert.equal(opens, 1); assert.equal(reads, 1); assert.equal(v.launches.length, 0); assert.equal(v.takes(), 0);
+      assert.equal(v.host.querySelector('iframe'), null);
+    } finally { v.stage.dispose(); }
+  });
 }

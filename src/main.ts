@@ -562,7 +562,7 @@ async function boot(): Promise<void> {
   if (!device) {
     device = await createDevice("Гость");
   }
-  initializeConnect(device.nick);
+  if (!(await initializeConnect(device.nick, app))) return;
 
   const pending = loadPendingJoin();
   if (pending) {

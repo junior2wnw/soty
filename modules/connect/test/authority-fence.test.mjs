@@ -245,13 +245,16 @@ test('host current-contact views expire and cannot be retained, widened or neste
   let retained;
   const result = f.service.withAuthorityFence(() => f.service.withCurrentContacts(Object.freeze({ accountId: a.accountId, deviceId: a.deviceId }), contacts => {
     retained = contacts; assert.ok(Object.isFrozen(contacts)); assert.ok(Object.isFrozen(contacts.accountIds()));
-    assert.deepEqual(Object.keys(contacts).sort(), ['accountId', 'accountIds', 'deviceId', 'has']);
+    assert.deepEqual(Object.keys(contacts).sort(), ['accountId', 'accountIds', 'deviceId', 'has', 'relationshipId']);
+    assert.equal(typeof contacts.relationshipId(b.accountId), 'string');
+    assert.equal(contacts.relationshipId(a.accountId), null);
     assert.throws(() => f.service.withCurrentContacts(b, () => assert.fail()), code('connect_authority_actor_mismatch'));
     return f.service.withCurrentContacts(a, nested => { assert.equal(nested, contacts); return nested.has(b.accountId); });
   }));
   assert.equal(result, true);
   assert.throws(() => retained.has(b.accountId), code('connect_contact_authority_expired'));
   assert.throws(() => retained.accountIds(), code('connect_contact_authority_expired'));
+  assert.throws(() => retained.relationshipId(b.accountId), code('connect_contact_authority_expired'));
   assert.throws(() => f.service.withCurrentContacts({ accountId: b.accountId, deviceId: a.deviceId }, () => assert.fail()), code('connect_authority_actor_mismatch'));
   assert.equal(f.service.withCurrentContacts(a, contacts => contacts.has(b.accountId)), true);
 });

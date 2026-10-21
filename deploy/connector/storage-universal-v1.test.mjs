@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -88,26 +89,26 @@ test('literal U1 store fixtures pin independent normalized layouts and match the
   for (const expected of Object.values(provenance.stores)) assert.ok(source.includes(expected.layoutSha256));
 });
 
-test('absent and empty new stores preserve exact legacy v3, while either installed store produces six-store v4', async t => {
-  const root = await directory(t); assert.deepEqual(await readStorageFormat(root), legacy);
+test('current v7 explicitly reports absent and installed registration/feedback while retaining historical v3/v4 vectors', async t => {
+  const root = await directory(t); assert.deepEqual(await readStorageFormat(root), currentObservation(legacy));
   for (const entry of Object.values(formats)) await mkdir(join(root, entry.directory));
-  assert.deepEqual(await readStorageFormat(root), legacy);
+  assert.deepEqual(await readStorageFormat(root), currentObservation(legacy));
   const file = await seed(root, 'appRegistration'), before = await persistentHash(file);
-  assert.deepEqual(await readStorageFormat(root), format(1, 'empty')); assert.deepEqual(await persistentHash(file), before);
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(1, 'empty'))); assert.deepEqual(await persistentHash(file), before);
   const feedback = await seed(root, 'feedback'), secondBefore = await persistentHash(feedback);
-  assert.deepEqual(await readStorageFormat(root), format()); assert.deepEqual(await persistentHash(feedback), secondBefore);
-  const onlyFeedback = await directory(t); await seed(onlyFeedback, 'feedback'); assert.deepEqual(await readStorageFormat(onlyFeedback), format('empty', 1));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format())); assert.deepEqual(await persistentHash(feedback), secondBefore);
+  const onlyFeedback = await directory(t); await seed(onlyFeedback, 'feedback'); assert.deepEqual(await readStorageFormat(onlyFeedback), currentObservation(format('empty', 1)));
 });
 
-test('v3 images cannot start new stores even when a container copies v4 labels; v4 reads all historical combinations', () => {
+test('v3 images cannot start new stores even when a container copies v4 labels; the current image reads historical combinations', () => {
   for (const pair of [[1, 1], [1, 'empty'], ['empty', 1]]) assert.throws(() => assertStorageCompatible(image(reader3), format(...pair)), /storage_reader_incompatible/u);
   for (const rooms of ['empty', 1, 2]) for (const apps of ['empty', 1, 2, 3, 4, 5, 6]) {
     for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {
       assertStorageCompatible(image(), { ...legacy, rooms, apps, notes, capabilities });
     }
   }
-  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms']);
-  assert.equal(JSON.parse(currentStorageReaders).version, 6);
+  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
+  assert.equal(JSON.parse(currentStorageReaders).version, 7);
   assert.deepEqual(storageReaders(image()).connect, [3, 4]);
 });
 
@@ -190,7 +191,7 @@ test('new format recognition never enumerates tickets, media BLOBs, descriptors 
     db.prepare('INSERT INTO feedback_provider_receipts VALUES (?,?,?,?)').run('proof', 'installation', JSON.stringify({ body: sentinel }), 1);
   });
   const before = await persistentHash(filename), result = await readStorageFormat(root);
-  assert.deepEqual(result, format('empty', 1)); assert.equal(JSON.stringify(result).includes(sentinel), false);
+  assert.deepEqual(result, currentObservation(format('empty', 1))); assert.equal(JSON.stringify(result).includes(sentinel), false);
   assert.equal(JSON.stringify(result).includes('REG.soty'), false); assert.deepEqual(await persistentHash(filename), before);
 });
 
@@ -219,10 +220,10 @@ function hostGuard(root, label = currentStorageReaders) {
   const context = { engine, async probe() { probes++; return readStorageFormat(root); } };
   return { runtime, context, get probes() { return probes; } };
 }
-test('real-format guard records v4 evidence and rejects absent reader declarations before candidate START', async t => {
+test('real-format guard records current v7 evidence and rejects absent reader declarations before candidate START', async t => {
   const root = await directory(t); await seed(root, 'appRegistration'); await seed(root, 'feedback');
   const current = hostGuard(root), receipt = await guardStorageStart(current.context, current.runtime);
-  assert.equal(receipt.schema, 'soty.storage-start.v4'); assert.equal(receipt.appRegistration, 1); assert.equal(receipt.feedback, 1);
+  assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.appRegistration, 1); assert.equal(receipt.feedback, 1);
   requireStorageStartReceipt(receipt, current.runtime.Id);
   const old = hostGuard(root, reader3); await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/u);
   const noFeedback = JSON.parse(currentStorageReaders); delete noFeedback.readers.feedback;
@@ -260,7 +261,7 @@ test('snapshot includes registration and private media store, enforces aggregate
   const source = await directory(t), registry = await seed(source, 'appRegistration'), feedback = await seed(source, 'feedback');
   const targetParent = await directory(t), target = join(targetParent, 'complete');
   const before = await Promise.all([persistentHash(registry), persistentHash(feedback)]); await snapshotStorage(source, target);
-  assert.deepEqual(await readStorageFormat(target), format());
+  assert.deepEqual(await readStorageFormat(target), currentObservation(format()));
   assert.deepEqual(await Promise.all([persistentHash(registry), persistentHash(feedback)]), before);
   await assert.rejects(snapshotStorage(source, join(targetParent, 'too-small'), 1), /storage_format_unreadable/u);
   await writeFile(join(source, 'feedback', 'orphan-evidence'), 'synthetic');

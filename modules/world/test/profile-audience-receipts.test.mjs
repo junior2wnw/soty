@@ -182,7 +182,7 @@ function logicalSnapshot(db) {
     profiles: db.prepare('SELECT * FROM profiles ORDER BY account_id').all() };
 }
 
-test('existing formats1/2/3 refuse default audience migration before journal/schema/data writes; explicit synthetic opt-in alone upgrades', async t => {
+test('existing formats1/2/3 refuse default audience migration before journal/schema/data writes; both explicit synthetic startup opt-ins upgrade', async t => {
   for (const version of [1, 2, 3]) await t.test('format' + version, tt => {
     const directory = mkdtempSync(join(tmpdir(), 'soty-profile-migration-optin-')), databasePath = join(directory, 'world.sqlite');
     let service; tt.after(() => { service?.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -198,18 +198,23 @@ test('existing formats1/2/3 refuse default audience migration before journal/sch
     finally { unexpected?.close(); }
     const observed = new DatabaseSync(databasePath, { readOnly: true });
     try { assert.deepEqual(logicalSnapshot(observed), before); } finally { observed.close(); }
-    service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true });
+    // The existing audience flag alone never grants the new combined upgrade.
+    try { assert.throws(() => { unexpected = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true }); }, /world6_migration_required/u); }
+    finally { unexpected?.close(); }
+    const stillOld = new DatabaseSync(databasePath, { readOnly: true });
+    try { assert.deepEqual(logicalSnapshot(stillOld), before); } finally { stillOld.close(); }
+    service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true, allowWorld6Migration: true });
     const profile = service.execute({ actor: alice, op: 'world.profile.get' }).profile;
-    assert.equal(service.schemaVersion, 5); assert.equal(profile.revision, 17); assert.equal(profile.bio, 'Существующий профиль'); assert.equal(profile.audience, 'private');
+    assert.equal(service.schemaVersion, 6); assert.equal(profile.revision, 17); assert.equal(profile.bio, 'Существующий профиль'); assert.equal(profile.audience, 'private');
   });
 });
 
-test('invalid migration opt-in rejects before creating a database; fresh format0 still starts format5 by default', t => {
+test('invalid migration opt-in rejects before creating a database; fresh format0 still starts current format6 by default', t => {
   const directory = mkdtempSync(join(tmpdir(), 'soty-profile-migration-invalid-')), databasePath = join(directory, 'world.sqlite');
   let service; t.after(() => { service?.close(); rmSync(directory, { recursive: true, force: true }); });
   let unexpected;
   try { denied(() => { unexpected = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: 'true' }); }, 'invalid_audience_migration_mode'); }
   finally { unexpected?.close(); }
   assert.equal(existsSync(databasePath), false);
-  service = createWorldService({ databasePath, projectId: PROJECT }); assert.equal(service.schemaVersion, 5);
+  service = createWorldService({ databasePath, projectId: PROJECT }); assert.equal(service.schemaVersion, 6);
 });

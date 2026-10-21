@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -127,7 +128,7 @@ test('Apps5 main plus committed Apps6 WAL preserves saved entries and makes exac
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
     const mainBefore = await readFile(filename);
     assert.equal(mainBefore.readUInt32BE(60), 5);
-    assert.deepEqual(await readStorageFormat(root), format(5));
+    assert.deepEqual(await readStorageFormat(root), currentObservation(format(5)));
     const oldObjects = objects(db);
     const preserved = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name<>'apps_meta' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name);
     const oldRows = new Map(preserved.map(name => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
@@ -145,7 +146,7 @@ test('Apps5 main plus committed Apps6 WAL preserves saved entries and makes exac
     const walBefore = await readFile(filename + '-wal');
     assert.ok(walBefore.length > 32); assert.deepEqual(await readFile(filename), mainBefore);
     const observed = await readStorageFormat(root);
-    assert.deepEqual(observed, format(6));
+    assert.deepEqual(observed, currentObservation(format(6)));
     assert.doesNotMatch(JSON.stringify(observed), /account-|Historical|Synthetic discussion|My saved|apps\.example|9001|community-original/u);
     assert.throws(() => assertStorageCompatible(image(oldReaders), observed), /storage_reader_incompatible/u);
     assertStorageCompatible(image(currentStorageReaders), observed);
@@ -159,7 +160,7 @@ test('Apps5 main plus committed Apps6 WAL preserves saved entries and makes exac
     assert.deepEqual(await readFile(filename + '-wal'), walBefore, 'old code and host probe never append, truncate or rewrite WAL');
     for (const [name, rows] of oldRows) assert.deepEqual(db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all(), rows, name);
   } finally { db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format(6));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(6)));
   const reopened = new DatabaseSync(filename);
   try {
     assert.equal(migrateAppsSchema(reopened).migrated, false);

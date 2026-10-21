@@ -6,7 +6,13 @@ export const AUDIENCE_FORMATS = Object.freeze({
   v10: Object.freeze({ base: 'v7', version: 10, marker: 'soty.apps-registry.v10' }),
   v11: Object.freeze({ base: 'v8', version: 11, marker: 'soty.apps-registry.v11' }),
 });
-export const baseAppsSchema = state => AUDIENCE_FORMATS[state]?.base ?? state;
+export const COVER_APP_FORMATS = Object.freeze({
+  v12: Object.freeze({ base: 'v6', audience: 'v9', version: 12, marker: 'soty.apps-registry.v12' }),
+  v13: Object.freeze({ base: 'v7', audience: 'v10', version: 13, marker: 'soty.apps-registry.v13' }),
+  v14: Object.freeze({ base: 'v8', audience: 'v11', version: 14, marker: 'soty.apps-registry.v14' }),
+});
+export const baseAppsSchema = state => COVER_APP_FORMATS[state]?.base ?? AUDIENCE_FORMATS[state]?.base ?? state;
+export const audienceAppsSchema = state => COVER_APP_FORMATS[state]?.audience ?? state;
 export const audienceColumns = Object.freeze({
   app_audiences: ['app_id', 'audience'],
   app_discussion_head_audiences: ['app_id', 'current_id', 'audience'],
@@ -43,7 +49,7 @@ export function audienceMatchesPolicy(audience, launchPolicy, listed) {
   return expected === null || expected.launchPolicy === launchPolicy && expected.listed === listed;
 }
 export function hasAudienceSchema(db) {
-  return [9, 10, 11].includes(Number(db.prepare('PRAGMA user_version').get().user_version));
+  return [9, 10, 11, 12, 13, 14].includes(Number(db.prepare('PRAGMA user_version').get().user_version));
 }
 export function readAppAudience(db, id) {
   if (!hasAudienceSchema(db)) return null;

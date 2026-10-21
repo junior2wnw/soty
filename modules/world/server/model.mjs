@@ -1,6 +1,6 @@
 import { assert, identifier, text, folded } from './validation.mjs';
 
-export function createModel(db, emit, currentContacts = () => null) {
+export function createModel(db, emit, currentContacts = () => null, profileCoverAvailable = () => false) {
   const statements = new Map();
   const statement = sql => {
     let value = statements.get(sql);
@@ -11,10 +11,13 @@ export function createModel(db, emit, currentContacts = () => null) {
   const all = (sql, ...params) => statement(sql).all(...params);
   const run = (sql, ...params) => statement(sql).run(...params);
   const person = profileId => get('SELECT * FROM profiles WHERE account_id=?', identifier(profileId));
-  function ensurePerson(actor, now) {
+  function validateActor(actor) {
     assert(actor && typeof actor === 'object', 'authentication_required');
     identifier(actor.accountId); identifier(actor.deviceId);
-    const name = text(actor.label, 80, { empty: false });
+    return text(actor.label, 80, { empty: false });
+  }
+  function ensurePerson(actor, now) {
+    const name = validateActor(actor);
     const existing = person(actor.accountId); if (existing) return existing;
     run(`INSERT OR IGNORE INTO profiles(account_id,display_name,search_text,created_at,updated_at) VALUES (?,?,?,?,?)`, actor.accountId, name, folded(name), now, now);
     return person(actor.accountId);
@@ -32,6 +35,7 @@ export function createModel(db, emit, currentContacts = () => null) {
     const result = { ...identity(row), bio: row.bio, interests: JSON.parse(row.interests) };
     if (own) Object.assign(result, { audience: row.audience, audienceWriteVersion: 1, discoverable: row.audience === 'public', showPresence: Boolean(row.show_presence),
       showMemberships: Boolean(row.show_memberships), contactPolicy: row.contact_policy });
+    if (own && profileCoverAvailable() === true) result.avatarWriteVersion = 1;
     return result;
   }
   const membership = (communityId, profileId) => get('SELECT * FROM memberships WHERE community_id=? AND account_id=?', communityId, profileId);
@@ -99,6 +103,6 @@ export function createModel(db, emit, currentContacts = () => null) {
     const current = membership(communityId, profileId);
     emit({ communityId, profileId, state: current.state, revision: current.revision });
   }
-  return { db, get, all, run, person, ensurePerson, identity, profile, canViewFullProfile, friendAccountIds, membership, member, group, visibleGroup, requireMember, requireManager,
+  return { db, get, all, run, person, validateActor, ensurePerson, identity, profile, canViewFullProfile, friendAccountIds, membership, member, group, visibleGroup, requireMember, requireManager,
     canAccess, canRequestContact, unread, community, audit, rate, changed, emit };
 }

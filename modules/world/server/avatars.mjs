@@ -1,4 +1,4 @@
-import { assert, exact, identifier, revision, WorldError } from './validation.mjs';
+import { assert, exact, identifier, WorldError } from './validation.mjs';
 
 export const AVATAR_OPERATIONS = ['world.profile.avatar.set', 'world.profile.avatar.read', 'world.profile.avatars'];
 export const AVATAR_LIMITS = Object.freeze({ imageBytes: 96 * 1024, thumbnailBytes: 8 * 1024, imagePixels: 512, thumbnailPixels: 192, batch: 24 });
@@ -98,25 +98,7 @@ export function validateAvatar(value, { maximumBytes, maximumPixels }) {
 const dataUrl = (mime, bytes) => `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
 
 export function avatarOperation(m, op, args, actor, now) {
-  if (op === 'world.profile.avatar.set') {
-    exact(args, ['expectedRevision', 'avatarUrl', 'thumbnailUrl']);
-    const profile = m.person(actor.accountId); revision(args, profile);
-    if (args.avatarUrl === null || args.thumbnailUrl === null) {
-      valid(args.avatarUrl === null && args.thumbnailUrl === null);
-      m.run('DELETE FROM profile_avatars WHERE account_id=?', actor.accountId);
-      m.run('UPDATE profiles SET avatar_revision=NULL,revision=revision+1,updated_at=? WHERE account_id=?', now, actor.accountId);
-    } else {
-      const image = validateAvatar(args.avatarUrl, { maximumBytes: AVATAR_LIMITS.imageBytes, maximumPixels: AVATAR_LIMITS.imagePixels });
-      const thumb = validateAvatar(args.thumbnailUrl, { maximumBytes: AVATAR_LIMITS.thumbnailBytes, maximumPixels: AVATAR_LIMITS.thumbnailPixels });
-      m.rate('avatar:' + actor.accountId, 12, 60_000, now);
-      m.run(`INSERT INTO profile_avatars(account_id,mime,image,thumbnail_mime,thumbnail) VALUES (?,?,?,?,?)
-        ON CONFLICT(account_id) DO UPDATE SET mime=excluded.mime,image=excluded.image,thumbnail_mime=excluded.thumbnail_mime,thumbnail=excluded.thumbnail`,
-      actor.accountId, image.mime, image.bytes, thumb.mime, thumb.bytes);
-      m.run('UPDATE profiles SET avatar_revision=revision+1,revision=revision+1,updated_at=? WHERE account_id=?', now, actor.accountId);
-    }
-    m.audit(actor.accountId, op, actor.accountId, now);
-    return { profile: m.profile(m.person(actor.accountId), true) };
-  }
+  if (op === 'world.profile.avatar.set') throw new WorldError('avatar_common_writer_required');
   const batch = op === 'world.profile.avatars';
   exact(args, batch ? ['profileIds'] : ['profileId'], ['communityId']);
   if (args.communityId !== undefined) m.requireMember(identifier(args.communityId), actor.accountId);

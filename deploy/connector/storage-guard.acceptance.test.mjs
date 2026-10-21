@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
@@ -20,7 +21,7 @@ function gateFixture({ running = false, production = false } = {}) {
   const objects = new Map([[runtime.Id, runtime]]), journal = {}, calls = [];
   const volumes = new Map([[runtime.Mounts[0].Name, { Name: runtime.Mounts[0].Name, Mountpoint: runtime.Mounts[0].Source,
     Driver: 'local', Scope: 'local', Options: null }]]);
-  let observed = format(2), probes = 0, sequence = 9;
+  let observed = currentObservation(format(2)), probes = 0, sequence = 9;
   const engine = {
     async inspect(key) { const value = objects.get(key) ?? [...objects.values()].find(value => value.Name === `/${key}`); if (!value) throw new SafeError('engine_http_404'); return clone(value); },
     async image(key) { return { Id: key, Config: { Labels: { [storageReaderLabel]: currentStorageReaders } } }; },
@@ -94,7 +95,7 @@ test('a volume-subpath introduced while checking is rejected even when the root 
   const f = gateFixture();
   f.context.probe = async () => {
     f.runtime.HostConfig.Mounts.push({ Type: 'volume', Source: f.runtime.Mounts[0].Name, Target: '/data', VolumeOptions: { Subpath: 'different-view' } });
-    return format(2);
+    return currentObservation(format(2));
   };
   await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_data_subpath_unsupported/);
 });
@@ -116,7 +117,7 @@ test('the managed local-volume profile rejects ambiguous backing stores and rech
   await assert.rejects(guardStorageStart(bound.context, bound.runtime), error => error.code?.startsWith('storage_'));
   assert.equal(bound.probes(), 0);
   const late = gateFixture();
-  late.context.probe = async () => { late.volumes.get(late.runtime.Mounts[0].Name).Options = { device: '/srv/late-alias' }; return format(2); };
+  late.context.probe = async () => { late.volumes.get(late.runtime.Mounts[0].Name).Options = { device: '/srv/late-alias' }; return currentObservation(format(2)); };
   await assert.rejects(guardStorageStart(late.context, late.runtime), error => error.code?.startsWith('storage_'));
 });
 

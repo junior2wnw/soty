@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -130,7 +131,7 @@ test('B1 independent: exact historical populated stores survive RO projection wi
   seedNotes(notes); seedCapabilities(caps);
   const before = await persistentBytes(f), files = await inventory(f.root);
   const observed = await readStorageFormat(f.root);
-  assert.deepEqual(observed, format(1, 1));
+  assert.deepEqual(observed, currentObservation(format(1, 1)));
   assert.doesNotMatch(JSON.stringify(observed), /PRIVATE|account-independent|client-independent|note-active/u);
   assert.deepEqual(await persistentBytes(f), before, 'read-only success leaves main/WAL bytes unchanged');
   assert.deepEqual(await inventory(f.root), files, 'an existing WAL view needs no new files');
@@ -142,9 +143,9 @@ test('B1 independent: exact historical populated stores survive RO projection wi
 
 test('B1 independent: absent and empty are accepted, orphan evidence in either store is never initialized or ignored', async t => {
   const f = await fixture(t);
-  assert.deepEqual(await readStorageFormat(f.root), format());
+  assert.deepEqual(await readStorageFormat(f.root), currentObservation(format()));
   for (const store of ['notes', 'capabilities']) await mkdir(path.dirname(f.filenames[store]));
-  assert.deepEqual(await readStorageFormat(f.root), format());
+  assert.deepEqual(await readStorageFormat(f.root), currentObservation(format()));
   for (const store of ['notes', 'capabilities']) {
     const g = await fixture(t);
     await mkdir(path.dirname(g.filenames[store]));
@@ -157,7 +158,7 @@ test('B1 independent: absent and empty are accepted, orphan evidence in either s
   }
 });
 
-for (const changed of ['notes', 'capabilities']) test(`B1 independent: fresh guard rejects committed ${changed} future WAL after a prior v3 receipt`, async t => {
+for (const changed of ['notes', 'capabilities']) test(`B1 independent: fresh guard rejects committed ${changed} future WAL after a prior current receipt`, async t => {
   const f = await fixture(t), notes = await f.open('notes'), caps = await f.open('capabilities');
   seedNotes(notes); seedCapabilities(caps);
   notes.exec('PRAGMA wal_checkpoint(TRUNCATE)'); caps.exec('PRAGMA wal_checkpoint(TRUNCATE)');

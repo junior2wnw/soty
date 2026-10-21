@@ -2,6 +2,7 @@ import { canonical, hash, need } from './profile.mjs';
 import { approvedEmbedProfile, requireEmbedAdapter } from './profile-dispatch.mjs';
 import { connectorKey } from '../server/protocol.mjs';
 import { inspectAppsSchema } from '../server/schema.mjs';
+import { baseAppsSchema } from '../server/audience.mjs';
 
 /** Private approved host catalogue. Persisted public tuple/manifest fields do
  * not install a profile or create a Source grant. Historical pins are immutable. */
@@ -26,8 +27,9 @@ export function createScopedAdmissionRegistry({ db, profiles = [], clock = Date.
     // Full DDL/row recognition belongs to startup. Per-request authority stays
     // bounded and checks the exact current immutable admission plus host pin.
     const version = Number(db.prepare('PRAGMA user_version').get().user_version);
-    need([7,8].includes(version) && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value==='soty.apps-registry.v'+version
-      && (profile.schema !== 'soty.selected-human-embed.v2' || version === 8), 'app_scoped_migration_required', 503);
+    const base = baseAppsSchema('v' + version);
+    need(['v7','v8'].includes(base) && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value==='soty.apps-registry.v'+version
+      && (profile.schema !== 'soty.selected-human-embed.v2' || base === 'v8'), 'app_scoped_migration_required', 503);
   }
   function read(target) {
     const item = verifyTarget(target);
@@ -46,9 +48,10 @@ export function createScopedAdmissionRegistry({ db, profiles = [], clock = Date.
       return item;
     },
     commit(target) {
-      need(db.isTransaction && ['v7','v8','v10','v11'].includes(inspectAppsSchema(db)), 'app_scoped_transaction_required', 500);
+      const base = baseAppsSchema(inspectAppsSchema(db));
+      need(db.isTransaction && ['v7','v8'].includes(base), 'app_scoped_transaction_required', 500);
       const item = verifyTarget(target);
-      need(item.profile.schema !== 'soty.selected-human-embed.v2' || ['v8','v11'].includes(inspectAppsSchema(db)), 'app_scoped_migration_required', 503);
+      need(item.profile.schema !== 'soty.selected-human-embed.v2' || base === 'v8', 'app_scoped_migration_required', 503);
       const existing = db.prepare('SELECT * FROM app_scoped_embed_admissions WHERE app_id=? AND target_revision=?').get(target.appId, target.revision);
       if (existing) { read(target); return; }
       db.prepare('INSERT INTO app_scoped_embed_admissions VALUES(?,?,?,?,?,?)')

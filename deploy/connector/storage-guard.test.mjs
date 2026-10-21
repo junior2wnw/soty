@@ -1,3 +1,4 @@
+import { currentObservation, frozenStorageReaders6 } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
@@ -31,16 +32,16 @@ async function directory(t) {
 
 test('empty volume is explicit, legacy files require reader1, coexisting v2 wins without modifying old files', async t => {
   const root = await directory(t);
-  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty')));
   assertStorageCompatible(image(2), await readStorageFormat(root));
   await writeFile(path.join(root, 'connector-store.json'), '{}');
-  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty')));
   const legacy = path.join(root, 'room_1234567890123456.json');
   await writeFile(legacy, '{"auth":"synthetic","files":[],"updates":[]}');
-  assert.deepEqual(await readStorageFormat(root), format(1));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(1)));
   const store = createRoomStore(root); store.close();
   const before = await readFile(legacy), dbBefore = await readFile(path.join(root, 'rooms-v2.sqlite'));
-  assert.deepEqual(await readStorageFormat(root), format(2));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(2)));
   assert.throws(() => assertStorageCompatible(image(1, jsonOnly), format(2)), /storage_reader_incompatible/);
   assert.deepEqual(await readFile(legacy), before);
   assert.deepEqual(await readFile(path.join(root, 'rooms-v2.sqlite')), dbBefore);
@@ -80,18 +81,19 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   }
   assert.throws(() => checkedStorageFormat({ ok: true, rooms: 2 }), /storage_probe_invalid/);
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
-  const baseline = JSON.parse(currentStorageReaders);
-  for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
-    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [12] : store === 'capabilities' ? [4] : [3]]) {
-      const value = clone(baseline); value.readers[store] = readers;
+  for (const baseline of [JSON.parse(frozenStorageReaders6), JSON.parse(currentStorageReaders)]) {
+    for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
+      for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [baseline.version === 6 ? 12 : 15] : store === 'capabilities' ? [4] : [3]]) {
+        const value = clone(baseline); value.readers[store] = readers;
+        assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+      }
+      const value = clone(baseline); delete value.readers[store];
       assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
     }
-    const value = clone(baseline); delete value.readers[store];
-    assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
-  }
-  for (const value of [{ ...baseline, allow: true }, { ...baseline, version: '3' },
-    { ...baseline, readers: { ...baseline.readers, world: [3] } }]) {
-    assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+    for (const value of [{ ...baseline, allow: true }, { ...baseline, version: '3' },
+      { ...baseline, readers: { ...baseline.readers, [baseline.version === 6 ? 'world' : 'futureStore']: [3] } }]) {
+      assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+    }
   }
 });
 
@@ -102,7 +104,7 @@ function fixture({ readers = currentStorageReaders, rooms = 2, apps = 'empty', n
   const images = new Map([[imageId(2), image(2, readers)], [imageId(3), image(3, null)]]);
   const containers = new Map([[runtime.Id, runtime]]), events = [], state = {}, receipts = [];
   const volume = { Name: 'live-data', Driver: 'local', Scope: 'local', Options: null, Mountpoint: runtime.Mounts[0].Source };
-  let helperCount = 0, result = format(rooms, apps, notes, capabilities), dropStart = false;
+  let helperCount = 0, result = currentObservation(format(rooms, apps, notes, capabilities)), dropStart = false;
   const engine = {
     async inspect(key) { const c = containers.get(key) || [...containers.values()].find(c => c.Name === '/' + key); if (!c) throw new Error('404'); return clone(c); },
     async image(key) { if (!images.has(key)) throw new Error('404'); return clone(images.get(key)); },
@@ -128,7 +130,7 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   const f = fixture(); f.dropStart();
   const receipt = await guardStorageStart(f.context, f.runtime);
   requireStorageStartReceipt(receipt, f.runtime.Id);
-  assert.equal(receipt.schema, 'soty.storage-start.v3'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
+  assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
   assert.equal(receipt.notes, 'empty'); assert.equal(receipt.capabilities, 'empty');
   const created = f.events.find(e => e.verb === 'create').body;
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
@@ -247,7 +249,7 @@ test('a retained v2 helper is refused without repeating CREATE or START or rewri
 test('future Notes or Capabilities cannot become successful helper or start receipts', async () => {
   for (const store of ['notes', 'capabilities']) {
     const f = fixture({ notes: 1, capabilities: 1 });
-    f.setResult({ ...format(2, 6, 1, 1), [store]: store === 'capabilities' ? 4 : 3 });
+    f.setResult(currentObservation({ ...format(2, 6, 1, 1), [store]: store === 'capabilities' ? 4 : 3 }));
     await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
     assert.ok(f.state.storageGuardHelper);
     assert.ok(!f.events.some(event => event.verb === 'start' && event.id === f.runtime.Id));
@@ -260,7 +262,7 @@ test('honest v3 reader1 cannot reuse successful v1 evidence after either store b
     const old = fixture({ readers, rooms: 2, apps: 6, notes: 1, capabilities: 1 });
     const receipt = await guardStorageStart(old.context, old.runtime);
     assert.equal(receipt[store], 1);
-    old.setResult({ ...format(2, 6, 1, 1), [store]: 2 });
+    old.setResult(currentObservation({ ...format(2, 6, 1, 1), [store]: 2 }));
     await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
     assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
     const current = fixture({ rooms: 2, apps: 6, notes: store === 'notes' ? 2 : 1, capabilities: store === 'capabilities' ? 2 : 1 });
@@ -277,7 +279,7 @@ for (const previous of [3, 4, 5]) test(`a completed Apps${previous} helper recei
   const old = [...f.containers.values()].find(c => c.Id !== f.runtime.Id);
   // A crash left the already executed helper recorded, with an old result.
   f.state.storageGuardHelper = { id: old.Id, name: old.Name.slice(1), image: old.Image, state: 'starting' };
-  f.engine.helperOutput = async id => format(2, id === old.Id ? previous : previous + 1);
+  f.engine.helperOutput = async id => id === old.Id ? format(2, previous) : currentObservation(format(2, previous + 1));
   await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_reader_incompatible/);
   assert.equal(f.events.filter(e => e.verb === 'start' && e.id === old.Id).length, 1);
   assert.equal(f.events.filter(e => e.verb === 'create').length, 2);
@@ -353,8 +355,8 @@ test('failed probe remains explicit and never becomes a successful start receipt
 
 test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
-  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 6,
-    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4] } });
+  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 7,
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], notes: [1, 2], capabilities: [1, 2, 3], appRegistration: [1], feedback: [1], humanIdentity: [1, 2, 3], connect: [3, 4], world: [6] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);
@@ -381,7 +383,7 @@ test('Connect bridge snapshot preserves schema3; schema4 fences reader1 and reje
   migrateDatabase(db, 'soty', { supportedVersion: 3 }); db.close();
   const before = await readFile(filename);
   assert.equal(await readConnectFormat(root), 3);
-  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation({ ...format('empty'), connect: 3 }));
   const target = path.join(await directory(t), 'snapshot');
   await snapshotStorage(root, target);
   assert.equal(await readConnectFormat(target), 3);
@@ -389,9 +391,9 @@ test('Connect bridge snapshot preserves schema3; schema4 fences reader1 and reje
   assert.deepEqual(await readFile(filename), before);
   const upgraded = new DatabaseSync(filename); migrateDatabase(upgraded, 'soty'); upgraded.close();
   const next = await readStorageFormat(root);
-  assert.equal(next.schema, 'soty.storage-format.v6'); assert.equal(next.connect, 4);
+  assert.equal(next.schema, 'soty.storage-format.v7'); assert.equal(next.connect, 4); assert.equal(next.world, 'empty');
   assertStorageCompatible(image(2), next);
-  const previous = JSON.parse(currentStorageReaders); previous.version = 5; delete previous.readers.connect;
+  const previous = JSON.parse(frozenStorageReaders6); previous.version = 5; delete previous.readers.connect;
   assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(previous)), next), /storage_reader_incompatible/);
   const corrupt = new DatabaseSync(filename); corrupt.exec("UPDATE connect_meta SET value='1' WHERE key='min_reader'"); corrupt.close();
   await assert.rejects(readStorageFormat(root), /storage_format_unknown/);

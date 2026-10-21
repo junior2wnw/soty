@@ -41,6 +41,12 @@ import { loadPreferences, savePreferences, type WorldPreferences, type WorldView
 import { entityId, entityName, worldColor, worldColors, type WorldApi, type WorldAppOptions, type WorldAppRecord, type WorldAssistantHandle, type WorldCommunity, type WorldDevice, type WorldEntity, type WorldHumanCallState, type WorldMember, type WorldMessage, type WorldIdentity, type WorldProfile, type WorldSearch } from './types';
 import './one-field.css';
 import { bindSheetGripDismiss } from './sheet-grip-dismiss';
+import { createCommunityConversation, createDirectConversation, type ConversationTarget } from './conversation-target.mjs';
+import type { WorldDirectThread } from './types';
+import type { ConnectionIntent } from '../platform/connection-intent.mjs';
+import { mountCoverEditor } from './cover-editor';
+import { createCoverApi, type CoverKind } from './cover-api.mjs';
+import { createAppCoverPresenter, mountAppCoverField, type AppCoverPresenter } from './app-cover-presenter.mjs';
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
@@ -49,13 +55,21 @@ interface DeviceProjection { hostDeviceId: string; connectorId: string; name: st
 interface HomeNote { noteId: string; title: string; preview: string; pinned: boolean; updatedAt: number; }
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
 interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<void>; reconnect(): void; hasUnsavedChanges(): boolean; }
+interface ChatMenuAction { label: string; symbol: string; run(): void; danger?: boolean; disabled?: boolean }
+interface ConversationPresentation {
+  showHeader: boolean; emblem(): HTMLElement; identityLabel(): string; onIdentity(): void;
+  extraActions(): ChatMenuAction[]; callButton?(): HTMLButtonElement | null; invite?(): void;
+  notify(chat: HTMLElement, message: WorldMessage | undefined, readAcknowledged: boolean): void;
+}
 
-export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void; }
+export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void;
+  followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void>; }
 
 export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): WorldAppHandle {
   const app = new WorldApplication(root, options);
   void app.refresh();
-  return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor() };
+  return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(),
+    followConnection: (intent, navigate) => app.followConnection(intent, navigate) };
 }
 
 class WorldApplication {
@@ -67,6 +81,8 @@ class WorldApplication {
   private readonly header = el('header', 'sw-topbar');
   private readonly sidebar = el('aside', 'sx-sidebar');
   private readonly mobileNav = el('nav', 'sw-mobile-nav');
+  private readonly fieldNavigation = el('nav', 'of-field-navigation');
+  private readonly connectionButton = iconButton('Подключить по QR-коду', 'qr', () => { void this.openConnections(); });
   private readonly live = el('div', 'sw-sr-only');
   private readonly humanCallStrip = el('section', 'sw-human-call-strip');
   private readonly humanCallIncoming = el('div', 'sw-human-call-incoming');
@@ -98,6 +114,12 @@ class WorldApplication {
   private readonly dialogs = new Set<WorldDialog>();
   private appSettingsDialog: WorldDialog | null = null;
   private appSettingsRouteClose: ((resume: () => void) => void) | null = null;
+  private coverDialog: WorldDialog | null = null;
+  private coverHandle: ReturnType<typeof mountCoverEditor> | null = null;
+  private coverTargetCurrent: (() => boolean) | null = null;
+  private fieldCoverPresenter: AppCoverPresenter | null = null;
+  private fieldCoverBinding: { dispose(): void } | null = null;
+  private fieldCoverTimer: ReturnType<typeof setInterval> | null = null;
   private appPlacementDialog: WorldDialog | null = null;
   private appPlacementController: AppFieldPlacementController | null = null;
   private appPlacementRouteClose: ((resume?: () => void) => void) | null = null;
@@ -155,6 +177,11 @@ class WorldApplication {
   private chatTimer: ReturnType<typeof setInterval> | null = null;
   private chatCleanup: (() => void) | null = null;
   private selectedChat: string | undefined;
+  private directThreads: WorldDirectThread[] = [];
+  private directThreadsLoaded = false;
+  private directLabels = new Map<string, string>();
+  private directOpenSequence = 0;
+  private directProjectionEpoch = 0;
   private readonly chatDrafts = createChatDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) });
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private requestSequence = 0;
@@ -203,7 +230,11 @@ class WorldApplication {
     this.humanCallStrip.append(this.humanCallIncoming, this.humanCallLive);
     const skip = el('a', 'sx-skip', 'К содержимому'); skip.href = '#soty-main';
     skip.addEventListener('click', event => { event.preventDefault(); this.main.focus(); });
-    root.replaceChildren(skip, this.sidebar, this.header, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
+    this.connectionButton.classList.add('of-connect-button');
+    this.connectionButton.setAttribute('aria-haspopup', 'dialog');
+    this.connectionButton.title = 'QR · люди, устройства и приглашения';
+    this.fieldNavigation.setAttribute('aria-label', 'Пространство');
+    root.replaceChildren(skip, this.sidebar, this.header, this.fieldNavigation, this.connectionButton, this.pwaBanner, this.humanCallStrip, this.main, this.mobileNav, this.live);
 
     this.agentOrb = mountAgentOrb(root, { mount: options.openAssistant, openProjectEditor:this.openProjectEditor, context: () => this.widgets?.hasActiveWidget() ? this.widgets.assistantContext() : this.appStage?.assistantContext?.() ?? null,
       browserAssist: () => this.widgets?.hasActiveWidget() ? null : this.appStage?.browserAssist() ?? null,
@@ -214,6 +245,8 @@ class WorldApplication {
     this.widgets = mountMicroWidgets(root, {
       mount: (host, app, intent, current, instanceId) => mountAppStage(host, { api: this.api, app, accountId: this.deskAccount, intent,
         presentation: 'widget', instanceId, isCurrent: current, ...this.appRuntime(app),
+        ...(this.options.nativeVoice ? { nativeVoice: this.options.nativeVoice } : {}),
+        ...(this.options.readNativeVoice ? { readNativeVoice: this.options.readNativeVoice } : {}),
         onNavigate: () => { /* The widget owns its route independently of the main screen. */ },
         onBack: () => {}, onAccount: async () => { if (current()) { await this.options.openAccount('recovery'); await this.refresh(); } },
         onOpenCurrentEntry: async entry => {
@@ -251,15 +284,16 @@ class WorldApplication {
     this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.widgets?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
     this.avatars = new AvatarHydrator(this.api, root);
     this.renderNavigation(); this.main.append(this.loading('Открываем Соты'));
     window.addEventListener('popstate', () => { void this.openRoute(); }, { signal: this.controller.signal });
-    window.addEventListener('pagehide', () => this.stopIncomingCallPolling(), { signal: this.controller.signal });
-    window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); }, { signal: this.controller.signal });
+    window.addEventListener('pagehide', () => { this.stopIncomingCallPolling(); this.mountFieldCovers(null); }, { signal: this.controller.signal });
+    window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); this.mountFieldCovers(this.unifiedField); }, { signal: this.controller.signal });
+    document.addEventListener('visibilitychange', () => this.mountFieldCovers(this.unifiedField), { signal: this.controller.signal });
     window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
@@ -430,6 +464,7 @@ class WorldApplication {
   }
 
   private updateGroupCallButtons(): void {
+    for (const control of this.root.querySelectorAll<HTMLButtonElement>('.sw-direct-call-join')) control.disabled = this.humanCallActive() || this.humanCallJoinPending;
     const active = this.humanCallActive();
     for (const control of this.main.querySelectorAll<HTMLButtonElement>('.sw-human-call-join')) {
       const sameRoom = active && this.humanCallState?.roomId === control.dataset.roomId && this.humanCallState?.mode === 'group';
@@ -528,6 +563,8 @@ class WorldApplication {
   }
 
   async refresh(preserveNote = false): Promise<void> {
+    this.fieldCoverPresenter?.invalidateAll();
+    if (this.coverDialog?.element.open && this.coverTargetCurrent && !this.coverTargetCurrent()) this.coverDialog.close({ restoreFocus: false });
     this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined);
     const sequence = ++this.requestSequence, accountAtStart = this.deskAccount, screenAtStart = this.screenSequence;
     try {
@@ -589,7 +626,7 @@ class WorldApplication {
       }
       // A same-account shell refresh is not navigation. The owner window and
       // its running app keep their draft, selection and existing connection.
-      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
+      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open || this.coverDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; await settleCommunities(); return; }
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) { await settleCommunities(); return; } }
@@ -651,7 +688,7 @@ class WorldApplication {
     this.widgets?.setAccount(next);
     this.fieldOutbox?.dispose(); this.fieldOutbox = null;
     this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
-    this.profile = null; this.communities = []; this.apps = []; this.devices = []; this.homeNotes = null;
+    this.profile = null; this.communities = []; this.directThreads = []; this.directLabels = new Map(); this.directThreadsLoaded = false; this.humanCallJoinPending = false; this.apps = []; this.devices = []; this.homeNotes = null;
     this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine'; this.groupTab = 'about';
     this.homeState.slots.clear(); this.homeState.scroll = 0; this.homeState.fieldX = 0; this.homeState.fieldY = 0;
     this.homeState.communityId = null; this.homeState.focusId = null; this.homeState.focusControl = null; this.homeState.lens = 'all';
@@ -694,8 +731,8 @@ class WorldApplication {
     const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
     node.append(el('span', '', label)); return node;
   }
-  private cleanScreen(): void { this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
-  private screenHasUnsavedChanges(): boolean { return !!(this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
+  private cleanScreen(): void { this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
@@ -707,6 +744,10 @@ class WorldApplication {
   private runHook(hook: () => void | Promise<void>): void { void Promise.resolve().then(hook).catch(error => this.toast(errorText(error), true)); }
   private afterNoteSaved(action: () => void): void {
     if (this.destroyed || this.noteActionPending) return;
+    if (this.coverDialog?.element.open && this.coverHandle) {
+      const accountCurrent = this.accountTask(), sequence = this.screenSequence;
+      this.coverHandle.requestClose(() => { if (accountCurrent() && this.screenSequence === sequence) this.afterNoteSaved(action); }); return;
+    }
     if (this.appPlacementDialog?.element.open && this.appPlacementRouteClose) {
       this.appPlacementRouteClose(() => this.afterNoteSaved(action)); return;
     }
@@ -755,6 +796,15 @@ class WorldApplication {
 
   private renderNavigation(): void {
     this.sidebar.replaceChildren();
+    // The application surface hides this navigation in CSS. Keeping its logical
+    // field state avoids a stale hidden flag when a stage closes after this render.
+    this.fieldNavigation.hidden = !['mine', 'world'].includes(this.view) || !!this.group;
+    const fieldMode = (view: 'mine' | 'world', label: string, symbol: string): HTMLButtonElement => {
+      const control = button(label, symbol, 'of-field-mode', () => this.navigate(view));
+      control.setAttribute('aria-pressed', String(this.view === view));
+      return control;
+    };
+    this.fieldNavigation.replaceChildren(fieldMode('mine', 'Личное', 'grid'), fieldMode('world', 'Мир', 'world'));
     const search = iconButton('Поиск', 'search', () => this.unifiedField ? this.unifiedField.focusSearch() : this.openQuickActions());
     search.dataset.fieldSearch = ''; search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.title = 'Поиск · Ctrl K';
     const add = iconButton('Создать', 'plus', () => this.openAddMenu()); add.title = 'Создать';
@@ -769,12 +819,36 @@ class WorldApplication {
     this.updateNavUnread(); this.unifiedField?.attachHeaderSearch(this.header);
   }
 
+  private async openConnections(): Promise<void> {
+    const current = this.accountTask();
+    try {
+      if (this.options.openConnections) await this.options.openConnections();
+      else await this.options.openAccount('people');
+    } catch (error) { if (current()) this.toast(errorText(error)); }
+  }
+
+  async followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void> {
+    const current = this.accountTask(), sequence = this.screenSequence;
+    await Promise.all([this.flushScreen(), this.agentOrb?.flush(), this.widgets?.flush()]);
+    if (!current() || sequence !== this.screenSequence) throw Error('connection_entry_changed');
+    if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()
+      || this.chatDrafts.hasVolatile() || this.formEdits?.hasUnsavedChanges() || this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)
+      throw Error('Сохраните или закройте открытые настройки перед переходом');
+    if (intent.kind === 'profile') this.openPersonDialog(intent.id);
+    else if (intent.kind === 'community') await this.openGroup(intent.id, intent.tab);
+    else if (intent.kind === 'application') {
+      const known = this.apps.find(app => app.appId === intent.launch.target.appId);
+      await this.openApplication(known ?? { appId: intent.launch.target.appId, name: 'Приложение', status: 'unknown' }, intent.launch, !known);
+    } else if ((intent.kind === 'legacy-room' || intent.kind === 'platform-invitation') && navigate) navigate();
+    else throw Error('connection_route_unavailable');
+  }
+
   private openFieldMenu(): void {
     if (this.fieldMenu?.element.open) { this.fieldMenu.close(); return; }
-    let disposeGrip = (): void => {};
+    let disposeGrip = (): void => {}, disposeTheme = (): void => {};
     const account = this.deskAccount, accountGeneration = this.accountGeneration;
     const menu = this.dialog('Меню', () => {
-      disposeGrip();
+      disposeGrip(); disposeTheme();
       this.fieldMenu = null;
       for (const control of this.root.querySelectorAll('.of-menu-button')) control.setAttribute('aria-expanded', 'false');
     });
@@ -803,7 +877,9 @@ class WorldApplication {
       isCurrent: () => !this.destroyed && this.fieldMenu === menu && menu.element.open && account === this.deskAccount && accountGeneration === this.accountGeneration,
       signal: this.controller.signal,
     });
-    menu.body.append(grip, grid, tools,
+    const theme = createThemeControls(this.theme); theme.element.classList.add('of-menu-theme');
+    disposeTheme = () => theme.destroy();
+    menu.body.append(grip, grid, tools, theme.element,
       button('Закрыть', 'close', 'of-menu-close', () => menu.close()));
     this.updateNavUnread(); grid.querySelector('button')?.focus({ preventScroll: true });
   }
@@ -820,7 +896,8 @@ class WorldApplication {
   }
 
   private updateNavUnread(): void {
-    const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0);
+    const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0)
+      +(this.directThreads ?? []).filter(thread=>!thread.preferences.muted).reduce((sum,thread)=>sum+Math.max(0,thread.unreadCount),0);
     for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread);}
   }
 
@@ -929,6 +1006,14 @@ class WorldApplication {
   private async openRoute(): Promise<boolean> {
     if (this.destroyed || (!this.profile && !this.deskAccount)) return false;
     this.widgets?.clearActive();
+    if (this.coverDialog?.element.open && this.coverHandle) {
+      if (location.hash !== this.activeRoute) {
+        const accountCurrent = this.accountTask(), sequence = this.screenSequence;
+        history.pushState({ soty: true }, '', this.activeRoute);
+        this.coverHandle.requestClose(() => { if (accountCurrent() && this.screenSequence === sequence) history.back(); });
+      }
+      return true;
+    }
     if (this.appPlacementDialog?.element.open && this.appPlacementRouteClose) {
       if (location.hash !== this.activeRoute) {
         const accountCurrent = this.accountTask(), sequence = this.screenSequence;
@@ -1063,13 +1148,18 @@ class WorldApplication {
           void this.openApplication({ appId: item.entity.id, name: item.title, status: app?.state ?? 'unknown', ...(app ? { entry: app.entry, ownerAccountId: app.ownerAccountId } : {}) }, undefined, !app); return;
         }
         if (item.entity.kind === 'community') { const group = record && 'communityId' in record ? record as WorldCommunity : null; void this.openGroup(item.entity.id, group?.membership?.state === 'active' ? 'chat' : 'about'); return; }
-        if (item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact') { this.runHook(() => this.options.openAccount('people')); return; }
+        if (item.entity.kind === 'person' && item.entity.id === this.deskAccount) { this.openProfileEditor(); return; }
+        if (item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact') {
+          if (this.profile?.directMessagesVersion === 1) void this.openDirectContact(record as DirectoryContact);
+          else this.runHook(() => this.options.openAccount('people'));
+          return;
+        }
         if (item.entity.kind === 'person' && record && 'profileId' in record) { const person = record as DirectoryPerson; this.openPersonDialog(person); return; }
         if (item.entity.kind === 'device') this.runHook(() => this.options.openAccount('devices'));
       }),
       onCreate: kind => { if (!isCurrent()) return; if (kind === 'app') this.openAddApp(); else if (kind === 'community') this.openCommunityForm(); else if (kind === 'device') this.runHook(this.options.connectDevice); else if (kind === 'person') this.runHook(() => this.options.openAccount('people')); else this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }); },
     });
-    this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header);
+    this.unifiedField = field; this.main.replaceChildren(field.element); field.attachHeaderSearch(this.header); this.mountFieldCovers(field);
   }
 
   private renderAssistant(): void {
@@ -1398,11 +1488,31 @@ class WorldApplication {
   }
 
   private mountChat(parent: HTMLElement, group: WorldCommunity, showHeader = false): void {
-    this.avatars.setContext(group.communityId);
+    const current = this.accountTask(), sequence = this.screenSequence;
+    let mountedCurrent = (): boolean => true;
+    const target = createCommunityConversation({ api: this.api, community: group,
+      isCurrent: () => current() && sequence === this.screenSequence && mountedCurrent(),
+      onUpdate: next => { this.updateCommunity(next); if (this.group?.communityId === next.communityId) this.group = next; } });
+    const community = (): WorldCommunity => target.record as WorldCommunity;
+    mountedCurrent = this.mountConversation(parent, target, {
+      showHeader, emblem: () => communityEmblem(community()), identityLabel: () => `О сообществе ${target.name}`,
+      onIdentity: () => { void this.openGroup(target.id); },
+      extraActions: () => [
+        { label: 'О сообществе', symbol: 'people', run: () => { void this.openGroup(target.id); } },
+        { label: 'Участники', symbol: 'person', run: () => this.openGroupManagement(community()) },
+      ],
+      callButton: () => this.options.humanCalls && community().membership?.state === 'active' ? this.groupHumanCallButton(community()) : null,
+      invite: () => this.openInvite(community()),
+      notify: (chat, message, readAcknowledged) => chat.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: community(), message, readAcknowledged } })),
+    });
+  }
+
+  private mountConversation(parent: HTMLElement, conversation: ConversationTarget, presentation: ConversationPresentation): () => boolean {
+    this.avatars.setContext(conversation.avatarContext);
     const sequence = this.screenSequence;
     const accountId = this.profile?.profileId ?? this.deskAccount;
-    const initialDraft = this.chatDrafts.read(accountId, group.communityId);
-    const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${group.name}`);
+    const initialDraft = this.chatDrafts.read(accountId, conversation.draftKey);
+    const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${conversation.name}`);
     let replyTo = initialDraft.replyTo, sending = false, accessClosed = false, searchIndex = -1;
     let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, historyLoading = false, hasHistory = false;
     let catchupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1419,7 +1529,7 @@ class WorldApplication {
       const anchor = menuAnchor; menu.hidden = true; menuAnchor = null; anchor?.setAttribute('aria-expanded', 'false'); anchor?.closest('.sw-chat-message')?.classList.remove('has-actions');
       if (restoreFocus && anchor?.isConnected) anchor.focus({ preventScroll: true });
     };
-    const openMenu = (anchor: HTMLButtonElement, actions: { label: string; symbol: string; run(): void; danger?: boolean; disabled?: boolean }[]): void => {
+    const openMenu = (anchor: HTMLButtonElement, actions: ChatMenuAction[]): void => {
       if (menuAnchor === anchor && !menu.hidden) { closeMenu(true); return; }
       closeMenu(); menuAnchor = anchor; menuScrollTop = messages.scrollTop; anchor.setAttribute('aria-expanded', 'true'); anchor.closest('.sw-chat-message')?.classList.add('has-actions');
       menu.replaceChildren(...actions.map(action => {
@@ -1453,26 +1563,26 @@ class WorldApplication {
     const searchClose = iconButton('Закрыть поиск', 'close', () => { searchBar.hidden = true; searchInput.value = ''; refreshSearch(); input.focus({ preventScroll: true }); });
     searchBar.append(icon('search'), searchInput, searchCount, searchPrevious, searchNext, searchClose);
     let refreshHeader = (): void => {};
-    if (showHeader) {
+    if (presentation.showHeader) {
       const header = el('div', 'sw-chat-header'); const back = iconButton('Все чаты', 'back', () => { this.navigate('messages'); this.main.querySelector<HTMLHeadingElement>('.sw-inbox-head h1')?.focus({ preventScroll: true }); }); back.classList.add('sw-mobile-back');
-      const identity = el('button', 'sw-chat-identity'); identity.type = 'button'; identity.setAttribute('aria-label', `О сообществе ${group.name}`); identity.addEventListener('click', () => { void this.openGroup(group.communityId); });
-      const copy = el('span', 'sw-grow'), name = el('strong', '', group.name), members = el('small', 'sw-muted', nounCount(group.memberCount, 'участник', 'участника', 'участников')); copy.append(name, members); identity.append(communityEmblem(group), copy);
-      refreshHeader = () => { name.textContent = group.name; members.textContent = nounCount(group.memberCount, 'участник', 'участника', 'участников'); identity.setAttribute('aria-label', `О сообществе ${group.name}`); identity.replaceChildren(communityEmblem(group), copy); chat.setAttribute('aria-label', `Чат: ${group.name}`); };
+      const subtitle = (): string => typeof conversation.subtitle === 'number' ? nounCount(conversation.subtitle, 'участник', 'участника', 'участников') : conversation.subtitle;
+      const identity = el('button', 'sw-chat-identity'); identity.type = 'button'; identity.setAttribute('aria-label', presentation.identityLabel()); identity.addEventListener('click', presentation.onIdentity);
+      const copy = el('span', 'sw-grow'), name = el('strong', '', conversation.name), members = el('small', 'sw-muted', subtitle()); copy.append(name, members); identity.append(presentation.emblem(), copy);
+      refreshHeader = () => { name.textContent = conversation.name; members.textContent = subtitle(); identity.setAttribute('aria-label', presentation.identityLabel()); identity.replaceChildren(presentation.emblem(), copy); chat.setAttribute('aria-label', `Чат: ${conversation.name}`); };
       const searchOpen = iconButton('Поиск в чате', 'search', () => { searchBar.hidden = !searchBar.hidden; if (!searchBar.hidden) searchInput.focus(); else { searchInput.value = ''; refreshSearch(); } });
       const more = iconButton('Действия с чатом', 'more'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
       const changePreference = (key: 'muted' | 'pinned'): void => {
-        void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, [key]: !group.membership?.[key] }).then(result => {
-          if (!active()) return; group = result.community; this.updateCommunity(group); if (this.group?.communityId === group.communityId) this.group = group; notifyConversation();
+        void conversation.setPreference(key, !conversation.preferences?.[key]).then(() => {
+          if (!active()) return; notifyConversation();
         }).catch(reason => { if (active()) this.toast(errorText(reason), true); });
       };
       more.addEventListener('click', () => openMenu(more, [
-        { label: 'О сообществе', symbol: 'people', run: () => { void this.openGroup(group.communityId); } },
-        { label: 'Участники', symbol: 'person', run: () => this.openGroupManagement(group) },
-        { label: group.membership?.muted ? 'Включить уведомления' : 'Отключить уведомления', symbol: 'bell', run: () => changePreference('muted') },
-        { label: group.membership?.pinned ? 'Открепить чат' : 'Закрепить чат', symbol: 'pin', run: () => changePreference('pinned') },
+        ...presentation.extraActions(),
+        { label: conversation.preferences?.muted ? 'Включить уведомления' : 'Отключить уведомления', symbol: 'bell', run: () => changePreference('muted') },
+        { label: conversation.preferences?.pinned ? 'Открепить чат' : 'Закрепить чат', symbol: 'pin', run: () => changePreference('pinned') },
       ]));
       header.append(back, identity);
-      if (this.options.humanCalls && group.membership?.state === 'active') header.append(this.groupHumanCallButton(group));
+      const call = presentation.callButton?.(); if (call) header.append(call);
       header.append(searchOpen, more); chat.append(header);
     }
     const messages = el('div', 'sw-chat-messages'); messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Сообщения'); messages.setAttribute('aria-live', 'polite'); messages.setAttribute('aria-relevant', 'additions'); messages.setAttribute('tabindex', '0'); messages.append(this.loading('Загружаем разговор'));
@@ -1483,8 +1593,8 @@ class WorldApplication {
     const reply = el('div', 'sw-composer-reply'); reply.hidden = true;
     const replyCopy = el('button', 'sw-composer-reply-copy'); replyCopy.type = 'button'; replyCopy.addEventListener('click', () => { if (replyTo) void jumpToMessage(replyTo); });
     const replyAuthor = el('strong'), replyText = el('span'); replyCopy.append(icon('back'), replyAuthor, replyText);
-    const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, group.communityId, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
-    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
+    const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, conversation.draftKey, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
+    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
     const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
     const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = true; error.append(retrySend);
@@ -1493,10 +1603,10 @@ class WorldApplication {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
-    const updateComposer = (): void => { input.disabled = accessClosed || !group.permissions.canWrite; input.placeholder = group.permissions.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${group.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
+    const updateComposer = (): void => { input.disabled = accessClosed || !conversation.canWrite; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
     const describeDraft = (): void => {
-      const volatile = this.chatDrafts.isVolatile(accountId, group.communityId);
-      const draft = this.chatDrafts.read(accountId, group.communityId), clearing = !draft.text && !draft.replyTo && !draft.pending;
+      const volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey);
+      const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending;
       draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : '';
       draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !volatile; downloadDraft.hidden = !volatile || !draft.text;
     };
@@ -1506,7 +1616,7 @@ class WorldApplication {
       reply.hidden = !replyTo; if (!replyTo) return;
       const target = known.get(replyTo); replyAuthor.textContent = target ? `Ответ · ${target.author.displayName}` : 'Ответ на сообщение'; replyText.textContent = target ? chatPreview(target) : 'Сообщение из предыдущей истории';
     };
-    input.addEventListener('input', () => { this.chatDrafts.edit(accountId, group.communityId, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
+    input.addEventListener('input', () => { this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
     input.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229) return;
       if (shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
@@ -1517,10 +1627,10 @@ class WorldApplication {
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
     composerResize.observe(composer); composerResize.observe(dock);
-    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, group.communityId, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; updateComposer(); refreshReply(); describeDraft(); });
+    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, conversation.draftKey, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; updateComposer(); refreshReply(); describeDraft(); });
 
     const ordered = (): WorldMessage[] => [...known.values()].sort((a, b) => a.seq - b.seq);
-    const notifyConversation = (readAcknowledged = false): void => { chat.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: group, message: ordered().at(-1), readAcknowledged } })); };
+    const notifyConversation = (readAcknowledged = false): void => presentation.notify(chat, ordered().at(-1), readAcknowledged);
     const capturePosition = (): { node?: HTMLElement; top: number; height: number; scroll: number } => {
       const bounds = messages.getBoundingClientRect(), top = bounds.top;
       const node = Array.from(messages.querySelectorAll<HTMLElement>('[data-message-seq]')).find(row => { const rect = row.getBoundingClientRect(); return rect.bottom > top && rect.top < bounds.bottom; });
@@ -1566,11 +1676,11 @@ class WorldApplication {
     const messageActions = (messageId: string, anchor: HTMLButtonElement): void => {
       const message = known.get(messageId); if (!message || message.removed) return;
       const actions: Parameters<typeof openMenu>[1] = [
-        { label: 'Ответить', symbol: 'back', disabled: sending || accessClosed || !group.permissions.canWrite, run: () => { replyTo = messageId; this.chatDrafts.edit(accountId, group.communityId, input.value, replyTo); refreshReply(); input.focus({ preventScroll: true }); } },
+        { label: 'Ответить', symbol: 'back', disabled: sending || accessClosed || !conversation.canWrite, run: () => { replyTo = messageId; this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); refreshReply(); input.focus({ preventScroll: true }); } },
         { label: 'Копировать текст', symbol: 'list', run: () => { if (!navigator.clipboard) { this.toast('Выделите текст сообщения, чтобы скопировать его.', true); return; } void navigator.clipboard.writeText(message.text).then(() => { if (active()) this.toast('Текст скопирован'); }).catch(() => { if (active()) this.toast('Не удалось скопировать. Выделите текст сообщения.', true); }); } },
       ];
-      if (message.author.profileId === accountId || group.permissions.canModerate) actions.push({ label: 'Удалить у всех', symbol: 'trash', danger: true, run: () => this.confirmAction('Удалить сообщение?', 'Оно исчезнет из разговора у всех участников.', 'Удалить', async () => {
-        await this.api.request('world.chat.remove', { communityId: group.communityId, messageId });
+      if (message.author.profileId === accountId || conversation.canModerate) actions.push({ label: 'Удалить у всех', symbol: 'trash', danger: true, run: () => this.confirmAction('Удалить сообщение?', 'Оно исчезнет из разговора у всех участников.', 'Удалить', async () => {
+        await conversation.request('remove', { messageId });
         if (!active()) return; const position = capturePosition(); append({ ...message, text: '', removed: true }); refreshTimeline(); restorePosition(position); notifyConversation();
       }) });
       openMenu(anchor, actions);
@@ -1616,25 +1726,27 @@ class WorldApplication {
     const markRead = (): void => {
       if (!reading && !accessClosed && syncSeq > lastRead && document.visibilityState === 'visible' && nearEnd()) {
         reading = true; const throughSeq = syncSeq;
-        void this.api.request<{ unreadCount: number }>('world.chat.read', { communityId: group.communityId, throughSeq }).then(result => { if (!active()) return; lastRead = throughSeq; group.unreadCount = result.unreadCount; this.updateCommunity(group); notifyConversation(true); }).catch(() => { /* Reading acknowledgement retries with the next refresh. */ }).finally(() => { reading = false; });
+        void conversation.request<{ unreadCount: number }>('read', { throughSeq }).then(result => { if (!active()) return; lastRead = throughSeq; conversation.setUnread(result.unreadCount); notifyConversation(true); }).catch(reason => { if (active()) closeAccess(reason); }).finally(() => { reading = false; });
       }
     };
     const closeAccess = (reason: unknown): boolean => {
-      if (!(typeof reason === 'object' && reason && 'code' in reason && ['community_membership_required', 'community_not_found', 'community_banned'].includes(String(reason.code)))) return false;
+      if (!(typeof reason === 'object' && reason && 'code' in reason && ['community_membership_required', 'community_not_found', 'community_banned', 'direct_not_found', 'direct_contact_required', 'direct_account_changed'].includes(String(reason.code)))) return false;
       accessClosed = true; closeMenu(); updateComposer(); this.avatars.setContext(); known.clear(); rows.clear(); reply.hidden = true; messages.replaceChildren(emptyState('Доступ к чату закрыт', 'Вернитесь в общий мир, чтобы продолжить.', button('В общий мир', 'world', 'sw-button-primary', () => this.navigate('world')), 'lock'));
       previous.hidden = true; jump.hidden = true; searchBar.hidden = true; if (this.chatTimer) clearInterval(this.chatTimer); if (catchupTimer) clearTimeout(catchupTimer); return true;
     };
+    chat.addEventListener('soty:direct-unavailable', () => { if (conversation.kind === 'direct' && active()) closeAccess({ code: 'direct_not_found' }); });
+    chat.addEventListener('soty:direct-labels', () => { if (conversation.kind === 'direct' && active()) refreshHeader(); });
     chat.addEventListener('soty:chat-community', event => {
       const detail = (event as CustomEvent<{ communityId: string; community: WorldCommunity | null }>).detail;
-      if (!active() || detail.communityId !== group.communityId) return;
+      if (!active() || conversation.kind !== 'community' || detail.communityId !== conversation.id) return;
       if (!detail.community || detail.community.membership?.state !== 'active') { closeAccess({ code: 'community_membership_required' }); return; }
-      group = detail.community; refreshHeader(); updateComposer();
+      conversation.acceptCommunity?.(detail.community); refreshHeader(); updateComposer();
     });
     const loadHistory = async (): Promise<boolean> => {
       if (historyLoading || !hasHistory || initial || accessClosed || !active()) return false;
       historyLoading = true; previous.disabled = true; previous.querySelector('span')!.textContent = 'Загружаем историю'; messages.setAttribute('aria-busy', 'true');
       try {
-        const history = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, before: firstSeq, limit: 60 });
+        const history = await conversation.request<{ messages: WorldMessage[]; hasMore: boolean }>('list', { before: firstSeq, limit: 60 });
         if (!active()) return false; const position = capturePosition(); history.messages.forEach(append); hasHistory = history.hasMore && history.messages.length > 0; previous.hidden = !hasHistory; refreshTimeline(); restorePosition(position); updateJump(); if (retrySend.hidden) errorMessage.textContent = ''; return history.messages.length > 0;
       } catch (reason) { if (active() && !closeAccess(reason)) errorMessage.textContent = errorText(reason); return false; }
       finally { historyLoading = false; previous.disabled = false; previous.querySelector('span')!.textContent = 'Ранее'; messages.setAttribute('aria-busy', 'false'); }
@@ -1643,24 +1755,22 @@ class WorldApplication {
       if (fetching || historyLoading || accessClosed || !active() || document.visibilityState === 'hidden') return;
       fetching = true;
       try {
-        // Standalone group chats have no inbox poll to refresh their permissions.
-        if (!chat.closest('.sw-inbox')) {
-          const current = await this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: group.communityId });
-          if (!active()) return;
-          if (current.community.membership?.state !== 'active') { closeAccess({ code: 'community_membership_required' }); return; }
-          group = current.community; this.updateCommunity(group); refreshHeader(); updateComposer();
+        // Direct conversations always recheck their exact relationship. Standalone
+        // community chats have no inbox poll to refresh current membership.
+        if (conversation.kind === 'direct' || !chat.closest('.sw-inbox')) {
+          await conversation.refresh(); if (!active()) return; refreshHeader(); updateComposer();
         }
-        const response = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, limit: 60 });
+        const response = await conversation.request<{ messages: WorldMessage[]; hasMore: boolean }>('list', { limit: 60 });
         if (!active()) return;
         const updates: WorldMessage[] = [], incoming: WorldMessage[] = []; let nextSync = Math.max(0, ...response.messages.map(message => message.seq)), hasMoreForward = false;
         if (!initial) {
           // Refresh existing tombstones without jumping past an unseen interval.
           const visiblePosition = capturePosition();
           if (visiblePosition.node && Number(visiblePosition.node.dataset.messageSeq) < (response.messages[0]?.seq ?? 0)) {
-            const visible = await this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after: Math.max(0, Number(visiblePosition.node.dataset.messageSeq) - 1), limit: 60 });
+            const visible = await conversation.request<{ messages: WorldMessage[]; hasMore: boolean }>('list', { after: Math.max(0, Number(visiblePosition.node.dataset.messageSeq) - 1), limit: 60 });
             if (!active()) return; updates.push(...visible.messages);
           }
-          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => this.api.request<{ messages: WorldMessage[]; hasMore: boolean }>('world.chat.list', { communityId: group.communityId, after, limit: 60 }), append: message => incoming.push(message) });
+          const forward = await readChatForward({ after: syncSeq, active, fetchPage: after => conversation.request<{ messages: WorldMessage[]; hasMore: boolean }>('list', { after, limit: 60 }), append: message => incoming.push(message) });
           if (!active()) return;
           nextSync = forward.cursor; hasMoreForward = forward.hasMore;
         }
@@ -1669,7 +1779,7 @@ class WorldApplication {
         if (initial) { messages.replaceChildren(previous); response.messages.forEach(append); hasHistory = response.hasMore; previous.hidden = !hasHistory; }
         else { [...response.messages, ...updates].filter(message => known.has(message.messageId)).forEach(append); incoming.forEach(append); }
         syncSeq = nextSync; if (hasMoreForward) catchupTimer = setTimeout(() => { void load(); }, 100);
-        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', group.memberCount < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', group.permissions.canModerate ? button('Пригласить человека', 'people', 'sw-button-primary', () => this.openInvite(group)) : undefined, 'chat'));
+        if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', conversation.kind === 'direct' ? 'Напишите своему контакту.' : typeof conversation.subtitle === 'number' && conversation.subtitle < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', conversation.canModerate && presentation.invite ? button('Пригласить человека', 'people', 'sw-button-primary', presentation.invite) : undefined, 'chat'));
         refreshTimeline();
         if (!stickToEnd) unseen += Math.max(0, known.size - countBefore);
         initial = false; if (retrySend.hidden) errorMessage.textContent = '';
@@ -1685,10 +1795,10 @@ class WorldApplication {
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
       event.preventDefault(); const text = input.value.trim(); if (!text || send.disabled) return;
-      sending = true; const pending = this.chatDrafts.beginSend(accountId, group.communityId, text, replyTo); describeDraft(); updateComposer();
+      sending = true; const pending = this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo); describeDraft(); updateComposer();
       errorMessage.textContent = ''; retrySend.hidden = true;
-      void this.api.request<{ message: WorldMessage }>('world.chat.send', { communityId: group.communityId, clientId: pending.clientId, text, replyTo: pending.replyTo }).then(response => {
-        const draft = this.chatDrafts.acknowledge(accountId, group.communityId, pending.clientId);
+      void conversation.request<{ message: WorldMessage }>('send', { clientId: pending.clientId, text, replyTo: pending.replyTo }).then(response => {
+        const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId);
         if (!active()) return;
         const stickToEnd = nearEnd(), position = capturePosition();
         append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
@@ -1696,23 +1806,81 @@ class WorldApplication {
         updateJump(); notifyConversation(); void load();
       }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
-    const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, group.communityId); describeDraft(); void load(); } };
+    const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
     const previousCleanup = this.chatCleanup;
     this.chatCleanup = () => { previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
+    return active;
+  }
+
+  private async openDirectContact(contact: Omit<DirectoryContact, 'kind'>): Promise<void> {
+    if (this.profile?.directMessagesVersion !== 1) return;
+    const current = this.accountTask(), expectedAccountId = this.deskAccount;
+    const sequence = this.screenSequence, request = ++this.directOpenSequence;
+    const active = (): boolean => current() && sequence === this.screenSequence && request === this.directOpenSequence;
+    const { peerAccountId, relationshipId, label } = contact;
+    try {
+      const response = await this.api.request<{ current: WorldDirectThread }>('world.direct.open', {
+        expectedAccountId, peerAccountId, expectedRelationshipId: relationshipId, requestId: crypto.randomUUID(),
+      });
+      if (!active()) return;
+      const thread = response.current;
+      if (thread.peer.accountId !== peerAccountId || thread.relationshipId !== relationshipId) throw new Error('Контакт изменился. Откройте его ещё раз.');
+      this.directProjectionEpoch++;
+      this.directLabels.set(peerAccountId, label);
+      this.directThreads = [thread, ...this.directThreads.filter(value => value.threadId !== thread.threadId)];
+      this.navigate('messages', thread.threadId);
+    } catch (error) { if (active()) this.toast(errorText(error), true); }
+  }
+
+  private mountDirectChat(parent: HTMLElement, thread: WorldDirectThread): void {
+    const current = this.accountTask(), sequence = this.screenSequence;
+    let mountedCurrent = (): boolean => true;
+    const target = createDirectConversation({ api: this.api, thread, accountId: this.deskAccount,
+      peerLabel: () => this.directLabels.get(thread.peer.accountId) || '',
+      isCurrent: () => current() && sequence === this.screenSequence && mountedCurrent(),
+      onUpdate: next => { this.directProjectionEpoch++; this.directThreads = this.directThreads.map(value => value.threadId === next.threadId ? next : value); this.updateNavUnread(); },
+    });
+    mountedCurrent = this.mountConversation(parent, target, {
+      showHeader: true,
+      emblem: () => avatar(target.name, undefined, '#C89448', thread.peer.accountId, (target.record as WorldDirectThread).peer.avatarRevision),
+      identityLabel: () => `Профиль: ${target.name}`, onIdentity: () => this.openPersonDialog(thread.peer.accountId),
+      extraActions: () => [{ label: 'Контакт', symbol: 'person', run: () => this.runHook(() => this.options.openAccount('people')) }],
+      callButton: () => this.options.humanCalls ? this.directHumanCallButton(thread.peer.accountId, target.name) : null,
+      notify: (chat, message, readAcknowledged) => chat.dispatchEvent(new CustomEvent('soty:direct-updated', { bubbles: true, detail: { thread: target.record, message, readAcknowledged } })),
+    });
+  }
+
+  private directHumanCallButton(peerAccountId: string, label: string): HTMLButtonElement {
+    const control = button('Позвонить', 'phone', 'sw-button-quiet sw-direct-call-join', () => {
+      const port = this.options.humanCalls, current = this.accountTask();
+      if (!port || this.humanCallActive() || this.humanCallJoinPending) return;
+      this.humanCallJoinPending = true; this.updateGroupCallButtons(); control.disabled = true;
+      void port.join({ roomId: peerAccountId, mode: 'one-to-one', displayLabel: label }).then(result => {
+        if (!current()) return; this.receiveHumanCallState(port.snapshot());
+        if (!result.ok) this.toast('Не удалось соединиться. Микрофон выключен.', true);
+      }).catch(() => { if (current()) this.toast('Не удалось соединиться. Микрофон выключен.', true); }).finally(() => {
+        if (!current()) return; this.humanCallJoinPending = false; this.updateGroupCallButtons();
+      });
+    });
+    control.setAttribute('aria-label', `Позвонить: ${label}. Микрофон выключен`);
+    control.disabled = this.humanCallActive() || this.humanCallJoinPending;
+    return control;
   }
 
   private renderMessages(selectedId?: string): void {
     const restoreHeadingFocus = document.activeElement instanceof HTMLElement && document.activeElement.matches('.sw-inbox-head h1');
     const groups = this.communities.filter(group => group.membership?.state === 'active'); const accountId = this.profile?.profileId ?? this.deskAccount;
-    const selected = groups.find(group => group.communityId === selectedId);
-    this.selectedChat = selected?.communityId;
-    if (selectedId && !selected) { this.activeRoute = '#messages'; history.replaceState({ soty: true }, '', this.activeRoute); this.toast('Этот чат сейчас недоступен. Выберите другой разговор.'); }
+    const directEnabled = this.profile?.directMessagesVersion === 1;
+    const selected = groups.find(group => group.communityId === selectedId), selectedDirect = directEnabled ? this.directThreads.find(value => value.threadId === selectedId) : undefined;
+    const pendingDirect = directEnabled && !!selectedId?.startsWith('direct_') && !this.directThreadsLoaded;
+    this.selectedChat = selected?.communityId ?? selectedDirect?.threadId ?? (pendingDirect ? selectedId : undefined);
+    if (selectedId && !selected && !selectedDirect && !pendingDirect) { this.activeRoute = '#messages'; history.replaceState({ soty: true }, '', this.activeRoute); this.toast('Этот чат сейчас недоступен. Выберите другой разговор.'); }
     const sequence = this.screenSequence, previews = new Map<string, WorldMessage>(), conversationRows = new Map<string, HTMLButtonElement>(), unsubscribers = new Map<string, () => void>();
     const active = (): boolean => !this.destroyed && sequence === this.screenSequence && screen.isConnected;
     let selectedUpdate = 0, refreshing = false;
-    const screen = el('section', `sw-messages-view sw-inbox${selected ? ' has-room' : ''}`); screen.setAttribute('aria-label', 'Чаты');
+    const screen = el('section', `sw-messages-view sw-inbox${selected || selectedDirect || pendingDirect ? ' has-room' : ''}`); screen.setAttribute('aria-label', 'Чаты');
     const list = el('aside', 'sw-conversations'); list.setAttribute('aria-label', 'Список чатов');
     const top = el('div', 'sw-inbox-head'); const title = el('h1', '', 'Чаты'); title.tabIndex = -1; const contacts = iconButton('Контакты и приглашения', 'people', () => this.runHook(() => this.options.openAccount('people'))); top.append(title, contacts);
     const search = el('label', 'sw-inbox-search'); const query = textInput('', 'Поиск', 160); query.type = 'search'; query.setAttribute('aria-label', 'Поиск чатов'); const clearSearch = iconButton('Очистить поиск', 'close', () => { query.value = ''; renderList(); query.focus(); }); clearSearch.hidden = true; search.append(icon('search'), query, clearSearch);
@@ -1744,8 +1912,23 @@ class WorldApplication {
       allFilter.classList.toggle('is-selected', !unreadOnly); unreadFilter.classList.toggle('is-selected', unreadOnly); allFilter.setAttribute('aria-pressed', String(!unreadOnly)); unreadFilter.setAttribute('aria-pressed', String(unreadOnly));
       const visible = groups.filter(group => (!unreadOnly || group.unreadCount > 0) && (!needle || `${group.name} ${group.description} ${group.topics.join(' ')}`.toLocaleLowerCase('ru-RU').includes(needle))).sort((a, b) => Number(!!b.membership?.pinned) - Number(!!a.membership?.pinned) || (previews.get(b.communityId)?.createdAt ?? 0) - (previews.get(a.communityId)?.createdAt ?? 0));
       const focused = document.activeElement instanceof HTMLButtonElement && conversations.contains(document.activeElement) ? document.activeElement.dataset.communityId : undefined;
-      conversations.replaceChildren(...visible.map(paintConversation)); listStatus.textContent = '';
-      if (!groups.length) {
+      const directRows = directEnabled ? this.directThreads.filter(value => (!unreadOnly || value.unreadCount > 0) && (!needle || (value.peer.label || this.directLabels.get(value.peer.accountId) || 'Контакт').toLocaleLowerCase('ru-RU').includes(needle)))
+        .sort((a, b) => Number(b.preferences.pinned) - Number(a.preferences.pinned) || b.createdAt - a.createdAt) : [];
+      conversations.replaceChildren(...directRows.map(thread => {
+        const name = thread.peer.label || this.directLabels.get(thread.peer.accountId) || 'Контакт'; let row = conversationRows.get(thread.threadId);
+        if (!row) { row = button('', undefined, 'sw-conversation', () => this.navigate('messages', thread.threadId)); conversationRows.set(thread.threadId, row); }
+        row.dataset.communityId = thread.threadId; row.classList.toggle('is-selected', selectedId === thread.threadId); row.classList.toggle('is-muted', thread.preferences.muted);
+        row.setAttribute('aria-current', selectedId === thread.threadId ? 'true' : 'false');
+        const copy = el('span', 'sw-conversation-copy'), head = el('span', 'sw-conversation-head'), sub = el('span', 'sw-conversation-sub'), message = previews.get(thread.threadId);
+        head.append(el('strong', '', name)); if (message) { const time = el('time', '', chatListTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); head.append(time); }
+        const draftKey = `direct:${thread.threadId}:${thread.relationshipId}`, draft = this.chatDrafts.read(accountId, draftKey);
+        sub.append(el('span', 'sw-conversation-preview', draft.text ? `Черновик: ${draft.text.replace(/\s+/gu, ' ')}` : message ? `${message.author.profileId === accountId ? 'Вы' : name}: ${chatPreview(message)}` : 'Личный разговор'));
+        if (thread.preferences.pinned) { const pin = icon('pin'); pin.setAttribute('aria-label', 'Закреплён'); sub.append(pin); }
+        if (thread.preferences.muted) { const muted = icon('bell'); muted.setAttribute('aria-label', 'Уведомления выключены'); sub.append(muted); }
+        if (thread.unreadCount) sub.append(el('span', 'sw-message-count', thread.unreadCount > 99 ? '99+' : String(thread.unreadCount)));
+        copy.append(head, sub); row.replaceChildren(avatar(name, undefined, '#C89448', thread.peer.accountId, thread.peer.avatarRevision), copy); return row;
+      }), ...visible.map(paintConversation)); listStatus.textContent = '';
+      if (!groups.length && !this.directThreads.length) {
         const actions = el('div', 'sw-stack sw-inbox-start-actions');
         const invite = button('', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people')));
         invite.setAttribute('aria-label', 'Пригласить по QR или ссылке');
@@ -1756,12 +1939,17 @@ class WorldApplication {
         actions.append(invite, button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
         conversations.append(emptyState('Начните разговор', 'Добавьте человека или создайте чат для своих.', actions, 'chat'));
       }
-      else if (!visible.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';
+      else if (!visible.length && !directRows.length) listStatus.textContent = needle ? 'Чат не найден' : 'Все сообщения прочитаны';
       if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
     };
     query.addEventListener('input', renderList); query.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229) return; if (event.key === 'Escape' && query.value) { event.preventDefault(); clearSearch.click(); } else if (event.key === 'ArrowDown') { event.preventDefault(); conversations.querySelector<HTMLButtonElement>('button')?.focus(); } });
     conversations.addEventListener('keydown', event => { if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return; const items = Array.from(conversations.querySelectorAll<HTMLButtonElement>('.sw-conversation')); const index = items.indexOf(document.activeElement as HTMLButtonElement); if (index < 0) return; event.preventDefault(); items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus({ preventScroll: true }); });
     screen.addEventListener('soty:chat-updated', event => { const detail = (event as CustomEvent<{ community: WorldCommunity; message?: WorldMessage; readAcknowledged?: boolean }>).detail; const index = groups.findIndex(group => group.communityId === detail.community.communityId); if (index < 0) return; groups[index] = detail.community; if (detail.community.communityId === selectedId && detail.readAcknowledged) selectedUpdate++; if (detail.message) previews.set(detail.community.communityId, detail.message); renderList(); });
+    screen.addEventListener('soty:direct-updated', event => {
+      const detail = (event as CustomEvent<{ thread: WorldDirectThread; message?: WorldMessage }>).detail;
+      if (!active() || !this.directThreads.some(value => value.threadId === detail.thread.threadId && value.relationshipId === detail.thread.relationshipId)) return;
+      if (detail.message) previews.set(detail.thread.threadId, detail.message); renderList();
+    });
     const subscribeDrafts = (): void => { for (const group of groups) if (!unsubscribers.has(group.communityId)) unsubscribers.set(group.communityId, this.chatDrafts.subscribe(accountId, group.communityId, () => { if (!active()) return; const current = groups.find(item => item.communityId === group.communityId); if (current && conversationRows.get(group.communityId)?.isConnected) paintConversation(current); })); };
     subscribeDrafts();
     const previousCleanup = this.chatCleanup;
@@ -1772,23 +1960,55 @@ class WorldApplication {
     renderList();
     if (restoreHeadingFocus) title.focus({ preventScroll: true });
     if (selected) this.mountChat(room, selected, true);
+    else if (selectedDirect) this.mountDirectChat(room, selectedDirect);
+    else if (pendingDirect) room.append(this.loading('Открываем личный разговор'));
     else if (groups.length) room.append(emptyState('Ближе к своим', 'Выберите чат, чтобы продолжить разговор.', undefined, 'chat'));
     else room.hidden = true;
+    if (selectedDirect || pendingDirect) room.hidden = false;
+    if (directEnabled) void this.api.request<{ contacts: Omit<DirectoryContact, 'kind'>[] }>('contacts.list', {}).then(result => {
+      if (!active()) return; this.directLabels = new Map(result.contacts.map(contact => [contact.peerAccountId, contact.label])); renderList();
+      room.querySelector('.sw-chat')?.dispatchEvent(new Event('soty:direct-labels'));
+    }).catch(() => {});
+    let directRefreshing = false;
+    const refreshDirect = async (): Promise<void> => {
+      if (!directEnabled || directRefreshing || !active() || document.visibilityState === 'hidden') return;
+      const projectionEpoch = this.directProjectionEpoch;
+      directRefreshing = true; const next: WorldDirectThread[] = []; let cursor: string | null = null;
+      try {
+        do {
+          const page: { threads: WorldDirectThread[]; nextCursor: string | null } = await this.api.request('world.direct.list', { expectedAccountId: accountId, limit: 60, ...(cursor ? { cursor } : {}) });
+          if (!active() || projectionEpoch !== this.directProjectionEpoch) return; next.push(...page.threads); cursor = page.nextCursor;
+          if (next.length > 1000) throw new Error('Список разговоров слишком большой.');
+          this.directThreads = [...next, ...this.directThreads.filter(value => !next.some(loaded => loaded.threadId === value.threadId))]; renderList(); refreshVisiblePreviews();
+        } while (cursor);
+        if (!active() || projectionEpoch !== this.directProjectionEpoch) return; this.directThreads = next; this.directThreadsLoaded = true; renderList(); this.updateNavUnread();
+        if (pendingDirect && !selectedDirect) { this.cleanScreen(); this.renderMessages(selectedId); }
+        else if (selectedDirect && !next.some(value => value.threadId === selectedDirect.threadId && value.relationshipId === selectedDirect.relationshipId)) room.querySelector('.sw-chat')?.dispatchEvent(new Event('soty:direct-unavailable'));
+      } catch (error) { if (active()) listStatus.textContent = 'Личные разговоры пока не обновились. Повторим подключение.'; }
+      finally { directRefreshing = false; }
+    };
     const pendingPreviews = new Set(groups.filter(group => group.communityId !== selectedId).map(group => group.communityId)); let previewWorkers = 0;
     const loadPreviews = async (): Promise<void> => {
       previewWorkers++;
       try { while (active() && pendingPreviews.size) {
         const id = pendingPreviews.values().next().value; if (!id) break; pendingPreviews.delete(id);
-        if (!groups.some(group => group.communityId === id)) continue;
-        try { const response = await this.api.request<{ messages: WorldMessage[] }>('world.chat.list', { communityId: id, limit: 1 }); if (!active()) return; if (!groups.some(group => group.communityId === id)) continue; const message = response.messages[0]; if (message) previews.set(id, message); renderList(); }
+        const direct = this.directThreads.find(thread => thread.threadId === id);
+        if (!direct && !groups.some(group => group.communityId === id)) continue;
+        try { const response = direct
+          ? await this.api.request<{ messages: WorldMessage[] }>('world.direct.chat.list', { expectedAccountId: accountId, threadId: direct.threadId, expectedRelationshipId: direct.relationshipId, limit: 1 })
+          : await this.api.request<{ messages: WorldMessage[] }>('world.chat.list', { communityId: id, limit: 1 });
+          if (!active()) return;
+          if (direct ? !this.directThreads.some(value => value.threadId === id && value.relationshipId === direct.relationshipId) : !groups.some(group => group.communityId === id)) continue;
+          const message = response.messages[0]; if (message) previews.set(id, message); renderList(); }
         catch { /* A community remains usable when its preview could not refresh. */ }
       } } finally { previewWorkers--; }
     };
     const startPreviews = (): void => { while (active() && previewWorkers < 3 && pendingPreviews.size) void loadPreviews(); };
     const visibleConversation = (id: string): boolean => { const target = conversationRows.get(id); if (!target?.isConnected || !conversations.clientHeight || !conversations.getClientRects().length) return false; const bounds = conversations.getBoundingClientRect(), row = target.getBoundingClientRect(); return row.bottom > bounds.top && row.top < bounds.bottom; };
-    const refreshVisiblePreviews = (): void => { if (!active()) return; for (const group of groups) if (group.communityId !== selectedId && visibleConversation(group.communityId)) pendingPreviews.add(group.communityId); startPreviews(); };
+    const refreshVisiblePreviews = (): void => { if (!active()) return; for (const group of groups) if (group.communityId !== selectedId && visibleConversation(group.communityId)) pendingPreviews.add(group.communityId); for (const thread of this.directThreads) if (thread.threadId !== selectedId && visibleConversation(thread.threadId)) pendingPreviews.add(thread.threadId); startPreviews(); };
     conversations.addEventListener('scroll', refreshVisiblePreviews, { passive: true });
     const refreshInbox = async (): Promise<void> => {
+      void refreshDirect();
       if (refreshing || !active() || document.visibilityState === 'hidden') return; refreshing = true;
       const updateBefore = selectedUpdate, communityEpoch = this.communityEpoch, communityRead = ++this.communityReadSequence;
       try {
@@ -1812,7 +2032,7 @@ class WorldApplication {
       } catch { /* Existing conversations and drafts remain usable while metadata is offline. */ }
       finally { refreshing = false; }
     };
-    startPreviews(); inboxTimer = setInterval(() => { void refreshInbox(); }, 6000); document.addEventListener('visibilitychange', returned);
+    startPreviews(); void refreshDirect(); inboxTimer = setInterval(() => { void refreshInbox(); }, 6000); document.addEventListener('visibilitychange', returned);
   }
 
   private async loadPersonal(only?: HomeSection): Promise<void> {
@@ -2147,6 +2367,7 @@ class WorldApplication {
     const sequence = this.screenSequence, accountId = this.deskAccount, accountGeneration = this.accountGeneration;
     const current = (): boolean => !this.destroyed && this.screenSequence === sequence && this.deskAccount === accountId && this.accountGeneration === accountGeneration;
     const stage = mountAppStage(this.main, { api: this.api, app, accountId, intent: launchIntent, isCurrent: current, minimalChrome: true, ...(this.options.nativeVoice?{nativeVoice:this.options.nativeVoice}:{}),
+      ...(this.options.readNativeVoice ? { readNativeVoice: this.options.readNativeVoice } : {}),
       ...this.appRuntime(app),
       onOpenCurrentEntry: async entry => {
         if (!current()) return;
@@ -2363,6 +2584,53 @@ class WorldApplication {
     } catch (reason) { report(String((reason as {code?: string})?.code ?? '')); }
   }
 
+  private mountFieldCovers(field: UnifiedFieldScreen | null): void {
+    if (this.fieldCoverTimer) clearInterval(this.fieldCoverTimer); this.fieldCoverTimer = null;
+    this.fieldCoverBinding?.dispose(); this.fieldCoverBinding = null;
+    this.fieldCoverPresenter?.dispose(); this.fieldCoverPresenter = null;
+    if (!field || this.destroyed || !this.deskAccount || document.visibilityState === 'hidden') return;
+    const accountId = this.deskAccount, accountCurrent = this.accountTask();
+    const isCurrent = (): boolean => accountCurrent() && this.unifiedField === field;
+    const presenter = createAppCoverPresenter({ accountId, isCurrent,
+      readApp: (appId, width) => createCoverApi({ api: this.api, kind: 'app', targetId: appId, accountId, isCurrent }).call('read', { width }) });
+    this.fieldCoverPresenter = presenter;
+    this.fieldCoverBinding = mountAppCoverField({ root: field.element, presenter, isCurrent });
+    this.fieldCoverTimer = setInterval(() => {
+      if (isCurrent() && document.visibilityState !== 'hidden' && presenter.stats().running === 0 && presenter.stats().queued === 0) presenter.refreshVisible();
+    }, 30_000);
+  }
+
+  private openCoverEditor(kind: CoverKind, targetId: string, label: string, onProfileChanged?: (profile: WorldProfile) => void,
+    targetCurrent: () => boolean = () => true): void {
+    const accountId = this.deskAccount, accountCurrent = this.accountTask(), sequence = this.screenSequence;
+    if (!accountId || !accountCurrent() || !targetCurrent()) return;
+    if (this.coverDialog?.element.open && this.coverHandle) {
+      this.coverHandle.requestClose(() => { if (accountCurrent() && this.screenSequence === sequence) this.openCoverEditor(kind, targetId, label, onProfileChanged, targetCurrent); }); return;
+    }
+    let handle: ReturnType<typeof mountCoverEditor> | null = null;
+    const dialog = this.dialog(kind === 'app' ? 'Обложка' : 'Аватар', () => {
+      handle?.dispose();
+      if (this.coverDialog === dialog) { this.coverDialog = null; this.coverHandle = null; this.coverTargetCurrent = null; }
+    });
+    const isCurrent = (): boolean => accountCurrent() && this.screenSequence === sequence && dialog.element.open && targetCurrent();
+    this.coverDialog = dialog; this.coverTargetCurrent = targetCurrent;
+    handle = mountCoverEditor({ dialog, api: this.api, kind, targetId, accountId, targetLabel: label, isCurrent,
+      onCommitted: () => {
+        if (!isCurrent()) return;
+        if (kind === 'app') { this.fieldCoverPresenter?.invalidate(targetId); return; }
+        // The confirmed profile projection belongs to this account even if its
+        // photo dialog closes while the optional current read is in flight.
+        void this.api.request<{ profile: WorldProfile }>('world.profile.get', {}).then(response => {
+          if (!accountCurrent() || response.profile.profileId !== accountId || this.profile?.revision && this.profile.revision > response.profile.revision) return;
+          this.profile = response.profile; onProfileChanged?.(response.profile);
+          this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined); this.renderNavigation();
+          const field = this.unifiedField;
+          if (field) void field.refresh({ preserveView: true }).catch(reason => { if (accountCurrent() && this.unifiedField === field) this.toast(errorText(reason), true); });
+        }).catch(reason => { if (accountCurrent()) this.toast('Аватар сохранён. Обновите профиль, чтобы увидеть актуальную картинку.', true); });
+      },
+    }); this.coverHandle = handle;
+  }
+
   private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void, returnTarget = this.appDialogReturnTarget(app.appId), openPlacement?: () => void, quickAccess = false): void {
     const accountId = this.deskAccount, sequence = this.screenSequence, accountCurrent = this.accountTask();
     if (this.destroyed || !accountId) return;
@@ -2389,9 +2657,22 @@ class WorldApplication {
     dialog.element.classList.add('sw-app-settings-dialog');
     if (quickAccess) dialog.element.classList.add('of-app-quick-access');
     const isCurrent = (): boolean => accountCurrent() && this.screenSequence === sequence && dialog.element.open;
+    const cover = button('Обложка', 'image', 'sw-button-quiet sw-button-wide', () => {
+      if (!isCurrent()) return;
+      handle?.requestClose(cover, () => {
+        if (!accountCurrent() || this.screenSequence !== sequence) return;
+        const known = this.apps.find(value => value.appId === app.appId);
+        const source = known ? JSON.stringify([known.deviceId, known.entry]) : null;
+        this.openCoverEditor('app', app.appId, app.name, undefined, () => {
+          const latest = this.apps.find(value => value.appId === app.appId);
+          return source === null || !!latest && JSON.stringify([latest.deviceId, latest.entry]) === source;
+        });
+      });
+    }); cover.hidden = true;
     handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent, compactAccess: quickAccess,
       onChanged: snapshot => {
         if (!isCurrent()) return;
+        cover.hidden = !snapshot.actions.canEdit;
         const before = JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel, app.entry]);
         const { entry: _previousEntry, ...metadata } = app;
         const entry = preferredInspectionEntry(snapshot);
@@ -2424,6 +2705,7 @@ class WorldApplication {
       },
     });
     this.appSettingsRouteClose = resume => handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : undefined, resume);
+    dialog.body.append(cover);
     if (openPlacement) dialog.body.append(button('Расположение на поле', 'cells', 'sw-button-quiet sw-button-wide', () => {
       if (isCurrent()) handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : undefined, openPlacement);
     }));
@@ -2543,7 +2825,18 @@ class WorldApplication {
     let pendingAvatar: { avatarUrl: string | null; thumbnailUrl: string | null } | undefined;
     const photoActions = el('div', 'sw-row'); const choose = button('Фото', 'camera', 'sw-button-small', () => upload.click());
     const removePhoto = button('Убрать', 'close', 'sw-button-small sw-button-quiet', () => { pendingAvatar = { avatarUrl: null, thumbnailUrl: null }; delete preview.dataset.profileId; preview.replaceChildren(el('span', '', name.value.slice(0, 1).toUpperCase())); }); removePhoto.hidden = !profile.avatarRevision;
-    photoActions.append(choose, removePhoto, upload); identityControls.append(photoActions);
+    photoActions.append(choose, removePhoto, upload);
+    if (profile.avatarWriteVersion === 1) photoActions.append(button('Кадр и история', 'image', 'sw-button-small sw-button-quiet', () => {
+      if (!current() || !dialog.element.open) return;
+      if (pendingAvatar || choose.disabled || save.disabled) { error.textContent = 'Сначала сохраните выбранное фото или завершите текущее действие.'; return; }
+      this.openCoverEditor('profile', profile.profileId, name.value, next => {
+        if (!current() || !dialog.element.open) return;
+        preview.dataset.profileId = next.profileId; preview.dataset.avatarLabel = name.value.slice(0, 1).toUpperCase();
+        if (next.avatarRevision) preview.dataset.avatarRevision = String(next.avatarRevision); else delete preview.dataset.avatarRevision;
+        preview.replaceChildren(el('span', '', name.value.slice(0, 1).toUpperCase())); removePhoto.hidden = !next.avatarRevision;
+      }, () => this.profile?.profileId === profile.profileId);
+    }));
+    identityControls.append(photoActions);
     const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button('Сохранить', 'check', 'sw-button-primary'); save.type = 'submit';
     upload.addEventListener('change', () => { const file = upload.files?.[0]; upload.value = ''; if (!file) return; choose.disabled = true; save.disabled = true; error.textContent = ''; void prepareAvatar(file).then(value => { pendingAvatar = value; delete preview.dataset.profileId; const image = el('img'); image.src = value.avatarUrl; image.alt = 'Предпросмотр фотографии'; preview.replaceChildren(image); removePhoto.hidden = false; }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { choose.disabled = false; save.disabled = false; }); });
     form.classList.add('sw-profile-form');
@@ -2717,7 +3010,7 @@ class WorldApplication {
   }
 
   private shareCommunity(group: WorldCommunity): void {
-    const url = new URL(location.href); url.hash = `community/${group.communityId}/about`;
+    const url = new URL('/', new URL(location.href).origin); url.hash = `community/${group.communityId}/about`;
     void navigator.clipboard.writeText(url.href).then(() => this.toast('Ссылка на сообщество скопирована')).catch(() => {
       const dialog = this.dialog('Ссылка на сообщество'); const input = textInput(url.href); input.readOnly = true; dialog.body.append(labeledField('Ссылка', input), el('p', 'sw-muted', group.joinPolicy === 'invite' ? 'Увидят только участники и приглашённые.' : 'Откроется страница сообщества.')); input.select();
     });

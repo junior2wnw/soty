@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -67,20 +68,20 @@ test('frozen HumanIdentity v1 vector pins every table/index/conditional guard in
   } finally { literal.close(); actual.close(); }
 });
 
-test('only an installed human store raises the profile to seven-store v5; absence/empty preserves exact v3/v4', async t => {
-  const root = await directory(t); await mkdir(join(root, 'human-identity')); assert.deepEqual(await readStorageFormat(root), v3);
-  await seedUniversal(root, 'feedback'); assert.deepEqual(await readStorageFormat(root), { ...v4, appRegistration: 'empty' });
+test('current v7 explicitly reports human-store presence or empty without changing historical v3/v4/v5 vectors', async t => {
+  const root = await directory(t); await mkdir(join(root, 'human-identity')); assert.deepEqual(await readStorageFormat(root), currentObservation(v3));
+  await seedUniversal(root, 'feedback'); assert.deepEqual(await readStorageFormat(root), currentObservation({ ...v4, appRegistration: 'empty' }));
   await seedUniversal(root, 'registration'); const path = await seed(root), before = sha(await readFile(path));
-  assert.deepEqual(await readStorageFormat(root), v5); assert.equal(sha(await readFile(path)), before);
-  const only = await directory(t); await seed(only); assert.deepEqual(await readStorageFormat(only), { ...v5, appRegistration: 'empty', feedback: 'empty' });
+  assert.deepEqual(await readStorageFormat(root), currentObservation(v5)); assert.equal(sha(await readFile(path)), before);
+  const only = await directory(t); await seed(only); assert.deepEqual(await readStorageFormat(only), currentObservation({ ...v5, appRegistration: 'empty', feedback: 'empty' }));
 });
 
-test('old v3/v4 readers refuse v5 evidence, while current v5 reads all historical manifests without downgrading receipts', () => {
+test('old v3/v4 readers refuse v5 evidence, while the current image reads historical manifests without downgrading receipts', () => {
   for (const label of [reader3, reader4]) assert.throws(() => assertStorageCompatible(image(label), v5), /storage_reader_incompatible/u);
   for (const value of [v3, v4, v5]) assert.deepEqual(assertStorageCompatible(image(), value), value);
   assertStorageCompatible(image(reader4), v4); assertStorageCompatible(image(reader3), v3);
-  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms']);
-  assert.equal(JSON.parse(currentStorageReaders).version, 6);
+  assert.deepEqual(Object.keys(storageReaders(image())).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'rooms', 'world']);
+  assert.equal(JSON.parse(currentStorageReaders).version, 7);
   assert.deepEqual(storageReaders(image()).connect, [3, 4]);
   for (const changed of [undefined, [], [4], ['1'], [1, 1]]) {
     const manifest = JSON.parse(currentStorageReaders); if (changed === undefined) delete manifest.readers.humanIdentity; else manifest.readers.humanIdentity = changed;
@@ -141,14 +142,14 @@ test('orphan human journals, unexpected files and a directory junction are retai
   await assert.rejects(readStorageFormat(link), /storage_format_unreadable/u); await assert.rejects(snapshotStorage(link, join(targetParent, 'link-copy')), /storage_format_unreadable/u);
 });
 
-test('actual guard emits a v5 START receipt and refuses a v4 image before START even if its container copied a v5 label', async t => {
+test('actual guard emits current v7 START evidence and refuses a v4 human-incompatible image before START', async t => {
   const root = await directory(t); await seed(root);
   const runtime = { Id: '2'.repeat(64), Image: image().Id, State: { Running: false }, Config: { Env: ['DATA_DIR=/data'], Labels: { [storageReaderLabel]: currentStorageReaders } },
     Mounts: [{ Type: 'volume', Name: 'synthetic-data', Source: '/docker/volumes/synthetic-data', Destination: '/data', RW: true }] };
   const context = label => ({ engine: { async inspect() { return structuredClone(runtime); }, async image() { return image(label); },
     async request(_method, url) { return url.startsWith('/volumes/') ? { Name: 'synthetic-data', Driver: 'local', Scope: 'local', Mountpoint: '/docker/volumes/synthetic-data', Options: {} } : []; } },
     async probe() { return readStorageFormat(root); } });
-  const receipt = await guardStorageStart(context(currentStorageReaders), runtime); assert.equal(receipt.schema, 'soty.storage-start.v5'); assert.equal(receipt.humanIdentity, 1);
+  const receipt = await guardStorageStart(context(currentStorageReaders), runtime); assert.equal(receipt.schema, 'soty.storage-start.v7'); assert.equal(receipt.world, 'empty'); assert.equal(receipt.humanIdentity, 1);
   requireStorageStartReceipt(receipt, runtime.Id); await assert.rejects(guardStorageStart(context(reader4), runtime), /storage_reader_incompatible/u);
   const docker = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8'); const label = /LABEL io\.soty\.storage\.readers="(.+)"/u.exec(docker)?.[1]?.replace(/\\"/gu, '"');
   assert.equal(label, currentStorageReaders); assert.match(docker, /ARG LEGACY_UNIVERSAL_MODE=0/u); assert.match(docker, /server\/universal-mode\.js/u);

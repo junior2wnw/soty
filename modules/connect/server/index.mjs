@@ -373,6 +373,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           live(); const peerId = textId(peerAccountId);
           return peerSet ? peerSet.has(peerId) : Boolean(currentRelationship(accountId, peerId) && !blocked(accountId, peerId));
         },
+        relationshipId(peerAccountId) {
+          live(); const peerId = textId(peerAccountId), relation = currentRelationship(accountId, peerId);
+          return relation && !blocked(accountId, peerId) ? relation.id : null;
+        },
         accountIds() {
           live();
           if (!peers) {

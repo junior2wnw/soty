@@ -32,6 +32,9 @@ importers:
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
+      sharp:
+        specifier: 0.34.5
+        version: 0.34.5
       tldts:
         specifier: 7.4.16
         version: 7.4.16
@@ -60,9 +63,6 @@ importers:
       esbuild:
         specifier: 0.27.7
         version: 0.27.7
-      sharp:
-        specifier: 0.34.5
-        version: 0.34.5
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

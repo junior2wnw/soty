@@ -6,9 +6,9 @@ import { REPO_ROOT, prepareArtwork, importArtwork, bindArtwork, aliasFieldArtwor
 const HELP = `Soty application artwork
   prepare --all [--refresh]
   prepare --key notes [--app-id app-<32 hex>] [--prompt-file prompt.txt] [--reference-image output/app-art-history/.../source....png]
-  prepare --definition app-art.json
+  prepare --definition app-art.json [--origin generated|upload]
   prepare --catalog app-catalog.json
-  import --key notes --source C:\\path\\image.png [--job scripts/app-art/jobs/notes/job-....json] --visual-approved [--reviewer codex] [--generation-id id]
+  import --key notes --source C:\\path\\image.png [--job scripts/app-art/jobs/notes/job-....json] --visual-approved [--reviewer codex] [--generation-id id] [--public-approved]
   bind --app-id app-<32 hex> --key cover-key [--profile field]
   profile --key field-hive --cover-key hive
   icon --key field-hive --icon cells
@@ -20,13 +20,14 @@ const HELP = `Soty application artwork
 
 Generation runs through Codex built-in image_gen using prepared job.prompt.
 This local CLI prepares, versions, validates, imports and binds images; it does not call an image API.
+Upload jobs contain no generation prompt/provider and need explicit --public-approved at import.
 `;
 const FLAG_SETS = {
-  prepare: ['root', 'all', 'refresh', 'key', 'definition', 'catalog', 'prompt-file', 'app-id', 'reference-image'],
-  import: ['root', 'key', 'source', 'job', 'visual-approved', 'reviewer', 'generation-id'],
+  prepare: ['root', 'all', 'refresh', 'key', 'definition', 'catalog', 'prompt-file', 'app-id', 'reference-image', 'origin'],
+  import: ['root', 'key', 'source', 'job', 'visual-approved', 'reviewer', 'generation-id', 'public-approved'],
   bind: ['root', 'app-id', 'key', 'profile'], profile: ['root','cover-key','key'], icon: ['root','key','icon'], rollback: ['root', 'key', 'version'], validate: ['root', 'public'], list: ['root'], queue: ['root', 'all'], 'migrate-history': ['root'],
 };
-const BOOLEANS = new Set(['all', 'refresh', 'visual-approved', 'public']);
+const BOOLEANS = new Set(['all', 'refresh', 'visual-approved', 'public', 'public-approved']);
 function flags(args, command) {
   const result = {};
   for (let i = 0; i < args.length; i++) {
@@ -51,9 +52,9 @@ try {
       if (options.definition && options.catalog) throw new Error('Choose one definition or catalog input');
       const definitions = options.definition ? [await readJson(resolve(root, options.definition))] : options.catalog ? definitionsFromCatalog(await readJson(resolve(root, options.catalog))) : [];
       const prompt = options['prompt-file'] ? await readFile(resolve(root, options['prompt-file']), 'utf8') : undefined;
-      result = await prepareArtwork(root, { definitions, keys: options.key ? [options.key] : [], all: !!options.all, refresh: !!options.refresh, ...(prompt !== undefined ? { prompt } : {}), ...(options['app-id'] ? { appId: options['app-id'] } : {}), ...(options['reference-image'] ? { referenceImage: options['reference-image'] } : {}) });
+      result = await prepareArtwork(root, { definitions, keys: options.key ? [options.key] : [], all: !!options.all, refresh: !!options.refresh, ...(prompt !== undefined ? { prompt } : {}), ...(options['app-id'] ? { appId: options['app-id'] } : {}), ...(options['reference-image'] ? { referenceImage: options['reference-image'] } : {}), ...(options.origin !== undefined ? { sourceOrigin: options.origin } : {}) });
     } else if (command === 'import') {
-      result = await importArtwork(root, { key: options.key, source: options.source, visualApproved: !!options['visual-approved'], reviewer: options.reviewer || 'local-review', ...(options.job ? { job: options.job } : {}), ...(options['generation-id'] ? { generationId: options['generation-id'] } : {}) });
+      result = await importArtwork(root, { key: options.key, source: options.source, job: options.job, visualApproved: !!options['visual-approved'], reviewer: options.reviewer || 'local-review', ...(options['generation-id'] ? { generationId: options['generation-id'] } : {}), publicDistributionApproved: !!options['public-approved'] });
     } else if (command === 'bind') result = await bindArtwork(root, { key: options.key, appId: options['app-id'], ...(options.profile ? {profile:options.profile} : {}) });
     else if (command === 'profile') result = await aliasFieldArtwork(root,{key:options.key,coverKey:options['cover-key']});
     else if (command === 'icon') result = await configureFieldIcon(root,{key:options.key,icon:options.icon});

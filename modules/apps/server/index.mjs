@@ -32,8 +32,9 @@ import { selectedNativeHandoff, HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURC
 import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource, isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 import { hash as scopedHash, capture as scopedCapture, SCOPED_EMBED_LIMITS } from '../scoped-embed/profile.mjs';
 import { parseSourceJson } from '../../source-app/shared/strict-json.mjs';
-import { hasAudienceSchema, readAppAudience } from './audience.mjs';
+import { COVER_APP_FORMATS, hasAudienceSchema, readAppAudience } from './audience.mjs';
 import { synchronous } from './engagement-transaction.mjs';
+import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 const cookieName = 'soty_app_session';
@@ -45,7 +46,13 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
+  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  assertApps(typeof allowCoverMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
+  assertApps(coverDecoder === undefined || coverDecoder && typeof coverDecoder.decode === 'function'
+    && typeof withCurrentContacts === 'function' && typeof withWorldAuthorityFence === 'function'
+    && !['AsyncFunction','AsyncGeneratorFunction'].includes(withWorldAuthorityFence.constructor?.name), 'apps_cover_configuration_invalid', 503);
+  assertApps(coverLimits === undefined || coverDecoder !== undefined, 'apps_cover_configuration_invalid', 503);
   assertApps(withCurrentContacts === undefined || typeof withCurrentContacts === 'function'
     && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(withCurrentContacts.constructor?.name), 'apps_contact_authority_invalid', 503);
   let contactsFrame = null;
@@ -110,8 +117,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
-    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration, allowAudienceMigration });
+    if (['v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9', 'v10', 'v11', 'v12', 'v13', 'v14'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
+    // A configured decoder initializes covers for a genuinely empty store.
+    // Existing formats still require the explicit offline migration permission.
+    migrateAppsSchema(db, { legacyTemplate: template, now, allowScopedEmbedMigration, allowSelectedResourceMigration, allowAudienceMigration,
+      allowCoverMigration: allowCoverMigration || schema === 'empty' && coverDecoder !== undefined });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, withContactAuthority, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, namedCanonical, retainedNamedAppZones: retainedZones, domainLimits: limits,
       shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
@@ -125,7 +135,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const voiceSourceActors=new WeakMap();
   const backendSourceContexts=new Map();
   const backendSourceAcquisitions=new Set();
-  let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway;
+  let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway, covers;
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
   try {
@@ -188,9 +198,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         return readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds);
       },
       authorLabel: discussionAuthorLabel, limits: discussionLimits });
+    if (coverDecoder !== undefined && COVER_APP_FORMATS[inspectAppsSchema(db)]) covers = createAppCoverAdapter({ db, assertActor, withAuthorityFence, resolveEntry,
+      requireScopedTarget: target => scopedAdmissions.require(target), decoder: coverDecoder, clock: now, limits: coverLimits });
   } catch (error) { db.close(); throw error; }
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
   let closed = false;
+  const coverExtension = covers ? Object.freeze({ operations: new Set(appCoverOperations), async executeAsync({ op, args = {}, actor }) {
+    assertApps(args && typeof args === 'object' && !Array.isArray(args) && Object.hasOwn(args, 'expectedAccountId'), 'apps_cover_account_required');
+    return covers.execute({ op, actor, args: authenticatedArgs(actor,args) });
+  } }) : null;
   const row = id => db.prepare('SELECT * FROM local_apps WHERE id=?').get(id);
   const binding = key => db.prepare('SELECT * FROM app_devices WHERE connector_key=?').get(key);
   const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
@@ -1661,7 +1677,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+  return { operations, execute, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,
@@ -1679,7 +1695,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
     },
     configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; scopedGateway?.close();closed = true; discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); bootCandidates.clear(); wss.close(); db.close(); },
+    close() { if (closed) return; scopedGateway?.close();closed = true; covers?.close(); discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); bootCandidates.clear(); wss.close(); db.close(); },
   };
 }
 function discussionAuthorLabel(actor) {

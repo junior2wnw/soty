@@ -1,3 +1,4 @@
+import { currentObservation } from './current-storage-observation.mjs';
 import test from 'node:test';
 import {mkdtemp,writeFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -30,6 +31,6 @@ export function fixture(fault={}) {
  const helper=async verb=>{events.push('helper:'+verb);fail('helper-'+verb,'before');if(verb==='enter')maintenance=true;if(verb==='leave')maintenance=false;if(verb==='rollback'){if(fault.rollbackFailure)throw new SafeError('rollback_failed');migrated=false;}
  const raced=verb==='status'&&((++statusCalls===2&&fault.race)||fault.active);fail('helper-'+verb,'after');return {ok:true,count:raced?1:0,activeJobs:raced?[{id:'raced-job',status:'queued'}]:[],maintenance,schema:'synthetic'};};
  const ready=async kind=>{events.push('ready:'+kind);if(kind==='candidate'){migrated=true;fail('readiness','before');return {ok:true,storageReady:true,maintenance:true,schema:'soty.connector-storage-ready.v1',modelProxies,applicationPolicySha256:run.args.applicationPolicy?.sha256||null};}return {ok:true,modelProxies};};
- const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
+ const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>currentObservation({ok:true,schema:'soty.storage-format.v3',notes:'empty',capabilities:'empty',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
  return {run,engine,map,events,records,get migrated(){return migrated;}};
 }

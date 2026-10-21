@@ -11,12 +11,12 @@ import { createWorldService } from '../server/index.mjs';
 const actor = { accountId: 'legacy_field_account', deviceId: 'legacy_field_device', label: 'Existing World actor' };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function snapshot(db) {
-  const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all();
+  const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' OR (name='profile_avatars' AND type='view') ORDER BY name").all();
   return Object.fromEntries(tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()
     .map(row => JSON.stringify(Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Uint8Array ? Buffer.from(value).toString('hex') : value])))).sort()]));
 }
 
-test('frozen v3 schema prepares baseline; current boot preserves records and field layout; the old schema reader rejects World5 without writes', t => {
+test('frozen v3 schema prepares baseline; current boot preserves records and field layout; the old schema reader rejects World6 without writes', t => {
   const directory = mkdtempSync(join(tmpdir(), 'soty-field-old-reader-')), databasePath = join(directory, 'world.sqlite'); let instance;
   const options = { databasePath, projectId: 'field-legacy-acceptance', clock: () => 1_800_000_000_000 };
   t.after(() => { instance?.close(); assert.equal(dirname(resolve(directory)), resolve(tmpdir())); assert.match(basename(directory), /^soty-field-old-reader-/u); rmSync(directory, { recursive: true, force: true }); });
@@ -27,10 +27,12 @@ test('frozen v3 schema prepares baseline; current boot preserves records and fie
   const beforeDb = new DatabaseSync(databasePath), before = snapshot(beforeDb);
   assert.equal(beforeDb.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(beforeDb.prepare("SELECT value FROM world_meta WHERE key='field_schema_version'").get(), undefined); beforeDb.close();
-  instance = createWorldService({ ...options, allowAudienceMigration: true });
+  instance = createWorldService({ ...options, allowAudienceMigration: true, allowWorld6Migration: true });
   const afterDb = new DatabaseSync(databasePath), after = snapshot(afterDb);
-  assert.equal(afterDb.prepare('PRAGMA user_version').get().user_version, 5);
-  assert.deepEqual(Object.keys(after).filter(name => !Object.hasOwn(before, name)).sort(), ['world_field_documents', 'world_field_receipts']);
+  assert.equal(afterDb.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.deepEqual(Object.keys(after).filter(name => !Object.hasOwn(before, name)).sort(), ['world_field_documents', 'world_field_receipts', 'world_direct_threads', 'world_direct_messages', 'world_direct_read_state',
+    'profile_avatar_usage', 'profile_avatar_owner_usage', 'profile_avatar_assets', 'profile_avatar_renditions',
+    'profile_avatar_versions', 'profile_avatar_heads', 'profile_avatar_drafts', 'profile_avatar_receipts'].sort());
   assert.equal(after.world_field_documents.length, 0); assert.equal(after.world_field_receipts.length, 0);
   assert.deepEqual(after.world_meta.filter(row => !['field_schema_version', 'schema_version'].includes(JSON.parse(row).key)), before.world_meta.filter(row => JSON.parse(row).key !== 'schema_version'));
   assert.deepEqual(after.world_meta.filter(row => JSON.parse(row).key === 'field_schema_version').map(row => JSON.parse(row)), [{ key: 'field_schema_version', value: '1' }]);

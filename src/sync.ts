@@ -1,4 +1,7 @@
 import * as Y from "yjs";
+import { validateCallIceReply, closedIceRecord, type CallIceReply } from './transport/human-call-ice.mjs';
+import { createHumanCallCameraOwner, createHumanCallVideoTransport, type CameraView, type CameraAdmission,
+  type CameraScope, type HumanCallCameraOptions } from './transport/human-call-video.mjs';
 import { createFileReceiveStore, type ReceiveSpool } from './transport/file-receive-store.mjs';
 import { createFileOutbox, estimatedChunkWireBytes, fileChunkBytes, FileTransferError, maxControlQueueBytes,
   maxControlQueueCount, maxFileBytes, maxSocketBufferedBytes, validChunk, wireBytes, ciphertextMatchesBytes } from "./transport/file-transfer.mjs";
@@ -456,19 +459,21 @@ export function createP2pPeer(id: string, events: {
 
 export interface HumanCallConnectionState {
   connection: 'idle' | 'connecting' | 'admitted' | 'connected' | 'reconnecting' | 'closed' | 'error';
-  peers: number; playbackBlocked: boolean; turnConfigured: false;
+  peers: number; playbackBlocked: boolean; turnConfigured: boolean; iceWaiting: boolean;
 }
 interface HumanCallScope { accountId: string; deviceId: string; roomId: string; mode: 'one-to-one' | 'group'; generation: number;
   expectedCallId?: string; expectedEpoch?: number }
-interface HumanCallAdmission { schema: string; purpose: string; callId: string; epoch: number; accountId: string; deviceId: string; grantRef: string; expiresAt: number }
+interface HumanCallAdmission { schema: string; purpose: string; callId: string; epoch: number; accountId: string; deviceId: string; grantRef: string; expiresAt: number;
+  mediaProtocol?: 2; mediaInstance?: string; cameraConfigured?: boolean; iceConfigured?: boolean }
 interface HumanCallInvitation { callId: string; epoch: number; roomId: string; label: string }
 interface HumanCallClient { extension<T>(operation: string, args: Record<string, unknown>, context: { expectedAccountId: string }): Promise<T> }
 type HumanPeer = P2pPeer & { microphone: boolean; makingOffer: boolean; ignoreOffer: boolean; isSettingRemoteAnswerPending: boolean };
 
 /** Concrete Root signed-call -> existing RTC -> existing local lifecycle ports.
  * Test hooks replace native IO only; production defaults perform no capture before authorize+click. */
-export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquire, playRemote, onInterrupted = () => {} }: {
-  client: HumanCallClient; rtcFactory?: () => RTCPeerConnection; socketFactory?: (url: string) => WebSocket;
+export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquire, playRemote, onInterrupted = () => {}, mediaProtocol, camera }: {
+  client: HumanCallClient; rtcFactory?: (config?: RTCConfiguration) => RTCPeerConnection; socketFactory?: (url: string) => WebSocket;
+  mediaProtocol?: 2; camera?: HumanCallCameraOptions;
   acquire?: () => Promise<MediaStream>; playRemote?: (track: MediaStreamTrack) => { play(): Promise<void>; close(): void };
   onInterrupted?: (reason: 'rtc' | 'signaling') => void;
 }) {
@@ -477,8 +482,26 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
   // Keep failed teardown resources reachable across later calls, up to the
   // existing lifecycle's 16 retained groups. Only observed clean close releases.
   const ownedSessions = new Set<ReturnType<typeof makeSession>>();
-  let active: ReturnType<typeof makeSession> | null = null;
-  let state: HumanCallConnectionState = { connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false };
+  let active: ReturnType<typeof makeSession> | null = null, joining = false, joinAttempt = 0;
+  const cameraObservers = new Set<(value: CameraView) => void>();
+  const cameraOff = (): CameraView => ({ state: 'off', configured: false, ready: false, code: null, cleanupPending: false, cleanupFailed: false, ownedTracks: 0 });
+  let cameraState: CameraView = cameraOff();
+  const emitCamera = (value: CameraView) => { cameraState = value;
+    for (const observer of [...cameraObservers]) { try { void Promise.resolve(observer({ ...value })).catch(() => {}); } catch {} }
+  };
+  const mediaDto = (value: unknown, keys: readonly string[]) => {
+    if (!closedIceRecord(value, keys, ['ok'])) fail('human_call_media_invalid');
+    const record = value as Record<string, unknown>; if ('ok' in record && record.ok !== true) fail('human_call_media_invalid');
+    return Object.fromEntries(keys.map(key => [key, record[key]]));
+  };
+  const iceScope = (reply: HumanCallAdmission) => ({ accountId: reply.accountId, deviceId: reply.deviceId,
+    callId: reply.callId, epoch: reply.epoch, joinRef: reply.grantRef });
+  async function fetchIce(reply: HumanCallAdmission, expectedRevision: number) {
+    const raw = await client.extension<unknown>('call.ice.get', { callId: reply.callId, epoch: reply.epoch,
+      expectedJoinRef: reply.grantRef, requestId: 'ice_' + expectedRevision, expectedRevision }, { expectedAccountId: reply.accountId });
+    return validateCallIceReply(mediaDto(raw, ['schema', 'accountId', 'deviceId', 'callId', 'epoch', 'joinRef', 'revision', 'expiresAt', 'iceServers']), iceScope(reply));
+  }
+  let state: HumanCallConnectionState = { connection: 'idle', peers: 0, playbackBlocked: false, turnConfigured: false, iceWaiting: false };
   const emit = (patch: Partial<HumanCallConnectionState>) => {
     state = { ...state, ...patch }; for (const observer of [...observers]) { try { void Promise.resolve(observer({ ...state })).catch(() => {}); } catch {} }
   };
@@ -493,11 +516,14 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     const token = join ? 0 : session!.reserveMicrophone();
     const reply = await client.extension<HumanCallAdmission>(join ? 'call.join' : 'call.microphone', join
       ? { requestId: nonce(), mode: scope.mode, targetId: scope.roomId,
+        ...((mediaProtocol === 2 || camera?.enabled === true) ? { mediaProtocol: 2 } : {}),
         ...(hasExpectedCallId ? { expectedCallId: scope.expectedCallId!, expectedEpoch: scope.expectedEpoch! } : {}) }
       : { requestId: nonce(), callId: session!.reply.callId, epoch: session!.reply.epoch }, { expectedAccountId: scope.accountId });
     if (reply.schema !== 'soty.human-call-admission.v1' || reply.purpose !== purpose || reply.accountId !== scope.accountId
       || reply.deviceId !== scope.deviceId || typeof reply.grantRef !== 'string' || !/^[a-zA-Z0-9-]{1,160}$/.test(reply.callId)
       || !Number.isSafeInteger(reply.epoch) || reply.epoch < 1) fail('human_call_admission_invalid');
+    if (reply.mediaProtocol !== undefined && (reply.mediaProtocol !== 2 || typeof reply.mediaInstance !== 'string'
+      || !/^[A-Za-z0-9_.:-]{1,160}$/u.test(reply.mediaInstance) || typeof reply.cameraConfigured !== 'boolean' || typeof reply.iceConfigured !== 'boolean')) fail('human_call_admission_invalid');
     if (signal.aborted) {
       if (!join && session?.matches(scope)) session.unpublish(token);
       if (join) void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {});
@@ -506,7 +532,7 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     if (!join && !session!.consentCurrent(token)) fail();
     const value = Object.freeze({}); admitted.set(value, { reply, scope, signal, token }); return value;
   }
-  function makeSession(reply: HumanCallAdmission, scope: HumanCallScope, signal: AbortSignal) {
+  function makeSession(reply: HumanCallAdmission, scope: HumanCallScope, signal: AbortSignal, initialIce: CallIceReply | null) {
     const locationUrl = typeof location === 'undefined' ? 'https://human-call.test/' : location.href;
     const url = new URL(`/ws/human-call/${encodeURIComponent(reply.callId)}`, locationUrl); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = socketFactory ? socketFactory(url.href) : new WebSocket(url);
@@ -519,7 +545,62 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     const joined = new Promise<any>((resolve, reject) => { resolveJoin = resolve; rejectJoin = reject; });
     void joined.catch(() => {}); // A reentrant close can reject before join returns this promise.
     let publishWait: { grantRef: string; resolve(): void; reject(reason: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined, iceTimer: ReturnType<typeof setTimeout> | undefined;
+    let callIce = initialIce, iceRefresh: Promise<boolean> | null = null, iceRetryMs = 30_000;
+    let iceTimerTicket: object | null = null;
+    const requiresCallIce = reply.mediaProtocol === 2 && reply.iceConfigured === true;
+    const waitingAudioPeers = new Map<string, boolean>();
+    let video: ReturnType<typeof createHumanCallVideoTransport> | null = null;
+    let cameraLife: ReturnType<typeof createHumanCallCameraOwner> | null = null;
+    let negotiatedPeers = 0;
+    const cameraScope: CameraScope = Object.freeze({ ...iceScope(reply), generation: scope.generation });
+    const rtcConfig = (): RTCConfiguration | undefined => callIce && callIce.expiresAt > Date.now()
+      ? { iceServers: callIce.iceServers.map(server => ({ ...server, urls: [...server.urls] })) } : undefined;
+    const callRtcFactory = () => { const config = rtcConfig();
+      // REVIEW-FIX-ICE-FACTORY: configured calls never use legacy defaults.
+      if (requiresCallIce && !config) fail('human_call_ice_waiting');
+      return rtcFactory ? rtcFactory(config) : new RTCPeerConnection(config ?? { iceServers: p2pIceServers }); };
+    const cameraReady = () => cameraLife?.setReady(live() && ready && state.connection === 'connected' && negotiatedPeers > 0
+      && (Boolean(callIce && callIce.expiresAt > Date.now()) || cameraLife?.snapshot().state === 'on'));
+    const scheduleIce = (retry = false) => {
+      clearTimeout(iceTimer); iceTimer = undefined; iceTimerTicket = null;
+      // ICE-RETRY-GUARD: one owned timer; retries respect the issuer's 30s rate window.
+      if (!live() || !callIce) return;
+      const delay = retry ? iceRetryMs : Math.max(1000, callIce.expiresAt - Date.now() - 15_000);
+      iceRetryMs = retry ? Math.min(120_000, iceRetryMs * 2) : 30_000;
+      const ticket = {}; iceTimerTicket = ticket;
+      iceTimer = setTimeout(() => {
+        if (iceTimerTicket !== ticket || !live()) return;
+        iceTimerTicket = null; iceTimer = undefined; void refreshIce();
+      }, delay);
+    };
+    async function refreshIce() {
+      if (iceRefresh) return iceRefresh;
+      if (!live() || !callIce) return false;
+      const previous = callIce;
+      const task = (async () => {
+        try {
+          const next = await fetchIce(reply, previous.revision);
+          if (!live() || callIce !== previous) return false;
+          if (next.revision <= previous.revision) {
+            emit({ turnConfigured: false, iceWaiting: true }); scheduleIce(true); return false;
+          }
+          callIce = next;
+          const config = rtcConfig()!;
+          for (const link of links.values()) { link.pc.setConfiguration(config); link.pc.restartIce(); }
+          for (const [deviceId, microphone] of [...waitingAudioPeers]) ensurePeer(deviceId, microphone);
+          video?.setIce(next); emit({ iceWaiting: false, turnConfigured: next.iceServers.some(server => server.urls.some(url => /^turns?:/u.test(url))) });
+          cameraReady(); scheduleIce(); return true;
+        } catch {
+          if (live()) {
+            // Existing established media keeps its owner. Only fresh PC admission waits.
+            if (cameraLife?.snapshot().state !== 'on') cameraLife?.setReady(false);
+            emit({ turnConfigured: false, iceWaiting: true }); scheduleIce(true);
+          } return false;
+        }
+      })();
+      iceRefresh = task; try { return await task; } finally { if (iceRefresh === task) iceRefresh = null; }
+    }
     const live = () => !closed && !signal.aborted;
     const same = (candidate: HumanCallScope) => live() && candidate.generation === scope.generation
       && candidate.accountId === scope.accountId && candidate.deviceId === scope.deviceId && candidate.roomId === scope.roomId && candidate.mode === scope.mode;
@@ -549,12 +630,12 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
     }
     const signalOut = (type: string, targetDeviceId: string, values: Record<string, unknown>) => send(type, { signal: { id: nonce(), targetDeviceId, ...values } });
     const interrupt = (reason: 'rtc' | 'signaling' = 'rtc') => {
-      emit({ connection: 'reconnecting' }); try { void Promise.resolve(onInterrupted(reason)).catch(() => {}); } catch {}
+      cameraLife?.setReady(false); emit({ connection: 'reconnecting' }); try { void Promise.resolve(onInterrupted(reason)).catch(() => {}); } catch {}
     };
     const connectionState = () => {
       if (!live()) return;
       const connected = [...links.values()].filter(link => link.pc.connectionState === 'connected').length;
-      emit({ peers: connected, connection: connected ? 'connected' : ready ? 'admitted' : 'connecting' });
+      emit({ peers: connected, connection: connected ? 'connected' : ready ? 'admitted' : 'connecting' }); cameraReady();
     };
     async function offer(link: HumanPeer) {
       if (!live() || links.get(link.id) !== link) return;
@@ -574,13 +655,19 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
         for (const [track, owner] of receivers) if (owner === previous) { if (microphone) playTrack(track); else pausePlayback(track); }
         return previous;
       }
+      // REVIEW-FIX-ICE-DEFER: retire neither current audio nor current video for a waiting peer.
+      if (requiresCallIce && !rtcConfig()) {
+        if (!waitingAudioPeers.has(deviceId) && waitingAudioPeers.size >= 3) fail('human_call_full');
+        waitingAudioPeers.set(deviceId, microphone); emit({ iceWaiting: true, turnConfigured: false }); return null;
+      }
+      waitingAudioPeers.delete(deviceId);
       if (links.size >= 3) fail('human_call_full');
       const link = createP2pPeer(deviceId, {
         candidate(candidateLink, candidate) { if (live() && links.get(deviceId) === candidateLink) signalOut('p2p.candidate', deviceId, candidate.toJSON() as unknown as Record<string, unknown>); },
         channel(candidateLink, channel) { if (live() && links.get(deviceId) === candidateLink) candidateLink.channel = channel; else channel.close(); },
         state(candidateLink) { if (live() && links.get(deviceId) === candidateLink) { if (['failed', 'disconnected'].includes(candidateLink.pc.connectionState)) interrupt(); else connectionState(); } },
         iceFailed(candidateLink) { if (live() && links.get(deviceId) === candidateLink) interrupt(); },
-      }, rtcFactory) as HumanPeer;
+      }, callRtcFactory) as HumanPeer;
       Object.assign(link, { microphone, makingOffer: false, ignoreOffer: false, isSettingRemoteAnswerPending: false }); links.set(deviceId, link);
       link.pc.onnegotiationneeded = () => { void offer(link); };
       link.pc.ontrack = event => {
@@ -674,25 +761,69 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       micSignal.addEventListener('abort', aborted, { once: true }); return stage;
     }
     function close() {
-      if (closePromise) return closePromise; closed = true; clearTimeout(joinTimer); clearInterval(heartbeat);
+      if (closePromise) return closePromise; closed = true; clearTimeout(joinTimer); clearInterval(heartbeat); clearTimeout(iceTimer); iceTimerTicket = null;
+      cameraLife?.end();
+      try { video?.close(); } catch { cleanupUnknown = true; } video = null;
       closePromise = new Promise<void>((resolve, reject) => { closeResolve = resolve; closeReject = reject; });
       closeTimer = setTimeout(() => closeReject?.(new Error('human_call_close_unknown')), 5000);
       try { publication?.dispose(); } catch { cleanupUnknown = true; } publication = null;
       if (publishWait) { clearTimeout(publishWait.timer); publishWait.reject(new Error('human_call_closed')); publishWait = null; }
       for (const id of [...links.keys()]) { try { removePeer(id); } catch { cleanupUnknown = true; } }
       for (const track of [...receivers.keys()]) stopPlayback(track);
-      if (active === session) active = null; emit({ connection: 'closed', peers: 0 });
+      waitingAudioPeers.clear();
+      if (active === session) active = null; emit({ connection: 'closed', peers: 0, turnConfigured: false, iceWaiting: false });
       rejectJoin(new Error('human_call_closed'));
       try { if (ws.readyState === 3) observedClose(); else ws.close(); } catch { clearTimeout(closeTimer); closeReject?.(new Error('human_call_close_unknown')); }
       void client.extension('call.leave', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {});
       return closePromise;
     }
     function observedClose() { clearTimeout(closeTimer); if (cleanupUnknown) closeReject?.(new Error('human_call_cleanup_unknown')); else { ownedSessions.delete(session); closeResolve?.(); } }
-    const session = { reply, matches: same, close, unpublish, reserveMicrophone, consentCurrent, preparePublication, joined,
+    const session = { reply, matches: same, close, unpublish, reserveMicrophone, consentCurrent, preparePublication, joined, refreshIce,
+      enableCamera: () => { if (!cameraLife || !video) return Promise.resolve({ ok: false, code: 'camera_unconfigured' });
+        try { video.retry(); cameraReady(); return cameraLife.enable(); } catch { return Promise.resolve({ ok: false, code: 'camera_cleanup_pending' }); } },
+      disableCamera: () => cameraLife?.disable() ?? cameraOff(),
       async resumeListening() {
         let blocked = false; for (const [track, output] of playback) if (live() && receivers.get(track)?.microphone) { try { await output.play(); } catch { blocked = true; } }
         if (live()) emit({ playbackBlocked: blocked });
       } };
+    if (camera && reply.mediaProtocol === 2 && callIce) {
+      video = createHumanCallVideoTransport({ scope: cameraScope, mediaInstance: reply.mediaInstance!, send,
+        rtcFactory: config => rtcFactory ? rtcFactory(config) : new RTCPeerConnection(config),
+        ...(camera.renderRemote ? { renderRemote: camera.renderRemote } : {}),
+        onFault: () => { cameraLife?.disable(); }, });
+      video.setIce(callIce);
+      cameraLife = createHumanCallCameraOwner({ enabled: camera.enabled && reply.cameraConfigured === true,
+        coordinator: camera.coordinator,
+        isCurrent: candidate => same(scope) && active === session && candidate.joinRef === reply.grantRef,
+        onState: value => { if (active === session || !active) emitCamera(value); },
+        ...(camera.onLocalStream ? { onLocalStream: camera.onLocalStream } : {}),
+        acquire: camera.acquire ?? (async (constraints, context) => {
+          // The capsule labels exactly this owned capture. A late native result
+          // is still adopted/stopped by its retired camera lifecycle.
+          const stream = await navigator.mediaDevices.getUserMedia(constraints); return { owner: context.owner, stream };
+        }),
+        authorize: async (_cameraScope, context) => {
+          if (!live() || !video || !cameraLife?.snapshot().ready) fail('camera_not_connected');
+          const transport = video;
+          const raw = await client.extension<unknown>('call.camera', { requestId: nonce(), callId: reply.callId, epoch: reply.epoch,
+            expectedJoinRef: reply.grantRef, expectedCameraGeneration: transport.snapshot().generation }, { expectedAccountId: scope.accountId });
+          const receipt = mediaDto(raw, ['schema', 'callId', 'epoch', 'accountId', 'deviceId', 'grantRef', 'cameraGeneration', 'expiresAt']);
+          let cancelStarted = false;
+          const cancel = () => { if (cancelStarted) return; cancelStarted = true;
+            void client.extension('call.camera.cancel', { callId: reply.callId, epoch: reply.epoch, expectedJoinRef: reply.grantRef,
+              grantRef: receipt.grantRef, cameraGeneration: receipt.cameraGeneration }, { expectedAccountId: scope.accountId }).catch(() => {});
+          };
+          if (context.signal.aborted || !live() || video !== transport) { cancel(); fail('camera_stale'); }
+          let admission: CameraAdmission; try { admission = transport.noteAdmission(receipt); } catch (error) { cancel(); throw error; }
+          context.signal.addEventListener('abort', cancel, { once: true });
+          if (context.signal.aborted) { cancel(); fail('camera_stale'); }
+          return admission;
+        },
+        prepare: value => { if (!video) fail('camera_stale'); return video.prepare(value); },
+      });
+      cameraLife.setSession(cameraScope);
+    } else emitCamera(cameraOff());
+    scheduleIce();
     const joinTimer = setTimeout(() => { if (!ready) { rejectJoin(new Error('human_call_join_unknown')); void close().catch(() => {}); } }, 10_000);
     signal.addEventListener('abort', () => { void close().catch(() => {}); }, { once: true });
     ws.onopen = () => { if (live()) send('call.bind', { grantRef: reply.grantRef }); else ws.close(); };
@@ -711,13 +842,18 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
           }
           const ids = new Set<string>();
           for (const peer of message.peers) if (peer.deviceId !== reply.deviceId) { if (typeof peer.deviceId !== 'string' || ids.has(peer.deviceId) || typeof peer.microphone !== 'boolean') fail(); ids.add(peer.deviceId); ensurePeer(peer.deviceId, peer.microphone); }
-          for (const id of [...links.keys()]) if (!ids.has(id)) removePeer(id); connectionState();
+          for (const id of [...links.keys()]) if (!ids.has(id)) removePeer(id);
+          for (const id of waitingAudioPeers.keys()) if (!ids.has(id)) waitingAudioPeers.delete(id);
+          if (video) { video.setRoster(message.peers); negotiatedPeers = message.peers.filter((peer: any) => peer.deviceId !== reply.deviceId && peer.mediaProtocol === 2).length; }
+          connectionState();
         } else if (message.type === 'call.published' && publishWait && publishWait.grantRef === message.grantRef) {
           clearTimeout(publishWait.timer); const waiter = publishWait; publishWait = null; waiter.resolve();
         } else if (['p2p.offer', 'p2p.answer', 'p2p.candidate'].includes(message.type)) void description(message);
+        else if (message.type.startsWith('video.') || message.type.startsWith('call.video.')) video?.receive(message);
       } catch { void close().catch(() => {}); }
     };
-    emit({ connection: 'connecting', peers: 0, playbackBlocked: false }); return session;
+    emit({ connection: 'connecting', peers: 0, playbackBlocked: false,
+      iceWaiting: false, turnConfigured: Boolean(callIce?.iceServers.some(server => server.urls.some(url => /^turns?:/u.test(url)))) }); return session;
   }
   return {
     host: { authorize }, media: { acquire: () => acquire ? acquire() : navigator.mediaDevices.getUserMedia({ audio: true, video: false }) },
@@ -731,15 +867,27 @@ export function createHumanCallPorts({ client, rtcFactory, socketFactory, acquir
       return client.extension<{ declined: boolean }>('call.decline', { callId: invitation.callId, epoch: invitation.epoch }, { expectedAccountId: accountId });
     },
     transport: { async join({ scope, admission, signal }: { scope: HumanCallScope; admission: object; signal: AbortSignal }) {
-      const proof = admitted.get(admission); if (!proof || proof.reply.purpose !== 'join' || proof.scope !== scope || signal.aborted || active) fail();
+      const proof = admitted.get(admission); if (!proof || proof.reply.purpose !== 'join' || proof.scope !== scope || proof.signal !== signal || signal.aborted || active || joining) fail();
       if (ownedSessions.size >= 16) fail('human_call_capacity');
-      admitted.delete(admission); const session = makeSession(proof.reply, scope, signal);
-      ownedSessions.add(session);
-      if (!session.matches(scope)) { void session.close().then(() => ownedSessions.delete(session), () => {}); fail(); } active = session; return session.joined;
+      admitted.delete(admission); joining = true; const attempt = ++joinAttempt;
+      try {
+        const initialIce = proof.reply.mediaProtocol === 2 && proof.reply.iceConfigured ? await fetchIce(proof.reply, 0) : null;
+        if (signal.aborted || active || attempt !== joinAttempt) fail();
+        const session = makeSession(proof.reply, scope, signal, initialIce); ownedSessions.add(session);
+        if (!session.matches(scope)) { void session.close().then(() => ownedSessions.delete(session), () => {}); fail(); }
+        active = session; return session.joined;
+      } catch (error) {
+        void client.extension('call.leave', { callId: proof.reply.callId, epoch: proof.reply.epoch,
+          expectedJoinRef: proof.reply.grantRef }, { expectedAccountId: scope.accountId }).catch(() => {}); throw error;
+      } finally { joining = false; }
     } },
     snapshot: () => ({ ...state }), subscribe(observer: (state: HumanCallConnectionState) => void) { observers.add(observer); return () => observers.delete(observer); },
     async resumeListening() { await active?.resumeListening(); },
-    close() { return active?.close(); },
+    close() { joinAttempt++; return active?.close(); },
+    enableCamera() { return active?.enableCamera() ?? Promise.resolve({ ok: false, code: 'camera_not_connected' }); },
+    disableCamera() { return active?.disableCamera() ?? cameraOff(); }, cameraSnapshot: () => ({ ...cameraState }),
+    subscribeCamera(observer: (value: CameraView) => void) { cameraObservers.add(observer); return () => cameraObservers.delete(observer); },
+    refreshCallIce() { return active?.refreshIce() ?? Promise.resolve(false); },
   };
 }
 

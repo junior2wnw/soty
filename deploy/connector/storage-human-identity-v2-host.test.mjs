@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -33,8 +34,8 @@ async function fixture(t) {
 test('the actual inline host probe recognizes literal schema2 and refuses a frozen v1-only fallback', async t => {
   const f = await fixture(t), before = await readFile(f.file);
   const format = await readStorageFormat(f.data);
-  assert.deepEqual(format, { ok: true, schema: 'soty.storage-format.v5', rooms: 'empty', apps: 'empty', notes: 'empty',
-    capabilities: 'empty', appRegistration: 'empty', feedback: 'empty', humanIdentity: 2 });
+  assert.deepEqual(format, currentObservation({ ok: true, schema: 'soty.storage-format.v5', rooms: 'empty', apps: 'empty', notes: 'empty',
+    capabilities: 'empty', appRegistration: 'empty', feedback: 'empty', humanIdentity: 2 }));
   assert.deepEqual(await readFile(f.file), before);
   assert.throws(() => assertStorageCompatible(image(oldReaders), format), /storage_reader_incompatible/u);
   assert.deepEqual(assertStorageCompatible(image(currentStorageReaders), format), format);
@@ -44,7 +45,7 @@ test('the actual inline host probe recognizes literal schema2 and refuses a froz
   assert.deepEqual(await readFile(f.file), damaged);
 });
 
-test('a bounded seven-store snapshot preserves schema2 consumed-token evidence in committed WAL without disclosure', async t => {
+test('a bounded current-store snapshot preserves schema2 consumed-token evidence in committed WAL without disclosure', async t => {
   const f = await fixture(t); f.db.exec('PRAGMA journal_mode=WAL');
   const sentinel = 'SYNTHETIC_PRIVATE_RENEWAL_KEY';
   f.db.prepare('INSERT INTO human_identity_artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('RefreshToken', 'a'.repeat(64),

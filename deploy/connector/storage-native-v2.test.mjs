@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -167,10 +168,10 @@ test('all nine independent empty/v1/v2 pairs are read-only and disclose only for
     const root = await directory(t);
     for (const [store, version] of Object.entries({ notes, capabilities })) if (version !== 'empty') (await database(root, store, version)).close();
     const before = await Promise.all(Object.keys(stores).map(store => persistent(root, store)));
-    const result = await readStorageFormat(root); assert.deepEqual(result, format(notes, capabilities));
+    const result = await readStorageFormat(root); assert.deepEqual(result, currentObservation(format(notes, capabilities)));
     assertStorageCompatible({ Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: currentStorageReaders } } }, result);
     assert.deepEqual(await Promise.all(Object.keys(stores).map(store => persistent(root, store))), before);
-    assert.deepEqual(Object.keys(result).sort(), ['apps', 'capabilities', 'notes', 'ok', 'rooms', 'schema']);
+    assert.deepEqual(Object.keys(result).sort(), ['appRegistration', 'apps', 'capabilities', 'connect', 'feedback', 'humanIdentity', 'notes', 'ok', 'rooms', 'schema', 'world']);
   }
 });
 
@@ -205,7 +206,7 @@ for (const [store, spec] of Object.entries(stores)) test(`${store}: genuine main
     const before = await persistent(root, store); assert.ok(before['-wal']);
     await assert.rejects(oldProbe(root), /storage_format_unknown/u);
     const result = await readStorageFormat(root);
-    assert.deepEqual(result, format(store === 'notes' ? 2 : 'empty', store === 'capabilities' ? 2 : 'empty'));
+    assert.deepEqual(result, currentObservation(format(store === 'notes' ? 2 : 'empty', store === 'capabilities' ? 2 : 'empty')));
     const image = { Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: bridgeReaders } } };
     assert.throws(() => assertStorageCompatible(image, result), /storage_reader_incompatible/u);
     assert.deepEqual(await persistent(root, store), before);

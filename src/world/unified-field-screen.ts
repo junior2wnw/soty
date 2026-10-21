@@ -615,10 +615,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         actions.append(join, button('О сообществе', 'info', 'sw-button-quiet', () => options.onOpen(item, directory.getRecord(item.entity))));
       }
     } else {
-      const open = button(item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
-      if (item.entity.kind === 'person') open.setAttribute('aria-label', 'Профиль и контакт');
+      const ownProfile = item.entity.kind === 'person' && item.entity.id === options.accountId;
+      const open = button(ownProfile ? 'Редактировать профиль' : item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
+      if (item.entity.kind === 'person') open.setAttribute('aria-label', ownProfile ? 'Редактировать профиль' : 'Профиль и контакт');
       else if (item.entity.kind === 'device') open.setAttribute('aria-label', 'Управление устройствами');
-      open.disabled = !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
+      open.disabled = !ownProfile && !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
     }
     if (item.entity.kind === 'app' && record && 'canManage' in record && record.canManage && options.onAppSettings) actions.append(button('Настройки приложения', 'settings', 'sw-button-quiet', () => options.onAppSettings!(record as DirectoryApp)));
     const alreadyPlaced = engine?.snapshot().shortcuts.some(shortcut => fieldEntityKey(shortcut.entity) === fieldEntityKey(item.entity));

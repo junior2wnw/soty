@@ -61,11 +61,20 @@ const appAudienceLayouts = Object.freeze({
   10: { base: 7, objects: 73, digest: '100da3faa8bb105ce2f16640ad9837c59a57373dec02d1e76f967fa04caa3d64' },
   11: { base: 8, objects: 73, digest: 'd1f7a5f101e0436737733cdc2d8f21781e6f202c4a3307cf2d885c3c776c067d' },
 });
+// Literal sqlite_schema.sql inventories, with no token or whitespace transform.
+// Runtime never imports an application migrator
+// or computes an expected layout from the candidate image's schema module.
+const appCoverLayouts = Object.freeze({
+  12: { objects: 109, digest: 'a86e7f6b08ba3bd2eb5dad9196000af6ae303e902cfcfea7cfd97b06293efa4e' },
+  13: { objects: 113, digest: 'c686aebd71bd30358a4496a9274a1f9dba45de56bf971193b0e46d62e89e8028' },
+  14: { objects: 113, digest: '7cb308cb923a2305e3c9b861a1132ba58b4d2b7fad851fed15ae43436503d14b' },
+});
 const appAudienceObjects = new Set([...Object.keys(appAudience), ...Object.keys(appAudienceGuards)]);
-function readAudienceApps(db, format) {
-  const pin = appAudienceLayouts[format];
+function readAudienceApps(db, format, covers = false) {
+  const pin = appAudienceLayouts[covers ? format - 3 : format];
   if (!pin) fail('storage_format_unreadable');
-  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(pin.objects + 1);
+  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(pin.objects + (covers ? 40 : 0) + 1)
+    .filter(row => !covers || !row.name.startsWith('app_cover_'));
   if (rows.length !== pin.objects || rows.some(row => typeof row.sql !== 'string' || row.sql.length > 32768)
     || sha(JSON.stringify(rows.map(row => [row.type, row.name, row.tbl_name, normalized(row.sql)]))) !== pin.digest
     || db.prepare('PRAGMA foreign_key_check').get()) fail('storage_format_unreadable');
@@ -496,11 +505,12 @@ function profile(value, target) {
       && (new URL(value.nativeOrigin).hostname !== new URL(value.embedOrigin).hostname || sameOriginWorkspace) && value.parentOrigin !== value.embedOrigin;
   } catch { return false; }
 }
-function readScopedApps8(db, audience = false) {
-  refuse(Number(db.prepare('PRAGMA user_version').get().user_version) === (audience ? 11 : 8)
-    && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === (audience ? 'soty.apps-registry.v11' : 'soty.apps-registry.v8'));
-  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(audience ? 74 : 68)
-    .filter(row => !audience || !appAudienceObjects.has(row.name));
+function readScopedApps8(db, audience = false, covers = false) {
+  const version = covers ? 14 : audience ? 11 : 8;
+  refuse(Number(db.prepare('PRAGMA user_version').get().user_version) === version
+    && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value === 'soty.apps-registry.v' + version);
+  const rows = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?").all(covers ? 114 : audience ? 74 : 68)
+    .filter(row => (!audience || !appAudienceObjects.has(row.name)) && (!covers || !row.name.startsWith('app_cover_')));
   refuse(rows.length === 67 && rows.every(value => typeof value.sql === 'string' && value.sql.length <= 32768));
   refuse(sha(JSON.stringify(rows.map(row => [row.type, row.name, row.tbl_name, normalized(row.sql)]))) === layoutPin);
   refuse(db.prepare('PRAGMA foreign_key_check').get() === undefined);
@@ -534,7 +544,7 @@ async function readAppsFormat(dataDir) {
   }
   await checkedDatabaseFile(filename, info);
   return inspectDatabase(filename, db => {
-    const objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND type IN ('table','view','trigger')").all();
+    let objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND type IN ('table','view','trigger')").all();
     if (!objects.some(row => row.type === 'table' && row.name === 'apps_meta')) fail('storage_format_unreadable');
     const markers = db.prepare("SELECT value FROM apps_meta WHERE key='schema' LIMIT 2").all();
     const version = db.prepare('PRAGMA user_version').get().user_version;
@@ -547,9 +557,13 @@ async function readAppsFormat(dataDir) {
               : markers[0].value === 'soty.apps-registry.v6' && version === 6 ? 6
                 : markers[0].value === 'soty.apps-registry.v7' && version === 7 ? 7
                   : markers[0].value === 'soty.apps-registry.v8' && version === 8 ? 8
-                    : [9,10,11].includes(version) && markers[0].value === 'soty.apps-registry.v' + version ? version : null;
+                    : [9,10,11,12,13,14].includes(version) && markers[0].value === 'soty.apps-registry.v' + version ? version : null;
     if (!format) fail('storage_format_unknown');
-    const audience = format >= 9, base = audience ? format - 3 : format;
+    const covers = format >= 12, audience = format >= 9, base = covers ? format - 6 : audience ? format - 3 : format;
+    if (covers) {
+      recognizeFrozenLayout(db, appCoverLayouts[format]); recognizeCoverStorage(db, 'app_cover');
+      objects = objects.filter(row => !row.name.startsWith('app_cover_'));
+    }
     const projections = { ...appCore, ...(base >= 2 ? appDomains : {}), ...(base >= 3 ? appPublications : {}),
       ...(base >= 4 ? appSources : {}), ...(base >= 5 ? appSaved : {}), ...(base >= 6 ? appDiscussions : {}), ...(base >= 7 ? appScoped : {}), ...(audience ? appAudience : {}) };
     const guards = { ...(base >= 3 ? appTargetGuards : {}), ...(base >= 4 ? appSourceGuards : {}),
@@ -583,8 +597,8 @@ async function readAppsFormat(dataDir) {
       }
       if(Number(db.prepare('SELECT count(*) AS n FROM app_scoped_embed_admissions').get().n)!==selected)fail('storage_format_unreadable');
     }
-    if (audience) readAudienceApps(db, format);
-    if (base === 8) { try { readScopedApps8(db, audience); } catch { fail('storage_format_unreadable'); } }
+    if (audience) readAudienceApps(db, format, covers);
+    if (base === 8) { try { readScopedApps8(db, audience, covers); } catch { fail('storage_format_unreadable'); } }
     if (format >= 2) {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template' LIMIT 2").all();
       if (pinned.length !== 1 || typeof pinned[0].value !== 'string') fail('storage_format_unreadable');
@@ -763,6 +777,65 @@ export async function readConnectFormat(dataDir = '/data') {
   });
 }
 
+const worldLayouts = Object.freeze({
+  '3:0': { objects: 34, digest: 'fbc4458718be3932c518398ed1317aeaeca47ddfa1e2a3d228317b15c4989d29' },
+  '3:1': { objects: 42, digest: '2561f6c776add82ef360190ecb73101f6920c5aed062bbe93bed17a7e05bc13b' },
+  '5:0': { objects: 34, digest: '312c6e4a1c8ee9449d5ac091118146c6fbfe96edd5483ba1e3a695910e6f46b0' },
+  '5:1': { objects: 42, digest: 'b8287f349c04e2ac24d63fc9a5f230545f02ef209e8781008503790986a4c1a3' },
+  '6:0': { objects: 88, digest: 'f5e52f2f8330417f360b7b4d750926ae03e6fb274bbfe3184da2e8b5a596130a' },
+  '6:1': { objects: 96, digest: '2ada5247d1f7919143e9bff51c539d988f143558257e1bbac8c8c9fb75f9bf2b' },
+});
+function recognizeFrozenLayout(db, pin) {
+  if (!pin) fail('storage_format_unreadable');
+  const rows = db.prepare(`SELECT type,CASE WHEN length(name)<=128 THEN name END AS name,
+    CASE WHEN length(tbl_name)<=128 THEN tbl_name END AS tbl_name,CASE WHEN length(sql)<=32768 THEN sql END AS sql
+    FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name LIMIT ?`).all(pin.objects + 1);
+  if (rows.length !== pin.objects || rows.some(row => typeof row.name !== 'string' || typeof row.tbl_name !== 'string' || typeof row.sql !== 'string')
+    || sha(JSON.stringify(rows.map(row => [row.type,row.name,row.tbl_name,row.sql]))) !== pin.digest
+    || db.prepare('PRAGMA foreign_key_check').get()) fail('storage_format_unreadable');
+}
+function recognizeCoverStorage(db, prefix) {
+  // These two server literals are the complete interpolation authority.
+  if (!['app_cover','profile_avatar'].includes(prefix)) fail('storage_format_unreadable');
+  const rows = db.prepare(`SELECT * FROM ${prefix}_usage LIMIT 2`).all(), usage = rows[0];
+  const instance = prefix === 'app_cover' ? /^apps_cover_[a-f0-9]{32}$/u : /^world_profile_[a-f0-9]{48}$/u;
+  if (rows.length !== 1 || usage.id !== 1 || !instance.test(usage.store_id)
+    || ['encoded_bytes','reserved_bytes','draft_count','receipt_count','logical_now','minimum_request_time'].some(key => !Number.isSafeInteger(usage[key]) || usage[key] < 0)) fail('storage_format_unreadable');
+  const actual = db.prepare(`SELECT
+    (SELECT coalesce(sum(encoded_bytes),0) FROM ${prefix}_assets WHERE purged_at IS NULL) AS encoded_bytes,
+    (SELECT coalesce(sum(reserved_bytes),0) FROM ${prefix}_drafts WHERE state IN('processing','ready')) AS reserved_bytes,
+    (SELECT count(*) FROM ${prefix}_drafts WHERE state IN('processing','ready')) AS draft_count,
+    (SELECT count(*) FROM ${prefix}_receipts) AS receipt_count`).get();
+  const owner = db.prepare(`SELECT coalesce(sum(encoded_bytes),0) AS encoded_bytes,coalesce(sum(reserved_bytes),0) AS reserved_bytes,
+    coalesce(sum(draft_count),0) AS draft_count,coalesce(sum(receipt_count),0) AS receipt_count FROM ${prefix}_owner_usage`).get();
+  if (['encoded_bytes','reserved_bytes','draft_count','receipt_count'].some(key => actual[key] !== usage[key] || owner[key] !== usage[key])
+    || db.prepare(`SELECT 1 FROM ${prefix}_heads h LEFT JOIN ${prefix}_versions v ON v.id=h.active_version_id
+      WHERE v.id IS NULL OR v.target_id<>h.target_id OR v.owner_id<>h.owner_id OR v.purged_at IS NOT NULL
+        OR h.revision<1 OR v.version<>h.next_version-1 OR h.revision<>v.version LIMIT 1`).get()
+    || db.prepare(`SELECT 1 FROM ${prefix}_assets a LEFT JOIN(SELECT asset_id,sum(byte_count) AS n FROM ${prefix}_renditions GROUP BY asset_id) r ON r.asset_id=a.id
+      WHERE a.purged_at IS NULL AND a.encoded_bytes<>coalesce(r.n,0) LIMIT 1`).get()) fail('storage_format_unreadable');
+}
+export async function readWorldFormat(dataDir = '/data') {
+  const file = await checkedStoreFile(dataDir, 'world', 'world.sqlite');
+  if (!file) return 'empty';
+  return inspectDatabase(file, db => {
+    const version = Number(db.prepare('PRAGMA user_version').get().user_version);
+    if (![3,5,6].includes(version)) fail('storage_format_unknown');
+    const rows = db.prepare('SELECT key,CASE WHEN length(value)<=128 THEN value END AS value FROM world_meta LIMIT 5').all();
+    const meta = Object.fromEntries(rows.map(row => [row.key,row.value])), field = meta.field_schema_version !== undefined;
+    const keys = ['project_id','lineage','schema_version',...(field ? ['field_schema_version'] : [])].sort().join(',');
+    if (rows.length !== (field ? 4 : 3) || Object.keys(meta).sort().join(',') !== keys || meta.project_id !== 'soty'
+      || meta.lineage !== 'soty.world.sqlite.v1' || meta.schema_version !== String(version) || field && meta.field_schema_version !== '1') fail('storage_format_unknown');
+    recognizeFrozenLayout(db, worldLayouts[version + ':' + (field ? 1 : 0)]);
+    if (db.prepare('PRAGMA quick_check(1)').all().some(row => row.quick_check !== 'ok')
+      || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
+        WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL)
+          OR (p.avatar_revision IS NOT NULL AND (typeof(p.avatar_revision)<>'integer' OR p.avatar_revision<1 OR p.avatar_revision>p.revision)) LIMIT 1`).get()) fail('storage_format_unreadable');
+    if (version === 6) recognizeCoverStorage(db, 'profile_avatar');
+    return version;
+  });
+}
+
 export async function readStorageFormat(dataDir = '/data') {
   const root = await lstat(dataDir);
   if (!root.isDirectory() || root.isSymbolicLink()) fail('storage_directory_invalid');
@@ -771,14 +844,9 @@ export async function readStorageFormat(dataDir = '/data') {
   const registration = await readUniversalFormat(dataDir, 'appRegistration'), feedback = await readUniversalFormat(dataDir, 'feedback'), human = await readUniversalFormat(dataDir, 'humanIdentity');
   const metadata = [registration.metadata, feedback.metadata, human.metadata].filter(Boolean);
   if (metadata.some(value => value.registryId !== metadata[0].registryId || value.environmentId !== metadata[0].environmentId)) fail('storage_format_unknown');
-  const connect = await readConnectFormat(dataDir);
-  if (connect === 4) return { ok: true, schema: 'soty.storage-format.v6', rooms, apps, notes, capabilities,
-    appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format, connect };
-  if (human.format !== 'empty') return { ok: true, schema: 'soty.storage-format.v5', rooms, apps, notes, capabilities,
-    appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format };
-  if (registration.format === 'empty' && feedback.format === 'empty') return { ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities };
-  return { ok: true, schema: 'soty.storage-format.v4', rooms, apps, notes, capabilities,
-    appRegistration: registration.format, feedback: feedback.format };
+  const connect = await readConnectFormat(dataDir), world = await readWorldFormat(dataDir);
+  return { ok: true, schema: 'soty.storage-format.v7', rooms, apps, notes, capabilities,
+    appRegistration: registration.format, feedback: feedback.format, humanIdentity: human.format, connect, world };
 }
 
 if (process.env.SOTY_STORAGE_PROBE === '1') {

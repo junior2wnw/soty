@@ -472,14 +472,14 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
   const receipt = stateFor(handle).receipt;
   try {
     const candidate = storageReaders(candidateImage), original = storageReaders(originalImage);
-    check([5, 6].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
+    check([5, 6, 7].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');
     check(candidateImage.Config.Labels[universalModeLabel] === (receipt.phase === 'legacy-baseline' ? '1' : '0'), 'universal_policy_image_mode_mismatch');
     if (receipt.human.renewal) check(candidate.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
     const needsDeviceConsentReader = Boolean(receipt.human.deviceConsent || receipt.environment.some(value =>
       value.name === settings.humanDeviceConsentMigration && value.value === '1'));
     if (needsDeviceConsentReader) check(candidate.humanIdentity.includes(3), 'universal_policy_reader_baseline_required');
-    if (receipt.phase === 'features') check([5, 6].includes(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version)
+    if (receipt.phase === 'features') check([5, 6, 7].includes(JSON.parse(originalImage.Config.Labels[storageReaderLabel]).version)
       && original.appRegistration.includes(1) && original.feedback.includes(1) && original.humanIdentity.includes(1)
       && originalImage.Config.Labels[universalModeLabel] === (receipt.expectedCurrentPreparednessSha256 === undefined ? '1' : '0'),
       'universal_policy_reader_baseline_required');

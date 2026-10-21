@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -119,20 +120,24 @@ for (const [store, spec] of Object.entries(stores)) test(`${store}: literal v1 m
 
 test('only absent or actually empty Notes/Capabilities directories are empty and never initialized', async t => {
   const root = await directory(t);
-  assert.deepEqual(await readStorageFormat(root), format());
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format()));
   for (const store of Object.keys(stores)) await mkdir(path.join(root, store));
-  await mkdir(path.join(root, 'world')); await writeFile(path.join(root, 'world', 'out-of-scope'), 'synthetic');
-  assert.deepEqual(await readStorageFormat(root), format());
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format()));
+  await mkdir(path.join(root, 'world'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format()));
+  await writeFile(path.join(root, 'world', 'out-of-scope'), 'synthetic');
+  await assert.rejects(readStorageFormat(root), /storage_format_unreadable/u);
+  assert.equal(await readFile(path.join(root, 'world', 'out-of-scope'), 'utf8'), 'synthetic');
   for (const store of Object.keys(stores)) assert.deepEqual(await readdir(path.join(root, store)), []);
 });
 
-test('populated cold v1 stores are independent, keep FTS/receipts/ledger bytes and expose only four format fields', async t => {
+test('populated cold v1 stores are independent, keep FTS/receipts/ledger bytes and expose only explicit current format fields', async t => {
   for (const selection of [['notes'], ['capabilities'], ['notes', 'capabilities']]) {
     const root = await directory(t);
     for (const store of selection) (await database(root, store, { seed: true })).close();
     const before = await Promise.all(selection.map(store => persistentBytes(root, store)));
     const observed = await readStorageFormat(root);
-    assert.deepEqual(observed, format(selection.includes('notes') ? 1 : 'empty', selection.includes('capabilities') ? 1 : 'empty'));
+    assert.deepEqual(observed, currentObservation(format(selection.includes('notes') ? 1 : 'empty', selection.includes('capabilities') ? 1 : 'empty')));
     assertStorageCompatible({ Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: currentStorageReaders } } }, observed);
     assert.deepEqual(await Promise.all(selection.map(store => persistentBytes(root, store))), before);
     assert.doesNotMatch(JSON.stringify(observed), /fixture|private|credential|input|receipt/u);
@@ -154,7 +159,7 @@ for (const [store, spec] of Object.entries(stores)) test(`${store}: committed in
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, 1);
     const before = await persistentBytes(root, store);
     assert.ok(before['-wal']);
-    assert.deepEqual(await readStorageFormat(root), format(store === 'notes' ? 1 : 'empty', store === 'capabilities' ? 1 : 'empty'));
+    assert.deepEqual(await readStorageFormat(root), currentObservation(format(store === 'notes' ? 1 : 'empty', store === 'capabilities' ? 1 : 'empty')));
     assert.deepEqual(await persistentBytes(root, store), before);
   } finally { db.close(); }
 });
@@ -263,7 +268,7 @@ test('a real exclusive SQLite writer causes a bounded unreadable refusal, not em
     await assert.rejects(readStorageFormat(root), /storage_format_unreadable/u);
     assert.deepEqual(await persistentBytes(root, 'capabilities'), before);
   } finally { db.exec('ROLLBACK'); db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format('empty', 1));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty', 1)));
 });
 
 for (const store of Object.keys(stores)) test(`${store}: cold committed WAL after an exited writer is read without checkpointing`, async t => {
@@ -296,7 +301,7 @@ for (const store of Object.keys(stores)) test(`${store}: cold committed WAL afte
     assert.equal((await readFile(file(root, store))).readUInt32BE(60), 0);
     const before = await persistentBytes(root, store), names = await readdir(path.join(root, store));
     assert.ok(before['-wal']); assert.ok(names.includes(stores[store].main + '-shm'));
-    assert.deepEqual(await readStorageFormat(root), format(store === 'notes' ? 1 : 'empty', store === 'capabilities' ? 1 : 'empty'));
+    assert.deepEqual(await readStorageFormat(root), currentObservation(format(store === 'notes' ? 1 : 'empty', store === 'capabilities' ? 1 : 'empty')));
     assert.deepEqual(await persistentBytes(root, store), before);
     assert.deepEqual(await readdir(path.join(root, store)), names);
   } finally {

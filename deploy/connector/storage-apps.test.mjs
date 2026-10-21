@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, lstat, symlink } from 'node:fs/promises';
@@ -103,10 +104,10 @@ async function v6(root) {
 
 test('Apps absent or genuinely empty directory is explicit and no store is created by the probe', async t => {
   const root = await directory(t);
-  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty')));
   assert.deepEqual(await readdir(root), []);
   await mkdir(path.join(root, 'apps'));
-  assert.deepEqual(await readStorageFormat(root), format('empty'));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format('empty')));
   assert.deepEqual(await readdir(path.join(root, 'apps')), []);
   await writeFile(path.join(root, 'apps', 'registry.sqlite.bak'), 'unreviewed evidence');
   await assert.rejects(readStorageFormat(root), /storage_format_unreadable/);
@@ -118,7 +119,7 @@ test('historical Apps v1 through v5 plus current v6 are readable without disclos
     if (version === 6) await v6(root); else if (version === 5) await v5(root); else if (version === 4) await v4(root); else if (version === 3) await v3(root); else if (version === 2) await v2(root); else await v1(root, version);
     const before = await readFile(filename(root));
     const observed = await readStorageFormat(root);
-    assert.deepEqual(observed, format(version >= 2 ? version : 1));
+    assert.deepEqual(observed, currentObservation(format(version >= 2 ? version : 1)));
     assertStorageCompatible(image(), observed);
     assert.doesNotMatch(JSON.stringify(observed), /account-private|connector-private|Private project|9001/);
     assert.deepEqual(await readFile(filename(root)), before);
@@ -128,12 +129,12 @@ test('historical Apps v1 through v5 plus current v6 are readable without disclos
 test('rooms and Apps formats coexist without one masking the other', async t => {
   const root = await directory(t); await v1(root);
   await writeFile(path.join(root, 'room_1234567890123456.json'), '{"auth":"fixture"}');
-  assert.deepEqual(await readStorageFormat(root), format(1, 1));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(1, 1)));
   const rooms = createRoomStore(root); rooms.close();
-  assert.deepEqual(await readStorageFormat(root), format(1, 2));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(1, 2)));
   const db = new DatabaseSync(filename(root));
   try { migrateAppsSchema(db); } finally { db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format(6, 2));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(6, 2)));
 });
 
 for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} to v6 migration is observed in WAL without checkpointing or weakening old data`, async t => {
@@ -143,7 +144,7 @@ for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} t
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
     const before = await readFile(filename(root));
     assert.equal(before.readUInt32BE(60), previous);
-    assert.deepEqual(await readStorageFormat(root), format(previous));
+    assert.deepEqual(await readStorageFormat(root), currentObservation(format(previous)));
     const preserved = ['app_devices', 'local_apps', 'local_app_grants', ...(previous >= 2
       ? ['app_domain_zones', 'app_domain_heads', 'app_domains', 'app_domain_receipts'] : []), ...(previous >= 3
       ? ['app_runtime_targets', 'app_publications', 'app_publication_domains', 'app_publication_receipts'] : []), ...(previous >= 4
@@ -154,7 +155,7 @@ for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} t
     assert.ok((await lstat(filename(root) + '-wal')).size > 32);
     assert.deepEqual(await readFile(filename(root)), before, 'the migration is still in the WAL');
     const observed = await readStorageFormat(root);
-    assert.deepEqual(observed, format(6));
+    assert.deepEqual(observed, currentObservation(format(6)));
     const oldReader = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5], notes: [1], capabilities: [1] } });
     assert.throws(() => assertStorageCompatible(image(oldReader), observed), /storage_reader_incompatible/);
     assertStorageCompatible(image(), observed);
@@ -172,16 +173,16 @@ for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} t
     assert.equal(db.prepare('SELECT count(*) AS n FROM app_discussion_heads').get().n, 0, 'migration never opens discussions for the owner');
     assert.deepEqual({ ...db.prepare('SELECT * FROM app_discussion_usage').get() }, { id: 1, head_count: 0, conversation_count: 0, message_count: 0, body_bytes: 0 });
   } finally { db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format(6));
+  assert.deepEqual(await readStorageFormat(root), currentObservation(format(6)));
 });
 
-test('future Apps v12 in WAL refuses even while the main file is accepted v6', async t => {
+test('future Apps v15 in WAL refuses even while the main file is accepted v6', async t => {
   const root = await directory(t); await v6(root);
   const db = new DatabaseSync(filename(root));
   try {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
     const before = await readFile(filename(root)); assert.equal(before.readUInt32BE(60), 6);
-    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v12' WHERE key='schema'; PRAGMA user_version=12; COMMIT");
+    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v15' WHERE key='schema'; PRAGMA user_version=15; COMMIT");
     await assert.rejects(readStorageFormat(root), /storage_format_unknown/);
     assert.deepEqual(await readFile(filename(root)), before);
   } finally { db.close(); }
@@ -213,7 +214,7 @@ test('both Apps marker and user_version must agree, including rejection of a dec
     ...[0, 1, 2, 3, 4, 5, 6, 8].map(version => ['soty.apps-registry.v7', version]),
     ...[0, 1, 2, 3, 4, 5, 6, 7, 9].map(version => ['soty.apps-registry.v8', version]), ...[9, 10, 11].flatMap(audienceVersion => Array.from({ length: 13 }, (_, version) => version)
       .filter(version => version !== audienceVersion).map(version => ['soty.apps-registry.v' + audienceVersion, version])),
-    ['soty.apps-registry.v12', 12], ['unknown', 1]]) {
+    ['soty.apps-registry.v15', 15], ['unknown', 1]]) {
     const root = await directory(t); await v1(root);
     const db = new DatabaseSync(filename(root));
     try { db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(schema); db.exec('PRAGMA user_version=' + version); } finally { db.close(); }

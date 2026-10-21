@@ -1,3 +1,4 @@
+import { currentObservation } from './current-storage-observation.mjs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fixture, args, modelProxies } from './rollout-engine.mjs';
@@ -42,7 +43,7 @@ export async function dockerHttpFixture(root) {
         if (command === 'json') value = await f.engine.inspect(id);
         else if (command === 'logs') {
           const container = f.map.get(id), verb = container.Config.Labels?.['io.soty.connector-rollout.helper'];
-          const payload = container.Config.Labels?.['io.soty.storage.probe'] ? { ok: true, schema: 'soty.storage-format.v3', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty' }
+          const payload = container.Config.Labels?.['io.soty.storage.probe'] ? currentObservation({ ok: true, schema: 'soty.storage-format.v3', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty' })
             : { ok: true, count: 0, activeJobs: [], maintenance, schema: 'fixture', ...(verb === 'rollback' ? { rollback: 'legacy-json', bytes: 1, sha256: '1'.repeat(64) } : {}) };
           res.end(frame(payload)); return;
         } else if (command === 'start') {

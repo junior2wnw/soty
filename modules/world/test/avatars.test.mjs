@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createWorldService, SCHEMA_VERSION } from '../server/index.mjs';
+import { createWorldService as createWorld5Service } from './support/world5-service-before.mjs';
 import { removeAudienceProjection, removeDiscoveryProjection } from './schema-fixtures.mjs';
 import { validateAvatar, AVATAR_LIMITS } from '../server/avatars.mjs';
 import { pngFixture, pngChunk, asDataUrl, jpegFixture, webpFixture } from './avatar-fixtures.mjs';
@@ -15,10 +16,10 @@ const bob = { accountId: 'acct_avatar_bob', deviceId: 'dev_bob', label: 'Маш�
 const outsider = { accountId: 'acct_avatar_outside', deviceId: 'dev_outside', label: 'Ирина' };
 const limits = { maximumBytes: AVATAR_LIMITS.imageBytes, maximumPixels: AVATAR_LIMITS.imagePixels };
 function denied(fn, code) { assert.throws(fn, error => error.code === code, code); }
-function fixture(t) {
+function fixture(t, legacy = false) {
   const base = resolve(tmpdir()), dir = mkdtempSync(join(base, 'soty-avatars-test-')), path = join(dir, 'world.sqlite'); const services = [];
-  const open = (options = {}) => { const service = createWorldService({ databasePath: path, projectId: 'avatars', ...options }); services.push(service); return service; };
-  const service = open(); const call = (actor, op, args = {}) => service.execute({ actor, op: 'world.' + op, args });
+  const open = (options = {}, factory = createWorldService) => { const service = factory({ databasePath: path, projectId: 'avatars', ...options }); services.push(service); return service; };
+  const service = open({}, legacy ? createWorld5Service : createWorldService); const call = (actor, op, args = {}) => service.execute({ actor, op: 'world.' + op, args });
   [alice, bob, outsider].forEach(actor => call(actor, 'profile.get'));
   t.after(() => { services.forEach(item => item.close()); assert.equal(dirname(resolve(dir)), base); assert.ok(resolve(dir).startsWith(join(base, 'soty-avatars-test-'))); rmSync(dir, { recursive: true, force: true }); });
   const set = (actor, avatarUrl = image, thumbnailUrl = image) => call(actor, 'profile.avatar.set', { expectedRevision: call(actor, 'profile.get').profile.revision, avatarUrl, thumbnailUrl });
@@ -91,13 +92,17 @@ test('avatar thumbnail batches and writes are bounded; deletion and restart pres
 });
 
 test('schema v1 upgrades additively and active-community lookup changes immediately after leave/archive', t => {
-  const f = fixture(t); const communityId = f.call(alice, 'community.create', { requestId: 'migration_group', name: 'Сохраняется' }).communityId;
+  const f = fixture(t, true); const communityId = f.call(alice, 'community.create', { requestId: 'migration_group', name: 'Сохраняется' }).communityId;
   f.call(bob, 'membership.join', { communityId }); assert.deepEqual(f.service.activeCommunityIds(bob.accountId), [communityId]);
   f.call(bob, 'membership.leave', { communityId }); assert.deepEqual(f.service.activeCommunityIds(bob.accountId), []);
   f.service.close(); const db = new DatabaseSync(f.path);
+  // Start from the actual frozen pre6 World5 service, never a relabelled6 DB.
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare("SELECT type FROM sqlite_schema WHERE name='profile_avatars'").get().type, 'table');
+  assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name GLOB 'profile_avatar_*' OR name GLOB 'world_direct_*'").get().n, 0);
   removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("DROP TABLE profile_avatars; ALTER TABLE profiles DROP COLUMN avatar_revision; PRAGMA user_version=1; UPDATE world_meta SET value='1' WHERE key='schema_version';"); db.close();
-  const migrated = f.open({ allowAudienceMigration: true }); assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
+  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
   assert.equal(migrated.execute({ actor: alice, op: 'world.profile.get' }).profile.avatarRevision, null);
   assert.equal(migrated.execute({ actor: alice, op: 'world.community.get', args: { communityId } }).community.name, 'Сохраняется');
   migrated.execute({ actor: alice, op: 'world.community.archive', args: { communityId, expectedRevision: 1 } });

@@ -40,7 +40,7 @@ function snapshot(db) {
     .map(row => JSON.stringify(Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Uint8Array ? Buffer.from(value).toString('hex') : value])))).sort()]));
 }
 
-test('World3 migrates to the unambiguous audience format5, preserving legacy identities, revisions, avatars and public index sequence', t => {
+test('World3 migrates to the combined audience/Direct/avatar format6, preserving legacy identities, revisions, avatars and public index sequence', t => {
   const directory = mkdtempSync(join(tmpdir(), 'soty-world-audience-migration-')), databasePath = join(directory, 'world.sqlite');
   let service; t.after(() => { service?.close(); rmSync(directory, { recursive: true, force: true }); });
   const db = new DatabaseSync(databasePath); migrateV3(db, PROJECT);
@@ -49,14 +49,17 @@ test('World3 migrates to the unambiguous audience format5, preserving legacy ide
   insert.run(bob.accountId, bob.label, 'Публичное описание', '["фото"]', 'борис фото', 1, 23, 102, 203);
   db.prepare('INSERT INTO profile_avatars(account_id,mime,image,thumbnail_mime,thumbnail) VALUES(?,?,?,?,?)')
     .run(alice.accountId, 'image/jpeg', jpegFixture, 'image/png', pngFixture());
+  // Real legacy writers always set avatar_revision when bytes exist. Keep the
+  // seeded legacy profile internally consistent before capturing all old rows.
+  db.prepare('UPDATE profiles SET avatar_revision=17 WHERE account_id=?').run(alice.accountId);
   const before = db.prepare('SELECT * FROM profiles ORDER BY account_id').all().map(row => ({ ...row }));
   const avatars = db.prepare('SELECT * FROM profile_avatars').all();
   const sequence = db.prepare('SELECT * FROM world_directory ORDER BY seq').all(); db.close();
-  service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true }); assert.equal(SCHEMA_VERSION, 5); assert.equal(service.schemaVersion, 5);
+  service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 6); assert.equal(service.schemaVersion, 6);
   const observed = new DatabaseSync(databasePath, { readOnly: true });
   try {
-    assert.equal(observed.prepare('PRAGMA user_version').get().user_version, 5);
-    assert.equal(observed.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get().value, '5');
+    assert.equal(observed.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(observed.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get().value, '6');
     assert.deepEqual(observed.prepare('SELECT * FROM profiles ORDER BY account_id').all().map(({ audience, ...row }) => row), before);
     assert.deepEqual(observed.prepare('SELECT account_id,audience FROM profiles ORDER BY account_id').all().map(row => ({ ...row })),
       [{ account_id: alice.accountId, audience: 'private' }, { account_id: bob.accountId, audience: 'public' }]);
@@ -86,7 +89,7 @@ test('Root audience reader rejects reserved attachment format4 without relabelli
   finally { after.close(); }
 });
 
-test('World5 admission verifies the exact audience column and public-index trigger, not only the numeric label', async t => {
+test('World6 admission verifies the exact audience column and public-index trigger, not only the numeric label', async t => {
   for (const [name, sql] of [
     ['missing public trigger', 'DROP TRIGGER world_profile_directory_ai'],
     ['legacy public trigger', "DROP TRIGGER world_profile_directory_au; CREATE TRIGGER world_profile_directory_au AFTER UPDATE OF discoverable ON profiles BEGIN SELECT 1; END"],

@@ -419,3 +419,157 @@ test('cold-checkout public validation rejects malformed collection shapes even w
     await assert.rejects(validatePublicArtwork(root), /Unsupported public artwork manifest/u);
   }
 });
+
+test('upload provenance: preparation is idempotent, has no model prompt and reports a real upload queue', async t => {
+  const root = await fixture(t);
+  const first = await prepareArtwork(root, { definitions: [fixtureDefinition], sourceOrigin: 'upload' });
+  const repeated = await prepareArtwork(root, { keys: [fixtureDefinition.key], sourceOrigin: 'upload' });
+  assert.deepEqual(first.prepared, repeated.prepared);
+  const job = await readJson(join(root, first.prepared[0].job));
+  assert.equal(job.schemaVersion, 2); assert.deepEqual(job.sourceOrigin, { kind: 'upload' });
+  for (const key of ['provider', 'prompt', 'promptHash', 'inputImages', 'reference']) assert.equal(Object.hasOwn(job, key), false);
+  assert.equal(job.jobHash, sha256(Buffer.from(JSON.stringify({ key: job.key, definitionHash: job.definitionHash, styleVersion: job.styleVersion, sourceOrigin: { kind: 'upload' } }, null, 2) + '\n')));
+  assert.equal((await queueArtwork(root)).queue[0].status, 'needs-upload');
+  assert.deepEqual((await readJson(join(root, 'public', 'app-art', 'manifest.json'))).assets, {});
+});
+
+test('upload provenance: generation-only options and unknown origin fail before local preparation changes', async t => {
+  const root = await fixture(t), before = await readFile(join(root, 'scripts', 'app-art', 'registry.json'));
+  for (const options of [{ sourceOrigin: 'download' }, { sourceOrigin: 'upload', prompt: 'Generate a glass object' }, { sourceOrigin: 'upload', referenceImage: 'output/app-art-history/test/v001-123456abcdef/source.123456abcdef.png' }]) {
+    await assert.rejects(prepareArtwork(root, { definitions: [fixtureDefinition], ...options }), /origin must|does not accept/u);
+    assert.deepEqual(await readFile(join(root, 'scripts', 'app-art', 'registry.json')), before);
+  }
+});
+
+test('upload provenance: import requires public distribution choice and refuses a fabricated generation id', async t => {
+  const root = await fixture(t), prepared = await prepareArtwork(root, { definitions: [fixtureDefinition], sourceOrigin: 'upload' });
+  const source = await syntheticSource(root), job = prepared.prepared[0].job;
+  const before = await readFile(join(root, 'public', 'app-art', 'manifest.json'));
+  await assert.rejects(importArtwork(root, { key: fixtureDefinition.key, source, job, visualApproved: true }), /public-approved/u);
+  await assert.rejects(importArtwork(root, { key: fixtureDefinition.key, source, job, visualApproved: true, publicDistributionApproved: true, generationId: 'pretend-provider-output' }), /cannot record a generation id/u);
+  assert.deepEqual(await readFile(join(root, 'public', 'app-art', 'manifest.json')), before);
+  assert.equal((await queueArtwork(root)).queue[0].status, 'needs-upload');
+});
+
+test('upload provenance: a prepared upload cannot be relabeled with a provider, changed origin or another identity', async t => {
+  for (const corruption of ['provider', 'origin', 'identity']) {
+    const root = await fixture(t), prepared = await prepareArtwork(root, { definitions: [fixtureDefinition], sourceOrigin: 'upload' });
+    const path = join(root, prepared.prepared[0].job), job = await readJson(path);
+    if (corruption === 'provider') job.provider = 'codex-builtin-image-gen';
+    if (corruption === 'origin') job.sourceOrigin = { kind: 'generated' };
+    if (corruption === 'identity') job.jobHash = '0'.repeat(64);
+    await writeFile(path, JSON.stringify(job));
+    const before = await readFile(join(root, 'public', 'app-art', 'manifest.json'));
+    await assert.rejects(importArtwork(root, { key: fixtureDefinition.key, source: await syntheticSource(root), job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true }), /Upload artwork job|upload artwork origin|job identity mismatch/u);
+    assert.deepEqual(await readFile(join(root, 'public', 'app-art', 'manifest.json')), before);
+  }
+});
+
+test('upload provenance: a selected logo is accepted without invented generation or no-text claims', async t => {
+  const root = await fixture(t), definition = { ...fixtureDefinition, profile: 'field' };
+  const prepared = await prepareArtwork(root, { definitions: [definition], sourceOrigin: 'upload' });
+  const source = join(root, 'selected-logo.png');
+  await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="960" height="960"><rect width="960" height="960" fill="#223344"/><text x="160" y="500" font-size="120" fill="white">MY LOGO</text></svg>')).png().toFile(source);
+  const imported = await importArtwork(root, { key: definition.key, source, job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true, reviewer: 'synthetic-logo-fixture' });
+  const asset = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[definition.key];
+  const receipt = await readJson(join(root, asset.provenance.path));
+  assert.equal(receipt.schemaVersion, 2); assert.deepEqual(receipt.sourceOrigin, { kind: 'upload' });
+  assert.deepEqual(asset.sourceOrigin, { kind: 'upload' });
+  for (const key of ['generation', 'provider', 'prompt', 'promptHash']) assert.equal(Object.hasOwn(receipt, key), false);
+  for (const key of ['prompt', 'promptHash', 'provider', 'styleReference']) assert.equal(Object.hasOwn(receipt.job, key), false);
+  assert.equal(Object.hasOwn(receipt.review, 'noTextOrUi'), false); assert.equal(Object.hasOwn(receipt.review, 'subjectApproved'), false);
+  assert.equal(receipt.review.sourceApproved, true); assert.equal(receipt.review.publicDistributionApproved, true);
+  const manifest = await readJson(join(root, 'public', 'app-art', 'field-profile.json'));
+  assert.equal(manifest.assets[imported.publicKey].version, 1);
+  for (const token of ['sourceOrigin', 'generation', 'MY LOGO', 'prompt', 'reviewer']) assert.equal(JSON.stringify(manifest).includes(token), false);
+  assert.equal((await validateArtwork(root)).valid, true); assert.equal((await validatePublicArtwork(root)).valid, true);
+  assert.equal((await queueArtwork(root)).pending, 0);
+  const repeated = await importArtwork(root, { key: definition.key, source, job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true });
+  assert.equal(repeated.version, 1); assert.equal(repeated.unchanged, true);
+});
+
+test('upload provenance: legacy generated receipts survive upload, identical-byte mode changes and both rollbacks', async t => {
+  const root = await fixture(t), generated = await prepareArtwork(root, { definitions: [fixtureDefinition] });
+  const source = await syntheticSource(root);
+  await importArtwork(root, { key: fixtureDefinition.key, source, job: generated.prepared[0].job, visualApproved: true });
+  const original = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[fixtureDefinition.key];
+  const originalBytes = await readFile(join(root, original.provenance.path)), oldReceipt = JSON.parse(originalBytes);
+  assert.equal(oldReceipt.schemaVersion, 1); assert.equal(oldReceipt.generation.provider, 'codex-builtin-image-gen');
+  assert.equal(oldReceipt.review.noTextOrUi, true); assert.equal(Object.hasOwn(oldReceipt, 'sourceOrigin'), false);
+  const uploaded = await prepareArtwork(root, { keys: [fixtureDefinition.key], sourceOrigin: 'upload' });
+  const second = await importArtwork(root, { key: fixtureDefinition.key, source, job: uploaded.prepared[0].job, visualApproved: true, publicDistributionApproved: true });
+  assert.equal(second.version, 2); assert.equal(second.unchanged, false);
+  const uploadAsset = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[fixtureDefinition.key];
+  const uploadBytes = await readFile(join(root, uploadAsset.provenance.path));
+  assert.deepEqual(await readFile(join(root, original.provenance.path)), originalBytes);
+  await rollbackArtwork(root, { key: fixtureDefinition.key, version: 1 });
+  assert.equal((await validateArtwork(root)).checked[0].version, 1);
+  assert.deepEqual(await readFile(join(root, original.provenance.path)), originalBytes);
+  await rollbackArtwork(root, { key: fixtureDefinition.key, version: 2 });
+  assert.equal((await validateArtwork(root)).checked[0].version, 2);
+  assert.deepEqual(await readFile(join(root, uploadAsset.provenance.path)), uploadBytes);
+});
+
+test('upload provenance: a crop-only update preserves uploaded source, receipts and image version without generation', async t => {
+  const root = await fixture(t), definition = { ...fixtureDefinition, profile: 'field' };
+  const prepared = await prepareArtwork(root, { definitions: [definition], sourceOrigin: 'upload' });
+  const source = await syntheticSource(root, 'square.png', '#334455', 960, 960);
+  await importArtwork(root, { key: definition.key, source, job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true });
+  const before = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[definition.key];
+  const receiptBytes = await readFile(join(root, before.provenance.path));
+  const crop = await prepareArtwork(root, { definitions: [{ ...definition, compactFocalPoint: { x: .7, y: .4 } }] });
+  assert.equal(crop.prepared.length, 0); assert.equal(crop.layoutUpdated.length, 1);
+  const after = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[definition.key];
+  assert.equal(after.version, 1); assert.deepEqual(after.original, before.original); assert.deepEqual(after.renditions, before.renditions);
+  assert.deepEqual(await readFile(join(root, after.provenance.path)), receiptBytes);
+  const layout = await readJson(join(root, after.layout.provenance.path));
+  assert.equal(layout.schemaVersion, 2); assert.equal(layout.sourceProvenanceSha256, before.provenance.sha256);
+  assert.equal(Object.hasOwn(layout, 'generationProvenanceSha256'), false);
+  assert.equal((await queueArtwork(root)).pending, 0); assert.equal((await validateArtwork(root)).valid, true);
+});
+
+test('upload provenance: tampered upload origin, public approval or fabricated provider cannot authorize rollback', async t => {
+  for (const corruption of ['origin', 'public-choice', 'provider']) {
+    const root = await fixture(t), prepared = await prepareArtwork(root, { definitions: [fixtureDefinition], sourceOrigin: 'upload' });
+    const options = { key: fixtureDefinition.key, job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true };
+    await importArtwork(root, { ...options, source: await syntheticSource(root) });
+    const first = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[fixtureDefinition.key];
+    const path = join(root, first.provenance.path), receipt = await readJson(path);
+    await importArtwork(root, { ...options, source: await syntheticSource(root, 'next.png', '#445566') });
+    if (corruption === 'origin') receipt.sourceOrigin.kind = 'generated';
+    if (corruption === 'public-choice') receipt.review.publicDistributionApproved = false;
+    if (corruption === 'provider') receipt.generation = { provider: 'codex-builtin-image-gen' };
+    await writeFile(path, JSON.stringify(receipt));
+    const before = await readFile(join(root, 'public', 'app-art', 'manifest.json'));
+    await assert.rejects(rollbackArtwork(root, { key: fixtureDefinition.key, version: 1 }), /origin|upload acceptance|Upload artwork receipt/u);
+    assert.deepEqual(await readFile(join(root, 'public', 'app-art', 'manifest.json')), before);
+    assert.equal((await validateArtwork(root)).checked[0].version, 2);
+  }
+});
+
+test('upload provenance: an explicitly requested generated edit of an upload has genuine separate generation metadata', async t => {
+  const root = await fixture(t), prepared = await prepareArtwork(root, { definitions: [fixtureDefinition], sourceOrigin: 'upload' });
+  const source = await syntheticSource(root);
+  await importArtwork(root, { key: fixtureDefinition.key, source, job: prepared.prepared[0].job, visualApproved: true, publicDistributionApproved: true });
+  const first = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[fixtureDefinition.key];
+  const generated = await prepareArtwork(root, { keys: [fixtureDefinition.key], sourceOrigin: 'generated', prompt: 'Change only the background; preserve this selected object.', referenceImage: first.original.path });
+  const job = await readJson(join(root, generated.prepared[0].job));
+  assert.equal(job.schemaVersion, 1); assert.equal(job.provider, 'codex-builtin-image-gen'); assert.equal(job.inputImages[0].sha256, first.original.sha256);
+  await importArtwork(root, { key: fixtureDefinition.key, source: await syntheticSource(root, 'edited.png', '#556677'), job: generated.prepared[0].job, visualApproved: true });
+  const second = (await readJson(join(root, 'output', 'app-art-history', 'index.json'))).assets[fixtureDefinition.key];
+  const receipt = await readJson(join(root, second.provenance.path));
+  assert.equal(receipt.schemaVersion, 1); assert.equal(receipt.generation.referenceMode, 'precise-object-edit');
+  assert.equal(receipt.generation.inputImages[0].sha256, first.original.sha256); assert.equal(Object.hasOwn(receipt, 'sourceOrigin'), false);
+  assert.equal((await validateArtwork(root)).valid, true);
+});
+
+test('upload CLI: prepare and import expose selected-upload provenance and enforce explicit public approval', async t => {
+  const root = await fixture(t), definition = join(root, 'selected-definition.json');
+  await writeFile(definition, JSON.stringify(fixtureDefinition));
+  const prepared = JSON.parse((await execute(process.execPath, [cli, 'prepare', '--root', root, '--definition', definition, '--origin', 'upload'])).stdout);
+  const job = prepared.prepared[0].job, source = await syntheticSource(root);
+  assert.equal(prepared.prepared[0].sourceOrigin, 'upload');
+  await assert.rejects(execute(process.execPath, [cli, 'import', '--root', root, '--key', fixtureDefinition.key, '--source', source, '--job', job, '--visual-approved']), /public-approved/u);
+  const accepted = JSON.parse((await execute(process.execPath, [cli, 'import', '--root', root, '--key', fixtureDefinition.key, '--source', source, '--job', job, '--visual-approved', '--public-approved'])).stdout);
+  assert.equal(accepted.version, 1); assert.equal((await validateArtwork(root)).valid, true);
+});

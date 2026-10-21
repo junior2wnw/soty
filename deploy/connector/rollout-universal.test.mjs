@@ -1,3 +1,4 @@
+import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
@@ -205,7 +206,7 @@ test('new Human2 data fences a reader1-only fallback before any downgrade helper
   f.engine.image = async id => { const value = await image(id); if (id === args.originalImage) {
     const readers = JSON.parse(currentStorageReaders); readers.readers.humanIdentity = [1]; value.Config.Labels[storageReaderLabel] = JSON.stringify(readers);
   } return value; };
-  f.run.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v5', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty',
+  f.run.storageProbe = async () => currentObservation({ ok: true, schema: 'soty.storage-format.v5', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty',
     appRegistration: 'empty', feedback: 'empty', humanIdentity: f.migrated ? 2 : 'empty' });
   await f.run.prepare(f.request); f.run.universalMeasurement = async () => ({ ok: true, storageReady: true });
   await assert.rejects(f.run.promote(), /recovery_required/u); assert.equal(f.run.state.failureCode, 'storage_reader_incompatible');

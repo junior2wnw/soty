@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createWorldService, SCHEMA_VERSION } from '../server/index.mjs';
+import { createWorldService as createWorld5Service } from './support/world5-service-before.mjs';
 import { removeAudienceProjection, removeDiscoveryProjection } from './schema-fixtures.mjs';
 import { asDataUrl, pngFixture } from './avatar-fixtures.mjs';
 
@@ -14,12 +15,12 @@ const personIds = result => result.people.map(profile => profile.profileId);
 const communityIds = result => result.communities.map(group => group.communityId);
 const denied = (fn, code) => assert.throws(fn, error => error.code === code, code);
 
-function fixture(t) {
+function fixture(t, legacy = false) {
   const base = resolve(tmpdir()), dir = mkdtempSync(join(base, 'soty-directory-test-'));
   const databasePath = join(dir, 'world.sqlite'), services = [];
   let now = 1_800_000_000_000, serial = 0;
-  const open = (options = {}) => { const service = createWorldService({ databasePath, projectId: 'directory-tests', clock: () => now, ...options }); services.push(service); return service; };
-  let service = open();
+  const open = (options = {}, factory = createWorldService) => { const service = factory({ databasePath, projectId: 'directory-tests', clock: () => now, ...options }); services.push(service); return service; };
+  let service = open({}, legacy ? createWorld5Service : createWorldService);
   const call = (actor, operation, args = {}) => service.execute({ actor, op: 'world.' + operation, args });
   [owner, reader].forEach(actor => call(actor, 'profile.get'));
   const update = (actor, fields) => call(actor, 'profile.update', { expectedRevision: call(actor, 'profile.get').profile.revision, ...fields }).profile;
@@ -171,27 +172,32 @@ test('directory and FTS query plans use their indexes and do not allocate tempor
 });
 
 test('v2 database upgrades to the current reader without changing profile content, avatars, groups, chat or receipts; reopening is idempotent', t => {
-  const f = fixture(t); f.update(owner, { discoverable: true, displayName: 'Миграция Ирина', bio: 'Сохраняется' });
+  const f = fixture(t, true); f.update(owner, { discoverable: true, displayName: 'Миграция Ирина', bio: 'Сохраняется' });
   const image = asDataUrl(pngFixture());
   f.call(owner, 'profile.avatar.set', { expectedRevision: f.call(owner, 'profile.get').profile.revision, avatarUrl: image, thumbnailUrl: image });
   const publicGroup = f.group('Миграция общий'), privateGroup = f.group('Миграция личный', { joinPolicy: 'invite' });
   f.call(owner, 'chat.send', { communityId: publicGroup.communityId, clientId: 'migration_message', text: 'История сохраняется' });
   f.service.close(); const db = new DatabaseSync(f.databasePath);
   const tables = ['profiles', 'profile_avatars', 'communities', 'memberships', 'messages', 'receipts', 'world_audit'];
-  const before = Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const order = table => table === 'profile_avatars' ? 'account_id' : 'rowid';
+  const before = Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY ${order(table)}`).all()]));
+  // The frozen5 service wrote the real legacy table; no6 fragments exist.
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare("SELECT type FROM sqlite_schema WHERE name='profile_avatars'").get().type, 'table');
+  assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name GLOB 'profile_avatar_*' OR name GLOB 'world_direct_*'").get().n, 0);
   removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("PRAGMA user_version=2; UPDATE world_meta SET value='2' WHERE key='schema_version'"); db.close();
-  const migrated = f.open({ allowAudienceMigration: true }); assert.equal(SCHEMA_VERSION, 5); assert.equal(migrated.schemaVersion, 5);
+  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 6); assert.equal(migrated.schemaVersion, 6);
   assert.deepEqual(f.search({ query: 'миграц' }).totals, { people: 1, communities: 1 });
   assert.equal(f.search({ query: privateGroup.communityId }).communities.length, 0);
   assert.equal(f.call(owner, 'profile.avatar.read', { profileId: owner.accountId }).avatarUrl, image);
   const reopenedDb = new DatabaseSync(f.databasePath);
   let sequence;
   try {
-    for (const table of tables) assert.deepEqual(reopenedDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), before[table], table);
+    for (const table of tables) assert.deepEqual(reopenedDb.prepare(`SELECT * FROM ${table} ORDER BY ${order(table)}`).all(), before[table], table);
     sequence = reopenedDb.prepare('SELECT seq,kind,entity_id FROM world_directory ORDER BY seq').all();
     assert.equal(reopenedDb.prepare('PRAGMA foreign_key_check').get(), undefined);
-    assert.equal(reopenedDb.prepare('PRAGMA user_version').get().user_version, 5);
+    assert.equal(reopenedDb.prepare('PRAGMA user_version').get().user_version, 6);
   } finally { reopenedDb.close(); }
   migrated.close(); f.open();
   assert.deepEqual(f.search({}).totals, { people: 1, communities: 1 });

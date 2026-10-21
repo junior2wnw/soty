@@ -1,4 +1,6 @@
 import { mountWorldApp } from './app';
+import { createDirectFixture } from './ui-fixture-direct';
+import { openConnectionHub } from '../platform/connection-hub';
 import { resolveFieldAppArt } from './field-art.mjs';
 import { createFieldDocument, validateFieldDocument, type FieldDocument } from '../../modules/field/contract.mjs';
 import { el, button } from './dom';
@@ -101,6 +103,8 @@ let fixtureSavedRevision = 0;
 const fixtureSaved = new Map<string, Record<string, unknown>>();
 const fixtureSavedReceipts = new Map<string, { args: string; result: unknown }>();
 const now = Date.now();
+const directSpecimen = params.get('direct') === '1';
+const fixtureDirect = createDirectFixture(self, people[1]!, directSpecimen);
 const history: Record<string, WorldMessage[]> = {};
 for (const group of groups) {
     history[group.communityId] = params.has('history') ? Array.from({ length: 130 }, (_, index) => ({ messageId: `qa-msg-${group.communityId}-${index + 1}`, seq: index + 1, text: index === 127 ? 'Этот трек оставим?' : index === 128 ? 'Да, звучит отлично.' : index === 129 ? 'Добавила ещё один.' : `Идея ${index + 1}: давайте соберём всё в одном месте.`, author: people[index % 3]!, createdAt: now - (130 - index) * 70000 - (index < 65 ? 86400000 : 0), replyTo: null, removed: false })) : [
@@ -128,6 +132,7 @@ const addRegisteredProjection = (value: FixtureRegistration): void => {
 };
 registrations.forEach(addRegisteredProjection);
 const api: WorldApi = { async request<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+        const direct = fixtureDirect(op, args); if (direct !== undefined) return direct as T;
         let result: unknown;
         const group = groups.find(item => item.communityId === args.communityId) || groups[0]!;
         switch (op) {
@@ -135,7 +140,7 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 if (Object.keys(args).length) throw Object.assign(new Error('В локальном примере нет голосовых сессий'), { code: 'fixture_unsupported' });
                 result = { schema: 'soty.voice-orb-status.v1', configured: false, missingBinding: 'not_enabled', voiceModel: 'gpt-realtime-2.1', brainModel: 'zai-org/GLM-5.3-Flash' };
                 break;
-            case 'contacts.list': result = { contacts: [], requests: { incoming: [], outgoing: [] }, blocked: [], invitations: [] }; break;
+            case 'contacts.list': result = { contacts: directSpecimen ? [{ relationshipId:'rel_qa_tim1111111111111111',peerAccountId:people[1]!.profileId,label:people[1]!.displayName,createdAt:now }] : [], requests: { incoming: [], outgoing: [] }, blocked: [], invitations: [] }; break;
             case 'world.field.get': {
                 if (!fixtureField) {
                     if (oneFieldFixture) {
@@ -363,12 +368,24 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
         }
         return result as T;
     } };
-const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName, deviceId: 'qa-notebook', localRevision: 1, current: { revoked: false } }), extension: <T>(op: string, args?: Record<string, unknown>) => api.request<T>(op, args) };
+const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, label: self.displayName, deviceId: 'qa-notebook', localRevision: 1, current: { revoked: false } }),
+  extension: <T>(op: string, args?: Record<string, unknown>) => op === 'card.get'
+    ? Promise.resolve({ cardId: 'card_qa1111111111111111111111111111' } as T) : api.request<T>(op, args) };
 const assistant = (host: HTMLElement, context?: WorldAssistantMountContext) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
   acquireVoiceCapture: () => null, connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) }, context);
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
-mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
+const openConnections = async (): Promise<void> => {
+  const hub = openConnectionHub({ client: fakeClient as unknown as ConnectClient, origin: location.origin, isCurrent: () => true,
+    onIntent: async intent => {
+      if (intent.kind !== 'profile' && intent.kind !== 'community' && intent.kind !== 'application')
+        throw Error('Подтверждение доступа проверяется отдельно. Здесь только локальный UI пример.');
+      await world.followConnection(intent); hub.close();
+    },
+  });
+  await hub.closed;
+};
+const world = mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), openConnections, connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
 const marker = el('aside', 'sx-fixture-badge', 'Примеры · локальная проверка');
 marker.setAttribute('aria-label', 'Изолированный UI пример. Данные вымышленные, операции локальные.');
 document.body.append(marker);

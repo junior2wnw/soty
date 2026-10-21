@@ -16,6 +16,8 @@ export interface WorldProfile extends WorldIdentity {
   interests: string[];
   audience?: WorldProfileAudience;
   audienceWriteVersion?: 1;
+  directMessagesVersion?: 1;
+  avatarWriteVersion?: 1;
   discoverable?: boolean;
   showPresence?: boolean;
   showMemberships?: boolean;
@@ -56,6 +58,11 @@ export interface WorldMessage {
   removed: boolean;
 }
 export interface WorldMember extends WorldMembership { profile: WorldIdentity }
+export interface WorldDirectThread {
+  schema: 'soty.world-direct.v1'; threadId: string; revision: number; relationshipId: string;
+  peer: { accountId: string; label: string | null; avatarRevision: number | null };
+  unreadCount: number; preferences: { pinned: boolean; muted: boolean }; createdAt: number;
+}
 export interface WorldSearch { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null; totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean } }
 export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
@@ -110,7 +117,8 @@ export interface WorldHumanCallState {
   roomId: string | null;
   mode: 'one-to-one' | 'group' | null;
   code: string | null;
-  turnConfigured: false;
+  turnConfigured: boolean;
+  iceWaiting?: boolean;
   incomingCall?: WorldIncomingCall | null;
   /** Display-only name supplied by the current authenticated UI target. Never a call grant. */
   targetLabel?: string | null;
@@ -131,6 +139,7 @@ export interface WorldHumanCallPort {
 }
 export interface WorldAppOptions {
   nativeVoice?: { client:any; mount:any };
+  readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
   api: WorldApi;
   humanCalls?: WorldHumanCallPort;
   fieldArt?: (entity: { entity: { kind: string; id: string }; coverKey?: string }) => import('./app-art.mjs').AppArt | null;
@@ -140,6 +149,7 @@ export interface WorldAppOptions {
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
+  openConnections?: () => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
   openAssistant?: (host: HTMLElement, context?: WorldAssistantMountContext) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;

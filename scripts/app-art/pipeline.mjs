@@ -222,7 +222,9 @@ const specHash = spec => { const definition = validateDefinition(spec); delete d
 
 function layoutIdentity(key, asset, compactFocalPoint, icon) {
   assert(icon === undefined || asset.profile === 'field' && FIELD_ART_ICONS.includes(icon),'Layout icon must be an approved field glyph');
-  return { schemaVersion: 1, type: 'layout-metadata', key, artVersion: asset.version, sourceSha256: asset.original.sha256, generationProvenanceSha256: asset.provenance.sha256, compactFocalPoint, ...(icon ? {icon} : {}) };
+  const uploaded = asset.sourceOrigin?.kind === 'upload';
+  return { schemaVersion: uploaded ? 2 : 1, type: 'layout-metadata', key, artVersion: asset.version, sourceSha256: asset.original.sha256,
+    ...(uploaded ? { sourceProvenanceSha256: asset.provenance.sha256 } : { generationProvenanceSha256: asset.provenance.sha256 }), compactFocalPoint, ...(icon ? {icon} : {}) };
 }
 async function applyCompactLayout(root, registry, history, key) {
   const asset = own(history.assets, key); if (!asset) return null;
@@ -299,7 +301,9 @@ export function definitionsFromCatalog(catalog) {
   });
 }
 
-export async function prepareArtwork(root = REPO_ROOT, { definitions = [], keys = [], all = false, refresh = false, prompt, appId, referenceImage } = {}) {
+export async function prepareArtwork(root = REPO_ROOT, { definitions = [], keys = [], all = false, refresh = false, prompt, appId, referenceImage, sourceOrigin } = {}) {
+  assert(sourceOrigin === undefined || ['generated','upload'].includes(sourceOrigin), 'Artwork origin must be generated or upload');
+  assert(sourceOrigin !== 'upload' || prompt === undefined && referenceImage === undefined, 'Upload preparation does not accept a generation prompt or edit reference');
   return withArtLock(root, async () => {
     const { registry, history } = await state(root);
     for (const value of definitions) {
@@ -337,29 +341,36 @@ export async function prepareArtwork(root = REPO_ROOT, { definitions = [], keys 
       assert(spec, 'Unknown cover key; prepare a definition first');
       if (spec.kind === 'app' && !spec.publicKey) spec.publicKey = `art-${randomUUID().replaceAll('-', '')}`;
       const layoutChange = await applyCompactLayout(root, registry, history, key); if (layoutChange) layoutUpdated.push(layoutChange);
-      const alreadyAccepted = own(history.assets, key)?.styleVersion === registry.styleVersion && own(history.assets, key)?.definitionHash === specHash(spec);
+      const current = own(history.assets, key);
+      // A crop-only update to a selected upload does not request generation.
+      const origin = sourceOrigin ?? (prompt !== undefined || referenceImage !== undefined ? 'generated' : current?.sourceOrigin?.kind === 'upload' ? 'upload' : 'generated');
+      const originMatches = origin === 'upload' ? current?.sourceOrigin?.kind === 'upload' : current?.sourceOrigin === undefined;
+      const alreadyAccepted = originMatches && current?.styleVersion === registry.styleVersion && current?.definitionHash === specHash(spec);
       const metadataOnly = definitions.some(value => value.key === key) && prompt === undefined && referenceImage === undefined;
       if (!refresh && alreadyAccepted && (all || metadataOnly)) { ready.push(key); continue; }
-      const finalPrompt = prompt === undefined ? buildPrompt(spec) : prompt.trim().replaceAll('\r\n', '\n');
-      assert(typeof finalPrompt === 'string' && finalPrompt.length > 0 && finalPrompt.length <= 6000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(finalPrompt), 'prompt: expected at most 6000 characters of plain text');
+      const finalPrompt = origin === 'upload' ? undefined : prompt === undefined ? buildPrompt(spec) : prompt.trim().replaceAll('\r\n', '\n');
+      assert(origin === 'upload' || typeof finalPrompt === 'string' && finalPrompt.length > 0 && finalPrompt.length <= 6000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(finalPrompt), 'prompt: expected at most 6000 characters of plain text');
       // Multiline built-in prompts are immutable data, never executable command text.
-      const digest = sha256(finalPrompt);
-      const jobIdentity = sha256(jsonBytes({ key, definitionHash: specHash(spec), styleVersion: registry.styleVersion, promptHash: digest, ...(inputImages.length ? { inputImages } : {}) }));
+      const digest = origin === 'upload' ? undefined : sha256(finalPrompt);
+      const jobIdentity = sha256(jsonBytes({ key, definitionHash: specHash(spec), styleVersion: registry.styleVersion,
+        ...(origin === 'upload' ? { sourceOrigin: { kind: 'upload' } } : { promptHash: digest, ...(inputImages.length ? { inputImages } : {}) }) }));
       const jobPath = inside(root, 'scripts', 'app-art', 'jobs', key, `job-${jobIdentity.slice(0,16)}.json`);
       let job;
       try { job = await readJson(jobPath); }
       catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        job = { schemaVersion: 1, key, status: 'prepared', preparedAt: new Date().toISOString(), provider: 'codex-builtin-image-gen', definitionHash: specHash(spec), styleVersion: registry.styleVersion, prompt: finalPrompt, promptHash: digest, reference: spec.styleReference || registry.reference || null, ...(inputImages.length ? { inputImages } : {}), jobHash: jobIdentity };
+        job = origin === 'upload'
+          ? { schemaVersion: 2, key, status: 'prepared', preparedAt: new Date().toISOString(), sourceOrigin: { kind: 'upload' }, definitionHash: specHash(spec), styleVersion: registry.styleVersion, jobHash: jobIdentity }
+          : { schemaVersion: 1, key, status: 'prepared', preparedAt: new Date().toISOString(), provider: 'codex-builtin-image-gen', definitionHash: specHash(spec), styleVersion: registry.styleVersion, prompt: finalPrompt, promptHash: digest, reference: spec.styleReference || registry.reference || null, ...(inputImages.length ? { inputImages } : {}), jobHash: jobIdentity };
         await immutable(root, ['scripts', 'app-art', 'jobs', key, basename(jobPath)], jsonBytes(job));
       }
-      prepared.push({ key, publicKey: spec.publicKey || key, job: relative(root, jobPath).split(sep).join('/'), promptHash: digest });
+      prepared.push({ key, publicKey: spec.publicKey || key, job: relative(root, jobPath).split(sep).join('/'), ...(origin === 'upload' ? { sourceOrigin: 'upload' } : { promptHash: digest }) });
     }
     await atomicJson(root, ['scripts', 'app-art', 'registry.json'], registry);
     if (layoutUpdated.length) await atomicJson(root, [...HISTORY_PARTS, 'index.json'], history);
     // New private names, purpose, alt, bindings and pending jobs stay entirely local.
     await writeDisplayManifests(root, syncManifest(registry, history), syncFieldProfile(registry, history));
-    return { prepared, ready, layoutUpdated, generation: 'Use Codex built-in image_gen with each job.prompt; CLI does not generate images.' };
+    return { prepared, ready, layoutUpdated, generation: 'Generated jobs use Codex built-in image_gen with job.prompt. Upload jobs use the selected local image. CLI does not generate images.' };
   });
 }
 
@@ -377,8 +388,16 @@ async function resolveJob(root, key, jobPath) {
   return jobs[0];
 }
 function assertJob(job, spec, registry) {
-  assert(job.schemaVersion === 1 && job.key === spec.key && job.status === 'prepared' && job.provider === 'codex-builtin-image-gen', 'Invalid prepared artwork job');
+  assert(job.key === spec.key && job.status === 'prepared', 'Invalid prepared artwork job');
   assert(job.definitionHash === specHash(spec) && job.styleVersion === registry.styleVersion, 'Artwork definition changed after preparation; prepare a fresh job');
+  if (job.schemaVersion === 2) {
+    exactFields(job, ['schemaVersion','key','status','preparedAt','sourceOrigin','definitionHash','styleVersion','jobHash'], 'Upload artwork job');
+    exactFields(job.sourceOrigin, ['kind'], 'Upload artwork origin');
+    assert(job.sourceOrigin.kind === 'upload', 'Invalid upload artwork origin');
+    assert(job.jobHash === sha256(jsonBytes({ key: job.key, definitionHash: job.definitionHash, styleVersion: job.styleVersion, sourceOrigin: { kind: 'upload' } })), 'Artwork job identity mismatch');
+    return;
+  }
+  assert(job.schemaVersion === 1 && job.provider === 'codex-builtin-image-gen' && job.sourceOrigin === undefined, 'Invalid prepared artwork job');
   assert(typeof job.prompt === 'string' && job.prompt.length <= 6000 && HASH.test(job.promptHash) && sha256(job.prompt) === job.promptHash, 'Artwork prompt hash mismatch');
   const inputImages = job.inputImages || [];
   assert(Array.isArray(inputImages) && inputImages.length <= 1 && inputImages.every(item => PRIVATE_PATH.test(item?.path || '') && /\/source\./u.test(item.path) && HASH.test(item.sha256 || '')), 'Invalid local edit reference');
@@ -392,9 +411,9 @@ async function nextVersion(root, key, publicKey) {
   return Math.max(0, ...names.map(name => Number(VERSION_DIR.exec(name)?.[1]) || 0)) + 1;
 }
 
-export async function importArtwork(root = REPO_ROOT, { key, source, job: jobPath, visualApproved = false, reviewer = 'local-review', generationId } = {}) {
+export async function importArtwork(root = REPO_ROOT, { key, source, job: jobPath, visualApproved = false, reviewer = 'local-review', generationId, publicDistributionApproved = false } = {}) {
   validateKey(key);
-  assert(visualApproved === true, 'Import needs --visual-approved after checking no text/UI, subject and responsive crops');
+  assert(visualApproved === true, 'Import needs --visual-approved after checking the selected source and responsive crops');
   text(reviewer, 'reviewer', 80);
   assert(typeof source === 'string' && !source.includes('://') && source.length <= 4096, 'Source must be a local image path');
   return withArtLock(root, async () => {
@@ -402,6 +421,9 @@ export async function importArtwork(root = REPO_ROOT, { key, source, job: jobPat
     assert(spec, 'Unknown artwork key');
     assert(spec.kind !== 'app' || PUBLIC_KEY.test(spec.publicKey || ''), 'Prepare an opaque public key before accepting app artwork');
     const job = await resolveJob(root, key, jobPath); assertJob(job, spec, registry);
+    const uploaded = job.schemaVersion === 2;
+    assert(!uploaded || publicDistributionApproved === true, 'Upload import needs --public-approved: static artwork is public and must contain no private media');
+    assert(!uploaded || generationId === undefined, 'Upload import cannot record a generation id');
     for (const reference of job.inputImages || []) await verifyFile(root, reference);
     const input = resolve(root, source), info = await stat(input);
     assert(info.isFile() && info.size > 0 && info.size <= 32 * 1024 * 1024, 'Source must be a regular image smaller than 32 MiB');
@@ -437,13 +459,15 @@ export async function importArtwork(root = REPO_ROOT, { key, source, job: jobPat
       outputs.push([filename, data]);
     }
     const sourceName = `source.${originalHash.slice(0,12)}.${metadata.format === 'jpeg' ? 'jpg' : metadata.format}`;
-    const asset = { key, publicKey, version, styleVersion: job.styleVersion, definitionHash: specHash(spec), promptHash: job.promptHash, alt: spec.alt, palette: spec.palette, focalPoint: spec.focalPoint, ...(spec.compactFocalPoint ? { compactFocalPoint: { x: spec.compactFocalPoint.x, y: spec.compactFocalPoint.y } } : {}), ...(spec.profile ? {profile:spec.profile} : {}), kind: spec.kind, original: { path: [...privateParts, sourceName].join('/'), width: metadata.width, height: metadata.height, bytes: original.length, sha256: originalHash }, renditions };
+    const asset = { key, publicKey, version, styleVersion: job.styleVersion, definitionHash: specHash(spec), ...(uploaded ? { sourceOrigin: { kind: 'upload' } } : { promptHash: job.promptHash }), alt: spec.alt, palette: spec.palette, focalPoint: spec.focalPoint, ...(spec.compactFocalPoint ? { compactFocalPoint: { x: spec.compactFocalPoint.x, y: spec.compactFocalPoint.y } } : {}), ...(spec.profile ? {profile:spec.profile} : {}), kind: spec.kind, original: { path: [...privateParts, sourceName].join('/'), width: metadata.width, height: metadata.height, bytes: original.length, sha256: originalHash }, renditions };
     const receipt = {
-      schemaVersion: 1, acceptedAt: new Date().toISOString(),
-      generation: { provider: 'codex-builtin-image-gen', outputBasename: basename(input), ...(generationId ? { id: text(generationId, 'generationId', 160) } : {}), inputImages: job.inputImages || [], referenceMode: job.inputImages?.length ? 'precise-object-edit' : 'described-from-approved-render' },
-      job: { key, jobHash: job.jobHash, prompt: job.prompt, promptHash: job.promptHash, definitionHash: job.definitionHash, styleVersion: job.styleVersion, styleReference: job.reference },
+      schemaVersion: uploaded ? 2 : 1, acceptedAt: new Date().toISOString(),
+      ...(uploaded ? { sourceOrigin: { kind: 'upload' } } : { generation: { provider: 'codex-builtin-image-gen', outputBasename: basename(input), ...(generationId ? { id: text(generationId, 'generationId', 160) } : {}), inputImages: job.inputImages || [], referenceMode: job.inputImages?.length ? 'precise-object-edit' : 'described-from-approved-render' } }),
+      job: uploaded
+        ? { key, jobHash: job.jobHash, definitionHash: job.definitionHash, styleVersion: job.styleVersion, sourceOrigin: { kind: 'upload' } }
+        : { key, jobHash: job.jobHash, prompt: job.prompt, promptHash: job.promptHash, definitionHash: job.definitionHash, styleVersion: job.styleVersion, styleReference: job.reference },
       recipe: { ...recipe, sharp: sharp.versions.sharp, libvips: sharp.versions.vips },
-      review: { reviewer, visualApproved: true, noTextOrUi: true, subjectApproved: true, cropApproved: true, automatedChecks: ['local-source', 'still-image', 'dimensions', 'aspect', 'WebP-size-budgets', 'SHA-256'] },
+      review: { reviewer, visualApproved: true, ...(uploaded ? { sourceApproved: true, publicDistributionApproved: true } : { noTextOrUi: true, subjectApproved: true }), cropApproved: true, automatedChecks: ['local-source', 'still-image', 'dimensions', 'aspect', 'WebP-size-budgets', 'SHA-256'] },
       asset,
     };
     const receiptBytes = jsonBytes(receipt);
@@ -521,6 +545,20 @@ async function validatePublicTree(root) {
   return count;
 }
 function assertAcceptance(receipt, asset) {
+  if (receipt.schemaVersion === 2) {
+    exactFields(receipt, ['schemaVersion','acceptedAt','sourceOrigin','job','recipe','review','asset'], 'Upload artwork receipt');
+    for (const origin of [receipt.sourceOrigin, receipt.job?.sourceOrigin, asset.sourceOrigin]) {
+      exactFields(origin, ['kind'], 'Upload artwork origin'); assert(origin.kind === 'upload', 'Invalid upload artwork origin');
+    }
+    assert(receipt.review?.visualApproved === true && receipt.review.sourceApproved === true && receipt.review.publicDistributionApproved === true && receipt.review.cropApproved === true, 'Artwork has no recorded upload acceptance');
+    exactFields(receipt.review, ['reviewer','visualApproved','sourceApproved','publicDistributionApproved','cropApproved','automatedChecks'], 'Upload artwork review');
+    exactFields(receipt.job, ['key','jobHash','definitionHash','styleVersion','sourceOrigin'], 'Upload artwork receipt job');
+    assert(asset.promptHash === undefined && asset.generation === undefined, 'Upload artwork cannot claim generation provenance');
+    assert(receipt.job.key === asset.key && receipt.job.definitionHash === asset.definitionHash && receipt.job.styleVersion === asset.styleVersion, 'Provenance definition mismatch');
+    assert(receipt.job.jobHash === sha256(jsonBytes({ key: asset.key, definitionHash: asset.definitionHash, styleVersion: asset.styleVersion, sourceOrigin: { kind: 'upload' } })), 'Provenance job identity mismatch');
+    return;
+  }
+  assert(receipt.schemaVersion === 1 && receipt.sourceOrigin === undefined && asset.sourceOrigin === undefined, 'Unsupported artwork acceptance origin');
   assert(receipt.review?.visualApproved === true && receipt.review.noTextOrUi === true && receipt.generation?.provider === 'codex-builtin-image-gen', 'Artwork has no recorded visual acceptance');
   assert(receipt.job?.promptHash === sha256(receipt.job?.prompt || '') && asset.promptHash === receipt.job.promptHash, 'Provenance prompt mismatch');
   assert(receipt.job.key === asset.key && receipt.job.definitionHash === asset.definitionHash && receipt.job.styleVersion === asset.styleVersion, 'Provenance definition mismatch');
@@ -700,7 +738,7 @@ export async function listArtwork(root = REPO_ROOT) {
   return { styleVersion: registry.styleVersion, assets: Object.entries(registry.assets).map(([key, spec]) => ({ key, publicKey: spec.publicKey || key, kind: spec.kind, status: own(history.assets, key) ? 'ready' : 'pending', version: own(history.assets, key)?.version || null })), bindings: sorted(registry.bindings) };
 }
 
-/** Pending generation requests; accepted jobs stay immutable but leave this queue. */
+/** Pending generation/upload requests; accepted jobs stay immutable but leave this queue. */
 export async function queueArtwork(root = REPO_ROOT, { includeAccepted = false } = {}) {
   const { registry, history } = await state(root), queue = [];
   for (const [key, spec] of Object.entries(registry.assets)) {
@@ -717,10 +755,11 @@ export async function queueArtwork(root = REPO_ROOT, { includeAccepted = false }
     const latest = jobs[0], current = own(history.assets, key);
     const matchesMetadata = latest && current?.promptHash === latest.job.promptHash && current?.definitionHash === latest.job.definitionHash && current?.styleVersion === latest.job.styleVersion;
     const accepted = matchesMetadata && JSON.parse(await verifyFile(root, current.provenance)).job?.jobHash === latest.job.jobHash;
-    const status = accepted ? 'accepted' : latest ? 'needs-generation' : 'needs-prepare';
-    if (!accepted || includeAccepted) queue.push({ key, status, ...(latest ? { job: latest.path, promptHash: latest.job.promptHash } : {}), ...(accepted ? { version: current.version } : {}) });
+    const uploaded = latest?.job.schemaVersion === 2;
+    const status = accepted ? 'accepted' : latest ? uploaded ? 'needs-upload' : 'needs-generation' : 'needs-prepare';
+    if (!accepted || includeAccepted) queue.push({ key, status, ...(latest ? { job: latest.path, ...(uploaded ? { sourceOrigin: 'upload' } : { promptHash: latest.job.promptHash }) } : {}), ...(accepted ? { version: current.version } : {}) });
   }
-  return { queue, pending: queue.filter(item => item.status !== 'accepted').length, generation: 'Codex built-in image_gen; no automatic API calls.' };
+  return { queue, pending: queue.filter(item => item.status !== 'accepted').length, generation: 'Generated jobs use Codex built-in image_gen; upload jobs use a selected local image. No automatic API calls.' };
 }
 
 /** Native same-workspace moves preserve existing URLs and exact accepted source bytes. */
