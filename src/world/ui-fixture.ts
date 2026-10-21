@@ -24,7 +24,7 @@ if (assistantSpecimen === 'personal' || assistantSpecimen === 'device') {
     };
 }
 const palette = params.get('theme') === 'light' ? 'light' : 'dark';
-localStorage.setItem('soty.world.ui.v1', JSON.stringify({ themeMode: palette, themeBrightness: 50, view: 'mine', presentation: 'field', homePresentation: 'list' }));
+localStorage.setItem('soty.world.ui.v1', JSON.stringify({ themeMode: palette, themeBrightness: 50, view: 'mine', presentation: 'field', homePresentation: 'list', ...(params.get('motion') === 'off' ? { motion: false } : {}) }));
 const self: WorldProfile = { profileId: oneFieldFixture ? 'qa-onefield-anna' : 'qa-field4-anna', displayName: 'Аня', bio: '', interests: [], avatarColor: '#a6b59a', revision: 1, discoverable: true,
     ...(oneFieldFixture ? { audience: 'public' as const, audienceWriteVersion: 1 as const } : {}) };
 const people: WorldProfile[] = [self, { ...self, profileId: 'qa-person-tim', displayName: 'Тим', avatarColor: '#c4b0d8' }, { ...self, profileId: 'qa-person-mira', displayName: 'Мира', avatarColor: '#dba99b' }, { ...self, profileId: 'qa-person-sasha', displayName: 'Саша', avatarColor: '#b3c6a8' }, { ...self, profileId: 'qa-person-kirill', displayName: 'Кирилл', avatarColor: '#c7b995' }];

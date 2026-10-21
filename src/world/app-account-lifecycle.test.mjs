@@ -36,7 +36,7 @@ import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-r
 
 // Exercise the actual controller methods. UI/network ports are inert fixtures;
 // no source regex assertions, copied transition implementation or DOM package.
-const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
+const source = await readFile(process.env.SOTY_FIELD_RETURN_SOURCE ?? new URL('./app.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const stageSource = await readFile(process.env.SOTY_NEUTRAL_RUNTIME_STAGE_SOURCE ?? new URL('./app-stage.ts', import.meta.url), 'utf8');
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -236,7 +236,9 @@ test('persistent field modes use the real dirty-screen guard and reflect the sel
   f.app.group = { communityId: 'visible-group' }; f.Controller.prototype.renderNavigation.call(f.app);
   assert.equal(f.app.fieldNavigation.hidden, true);
   f.app.group = null; f.app.view = 'notes'; f.Controller.prototype.renderNavigation.call(f.app);
-  assert.equal(f.app.fieldNavigation.hidden, true);
+  assert.equal(f.app.fieldNavigation.hidden, false);
+  assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'true');
+  assert.equal(f.app.fieldNavigation.children.length, 1);
 });
 
 test('connection entry calls the host hub once and ignores failures from a departed account', async () => {
@@ -2065,3 +2067,71 @@ for (const presentation of ['main', 'widget']) {
     } finally { v.stage.dispose(); }
   });
 }
+
+
+// The real header control, save guard, route writer and screen disposal run here.
+// The field renderer and note I/O are controlled ports; this is not pixel QA.
+function fieldReturnFixture(view = 'notes') {
+  const f = fixture({ hash: view === 'notes' ? '#notes/current-note' : `#${view}` });
+  const pending = deferred(), mounts = [];
+  let dirty = true, flushes = 0, disposals = 0, focuses = 0;
+  const draft = { hasUnsavedChanges: () => dirty, flush() { flushes++; return pending.promise; }, dispose() { disposals++; } };
+  Object.assign(f.app, {
+    view, preferences: { view }, notesHandle: draft, unifiedField: null,
+    unifiedFieldFilters: { mine: 'all', world: 'all' }, homeQuery: '', unifiedFieldFilter: 'all',
+    sidebar: new ElementPort(), header: new ElementPort(), mobileNav: new ElementPort(), fieldNavigation: new ElementPort(),
+    renderNavigation: f.Controller.prototype.renderNavigation, updateNavUnread() {}, persist() {}, loadPersonal() {},
+    renderCurrent() { this.cleanScreen(); mounts.push(this.view); },
+  });
+  f.app.main.focus = () => { focuses++; };
+  f.app.renderNavigation();
+  assert.equal(f.app.fieldNavigation.hidden, false);
+  assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'true');
+  const [control] = f.app.fieldNavigation.children;
+  assert.equal(f.app.fieldNavigation.children.length, 1);
+  assert.equal(control.textContent, 'Моё поле'); assert.equal(control.getAttribute('aria-label'), 'На моё поле');
+  assert.equal(control.getAttribute('aria-pressed'), null, 'a destination is not a field-mode toggle');
+  return { ...f, pending, draft, mounts, control,
+    click() { control.emit('click'); }, setDurable() { dirty = false; },
+    get flushes() { return flushes; }, get disposals() { return disposals; }, get focuses() { return focuses; },
+  };
+}
+for (const view of ['notes', 'messages', 'assistant', 'access', 'library']) {
+  test(`one-click field return: ${view} reaches the real field route and focuses its content`, () => {
+    const f = fieldReturnFixture(view); f.setDurable(); f.click();
+    assert.equal(f.location.hash, '#mine'); assert.equal(f.app.activeRoute, '#mine');
+    assert.equal(f.app.view, 'mine'); assert.deepEqual(f.mounts, ['mine']); assert.equal(f.disposals, 1);
+    assert.equal(f.focuses, 1); assert.equal(f.flushes, 0);
+    assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'false');
+    assert.deepEqual(f.app.fieldNavigation.children.map(control => control.textContent), ['Личное', 'Мир']);
+  });
+}
+test('one-click field return: a pending Notes flush holds the editor and repeated activation navigates once', async () => {
+  const f = fieldReturnFixture(), sequence = f.app.screenSequence;
+  f.click(); f.click(); assert.equal(f.flushes, 1); assert.equal(f.app.noteActionPending, true);
+  assert.equal(f.location.hash, '#notes/current-note'); assert.equal(f.app.screenSequence, sequence);
+  assert.equal(f.app.notesHandle, f.draft); assert.equal(f.disposals, 0); assert.equal(f.focuses, 0);
+  f.setDurable(); f.pending.resolve(); await turn();
+  assert.equal(f.location.hash, '#mine'); assert.deepEqual(f.mounts, ['mine']);
+  assert.equal(f.app.screenSequence, sequence + 1); assert.equal(f.disposals, 1); assert.equal(f.focuses, 1);
+});
+for (const outcome of ['rejected', 'still-undurable']) {
+  test(`one-click field return: ${outcome} Notes flush retains its route, draft and focus`, async () => {
+    const f = fieldReturnFixture(), sequence = f.app.screenSequence;
+    f.click();
+    if (outcome === 'rejected') f.pending.reject(failure('notes_local_unavailable')); else f.pending.resolve();
+    await turn(); assert.equal(f.flushes, 1); assert.equal(f.location.hash, '#notes/current-note');
+    assert.equal(f.app.screenSequence, sequence); assert.equal(f.app.notesHandle, f.draft);
+    assert.equal(f.disposals, 0); assert.equal(f.focuses, 0); assert.deepEqual(f.mounts, []);
+    assert.equal(f.app.noteActionPending, false); assert.match(f.app.lastToast, /сохран/u);
+  });
+}
+test('one-click field return: a held exit cannot navigate or steal focus after an account ABA', async () => {
+  const f = fieldReturnFixture(); f.click(); assert.equal(f.flushes, 1);
+  f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
+  const sequence = f.app.screenSequence, route = f.location.hash;
+  f.setDurable(); f.pending.resolve(); await turn();
+  assert.equal(f.app.screenSequence, sequence); assert.equal(f.location.hash, route);
+  assert.equal(f.app.notesHandle, null); assert.equal(f.disposals, 1);
+  assert.equal(f.focuses, 0); assert.deepEqual(f.mounts, []);
+});

@@ -798,13 +798,21 @@ class WorldApplication {
     this.sidebar.replaceChildren();
     // The application surface hides this navigation in CSS. Keeping its logical
     // field state avoids a stale hidden flag when a stage closes after this render.
-    this.fieldNavigation.hidden = !['mine', 'world'].includes(this.view) || !!this.group;
+    const returnToField = !['mine', 'world'].includes(this.view);
+    this.fieldNavigation.hidden = !!this.group;
+    this.fieldNavigation.dataset.fieldReturn = String(returnToField);
     const fieldMode = (view: 'mine' | 'world', label: string, symbol: string): HTMLButtonElement => {
       const control = button(label, symbol, 'of-field-mode', () => this.navigate(view));
       control.setAttribute('aria-pressed', String(this.view === view));
       return control;
     };
-    this.fieldNavigation.replaceChildren(fieldMode('mine', 'Личное', 'grid'), fieldMode('world', 'Мир', 'world'));
+    if (returnToField) {
+      const home = button('Моё поле', 'back', 'of-field-mode', () => this.afterNoteSaved(() => {
+        this.navigateReady('mine'); this.main.focus({ preventScroll: true });
+      }));
+      home.setAttribute('aria-label', 'На моё поле'); home.title = 'На моё поле';
+      this.fieldNavigation.replaceChildren(home);
+    } else this.fieldNavigation.replaceChildren(fieldMode('mine', 'Личное', 'grid'), fieldMode('world', 'Мир', 'world'));
     const search = iconButton('Поиск', 'search', () => this.unifiedField ? this.unifiedField.focusSearch() : this.openQuickActions());
     search.dataset.fieldSearch = ''; search.setAttribute('aria-keyshortcuts', 'Control+k Meta+k'); search.title = 'Поиск · Ctrl K';
     const add = iconButton('Создать', 'plus', () => this.openAddMenu()); add.title = 'Создать';

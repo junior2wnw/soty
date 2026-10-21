@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Соты · проверка компоновки</title>
+<style>
+  * { box-sizing: border-box; } body { margin: 0; background: #202326; color: #fff; font: 14px system-ui,sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px; align-items: center; }
+  label { display: flex; gap: 6px; align-items: center; } select { font: inherit; padding: 6px; }
+  p { margin: 0; padding: 0 16px 12px; color: #ced0d2; } main { margin: 0 16px; }
+  iframe { display: block; border: 0; transform-origin: top left; background: #fff; }
+</style>
+<header>
+  <label>Ширина <select id="width" aria-label="Ширина проверки"><option>320</option><option>390</option><option>800</option><option selected>929</option><option>1440</option></select></label>
+  <label>Высота <select id="height" aria-label="Высота проверки"><option>360</option><option selected>640</option><option>883</option></select></label>
+  <label>Пример <select id="example" aria-label="Проверяемый пример"><option value="ui">Интерфейс</option><option value="engine">Движок поля</option><option value="paint">Paint/hit · одна сота</option></select></label>
+  <label>Экран <select id="screen" aria-label="Начальный экран"><option value="mine">Поле</option><option value="notes">Записки</option><option value="app">Приложение</option></select></label>
+  <label>Тема <select id="theme" aria-label="Тема проверки"><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
+</header>
+<p>Только локальные вымышленные данные. Большой экран вписан в окно; физические жесты проверяются на устройствах отдельно.</p>
+<main><iframe title="Проверяемые Соты" allowfullscreen></iframe></main>
+<script type="module">
+  if (!import.meta.env.DEV) throw Error('Layout review is development-only');
+  const width = document.querySelector('#width'), height = document.querySelector('#height');
+  const example = document.querySelector('#example'), theme = document.querySelector('#theme');
+  const screen = document.querySelector('#screen');
+  const frame = document.querySelector('iframe'), main = document.querySelector('main');
+  const size = () => {
+    frame.width = width.value; frame.height = height.value;
+    const scale = Math.min(1, Math.max(1, document.documentElement.clientWidth - 32) / Number(width.value),
+      Math.max(1, document.documentElement.clientHeight - main.offsetTop - 16) / Number(height.value));
+    frame.style.transform = `scale(${scale})`; main.style.height = `${Number(height.value) * scale}px`;
+  };
+  const load = () => {
+    const route = screen.value === 'app' ? 'launch/app-22222222222222222222222222222222/dom_22222222222222222222222222222222?path=%2F' : screen.value;
+    const source = example.value === 'paint'
+      ? `./unified-field.test.html?layout=one-field&count=3&paint=1&kind=device&theme=${theme.value}`
+      : example.value === 'engine'
+        ? `./unified-field.test.html?layout=one-field&count=3&theme=${theme.value}`
+        : `./ui-fixture.html?layout=one-field&theme=${theme.value}&motion=off&chats=empty#${route}`;
+    frame.src = new URL(source, location.href).href;
+  };
+  width.addEventListener('change', size); height.addEventListener('change', size);
+  example.addEventListener('change', load); theme.addEventListener('change', load); screen.addEventListener('change', load);
+  window.addEventListener('resize', size); size(); load();
+</script>
+</html>

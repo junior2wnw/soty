@@ -351,6 +351,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
         const status = el('span', `uf-status ${entity.online ? 'is-online' : 'is-offline'}`); status.setAttribute('aria-label', entity.online ? 'Устройство в сети' : 'Устройство не в сети'); inner.append(status);
       }
       target.append(inner, hexFrame(metrics.radius));
+      const hit = el('span', 'uf-hit-shape'); hit.setAttribute('aria-hidden', 'true'); target.append(hit);
     } else {
       let art: FieldVisualArt | null = null; try { art = options.resolveArt?.(entity) ?? null; } catch { /* Icon fallback remains usable. */ }
       const fallback = resolveAppArt({ appId: entity.entity.id });
@@ -378,6 +379,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       target.append(hexFrame(metrics.radius));
       const caption = el('span', 'uf-app-caption uf-label'); caption.append(icon(symbol, 'uf-node-icon'), el('span', 'uf-label-text', entity.title));
       target.append(caption);
+      const hit = el('span', 'uf-hit-shape'); hit.setAttribute('aria-hidden', 'true'); target.append(hit);
     }
     if (entity.unreadCount && entity.unreadCount > 0) target.append(el('span', 'uf-unread', entity.unreadCount > 99 ? '99+' : String(entity.unreadCount)));
   }

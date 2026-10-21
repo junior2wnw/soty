@@ -8,7 +8,7 @@ import { fieldEntityKey } from '../../modules/field/contract.mjs';
 
 // Execute the actual node renderer and URL policy. These are DOM-port tests,
 // not a claim that browser typography or the visual composition was reviewed.
-const text = readFileSync(new URL('./unified-field.ts', import.meta.url), 'utf8');
+const text = readFileSync(process.env.SOTY_FIELD_ART_SOURCE ?? new URL('./unified-field.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('unified-field.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const printer = ts.createPrinter(), print = node => printer.printNode(ts.EmitHint.Unspecified, node, parsed);
 const factory = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedField');
@@ -113,4 +113,70 @@ test('invalid CSS values, a remote cover or a resolver failure leave a safe dete
   assert.equal(h.target.querySelector('img'), null);
   h.env.options.resolveArt = () => { throw new Error('Unavailable art resolver'); }; h.render(record);
   assert.equal(h.target.style['--uf-art-base'], fallback.palette.base); assert.equal(h.target.querySelector('.uf-fallback-mark').symbol, 'music');
+});
+
+for (const kind of ['app', 'builtin', 'community']) test('the ' + kind + ' renderer adds one inert hit surface inside the same native button', () => {
+  const h = harness(), record = entity('hit-fixture', 'Проверка названия', { entity: { kind, id: 'hit-fixture' } });
+  h.render(record);
+  const hit = h.target.querySelector('.uf-hit-shape');
+  assert.ok(hit); assert.equal(hit.tag, 'span'); assert.equal(hit.attributes.get('aria-hidden'), 'true');
+  assert.equal(hit.parentElement, h.target); assert.equal(hit.children.length, 0); assert.equal(hit.listeners.size, 0);
+  assert.equal(h.target.querySelector('.uf-label-text').textContent, 'Проверка названия');
+  h.render(record);
+  assert.equal(h.target.children.filter(child => child.classList.contains('uf-hit-shape')).length, 1);
+});
+
+
+test('device renderer preserves the full name and symbol and adds exactly one inert hex hit child', () => {
+  let artCalls = 0; const h = harness(() => { artCalls++; return art(); });
+  const title = 'Мой ноутбук · длинное проверочное название устройства';
+  const record = entity('device-caption-fixture', title, { entity: { kind: 'device', id: 'device-caption-fixture' }, symbol: 'desktop' });
+  h.render(record);
+  const hit = h.target.querySelector('.uf-hit-shape'), inner = h.target.querySelector('.uf-device-inner');
+  assert.equal(h.target.tag, 'button'); assert.equal(h.target.dataset.entityId, 'device:device-caption-fixture');
+  assert.equal(h.target.querySelector('.uf-label-text').textContent, title);
+  assert.equal(h.target.querySelector('.uf-label').parentElement, inner);
+  assert.equal(h.target.querySelector('.uf-device-icon').symbol, 'desktop');
+  assert.equal(h.target.querySelector('img'), null); assert.equal(artCalls, 0);
+  assert.ok(h.target.querySelector('.uf-hex-frame'));
+  assert.ok(hit); assert.equal(hit.tag, 'span'); assert.equal(hit.attributes.get('aria-hidden'), 'true');
+  assert.equal(hit.parentElement, h.target); assert.equal(hit.children.length, 0); assert.equal(hit.listeners.size, 0);
+  assert.deepEqual(h.target.children.map(child => child.className), ['uf-device-inner', 'uf-hex-frame', 'uf-hit-shape']);
+});
+
+for (const online of [true, false]) test('device ' + (online ? 'online' : 'offline') + ' witness keeps the real forty-five-second boundary', () => {
+  const h = harness(); h.env.Date = { now: () => 50_000 };
+  h.render(entity('device-fresh', 'Мой ноутбук', { entity: { kind: 'device', id: 'device-fresh' }, updatedAt: 5_000, online }));
+  const status = h.target.querySelector('.uf-status'); assert.ok(status);
+  assert.equal(status.classList.contains(online ? 'is-online' : 'is-offline'), true);
+  assert.equal(status.attributes.get('aria-label'), online ? 'Устройство в сети' : 'Устройство не в сети');
+  assert.equal(status.parentElement, h.target.querySelector('.uf-device-inner'));
+  assert.equal(h.target.children.filter(child => child.classList.contains('uf-hit-shape')).length, 1);
+});
+
+test('stale, future, absent or unknown device observations do not invent presence after the paint split', () => {
+  for (const observation of [{ updatedAt: 4_999, online: true }, { updatedAt: 50_001, online: true }, { online: false }, { updatedAt: 50_000 }]) {
+    const h = harness(); h.env.Date = { now: () => 50_000 };
+    h.render(entity('device-unknown', 'Ноутбук', { entity: { kind: 'device', id: 'device-unknown' }, ...observation }));
+    assert.equal(h.target.querySelector('.uf-status'), null);
+    assert.equal(h.target.querySelector('.uf-label-text').textContent, 'Ноутбук');
+    assert.equal(h.target.children.filter(child => child.classList.contains('uf-hit-shape')).length, 1);
+  }
+});
+
+test('device rerender retires the previous hit and presence without duplicating the next button surface', () => {
+  const h = harness(); h.env.Date = { now: () => 50_000 };
+  h.render(entity('device-rerender', 'Первое имя', { entity: { kind: 'device', id: 'device-rerender' }, updatedAt: 50_000, online: true }));
+  const oldHit = h.target.querySelector('.uf-hit-shape'), oldInner = h.target.querySelector('.uf-device-inner');
+  assert.ok(oldHit); assert.ok(oldInner);
+  h.render(entity('device-rerender', 'Новое полное имя', { entity: { kind: 'device', id: 'device-rerender' } }));
+  assert.equal(oldHit.parentElement, null); assert.equal(oldInner.parentElement, null);
+  assert.equal(h.target.querySelector('.uf-status'), null);
+  assert.equal(h.target.querySelector('.uf-label-text').textContent, 'Новое полное имя');
+  assert.notEqual(h.target.querySelector('.uf-hit-shape'), oldHit);
+  assert.equal(h.target.children.filter(child => child.classList.contains('uf-hit-shape')).length, 1);
+  h.render(entity());
+  assert.equal(h.target.querySelector('.uf-device-inner'), null);
+  assert.equal(h.target.querySelector('.uf-fallback-mark').symbol, 'music');
+  assert.equal(h.target.children.filter(child => child.classList.contains('uf-hit-shape')).length, 1);
 });
