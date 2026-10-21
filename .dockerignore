@@ -23,6 +23,7 @@ deploy/apps/**
 deploy/connector/**
 !deploy/connector/*.mjs
 !deploy/connector/Dockerfile
+!deploy/connector/Dockerfile.world3
 !deploy/connector/test-support/
 !deploy/connector/test-support/**
 !deploy/connector/apps-v2.fixture.mjs
