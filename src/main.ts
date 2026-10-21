@@ -19,7 +19,9 @@ import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversize
 import { FileTransferError } from './transport/file-transfer.mjs';
 import { clearRemoteSessionState, loadConnectorAccess, loadIssuedConnectorAccess, loadRemoteAccess, loadRemoteEnabled, setConnectorAccess, setIssuedConnectorAccess, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
-import { adoptTrafficProfileFromUrl, provisionTraffic, provisionTrafficClient, readTrafficProfile, revokeTrafficClient, saveTrafficProfile, stopTraffic, trafficFabricStatus, trafficInterfaces, trafficProfileInviteUrl, trafficServerStatus } from "./features/traffic-fabric";
+import { adoptTrafficProfileFromUrl, provisionTraffic, provisionTrafficClient, readTrafficProfile, revokeTrafficClient, saveTrafficProfile, startTraffic, stopTraffic, trafficFabricStatus, trafficInterfaces, trafficProfileInviteUrl, trafficServerStatus } from "./features/traffic-fabric";
+// @ts-expect-error Browser-neutral profile converter is tested directly.
+import { buildSingBoxProfile } from "./features/sing-box-profile.mjs";
 import type { TrafficClient, TrafficExit, TrafficInterface, TrafficRuntime } from "./features/traffic-fabric";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
@@ -7720,8 +7722,10 @@ async function renderTrafficFabricModal(overlay: HTMLDialogElement, notice = "")
       </div>
     </section>
     <div class="traffic-primary-actions">
-      <button class="traffic-provision" type="button">${active ? "Добавить телефон" : "Включить и добавить телефон"}</button>
-      ${runtime.configured ? `<button class="traffic-stop" type="button">Остановить</button>` : ""}
+      ${runtime.configured && !active
+        ? `<button class="traffic-start" type="button">Включить</button>`
+        : `<button class="traffic-provision" type="button">${active ? "Добавить телефон" : "Включить и добавить телефон"}</button>`}
+      ${active ? `<button class="traffic-stop" type="button">Остановить</button>` : ""}
     </div>
     <p class="traffic-footnote">Доступ к локальной сети и файлам компьютера не выдаётся. Профиль можно отозвать отдельно.</p>`;
 
@@ -7749,15 +7753,33 @@ async function renderTrafficFabricModal(overlay: HTMLDialogElement, notice = "")
       await renderTrafficFabricModal(overlay, trafficErrorText(error));
     }
   });
-  content.querySelector<HTMLButtonElement>(".traffic-stop")?.addEventListener("click", async () => {
-    await stopTraffic().catch(() => undefined);
-    await renderTrafficFabricModal(overlay, "Маршрут остановлен");
+  content.querySelector<HTMLButtonElement>(".traffic-start")?.addEventListener("click", async (event) => {
+    (event.currentTarget as HTMLButtonElement).disabled = true;
+    try {
+      await startTraffic();
+      await renderTrafficFabricModal(overlay, "Ядро маршрута запущено");
+    } catch (error) {
+      await renderTrafficFabricModal(overlay, trafficErrorText(error));
+    }
+  });
+  content.querySelector<HTMLButtonElement>(".traffic-stop")?.addEventListener("click", async (event) => {
+    (event.currentTarget as HTMLButtonElement).disabled = true;
+    try {
+      await stopTraffic();
+      await renderTrafficFabricModal(overlay, "Маршрут остановлен");
+    } catch (error) {
+      await renderTrafficFabricModal(overlay, trafficErrorText(error));
+    }
   });
   content.querySelectorAll<HTMLButtonElement>("[data-revoke-client]").forEach((button) => {
     button.addEventListener("click", async () => {
       button.disabled = true;
-      await revokeTrafficClient(button.dataset.revokeClient || "").catch(() => undefined);
-      await renderTrafficFabricModal(overlay, "Доступ устройства отозван");
+      try {
+        await revokeTrafficClient(button.dataset.revokeClient || "");
+        await renderTrafficFabricModal(overlay, "Доступ устройства отозван");
+      } catch (error) {
+        await renderTrafficFabricModal(overlay, trafficErrorText(error));
+      }
     });
   });
 }
@@ -7782,18 +7804,22 @@ function renderTrafficMobileProfile(content: HTMLDivElement, notice = ""): void 
   content.innerHTML = profile ? `
     ${notice ? `<output class="traffic-notice">${escapeHtml(notice)}</output>` : ""}
     <section class="traffic-status-line" data-active="true">
-      <span class="traffic-pulse"></span><span><b>Профиль готов</b><small>Откройте его в INCY и нажмите подключение</small></span>
+      <span class="traffic-pulse"></span><span><b>Профиль готов</b><small>Сохраните профиль и импортируйте его в sing-box</small></span>
     </section>
-    <div class="traffic-mobile-steps"><span>1</span><p><b>Установите INCY</b><small>Если приложение уже есть — переходите дальше.</small></p></div>
-    <div class="traffic-mobile-steps"><span>2</span><p><b>Импортируйте профиль</b><small>INCY покажет VLESS · XHTTP · TLS.</small></p></div>
-    <button class="traffic-open-client" type="button">Открыть в INCY</button>
-    <p class="traffic-footnote">Профиль даёт только интернет через выбранный компьютер. Он не открывает его файлы и локальную сеть.</p>` : `
+    <div class="traffic-mobile-steps"><span>1</span><p><b>Откройте sing-box</b><small>Существующие профили и аккаунты сохраняются.</small></p></div>
+    <div class="traffic-mobile-steps"><span>2</span><p><b>Добавьте локальный профиль</b><small>Выберите скачанный файл soty-internet.json, затем включите подключение.</small></p></div>
+    <button class="traffic-download-profile" type="button">Скачать профиль sing-box</button>
+    <p class="traffic-footnote">Это отдельный профиль выхода через выбранный компьютер. Уже работающий доступ TRANSIT на телефоне не меняется.</p>` : `
     <section class="traffic-status-line" data-active="false">
       <span class="traffic-pulse"></span><span><b>Нужен профиль</b><small>Откройте «Интернет» в Сотах на компьютере и покажите QR.</small></span>
     </section>
-    <p class="traffic-empty">После сканирования этот экран сам предложит открыть INCY.</p>`;
-  content.querySelector<HTMLButtonElement>(".traffic-open-client")?.addEventListener("click", () => {
-    window.location.href = profile;
+    <p class="traffic-empty">После сканирования здесь появится профиль для sing-box.</p>`;
+  content.querySelector<HTMLButtonElement>(".traffic-download-profile")?.addEventListener("click", () => {
+    try {
+      downloadTextFile('soty-internet.json', `${JSON.stringify(buildSingBoxProfile(profile), null, 2)}\n`, 'application/json');
+    } catch (error) {
+      renderTrafficMobileProfile(content, trafficErrorText(error));
+    }
   });
 }
 
@@ -7808,7 +7834,7 @@ async function renderTrafficProfileReady(content: HTMLDivElement, profile: strin
       <button class="traffic-copy-link" type="button">Скопировать ссылку</button>
       <button class="traffic-done" type="button">Готово</button>
     </div>
-    <p class="traffic-footnote">QR открывает PWA «Сот», а уже она передаёт профиль установленному INCY.</p>`;
+    <p class="traffic-footnote">QR открывает Соты на телефоне и предлагает скачать профиль sing-box.</p>`;
   const qr = content.querySelector<HTMLImageElement>(".traffic-profile-qr img");
   if (qr && invite) qr.src = await QRCode.toDataURL(invite, { width: 320, margin: 2, color: { dark: "#071009", light: "#e8f7ef" } });
   content.querySelector<HTMLButtonElement>(".traffic-copy-link")?.addEventListener("click", () => void copyText(invite));
@@ -7819,7 +7845,11 @@ function trafficErrorText(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error || "Не удалось включить маршрут");
   const known: Record<string, string> = {
     "agent-not-connected": "Soty Agent на компьютере сейчас не связан с сервером.",
-    "profile-not-created": "Сервер не выдал профиль устройства."
+    "profile-not-created": "Сервер не выдал профиль устройства.",
+    "traffic-stop-unconfirmed": "Остановка не подтверждена. Проверьте состояние маршрута и повторите.",
+    "traffic-start-unconfirmed": "Запуск не подтверждён. Проверьте состояние маршрута и повторите.",
+    "sing-box-transport-unsupported": "Для sing-box нужен совместимый профиль WebSocket или TCP. Создайте новый профиль телефона на компьютере.",
+    "invalid-sing-box-profile": "Профиль повреждён или не поддерживается. Существующие подключения сохранены."
   };
   return known[raw] || raw.replace(/^traffic-control-http-/u, "Ошибка сервера: ").slice(0, 180);
 }

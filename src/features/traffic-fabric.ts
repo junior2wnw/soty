@@ -90,7 +90,13 @@ export async function revokeTrafficClient(clientId: string): Promise<void> {
 }
 
 export async function stopTraffic(): Promise<void> {
-  await trafficCoreAction({ action: "stop" });
+  const payload = await trafficCoreAction({ action: "stop" });
+  if ((payload.runtime as TrafficRuntime | undefined)?.active !== false) throw new Error("traffic-stop-unconfirmed");
+}
+
+export async function startTraffic(): Promise<void> {
+  const payload = await trafficCoreAction({ action: "start" });
+  if ((payload.runtime as TrafficRuntime | undefined)?.active !== true) throw new Error("traffic-start-unconfirmed");
 }
 
 async function trafficCoreAction(body: Record<string, unknown>): Promise<Record<string, unknown>> {

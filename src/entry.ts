@@ -12,7 +12,7 @@ const root = document.querySelector<HTMLElement>('#app')!;
 const url = new URL(window.location.href);
 const consent = /^\/oauth\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
 const humanLogin = /^\/human-identity\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
-const legacyParameters = ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic'];
+const legacyParameters = ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic', 'trafficProfile'];
 const classic = url.searchParams.get('view') === 'classic'
   || legacyParameters.some(name => url.searchParams.has(name))
   || url.pathname.startsWith('/install/');
