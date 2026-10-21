@@ -12,6 +12,18 @@ const connectorScript = fileURLToPath(new URL('../../../scripts/soty-connector.m
 const invitation = 'I'.repeat(43);
 const navigation = '/embed#document=pag_x&block=hero&invite=' + invitation;
 const bootToken = launch => new URL(launch.launchUrl).hash.slice(1);
+function assertPrivateBoot(url, renewal = false) {
+  const boot = new URL(url);
+  assert.equal(boot.pathname, '/_soty/boot');
+  assert.equal(boot.searchParams.get('path'), '/embed');
+  assert.deepEqual([...boot.searchParams.keys()], renewal ? ['path', 'mode'] : ['path']);
+  if (renewal) assert.equal(boot.searchParams.get('mode'), 'renew');
+  assert.match(boot.hash.slice(1), /^[A-Za-z0-9_-]{43}$/u);
+  assert.notEqual(boot.hash.slice(1), invitation, 'the invitation is not a launch ticket');
+  for (const privateValue of ['pag_x', 'hero', 'document', 'invite', invitation]) {
+    assert.equal(boot.search.includes(privateValue), false, 'private navigation stays out of the bootstrap query');
+  }
+}
 
 test('actual signed Root/SDK keeps document navigation through boot, external launch and same-slot renewal without changing authority', { timeout: 90000 }, async t => {
   const f = await createOrdinaryInstalledFixture(t, {
@@ -45,7 +57,7 @@ test('actual signed Root/SDK keeps document navigation through boot, external la
     } });
   t.after(() => launcher.dispose());
   const url = await launcher.launch(), first = replies.at(-1), captured = launcher.scopedCapture();
-  assert.equal(new URL(url).searchParams.get('path'), navigation);
+  assertPrivateBoot(url);
   assert.equal(first.entry.path, navigation); assert.deepEqual(first.scopedSource, pin.sourceProfile);
   async function boot(launch) {
     const reply = await f.wire(realm.embedded + '/_soty/session', { body: { ticket: bootToken(launch) } });
@@ -62,15 +74,14 @@ test('actual signed Root/SDK keeps document navigation through boot, external la
   assert.deepEqual(realm.instance.paths, ['/embed']);
   const popup = { opener: {}, closed: false, location: { replace(value) { this.url = value; } }, close() { this.closed = true; } };
   assert.equal(await launcher.openExternal(() => popup), 'opened');
-  assert.equal(new URL(popup.location.url).searchParams.get('path'), navigation);
+  assertPrivateBoot(popup.location.url);
   assert.equal(launcher.scopedCapture().handle, captured.handle, 'external entry cannot replace the visible slot');
   const external = await boot(replies.at(-1)); assert.notEqual(external.frame, initial.frame);
   assert.equal((await f.wire(realm.embedded + '/embed', { headers })).status, 200, 'original frame remains live');
   const args = { appId: realm.appId, handle: captured.handle, requestId: 'fragment-renew-request-0001' };
   const renewed = await f.reader.client.extension('apps.scoped.renew', args);
   const prepared = launcher.prepareRenewal({ ...renewed, url: renewed.launchUrl, scopedCleanup: f.reader.client.appSlotCleanup(renewed) });
-  assert.equal(new URL(prepared.url).searchParams.get('path'), navigation);
-  assert.equal(new URL(prepared.url).searchParams.get('mode'), 'renew');
+  assertPrivateBoot(prepared.url, true);
   const repeated = await f.reader.client.extension('apps.scoped.renew', args);
   assert.equal(repeated.entry.path, navigation); assert.equal(repeated.scopedCloseHandle, renewed.scopedCloseHandle);
   const candidate = await boot(renewed); assert.equal(candidate.frame, initial.frame);
@@ -92,11 +103,13 @@ test('actual signed Root/SDK keeps document navigation through boot, external la
 test('ordinary selected Source uses the same unchanged SDK for fragment launch and renewal', { timeout: 90000 }, async t => {
   const f = await createOrdinaryInstalledFixture(t, { realmIds: ['board'], connectorScript }), [realm] = f.realms;
   const launch = await f.reader.client.extension('apps.launch', { appId: realm.appId, path: navigation });
+  assertPrivateBoot(launch.launchUrl);
   const boot = await f.wire(realm.embedded + '/_soty/session', { body: { ticket: bootToken(launch) } });
   assert.equal(boot.status, 200); assert.equal(boot.value.entryPath, navigation); assert.equal(boot.value.frame, undefined);
   await f.login(realm);
   const renewed = await f.reader.client.extension('apps.scoped.renew', {
     appId: realm.appId, handle: launch.scopedCloseHandle, requestId: 'ordinary-fragment-renew-0001' });
+  assertPrivateBoot(renewed.launchUrl, true);
   assert.equal(renewed.entry.path, navigation); assert.deepEqual(renewed.scopedSource, launch.scopedSource);
   const candidate = await f.wire(realm.embedded + '/_soty/session', { body: { ticket: bootToken(renewed) } });
   assert.equal(candidate.status, 200); assert.equal(candidate.value.entryPath, navigation);
