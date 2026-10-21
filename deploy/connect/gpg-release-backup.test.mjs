@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { TarInventory,encryptTar,verifyTar,sha,keyBytes } from './gpg-tar.mjs';
 import { backupStopped,restoreIsolated } from './gpg-release-backup.mjs';
+import { listAllContainerMounts } from './gpg-container-inventory.mjs';
 
 const KEY=Buffer.from('A'.repeat(64)),IMAGE='sha256:'+'1'.repeat(64),ID='2'.repeat(32),CONTAINER='3'.repeat(64);
 const linux={skip:process.platform!=='linux',timeout:180000};
@@ -261,8 +262,8 @@ async function registerBackupLoggingRegressions({candidateFile,legacyArgsFile}) 
     // The trusted completed-auth port only lets this test reach actual CREATE
     // construction. It does not test real GPG or bypass production validation.
     const verifyTar=async()=>{actions.push('AUTH_COMPLETE');return {plainSha256:'5'.repeat(64),inventorySha256:'6'.repeat(64),entries:1,fileBytes:0};};
-    const restore=new Function('path','bad','limits','verifyTar','randomBytes',constants+'\n'+fences+'\n'+restoreSource+'\nreturn restoreIsolated;')(
-      path,bad,()=>({}),verifyTar,()=>Buffer.alloc(16,4));
+    const restore=new Function('path','bad','limits','verifyTar','randomBytes','listAllContainerMounts',constants+'\n'+fences+'\n'+restoreSource+'\nreturn restoreIsolated;')(
+      path,bad,()=>({}),verifyTar,()=>Buffer.alloc(16,4),listAllContainerMounts);
     const engine={
       image:async image=>({Id:image}),
       inspect:async()=>{throw Object.assign(Error('absent'),{code:'engine_http_404'});},
@@ -274,7 +275,7 @@ async function registerBackupLoggingRegressions({candidateFile,legacyArgsFile}) 
           if(!volume)throw Object.assign(Error('absent'),{code:'engine_http_404'});
           return volume;
         }
-        if(method==='GET'&&url==='/containers/json?all=1')return [];
+        if(method==='GET'&&url==='/containers/json?all=1&limit=8')return [];
         throw Error('Unexpected port; no Docker process may start in this Source test');
       },
       create:async(_name,value)=>{actions.push('CREATE_CONTAINER');creates++;config=value;throw Error('TEST_STOP_AFTER_CAPTURE');},
@@ -297,8 +298,8 @@ test('BK-LOG-01 actual extraction inspection refuses logging before START',async
   const restoreSource=span(source,'export async function restoreIsolated(', '\nasync function stdinKey(').replace(/^export /,'');
   let volume,config,starts=0,cleanups=0,creates=0,inspected=0;
   const extractId='8'.repeat(64);
-  const restore=new Function('path','bad','limits','verifyTar','randomBytes','processDocker','stopOwned',constants+'\n'+fences+'\n'+restoreSource+'\nreturn restoreIsolated;')(
-    path,bad,()=>({}),async()=>({}),()=>Buffer.alloc(16,4),()=>{starts++;throw Error('NO_PROCESS_PORT');},async()=>{cleanups++;});
+  const restore=new Function('path','bad','limits','verifyTar','randomBytes','processDocker','stopOwned','listAllContainerMounts',constants+'\n'+fences+'\n'+restoreSource+'\nreturn restoreIsolated;')(
+    path,bad,()=>({}),async()=>({}),()=>Buffer.alloc(16,4),()=>{starts++;throw Error('NO_PROCESS_PORT');},async()=>{cleanups++;},listAllContainerMounts);
   const engine={
     image:async()=>({Id:IMAGE}),
     inspect:async id=>{

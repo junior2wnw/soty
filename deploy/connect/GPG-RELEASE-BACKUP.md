@@ -289,3 +289,46 @@ final controlled volume/config switch and health checks. This helper never
 overwrites production, starts an image, changes a guard flag, or pretends that
 an unsupported binary can read World3. If the bridge/recovery route was not
 qualified, that is a release blocker, not authorization for a bypass.
+# Protected Docker volume paths (v5 operator adapter)
+
+Host `realpath` remains mandatory for the artifact parent and every accessible
+Source. An `EACCES` for the already validated sole local `/data` volume root can
+use a separate physical-isolation proof. Other errors, protected bind Sources,
+symlink/special bind roots, unknown filesystem layouts or ambiguous proofs fail.
+
+The proof helper uses the same explicitly qualified pinned helper image, Node24,
+no network/ports/logging/socket, read-only rootfs and exact read-only Source plus
+artifact-parent mounts. It reads only its kernel mountinfo and root stat records.
+Known filesystem types are ext4/xfs/btrfs/tmpfs. Device identity and canonical
+filesystem root paths are compared for the Source roots and **parent root plus
+the new artifact basename**, so sibling configuration files remain valid. It
+does not claim that container `realpath` equals host `realpath`. The artifact
+parent's kernel dev/inode must match host lstat; host parent identity and realpath
+are checked again before exclusive directory creation. Unknown/escaped/ambiguous
+fields are not admitted by a path-string fallback.
+
+The exact helper image, public inline command, nonce label, actual mounts, RO
+flags, logging, namespace and resource limits are checked before START and
+after exit. The helper is stopped/removed only with its full owned tuple. Any
+unresolved helper remains a failed operation. Raw mountinfo roots stay inside
+bounded memory/pipe; receipts contain only hashes/counts. GPG, key transport,
+archive codec, authentication and ciphertext ownership remain unchanged.
+
+This additional adapter needs a fresh actual Linux qualification, including real
+protected-volume admission and real alias geometry controls. A pure unit pass or
+a namespace `realpath` observation cannot replace that gate.
+
+
+## V7: bounded all-container restore ownership inventory
+
+The restore ownership fence now enumerates every stopped/running container in fixed pages of8 instead of one unbounded global metadata response. Docker Engine API1.45 supports all=1, limit and the before filter. Each following page uses filters.before containing the last full64-character container ID. A short page terminates enumeration; an exact-full final page needs one following empty page. No volume/name/label/ancestor/status filter is applied, so foreign bind aliases and stopped consumers remain in scope. Reference: https://docs.docker.com/reference/api/engine/version/v1.45/ and the official version/v1.45.yaml.
+
+The helper checks page/container/mount shape, lowerhex full IDs, duplicates across all pages and cursor progress. It retains only Id+Mounts, discarding Commands, Names, Labels and other unrelated metadata. Missing/null/incomplete mount summaries retain the existing per-container inspect fallback. The caller's original volume/labels/overlap/exact-extractor fence and repeated pre/post-use checks remain unchanged.
+
+Limits are fixed:8 records/page; existing4MiB DockerApi response cap/page;8192 total containers;1025 requests maximum (including final empty page);65536 retained mount records;16MiB UTF8 JSON size for retained Id+Mounts. A monotonic60s deadline is checked before/after each page; the existing request timeout bounds an in-flight request, so this is not a cancellation mechanism. Exceeded/invalid/ambiguous inventory fails closed and returns no partial list. DockerApi global limits and all other calls remain unchanged.
+
+Pagination is not an atomic Docker snapshot. The current restore's repeated ownership/no-consumer checks still apply before/after extraction/readback. Concurrent disappearance, ignored cursor, duplicate IDs, malformed responses or exceeded bounds are refusal/quarantine, not permission to skip records. The helper performs GET only and never deletes/stops/renames any listed foreign resource. No private metadata is logged.
+
+Root measured a separate readonly API page8 pilot:1293 IDs,162 pages, maximum page685287 bytes,21066420 aggregate bytes,9.75s; the ID set matched an independent full-ID docker CLI inventory. This is Root-reported feasibility, not author execution or qualification of this exact helper. Independent review, Node cases and the complete actual Docker/GPG/DPAPI synthetic cycle still qualify V7.
+
+The old62 test assertions/declarations/skips/timeouts are retained exactly; only two extracted-function harness ports now receive the actual new helper and one synthetic endpoint changes to the exact paginated first URL. All29 mount-proof tests and production mount-proof code are byte-identical to sealed V6. New portable inventory tests cover complete enumeration, strict bounds/shapes, dropped irrelevant metadata, ignored cursors, later-page foreign named-volume/bind-alias consumers and the actual restore inspect fallback. No GPG algorithm/key custody/TAR code or capability policy changes.

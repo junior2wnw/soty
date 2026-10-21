@@ -7,6 +7,8 @@ import { constants,createReadStream } from 'node:fs';
 import { mkdir,lstat,readdir,open,realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { assertArtifactMountIsolation } from './gpg-mount-proof.mjs';
+import { listAllContainerMounts } from './gpg-container-inventory.mjs';
 
 const ID=/^[a-f0-9]{32}$/,CONTAINER=/^[a-f0-9]{64}$/,IMAGE=/^sha256:[a-f0-9]{64}$/;
 const OWNER='io.soty.isolated-restore.owner',OP='io.soty.isolated-restore.operation';
@@ -79,12 +81,26 @@ async function sourceFence(engine,id){
   }
   return original;
 }
-async function artifactDirectory(directory,original){
+async function artifactDirectory(directory,original,engine,image,operationId,cap){
   const absolute=path.resolve(directory),parent=await realpath(path.dirname(absolute));
   if(path.dirname(absolute)!==parent)bad('backup_directory_invalid');
+  const parentStat=await lstat(parent,{bigint:true});
+  if(!parentStat.isDirectory()||parentStat.isSymbolicLink())bad('backup_directory_invalid');
+  let protectedVolume=false;
   for(const mount of original.Mounts){
-    const source=await realpath(mount.Source);
+    let source;
+    try{source=await realpath(mount.Source);}
+    catch(error){
+      if(error.code!=='EACCES'||mount.Type!=='volume'||mount.Destination!=='/data')throw error;
+      protectedVolume=true;continue;
+    }
     if(absolute===source||absolute.startsWith(source.replace(/\/$/,'')+'/')||source.startsWith(absolute+'/'))bad('backup_directory_overlaps_source');
+  }
+  if(protectedVolume){
+    await assertArtifactMountIsolation({engine,image,operationId,original,parent,parentStat,artifactBase:path.basename(absolute),cap,
+      run:processDocker,stop:(id,label,nonce,expectedImage)=>stopOwned(engine,id,label,nonce,expectedImage)});
+    const after=await lstat(parent,{bigint:true});
+    if(await realpath(parent)!==parent||['dev','ino','mode','uid','gid'].some(key=>parentStat[key]!==after[key]))bad('backup_directory_invalid');
   }
   await mkdir(absolute,{mode:0o700});
   const owned=await lstat(absolute);
@@ -144,7 +160,7 @@ export async function backupStopped({containerId,image,operationId,directory,key
   if(!CONTAINER.test(containerId??'')||!path.isAbsolute(directory??''))bad('backup_identity_invalid');
   const value=limits(cap),original=await sourceFence(engine,containerId),checkpoint=sourceState(original);
   await pinnedImage(engine,image);
-  await artifactDirectory(directory,original);
+  await artifactDirectory(directory,original,engine,image,operationId,value);
   const archive=await readonlyArchive(engine,containerId,operationId,'volume',image,value,randomBytes(16).toString('hex'));
   let volume;
   try{volume=await encryptTar({file:path.join(directory,'volume.gpg'),key,input:archive.child.stdout,cap:value});await archive.done;}
@@ -181,7 +197,7 @@ export async function restoreIsolated({file,expectedSha256,image,operationId,key
   const assertOwned=async()=>{
     const v=await engine.request('GET','/volumes/'+volume);
     if(v.Name!==volume||v.Driver!=='local'||v.Scope!=='local'||!path.posix.isAbsolute(v.Mountpoint??'')||v.Options&&Object.keys(v.Options).length||v.Labels?.[OWNER]!==nonce||v.Labels?.[OP]!==operationId||v.Labels?.[ISOLATED]!=='1')bad('restore_target_invalid');
-    const all=await engine.request('GET','/containers/json?all=1');
+    const all=await listAllContainerMounts(engine);
     if(!Array.isArray(all))bad('restore_target_invalid');
     const overlaps=(a,b)=>a===b||a.startsWith(b.replace(/\/$/,'')+'/')||b.startsWith(a.replace(/\/$/,'')+'/');
     for(let c of all){
