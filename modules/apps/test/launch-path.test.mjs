@@ -9,7 +9,9 @@ test('selected navigation admits only exact /embed with a bounded opaque same-do
     const result = createScopedLaunchPath(path);
     assert.equal(result.entryPath, path);
     const boot = new URL(result.bootPath, 'https://app.test');
-    assert.equal(boot.searchParams.get('path'), path);
+    assert.equal(boot.searchParams.get('path'), '/embed');
+    assert.equal(boot.searchParams.size, 1);
+    assert.equal(result.bootPath, '/_soty/boot?path=%2Fembed');
     assert.equal(boot.hash, '');
     const destination = new URL(path, 'https://app.test');
     assert.equal(destination.origin, 'https://app.test');

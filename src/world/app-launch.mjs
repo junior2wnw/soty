@@ -7,6 +7,17 @@ import {captureSourcePin} from './app-project-capture.mjs';
 
 export const isScopedRuntimeProfile = value => value === 'soty.selected-human-embed.v1' || value === 'soty.selected-human-embed.v2';
 
+// Public Source boot omits private navigation; all other paths still match exactly.
+function matchesBootPath(publicPath, privatePath, runtimeProfile) {
+  if (publicPath === privatePath) return true;
+  if (!isScopedRuntimeProfile(runtimeProfile) || publicPath !== '/embed' || typeof privatePath !== 'string'
+    || !privatePath.isWellFormed() || !privatePath.startsWith('/embed#')) return false;
+  const fragment = privatePath.slice(7);
+  if (fragment.length > 2048 || /[\\#\u0000-\u0020\u007f]/u.test(fragment)) return false;
+  try { return !/[\\\u0000-\u001f\u007f]/u.test(decodeURIComponent(fragment)); }
+  catch { return false; }
+}
+
 export class AppLaunchError extends Error {
   constructor(code) { super(code); this.name = 'AppLaunchError'; this.code = code; }
 }
@@ -44,7 +55,7 @@ export function validateAppLaunchPath(value) {
 }
 
 /** A server-resolved address. It is a location, never a reusable permission. */
-export function validateAppEntry(value, target, shellUrl, launchUrl) {
+export function validateAppEntry(value, target, shellUrl, launchUrl, runtimeProfile) {
   const requested = normalizeAppLaunchTarget(target);
   requireValue(value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).sort().join(',') === 'appId,domainId,origin,path', 'invalid_app_entry');
@@ -60,7 +71,7 @@ export function validateAppEntry(value, target, shellUrl, launchUrl) {
   if (launchUrl !== undefined) {
     const boot = new URL(validateAppLaunchUrl(launchUrl, shellUrl));
     requireValue(boot.origin === value.origin && [...boot.searchParams.keys()].join(',') === 'path'
-      && boot.searchParams.get('path') === selected.path, 'invalid_app_entry');
+      && matchesBootPath(boot.searchParams.get('path'), selected.path, runtimeProfile), 'invalid_app_entry');
   }
   return Object.freeze({ appId: selected.appId, domainId: selected.domainId, origin: value.origin, path: selected.path });
 }
@@ -167,7 +178,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     const savedRootEntry = requested.path === '/' && value?.path === '/embed'
       && binding?.profile === 'soty.selected-human-embed.v2' && binding.source?.id === 'soty.standard-workspace'
       && binding.source.version === 2 && binding.source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
-    const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl, url);
+    const entry = validateAppEntry(value, savedRootEntry ? { ...requested, path: '/embed' } : requested, shellUrl, url, binding?.profile);
     requireValue(!selected || (selected.domainId === entry.domainId && selected.origin === entry.origin
       && (selected.path === entry.path || (savedRootEntry && selected.path === '/'))), 'invalid_app_entry');
     selected = entry;
@@ -244,7 +255,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         &&source.digest===scoped.source.digest,'invalid_app_scoped_launch');
       const url=validateAppLaunchUrl(result.url,shellUrl),boot=new URL(url);
       requireValue(boot.origin===selected.origin&&[...boot.searchParams.keys()].join(',')==='path,mode'
-        &&boot.searchParams.get('path')===selected.path&&boot.searchParams.get('mode')==='renew','invalid_app_scoped_launch');
+        &&matchesBootPath(boot.searchParams.get('path'),selected.path,scoped.profile)&&boot.searchParams.get('mode')==='renew','invalid_app_scoped_launch');
       const entry=validateAppEntry(result.entry,{appId:selected.appId,domainId:selected.domainId,path:selected.path},shellUrl);
       requireValue(entry.origin===selected.origin&&Number.isSafeInteger(result.scopedSlotExpiresAt)&&result.scopedSlotExpiresAt>Date.now()
         &&result.scopedSlotExpiresAt<=Date.now()+310000&&typeof result.scopedRenewalRequestId==='string'&&/^[A-Za-z0-9_-]{16,128}$/.test(result.scopedRenewalRequestId),'invalid_app_scoped_launch');

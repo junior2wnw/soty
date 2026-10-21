@@ -26,5 +26,7 @@ export function checkedScopedEntryPath(value) {
 
 export function createScopedLaunchPath(value) {
   assertApps(checkedScopedEntryPath(value) !== null, 'app_scoped_admission_required', 503);
-  return createLaunchPath(value);
+  // Private document/invite navigation stays in the opaque ticket/session.
+  // Bootstrap request URLs and access logs contain only the admitted route.
+  return { ...createLaunchPath('/embed'), entryPath: value };
 }
