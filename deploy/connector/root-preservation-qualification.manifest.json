@@ -1,0 +1,816 @@
+{
+  "schema": "soty.root-preservation-qualification-sources.v2",
+  "stockRevision": "cbeb42586ff501899652b2010188415ce5b68d16",
+  "applicationSourceRevision": "12523c6e6d6145c132545ba4d9ae4f1840870ca8",
+  "profile": {
+    "rooms": 2,
+    "apps": 14,
+    "notes": 2,
+    "capabilities": 3,
+    "appRegistration": 1,
+    "feedback": 1,
+    "humanIdentity": 3,
+    "connect": 4,
+    "world": 6
+  },
+  "stockManifestSha256": "1b6e85270a7d4d42cd077fd89fd6ed6a10b802e27b337a8f377499d5907b5b2f",
+  "scope": "source-only-CURRENT-World6-Apps14-preservation-no-migration-no-deploy",
+  "roots": [
+    "deploy/connector/root-preservation-release.mjs",
+    "deploy/connector/root-preservation-runtime.mjs",
+    "deploy/connector/root-preservation-observe-runner.mjs",
+    "deploy/connector/root-state-observer.mjs",
+    "deploy/connector/root-preservation-fixture.mjs",
+    "deploy/connector/root-preservation-qualify.mjs",
+    "deploy/connector/root-preservation-delivery.mjs"
+  ],
+  "builtins": [
+    "node:child_process",
+    "node:crypto",
+    "node:fs",
+    "node:fs/promises",
+    "node:http",
+    "node:os",
+    "node:path",
+    "node:sqlite",
+    "node:stream",
+    "node:stream/promises",
+    "node:timers/promises",
+    "node:url",
+    "node:util",
+    "node:worker_threads"
+  ],
+  "externalPackages": {
+    "sharp": {
+      "version": "0.34.5",
+      "suppliedBy": "immutable-candidateImage-/app/node_modules",
+      "lockfile": "pnpm-lock.yaml"
+    }
+  },
+  "files": [
+    {
+      "path": "deploy/connect/backup.mjs",
+      "representation": "git-lf",
+      "bytes": 6422,
+      "sha256": "1da6efdfb5b63630b82fbb5d42dba36dc55090fa9fc25098bb6e50a62a3c21ee"
+    },
+    {
+      "path": "deploy/connect/gpg-container-inventory.mjs",
+      "representation": "git-lf",
+      "bytes": 2633,
+      "sha256": "ddfe7f375c429e2ce389e7a8cdf5d0754743ae1f3beb63d207ddca33282abc72"
+    },
+    {
+      "path": "deploy/connect/gpg-mount-proof.mjs",
+      "representation": "git-lf",
+      "bytes": 15253,
+      "sha256": "7659c651232b2a9d6dc323149edce02674a3e3a1a23263091bcf8f1fb5eac693"
+    },
+    {
+      "path": "deploy/connect/gpg-release-backup.mjs",
+      "representation": "git-lf",
+      "bytes": 20467,
+      "sha256": "4ea94d8550a92f8d801e871e5f23bcfb617da960c526c3bcf5e2288e0a20b6a1"
+    },
+    {
+      "path": "deploy/connect/gpg-tar.mjs",
+      "representation": "git-lf",
+      "bytes": 13876,
+      "sha256": "02574ba26f3528a8587403db1369846d5f45d48268bdb3494d1dd37dd52eb399"
+    },
+    {
+      "path": "deploy/connector/application-policy.mjs",
+      "representation": "git-lf",
+      "bytes": 2215,
+      "sha256": "e4cb44f7ee4cd6fb910a4db50e1bb95b7d4f2b5c3663fa17dc284219c3523dd4"
+    },
+    {
+      "path": "deploy/connector/cli.mjs",
+      "representation": "git-lf",
+      "bytes": 7450,
+      "sha256": "8921f6cd031d2c520b7bbafebfa7792a6b571a9db4de7d15436bce7839c5a183"
+    },
+    {
+      "path": "deploy/connector/cold-verification-stage.stock.json",
+      "representation": "raw",
+      "bytes": 21746,
+      "sha256": "1b6e85270a7d4d42cd077fd89fd6ed6a10b802e27b337a8f377499d5907b5b2f"
+    },
+    {
+      "path": "deploy/connector/docker-api.mjs",
+      "representation": "git-lf",
+      "bytes": 6762,
+      "sha256": "a4973ef4adb020bda2078ceac43c07b907e07e715205d30d807317968e9eb3b0"
+    },
+    {
+      "path": "deploy/connector/fixtures/universal-stores-v1/app-registration.sql",
+      "representation": "git-lf",
+      "bytes": 8233,
+      "sha256": "2e588186b477c355eec11249f3970421affdba194623541e6ae4660ef06db326"
+    },
+    {
+      "path": "deploy/connector/installed-module-rotation.mjs",
+      "representation": "git-lf",
+      "bytes": 14058,
+      "sha256": "81c5e81e3ae3aa3a7286ebf1329a78944cb9f67d2318831736a42e4fad7f370b"
+    },
+    {
+      "path": "deploy/connector/journal.mjs",
+      "representation": "git-lf",
+      "bytes": 689,
+      "sha256": "0bbcd96a05d7b6c549ed12f366b78b4554df008dc6d405e6ab40a0ec37eef597"
+    },
+    {
+      "path": "deploy/connector/rollout.mjs",
+      "representation": "git-lf",
+      "bytes": 29206,
+      "sha256": "4ccbc9ac857ca044d287f05f39b636c1da44bb8d7fe3878b4d99b5f88dac0bd8"
+    },
+    {
+      "path": "deploy/connector/root-preservation-delivery.mjs",
+      "representation": "raw",
+      "bytes": 3129,
+      "sha256": "724174e4c3e7671561cf3d9c301645afa58249c1ab834b5d567362a64bf198be"
+    },
+    {
+      "path": "deploy/connector/root-preservation-fixture-profile.mjs",
+      "representation": "raw",
+      "bytes": 1013,
+      "sha256": "39fb0dd739cdcbe306e2bec1d4784a73c8cdd96130ef11c5183016652232b3c0"
+    },
+    {
+      "path": "deploy/connector/root-preservation-fixture.mjs",
+      "representation": "raw",
+      "bytes": 4590,
+      "sha256": "6aaba51599804f07fa61457c91f325bc69c3c860b8ba1a690be099eb2cee30b0"
+    },
+    {
+      "path": "deploy/connector/root-preservation-observe-runner.mjs",
+      "representation": "raw",
+      "bytes": 302,
+      "sha256": "7ecdd970491cf7e508945875eee50a9108244aa461cbd276cc181d8c33f0abad"
+    },
+    {
+      "path": "deploy/connector/root-preservation-qualify.mjs",
+      "representation": "raw",
+      "bytes": 12134,
+      "sha256": "f0d3d4456d2523adf4e5a7709886ca6408e434634dcad0b6e70ecb8b74a5db62"
+    },
+    {
+      "path": "deploy/connector/root-preservation-release.mjs",
+      "representation": "raw",
+      "bytes": 18304,
+      "sha256": "2bd7989fda7264adc653f2ff4a423ba70e5fbd623296a92ed022ee4c2e9e2316"
+    },
+    {
+      "path": "deploy/connector/root-preservation-runtime.mjs",
+      "representation": "raw",
+      "bytes": 22149,
+      "sha256": "509e95d2f3c21e851b0a8154a16f33756b7809da2b9d3fccaa4c3cc5daa9a63c"
+    },
+    {
+      "path": "deploy/connector/root-state-observer.mjs",
+      "representation": "raw",
+      "bytes": 23775,
+      "sha256": "2a83ee137eec457b733aac33e09151843bf72a3d43ab11ab313518dbb5f7dc34"
+    },
+    {
+      "path": "deploy/connector/runtime.mjs",
+      "representation": "git-lf",
+      "bytes": 6782,
+      "sha256": "eb95a3e1b634d98cc91f6ca3486c1be13f7b91032ac3da8bc3d7f49a404e719b"
+    },
+    {
+      "path": "deploy/connector/storage-guard.mjs",
+      "representation": "git-lf",
+      "bytes": 14127,
+      "sha256": "7e6699a89fce9b029a68d3b22d0cb9203f9d61972408d1e806afe2971e3cf1e7"
+    },
+    {
+      "path": "deploy/connector/storage-probe.mjs",
+      "representation": "git-lf",
+      "bytes": 87141,
+      "sha256": "6182202eeaf3fb0871eddc2f926e4ebd2f7c66c7400cc3e8f9c7c230f6c32e50"
+    },
+    {
+      "path": "deploy/connector/storage-snapshot.mjs",
+      "representation": "git-lf",
+      "bytes": 2376,
+      "sha256": "29be51178f4b71a70dfa2d3714c029fad67d59690a0cda9d984a26d3d0175c1b"
+    },
+    {
+      "path": "deploy/connector/universal-cli-policy.mjs",
+      "representation": "git-lf",
+      "bytes": 3405,
+      "sha256": "3ab4a168fe531b5407d8aafceefa44751fca05ff445354fc2df5cb278238d2cb"
+    },
+    {
+      "path": "deploy/connector/universal-policy.mjs",
+      "representation": "git-lf",
+      "bytes": 43370,
+      "sha256": "84d162c68b8fe29e7416de73f312220e52c5756da5c278bd8f10cd63400ae634"
+    },
+    {
+      "path": "modules/app-contract/index.mjs",
+      "representation": "git-lf",
+      "bytes": 23183,
+      "sha256": "c25c4ea04dd07010bd397d73763a3a1f0c472dff73057f5e0e2eb2ec774cad9d"
+    },
+    {
+      "path": "modules/app-contract/json.mjs",
+      "representation": "git-lf",
+      "bytes": 5727,
+      "sha256": "8bccbf2ba50ea9dd391441b60f8536eeb6a6d4454a17472768ba6bc7e16a161e"
+    },
+    {
+      "path": "modules/app-contract/server/authority.mjs",
+      "representation": "git-lf",
+      "bytes": 6605,
+      "sha256": "daea19bf7535bd50efffa48bd6b30c842d72bb653fd09732ae1baf15791b1454"
+    },
+    {
+      "path": "modules/app-contract/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 9653,
+      "sha256": "34e8d9987f23ff6d2aa0682ab7ca6debb9f82274e057861990913a799fff3197"
+    },
+    {
+      "path": "modules/app-contract/universal-preparedness.mjs",
+      "representation": "git-lf",
+      "bytes": 12213,
+      "sha256": "669feb1979e4f9ca799f69c3b468fbde43ae0aa26faabd0eb5f599a5cc1da146"
+    },
+    {
+      "path": "modules/apps/scoped-embed/profile-dispatch.mjs",
+      "representation": "git-lf",
+      "bytes": 1496,
+      "sha256": "276562bd2f5587c9f346e09fe7a3500d9d01a6649a0b27da6b0334571a9a3d6a"
+    },
+    {
+      "path": "modules/apps/scoped-embed/profile.mjs",
+      "representation": "git-lf",
+      "bytes": 8423,
+      "sha256": "584ec7073a4794aec4b8bda44ba663e737b22fbb470d1036fddd0f283e2444bc"
+    },
+    {
+      "path": "modules/apps/scoped-embed/resource-profile.mjs",
+      "representation": "git-lf",
+      "bytes": 3994,
+      "sha256": "93027992be0fe7ce6527c82074d8e2df083e22ff7aafd089b0f37c1a8379d9c0"
+    },
+    {
+      "path": "modules/apps/scoped-embed/resource-route-adapters.mjs",
+      "representation": "git-lf",
+      "bytes": 9937,
+      "sha256": "c7fc881fe3defc9ec38d2b3bd2432fdb118f383342e4bb064c4cb58383c595dd"
+    },
+    {
+      "path": "modules/apps/server/audience.mjs",
+      "representation": "git-lf",
+      "bytes": 5423,
+      "sha256": "e22e190314414c2a3d8a5d751699157b569a76bfa7452ea3e0dec1bffd9b9329"
+    },
+    {
+      "path": "modules/apps/server/domain-policy.mjs",
+      "representation": "git-lf",
+      "bytes": 4658,
+      "sha256": "696d11c4ce1d2303a78004e5fd0acdab39c8a5e26b72c8df29a0ff6fd14ba7cb"
+    },
+    {
+      "path": "modules/apps/server/launch-path.mjs",
+      "representation": "git-lf",
+      "bytes": 473,
+      "sha256": "84c184b2943d4c5ff1e92fe2cdaac2c95fceec131b3dad3e2efb72db29e6ae36"
+    },
+    {
+      "path": "modules/apps/server/protocol.mjs",
+      "representation": "git-lf",
+      "bytes": 8828,
+      "sha256": "a1a9609de906b58c445377dea8d5325d944b4d81b2a59fae81547928594e9945"
+    },
+    {
+      "path": "modules/apps/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 70426,
+      "sha256": "834d2a270758c7bf3ce5c71d195eca6fd96643a6bc1ce8dbc387d0d3de2fe1c7"
+    },
+    {
+      "path": "modules/capabilities/server/catalog.mjs",
+      "representation": "git-lf",
+      "bytes": 8185,
+      "sha256": "424247fc29d5ba9a45a8486a501f00edfa0d3a1038c5cf0b2c1016bb2747ed98"
+    },
+    {
+      "path": "modules/capabilities/server/external-adapters.mjs",
+      "representation": "git-lf",
+      "bytes": 20411,
+      "sha256": "c911f199ad5539e8e88122641169feb2401d0586df1ab3e06a70b94346c307fc"
+    },
+    {
+      "path": "modules/capabilities/server/external-guidance.mjs",
+      "representation": "git-lf",
+      "bytes": 5369,
+      "sha256": "f9ce1a98c4f14e0ea0bacd39136b2d1178c6874539689149583e60985dd32340"
+    },
+    {
+      "path": "modules/capabilities/server/native-note-contract.mjs",
+      "representation": "git-lf",
+      "bytes": 1098,
+      "sha256": "1f3ab19fa9e6641e9928ce363ab6fdcbcf1421d4785256466a430ce0bcfa9c83"
+    },
+    {
+      "path": "modules/capabilities/server/oauth-baseline.mjs",
+      "representation": "git-lf",
+      "bytes": 15822,
+      "sha256": "a15d02d78d62f4f1eeea41104d5a85f4a020d69306b1503e4c4c7c7ec6b3a77c"
+    },
+    {
+      "path": "modules/capabilities/server/oauth-profile.mjs",
+      "representation": "git-lf",
+      "bytes": 14230,
+      "sha256": "e16b589a2cf8c492e7eb567989e465288009aea4bbc3b3c0db98319bd5799e07"
+    },
+    {
+      "path": "modules/capabilities/server/oauth-schema.mjs",
+      "representation": "git-lf",
+      "bytes": 15301,
+      "sha256": "ca2810310bab42a1d0232459163aa34eb5088de8d610aab411c17324e1002288"
+    },
+    {
+      "path": "modules/capabilities/server/readonly-queries.mjs",
+      "representation": "git-lf",
+      "bytes": 12012,
+      "sha256": "2fd4aff7c8bc9ea9765bda22b84976729833ff8a697d1b4fd0ff8c26f8c6652d"
+    },
+    {
+      "path": "modules/capabilities/server/schema-v2.mjs",
+      "representation": "git-lf",
+      "bytes": 23868,
+      "sha256": "2622db5d571920ca070f45a0839bf0e3269f24f7f26744860c297b77be823fc8"
+    },
+    {
+      "path": "modules/capabilities/server/schema-v3.mjs",
+      "representation": "git-lf",
+      "bytes": 4850,
+      "sha256": "ebed724aed700443eadb84fd96476b14fea971c31f44b6779aa3b4b0b098e557"
+    },
+    {
+      "path": "modules/capabilities/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 184,
+      "sha256": "e84001c4956e5a7836ab303f4eca63630febd12f3bd0ef0ca71b27c3c4969f80"
+    },
+    {
+      "path": "modules/capabilities/server/validation.mjs",
+      "representation": "git-lf",
+      "bytes": 3306,
+      "sha256": "b5cd743caa6183af7b82021eeab0381d6bea9dace806bae12b194df18c15fa9d"
+    },
+    {
+      "path": "modules/connect/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 11383,
+      "sha256": "03c8b2578d4278f80907e1a8be91183aca179d3ca337200b2995a009d7ae5eff"
+    },
+    {
+      "path": "modules/cover-art/server/codec.mjs",
+      "representation": "git-lf",
+      "bytes": 5443,
+      "sha256": "db32addd267e245e3f43ba0822d804638c6d443e44e79ccb08d9cdbcc869a2f7"
+    },
+    {
+      "path": "modules/cover-art/server/index.mjs",
+      "representation": "git-lf",
+      "bytes": 34669,
+      "sha256": "a92bad533d7110eb45926ef7e401734e73f6b20646b3e766f45792b104c681f1"
+    },
+    {
+      "path": "modules/cover-art/server/legacy-avatar.mjs",
+      "representation": "git-lf",
+      "bytes": 5807,
+      "sha256": "5adf9fe365448d3077d516e009724e8ada964a6c434c6c892a4473db2e16a232"
+    },
+    {
+      "path": "modules/cover-art/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 12295,
+      "sha256": "8d589fcfe2d68c6780542a460c55d95566ab7be9b93795cc3fecdc5a5a28be89"
+    },
+    {
+      "path": "modules/feedback/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 4530,
+      "sha256": "42d6c58f2af4085009a81a007f5ecb31db61169278ba6d3d73afd6ef1a8d3b23"
+    },
+    {
+      "path": "modules/field/contract.mjs",
+      "representation": "git-lf",
+      "bytes": 4007,
+      "sha256": "8bc6145bb3f33e5106d2d13dd55d0a8c42a643f091e3dddf9e1fe0f965c2f1e7"
+    },
+    {
+      "path": "modules/human-identity/profile.mjs",
+      "representation": "git-lf",
+      "bytes": 10327,
+      "sha256": "cf5715120dd4dc8fc71cc558c1708ecf10bc6657835ea611d37d76b5a4ff0f6b"
+    },
+    {
+      "path": "modules/human-identity/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 19233,
+      "sha256": "efe371ac4c438f31dcfc77a0624349d1aa15e41ff5cef9169d8b8cfc158c7b0c"
+    },
+    {
+      "path": "modules/native-voice/live-answer.ts",
+      "representation": "git-lf",
+      "bytes": 1938,
+      "sha256": "418495a0283bb57e808e79739f1dfed16a67adb7d153db8ea4e8cb72c00528ae"
+    },
+    {
+      "path": "modules/native-voice/root-source-adapters.mjs",
+      "representation": "git-lf",
+      "bytes": 7967,
+      "sha256": "754e96725639f3e19e49773de22d8d8eb42eccaca2023ba3754eef10e737bad6"
+    },
+    {
+      "path": "modules/notes/server/schema-v2.mjs",
+      "representation": "git-lf",
+      "bytes": 11992,
+      "sha256": "2a9f8b51f408179a6bb5333da63b2fd9b2452313b15597f01165aeba66be6fda"
+    },
+    {
+      "path": "modules/notes/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 111,
+      "sha256": "e9ce31f83be1ee35c57f22ed7cad239ebfa7a3962fa76c957c8714abb5b03d4f"
+    },
+    {
+      "path": "modules/notes/server/validation.mjs",
+      "representation": "git-lf",
+      "bytes": 2972,
+      "sha256": "48181ad5a4a5b516d21ff40d41f76bedd3b9d8e189977ed4b84267b4e4a9ca0e"
+    },
+    {
+      "path": "modules/personal-agent/provider/assembler.mjs",
+      "representation": "git-lf",
+      "bytes": 11515,
+      "sha256": "c89857223c8740c1e229a1c9253fb65c409fcd479ff642dfe539fb9ed569dda1"
+    },
+    {
+      "path": "modules/personal-agent/provider/index.mjs",
+      "representation": "git-lf",
+      "bytes": 8568,
+      "sha256": "8904fd1a51c7209b944bc462ccacc8de81888b29f054169a538bed91536f16f2"
+    },
+    {
+      "path": "modules/personal-agent/provider/request.mjs",
+      "representation": "git-lf",
+      "bytes": 5520,
+      "sha256": "02e1feb26a24ba73843e4e8a51af10979a181d3a64ad6e53c2368f5afe1d4dbb"
+    },
+    {
+      "path": "modules/personal-agent/provider/validation.mjs",
+      "representation": "git-lf",
+      "bytes": 5656,
+      "sha256": "a8b534f833e96b855d89e147346e95f10580ab069c45b0d7c7da877214e5956c"
+    },
+    {
+      "path": "modules/reviews/server/index.mjs",
+      "representation": "git-lf",
+      "bytes": 12425,
+      "sha256": "6b13edb8485695a92b75237d549104bf2bb0ccb4be56958b7146adcaaf2f37ef"
+    },
+    {
+      "path": "modules/reviews/server/profile.mjs",
+      "representation": "git-lf",
+      "bytes": 854,
+      "sha256": "f8c2d11b7e1bf7d9754032db2877e0c6c9a08b5fa87503c2ffe5a9a2a2c56dca"
+    },
+    {
+      "path": "modules/source-app/server/standard-profile.mjs",
+      "representation": "git-lf",
+      "bytes": 6952,
+      "sha256": "1dd59c4862f299943f062ff802871f69050add0e49e49b0223d27c553eb45dfd"
+    },
+    {
+      "path": "modules/source-app/server/wire.mjs",
+      "representation": "git-lf",
+      "bytes": 3235,
+      "sha256": "0532c7afb2a74ff5f560c9a7e308c6f1f5010395e4ef547329f7970ec43d6bb8"
+    },
+    {
+      "path": "modules/source-app/server/workspace-context.mjs",
+      "representation": "git-lf",
+      "bytes": 5785,
+      "sha256": "7a83655cb178ed83ee701afd6f352855ab819fa1965d9ece938c4cd630fdfd14"
+    },
+    {
+      "path": "modules/world/server/avatars.mjs",
+      "representation": "git-lf",
+      "bytes": 7957,
+      "sha256": "8019b56c6b344e852bd8ee5b3eec3f3e18e3239a50dd66b8cc09db5926800b44"
+    },
+    {
+      "path": "modules/world/server/direct-schema.mjs",
+      "representation": "git-lf",
+      "bytes": 11468,
+      "sha256": "d4cb42e962701b80b3c57c5df768bc8fefcc38d64ad7a9868df97759f8bc3d60"
+    },
+    {
+      "path": "modules/world/server/discovery.mjs",
+      "representation": "git-lf",
+      "bytes": 7715,
+      "sha256": "d463a7410ad09c44264f74bed1d3177fe5f0d0f514c5bbb8c38008040d0f5f0f"
+    },
+    {
+      "path": "modules/world/server/field.mjs",
+      "representation": "git-lf",
+      "bytes": 7441,
+      "sha256": "b9a0cdf81926b81603b6ce7a76b9c1df42e53e4caa0f7f2d77903e4a5db1b07a"
+    },
+    {
+      "path": "modules/world/server/schema.mjs",
+      "representation": "git-lf",
+      "bytes": 14796,
+      "sha256": "98ec844e1229f867d50a63c4cc43083287098d5382ac71dd61f4f2041ececd73"
+    },
+    {
+      "path": "modules/world/server/validation.mjs",
+      "representation": "git-lf",
+      "bytes": 2740,
+      "sha256": "c299b9ea99592a835c1313d73cdcfd1bd9c798a92308b1beab5ad32638f17612"
+    },
+    {
+      "path": "package.json",
+      "representation": "git-lf",
+      "bytes": 5446,
+      "sha256": "3e4b6bd35191dfe718cac135582fb9cb1a69e00a0c85a10927a251c6701de823"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "representation": "git-lf",
+      "bytes": 67848,
+      "sha256": "54c8b7ca758b19b949e1a052dcefffcf6f245e0acf740c8b18c95084d9a6bb31"
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "representation": "git-lf",
+      "bytes": 130,
+      "sha256": "90c00443496c700ab5cd88259f484e9f143d0534fa5910c81024d10b7f607034"
+    },
+    {
+      "path": "server/current-context-source.js",
+      "representation": "git-lf",
+      "bytes": 6790,
+      "sha256": "20b8526d3ceaaca012bc18453d6272953adbaa7698f4460d35455ec18133603b"
+    },
+    {
+      "path": "server/existing-app-host-composition.js",
+      "representation": "git-lf",
+      "bytes": 3649,
+      "sha256": "0b50587074d05bf4ab3fbb5f94b97654a836267ec9f03ff5f67e1dcac0605209"
+    },
+    {
+      "path": "server/external-applications.js",
+      "representation": "git-lf",
+      "bytes": 6641,
+      "sha256": "3c2508d50d6bf50ff618dfa0a6e92ba676c7bd2dbd14a10995018c133ee28d40"
+    },
+    {
+      "path": "server/hive-workflow-input.js",
+      "representation": "git-lf",
+      "bytes": 4418,
+      "sha256": "d9a3ed8a4c65184a26a697961e54e39bfeacbbc699db0bd312472257f5ad246a"
+    },
+    {
+      "path": "server/hive-workspace-source.js",
+      "representation": "git-lf",
+      "bytes": 7723,
+      "sha256": "b044c1ca5289c0446ee4400cae4c16915cbd07036d279bccbd274990aa28e9ab"
+    },
+    {
+      "path": "server/installed-applications-entry.js",
+      "representation": "git-lf",
+      "bytes": 8636,
+      "sha256": "aaea94a94ae4f5560bf2774350b34a93520d3ff22417a44e6fe7d0002cddf8a6"
+    },
+    {
+      "path": "server/installed-existing-applications.js",
+      "representation": "git-lf",
+      "bytes": 1546,
+      "sha256": "63044804af8b97cddfca2490e05378363411a9ea4d152ad40a27864056a8c56b"
+    },
+    {
+      "path": "server/native-source-handlers.js",
+      "representation": "git-lf",
+      "bytes": 3219,
+      "sha256": "45cf27834043cd62003ef0eb2390d89cabd3951c3a4315e34e6733df0362951d"
+    },
+    {
+      "path": "server/otsov-source.js",
+      "representation": "git-lf",
+      "bytes": 15316,
+      "sha256": "6b30feac17e9a319caa1602498b77b58d78373d8fdd0bfd5d465298fd55ef4b7"
+    },
+    {
+      "path": "server/personal-agent-configuration.js",
+      "representation": "git-lf",
+      "bytes": 7942,
+      "sha256": "3304f4b6bf7a000d2bbe67cd1d76649c34cc7eeb718a5387526dff2c377d77c8"
+    },
+    {
+      "path": "server/personal-agent-transport.js",
+      "representation": "git-lf",
+      "bytes": 8858,
+      "sha256": "897de8dbd0bc9b2538e16535a5b5f3d206824aa9c71314d2e63f3ae1972b761b"
+    },
+    {
+      "path": "server/room-storage-v2.mjs",
+      "representation": "git-lf",
+      "bytes": 22298,
+      "sha256": "d6261944f2daba1e1214384c474972ef5cbd01d7a7f95c27f4259c5ef9894412"
+    },
+    {
+      "path": "server/room-waiting.mjs",
+      "representation": "git-lf",
+      "bytes": 661,
+      "sha256": "127c757830f9b02274366346b26e06ccbe5e09ee39f26acf8e5868a38b2feca5"
+    },
+    {
+      "path": "server/selected-hive-source.js",
+      "representation": "git-lf",
+      "bytes": 7603,
+      "sha256": "c6bc7f729d8bf44d59c9c5d099e395aaa71b9ba6ff30e6e01370b51e71fe154f"
+    },
+    {
+      "path": "server/selected-native-source.js",
+      "representation": "git-lf",
+      "bytes": 16533,
+      "sha256": "1f77ea27f24976f9ea25f3370cd44004af15a29fa3598ad79fefb4d376079e4e"
+    },
+    {
+      "path": "server/tavysh-device-read-adapter.js",
+      "representation": "git-lf",
+      "bytes": 9218,
+      "sha256": "418117f5e4de6a15132a7241560686992069c43b9b00b0cbbed6cf11cd57103a"
+    },
+    {
+      "path": "server/tavysh-native-device-broker.js",
+      "representation": "git-lf",
+      "bytes": 7396,
+      "sha256": "72a54007e00332e0df80e5127088de21f1c33cf09c159ad1fb2958521b51bfb8"
+    },
+    {
+      "path": "server/universal-configuration.js",
+      "representation": "git-lf",
+      "bytes": 5580,
+      "sha256": "fb7b954156a915891917f6f969a3c556c3e91d021304dbd7c908b24e3f4a4ceb"
+    },
+    {
+      "path": "server/universal-mode.js",
+      "representation": "git-lf",
+      "bytes": 195,
+      "sha256": "c50c513c5aadf6b38905ecc2775c0cd3f7df880b017b1ee57fed4d9e94848397"
+    },
+    {
+      "path": "server/validators.js",
+      "representation": "git-lf",
+      "bytes": 5639,
+      "sha256": "092376c0c760c8fb853a5a7b00fed4700f7b97c3e1643d000171145ba308dcb8"
+    }
+  ],
+  "tests": [
+    {
+      "path": "deploy/connector/root-preservation-release.test.mjs",
+      "representation": "raw",
+      "bytes": 15322,
+      "sha256": "f8606cd4e98d6875dbfb279e0ac570661dc34c3a333c7230b72276c5cb1f0f50"
+    },
+    {
+      "path": "deploy/connector/test-support/root-preservation-scenarios.mjs",
+      "representation": "raw",
+      "bytes": 39430,
+      "sha256": "95d735785e963569c7fef15b143d0264f9842739c0d576ebfcebf9b88e3496b5"
+    },
+    {
+      "path": "deploy/connector/test-support/rollout-engine.mjs",
+      "representation": "raw",
+      "bytes": 6485,
+      "sha256": "db1b43b66b157cfff329ebb2eb660e14c02b46f620a456b45f9c59a6716aecba"
+    },
+    {
+      "path": "deploy/connector/test-support/current-storage-observation.mjs",
+      "representation": "git-lf",
+      "bytes": 988,
+      "sha256": "c38eb211e1a4ca882a4de1b9bd0e42469145a1c8d33b00fdede2a2d5fe1e9b9c"
+    },
+    {
+      "path": "deploy/connector/root-state-observer.test.mjs",
+      "representation": "raw",
+      "bytes": 18503,
+      "sha256": "f8c69d1dc7ec76ddadf991bac076c41b09e0481cd4941b1607c8a6cebf6fb406"
+    },
+    {
+      "path": "deploy/connector/rollout-cold-verification.test.mjs",
+      "representation": "raw",
+      "bytes": 14209,
+      "sha256": "7b13a77aab0746913411d50f4bf78251a1cf4edf8f503815e3e3a98cff0b1b5b"
+    },
+    {
+      "path": "modules/world/test/support/legacy-world-schema-v3.mjs",
+      "representation": "git-lf",
+      "bytes": 5950,
+      "sha256": "abeab7a846aaf89689f3fe2ae96ced0ff7cd51f686bc4591efef0d4fd278dffb"
+    },
+    {
+      "path": "server/gonka-proxy.js",
+      "representation": "git-lf",
+      "bytes": 15522,
+      "sha256": "2bf8df62f0d83d65b9a5a5601bf8b2fcbb33b12fee6cb7ba007373f4e5ca79dd"
+    },
+    {
+      "path": "server/inference-relay.js",
+      "representation": "git-lf",
+      "bytes": 22702,
+      "sha256": "3ba5f03aebab6a265fa6cda1d8ea1890e38a056cd79fc0234f16d165ecda908c"
+    },
+    {
+      "path": "server/inference-stream.js",
+      "representation": "git-lf",
+      "bytes": 9246,
+      "sha256": "715896b14d6cdcf2a2e9058ec93bffaa55f80513d595f7bfddddc2952ce36309"
+    },
+    {
+      "path": "deploy/connector/root-preservation-recovery.test.mjs",
+      "representation": "raw",
+      "bytes": 10207,
+      "sha256": "b01cb5d40263e6c080168153ad715278acae0e2a3f5071e367e9f0409930bed9"
+    },
+    {
+      "path": "server/connector-maintenance.js",
+      "representation": "git-lf",
+      "bytes": 9341,
+      "sha256": "ee4578bf6000c2fccd88e4f615a3e6f09853f6f71d5daea6462db2a911236b2d"
+    },
+    {
+      "path": "server/connector-registry.js",
+      "representation": "git-lf",
+      "bytes": 6153,
+      "sha256": "710362ac9c2b8ec760a2dc0b7fb858702d03b10207efdfc5556d4c6e347e1b58"
+    },
+    {
+      "path": "server/connector-store.js",
+      "representation": "git-lf",
+      "bytes": 60596,
+      "sha256": "77a03aa56dbf04d3a02f6c99d48d4a54e088a526162bf3d64f14f3efcd5e6329"
+    },
+    {
+      "path": "server/connector-persistence.js",
+      "representation": "git-lf",
+      "bytes": 15254,
+      "sha256": "0eb53d9af38006c58f05cc78fa481b92711c372dbb625fd6cf6d08adc0432d25"
+    },
+    {
+      "path": "server/connector-model-authorization.js",
+      "representation": "git-lf",
+      "bytes": 4328,
+      "sha256": "4b2070225f1ef11c7c0c55f8d831b40e6c3baadd2dd6e7e131aedf0ac845a6f1"
+    },
+    {
+      "path": "deploy/connector/root-preservation-fixture-profile.test.mjs",
+      "representation": "raw",
+      "bytes": 6647,
+      "sha256": "7de4577b60c3e339d8ffae17ac8d368b346759ff76e9963dff09921ee2d13d59"
+    },
+    {
+      "path": "modules/feedback/server/index.mjs",
+      "representation": "git-lf",
+      "bytes": 23005,
+      "sha256": "735948ed1db3a96a7cd44d3e30a6e622f4696c0123dd8bfcabd3b1d08cfde28d"
+    },
+    {
+      "path": "server/universal-apps.js",
+      "representation": "git-lf",
+      "bytes": 3863,
+      "sha256": "3016d7b438f2c104368290e50367b4a5d649035188071db35c059be81777f612"
+    },
+    {
+      "path": "modules/feedback/server/profile.mjs",
+      "representation": "git-lf",
+      "bytes": 1466,
+      "sha256": "a8e9cf4d271dced8c168b830e336f6600cacc9d0ca4f9de7f24ecb5e4380f185"
+    },
+    {
+      "path": "modules/feedback/server/media.mjs",
+      "representation": "git-lf",
+      "bytes": 26141,
+      "sha256": "0a840d70bd9bef5e15ce6c286964ecbb236b1196879429675e7df2f9978df6ca"
+    },
+    {
+      "path": "modules/app-contract/server/registration.mjs",
+      "representation": "git-lf",
+      "bytes": 27200,
+      "sha256": "72e736768880f8bdae3382f960374b2f12f6f13415a7a645da641b9cae4878f9"
+    }
+  ]
+}

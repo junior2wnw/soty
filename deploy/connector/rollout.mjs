@@ -11,6 +11,26 @@ const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fro
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
 const requireThat=(ok,code)=>{if(!ok)throw new SafeError(code);};
 const label='io.soty.connector-rollout';
+const coldSchema='soty.rollout-cold-verification.v1';
+const coldHashes=['volumeSha256','configurationSha256','volumeInventorySha256','configurationInventorySha256','qualificationSha256'];
+function coldFields(value,keys){
+  requireThat(value&&typeof value==='object'&&!Array.isArray(value)
+    &&[Object.prototype,null].includes(Object.getPrototypeOf(value)),'cold_verification_unresolved');
+  const fields=Object.getOwnPropertyDescriptors(value);
+  requireThat(Reflect.ownKeys(fields).length===keys.length&&keys.every(key=>fields[key]?.enumerable&&Object.hasOwn(fields[key],'value')),'cold_verification_unresolved');
+  return Object.fromEntries(keys.map(key=>[key,fields[key].value]));
+}
+function coldResult(value){
+  const ok=value&&Object.getOwnPropertyDescriptor(value,'ok')?.value;
+  const result=coldFields(value,ok===true?['ok','sourceUnchanged','proof']:['ok','sourceUnchanged']);
+  requireThat(typeof result.ok==='boolean'&&result.sourceUnchanged===true,'cold_verification_unresolved');
+  if(result.ok){
+    result.proof=coldFields(result.proof,['schema','operationId',...coldHashes]);
+    requireThat(result.proof.schema===coldSchema&&typeof result.proof.operationId==='string'&&/^[a-f0-9]{32}$/u.test(result.proof.operationId)
+      &&coldHashes.every(key=>typeof result.proof[key]==='string'&&/^[a-f0-9]{64}$/u.test(result.proof[key])),'cold_verification_unresolved');
+  }
+  return result;
+}
 export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy,universalPolicy) {
   const config=clone(original.Config),host=clone(original.HostConfig),endpoints={};
   // Inspect includes realised anonymous volume names. Reattach those explicitly;
@@ -45,7 +65,7 @@ export function preservationHash(config) {
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');requireThat(s.queuedSha256==null||(/^[a-f0-9]{64}$/.test(s.queuedSha256)&&s.count>0&&s.activeJobs.every(j=>j.status==='queued')),'maintenance_queued_fingerprint_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,queuedSha256:s.queuedSha256||null};}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
-  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,record,attempts,sleep});this.state={phase:'new'};}
+  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,coldVerification,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){requireThat(coldVerification===undefined||typeof coldVerification==='function','cold_verification_invalid');Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,coldVerification,record,attempts,sleep});this.state={phase:'new'};}
   candidateConfiguration(original){const candidateBase=this.installedModuleRotation?installedModuleCandidateBase(this.installedModuleRotation,original,this.args.universalPolicy,this.args.candidateImage):original;return createConfig(candidateBase,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy);}
   async restoreOriginalCode(){if(this.installedModuleRotation)await restoreInstalledModuleOriginal(this.installedModuleRotation);}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
@@ -179,6 +199,26 @@ export class Rollout {
     this.candidate=c;await this.note('prepared',{candidateId:c.Id});return this.state;
   }
   async status(){return safeStatus(await this.maintenance('status',this));}
+  async verifyCold(){
+    const verify=this.coldVerification;if(verify===undefined)return;
+    const boundary=async()=>{
+      const original=await this.engine.inspect(this.original.Id),candidate=await this.engine.inspect(this.candidate.Id);
+      requireThat(original.Id===this.original.Id&&original.Image===this.args.originalImage&&original.Name==='/'+this.originalName
+        &&original.State.Running===false&&original.State.Status==='exited'&&original.State.Restarting!==true&&original.State.Paused!==true
+        &&hash(original.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'cold_verification_boundary_changed');
+      await this.checkOriginalPreserved();this.validateCandidate(candidate,{stopped:true});
+      requireThat(candidate.Id===this.candidate.Id&&candidate.Name===this.candidate.Name&&candidate.State.Status==='created'&&candidate.State.Restarting!==true,'cold_verification_boundary_changed');
+    };
+    await boundary();
+    const binding=Object.freeze({schema:'soty.rollout-cold-context.v1',transaction:this.args.transaction,originalId:this.original.Id,originalImage:this.args.originalImage,
+      candidateId:this.candidate.Id,candidateImage:this.args.candidateImage,storageProbeImage:this.args.storageProbeImage,revision:this.args.revision});
+    await this.note(this.state.phase,{coldVerification:{schema:coldSchema,state:'running',binding}});
+    // Only trusted host code owns this closure; no engine, inspect, Env or key is passed.
+    const result=coldResult(await verify(binding));
+    await boundary();
+    await this.note(this.state.phase,{coldVerification:{schema:coldSchema,state:result.ok?'verified':'rejected',binding,sourceUnchanged:true,...(result.ok?{proof:result.proof}:{})}});
+    requireThat(result.ok,'cold_verification_rejected');
+  }
   async promote() {
     requireThat(this.state.phase==='prepared','candidate_not_prepared');
     let stopped=false,entered=false,leaveAttempted=false;
@@ -195,6 +235,7 @@ export class Rollout {
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;this.originalStopConfirmed=true;
       await this.note('original_stopped');
       await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
+      await this.verifyCold();
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256),'offline_admission_race');
       try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&s.maintenance,'maintenance_enter_failed');entered=true;
@@ -222,6 +263,12 @@ export class Rollout {
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
+      // An exception, malformed result or changed fence cannot attest that all
+      // callback helpers have stopped and the original data is unchanged.
+      if(this.state.coldVerification?.state==='running'){
+        await this.note('recovery_required',{activationFailureCode:'cold_verification_unresolved',failureCode:'cold_verification_unresolved'});
+        throw new SafeError('recovery_required');
+      }
       if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed'});
       if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
         ||(error.code==='operation_unresolved'&&(this.state.applicationStart?.state==='starting'||this.state.restartPolicyIntent))){await this.note('recovery_required',{failureCode:error.code});throw error;}

@@ -1,0 +1,630 @@
+{
+  "schema": "soty.cold-controller-stage-plan.v1",
+  "status": "source-pinned-qualification-pending",
+  "stockRevision": "cbeb42586ff501899652b2010188415ce5b68d16",
+  "scope": "control-plane-only-no-application-build-or-deploy",
+  "delivery": "full-git-archive-with-reviewed-rollout-patch",
+  "roots": [
+    "deploy/connector/cli.mjs",
+    "deploy/connector/rollout.mjs",
+    "deploy/connector/runtime.mjs",
+    "deploy/connector/journal.mjs",
+    "deploy/connector/storage-guard.mjs",
+    "deploy/connect/gpg-release-backup.mjs"
+  ],
+  "node": {
+    "major": 24,
+    "minimumMinor": 15,
+    "qualification": "independent-target-executable-pin-required"
+  },
+  "builtins": [
+    "node:child_process",
+    "node:crypto",
+    "node:fs",
+    "node:fs/promises",
+    "node:http",
+    "node:os",
+    "node:path",
+    "node:sqlite",
+    "node:stream",
+    "node:stream/promises",
+    "node:timers/promises",
+    "node:url",
+    "node:util"
+  ],
+  "guardPins": [
+    {
+      "path": "deploy/connector/storage-guard.mjs",
+      "sha256": "7e6699a89fce9b029a68d3b22d0cb9203f9d61972408d1e806afe2971e3cf1e7"
+    },
+    {
+      "path": "deploy/connector/storage-probe.mjs",
+      "sha256": "6182202eeaf3fb0871eddc2f926e4ebd2f7c66c7400cc3e8f9c7c230f6c32e50"
+    },
+    {
+      "path": "deploy/connector/storage-snapshot.mjs",
+      "sha256": "29be51178f4b71a70dfa2d3714c029fad67d59690a0cda9d984a26d3d0175c1b"
+    }
+  ],
+  "stock": [
+    {
+      "path": "deploy/connect/backup.mjs",
+      "bytes": 6422,
+      "sha256": "1da6efdfb5b63630b82fbb5d42dba36dc55090fa9fc25098bb6e50a62a3c21ee",
+      "imports": [
+        "deploy/connector/docker-api.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connect/gpg-container-inventory.mjs",
+      "bytes": 2633,
+      "sha256": "ddfe7f375c429e2ce389e7a8cdf5d0754743ae1f3beb63d207ddca33282abc72",
+      "imports": []
+    },
+    {
+      "path": "deploy/connect/gpg-mount-proof.mjs",
+      "bytes": 15253,
+      "sha256": "7659c651232b2a9d6dc323149edce02674a3e3a1a23263091bcf8f1fb5eac693",
+      "imports": []
+    },
+    {
+      "path": "deploy/connect/gpg-release-backup.mjs",
+      "bytes": 20467,
+      "sha256": "4ea94d8550a92f8d801e871e5f23bcfb617da960c526c3bcf5e2288e0a20b6a1",
+      "imports": [
+        "deploy/connect/backup.mjs",
+        "deploy/connect/gpg-container-inventory.mjs",
+        "deploy/connect/gpg-mount-proof.mjs",
+        "deploy/connect/gpg-tar.mjs",
+        "deploy/connector/docker-api.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connect/gpg-tar.mjs",
+      "bytes": 13876,
+      "sha256": "02574ba26f3528a8587403db1369846d5f45d48268bdb3494d1dd37dd52eb399",
+      "imports": []
+    },
+    {
+      "path": "deploy/connector/application-policy.mjs",
+      "bytes": 2215,
+      "sha256": "e4cb44f7ee4cd6fb910a4db50e1bb95b7d4f2b5c3663fa17dc284219c3523dd4",
+      "imports": [
+        "deploy/connector/docker-api.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/cli.mjs",
+      "bytes": 7450,
+      "sha256": "8921f6cd031d2c520b7bbafebfa7792a6b571a9db4de7d15436bce7839c5a183",
+      "imports": [
+        "deploy/connector/application-policy.mjs",
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/journal.mjs",
+        "deploy/connector/rollout.mjs",
+        "deploy/connector/runtime.mjs",
+        "deploy/connector/universal-cli-policy.mjs",
+        "deploy/connector/universal-policy.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/docker-api.mjs",
+      "bytes": 6762,
+      "sha256": "a4973ef4adb020bda2078ceac43c07b907e07e715205d30d807317968e9eb3b0",
+      "imports": [
+        "modules/app-contract/json.mjs",
+        "modules/app-contract/universal-preparedness.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/installed-module-rotation.mjs",
+      "bytes": 14058,
+      "sha256": "81c5e81e3ae3aa3a7286ebf1329a78944cb9f67d2318831736a42e4fad7f370b",
+      "imports": [
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/universal-policy.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "server/installed-applications-entry.js"
+      ]
+    },
+    {
+      "path": "deploy/connector/journal.mjs",
+      "bytes": 689,
+      "sha256": "0bbcd96a05d7b6c549ed12f366b78b4554df008dc6d405e6ab40a0ec37eef597",
+      "imports": []
+    },
+    {
+      "path": "deploy/connector/rollout.mjs",
+      "bytes": 25418,
+      "sha256": "a0d0a572549318f9710b039fee7a675ee29da6f244d01ff2b662f20d4245bdb4",
+      "imports": [
+        "deploy/connector/application-policy.mjs",
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/installed-module-rotation.mjs",
+        "deploy/connector/storage-guard.mjs",
+        "deploy/connector/universal-policy.mjs",
+        "modules/app-contract/universal-preparedness.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/runtime.mjs",
+      "bytes": 6782,
+      "sha256": "eb95a3e1b634d98cc91f6ca3486c1be13f7b91032ac3da8bc3d7f49a404e719b",
+      "imports": [
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/rollout.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/storage-guard.mjs",
+      "bytes": 14127,
+      "sha256": "7e6699a89fce9b029a68d3b22d0cb9203f9d61972408d1e806afe2971e3cf1e7",
+      "imports": [
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/storage-probe.mjs",
+        "deploy/connector/storage-snapshot.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/storage-probe.mjs",
+      "bytes": 87141,
+      "sha256": "6182202eeaf3fb0871eddc2f926e4ebd2f7c66c7400cc3e8f9c7c230f6c32e50",
+      "imports": []
+    },
+    {
+      "path": "deploy/connector/storage-snapshot.mjs",
+      "bytes": 2376,
+      "sha256": "29be51178f4b71a70dfa2d3714c029fad67d59690a0cda9d984a26d3d0175c1b",
+      "imports": []
+    },
+    {
+      "path": "deploy/connector/universal-cli-policy.mjs",
+      "bytes": 3405,
+      "sha256": "3ab4a168fe531b5407d8aafceefa44751fca05ff445354fc2df5cb278238d2cb",
+      "imports": [
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/universal-policy.mjs"
+      ]
+    },
+    {
+      "path": "deploy/connector/universal-policy.mjs",
+      "bytes": 43370,
+      "sha256": "84d162c68b8fe29e7416de73f312220e52c5756da5c278bd8f10cd63400ae634",
+      "imports": [
+        "deploy/connector/docker-api.mjs",
+        "deploy/connector/storage-guard.mjs",
+        "modules/app-contract/universal-preparedness.mjs",
+        "modules/apps/scoped-embed/resource-route-adapters.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/human-identity/profile.mjs",
+        "modules/reviews/server/index.mjs",
+        "modules/source-app/server/standard-profile.mjs",
+        "server/installed-applications-entry.js",
+        "server/personal-agent-configuration.js",
+        "server/universal-configuration.js"
+      ]
+    },
+    {
+      "path": "modules/app-contract/json.mjs",
+      "bytes": 5727,
+      "sha256": "8bccbf2ba50ea9dd391441b60f8536eeb6a6d4454a17472768ba6bc7e16a161e",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/app-contract/universal-preparedness.mjs",
+      "bytes": 12213,
+      "sha256": "669feb1979e4f9ca799f69c3b468fbde43ae0aa26faabd0eb5f599a5cc1da146",
+      "imports": [
+        "modules/apps/scoped-embed/profile-dispatch.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/human-identity/profile.mjs",
+        "modules/reviews/server/index.mjs"
+      ]
+    },
+    {
+      "path": "modules/apps/scoped-embed/profile-dispatch.mjs",
+      "bytes": 1496,
+      "sha256": "276562bd2f5587c9f346e09fe7a3500d9d01a6649a0b27da6b0334571a9a3d6a",
+      "imports": [
+        "modules/apps/scoped-embed/profile.mjs",
+        "modules/apps/scoped-embed/resource-profile.mjs",
+        "modules/apps/scoped-embed/resource-route-adapters.mjs"
+      ]
+    },
+    {
+      "path": "modules/apps/scoped-embed/profile.mjs",
+      "bytes": 8423,
+      "sha256": "584ec7073a4794aec4b8bda44ba663e737b22fbb470d1036fddd0f283e2444bc",
+      "imports": []
+    },
+    {
+      "path": "modules/apps/scoped-embed/resource-profile.mjs",
+      "bytes": 3994,
+      "sha256": "93027992be0fe7ce6527c82074d8e2df083e22ff7aafd089b0f37c1a8379d9c0",
+      "imports": [
+        "modules/apps/scoped-embed/profile.mjs",
+        "modules/source-app/server/standard-profile.mjs"
+      ]
+    },
+    {
+      "path": "modules/apps/scoped-embed/resource-route-adapters.mjs",
+      "bytes": 9937,
+      "sha256": "c7fc881fe3defc9ec38d2b3bd2432fdb118f383342e4bb064c4cb58383c595dd",
+      "imports": [
+        "modules/apps/scoped-embed/profile.mjs",
+        "modules/apps/scoped-embed/resource-profile.mjs",
+        "modules/source-app/server/standard-profile.mjs"
+      ]
+    },
+    {
+      "path": "modules/apps/server/protocol.mjs",
+      "bytes": 8828,
+      "sha256": "a1a9609de906b58c445377dea8d5325d944b4d81b2a59fae81547928594e9945",
+      "imports": []
+    },
+    {
+      "path": "modules/capabilities/server/catalog.mjs",
+      "bytes": 8185,
+      "sha256": "424247fc29d5ba9a45a8486a501f00edfa0d3a1038c5cf0b2c1016bb2747ed98",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/capabilities/server/external-adapters.mjs",
+      "bytes": 20411,
+      "sha256": "c911f199ad5539e8e88122641169feb2401d0586df1ab3e06a70b94346c307fc",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/capabilities/server/external-guidance.mjs",
+      "bytes": 5369,
+      "sha256": "f9ce1a98c4f14e0ea0bacd39136b2d1178c6874539689149583e60985dd32340",
+      "imports": [
+        "modules/app-contract/json.mjs",
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/capabilities/server/oauth-profile.mjs",
+      "bytes": 14230,
+      "sha256": "e16b589a2cf8c492e7eb567989e465288009aea4bbc3b3c0db98319bd5799e07",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/capabilities/server/readonly-queries.mjs",
+      "bytes": 12012,
+      "sha256": "2fd4aff7c8bc9ea9765bda22b84976729833ff8a697d1b4fd0ff8c26f8c6652d",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/capabilities/server/validation.mjs",
+      "bytes": 3306,
+      "sha256": "b5cd743caa6183af7b82021eeab0381d6bea9dace806bae12b194df18c15fa9d",
+      "imports": []
+    },
+    {
+      "path": "modules/human-identity/profile.mjs",
+      "bytes": 10327,
+      "sha256": "cf5715120dd4dc8fc71cc558c1708ecf10bc6657835ea611d37d76b5a4ff0f6b",
+      "imports": [
+        "modules/capabilities/server/oauth-profile.mjs"
+      ]
+    },
+    {
+      "path": "modules/native-voice/live-answer.ts",
+      "bytes": 1938,
+      "sha256": "418495a0283bb57e808e79739f1dfed16a67adb7d153db8ea4e8cb72c00528ae",
+      "imports": []
+    },
+    {
+      "path": "modules/native-voice/root-source-adapters.mjs",
+      "bytes": 7967,
+      "sha256": "754e96725639f3e19e49773de22d8d8eb42eccaca2023ba3754eef10e737bad6",
+      "imports": [
+        "modules/apps/scoped-embed/resource-profile.mjs",
+        "modules/capabilities/server/external-adapters.mjs",
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/native-voice/live-answer.ts",
+        "modules/source-app/server/standard-profile.mjs"
+      ]
+    },
+    {
+      "path": "modules/personal-agent/provider/assembler.mjs",
+      "bytes": 11515,
+      "sha256": "c89857223c8740c1e229a1c9253fb65c409fcd479ff642dfe539fb9ed569dda1",
+      "imports": [
+        "modules/personal-agent/provider/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/personal-agent/provider/index.mjs",
+      "bytes": 8568,
+      "sha256": "8904fd1a51c7209b944bc462ccacc8de81888b29f054169a538bed91536f16f2",
+      "imports": [
+        "modules/personal-agent/provider/assembler.mjs",
+        "modules/personal-agent/provider/request.mjs",
+        "modules/personal-agent/provider/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/personal-agent/provider/request.mjs",
+      "bytes": 5520,
+      "sha256": "02e1feb26a24ba73843e4e8a51af10979a181d3a64ad6e53c2368f5afe1d4dbb",
+      "imports": [
+        "modules/personal-agent/provider/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/personal-agent/provider/validation.mjs",
+      "bytes": 5656,
+      "sha256": "a8b534f833e96b855d89e147346e95f10580ab069c45b0d7c7da877214e5956c",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "modules/reviews/server/index.mjs",
+      "bytes": 12425,
+      "sha256": "6b13edb8485695a92b75237d549104bf2bb0ccb4be56958b7146adcaaf2f37ef",
+      "imports": [
+        "modules/app-contract/json.mjs",
+        "modules/apps/server/protocol.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/reviews/server/profile.mjs"
+      ]
+    },
+    {
+      "path": "modules/reviews/server/profile.mjs",
+      "bytes": 854,
+      "sha256": "f8c2d11b7e1bf7d9754032db2877e0c6c9a08b5fa87503c2ffe5a9a2a2c56dca",
+      "imports": []
+    },
+    {
+      "path": "modules/source-app/server/standard-profile.mjs",
+      "bytes": 6952,
+      "sha256": "1dd59c4862f299943f062ff802871f69050add0e49e49b0223d27c553eb45dfd",
+      "imports": [
+        "modules/source-app/server/wire.mjs"
+      ]
+    },
+    {
+      "path": "modules/source-app/server/wire.mjs",
+      "bytes": 3235,
+      "sha256": "0532c7afb2a74ff5f560c9a7e308c6f1f5010395e4ef547329f7970ec43d6bb8",
+      "imports": []
+    },
+    {
+      "path": "modules/source-app/server/workspace-context.mjs",
+      "bytes": 5785,
+      "sha256": "7a83655cb178ed83ee701afd6f352855ab819fa1965d9ece938c4cd630fdfd14",
+      "imports": [
+        "modules/source-app/server/wire.mjs"
+      ]
+    },
+    {
+      "path": "package.json",
+      "bytes": 5446,
+      "sha256": "3e4b6bd35191dfe718cac135582fb9cb1a69e00a0c85a10927a251c6701de823",
+      "imports": []
+    },
+    {
+      "path": "server/current-context-source.js",
+      "bytes": 6790,
+      "sha256": "20b8526d3ceaaca012bc18453d6272953adbaa7698f4460d35455ec18133603b",
+      "imports": [
+        "modules/apps/scoped-embed/resource-profile.mjs",
+        "modules/apps/scoped-embed/resource-route-adapters.mjs",
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/source-app/server/standard-profile.mjs",
+        "modules/source-app/server/workspace-context.mjs"
+      ]
+    },
+    {
+      "path": "server/existing-app-host-composition.js",
+      "bytes": 3649,
+      "sha256": "0b50587074d05bf4ab3fbb5f94b97654a836267ec9f03ff5f67e1dcac0605209",
+      "imports": [
+        "modules/app-contract/json.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "server/external-applications.js"
+      ]
+    },
+    {
+      "path": "server/external-applications.js",
+      "bytes": 6641,
+      "sha256": "3c2508d50d6bf50ff618dfa0a6e92ba676c7bd2dbd14a10995018c133ee28d40",
+      "imports": [
+        "modules/app-contract/json.mjs",
+        "modules/capabilities/server/catalog.mjs",
+        "modules/capabilities/server/external-adapters.mjs",
+        "modules/capabilities/server/external-guidance.mjs",
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/native-voice/root-source-adapters.mjs",
+        "server/current-context-source.js",
+        "server/selected-native-source.js"
+      ]
+    },
+    {
+      "path": "server/hive-workflow-input.js",
+      "bytes": 4418,
+      "sha256": "d9a3ed8a4c65184a26a697961e54e39bfeacbbc699db0bd312472257f5ad246a",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "server/hive-workspace-source.js",
+      "bytes": 7723,
+      "sha256": "b044c1ca5289c0446ee4400cae4c16915cbd07036d279bccbd274990aa28e9ab",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/source-app/server/standard-profile.mjs",
+        "server/hive-workflow-input.js",
+        "server/selected-native-source.js"
+      ]
+    },
+    {
+      "path": "server/installed-applications-entry.js",
+      "bytes": 8636,
+      "sha256": "aaea94a94ae4f5560bf2774350b34a93520d3ff22417a44e6fe7d0002cddf8a6",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "server/current-context-source.js",
+        "server/hive-workspace-source.js",
+        "server/installed-existing-applications.js",
+        "server/native-source-handlers.js",
+        "server/otsov-source.js",
+        "server/selected-hive-source.js",
+        "server/selected-native-source.js",
+        "server/tavysh-device-read-adapter.js",
+        "server/tavysh-native-device-broker.js"
+      ]
+    },
+    {
+      "path": "server/installed-existing-applications.js",
+      "bytes": 1546,
+      "sha256": "63044804af8b97cddfca2490e05378363411a9ea4d152ad40a27864056a8c56b",
+      "imports": [
+        "modules/capabilities/server/validation.mjs",
+        "server/existing-app-host-composition.js"
+      ]
+    },
+    {
+      "path": "server/native-source-handlers.js",
+      "bytes": 3219,
+      "sha256": "45cf27834043cd62003ef0eb2390d89cabd3951c3a4315e34e6733df0362951d",
+      "imports": [
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "server/otsov-source.js",
+      "bytes": 15316,
+      "sha256": "6b30feac17e9a319caa1602498b77b58d78373d8fdd0bfd5d465298fd55ef4b7",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/source-app/server/standard-profile.mjs",
+        "server/current-context-source.js",
+        "server/selected-native-source.js"
+      ]
+    },
+    {
+      "path": "server/personal-agent-configuration.js",
+      "bytes": 7942,
+      "sha256": "3304f4b6bf7a000d2bbe67cd1d76649c34cc7eeb718a5387526dff2c377d77c8",
+      "imports": [
+        "modules/personal-agent/provider/validation.mjs",
+        "server/personal-agent-transport.js"
+      ]
+    },
+    {
+      "path": "server/personal-agent-transport.js",
+      "bytes": 8858,
+      "sha256": "897de8dbd0bc9b2538e16535a5b5f3d206824aa9c71314d2e63f3ae1972b761b",
+      "imports": [
+        "modules/personal-agent/provider/index.mjs",
+        "modules/personal-agent/provider/validation.mjs"
+      ]
+    },
+    {
+      "path": "server/selected-hive-source.js",
+      "bytes": 7603,
+      "sha256": "c6bc7f729d8bf44d59c9c5d099e395aaa71b9ba6ff30e6e01370b51e71fe154f",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "server/hive-workflow-input.js",
+        "server/selected-native-source.js"
+      ]
+    },
+    {
+      "path": "server/selected-native-source.js",
+      "bytes": 16533,
+      "sha256": "1f77ea27f24976f9ea25f3370cd44004af15a29fa3598ad79fefb4d376079e4e",
+      "imports": [
+        "modules/apps/scoped-embed/resource-profile.mjs",
+        "modules/apps/scoped-embed/resource-route-adapters.mjs",
+        "modules/capabilities/server/catalog.mjs",
+        "modules/capabilities/server/external-adapters.mjs",
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "modules/source-app/server/standard-profile.mjs",
+        "modules/source-app/server/workspace-context.mjs",
+        "server/hive-workflow-input.js"
+      ]
+    },
+    {
+      "path": "server/tavysh-device-read-adapter.js",
+      "bytes": 9218,
+      "sha256": "418117f5e4de6a15132a7241560686992069c43b9b00b0cbbed6cf11cd57103a",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs"
+      ]
+    },
+    {
+      "path": "server/tavysh-native-device-broker.js",
+      "bytes": 7396,
+      "sha256": "72a54007e00332e0df80e5127088de21f1c33cf09c159ad1fb2958521b51bfb8",
+      "imports": [
+        "modules/capabilities/server/readonly-queries.mjs",
+        "modules/capabilities/server/validation.mjs",
+        "server/tavysh-device-read-adapter.js"
+      ]
+    },
+    {
+      "path": "server/universal-configuration.js",
+      "bytes": 5580,
+      "sha256": "fb7b954156a915891917f6f969a3c556c3e91d021304dbd7c908b24e3f4a4ceb",
+      "imports": [
+        "server/universal-mode.js"
+      ]
+    },
+    {
+      "path": "server/universal-mode.js",
+      "bytes": 195,
+      "sha256": "c50c513c5aadf6b38905ecc2775c0cd3f7df880b017b1ee57fed4d9e94848397",
+      "imports": []
+    }
+  ],
+  "patches": [
+    {
+      "path": "deploy/connector/rollout.mjs",
+      "stockSha256": "a0d0a572549318f9710b039fee7a675ee29da6f244d01ff2b662f20d4245bdb4",
+      "sha256": "4ccbc9ac857ca044d287f05f39b636c1da44bb8d7fe3878b4d99b5f88dac0bd8",
+      "bytes": 29206,
+      "encoding": "utf8-lf"
+    }
+  ],
+  "unqualified": [
+    "trusted-backup-orchestration-closure",
+    "disposable-linux-docker-controller-and-gpg-restore-cycle",
+    "exact-world3-candidate-and-fallback-images"
+  ],
+  "outsideStaticClosure": [
+    "operator-owned installed module loaded only after its separate existing policy checks",
+    "fixed commands inside separately qualified helper/application images",
+    "trusted coldVerification closure supplied by Main and independently pinned"
+  ],
+  "externalExecutables": [
+    "/usr/bin/docker",
+    "/usr/bin/gpg",
+    "/usr/bin/gpgconf"
+  ]
+}

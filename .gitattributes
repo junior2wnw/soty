@@ -16,3 +16,12 @@
 /docs/implementation/private-attach-current-root-source-freeze-20261008.json text eol=lf
 /test-fixtures/planner-source-ci/** text eol=lf
 /modules/personal-agent/runtime/vendor/agent-runtime-core.ts text eol=lf
+# These release inputs are pinned as raw bytes, including their line endings.
+/deploy/connector/root-preservation-*.mjs -text whitespace=cr-at-eol
+/deploy/connector/root-preservation-qualification.manifest.json -text
+/deploy/connector/root-state-observer.mjs -text whitespace=cr-at-eol
+/deploy/connector/root-state-observer.test.mjs -text whitespace=cr-at-eol
+/deploy/connector/test-support/root-preservation-scenarios.mjs -text
+/deploy/connector/test-support/rollout-engine.mjs -text whitespace=cr-at-eol
+/deploy/connector/cold-verification-stage.stock.json -text
+/deploy/connector/rollout-cold-verification.test.mjs -text
