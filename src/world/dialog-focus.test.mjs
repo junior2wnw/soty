@@ -23,6 +23,7 @@ function fixture() {
   let document;
   class Element extends EventTarget {
     children = []; dataset = {}; attributes = new Map(); parentElement = null; open = false; disabled = false;
+    style = { setProperty() {} };
     classList = { add: name => { this.className += ' ' + name; }, remove() {}, toggle() {} };
     constructor(tag = 'div', className = '', text = '') { super(); this.tagName = tag.toUpperCase(); this.className = className; this.textContent = text; }
     get isConnected() { return this === document.body || !!this.parentElement?.isConnected; }
@@ -72,7 +73,10 @@ function fixture() {
   document.activeElement = document.body;
   const el = (...args) => new Element(...args);
   const button = (label, _symbol, className, action) => { const value = el('button', className, label); if (action) value.addEventListener('click', action); return value; };
-  const dom = { el, button, iconButton: (label, symbol, action) => button(label, symbol, 'sw-icon-button', action) };
+  const dom = { el, button, iconButton: (label, symbol, action) => button(label, symbol, 'sw-icon-button', action),
+    textInput: (value = '', placeholder = '') => Object.assign(el('input'), { value, placeholder }),
+    labeledField: (label, input) => { const field = el('label'); field.append(el('span', '', label), input); return field; },
+    avatar: () => el('span', 'sw-avatar') };
   let settings, disposed = 0;
   const ports = { './dom': dom, './icons': { icon: () => el('svg') }, './types': { worldColor: value => value },
     '../platform/origin-continuity': { createOriginContinuityLinks: () => null },
@@ -333,6 +337,32 @@ test('Core support stays keyboard reachable in profile and Help, and leaves dirt
       assert.equal(guarded, 4);
     }
   }
+});
+
+test('Actual profile editor support keeps the unsaved About form open without saving or flushing it', () => {
+  const f = fixture(); let submits = 0;
+  f.app.profile = { profileId: 'account-A', displayName: 'Synthetic profile', bio: '', interests: [], avatarColor: 'honey' };
+  f.app.screenHasUnsavedChanges = () => true;
+  f.app.afterNoteSaved = () => assert.fail('An external support link must not flush or defer the profile form');
+  f.app.flushScreen = () => assert.fail('Opening support must not flush the profile form');
+  f.app.updateProfile = () => assert.fail('Opening support must not save the profile');
+  f.app.navigate = () => assert.fail('Opening support must not navigate the working window');
+  f.app.openProfileEditor();
+  const modal = [...f.app.dialogs][0], form = modal.body.querySelector('form'), about = form.querySelector('textarea');
+  form.addEventListener('submit', () => submits++);
+  about.value = 'Transient unsaved About marker';
+  const support = modal.body.querySelector('.sw-core-support-link');
+  assert.ok(support, 'The actual native profile editor needs its own support link');
+  assert.equal(support.tagName, 'A'); assert.equal(support.target, '_blank'); assert.equal(support.rel, 'noopener noreferrer');
+  assert.equal(support.href, 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749');
+  assert.equal(support.getAttribute('aria-label'), 'Поддержка Сот (в новой вкладке)');
+  assert.equal(f.dialogs.isDialogFocusTarget(support), true); support.focus(); assert.equal(f.document.activeElement, support);
+  const event = { target: support, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+  f.rootClick(event); support.click(); f.drain();
+  assert.equal(event.defaultPrevented, false); assert.equal(submits, 0);
+  assert.equal(modal.element.open, true); assert.equal(form.isConnected, true);
+  assert.equal(form.querySelector('textarea'), about); assert.equal(about.value, 'Transient unsaved About marker');
+  assert.equal(f.app.profile.bio, '', 'The saved profile remains unchanged');
 });
 
 test('removed Help and stale profile entries cannot run actions after close, account ABA or destruction', () => {

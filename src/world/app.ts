@@ -3090,7 +3090,7 @@ class WorldApplication {
         dialog.close(); this.toast('Профиль сохранён');
       }).catch(reason => { if (current() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     });
-    const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(() => this.options.openAccount('recovery')); })); dialog.body.append(form, el('hr', 'sw-rule'), extra);
+    const extra = el('div', 'sw-stack'); extra.append(button('Видимость', 'eye', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openVisibility(); }), button('Оформление', 'settings', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.openAppearance(); }), button('Вход и сохранность аккаунта', 'lock', 'sw-button-quiet sw-button-wide', () => { dialog.close(); this.runHook(() => this.options.openAccount('recovery')); }), this.coreSupportLink()); dialog.body.append(form, el('hr', 'sw-rule'), extra);
   }
 
   private colorPicker(current: string, change: (color: string) => void): HTMLElement {
