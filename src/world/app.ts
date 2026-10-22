@@ -58,6 +58,9 @@ type CatalogKind = 'all' | 'people' | 'communities';
 interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId?: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; publication?: WorldAppRecord['publication']; entry?: WorldAppRecord['entry']; port?: number; }
 interface DeviceProjection { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; }
 interface HomeNote { noteId: string; title: string; preview: string; pinned: boolean; updatedAt: number; }
+
+const CORE_SUPPORT_URL = 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749';
+const coreSupportLinks = new WeakSet<HTMLElement>();
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
 interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<void>; reconnect(): void; hasUnsavedChanges(): boolean; }
 interface ChatMenuAction { label: string; symbol: string; run(): void; danger?: boolean; disabled?: boolean }
@@ -299,7 +302,9 @@ class WorldApplication {
     });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
+      const support = target && coreSupportLinks.has(target) && (target as HTMLAnchorElement).href === CORE_SUPPORT_URL &&
+        (target as HTMLAnchorElement).target === '_blank' && (target as HTMLAnchorElement).rel === 'noopener noreferrer';
+      if (!target || support || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -689,7 +694,7 @@ class WorldApplication {
       if (!this.transitionAccount(null)) this.cleanScreen();
       this.renderNavigation();
       const box = emptyState('Соты ждут вас', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => { this.main.replaceChildren(this.loading('Подключаемся')); void this.refresh(); }));
-      box.append(button('Мой аккаунт', 'person', 'sw-button-quiet', () => this.runHook(this.options.openAccount)));
+      box.append(button('Мой аккаунт', 'person', 'sw-button-quiet', () => this.runHook(this.options.openAccount)), this.coreSupportLink());
       this.main.replaceChildren(box);
     }
   }
@@ -941,7 +946,7 @@ class WorldApplication {
     const tools = el('div', 'of-menu-tools');
     if (this.unifiedField) tools.append(item('Вид поля', 'sliders', () => this.unifiedField?.openView()));
     else tools.append(item('На моё поле', 'grid', () => this.navigate('mine')));
-    tools.append(item('Интернет', 'world', () => this.openCapability('internet')));
+    tools.append(item('Интернет', 'world', () => this.openCapability('internet')), this.coreSupportLink());
     const grip = el('button', 'of-sheet-handle'); grip.type = 'button'; grip.setAttribute('aria-label', 'Свернуть меню');
     disposeGrip = bindSheetGripDismiss(grip, () => menu.close(), {
       isCurrent: () => !this.destroyed && this.fieldMenu === menu && menu.element.open && account === this.deskAccount && accountGeneration === this.accountGeneration,
@@ -983,7 +988,17 @@ class WorldApplication {
       menu.close({ restoreFocus: false }); this.openHelp(returnTarget);
     });
     help.setAttribute('aria-haspopup', 'dialog'); options.append(help);
-    const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs); menu.body.append(options);
+    const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs, this.coreSupportLink()); menu.body.append(options);
+  }
+
+  private coreSupportLink(): HTMLAnchorElement {
+    const link = el('a', 'sw-button sw-button-quiet sw-core-support-link');
+    link.href = CORE_SUPPORT_URL;
+    link.target = '_blank'; link.rel = 'noopener noreferrer';
+    link.setAttribute('aria-label', 'Поддержка Сот (в новой вкладке)');
+    link.append(icon('chat'), el('span', '', 'Поддержка Сот'), icon('external'));
+    coreSupportLinks.add(link);
+    return link;
   }
 
   private openHelp(returnTarget = this.dialogReturnTarget()): void {
@@ -991,6 +1006,7 @@ class WorldApplication {
     const dialog = this.dialog('Помощь', undefined, returnTarget), content = el('div', 'sw-help');
     dialog.element.classList.add('sw-help-dialog');
     content.append(el('h3', '', 'О Сотах'), el('p', '', 'Одно личное пространство для ваших приложений, людей и задач — с сохранением данных и контролем доступа.'));
+    content.append(this.coreSupportLink(), el('p', 'sw-muted', 'Сообщите о проблеме или предложите улучшение Сот. Форма откроется в новой вкладке; ваша работа останется здесь.'));
     const action = (label: string, symbol: string, run: () => void): HTMLButtonElement => button(label, symbol, 'sw-button-quiet', () => {
       if (!current() || !dialog.element.open) return;
       dialog.close({ restoreFocus: false }); this.afterNoteSaved(() => { if (current()) run(); });

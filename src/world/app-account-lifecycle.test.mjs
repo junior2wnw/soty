@@ -518,6 +518,10 @@ test('missing or unreadable local identity never takes the preserveNote catch sh
     assert.equal(disposed, 1); assert.equal(f.app.notesHandle, null);
     assert.equal(f.app.deskAccount, ''); assert.equal(f.app.profile, null); assert.equal(f.app.apps.length, 0);
     assert.equal(f.app.main.children[0].textContent, 'Соты ждут вас');
+    const support = f.app.main.children[0].children.find(node => node.tagName === 'a');
+    assert.ok(support, 'Core identity error must still offer the public support form');
+    assert.equal(support.href, 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749');
+    assert.equal(support.target, '_blank'); assert.equal(support.rel, 'noopener noreferrer');
   }
 });
 

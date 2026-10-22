@@ -10,6 +10,10 @@ import * as deployment from './app-deployment.mjs';
 const compile = async file => ts.transpileModule(await readFile(new URL(file, import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsCode = await compile('./dialogs.ts'), appCode = await compile('./app.ts'), cardCode = await compile('./application-card.ts');
+const appAst = ts.createSourceFile('app.js', appCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+const appConstructor = appAst.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
+const rootClickHandler = appConstructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+  && node.expression.expression.getText(appAst) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click').expression.arguments[1].getText(appAst);
 
 // Deterministic native-close task/focus port. These tests execute the production
 // helper and controller; only the browser platform and the settings form are
@@ -22,7 +26,7 @@ function fixture() {
     classList = { add: name => { this.className += ' ' + name; }, remove() {}, toggle() {} };
     constructor(tag = 'div', className = '', text = '') { super(); this.tagName = tag.toUpperCase(); this.className = className; this.textContent = text; }
     get isConnected() { return this === document.body || !!this.parentElement?.isConnected; }
-    get tabIndex() { return this.attributes.has('tabindex') ? Number(this.attributes.get('tabindex')) : /^(BUTTON|INPUT|TEXTAREA|SUMMARY)$/.test(this.tagName) ? 0 : -1; }
+    get tabIndex() { return this.attributes.has('tabindex') ? Number(this.attributes.get('tabindex')) : /^(BUTTON|INPUT|TEXTAREA|SUMMARY)$/.test(this.tagName) || this.tagName === 'A' && this.href ? 0 : -1; }
     set tabIndex(value) { this.attributes.set('tabindex', String(value)); }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -36,6 +40,7 @@ function fixture() {
     matches(selector) {
       if (selector.includes(',')) return selector.split(',').some(part => this.matches(part.trim()));
       if (selector === ':disabled') return this.disabled;
+      if (selector === 'a[href]') return this.tagName === 'A' && Boolean(this.href);
       if (selector === 'dialog[open]') return this.tagName === 'DIALOG' && this.open;
       if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
       const attr = /^\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector);
@@ -73,12 +78,12 @@ function fixture() {
     '../platform/origin-continuity': { createOriginContinuityLinks: () => null },
     './app-audience.mjs': audience, './app-launch.mjs': launch, './app-deployment.mjs': deployment,
     './app-settings': { mountAppSettings(options) { settings = options; return { dispose() { disposed++; }, requestClose(_trigger, afterClose) { options.onClose(afterClose); } }; } } };
-  const globals = { document, location, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
+  const globals = { document, location, Element, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
     URLSearchParams, setTimeout, clearTimeout, clearInterval, Event };
   function evaluate(code) { const module = { exports: {} }; vm.runInNewContext(code, { ...globals, module, exports: module.exports, require: name => ports[name] ?? {} }); return module.exports; }
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;
   const { createApplicationCard } = evaluate(cardCode);
-  const { TestController } = evaluate(`${appCode}\nexports.TestController = WorldApplication;`);
+  const { TestController, bindRootClick } = evaluate(`${appCode}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; };`);
   const app = Object.create(TestController.prototype), main = el('main'), root = el('section'); main.tabIndex = -1; root.append(main); document.body.append(root);
   const record = { appId: `app-${'12'.repeat(16)}`, name: 'Fixture app', ownerAccountId: 'account-A', status: 'offline', grants: { accountIds: [], communityIds: [] }, publication: { launchPolicy: 'restricted', activeNamedAddressCount: 0 } };
   let renders = 0;
@@ -94,7 +99,7 @@ function fixture() {
   const opener = () => main.querySelector('[data-app-action="inspect"]');
   const chain = () => { opener().focus(); opener().click(); const inspect = [...app.dialogs][0]; const next = inspect.body.querySelectorAll('button').find(node => node.textContent === 'Название и доступ'); next.focus(); next.click(); return app.appSettingsDialog; };
   const changed = () => settings.onChanged({ actions: { canEdit: true }, app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
-  return { document, location, el, app, main, dialogs, record, opener, chain, changed, settings: () => settings,
+  return { document, location, el, app, main, dialogs, record, opener, chain, changed, rootClick: bindRootClick.call(app), settings: () => settings,
     disposed: () => disposed, renders: () => renders, drain() { while (tasks.length) tasks.shift()(); } };
 }
 
@@ -267,15 +272,10 @@ test('profile Help preserves developer docs and restores its original opener aft
     assert.equal(modal.element.getAttribute('aria-labelledby'), modal.element.querySelector('h2').id);
     assert.equal(modal.body.querySelectorAll('details').length, 4); assert.equal(modal.body.querySelector('details').open, true);
     if (native) modal.element.requestClose(); else {
-      const ast = ts.createSourceFile('app.js', appCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-      const constructor = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
-      const capture = constructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
-        && node.expression.expression.getText(ast) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click').expression.arguments[1];
-      const module = { exports: {} }; vm.runInNewContext('exports.bind = function() { return ' + capture.getText(ast) + '; };', { exports: module.exports, Element: opener.constructor });
       f.app.screenHasUnsavedChanges = () => true; f.app.afterNoteSaved = () => assert.fail('Dismissing Help must not drain unrelated work');
       const close = modal.element.querySelector('button'), event = { target: close, defaultPrevented: false,
         preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
-      module.exports.bind.call(f.app)(event); assert.equal(event.defaultPrevented, false); close.click();
+      f.rootClick(event); assert.equal(event.defaultPrevented, false); close.click();
     }
     f.drain(); assert.equal(f.app.dialogs.size, 0); assert.equal(f.document.activeElement, opener);
   }
@@ -296,6 +296,42 @@ test('Help shortcuts close before the real dirty guard, retain blocked work and 
     release(); await new Promise(resolve => setImmediate(resolve)); f.drain();
     assert.equal(navigation, outcome === 'saved' ? 1 : 0); assert.equal(warnings, outcome === 'blocked' ? 1 : 0);
     assert.equal(f.app.noteActionPending, false);
+  }
+});
+
+test('Core support stays keyboard reachable in profile and Help, and leaves dirty work in its current window', () => {
+  for (const entry of ['profile', 'Help']) {
+    const f = fixture(), draft = f.el('textarea'), frame = f.el('iframe'); draft.value = 'Unsaved private work'; f.main.append(draft, frame);
+    const screen = f.app.screenSequence, children = [...f.main.children]; let guarded = 0;
+    f.app.screenHasUnsavedChanges = () => true;
+    f.app.afterNoteSaved = () => guarded++;
+    f.app.navigate = () => assert.fail('Support must not navigate the working window');
+    if (entry === 'profile') f.app.openProfileMenu(); else f.app.openHelp();
+    const modal = [...f.app.dialogs][0], support = modal.body.querySelector('.sw-core-support-link');
+    assert.ok(support, entry); assert.equal(support.tagName, 'A');
+    assert.equal(support.href, 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749');
+    assert.equal(support.target, '_blank'); assert.equal(support.rel, 'noopener noreferrer');
+    assert.equal(support.getAttribute('aria-label'), 'Поддержка Сот (в новой вкладке)');
+    assert.equal(f.dialogs.isDialogFocusTarget(support), true); support.focus(); assert.equal(f.document.activeElement, support);
+    if (entry === 'profile') { const first = modal.element.querySelector('button'); first.focus(); bubbleTab(first, true); assert.equal(f.document.activeElement, support); }
+    const event = { target: support, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+    f.rootClick(event); support.click();
+    assert.equal(event.defaultPrevented, false); assert.equal(guarded, 0);
+    assert.equal(modal.element.open, true); assert.equal(f.app.screenSequence, screen);
+    assert.deepEqual(f.main.children, children); assert.equal(draft.value, 'Unsaved private work'); assert.equal(frame.isConnected, true);
+    if (entry === 'profile') {
+      const docs = modal.body.querySelector('a'); event.target = docs;
+      f.rootClick(event);
+      assert.equal(event.defaultPrevented, true); assert.equal(guarded, 1, 'Other links retain the existing dirty-work guard');
+      const foreign = f.el('a', 'sw-core-support-link'); foreign.target = support.target; foreign.rel = support.rel; modal.body.append(foreign);
+      for (const href of ['https://unrelated.example/support', support.href]) {
+        foreign.href = href; event.target = foreign; event.defaultPrevented = false; f.rootClick(event);
+        assert.equal(event.defaultPrevented, true, 'A class or matching URL cannot forge an owned support anchor');
+      }
+      support.href = 'https://unrelated.example/support'; event.target = support; event.defaultPrevented = false; f.rootClick(event);
+      assert.equal(event.defaultPrevented, true, 'An owned anchor cannot bypass the guard after its destination changes');
+      assert.equal(guarded, 4);
+    }
   }
 });
 
