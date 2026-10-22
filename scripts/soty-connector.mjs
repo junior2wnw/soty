@@ -20,7 +20,7 @@ import { createLocalJobReceipts } from "./agent-modules/local-job-receipts.mjs";
 import { windowsUserCompanion } from "./agent-modules/user-companion.mjs";
 import { productionShellOriginAllowed } from "./agent-modules/production-origin.mjs";
 
-const connectorVersion = "1.4.9";
+const connectorVersion = "1.4.10";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -1320,8 +1320,10 @@ async function transitUnderlayInterface() {
 
 async function transitRoutePresent() {
   if (process.platform !== 'win32') return false;
-  const result = await transitPowerShell("$r=@(Get-NetRoute -InterfaceAlias 'SotyTransit' -ErrorAction SilentlyContinue | Where-Object {$_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1')}); if($r.Count -gt 0){'yes'}else{'no'}");
-  return result === 'yes';
+  const result = await transitPowerShell("$r=@(Get-NetRoute -ErrorAction Stop | Where-Object {$_.InterfaceAlias -eq 'SotyTransit' -and $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1')}); if($r.Count -gt 0){'yes'}else{'no'}");
+  if (result === 'yes') return true;
+  if (result === 'no') return false;
+  throw new Error('transit-route-unconfirmed');
 }
 
 async function writeTransitPrivate(name, value) {

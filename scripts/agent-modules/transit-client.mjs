@@ -136,10 +136,15 @@ export function createTransitClientRuntime(deps) {
     if (!(await deps.verifyCore(core))) throw new Error('transit-core-pin-mismatch');
     return core;
   }
+  async function requireStopped() {
+    try { if (await deps.confirmStopped() === true) return; } catch {}
+    phase = 'unknown';
+    throw new Error('transit-stop-unconfirmed');
+  }
   async function stopOwned() {
     if (!alive()) {
       child = null;
-      if (!(await deps.confirmStopped())) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
+      await requireStopped();
       phase = 'off'; return;
     }
     const owned = child;
@@ -152,7 +157,7 @@ export function createTransitClientRuntime(deps) {
     }
     if (isAlive(owned)) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
     if (child === owned) child = null;
-    if (!(await deps.confirmStopped())) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
+    await requireStopped();
     phase = 'off';
   }
   return {

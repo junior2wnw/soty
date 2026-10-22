@@ -2151,10 +2151,15 @@ function createTransitClientRuntime(deps) {
     if (!(await deps.verifyCore(core))) throw new Error('transit-core-pin-mismatch');
     return core;
   }
+  async function requireStopped() {
+    try { if (await deps.confirmStopped() === true) return; } catch {}
+    phase = 'unknown';
+    throw new Error('transit-stop-unconfirmed');
+  }
   async function stopOwned() {
     if (!alive()) {
       child = null;
-      if (!(await deps.confirmStopped())) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
+      await requireStopped();
       phase = 'off'; return;
     }
     const owned = child;
@@ -2167,7 +2172,7 @@ function createTransitClientRuntime(deps) {
     }
     if (isAlive(owned)) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
     if (child === owned) child = null;
-    if (!(await deps.confirmStopped())) { phase = 'unknown'; throw new Error('transit-stop-unconfirmed'); }
+    await requireStopped();
     phase = 'off';
   }
   return {
@@ -4001,7 +4006,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.9";
+const connectorVersion = "1.4.10";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -5301,8 +5306,10 @@ async function transitUnderlayInterface() {
 
 async function transitRoutePresent() {
   if (process.platform !== 'win32') return false;
-  const result = await transitPowerShell("$r=@(Get-NetRoute -InterfaceAlias 'SotyTransit' -ErrorAction SilentlyContinue | Where-Object {$_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1')}); if($r.Count -gt 0){'yes'}else{'no'}");
-  return result === 'yes';
+  const result = await transitPowerShell("$r=@(Get-NetRoute -ErrorAction Stop | Where-Object {$_.InterfaceAlias -eq 'SotyTransit' -and $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1')}); if($r.Count -gt 0){'yes'}else{'no'}");
+  if (result === 'yes') return true;
+  if (result === 'no') return false;
+  throw new Error('transit-route-unconfirmed');
 }
 
 async function writeTransitPrivate(name, value) {

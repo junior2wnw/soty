@@ -45,15 +45,29 @@ function downloadProfile(profile: unknown): void {
 export async function openTransitClient(options: { openSharedInternet?: () => void } = {}): Promise<void> {
   let unobserve = () => {};
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  const dialog = createDialog('TRANSIT', () => { unobserve(); clearInterval(refreshTimer); });
+  let generation = 0, disposed = false;
+  const dialog = createDialog('TRANSIT', () => {
+    disposed = true; generation++; unobserve(); clearInterval(refreshTimer);
+  });
   dialog.element.classList.add('transit-client-dialog');
   const owner = (await accountClient.getLocalState()).accountId;
+  if (disposed || !dialog.element.isConnected) return;
   if (!owner) { dialog.body.textContent = 'Откройте свой профиль Сот, чтобы получить доступ TRANSIT.'; return; }
   unobserve = observeAccount(state => { if (state.accountId !== owner) dialog.close(); });
   const mobile = /android|iphone|ipad|ipod|mobile/iu.test(`${navigator.userAgent} ${navigator.platform}`);
   let saved: unknown = null, local: TransitReply | null = null, working = false;
   let hostDeviceId = '', controlToken = '', authorized = false;
-  const current = async () => dialog.element.isConnected && (await accountClient.getLocalState()).accountId === owner;
+  const live = (ticket: number) => !disposed && ticket === generation && dialog.element.isConnected;
+  const current = async (ticket = generation) => {
+    if (!live(ticket)) return false;
+    const state = await accountClient.getLocalState();
+    return live(ticket) && state.accountId === owner;
+  };
+  const ownerPost = async (body: Record<string, unknown>): Promise<TransitReply> => {
+    const ticket = generation;
+    if (!(await current(ticket)) || !live(ticket)) throw new Error('transit-owner-changed');
+    return localTransit(body);
+  };
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = '', className = '') => {
     const element = document.createElement(tag); element.textContent = text; element.className = className; return element;
   };
@@ -73,13 +87,13 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     hostDeviceId = agent?.deviceId || companion?.deviceId || hostDeviceId;
     controlToken = account.controllers[hostDeviceId] || ''; authorized = false;
     if (agent?.deviceId && controlToken) {
-      authorized = await localTransit({ action: 'authorize', deviceId: agent.deviceId, controlToken }).then(() => true, () => false);
+      authorized = await ownerPost({ action: 'authorize', deviceId: agent.deviceId, controlToken }).then(() => true, () => false);
     }
     if (await current()) render();
   }
   const agentAction = (body: Record<string, unknown>) => {
     if (!authorized || !controlToken) throw new Error('transit-control-not-paired');
-    return localTransit({ ...body, deviceId: local?.deviceId, controlToken });
+    return ownerPost({ ...body, deviceId: local?.deviceId, controlToken });
   };
   async function pairComputer(): Promise<void> {
     hostDeviceId ||= `device-${crypto.randomUUID()}`;
@@ -91,6 +105,8 @@ export async function openTransitClient(options: { openSharedInternet?: () => vo
     if (!(await current())) return;
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(controlToken)));
     const hash = [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const ticket = generation;
+    if (!(await current(ticket)) || !live(ticket)) return;
     downloadAgentInstallerForDevice('machine', { id: hostDeviceId }, '', hash);
   }
   async function perform(action: () => Promise<void>, success: string): Promise<void> {
