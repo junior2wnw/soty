@@ -37,6 +37,11 @@ function isSotyDocument(value) {
 const pushBindingCache = 'soty-notifications-v1';
 const pushBindingPath = '/__soty_push_binding';
 let pushBindingWork = Promise.resolve();
+const pushSeenCache = 'soty-notifications-seen-v1';
+// Cover provider retries after dismissal/restart without keeping an unbounded history.
+const pushSeenTtl = 2 * 3600_000, pushSeenLimit = 4096;
+let pushSeenWork = Promise.resolve();
+const pushInFlight = new Set();
 const pushBindingId = value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 function validPush(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -67,13 +72,54 @@ function updatePushBinding(data) {
   pushBindingWork = updating.catch(() => {});
   return updating;
 }
+function reservePush(data) {
+  const reserving=pushSeenWork.then(async()=>{
+    if(await currentPushBinding()!==data.bindingId)return false;
+    const key='/__soty_push_seen/'+data.bindingId+'/'+data.notificationId;
+    if(pushInFlight.has(key)||pushInFlight.size>=pushSeenLimit)return false;
+    const previous=await(await caches.open(pushSeenCache)).match(key,{ignoreSearch:true});
+    const until=Number(previous?.headers.get('X-Soty-Seen-Until')),now=Date.now();
+    if(until>now&&until<=now+pushSeenTtl)return false;
+    pushInFlight.add(key);return key;
+  });
+  pushSeenWork=reserving.catch(()=>{});return reserving;
+}
+function rememberPush(key) {
+  const remembering=pushSeenWork.then(async()=>{
+    const cache=await caches.open(pushSeenCache),now=Date.now(),live=[];
+    for(const request of await cache.keys()){
+      const until=Number(new URL(request.url).searchParams.get('until'));
+      if(!Number.isSafeInteger(until)||until<=now||until>now+pushSeenTtl)await cache.delete(request);
+      else live.push({request,until});
+    }
+    live.sort((left,right)=>left.until-right.until);
+    while(live.length>=pushSeenLimit)await cache.delete(live.shift().request);
+    await cache.delete(key,{ignoreSearch:true});
+    const until=now+pushSeenTtl;
+    await cache.put(key+'?until='+until,new Response('',{headers:{'X-Soty-Seen-Until':String(until)}}));
+  });
+  pushSeenWork=remembering.catch(()=>{});return remembering;
+}
 self.addEventListener('push', event => {
   event.waitUntil((async () => {
     let data;
     try { if (!event.data || event.data.text().length > 1024) return; data = event.data.json(); } catch { return; }
-    if (!validPush(data) || await currentPushBinding() !== data.bindingId) return;
-    await self.registration.showNotification('Соты', { body: 'Новое сообщение', icon: '/icons/soty-192.png',
-      badge: '/icons/soty-192.png', tag: 'soty-' + data.notificationId, data, renotify: false });
+    if (!validPush(data)) return;
+    const reservation=await reservePush(data);if(!reservation)return;
+    try {
+      if(await currentPushBinding()!==data.bindingId)return;
+      const tag='soty-'+data.bindingId+'-'+data.notificationId;
+      await self.registration.showNotification('Соты', { body: 'Новое сообщение', icon: '/icons/soty-192.png',
+        badge: '/icons/soty-192.png', tag, data, renotify: false });
+      // Binding changes must not wait for a held OS show. Clean up its late card only.
+      try {
+        if(await currentPushBinding()!==data.bindingId){
+          const shown=await self.registration.getNotifications({tag});
+          if(await currentPushBinding()!==data.bindingId)for(const notification of shown)
+            if(notification.tag===tag&&notification.data?.bindingId===data.bindingId&&notification.data?.notificationId===data.notificationId)notification.close();
+        }
+      } finally {await rememberPush(reservation);}
+    } finally {pushInFlight.delete(reservation);}
   })());
 });
 self.addEventListener('notificationclick', event => {
