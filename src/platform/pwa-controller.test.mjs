@@ -31,16 +31,17 @@ function fixture({standalone=false}={}) {
     standalone(){display.matches=true;display.dispatchEvent(new Event('change'));}};
 }
 
-function updateFixture(t,{lostActivationAck=false}={}) {
+function updateFixture(t,{lostActivationAck=false,actualWorker=lostActivationAck}={}) {
   const window=new EventTarget(),document=new EventTarget(),display=new EventTarget(),workers=new EventTarget(),exports={};
   const activationTimers=new Set(),workerHandlers=new Map(),protocol={requests:0,commits:0,activations:0,droppedAcks:0};
-  document.visibilityState='visible';display.matches=false;let reloads=0,onActivate,activationWork,beforeActivation,dropCommit=false,foreignController=false;
+  document.visibilityState='visible';display.matches=false;let reloads=0,onActivate,activationWork,beforeActivation,dropCommit=false,foreignController=false,holdController=false;
   class ServiceWorker extends EventTarget {
     scriptURL='https://soty.example/sw.js';
+    state='installed';
     postMessage(message,[port]) {
-      if(message.type==='SOTY_ACTIVATE_UPDATE'&&lostActivationAck){
+      if(message.type==='SOTY_ACTIVATE_UPDATE'&&actualWorker){
         protocol.requests++;
-        workerHandlers.get('message')({data:message,ports:[{postMessage(){protocol.droppedAcks++;port.close();}}],waitUntil(work){activationWork=work;}});return;
+        workerHandlers.get('message')({data:message,ports:[{postMessage(value){if(lostActivationAck)protocol.droppedAcks++;else port.postMessage(value);port.close();}}],waitUntil(work){activationWork=work;}});return;
       }
       if (message.type==='SOTY_ACTIVATE_UPDATE'&&onActivate) { onActivate(port);return; }
       port.postMessage(message.type==='SOTY_OFFLINE_STATUS'?{offlineReady:true}:{ready:true});port.close();
@@ -51,13 +52,14 @@ function updateFixture(t,{lostActivationAck=false}={}) {
   registration.waiting=null;registration.update=async()=>{};
   workers.controller=previous;workers.register=async()=>registration;workers.ready=Promise.resolve(registration);
   const commit=(source=next)=>{const event=new Event('message');Object.assign(event,{source,data:{type:'SOTY_UPDATE_COMMIT'},ports:[]});workers.dispatchEvent(event);};
-  const activate=()=>{registration.waiting=null;workers.controller=foreignController?foreign:next;workers.dispatchEvent(new Event('controllerchange'));};
-  if(lostActivationAck)vm.runInNewContext(workerSource,{URL,MessageChannel,setTimeout,clearTimeout,self:{
+  const workerState=state=>{next.state=state;next.dispatchEvent(new Event('statechange'));};
+  const activate=()=>{registration.waiting=null;workers.controller=foreignController?foreign:next;workerState(foreignController?'redundant':'activated');workers.dispatchEvent(new Event('controllerchange'));};
+  if(actualWorker)vm.runInNewContext(workerSource,{URL,MessageChannel,setTimeout,clearTimeout,self:{
     location:{origin:'https://soty.example'},addEventListener:(type,handler)=>workerHandlers.set(type,handler),
     clients:{matchAll:async()=>[{id:'page',url:'https://soty.example/',postMessage(data,ports=[]){
       if(data.type==='SOTY_UPDATE_COMMIT'){protocol.commits++;if(dropCommit)return;}
       const event=new Event('message');Object.assign(event,{source:next,data,ports});workers.dispatchEvent(event);
-    }}]},skipWaiting:async()=>{protocol.activations++;beforeActivation?.();activate();},
+    }}]},skipWaiting:async()=>{protocol.activations++;beforeActivation?.();if(holdController)workerState('activating');else activate();},
   }},{timeout:1000});
   const context={exports,window,document,ServiceWorker,MessageChannel,AbortController,AbortSignal,Event,URL,
     matchMedia:()=>display,navigator:{serviceWorker:workers,onLine:true},
@@ -67,10 +69,46 @@ function updateFixture(t,{lostActivationAck=false}={}) {
   vm.runInNewContext(compiled,context,{timeout:1000});const control=exports.createPwaController();t.after(()=>control.destroy());
   return {control,exports,context,protocol,foreignWorker:foreign,reloads:()=>reloads,
     offerUpdate(handler){registration.waiting=next;onActivate=handler;},
-    activate,commit,beforeActivation(handler){beforeActivation=handler;},suppressCommit(){dropCommit=true;},useForeignController(){foreignController=true;},replaceWaiting(){registration.waiting=foreign;},
+    activate,commit,beforeActivation(handler){beforeActivation=handler;},suppressCommit(){dropCommit=true;},useForeignController(){foreignController=true;},replaceWaiting(){registration.waiting=foreign;},holdActivation(){holdController=true;},redundant(){workerState('redundant');},
     async workerFinished(){for(let i=0;!activationWork&&i<10;i++)await setImmediate();assert.ok(activationWork);await activationWork;await setImmediate();},
     expireActivationAck(){assert.equal(activationTimers.size,1);const [timer]=activationTimers;activationTimers.delete(timer);timer.fn();}};
 }
+
+test('a positive ACK from a now-redundant clicked worker settles instead of staying activating',async t=>{
+  const f=updateFixture(t,{actualWorker:true});await setImmediate();f.useForeignController();f.offerUpdate();
+  const first=f.control.applyUpdate();await f.workerFinished();assert.equal(await first,false);
+  assert.equal(f.control.get().update,'failed');assert.equal(f.reloads(),0);
+  assert.deepEqual(f.protocol,{requests:1,commits:1,activations:1,droppedAcks:0});
+});
+
+test('redundancy after a positive ACK settles a pending controller transition without another event',async t=>{
+  const f=updateFixture(t,{actualWorker:true});await setImmediate();f.holdActivation();f.offerUpdate();
+  const first=f.control.applyUpdate();await f.workerFinished();assert.equal(await first,true);
+  assert.equal(f.control.get().update,'activating');assert.equal(f.reloads(),0);
+  f.useForeignController();f.activate();await setImmediate();
+  assert.equal(f.control.get().update,'failed');assert.equal(f.reloads(),0);assert.equal(f.protocol.requests,1);
+});
+
+test('a replacement waiting worker becomes a fresh offer without being activated automatically',async t=>{
+  const f=updateFixture(t,{actualWorker:true});await setImmediate();f.holdActivation();f.offerUpdate();
+  const first=f.control.applyUpdate();await f.workerFinished();assert.equal(await first,true);
+  f.replaceWaiting();f.redundant();await setImmediate();
+  assert.equal(f.control.get().update,'available');assert.equal(f.reloads(),0);assert.equal(f.protocol.requests,1);
+});
+
+test('redundancy after the single terminal reload cannot resurrect an error or a second navigation',async t=>{
+  const f=updateFixture(t,{actualWorker:true});await setImmediate();f.offerUpdate();const first=f.control.applyUpdate();
+  await f.workerFinished();assert.equal(await first,true);assert.equal(f.reloads(),1);assert.equal(f.control.get().update,'idle');
+  f.useForeignController();f.activate();await setImmediate();
+  assert.equal(f.control.get().update,'idle');assert.equal(f.reloads(),1);assert.equal(f.protocol.requests,1);
+});
+
+test('destroy removes the pending worker observer and cannot publish a late redundant state',async t=>{
+  const f=updateFixture(t,{actualWorker:true});await setImmediate();f.holdActivation();f.offerUpdate();
+  const first=f.control.applyUpdate();await f.workerFinished();assert.equal(await first,true);
+  f.control.destroy();const before=f.control.get().update;f.redundant();await setImmediate();
+  assert.equal(f.control.get().update,before);assert.equal(f.reloads(),0);assert.equal(f.protocol.requests,1);
+});
 
 function formFixture(f) {
   class HTMLElement {isConnected=true;ignored=false;closest(){return this.ignored?this:null;}contains(input){return input===this;}}

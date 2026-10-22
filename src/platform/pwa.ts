@@ -91,6 +91,21 @@ export function createPwaController(): PwaController {
     void checkConnection(); void refreshOffline();
     if (Date.now() - lastUpdateCheck > 60 * 60 * 1000) void checkUpdate();
   };
+  const rejectRedundant = (worker: ServiceWorker): boolean => {
+    if (worker.state !== 'redundant') return false;
+    if (reloadWorker === worker) { reloadArmed = false; reloadRequired = false; }
+    publish({ update: state.update === 'blocked' ? 'blocked' : registration?.waiting && registration.waiting !== worker ? 'available' : 'failed' });
+    return true;
+  };
+  const reloadWorkerChanged = (event: Event) => {
+    const worker = reloadWorker;
+    if (!destroyed && !reloading && worker && event.currentTarget === worker) rejectRedundant(worker);
+  };
+  const observeReloadWorker = (worker: ServiceWorker) => {
+    if (reloadWorker === worker) return;
+    reloadWorker?.removeEventListener('statechange', reloadWorkerChanged);
+    reloadWorker = worker; worker.addEventListener('statechange', reloadWorkerChanged, { signal: abort.signal });
+  };
   const message = (event: MessageEvent) => {
     // Only a worker registered at this origin may initiate an update handshake.
     const source = event.source;
@@ -100,8 +115,8 @@ export function createPwaController(): PwaController {
       publish({ update: 'saving' });
       void saveDrafts().then(ready => { port.postMessage({ ready }); port.close(); publish({ update: ready ? 'available' : 'blocked' }); });
     } else if (event.data?.type === 'SOTY_UPDATE_COMMIT') {
-      if (reloading || requestedWorker && source !== requestedWorker) return;
-      reloadWorker = source;
+      if (reloading || requestedWorker && source !== requestedWorker || source.state === 'redundant') return;
+      observeReloadWorker(source);
       reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
       // The controller can change before this cross-worker message arrives.
       if (navigator.serviceWorker.controller === source) controllerChanged();
@@ -112,12 +127,12 @@ export function createPwaController(): PwaController {
     if (destroyed) return false;
     if (reloading) return true;
     const worker = reloadWorker;
-    if (!reloadArmed || !worker || navigator.serviceWorker.controller !== worker) return false;
+    if (!reloadArmed || !worker || rejectRedundant(worker) || navigator.serviceWorker.controller !== worker) return false;
     // Typing may resume between prepare and activation: recheck before navigation.
     const ready = await saveDrafts();
     if (destroyed) return false;
     if (reloading) return true;
-    if (!reloadArmed || reloadWorker !== worker || navigator.serviceWorker.controller !== worker) return false;
+    if (!reloadArmed || reloadWorker !== worker || rejectRedundant(worker) || navigator.serviceWorker.controller !== worker) return false;
     if (!ready) { reloadArmed = false; publish({ update: 'blocked' }); return false; }
     reloading = true; reloadArmed = false; reloadRequired = false; location.reload(); publish({ update: 'idle' }); return true;
   };
@@ -183,8 +198,9 @@ export function createPwaController(): PwaController {
           const result = await workerRequest<{ ready?: boolean }>(worker, 'SOTY_ACTIVATE_UPDATE', 20_000);
           if (destroyed || state.update === 'blocked') return false;
           if (reloading) return true;
+          if (rejectRedundant(worker)) return false;
           if (!result.ready) { publish({ update: 'blocked' }); return false; }
-          reloadWorker = worker;
+          observeReloadWorker(worker);
           reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
           if (navigator.serviceWorker.controller === worker) return controllerChanged();
           return true;
