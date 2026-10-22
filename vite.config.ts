@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { publishUnixInstaller } from "./scripts/unix-installer-release.mjs";
 
 export default defineConfig({
   cacheDir: ".voice-v5-vite-cache",
@@ -10,6 +11,9 @@ export default defineConfig({
     name: "soty-versioned-worker",
     apply: "build",
     enforce: "post",
+    async configResolved(config) {
+      if (config.publicDir) await publishUnixInstaller(resolve(config.publicDir, "agent/install-macos-linux.sh"));
+    },
     generateBundle: {
       // Vite removes pure CSS proxy chunks in generateBundle. Build the worker
       // from the final graph, after that cleanup, or cache.addAll would fail.

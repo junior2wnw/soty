@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from 'node:module';
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeReleaseManifest } from "./agent-modules/opencode-release.mjs";
 import { transitClientWindowsRelease } from './agent-modules/transit-client.mjs';
+import { publishUnixInstaller } from "./unix-installer-release.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourcePath = join(root, "scripts", "soty-connector.mjs");
@@ -60,6 +61,8 @@ const reinstallSpecs = [
   ["arm", "soty-arm-windows-reinstall.ps1"],
   ["makeFastUsb", "soty-make-fast-usb.ps1"]
 ];
+
+await publishUnixInstaller(join(outputDir, "install-macos-linux.sh"));
 
 const source = (await readFile(sourcePath, "utf8")).replace(/\r\n/g, "\n");
 const bundled = await bundleLocalModules(source);
