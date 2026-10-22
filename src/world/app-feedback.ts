@@ -5,7 +5,7 @@ import { attachmentBytes, validateAttachmentBudget, rasterFile, captureSelectedD
   type FeedbackAttachment, type RasterRect } from './feedback-media.mjs';
 
 interface FeedbackContext {
-  installationId: string; appId: string; title: string; recipientLabel: string;
+  installationId: string; appId?: string; scope?: 'core'; title: string; recipientLabel: string;
   ticketVisibility: 'reporter-and-support'; canSubmit: boolean; canManage: boolean;
   capabilities: { text: boolean; voice: boolean; screenshot: boolean; asr: boolean };
   limits: { bodyChars: number; totalAttachmentBytes: number; maxAttachments: number; maxAudioSeconds: number };
@@ -14,7 +14,7 @@ interface FeedbackContext {
 interface FeedbackMessage { id?: string; body: string; createdAt: string | number; kind?: string; label?: string; }
 interface TicketAttachment { id?: string; kind: 'image' | 'audio'; name: string; mimeType: string; dataBase64?: string; byteLength?: number; }
 interface FeedbackTicket {
-  id: string; appId: string; installationId: string; body: string; status: string; revision: number;
+  id: string; appId?: string; scope?: 'core'; installationId: string; body: string; status: string; revision: number;
   createdAt: string | number; updatedAt?: string | number; attachments?: TicketAttachment[];
   messages?: FeedbackMessage[]; canReply?: boolean; canManage?: boolean; canAccept?: boolean;
 }
@@ -33,9 +33,10 @@ interface Draft {
 }
 export interface AppFeedbackOptions {
   api: WorldApi; accountId: string; appId: string; title: string; isCurrent(): boolean;
+  scope?: 'core';
   onModalChange?(modal: HTMLDialogElement, open: boolean): void;
 }
-export interface AppFeedbackHandle { open(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void; }
+export interface AppFeedbackHandle { open(): void; isOpen(): boolean; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void; }
 
 const DEFAULT_LIMITS = { bodyChars: 8000, totalAttachmentBytes: 1048576, maxAttachments: 3, maxAudioSeconds: 120 };
 const statuses: Record<string, string> = { received: 'Принято', in_progress: 'В работе', needs_action: 'Нужно ваше действие', needs_answer: 'Нужно ваше действие', ready_to_check: 'Готово для проверки', resolved: 'Решено' };
@@ -69,7 +70,12 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   let session = new AbortController(), generation = 0, recording: ReturnType<typeof createFeedbackRecorder> | null = null;
   let ownsModal = false;
   const current = () => !disposed && options.isCurrent();
-  const key = `soty.feedback.v1:${encodeURIComponent(options.accountId)}:${encodeURIComponent(options.appId)}`;
+  const core = options.scope === 'core';
+  const request = <T>(action: string, args: Record<string, unknown> = {}): Promise<T> => options.api.request<T>(
+    `${core ? 'core' : 'apps'}.feedback.${action}`, core ? args : { appId: options.appId, ...args });
+  const sameScope = (value: { scope?: 'core'; appId?: string }) => core ? value.scope === 'core' : value.appId === options.appId;
+  const key = core ? `soty.core-feedback.v1:${encodeURIComponent(options.accountId)}`
+    : `soty.feedback.v1:${encodeURIComponent(options.accountId)}:${encodeURIComponent(options.appId)}`;
   const lockKey = `${key}:submit`;
   let draft: Draft = { draftId: crypto.randomUUID(), accountId: options.accountId, appId: options.appId, installationId: null, body: '', attachments: [], pending: null, replies: {}, pendingReply: null, pendingAction: null, updatedAt: Date.now() };
   let draftWarning = '';
@@ -97,6 +103,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   } catch { draftWarning = 'Не удалось восстановить локальный черновик. Новое сообщение не отправлено.'; }
 
   const dialog = el('dialog', 'sf-dialog'); dialog.setAttribute('aria-labelledby', `feedback-heading-${options.appId}`);
+  if (core) dialog.dataset.pwaIgnore = ''; // This panel owns its durable draft/flush guard, like its App-stage host.
   const header = el('header', 'sf-header'), title = el('h2', '', 'Сообщить проблему'); title.id = `feedback-heading-${options.appId}`;
   const close = button('Закрыть', 'close', 'sw-button-quiet', () => closeDialog()); header.append(title, close);
   const subtitle = el('p', 'sf-subtitle', options.title), audience = el('p', 'sf-audience', 'Проверяем получателя…');
@@ -160,15 +167,15 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
   async function loadContext(): Promise<void> {
     const stamp = ++generation; readiness = 'pending'; controls();
     try {
-      const result = await options.api.request<{ context: FeedbackContext; readiness?: string }>('apps.feedback.context', { appId: options.appId });
+      const result = await request<{ context: FeedbackContext; readiness?: string }>('context');
       if (!current() || stamp !== generation) return;
       const value = result.context;
-      if (!value || value.appId !== options.appId || typeof value.installationId !== 'string' || typeof value.recipientLabel !== 'string' || value.ticketVisibility !== 'reporter-and-support') throw new Error('invalid_feedback_context');
+      if (!value || !sameScope(value) || typeof value.installationId !== 'string' || typeof value.recipientLabel !== 'string' || value.ticketVisibility !== 'reporter-and-support') throw new Error('invalid_feedback_context');
       context = { ...value, limits: Object.fromEntries(Object.entries(DEFAULT_LIMITS).map(([name, maximum]) => [name, Math.min(maximum, Number(value.limits?.[name as keyof typeof DEFAULT_LIMITS]) || maximum)])) as typeof DEFAULT_LIMITS }; readiness = result.readiness ?? value.readiness ?? 'ready';
       subtitle.textContent = context.title;
       if (!draft.installationId) { draft.installationId = context.installationId; persist(); }
       audience.textContent = `Получатель: ${context.recipientLabel}. Он получит текст и выбранные вложения. Обращение видно вам и допущенной поддержке; оно не публикуется как отзыв.`;
-      historyHeading.textContent = context.canManage ? 'Обращения приложения' : 'Ваши обращения';
+      historyHeading.textContent = context.canManage ? core ? 'Обращения в поддержку Сот' : 'Обращения приложения' : 'Ваши обращения';
       if (draft.installationId !== context.installationId) say('Очередь изменилась. Прежний черновик не перенесён новому получателю.');
       else if (readiness !== 'ready' || !context.canSubmit) say('Очередь пока недоступна. Черновик можно сохранить и проверить позже.');
       else if (draft.pending) say('Отправка ожидает проверки. Повтор использует прежний запрос.');
@@ -276,8 +283,8 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
           if (!persist() && saving) { draft.pending = null; return; }
         }
         const pending = draft.pending;
-        const result = await options.api.request<{ requestId: string; replayed: boolean; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>('apps.feedback.submit', {
-          appId: options.appId, installationId: pending.installationId, requestId: pending.requestId,
+        const result = await request<{ requestId: string; replayed: boolean; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>('submit', {
+          installationId: pending.installationId, requestId: pending.requestId,
           body: draft.body.trim() || (draft.attachments.some(item => item.kind === 'audio') ? 'Голосовое сообщение' : 'Сообщение со снимком'), attachments: draft.attachments,
         });
         if (!current()) return;
@@ -300,7 +307,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     if (!current() || !context) return; const stamp = ++historyGeneration;
     if (!cursor) historyList.replaceChildren(el('p', 'sw-muted', 'Загружаем разрешённые обращения…'));
     try {
-      const result = await options.api.request<{ tickets: FeedbackTicket[]; nextCursor?: string | null }>('apps.feedback.list', { appId: options.appId, installationId: context.installationId, limit: 20, ...(cursor ? { cursor } : {}) });
+      const result = await request<{ tickets: FeedbackTicket[]; nextCursor?: string | null }>('list', { installationId: context.installationId, limit: 20, ...(cursor ? { cursor } : {}) });
       if (!current() || stamp !== historyGeneration) return;
       if (!cursor) historyList.replaceChildren(); else historyList.querySelector('[data-feedback-more]')?.remove();
       if (!result.tickets.length && !cursor) historyList.append(el('p', 'sw-muted', 'Обращений пока нет.'));
@@ -318,13 +325,13 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
     if (!current() || !context) return; const stamp = ++ticketGeneration;
     detail.setAttribute('aria-busy', 'true');
     const status = detail.querySelector('.sf-ticket-status'); if (status) status.textContent = 'Проверяем актуальность…';
-    try { const result = await options.api.request<{ ticket: FeedbackTicket }>('apps.feedback.get', { appId: options.appId, installationId: context.installationId, ticketId });
+    try { const result = await request<{ ticket: FeedbackTicket }>('get', { installationId: context.installationId, ticketId });
       if (current() && stamp === ticketGeneration) renderTicket(result.ticket);
     } catch (error) { if (current() && stamp === ticketGeneration) detail.replaceChildren(el('p', 'sf-error', failure(error))); }
     finally { if (current() && stamp === ticketGeneration) detail.removeAttribute('aria-busy'); }
   }
   function renderTicket(ticket: FeedbackTicket): void {
-    if (!current() || ticket.appId !== options.appId || ticket.installationId !== context?.installationId) return;
+    if (!current() || !sameScope(ticket) || ticket.installationId !== context?.installationId) return;
     selectedTicketId = ticket.id;
     for (const row of historyList.querySelectorAll<HTMLElement>('[data-feedback-ticket-id]')) {
       if (row.dataset.feedbackTicketId === ticket.id) {
@@ -372,7 +379,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
         if (!current() || !context) return;
         if (!draft.pendingReply) { draft.pendingReply = { ticketId: ticket.id, installationId: ticket.installationId, requestId: crypto.randomUUID(), body: response.value.trim(), expectedRevision: ticket.revision }; if (!persist() && saving) { draft.pendingReply = null; return; } }
         const pending = draft.pendingReply;
-        const result = await options.api.request<{ requestId: string; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>('apps.feedback.reply', { appId: options.appId,
+        const result = await request<{ requestId: string; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>('reply', {
           installationId: pending.installationId, ticketId: pending.ticketId, requestId: pending.requestId, body: pending.body, expectedRevision: pending.expectedRevision });
         if (!current()) return;
         if (result.requestId !== pending.requestId || result.receipt?.ticketId !== pending.ticketId) throw new Error('invalid_feedback_receipt');
@@ -404,8 +411,8 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
         }
         const pending = draft.pendingAction;
         if (!pending) return;
-        const result = await options.api.request<{ requestId: string; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>(`apps.feedback.${pending.kind}`, {
-          appId: options.appId, installationId: pending.installationId, ticketId: pending.ticketId, requestId: pending.requestId, expectedRevision: pending.expectedRevision,
+        const result = await request<{ requestId: string; receipt: FeedbackReceipt; ticket: FeedbackTicket | null }>(pending.kind, {
+          installationId: pending.installationId, ticketId: pending.ticketId, requestId: pending.requestId, expectedRevision: pending.expectedRevision,
           ...(pending.kind === 'status' ? { status: pending.status } : {}),
         });
         if (!current()) return;
@@ -423,6 +430,7 @@ export function mountAppFeedback(host: HTMLElement, options: AppFeedbackOptions)
 
   renderPreviews(); controls();
   return {
+    isOpen: () => !disposed && dialog.open,
     open() { if (!current()) return; if (session.signal.aborted) session = new AbortController(); if (!dialog.open) dialog.showModal(); ownsModal = true; options.onModalChange?.(dialog, true); compose.hidden = false; history.hidden = true; text.focus(); void loadContext(); },
     async flush() { persist(); },
     hasUnsavedChanges: () => contents() && !saved,

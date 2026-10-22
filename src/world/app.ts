@@ -8,6 +8,7 @@ import { createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type
 import { attachmentImage } from './attachment-image.mjs';
 import './community.css';
 import { mountAppStage, type AppStageHandle, type AppStageOptions } from './app-stage';
+import { mountAppFeedback, type AppFeedbackHandle } from './app-feedback';
 import { mountMicroWidgets, type MicroWidgetsHandle } from './micro-widgets';
 import { createAppFieldPlacementController, type AppFieldPlacementController, type AppFieldPlacementSnapshot } from './app-field-placement-browser';
 import { createFieldPersistence } from './field-persistence';
@@ -148,6 +149,7 @@ class WorldApplication {
   private assistantMode: 'create' | 'chat' = 'create';
   private accessHandle: WorldAssistantHandle | null = null;
   private appStage: AppStageHandle | null = null;
+  private coreFeedback: AppFeedbackHandle | null = null;
   private appReturnView: 'mine' | 'world' = 'mine';
   private activeRoute = location.hash || '#mine';
   private homeNotes: HomeNote[] | null = null;
@@ -299,7 +301,7 @@ class WorldApplication {
     });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.sf-dialog,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -641,7 +643,7 @@ class WorldApplication {
       }
       // A same-account shell refresh is not navigation. The owner window and
       // its running app keep their draft, selection and existing connection.
-      if (sameAccount && (this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open || this.coverDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
+      if (sameAccount && (this.coreFeedback?.isOpen() || this.coreFeedback?.hasUnsavedChanges() || this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open || this.coverDialog?.element.open)) { this.routeLoaded = true; await settleCommunities(); return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; await settleCommunities(); return; }
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) { await settleCommunities(); return; } }
@@ -746,9 +748,9 @@ class WorldApplication {
     const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
     node.append(el('span', '', label)); return node;
   }
-  private cleanScreen(): void { this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
-  private screenHasUnsavedChanges(): boolean { return !!(this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
-  private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
+  private cleanScreen(): void { this.coreFeedback?.dispose(); this.coreFeedback = null; this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.coreFeedback?.hasUnsavedChanges() || this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
+  private async flushScreen(): Promise<void> { await Promise.all([this.coreFeedback?.flush(), this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
   private toast(message: string, isError = false, action?: { label: string; run(): void }): void {
@@ -1007,7 +1009,22 @@ class WorldApplication {
     section('Люди и устройства', 'Кнопка QR открывает подключения людей и устройств. Проверяйте, кого или какое устройство добавляете. Список подключённых устройств доступен в профиле → «Устройства».',
       action('Подключить по QR-коду', 'qr', () => { void this.openConnections(); }), action('Устройства', 'laptop', () => this.openResources('devices')));
     section('Обновление и открытая работа', 'Когда появится сообщение «Готова новая версия Сот», нажмите «Обновить». Соты сначала проверят сохранение открытой работы. Если обновление ждёт сохранения, завершите или сохраните действие и повторите. Не очищайте данные браузера для обновления.');
+    // The signed, account-bound context is the only readiness signal. Old or
+    // disabled servers leave Help complete without an inert support button.
+    void this.api.request<{ readiness: string; context: { scope: string; canSubmit: boolean } | null }>('core.feedback.context').then(result => {
+      if (!current() || !dialog.element.open || result.readiness !== 'ready' || result.context?.scope !== 'core' || result.context.canSubmit !== true) return;
+      section('Поддержка Сот', 'Сообщение и выбранные вами вложения увидите только вы и поддержка Сот. Ответы сохраняются в истории обращений.',
+        action('Написать в поддержку', 'message', () => this.openCoreFeedback()));
+    }).catch(() => {});
     dialog.body.append(content);
+  }
+
+  private openCoreFeedback(): void {
+    const accountId = this.deskAccount, current = this.accountTask();
+    if (!accountId || !current()) return;
+    this.coreFeedback ??= mountAppFeedback(this.root, { api: this.api, accountId, appId: 'soty-core', title: 'Поддержка Сот', scope: 'core', isCurrent: current,
+      onModalChange: (modal, open) => { if (open) { if (current()) this.agentOrb?.setModal(modal); } else this.agentOrb?.releaseModal(modal); } });
+    this.coreFeedback.open();
   }
 
   private openSavedLibrary(): void {

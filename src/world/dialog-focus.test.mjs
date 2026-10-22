@@ -84,7 +84,7 @@ function fixture() {
   let renders = 0;
   Object.assign(app, { root, main, deskAccount: 'account-A', accountGeneration: 1, screenSequence: 1, activeRoute: '#mine', destroyed: false,
     dialogs: new Set(), avatars: { observe() {} }, profile: { profileId: 'account-A' }, apps: [record], communities: [], group: null, view: 'mine', appStage: null,
-    appSettingsDialog: null, appSettingsRouteClose: null, api: {}, options: {},
+    appSettingsDialog: null, appSettingsRouteClose: null, api: { async request() { return { readiness: 'unavailable', context: null }; } }, options: {},
     renderPersonal() { renders++; render(); }, appStateLabel: () => 'Offline',
     openApplication() { const heading = el('h1', '', 'Preview'); heading.tabIndex = -1; main.replaceChildren(heading); app.screenSequence++; location.hash = '#preview'; heading.focus(); },
   });
@@ -311,4 +311,22 @@ test('removed Help and stale profile entries cannot run actions after close, acc
   const f = fixture(); f.app.openProfileMenu(); const menu = [...f.app.dialogs][0];
   const help = menu.body.querySelectorAll('button').find(node => node.textContent === 'Помощь');
   f.app.accountGeneration += 2; help.click(); assert.equal(f.app.dialogs.size, 1);
+});
+
+test('Help exposes core support only after a current signed ready context, with no inert OFF or old-server button', async () => {
+  for (const outcome of ['off', 'old-server', 'foreign-scope', 'closed', 'account ABA', 'ready']) {
+    const f = fixture(); let resolve, reject, opened = 0;
+    f.app.api = { request(method) { assert.equal(method, 'core.feedback.context'); return new Promise((yes, no) => { resolve = yes; reject = no; }); } };
+    f.app.openCoreFeedback = () => opened++;
+    f.app.openHelp(); const modal = [...f.app.dialogs][0];
+    const support = () => modal.body.querySelectorAll('button').find(node => node.textContent === 'Написать в поддержку');
+    assert.equal(support(), undefined);
+    if (outcome === 'closed') modal.close();
+    if (outcome === 'account ABA') f.app.accountGeneration += 2;
+    if (outcome === 'old-server') reject(Error('unsupported_operation'));
+    else resolve({ readiness: outcome === 'off' ? 'unavailable' : 'ready', context: { scope: outcome === 'foreign-scope' ? 'app' : 'core', canSubmit: true } });
+    await new Promise(done => setImmediate(done));
+    assert.equal(Boolean(support()), outcome === 'ready', outcome);
+    if (outcome === 'ready') { support().click(); assert.equal(opened, 1); assert.equal(modal.element.open, false); }
+  }
 });

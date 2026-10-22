@@ -43,6 +43,7 @@ import { createNativeVoiceComposition } from './native-voice-composition.js';
 import { createVoiceOrbComposition } from './voice-orb-composition.js';
 import { createHumanCallModule } from './human-call-module.js';
 import { createPushService, pushConfigurationFromEnvironment } from './push-service.js';
+import { createCoreFeedback, captureCoreFeedbackConfiguration, coreFeedbackConfigurationFromEnvironment } from './core-feedback.js';
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
@@ -68,7 +69,7 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, coreFeedback, localExecutorCurrent = false } = {}, nativeSources) {
   if (typeof allowAudienceMigration !== 'boolean') throw new AccessError('apps_audience_migration_configuration_invalid');
   if (typeof allowWorld7Migration !== 'boolean') throw new AccessError('world_attachment_migration_configuration_invalid');
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
@@ -84,7 +85,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
+  const coreFeedbackConfiguration = captureCoreFeedbackConfiguration(coreFeedback ?? coreFeedbackConfigurationFromEnvironment(env));
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push, support,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
   // Validate before opening any storage: a rejected configuration cannot migrate data.
@@ -172,7 +174,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [push, orbVoice, voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [support, push, orbVoice, voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -277,6 +279,12 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   catch (error) { failedStart(error); throw error; }
   app.locals.appsService = apps;
   app.locals.universalApps = universal;
+  try {
+    support = createCoreFeedback({ databasePath: path.join(dataDir || path.resolve('data'), 'feedback', 'feedback.sqlite'),
+      connectDatabasePath: path.join(dataDir || path.resolve('data'), 'connect', 'accounts.sqlite'),
+      configuration: coreFeedbackConfiguration, actorActive: actor => connect?.isActorActive(actor) === true });
+  } catch (error) { failedStart(error); throw error; }
+  app.locals.coreFeedback = support;
   app.locals.humanIdentityService = human;
   app.get('/api/apps/catalog', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Access-Control-Allow-Origin', '*');
@@ -303,7 +311,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
-    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls, push,
+    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls, push, support,
       ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
@@ -349,6 +357,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       let failed = false;
       const attempt = async action => { try { await action(); } catch { failed = true; } };
       if (nativeSources.enabled) await attempt(() => nativeSources.close());
+      await attempt(() => support.close());
       await attempt(() => push.close());
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
