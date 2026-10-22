@@ -16,6 +16,7 @@ async function fixture(shell){
   const window={location:{href:'https://shell.example/',origin:'https://shell.example',assign(){throw Error('unexpected navigation');}},
     addEventListener(type,fn){const set=events.get(type)??new Set();set.add(fn);events.set(type,set);},removeEventListener(type,fn){events.get(type)?.delete(fn);}};
   const ports={
+    './notifications-client.mjs':{createNotificationsController(){return {async refresh(){},dispose(){}};}},
     '../core/connect-client':{accountClient:client,observeAccount:()=>()=>{}},
     './connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
     '../platform/connection-hub':{ensureConnectionAccount(_host,options){entryOptions=options;return gate.promise;}},
