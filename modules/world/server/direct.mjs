@@ -69,7 +69,7 @@ export function directOperation(m, op, args, actor, now, authority) {
     return {messageId:row.id,seq:row.seq,text:row.deleted_at === null ? row.text : '',
       author:profile ? m.identity(profile) : {profileId:row.author_id,displayName:null,avatarColor:null,avatarRevision:null,revision:null},
       createdAt:row.created_at,replyTo:row.reply_to,removed:row.deleted_at !== null,
-      ...(own ? {clientId:row.client_id,readCount:Number(read)} : {})};
+      ...(own ? {clientId:row.client_id,read} : {})};
   };
   if (op === 'world.direct.open') {
     const peer = identifier(args.peerAccountId), expected = identifier(args.expectedRelationshipId); identifier(args.requestId);

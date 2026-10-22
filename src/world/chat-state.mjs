@@ -70,7 +70,8 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       if (!volatile.has(key)) { try { memory.set(key, decode(storage.getItem(key))); } catch { /* A revoked storage permission must not erase the live copy. */ } }
       const value = read(accountId, communityId);
       // A late ACK must never clear a newer draft or a later send.
-      if (value.pending?.clientId !== clientId) return value;
+      // A reread may also settle another tab's ACK before its storage event arrives.
+      if (value.pending?.clientId !== clientId) { notify(key, value); return value; }
       if (value.text.trim() === value.pending.text && value.replyTo === value.pending.replyTo) { value.text = ''; value.replyTo = null; }
       value.pending = null; save(accountId, communityId, value);
       return copy(value);

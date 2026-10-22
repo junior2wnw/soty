@@ -6,6 +6,8 @@ import { join, resolve, dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { createWorldService } from '../server/index.mjs';
+import { createModel } from '../server/model.mjs';
+import { chatOperation } from '../server/chat.mjs';
 
 const alice = Object.freeze({ accountId: 'acct_alice', deviceId: 'dev_alice', label: 'Алексей' });
 const bob = Object.freeze({ accountId: 'acct_bob', deviceId: 'dev_bob', label: 'Маша' });
@@ -61,20 +63,41 @@ test('open community explicitly grants membership; per-account revocation gates 
   assert.equal(f.call(alice, 'chat.list', { communityId: group.communityId }).messages.length, 1);
 });
 
-test('room read counts use acknowledged cursors and reveal send ids only to the author', t => {
+test('room read indicators use acknowledged cursors and reveal send ids only to the author', t => {
   const f = fixture(t), { communityId } = f.group();
   f.call(bob, 'membership.join', { communityId }); f.call(eve, 'membership.join', { communityId });
   const first = f.send(alice, communityId, 'First'), second = f.send(alice, communityId, 'Second');
-  assert.equal(first.readCount, 0); assert.equal(typeof first.clientId, 'string');
+  assert.equal(first.read, false); assert.equal(typeof first.clientId, 'string');
   const peers = f.call(bob, 'chat.list', { communityId }).messages;
-  assert.equal(Object.hasOwn(peers[0], 'clientId'), false); assert.equal(Object.hasOwn(peers[0], 'readCount'), false);
+  assert.equal(Object.hasOwn(peers[0], 'clientId'), false); assert.equal(Object.hasOwn(peers[0], 'read'), false);
   f.call(bob, 'chat.read', { communityId, throughSeq: first.seq });
   f.call(eve, 'chat.read', { communityId, throughSeq: second.seq });
-  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.readCount), [2, 1]);
+  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.read), [true, true]);
   f.call(alice, 'chat.read', { communityId, throughSeq: second.seq });
-  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.readCount), [2, 1], 'The author is not counted as a reader');
+  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.read), [true, true], 'The author is not counted as a reader');
   f.call(alice, 'chat.remove', { communityId, messageId: first.messageId });
-  assert.equal(f.call(alice, 'chat.list', { communityId }).messages[0].readCount, 0);
+  assert.equal(f.call(alice, 'chat.list', { communityId }).messages[0].read, false);
+});
+
+test('a 60-message read page aggregates 20000 members once without loading the roster into JS', t => {
+  const f = fixture(t), { communityId } = f.group(), db = new DatabaseSync(f.databasePath);
+  try {
+    const messages = Array.from({ length: 60 }, (_value, index) => f.send(alice, communityId, `Scale message ${index}`));
+    const profile = db.prepare('INSERT INTO profiles(account_id,display_name,search_text,created_at,updated_at) VALUES (?,?,?,1,1)'),
+      membership = db.prepare("INSERT INTO memberships(community_id,account_id,state,last_read_seq,updated_at) VALUES (?,?,'active',?,1)");
+    db.exec('BEGIN IMMEDIATE');
+    for (let index = 0; index < 20000; index++) { const id = `scale_${index}`; profile.run(id, id, id); membership.run(communityId, id, index === 0 ? messages.at(-1).seq : 0); }
+    db.exec('COMMIT');
+    const model = createModel(db, () => {}), originalGet = model.get, originalAll = model.all;
+    let aggregates = 0, rosterRows = 0;
+    model.get = (sql, ...params) => { if (sql.includes('MAX(last_read_seq)')) aggregates++; return originalGet(sql, ...params); };
+    model.all = (sql, ...params) => { const rows = originalAll(sql, ...params); if (/FROM memberships\b/u.test(sql)) rosterRows += rows.length; return rows; };
+    const result = chatOperation(model, 'world.chat.list', { communityId, limit: 60 }, alice, 1800000000000);
+    assert.equal(result.messages.length, 60); assert.equal(result.messages.every(message => message.read === true), true);
+    assert.equal(aggregates, 1); assert.equal(rosterRows, 0);
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT MAX(last_read_seq) AS seq FROM memberships WHERE community_id=? AND account_id<>? AND state='active'").all(communityId, alice.accountId);
+    assert.equal(plan.some(row => /SEARCH memberships USING INDEX memberships_group/u.test(row.detail)), true, 'The existing community/state index bounds the aggregate to this room');
+  } finally { db.close(); }
 });
 
 test('request groups require approval; moderators cannot promote themselves, remove owners or alter joining policy', t => {

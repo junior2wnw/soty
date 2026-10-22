@@ -1707,7 +1707,7 @@ class WorldApplication {
       if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
       body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
       const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
-      if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); const count = message.readCount ?? 0; if (count > 0) { delivered.append(icon('check')); delivered.classList.add('is-read'); } const status = count > 0 ? conversation.kind === 'direct' ? 'Прочитано собеседником' : `Прочитали: ${count}` : 'Отправлено'; delivered.setAttribute('aria-label', status); delivered.title = status; meta.append(delivered); }
+      if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); if (message.read) { delivered.append(icon('check')); delivered.classList.add('is-read'); } const status = message.read ? conversation.kind === 'direct' ? 'Прочитано собеседником' : 'Прочитано участником' : 'Отправлено'; delivered.setAttribute('aria-label', status); delivered.title = status; meta.append(delivered); }
       body.append(meta); row.append(body);
       if (!message.removed) { const more = iconButton('Действия с сообщением', 'more', () => messageActions(message.messageId, more)); more.classList.add('sw-message-actions'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false'); row.append(more); row.addEventListener('contextmenu', event => { if (window.getSelection()?.toString()) return; event.preventDefault(); messageActions(message.messageId, more); }); }
       return row;
@@ -1715,7 +1715,7 @@ class WorldApplication {
     const append = (message: WorldMessage): void => {
       if (message.author.profileId === accountId && message.clientId && this.chatDrafts.read(accountId, conversation.draftKey).pending?.clientId === message.clientId) this.chatDrafts.acknowledge(accountId, conversation.draftKey, message.clientId);
       const old = known.get(message.messageId);
-      if (old && old.removed === message.removed && old.text === message.text && old.readCount === message.readCount && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
+      if (old && old.removed === message.removed && old.text === message.text && old.read === message.read && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
       known.set(message.messageId, message); firstSeq = Math.min(firstSeq, message.seq); timelineDirty = true;
       messages.querySelector('.sw-empty')?.remove();
       const row = createMessage(message), existing = rows.get(message.messageId); rows.set(message.messageId, row);

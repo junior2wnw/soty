@@ -152,7 +152,7 @@ test('lost SQL send ACK, changed next text and reload recover one original messa
   assert.equal(call(alice, 'chat.send', { communityId: room, clientId: retry.clientId, text: retry.text }).message.messageId, accepted.messageId);
   assert.equal(call(bob, 'chat.list', { communityId: room }).messages.length, 1);
   const own = call(alice, 'chat.list', { communityId: room }).messages[0];
-  assert.equal(own.clientId, pending.clientId); assert.equal(own.readCount, 0);
+  assert.equal(own.clientId, pending.clientId); assert.equal(own.read, false);
   assert.equal(Object.hasOwn(call(bob, 'chat.list', { communityId: room }).messages[0], 'clientId'), false);
   drafts.acknowledge(alice.accountId, room, own.clientId);
   assert.equal(drafts.read(alice.accountId, room).text, 'Next thought'); assert.equal(drafts.read(alice.accountId, room).pending, null);

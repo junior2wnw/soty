@@ -97,11 +97,11 @@ test('send/reply/read/remove use one actor, stable client intent, thread boundar
 test('direct send recovery metadata stays author-only and reads follow the exact current peer',async t=>{
   const {f,a,b,c,rel}=await pair(t),thread=(await f.open(a,b,rel)).current,base=f.args(thread);
   const sent=(await f.call(a,'world.direct.chat.send',{...base,clientId:'read_receipt_one',text:'Disposable private text'})).message;
-  assert.equal(sent.clientId,'read_receipt_one');assert.equal(sent.readCount,0);
+  assert.equal(sent.clientId,'read_receipt_one');assert.equal(sent.read,false);
   const peerView=(await f.call(b,'world.direct.chat.list',base)).messages[0];
-  assert.equal(Object.hasOwn(peerView,'clientId'),false);assert.equal(Object.hasOwn(peerView,'readCount'),false);
+  assert.equal(Object.hasOwn(peerView,'clientId'),false);assert.equal(Object.hasOwn(peerView,'read'),false);
   await f.call(b,'world.direct.chat.read',{...base,throughSeq:sent.seq});f.reopen();
-  const read=(await f.call(a,'world.direct.chat.list',base)).messages[0];assert.equal(read.readCount,1);assert.equal(read.clientId,sent.clientId);
+  const read=(await f.call(a,'world.direct.chat.list',base)).messages[0];assert.equal(read.read,true);assert.equal(read.clientId,sent.clientId);
   await f.rejected(c,'world.direct.chat.list',base,'direct_not_found');
   await f.call(b,'contacts.block',{peerAccountId:a.accountId});
   await f.rejected(a,'world.direct.chat.list',base,'direct_not_found');

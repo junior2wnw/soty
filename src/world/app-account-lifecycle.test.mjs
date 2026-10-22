@@ -2,6 +2,8 @@ import * as appInvitationCarrier from './app-invitation-carrier.mjs';
 import * as nativeVoiceCarrier from './native-voice-carrier.mjs';
 import { createNativeVoiceDescriptor } from '../platform/native-voice-descriptor.mjs';
 import * as conversationTargets from './conversation-target.mjs';
+import * as chatState from './chat-state.mjs';
+import * as messenger from './messenger.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -86,12 +88,22 @@ class ElementPort {
   reportValidity(){return true;}
   addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, new Set()); this.handlers.get(type).add(fn);this.listeners.set(type,fn); }
   removeEventListener(type, fn) { this.handlers.get(type)?.delete(fn); }
-  emit(type) { for (const fn of [...this.handlers.get(type) || []]) fn(); }
+  emit(type, event = {}) { for (const fn of [...this.handlers.get(type) || []]) fn(event); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   contains(node) { return node === this || this.children.some(child => child instanceof ElementPort && child.contains(node)); }
-  focus() {}
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
+  getBoundingClientRect() { return { top: 0, left: 0, right: 800, bottom: 400, width: 800, height: 400 }; }
+  getClientRects() { return [this.getBoundingClientRect()]; }
+  querySelectorAll(selector) {
+    const matches = child => selector === '[data-message-seq]' ? child.dataset.messageSeq !== undefined
+      : selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.tagName === selector;
+    return this.children.flatMap(child => child instanceof ElementPort ? [...(matches(child) ? [child] : []), ...child.querySelectorAll(selector)] : []);
+  }
+  closest(selector) { return (selector.startsWith('.') && this.className.split(' ').includes(selector.slice(1))) ? this : this.parent?.closest(selector) ?? null; }
+  replaceWith(node) { if (this.parent) { const parent = this.parent, index = parent.children.indexOf(this); parent.children[index] = node; node.parent = parent; this.parent = null; } }
+  requestSubmit() { this.emit('submit', { preventDefault() {} }); }
   remove() { this.isConnected = false; if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); this.parent = null; }
 }
 test('ElementPort inline styles retain values across CSS names and camelCase without sharing declarations', () => {
@@ -130,6 +142,8 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
     './conversation-target.mjs': conversationTargets,
+    './chat-state.mjs': chatState,
+    './messenger.mjs': messenger,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
     './app-runtime-display.mjs': appRuntimeDisplay,
@@ -169,6 +183,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
     document, navigator: view.navigator, crypto: globalThis.crypto, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    setInterval: view.setInterval, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
   const Controller = module.exports.TestController, app = Object.create(Controller.prototype);
@@ -212,7 +227,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, ports, makeElement, mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -2135,3 +2150,39 @@ test('one-click field return: a held exit cannot navigate or steal focus after a
   assert.equal(f.app.notesHandle, null); assert.equal(f.disposals, 1);
   assert.equal(f.focuses, 0); assert.deepEqual(f.mounts, []);
 });
+
+for (const scenario of ['initial accepted send', 'later history poll', 'newer text and reply', 'another tab already acknowledged', 'cleanup denied']) {
+  test(`chat history reconciliation: ${scenario} clears only the accepted intent and retains focus`, async () => {
+    const f = fixture(), disk = new Map(), page = deferred(); let denyRemoval = false, pollResponse;
+    const storage = { getItem: key => disk.get(key) ?? null, setItem: (key, value) => disk.set(key, value), removeItem(key) { if (denyRemoval) throw Error('Synthetic cleanup denied'); disk.delete(key); } };
+    const drafts = chatState.createChatDraftStore(storage, () => 'intent_original');
+    drafts.beginSend('account-A', 'room_fixture', 'Original A', 'reply_original');
+    Object.assign(f.ports['./dom'], { timeLabel: () => '12:00', avatar: () => f.makeElement('span') });
+    f.app.chatDrafts = drafts; f.app.preferences = { motion: false };
+    const target = { kind: 'direct', id: 'room_fixture', draftKey: 'room_fixture', name: 'Synthetic conversation', subtitle: 'Private', avatarContext: undefined,
+      canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
+      async request(action) { if (action === 'list') return pollResponse ?? page.promise; throw Error(`Unexpected chat action: ${action}`); }, setUnread() {} };
+    const parent = f.makeElement('div');
+    f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+    const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer'), send = composer.querySelector('button');
+    input.focus(); assert.equal(input.value, 'Original A');
+    if (scenario === 'newer text and reply') drafts.edit('account-A', 'room_fixture', 'New draft B', 'reply_next');
+    if (scenario === 'another tab already acknowledged') chatState.createChatDraftStore(storage).acknowledge('account-A', 'room_fixture', 'intent_original');
+    if (scenario === 'cleanup denied') denyRemoval = true;
+    const accepted = { messages: [{ messageId: 'message_original', clientId: 'intent_original', seq: 1, text: 'Original A', author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false }], hasMore: false };
+    if (scenario === 'later history poll') { page.resolve({ messages: [], hasMore: false }); await turn(); assert.equal(input.value, 'Original A'); pollResponse = accepted; [...f.intervals.values()][0].fn(); }
+    else page.resolve(accepted);
+    await turn();
+    assert.equal(drafts.read('account-A', 'room_fixture').pending, null);
+    assert.equal(input.value, scenario === 'newer text and reply' ? 'New draft B' : '', 'The visible composer must agree with the reconciled durable/current draft');
+    assert.equal(send.disabled, scenario !== 'newer text and reply');
+    assert.equal(f.view.document.activeElement, input, 'A history acknowledgement must never move focus');
+    if (scenario === 'newer text and reply') assert.equal(drafts.read('account-A', 'room_fixture').replyTo, 'reply_next');
+    if (scenario === 'cleanup denied') {
+      assert.equal(drafts.hasVolatile(), true); assert.equal(parent.querySelector('.sw-chat-draft-status').hidden, false);
+      assert.match(parent.querySelector('.sw-chat-draft-status').textContent, /Не удалось очистить/u);
+      assert.equal(chatState.createChatDraftStore(storage).read('account-A', 'room_fixture').pending.clientId, 'intent_original', 'Failed cleanup must not claim disk changed');
+    }
+    f.app.chatCleanup();
+  });
+}
