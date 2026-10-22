@@ -82,23 +82,46 @@ export function writeUiRelease(release, directory) {
 
 function locateProxy(config, host) {
   const found = [];
-  function visit(value, pointer = [], hosts = [], paths = []) {
-    if (Array.isArray(value)) { value.forEach((child, index) => visit(child, [...pointer, index], hosts, paths)); return; }
+  function visit(value, pointer = [], hosts = [], boundaries = []) {
+    if (Array.isArray(value)) { value.forEach((child, index) => visit(child, [...pointer, index], hosts, boundaries)); return; }
     if (!value || typeof value !== 'object') return;
     const matches = Array.isArray(value.match) ? value.match : [];
     const inherited = matches.flatMap(match => match.host ?? []); if (inherited.length) hosts = inherited;
-    paths = [...paths, ...matches.flatMap(match => match.path ?? [])];
+    if (matches.some(match => match.path)) boundaries = [...boundaries, { pointer: [...pointer, 'match'], matches }];
     if (hosts.length === 1 && hosts[0] === host && value.handler === 'reverse_proxy'
-      && value.upstreams?.length === 1 && value.upstreams[0].dial === '127.0.0.1:18182') found.push({ pointer, value, paths });
-    Object.entries(value).forEach(([key, child]) => visit(child, [...pointer, key], hosts, paths));
+      && value.upstreams?.length === 1 && value.upstreams[0].dial === '127.0.0.1:18182') found.push({ pointer, value, boundaries });
+    Object.entries(value).forEach(([key, child]) => visit(child, [...pointer, key], hosts, boundaries));
   }
   visit(config);
   if (found.length !== 1 || found[0].value.handle_response || found[0].value.headers || found[0].value.rewrite
-    || Object.keys(found[0].value).some(key => !['handler', 'upstreams', 'transport', 'flush_interval'].includes(key))
-    || found[0].paths.length && !['/', '/assets/*'].every(name => found[0].paths.includes(name))) fail('ui_fallback_unknown_or_ambiguous');
+    || Object.keys(found[0].value).some(key => !['handler', 'upstreams', 'transport', 'flush_interval'].includes(key))) fail('ui_fallback_unknown_or_ambiguous');
   let leaf = config; found[0].pointer.slice(0, -2).forEach(key => { leaf = leaf[key]; });
   if (found[0].pointer.at(-2) !== 'handle' || found[0].pointer.at(-1) !== 0 || !isDeepStrictEqual(leaf, { handle: [found[0].value] })) fail('ui_fallback_unknown_or_ambiguous');
   return found[0];
+}
+
+// Keep the old native path matcher as the first OR branch, including all its
+// methods/queries. Only new, exact inventory URLs gain a GET/HEAD-only branch.
+function coverInventory(caddyfile, config, selected, release) {
+  if (!selected.boundaries.length) return { caddyfile, config };
+  const boundary = selected.boundaries[0], paths = boundary.matches[0]?.path;
+  if (selected.boundaries.length !== 1 || !Array.isArray(paths)
+    || !isDeepStrictEqual(boundary.matches, [{ path: paths }])
+    || !['/', '/assets/*'].every(name => paths.includes(name))
+    || paths.some(name => typeof name !== 'string' || !/^\/[A-Za-z0-9_./-]*\*?$/u.test(name))) fail('ui_fallback_unknown_or_ambiguous');
+  const missing = release.manifest.map(file => '/' + file.name).filter(url => !paths.some(pattern => pattern.endsWith('*')
+    ? url.toLowerCase().startsWith(pattern.slice(0, -1).toLowerCase()) : url.toLowerCase() === pattern.toLowerCase()));
+  if (!missing.length) return { caddyfile, config };
+  const definitions = [...caddyfile.matchAll(/^([\t ]*)(@[A-Za-z0-9_]+)[\t ]+path[\t ]+([^\r\n]+)\r?$/gmu)]
+    .filter(match => isDeepStrictEqual(match[3].trim().split(/[\t ]+/u), paths));
+  if (definitions.length !== 1) fail('ui_fallback_unknown_or_ambiguous');
+  const definition = definitions[0], args = values => values.map(value => JSON.stringify(value)).join(', ');
+  const expression = `path(${args(paths)}) || (method("GET", "HEAD") && path(${args(missing)}) && !query({"project": "*"}) && !query({"hive": "*"}))`;
+  const text = `${definition[1]}${definition[2]} expression \`${expression}\``;
+  const expected = structuredClone(config); let owner = expected;
+  boundary.pointer.slice(0, -1).forEach(key => { owner = owner[key]; });
+  owner[boundary.pointer.at(-1)] = [{ expression: { expr: expression, name: definition[2].slice(1) } }];
+  return { caddyfile: caddyfile.slice(0, definition.index) + text + caddyfile.slice(definition.index + definition[0].length), config: expected };
 }
 
 // Caddy renumbers generated handle groups while adapting. Preserve their exact
@@ -189,13 +212,14 @@ export async function createCaddyOverlay({ caddyfile, release, root, adapt, host
     || !/^\/[A-Za-z0-9_/-]+$/u.test(root) || path.posix.normalize(root) !== root || root.split('/').some(part => ['.', '..', 'current'].includes(part))
     || !root.endsWith('/' + release.id) || !release.manifest.some(file => file.immutable)) fail('ui_release_root_invalid');
   const before = await adapt(caddyfile), selected = locateProxy(before, host), accepted = [];
-  const matches = proxyBlocks(caddyfile); if (matches.length > 64) fail('ui_fallback_unknown_or_ambiguous');
+  const covered = coverInventory(caddyfile, before, selected, release);
+  const matches = proxyBlocks(covered.caddyfile); if (matches.length > 64) fail('ui_fallback_unknown_or_ambiguous');
   for (const match of matches) {
     const text = replacement(match.text.trimStart(), release, root);
     let standalone, after;
     try {
       standalone = await adapt(`{\n auto_https off\n}\nhttp://127.0.0.1:19001 {\n${text}\n}`);
-      const candidate = caddyfile.slice(0, match.index) + text + caddyfile.slice(match.index + match.text.length);
+      const candidate = covered.caddyfile.slice(0, match.index) + text + covered.caddyfile.slice(match.index + match.text.length);
       after = await adapt(candidate);
       const wrappers = [];
       const scan = value => {
@@ -204,7 +228,7 @@ export async function createCaddyOverlay({ caddyfile, release, root, adapt, host
         Object.values(value).forEach(child => Array.isArray(child) ? child.forEach(scan) : scan(child));
       };
       scan(standalone); if (wrappers.length !== 1) continue;
-      const expected = structuredClone(before); let owner = expected;
+      const expected = structuredClone(covered.config); let owner = expected;
       selected.pointer.slice(0, -3).forEach(key => { owner = owner[key]; }); owner.splice(selected.pointer.at(-3), 1, ...wrappers[0].routes);
       verifyStructuralDelta(expected, after); accepted.push({ caddyfile: candidate, config: after });
     } catch { /* Unknown syntax/config changes are a refusal, never a best-effort patch. */ }

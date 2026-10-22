@@ -110,8 +110,89 @@ test('actual Caddy2.11.2 preserves routes/security/status and serves both UI gen
   response = await fetch(base + '/', { method: 'POST' }); assert.equal(await response.text(), 'OLD UI');
   writeFileSync(configFile, configuration); caddy.kill('SIGUSR1');
   for (let attempt = 0; ; attempt++) {
-    if (await (await fetch(base)).text() === 'OLD UI') break;
+    try { if (await (await fetch(base)).text() === 'OLD UI') break; } catch { /* Reload can close an existing keepalive connection. */ }
     assert.ok(attempt < 100, 'rollback reload completes'); await new Promise(resolve => setTimeout(resolve, 20));
   }
   assert.equal(backend.listening, true); assert.equal(caddy.exitCode, null);
+});
+
+test('a production-shaped path boundary admits only missing inventory GET/HEAD and preserves its original branches', { timeout: 20000 }, async t => {
+  const configuration = `{
+ admin off
+ auto_https off
+}
+http://127.0.0.1:19082 {
+ @hive query project=*
+ handle @hive {\n respond "HIVE original"\n }
+ handle /index.html {\n redir * / 308\n }
+ handle /old-special {\n respond "old special"\n }
+ @soty_shell path / /assets/* /api/* /agent/* /sw.js /manifest.webmanifest /icon.svg
+ handle @soty_shell {
+  encode gzip
+  handle {
+   reverse_proxy 127.0.0.1:18182 {
+    flush_interval -1
+    transport http {\n dial_timeout 5s\n }
+   }
+  }
+ }
+ handle {\n respond "outside original" 404\n }
+}`;
+  const root = mkdtempSync(path.join(tmpdir(), 'soty-ui-boundary-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const additions = { 'capability-docs-update.js': 'public capability document', 'fonts/manrope.woff2': 'synthetic font bytes', 'fonts/manrope-OFL.txt': 'synthetic font license' };
+  const release = createUiRelease(fixtureDist(path.join(root, 'dist'), additions)), immutableRoot = path.join(root, release.id);
+  writeUiRelease(release, immutableRoot);
+  const overlay = await createCaddyOverlay({ caddyfile: configuration, release, root: immutableRoot, adapt, host: '127.0.0.1' });
+  const requests = [], backend = createServer((req, res) => {
+    requests.push(req.url); res.setHeader('Content-Security-Policy', "default-src 'self'"); res.setHeader('X-Frame-Options', 'DENY');
+    if (req.url.startsWith('/api/') || req.url.includes('blocked=1')) { res.statusCode = 403; res.end('original denied'); return; }
+    if (req.url.includes('redirect=1')) { res.statusCode = 302; res.setHeader('Location', '/old-special'); res.end(); return; }
+    res.end('OLD UI');
+  });
+  backend.listen(18182, '127.0.0.1'); await once(backend, 'listening');
+  t.after(async () => { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); });
+  const configFile = path.join(root, 'Caddyfile'); writeFileSync(configFile, overlay.caddyfile);
+  const caddy = spawn(binary, ['run', '--config', configFile, '--adapter', 'caddyfile'], { stdio: ['ignore', 'ignore', 'pipe'],
+    env: { ...process.env, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data') } });
+  caddy.stderr.resume(); t.after(async () => { if (caddy.exitCode === null) { caddy.kill('SIGTERM'); await once(caddy, 'exit'); } });
+  const base = 'http://127.0.0.1:19082';
+  for (let attempt = 0; ; attempt++) {
+    try { if ((await fetch(base)).ok) break; } catch { /* Only this disposable process. */ }
+    assert.ok(attempt < 100 && caddy.exitCode === null, 'synthetic Caddy starts'); await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  for (const [name, bytes] of Object.entries(additions)) {
+    let response = await fetch(base + '/' + name); assert.equal(response.status, 200, name); assert.equal(await response.text(), bytes);
+    assert.equal(response.headers.get('content-security-policy'), "default-src 'self'"); assert.equal(response.headers.get('x-frame-options'), 'DENY');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const etag = response.headers.get('etag'); assert.ok(etag);
+    response = await fetch(base + '/' + name, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), '');
+    response = await fetch(base + '/' + name, { headers: { 'If-None-Match': etag } }); assert.equal(response.status, 304);
+    response = await fetch(base + '/' + name, { headers: { Range: 'bytes=0-3' } }); assert.equal(response.status, 206); assert.equal(await response.text(), bytes.slice(0, 4));
+    for (const method of ['POST', 'PUT', 'OPTIONS']) { response = await fetch(base + '/' + name, { method }); assert.equal(response.status, 404); }
+    for (const [query, status, text] of [['hive=retained', 404, 'outside original'], ['project=retained', 200, 'HIVE original'], ['blocked=1', 403, 'original denied']]) {
+      response = await fetch(base + '/' + name + '?' + query); assert.equal(response.status, status); assert.equal(await response.text(), text);
+    }
+    response = await fetch(base + '/' + name + '?redirect=1', { redirect: 'manual' }); assert.equal(response.status, 302);
+  }
+  for (const [url, method, status, text] of [['/', 'POST', 200, 'OLD UI'], ['/agent/test', 'POST', 200, 'OLD UI'], ['/agent/test', 'GET', 200, 'OLD UI'],
+    ['/api/test', 'GET', 403, 'original denied'], ['/?hive=retained', 'GET', 200, 'OLD UI'], ['/old-special', 'GET', 200, 'old special'],
+    ['/fonts/unknown.woff2', 'GET', 404, 'outside original'], ['/projects/example/index.html', 'GET', 404, 'outside original']]) {
+    const response = await fetch(base + url, { method }); assert.equal(response.status, status); assert.equal(await response.text(), text);
+  }
+  const redirect = await fetch(base + '/index.html', { redirect: 'manual' }); assert.equal(redirect.status, 308); assert.equal(redirect.headers.get('location'), '/');
+  assert.ok(!requests.some(url => url.includes('hive=') && url !== '/?hive=retained'), 'excluded new paths never reach Node');
+  for (const changed of [configuration.replace('@soty_shell path ', '@soty_shell {\n method GET\n path ').replace('handle @soty_shell {', '}\n handle @soty_shell {'),
+    configuration.replace('  encode gzip', '  @inner path / /assets/*\n  route @inner {').replace(' handle {\n respond "outside', ' }\n handle {\n respond "outside'),
+    configuration + '\nhttp://127.0.0.1:19083 {\n @duplicate path / /assets/* /api/* /agent/* /sw.js /manifest.webmanifest /icon.svg\n respond "other host"\n}']) {
+    assert.doesNotThrow(() => adapt(changed), 'negative fixture is valid Caddy, not a syntax-error refusal');
+    await assert.rejects(createCaddyOverlay({ caddyfile: changed, release, root: immutableRoot, adapt, host: '127.0.0.1' }), { code: 'ui_fallback_unknown_or_ambiguous' });
+  }
+  await assert.rejects(createCaddyOverlay({ caddyfile: configuration, release, root: immutableRoot, host: '127.0.0.1', adapt: text => {
+    const result = adapt(text);
+    if (text.includes('soty_ui_release') && text.includes('outside original')) {
+      const visit = value => { if (value && typeof value === 'object') { if (value.expression) value.expression.expr = 'true'; Object.values(value).forEach(visit); } };
+      visit(result);
+    }
+    return result;
+  } }), { code: 'ui_fallback_unknown_or_ambiguous' });
 });
