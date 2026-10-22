@@ -143,7 +143,7 @@ export interface WorldService {
   canRequestContact(accountId: string, targetId: string): boolean;
   subscribeMembership(listener: (event: MembershipEvent) => unknown): () => void;
   subscribeMessages(listener: (event: WorldMessageEvent) => unknown): () => void;
-  notificationRecipients(event: WorldMessageEvent): string[];
+  notificationRecipients(event: WorldMessageEvent, page?: { afterAccountId?: string; limit?: number }): string[];
   canNotify(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, event: WorldMessageEvent): WorldNotificationTarget | null;
   notificationTarget(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, event: WorldMessageEvent): WorldNotificationTarget | null;
   close(): void;

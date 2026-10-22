@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assert, integer, identifier, folded, revision as expectedRevision, WorldError } from './validation.mjs';
+import { assert, exact, integer, identifier, folded, revision as expectedRevision, WorldError } from './validation.mjs';
 import { migrateWorld, SCHEMA_VERSION } from './schema.mjs';
 import { createModel } from './model.mjs';
 import { PROFILE_OPERATIONS, profileOperation } from './profiles.mjs';
@@ -288,13 +288,21 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
       assert(!closed, 'service_closed'); identifier(accountId); identifier(targetId);
       return m.canRequestContact(accountId, targetId);
     },
-    notificationRecipients(event) {
-      assert(!closed, 'service_closed'); const item = notificationMessage(event); if (!item) return [];
+    notificationRecipients(event, page) {
+      assert(!closed, 'service_closed');
+      let after = '', limit;
+      if (page !== undefined) {
+        exact(page, [], ['afterAccountId', 'limit']);
+        after = page.afterAccountId === undefined || page.afterAccountId === '' ? '' : identifier(page.afterAccountId);
+        limit = page.limit === undefined ? 256 : integer(page.limit, 1, 256);
+      }
+      const item = notificationMessage(event); if (!item) return [];
       if (event.kind === 'room') return m.all(`SELECT account_id FROM memberships WHERE community_id=? AND state='active'
-        AND account_id<>? AND muted=0 AND last_read_seq<? ORDER BY account_id`, item.community_id, item.author_id, item.seq).map(row => row.account_id);
+        AND account_id<>? AND muted=0 AND last_read_seq<?${limit === undefined ? '' : ' AND account_id>?'} ORDER BY account_id${limit === undefined ? '' : ' LIMIT ?'}`,
+        item.community_id, item.author_id, item.seq, ...(limit === undefined ? [] : [after, limit])).map(row => row.account_id);
       const peer = item.author_id === item.account_low ? item.account_high : item.account_low;
       const prefs = m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, peer);
-      return prefs?.muted || (prefs?.last_read_seq ?? 0) >= item.seq ? [] : [peer];
+      return peer <= after || prefs?.muted || (prefs?.last_read_seq ?? 0) >= item.seq ? [] : [peer];
     },
     canNotify(actor, event) { return messageNotificationTarget(actor, event, true); },
     notificationTarget(actor, event) { return messageNotificationTarget(actor, event, false); },

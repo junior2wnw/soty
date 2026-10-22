@@ -55,6 +55,8 @@ test('direct notification target follows current relationship and never survives
   const sent = good(await f.rpc(alice, 'world.direct.chat.send', { ...base, clientId: 'direct_notification_one', text: 'Private DM' })).message;
   const event = { kind: 'direct', conversationId: thread.threadId, messageId: sent.messageId };
   assert.deepEqual(f.world.notificationRecipients(event), [bob.accountId]);
+  assert.deepEqual(f.world.notificationRecipients(event, { limit: 1 }), [bob.accountId]);
+  assert.deepEqual(f.world.notificationRecipients(event, { afterAccountId: bob.accountId, limit: 1 }), []);
   assert.deepEqual(f.world.canNotify(bob, event), { kind: 'direct', threadId: thread.threadId, peerAccountId: alice.accountId, relationshipId });
   const target = { kind: 'direct', threadId: thread.threadId, peerAccountId: alice.accountId, relationshipId };
   assert.deepEqual(f.world.notificationTarget(bob, event), target);
@@ -82,4 +84,23 @@ test('direct notification target follows current relationship and never survives
   good(await f.rpc(bob, 'contacts.block', { peerAccountId: alice.accountId }));
   assert.equal(f.world.canNotify(bob, current), null);
   assert.equal(f.world.notificationTarget(bob, current), null);
+});
+
+test('notification recipient pages use a bounded account keyset and keep the legacy call unchanged', async t => {
+  const f = await signedFixture(t), [alice, bob, carol] = f.actors;
+  const room = good(await f.rpc(alice, 'world.community.create', { requestId: 'recipient_pages_room', name: 'Paged room' })).community;
+  for (const actor of [bob, carol]) good(await f.rpc(actor, 'world.membership.join', { communityId: room.communityId }));
+  const sent = good(await f.rpc(alice, 'world.chat.send', { communityId: room.communityId, clientId: 'recipient_pages_message', text: 'Page recipients' })).message;
+  const event = { kind: 'room', conversationId: room.communityId, messageId: sent.messageId };
+  const recipients = [bob.accountId, carol.accountId].sort();
+  assert.deepEqual(f.world.notificationRecipients(event), recipients);
+  assert.deepEqual(f.world.notificationRecipients(event, {}), recipients);
+  assert.deepEqual(f.world.notificationRecipients(event, { afterAccountId: '', limit: 1 }), recipients.slice(0, 1));
+  assert.deepEqual(f.world.notificationRecipients(event, { afterAccountId: recipients[0], limit: 1 }), recipients.slice(1));
+  assert.deepEqual(f.world.notificationRecipients(event, { afterAccountId: recipients[1], limit: 1 }), []);
+  for (const page of [{ limit: 0 }, { limit: 257 }, { limit: 1.5 }, { afterAccountId: '<unsafe>' }, { offset: 1 }]) {
+    assert.throws(() => f.world.notificationRecipients(event, page));
+  }
+  good(await f.rpc(bob, 'world.membership.preferences', { communityId: room.communityId, muted: true }));
+  assert.deepEqual(f.world.notificationRecipients(event, { limit: 1 }), [carol.accountId]);
 });
