@@ -669,7 +669,26 @@ export function createClientWithStorage(options, storage) {
         const kitFingerprint = await sha256(canonicalJson(kit));
         let state = await ensureState();
         const completed = state.installations.find(item => item.recoveryFingerprint === kitFingerprint && item.accountId === kit.accountId);
-        if (completed) return { accountId: completed.accountId, deviceId: completed.deviceId, label: completed.label, alreadyCompleted: true };
+        if (completed) {
+          const actor = await installation(completed.deviceId);
+          await withRoot(actor, expected => {
+            if (expected.length !== raw.length || !expected.every((byte, index) => byte === raw[index])) {
+              throw new ConnectError('RECOVERY_KEY_MISMATCH', 'This kit does not recover the saved account key.');
+            }
+          });
+          // A consumed kit may reopen its original recipient, never a revoked device.
+          const result = await rpc('status', {}, actor);
+          checkAccountResult(result, actor, kit.accountId);
+          await mutate(draft => {
+            if (draft.localRevision !== state.localRevision) throw new ConnectError('ACTIVE_PROFILE_CHANGED', 'The saved profiles changed during recovery. Review them before opening the recovered profile.');
+            const target = draft.installations.find(item => item.deviceId === actor.deviceId);
+            if (target.revoked) throw new ConnectError('DEVICE_REVOKED', 'This recovered device was disconnected. Use another saved sign-in method.');
+            if (draft.activeDeviceId === actor.deviceId) return null;
+            draft.activeDeviceId = actor.deviceId; return draft;
+          });
+          await notify(); await assertCurrent(actor);
+          return { accountId: actor.accountId, deviceId: actor.deviceId, label: actor.label, alreadyCompleted: true };
+        }
         if (state.pendingRecovery && (state.pendingRecovery.kitFingerprint !== kitFingerprint || state.pendingRecovery.label !== label)) throw new ConnectError('RECOVERY_PENDING', 'Another recovery is pending. Retry it with the same kit and device name.');
         if (!state.pendingRecovery) {
           const candidate = await createInstallation(label);

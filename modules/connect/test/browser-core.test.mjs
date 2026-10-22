@@ -356,6 +356,76 @@ test('unconfirmed replacement recovery does not deactivate the previously verifi
   assert.equal((await other.recover(oldKit, 'Replacement phone')).accountId, original.accountId);
 });
 
+test('retrying a completed recovery opens that saved profile and retains the previously selected profile', async t => {
+  const f = fixture(t), source = f.client().client, receiver = f.client();
+  const account = await source.bootstrap('Source'), previous = await receiver.client.bootstrap('Previous');
+  await source.saveVault({ draft: 'Source data' });
+  const kit = await source.prepareRecovery(); await source.confirmRecovery(kit);
+  const recovered = await receiver.client.recover(kit, 'Recovered');
+  await receiver.client.switchProfile(previous.accountId);
+  const repeated = await receiver.client.recover(kit, 'Recovered');
+  assert.equal(repeated.alreadyCompleted, true); assert.equal(repeated.deviceId, recovered.deviceId);
+  assert.equal((await receiver.client.getLocalState()).accountId, account.accountId);
+  assert.deepEqual((await receiver.client.loadVault()).payload, { draft: 'Source data' });
+  assert.equal((await receiver.client.getLocalState()).profiles.length, 2);
+});
+
+test('a completed recovery cannot reopen a locally or remotely revoked device', async t => {
+  for (const localRevocation of [false, true]) await t.test(localRevocation ? 'local revocation' : 'remote revocation', async tt => {
+    const f = fixture(tt), source = f.client().client, receiver = f.client();
+    await source.bootstrap('Source'); const previous = await receiver.client.bootstrap('Previous');
+    const kit = await source.prepareRecovery(); await source.confirmRecovery(kit);
+    const recovered = await receiver.client.recover(kit, 'Recovered');
+    await receiver.client.switchProfile(previous.accountId);
+    await source.revokeDevice(recovered.deviceId);
+    if (localRevocation) receiver.store.corrupt(state => { state.installations.find(item => item.deviceId === recovered.deviceId).revoked = true; });
+    await assert.rejects(receiver.client.recover(kit, 'Recovered'), error => error.code.toLowerCase() === 'device_revoked');
+    assert.equal((await receiver.client.getLocalState()).accountId, previous.accountId);
+    assert.equal((await receiver.client.getLocalState()).profiles.length, 2);
+  });
+});
+
+test('completed recovery verifies its server identity and cannot overwrite another tab selection', async t => {
+  for (const mode of ['wrong server identity', 'another tab changes the active profile', 'another tab changes it away and back']) await t.test(mode, async tt => {
+    const f = fixture(tt), source = f.client().client, receiver = f.client();
+    await source.bootstrap('Source'); const previous = await receiver.client.bootstrap('Previous');
+    const kit = await source.prepareRecovery(); await source.confirmRecovery(kit);
+    const recovered = await receiver.client.recover(kit, 'Recovered');
+    if (mode === 'wrong server identity') {
+      await receiver.client.switchProfile(previous.accountId);
+      f.mutateResponse((body, result) => body.op === 'status' && result.ok ? { ...result, accountId: previous.accountId } : result);
+      await assert.rejects(receiver.client.recover(kit, 'Recovered'), { code: 'ACCOUNT_MISMATCH' });
+    } else {
+      let release, started;
+      const held = new Promise(resolve => { release = resolve; }), reached = new Promise(resolve => { started = resolve; });
+      f.mutateResponse(async (body, result) => { if (body.op === 'status' && result.ok) { started(); await held; } return result; });
+      const recovery = receiver.client.recover(kit, 'Recovered');
+      await reached;
+      const otherTab = f.client(receiver.store).client;
+      await otherTab.switchProfile(previous.accountId);
+      if (mode === 'another tab changes it away and back') await otherTab.switchProfile(recovered.accountId);
+      release(); await assert.rejects(recovery, { code: 'ACTIVE_PROFILE_CHANGED' });
+    }
+    assert.equal((await receiver.client.getLocalState()).accountId, mode === 'another tab changes it away and back' ? recovered.accountId : previous.accountId);
+    assert.equal((await receiver.client.getLocalState()).profiles.length, 2);
+  });
+});
+
+test('completed recovery verifies the saved root against its kit before any server request', async t => {
+  const f = fixture(t), source = f.client().client, receiver = f.client();
+  await source.bootstrap('Source'); const previous = await receiver.client.bootstrap('Previous');
+  const kit = await source.prepareRecovery(); await source.confirmRecovery(kit);
+  const recovered = await receiver.client.recover(kit, 'Recovered');
+  await receiver.client.switchProfile(previous.accountId);
+  const installation = receiver.store.inspect().installations.find(item => item.deviceId === recovered.deviceId);
+  const wrongRoot = await sealLocalRoot(installation, projectId, new Uint8Array(32));
+  receiver.store.corrupt(state => { state.installations.find(item => item.deviceId === recovered.deviceId).rootEnvelope = wrongRoot; });
+  const before = f.traffic.length;
+  await assert.rejects(receiver.client.recover(kit, 'Recovered'), { code: 'RECOVERY_KEY_MISMATCH' });
+  assert.equal(f.traffic.length, before);
+  assert.equal((await receiver.client.getLocalState()).accountId, previous.accountId);
+});
+
 test('contact scan never authenticates as the peer or silently accepts the reciprocal request', async t => {
   const f = fixture(t), a = f.client().client, b = f.client().client;
   const accountA = await a.bootstrap('Анна'), accountB = await b.bootstrap('Борис');

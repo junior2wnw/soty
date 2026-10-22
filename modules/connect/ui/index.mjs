@@ -33,11 +33,17 @@ function friendly(error) {
 }
 export function parseConnectLink(value, origin = globalThis.location?.origin) {
   try {
-    const url = new URL(value, origin);
-    if (url.origin !== origin) return null;
+    if (typeof value !== 'string' || value.length > 4096 || !value.isWellFormed()) return null;
+    const source = value.trim(), base = new URL(origin);
+    if (base.origin !== origin || !['http:', 'https:'].includes(base.protocol)
+      || /[\\\u0000-\u0020\u007f]/u.test(source) || !/^(?:https?:\/\/[^/?#]+)?\/?\?/iu.test(source) || source.includes('#')) return null;
+    const url = new URL(source, origin);
+    if (url.origin !== origin || url.pathname !== '/' || url.username || url.password
+      || url.search.slice(1).split('&').some(part => !part)) return null;
     const kind = url.searchParams.get('connect');
-    const id = url.searchParams.get(kind === 'contact' ? 'card' : 'request');
-    if (!['contact', 'device'].includes(kind) || !id || !/^[A-Za-z0-9_-]{16,160}$/.test(id)) return null;
+    const field = kind === 'contact' ? 'card' : 'request', id = url.searchParams.get(field);
+    if (!['contact', 'device'].includes(kind) || !id || !/^[A-Za-z0-9_-]{16,160}$/.test(id)
+      || new Set(url.searchParams.keys()).size !== 2 || ['connect', field].some(name => url.searchParams.getAll(name).length !== 1)) return null;
     return { kind, id };
   } catch { return null; }
 }
