@@ -17,7 +17,7 @@ async function until(predicate) { const deadline = Date.now() + 5000; while (!pr
 const state = (accountId = 'account-A', deviceId = 'device-A') => ({ accountId, deviceId, label: 'Fixture', current: { accountId, deviceId, revoked: false } });
 function fixture(t, config = {}) {
   let selected = state(), reads = 0, fetches = 0, actionsDestroyed = 0, detached = 0, disposed = 0, bootstraps = 0;
-  const entry = deferred(), observers = new Set(), events = new Map(), mounts = [], requests = [], follows = [], navigationCalls = [];
+  const entry = deferred(), observers = new Set(), events = new Map(), mounts = [], requests = [], follows = [], navigationCalls = [], notifications = [];
   const root = { isConnected: true }, window = { location: { href: config.href ?? 'https://shell.example/', origin: 'https://shell.example', assign(value) { navigationCalls.push(value); } },
     addEventListener(name, fn) { const set = events.get(name) ?? new Set(); set.add(fn); events.set(name, set); }, removeEventListener(name, fn) { events.get(name)?.delete(fn); } };
   window.history = { replaceState(_state, _title, value) { window.location.href = new URL(value, window.location.href).href; } };
@@ -26,6 +26,10 @@ function fixture(t, config = {}) {
     async extension(method, args, context) { requests.push({ method, args, context }); return {}; } };
   const lifecycle = { dispose() { disposed++; } };
   const ports = {
+    './notifications-client.mjs': { createNotificationsController(options) {
+      const own = { options, refreshes: 0, disposals: [], async refresh() { this.refreshes++; }, dispose(options = {}) { this.disposals.push(options); } };
+      notifications.push(own); return own;
+    } },
     '../core/connect-client': { accountClient: client, observeAccount(fn) { observers.add(fn); return () => observers.delete(fn); } },
     './connection-hub': { ensureConnectionAccount() { return entry.promise; }, openConnectionHub() { throw Error('warm hub not used'); } },
     './connection-intent.mjs': intents, './connection-navigation.mjs': navigation, './native-voice-descriptor.mjs': voiceDescriptors,
@@ -42,7 +46,7 @@ function fixture(t, config = {}) {
   const module = { exports: {} };
   vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name] ?? {}, window, URL, AbortSignal, AbortController,
     fetch: () => { fetches++; return config.capabilities ? config.capabilities() : Promise.resolve({ ok: true, async json() { return { nativeVoice: null }; } }); } });
-  const result = { root, window, client, mounts, requests, follows, navigationCalls, observers, events,
+  const result = { root, window, client, mounts, requests, follows, navigationCalls, observers, events, notifications,
     get reads() { return reads; }, get fetches() { return fetches; }, get disposed() { return disposed; }, get detached() { return detached; },
     get actionsDestroyed() { return actionsDestroyed; }, get bootstraps() { return bootstraps; },
     change(next) { selected = next; for (const fn of [...observers]) fn(next); },
@@ -111,6 +115,18 @@ test('persisted pagehide preserves the mounted DOM and observer for browser rest
   const f = fixture(t); await f.start(); f.pagehide(true);
   assert.equal(f.mounts.length, 1); assert.equal(f.mounts[0].destroyed, 0); assert.equal(f.observers.size, 1);
   assert.equal(f.actionsDestroyed, 0); assert.equal(f.disposed, 0);
+});
+
+test('same actor revision refreshes notifications; closing the page keeps its binding, changing actor clears it', async t => {
+  const f = fixture(t); await f.start();
+  const first = f.notifications[0]; assert.equal(first.refreshes, 1);
+  f.change({ ...state(), localRevision: 2, label: 'Renamed' });
+  assert.equal(f.mounts.length, 1); assert.equal(first.refreshes, 2); assert.equal(first.disposals.length, 0);
+  f.pagehide(true); assert.equal(first.disposals.length, 0);
+  f.change({ ...state('account-B', 'device-B'), localRevision: 3 });
+  assert.equal(first.disposals.length, 1); assert.equal(first.disposals[0].accountChanged, true);
+  const second = f.notifications[1]; assert.equal(second.refreshes, 1);
+  f.pagehide(); assert.equal(second.disposals.length, 1); assert.equal(second.disposals[0].accountChanged, undefined);
 });
 
 const appLink = () => `https://shell.example/#app/app-${'a'.repeat(32)}?invitation=${'b'.repeat(64)}`;

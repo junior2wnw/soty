@@ -1310,6 +1310,9 @@
   background: var(--sw-danger-bg);
 }
 
+.sw-toast.has-action { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.sw-toast.has-action button { min-width: 44px; min-height: 44px; }
+
 .sw-dialog {
   border: 1px solid var(--sw-control-border);
   border-radius: 22px;

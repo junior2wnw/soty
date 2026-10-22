@@ -15,7 +15,7 @@ export function createNotificationsController({client,accountId,isCurrent=()=>tr
   serviceWorker=globalThis.navigator?.serviceWorker,notification=globalThis.Notification,pushSupported=typeof globalThis.PushManager === 'function',
   location=globalThis.location,history=globalThis.history,makeChannel=()=>new MessageChannel(),
   fingerprint=async value=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))].map(byte=>byte.toString(16).padStart(2,'0')).join('')}={}) {
-  let disposed=false,generation=0,identity,registration,report,busy=false,opening;
+  let disposed=false,generation=0,identity,registration,report,busy=false,opening,pendingNotification,entryHandled=false;
   let phase='checking',code=null;const listeners=new Set();
   const view=()=>({phase,configured:report?.configured===true,supported:Boolean(registration?.active&&notification&&pushSupported),enabled:phase==='on',busy,code});
   const notify=()=>{if(!disposed)for(const listener of listeners){try{listener(view());}catch{}}};
@@ -38,12 +38,14 @@ export function createNotificationsController({client,accountId,isCurrent=()=>tr
     stopped();const abort=new AbortController();opening=abort;const owned=identity,version=generation;
     const assertCurrent=async()=>{await current(owned);if(opening!==abort||abort.signal.aborted||version!==generation)throw failure('push_actor_denied');};
     try {
-      await assertCurrent();const result=await rpc('notifications.open',{notificationId:request},owned);await assertCurrent();
+      await assertCurrent();pendingNotification={notificationId:request,bindingId:report.bindingId};
+      const result=await rpc('notifications.open',{notificationId:request},owned);await assertCurrent();
       if(!exact(result,['ok','schema','target'])||result.ok===false||result.schema!=='soty.push-open.v1'||!validTarget(result.target))throw failure('push_invalid');
       await onOpen({...result.target},{assertCurrent,signal:abort.signal});await assertCurrent();
+      if(pendingNotification?.notificationId===request)pendingNotification=undefined;
       if(location?.href&&history){const url=new URL(location.href);if(url.searchParams.get('notification')===request){url.searchParams.delete('notification');history.replaceState(history.state,'',url.href);}}
       return true;
-    } catch { if(!disposed&&version===generation){code='push_notification_unavailable';notify();}return false; }
+    } catch(cause) { if(!disposed&&version===generation&&opening===abort){code=cause?.code==='push_navigation_blocked'?'push_navigation_blocked':'push_notification_unavailable';notify();}return false; }
     finally {if(opening===abort)opening=undefined;}
   }
   const message=event=>{
@@ -71,11 +73,15 @@ export function createNotificationsController({client,accountId,isCurrent=()=>tr
         phase=result.enabled&&notification.permission==='granted'&&matches?'on':'off';
         await workerMessage('SOTY_PUSH_BIND',report.bindingId,phase==='on');
       }
-      if(location?.href&&!disposed&&version===generation){const request=new URL(location.href).searchParams.get('notification');if(request)void open(request);}
+      if(location?.href&&!disposed&&version===generation&&!entryHandled){entryHandled=true;const request=new URL(location.href).searchParams.get('notification');if(request)void open(request);}
     } catch {if(!disposed&&version===generation){phase='unavailable';code='push_unavailable';await clearBinding();report=undefined;identity=undefined;}}
     if(!disposed&&version===generation)notify();return view();
   }
   return Object.freeze({view,refresh,open,subscribe(listener){listeners.add(listener);listener(view());return()=>listeners.delete(listener);},
+    async retryOpen() { const pending=pendingNotification;if(!pending||disposed)return false;await refresh();
+      if(disposed||pendingNotification!==pending)return false;
+      if(!identity||!report){if(isCurrent()){code='push_notification_unavailable';notify();}return false;}
+      return open(pending.notificationId,pending.bindingId); },
     async enable() {
       if(disposed||busy||phase!=='off'||!report?.configured||!view().supported||!identity)return;
       if(notification.permission==='denied'){phase='denied';notify();return;}
@@ -107,6 +113,6 @@ export function createNotificationsController({client,accountId,isCurrent=()=>tr
       } catch {if(!disposed&&version===generation){phase='unknown';code='push_unknown';}}
       finally {busy=false;if(!disposed)notify();}
     },
-    dispose({accountChanged=false}={}) {if(accountChanged)void clearBinding();if(disposed)return;disposed=true;generation++;stopped();serviceWorker?.removeEventListener?.('message',message);listeners.clear();},
+    dispose({accountChanged=false}={}) {if(accountChanged){pendingNotification=undefined;void clearBinding();}if(disposed)return;disposed=true;generation++;stopped();serviceWorker?.removeEventListener?.('message',message);listeners.clear();},
   });
 }

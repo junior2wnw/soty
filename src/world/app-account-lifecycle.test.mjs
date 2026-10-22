@@ -293,6 +293,89 @@ test('a late direct-open response cannot populate or navigate another account', 
   assert.deepEqual(navigation,[]);assert.equal(f.app.directThreads.length,0);assert.equal(f.app.directLabels.size,0);
 });
 
+function notificationFixture() {
+  const f = fixture(), calls = [], navigations = [];
+  f.view.document.querySelector = () => null;
+  f.app.chatDrafts = { hasVolatile: () => false };
+  f.app.navigateReady = (view, id) => navigations.push({ view, id });
+  const room = { communityId: 'room_fixture', revision: 1, membership: { state: 'active', muted: true } };
+  const direct = { threadId: 'direct_fixture', relationshipId: 'rel_fixture', peer: { accountId: 'peer_fixture' } };
+  f.app.api = { async request(op, args) { calls.push({ op, args: JSON.parse(JSON.stringify(args)) }); return op === 'world.community.get' ? { community: room } : { thread: direct }; } };
+  const request = { async assertCurrent() {}, signal: new AbortController().signal };
+  return { ...f, calls, navigations, room, direct, request };
+}
+
+test('notification click rechecks the exact current conversation and opens a muted room or a genuine DM', async () => {
+  const f = notificationFixture();
+  await f.app.openNotification({ kind: 'room', communityId: f.room.communityId }, f.request);
+  await f.app.openNotification({ kind: 'direct', threadId: f.direct.threadId, peerAccountId: f.direct.peer.accountId, relationshipId: f.direct.relationshipId }, f.request);
+  assert.deepEqual(f.navigations, [{ view: 'messages', id: f.room.communityId }, { view: 'messages', id: f.direct.threadId }]);
+  assert.deepEqual(f.calls.map(row => row.op), ['world.community.get', 'world.direct.get']);
+  assert.deepEqual(f.calls[1].args, { expectedAccountId: 'account-A', threadId: f.direct.threadId, expectedRelationshipId: f.direct.relationshipId });
+  assert.equal(f.app.directThreads[0].peer.accountId, 'peer_fixture');
+});
+
+test('notification navigation refuses a mismatched thread, relationship, peer or inactive room', async () => {
+  for (const change of [thread => { thread.threadId = 'direct_other'; }, thread => { thread.relationshipId = 'rel_other'; }, thread => { thread.peer.accountId = 'peer_other'; }]) {
+    const f = notificationFixture(), target = { kind: 'direct', threadId: 'direct_fixture', peerAccountId: 'peer_fixture', relationshipId: 'rel_fixture' };
+    change(f.direct); await assert.rejects(f.app.openNotification(target, f.request), /push_notification_unavailable/u);
+    assert.deepEqual(f.navigations, []); assert.deepEqual(f.app.directThreads, []);
+  }
+  const f = notificationFixture(); f.room.membership.state = 'left';
+  await assert.rejects(f.app.openNotification({ kind: 'room', communityId: f.room.communityId }, f.request), /push_notification_unavailable/u);
+  assert.deepEqual(f.navigations, []);
+});
+
+test('late notification lookup cannot override a new account, screen or aborted click', async () => {
+  for (const change of [f => { f.app.accountGeneration++; }, f => { f.app.screenSequence++; }, f => { f.aborter.abort(); }]) {
+    const f = notificationFixture(), gate = deferred(); f.aborter = new AbortController(); f.request.signal = f.aborter.signal;
+    f.app.api = { request: () => gate.promise };
+    const pending = f.app.openNotification({ kind: 'room', communityId: f.room.communityId }, f.request);
+    await turn(); change(f); gate.resolve({ community: f.room });
+    await assert.rejects(pending, /push_actor_denied/u); assert.deepEqual(f.navigations, []);
+  }
+});
+
+test('notification click waits for durable work and preserves editing that starts during its lookup', async () => {
+  const f = notificationFixture(), flush = deferred(); let dirty = true;
+  f.app.notesHandle = { flush: () => flush.promise, hasUnsavedChanges: () => dirty };
+  const pending = f.app.openNotification({ kind: 'room', communityId: f.room.communityId }, f.request);
+  await turn(); assert.equal(f.calls.length, 0); dirty = false; flush.resolve(); await pending;
+  assert.equal(f.navigations.length, 1);
+  const late = notificationFixture(), lookup = deferred(); let edited = false;
+  late.app.chatDrafts = { hasVolatile: () => edited }; late.app.api = { request: () => lookup.promise };
+  const result = late.app.openNotification({ kind: 'room', communityId: late.room.communityId }, late.request);
+  await turn(); edited = true; lookup.resolve({ community: late.room });
+  await assert.rejects(result, /Сохраните/u); assert.deepEqual(late.navigations, []); assert.equal(edited, true);
+});
+
+test('the actual root capture handler leaves notification Retry and Close operable while other work is dirty', () => {
+  const ast = ts.createSourceFile('app.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication');
+  const constructor = declaration.members.find(ts.isConstructorDeclaration);
+  const statement = constructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+    && node.expression.expression.getText(ast) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click');
+  const callback = statement.expression.arguments[1], module = { exports: {} };
+  vm.runInNewContext(ts.transpileModule('exports.bind = function() { return ' + callback.getText(ast) + '; };', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText, { exports: module.exports, Element: ElementPort });
+  let guarded = 0, prevented = 0;
+  const app = { screenHasUnsavedChanges: () => true, afterNoteSaved() { guarded++; } }, capture = module.exports.bind.call(app);
+  // A small CSS-selector DOM port, not a copy of the capture handler's policy.
+  const surface = (className, parent = null) => {
+    const node = new ElementPort(); node.tagName = parent ? 'button' : 'div'; node.className = className; node.parent = parent;
+    node.closest = selector => {
+      for (let value = node; value; value = value.parent) if (selector.split(',').some(part => part.trim().startsWith('.')
+        ? value.className.split(/\s+/u).includes(part.trim().slice(1)) : value.tagName === part.trim())) return value;
+      return null;
+    }; return node;
+  };
+  const toast = surface('sw-toast has-action'), retry = surface('sw-button', toast), close = surface('sw-button', toast);
+  const event = target => ({ target, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
+  capture(event(retry)); capture(event(close)); assert.equal(guarded, 0); assert.equal(prevented, 0);
+  capture(event(surface('sw-button', surface('ordinary-panel')))); assert.equal(guarded, 1); assert.equal(prevented, 1);
+});
+
 test('existing group chat mounts the common renderer with actual group authority and the original draft namespace', () => {
   const f=fixture(), captured=[];
   f.app.mountConversation=(parent,target,presentation)=>{captured.push({parent,target,presentation});return ()=>true;};

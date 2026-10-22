@@ -9,6 +9,7 @@ import { ensureConnectionAccount, openConnectionHub, type ConnectionHandoff } fr
 import { parseConnectionIntent, type ConnectionIntent } from './connection-intent.mjs';
 import { takeConnectionNavigation } from './connection-navigation.mjs';
 import { createNativeVoiceDescriptor } from './native-voice-descriptor.mjs';
+import { createNotificationsController, type NotificationsController } from './notifications-client.mjs';
 import type { ConnectIntent } from '../../modules/connect/ui/index.mjs';
 // The existing browser-neutral JS owner is tested directly; its runtime is unchanged.
 // @ts-expect-error The reviewed JS component has no TypeScript declaration.
@@ -47,11 +48,12 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
   let mountGeneration = 0, currentCallView: WorldHumanCallPort | undefined;
   let identityEvents = 0, pageClosed = false, unobserveAccount: (() => void) | undefined, destroyActions: (() => void) | undefined;
   let restoreOwnedRoute: (() => void) | undefined, worldMounted = false, entryScopeChanged = false;
+  let notifications: NotificationsController | undefined;
   const closePage = () => {
     if (pageClosed) return;
     pageClosed = true; pageLifetime.abort(); mountGeneration++;
     window.removeEventListener('pagehide', pagehide);
-    for (const cleanup of [unobserveAccount, destroyActions, () => world?.destroy(), detachCall, () => lifecycle.dispose()]) {
+    for (const cleanup of [unobserveAccount, destroyActions, () => notifications?.dispose(), () => world?.destroy(), detachCall, () => lifecycle.dispose()]) {
       try { cleanup?.(); } catch { /* Retire the remaining owners too. */ }
     }
   };
@@ -108,7 +110,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (pageClosed) return;
     identityEvents++;
     const nextAccount = state.current?.revoked ? null : state.accountId, nextDevice = nextAccount ? state.deviceId : null;
-    if (nextAccount === activeAccount && nextDevice === activeDevice) return;
+    if (nextAccount === activeAccount && nextDevice === activeDevice) { void notifications?.refresh(); return; }
+    notifications?.dispose({ accountChanged: true }); notifications = undefined;
     entryScopeChanged = true; activeAccount = nextAccount; activeDevice = nextDevice;
     if (world) { try { actions.resetAccount(); world.destroy(); world = mount(activeAccount); } catch (error) { closePage(); throw error; } }
   });
@@ -343,7 +346,12 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
       return accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
     } };
-    return mountWorldApp(root, { ...options, api, ...(humanCalls ? { humanCalls } : {}),
+    let mounted: WorldAppHandle;
+    const ownNotifications = accountId ? createNotificationsController({ client: accountClient, accountId,
+      isCurrent: () => !pageClosed && root.isConnected && current(),
+      onOpen: (target, context) => mounted.openNotification(target, context) }) : undefined;
+    notifications = ownNotifications;
+    mounted = mountWorldApp(root, { ...options, api, ...(humanCalls ? { humanCalls } : {}), ...(ownNotifications ? { notifications: ownNotifications } : {}),
       syncContactName: async displayName => {
         if (!accountId || !current()) throw Object.assign(new Error('The displayed profile changed.'), { code: 'ACTIVE_PROFILE_CHANGED' });
         await accountClient.rename(displayName, accountId);
@@ -351,6 +359,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       },
       requestContact: async (profile: WorldIdentity) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
     });
+    void ownNotifications?.refresh();
+    return mounted;
   };
   if (pageClosed || !root.isConnected) { closePage(); return; }
   world = mount(activeAccount); worldMounted = true;

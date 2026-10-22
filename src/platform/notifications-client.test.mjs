@@ -73,3 +73,30 @@ test('denied permission is explicit and an account-change dispose clears only it
   const f=fixture(t,{permission:'denied'});await f.controller.refresh();await f.controller.enable();assert.equal(f.controller.view().phase,'denied');assert.equal(f.counts().permissionCalls,0);
   f.controller.dispose({accountChanged:true});await tick();assert.equal(f.messages.at(-1).type,'SOTY_PUSH_CLEAR');assert.equal(f.messages.at(-1).bindingId,'a'.repeat(64));
 });
+
+test('a blocked host keeps an opaque notification retry and only navigates after a new signed permission check',async t=>{
+  let saved=false,opens=0;
+  const f=fixture(t,{onOpen:async(_target,context)=>{await context.assertCurrent();if(!saved)throw Object.assign(Error('Save first'),{code:'push_navigation_blocked'});opens++;}});
+  await f.controller.refresh();assert.equal(await f.controller.open('R'.repeat(32)),false);
+  assert.equal(f.controller.view().code,'push_navigation_blocked');assert.equal(opens,0);
+  saved=true;assert.equal(await f.controller.retryOpen(),true);assert.equal(opens,1);
+  assert.equal(f.calls.filter(value=>value.op==='notifications.open').length,2);
+  assert.equal(await f.controller.retryOpen(),false,'a completed click is not retained for a second navigation');
+});
+
+test('a network-failed retry remains visible and disposing an account prevents its retained retry',async t=>{
+  let online=true;
+  const f=fixture(t,{rpc(){if(!online)throw TypeError('Isolated unavailable transport');},onOpen:async()=>{throw Error('Isolated blocked navigation');}});
+  await f.controller.refresh();await f.controller.open('R'.repeat(32));online=false;
+  assert.equal(await f.controller.retryOpen(),false);assert.equal(f.controller.view().code,'push_notification_unavailable');
+  f.controller.dispose({accountChanged:true});online=true;const count=f.calls.length;
+  assert.equal(await f.controller.retryOpen(),false);assert.equal(f.calls.length,count);
+});
+
+test('a superseded open cannot overwrite the current click status after its delayed host fails',async t=>{
+  const held=defer(),entered=defer();let count=0;
+  const f=fixture(t,{onOpen:async()=>{if(++count===1){entered.resolve();await held.promise;throw Error('Old click cancelled');}}});
+  await f.controller.refresh();const first=f.controller.open('A'.repeat(32));await entered.promise;
+  assert.equal(await f.controller.open('B'.repeat(32)),true);held.resolve();assert.equal(await first,false);
+  assert.equal(f.controller.view().code,null);
+});

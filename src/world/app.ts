@@ -50,6 +50,8 @@ import type { ConnectionIntent } from '../platform/connection-intent.mjs';
 import { mountCoverEditor } from './cover-editor';
 import { createCoverApi, type CoverKind } from './cover-api.mjs';
 import { createAppCoverPresenter, mountAppCoverField, type AppCoverPresenter } from './app-cover-presenter.mjs';
+import { mountNotifications } from '../platform/notifications';
+import type { NotificationTarget } from '../platform/notifications-client.mjs';
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
@@ -66,12 +68,14 @@ interface ConversationPresentation {
 }
 
 export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void;
+  openNotification(target: NotificationTarget, context: { assertCurrent(): Promise<void>; signal: AbortSignal }): Promise<void>;
   followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void>; }
 
 export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): WorldAppHandle {
   const app = new WorldApplication(root, options);
   void app.refresh();
   return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(),
+    openNotification: (target, context) => app.openNotification(target, context),
     followConnection: (intent, navigate) => app.followConnection(intent, navigate) };
 }
 
@@ -134,6 +138,7 @@ class WorldApplication {
   private connection: PwaState['connection'] = 'checking';
   private readonly unsubscribePwa: () => void;
   private readonly unregisterUpdateGuard: () => void;
+  private unsubscribeNotifications: (() => void) | undefined;
   private desk: DeskPreferences = { favorites: [], recent: [] };
   private deskAccount = '';
   private accountGeneration = 0;
@@ -285,9 +290,16 @@ class WorldApplication {
       }
     });
     this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.widgets?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
+    let lastNotificationCode: string | null = null;
+    this.unsubscribeNotifications = options.notifications?.subscribe(state => {
+      if (state.code !== lastNotificationCode && ['push_navigation_blocked', 'push_notification_unavailable'].includes(state.code ?? ''))
+        this.toast(state.code === 'push_navigation_blocked' ? 'Сначала сохраните или закройте незавершённую работу.' : 'Не удалось открыть сообщение. Проверьте связь и повторите.', true,
+          { label: 'Повторить открытие', run: () => { void options.notifications?.retryOpen(); } });
+      lastNotificationCode = state.code;
+    });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -556,7 +568,7 @@ class WorldApplication {
 
   destroy(): void {
     this.stopIncomingCallPolling();
-    this.destroyed = true; this.requestSequence++; this.screenSequence++; this.agentOrb?.dispose(); this.agentOrb = null; this.widgets?.dispose(); this.widgets = null;
+    this.destroyed = true; this.requestSequence++; this.screenSequence++; this.unsubscribeNotifications?.(); this.agentOrb?.dispose(); this.agentOrb = null; this.widgets?.dispose(); this.widgets = null;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
     this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
@@ -739,10 +751,15 @@ class WorldApplication {
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
-  private toast(message: string, isError = false): void {
+  private toast(message: string, isError = false, action?: { label: string; run(): void }): void {
     this.root.querySelector('.sw-toast')?.remove(); if (this.toastTimer) clearTimeout(this.toastTimer);
     const toast = el('div', `sw-toast${isError ? ' is-error' : ''}`, message); toast.setAttribute('role', isError ? 'alert' : 'status'); this.root.append(toast);
-    this.toastTimer = setTimeout(() => toast.remove(), isError ? 6500 : 3800);
+    if (action) {
+      toast.classList.add('has-action');
+      toast.append(button(action.label, 'refresh', 'sw-button-quiet', () => { toast.remove(); action.run(); }),
+        iconButton('Закрыть уведомление', 'close', () => toast.remove()));
+      this.toastTimer = null;
+    } else this.toastTimer = setTimeout(() => toast.remove(), isError ? 6500 : 3800);
   }
   private runHook(hook: () => void | Promise<void>): void { void Promise.resolve().then(hook).catch(error => this.toast(errorText(error), true)); }
   private afterNoteSaved(action: () => void): void {
@@ -856,6 +873,45 @@ class WorldApplication {
     else throw Error('connection_route_unavailable');
   }
 
+  async openNotification(target: NotificationTarget, request: { assertCurrent(): Promise<void>; signal: AbortSignal }): Promise<void> {
+    const current = this.accountTask(), sequence = this.screenSequence, accountId = this.deskAccount;
+    const guard = async (): Promise<void> => {
+      await request.assertCurrent();
+      if (!current() || sequence !== this.screenSequence || request.signal.aborted) throw Error('push_actor_denied');
+    };
+    const saved = (): void => {
+      if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()
+        || this.chatDrafts.hasVolatile() || this.formEdits?.hasUnsavedChanges() || document.querySelector('dialog[open] form'))
+        throw Object.assign(Error('Сохраните или закройте незавершённое действие'), { code: 'push_navigation_blocked' });
+    };
+    await guard(); await Promise.all([this.flushScreen(), this.agentOrb?.flush(), this.widgets?.flush()]); await guard(); saved();
+    if (target.kind === 'room') {
+      const result = await this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: target.communityId });
+      await guard(); saved();
+      if (result.community?.communityId !== target.communityId || result.community.membership?.state !== 'active') throw Error('push_notification_unavailable');
+      this.updateCommunity(result.community);
+      for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
+      this.navigateReady('messages', target.communityId);
+    } else {
+      const result = await this.api.request<{ thread: WorldDirectThread }>('world.direct.get', { expectedAccountId: accountId,
+        threadId: target.threadId, expectedRelationshipId: target.relationshipId });
+      await guard(); saved();
+      if (result.thread?.threadId !== target.threadId || result.thread.relationshipId !== target.relationshipId
+        || result.thread.peer?.accountId !== target.peerAccountId) throw Error('push_notification_unavailable');
+      this.directProjectionEpoch++;
+      this.directThreads = [result.thread, ...this.directThreads.filter(value => value.threadId !== target.threadId)];
+      for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
+      this.navigateReady('messages', target.threadId);
+    }
+  }
+
+  private openNotifications(): void {
+    const controller = this.options.notifications; if (!controller) return;
+    let renderer: ReturnType<typeof mountNotifications> | undefined;
+    const dialog = this.dialog('Уведомления', () => renderer?.dispose());
+    renderer = mountNotifications(dialog.body, controller);
+  }
+
   private openFieldMenu(): void {
     if (this.fieldMenu?.element.open) { this.fieldMenu.close(); return; }
     let disposeGrip = (): void => {}, disposeTheme = (): void => {};
@@ -919,6 +975,7 @@ class WorldApplication {
     const menu=this.dialog('Профиль и настройки');const options=el('div','sx-profile-menu');
     const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
     options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
+    if (this.options.notifications) options.append(entry('Уведомления', 'bell', () => this.openNotifications()));
     const continuity = createOriginContinuityLinks(); if (continuity) options.append(continuity);
     const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs); menu.body.append(options);
   }

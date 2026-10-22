@@ -1,5 +1,6 @@
 import type { OtsovProjectArtifact, EditorReadback } from '../../modules/otsov-editor-handoff/wire.mjs';
 import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
+import type { NotificationsController } from '../platform/notifications-client.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
 export type WorldProfileAudience = 'private' | 'friends' | 'link' | 'public';
@@ -144,6 +145,7 @@ export interface WorldHumanCallPort {
   declineIncoming(invitation: WorldIncomingCall): Promise<{ ok: boolean; code?: string }>;
 }
 export interface WorldAppOptions {
+  notifications?: NotificationsController;
   nativeVoice?: { client:any; mount:any };
   readNativeVoice?: (options?: { retry?: boolean }) => Promise<{ client:any; mount:any } | null>;
   api: WorldApi;

@@ -55,6 +55,8 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
   const dataDir = env.DATA_DIR || path.join(rootDir, 'data'), port = Number.parseInt(env.PORT || '8080', 10), host = env.HOST || '0.0.0.0';
   const operatorFlag = env.SOTY_UNIVERSAL_OPERATOR_ENABLED ?? '';
   if (!['', '0', '1'].includes(operatorFlag)) invalid();
+  const attachmentsFlag = env.SOTY_WORLD7_MIGRATION ?? '';
+  if (!['', '0', '1'].includes(attachmentsFlag)) invalid();
   const trafficTunnel = combineTunnelProxies([
     createTrafficTunnelProxy({ target: env.SOTY_TRAFFIC_TUNNEL_TARGET || '', publicPath: env.SOTY_TRAFFIC_TUNNEL_PATH || '/api/traffic/tunnel' }),
     createTrafficTunnelProxy({ target: env.SOTY_TRAFFIC_WS_TARGET || '', publicPath: env.SOTY_TRAFFIC_WS_PATH || '/api/traffic/ws' }),
@@ -91,6 +93,7 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
       ...(installedApplications.sourceCredentialFor ? { sourceCredentialFor: installedApplications.sourceCredentialFor } : {}) };
     try { app = createHttpApp(distDir, { env, dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration,
       ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration, voiceOrb: voiceOrbConfiguration.voiceOrb,
+      allowWorld7Migration: attachmentsFlag === '1',
       ...httpOptions, env, gonka: rootGonkaOptions(env) }); }
     catch (error) { await waitForRejectedHttpStart(error); throw error; }
     server = createServer(app); server.keepAliveTimeout = 65000; server.headersTimeout = 70000;

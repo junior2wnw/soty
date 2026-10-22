@@ -42,6 +42,7 @@ import { createPersonalAgentComposition } from './personal-agent-composition.js'
 import { createNativeVoiceComposition } from './native-voice-composition.js';
 import { createVoiceOrbComposition } from './voice-orb-composition.js';
 import { createHumanCallModule } from './human-call-module.js';
+import { createPushService, pushConfigurationFromEnvironment } from './push-service.js';
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
@@ -67,8 +68,9 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, localExecutorCurrent = false } = {}, nativeSources) {
   if (typeof allowAudienceMigration !== 'boolean') throw new AccessError('apps_audience_migration_configuration_invalid');
+  if (typeof allowWorld7Migration !== 'boolean') throw new AccessError('world_attachment_migration_configuration_invalid');
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
   if (typeof universalAppsEnabled !== 'boolean') throw new AccessError('universal_configuration_invalid');
   if (typeof humanIdentityRenewalMigration !== 'boolean') throw new AccessError('universal_configuration_invalid');
@@ -82,7 +84,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   scopedEmbedProfiles = universalEnabled ? scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);}) : [];
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
-  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice,
+  let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
   // Validate before opening any storage: a rejected configuration cannot migrate data.
@@ -170,7 +172,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [orbVoice, voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [push, orbVoice, voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -187,7 +189,14 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
         sourceCredentialFor: sourceAccess.sourceCredentialFor } });
     voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
     orbVoice = createVoiceOrbComposition({ getConnect: () => connect, agent: personal, configuration: voiceOrb });
+    push = createPushService({ databasePath: path.join(dataDir || path.resolve('data'), 'push', 'push.sqlite'), projectId: 'soty',
+      configuration: notifications?.configuration ?? pushConfigurationFromEnvironment(env), getConnect: () => connect,
+      recipientsFor: (event, page) => world.notificationRecipients(event, page), authorizeDelivery: (actor, event) => world.canNotify(actor, event),
+      authorizeOpen: (actor, event) => world.notificationTarget(actor, event),
+      ...(notifications?.sendNotification ? { sendNotification: notifications.sendNotification } : {}),
+      ...(notifications?.clock ? { clock: notifications.clock } : {}) });
     world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty',
+      allowWorld7Migration,
       withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback),
       profileCoverDecoder: coverDecoder, profileCoverRegistered: operation => registeredCoverOperations.has(operation) });
     humanCalls = createHumanCallModule({ getConnect: () => connect, getWorld: () => world, allowedOrigins: shellOrigins });
@@ -280,6 +289,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     res.status(apps.allowsTlsDomain(req.query.domain) ? 204 : 403).end();
   });
   app.locals.worldService = world;
+  app.locals.pushService = push;
   app.locals.humanCalls = humanCalls;
   app.locals.notesService = notes;
   // Host-only service handle, like notesService/appsService; never part of an agent tool or HTTP DTO.
@@ -293,7 +303,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
-    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls,
+    const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls, push,
       ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
@@ -317,6 +327,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
     oauthCleanup = oauthProfile && capabilities.schemaVersion === 3
       ? startOAuthCleanup({ oauth: capabilities.oauth }) : null;
+    push.attach({ subscribeMessages: listener => world.subscribeMessages(listener) });
   } catch (error) { failedStart(error); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
@@ -338,6 +349,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       let failed = false;
       const attempt = async action => { try { await action(); } catch { failed = true; } };
       if (nativeSources.enabled) await attempt(() => nativeSources.close());
+      await attempt(() => push.close());
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
       await attempt(() => sourceAccess.close());
@@ -363,7 +375,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status(), nativeVoice: voice.publicMount(), voiceOrb: orbVoice.status() });
+    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human), personalAgent: personal.status(), nativeVoice: voice.publicMount(), voiceOrb: orbVoice.status(), notifications: { configured: push.status().configured } });
   });
   app.get('/api/calls/capabilities', (_req, res) => {
     const state = humanCalls.status();

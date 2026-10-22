@@ -7,6 +7,7 @@ export interface NotificationsController {
   enable():Promise<void>;
   disable():Promise<void>;
   open(notificationId:string,bindingId?:string):Promise<boolean>;
+  retryOpen():Promise<boolean>;
   dispose(options?:{accountChanged?:boolean}):void;
 }
 export function createNotificationsController(options:{

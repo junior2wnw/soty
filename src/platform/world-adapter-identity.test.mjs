@@ -12,6 +12,7 @@ test('actual world adapter keeps each controller and late contact action bound t
   const module = { exports: {} }, mounts = [], calls = [];
   let accountId = 'account-A', observer, bootstraps = 0, resets = 0;
   const ports = {
+    './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },
