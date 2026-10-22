@@ -45,8 +45,8 @@ const BUILTINS: DirectoryEntity[] = [
   { entity: { kind: 'builtin', id: 'chess' }, title: 'Шахматы', symbol: 'chess', coverKey: 'chess', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', source: 'builtin' },
 ];
-const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Сообщества', device: 'Устройства' };
-const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Сообщество', device: 'Моё устройство' })[kind];
+const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Комнаты', device: 'Устройства' };
+const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Комната', device: 'Моё устройство' })[kind];
 const matches = (item: DirectoryEntity, query: string, filter: FieldFilter): boolean =>
   (filter === 'all' || item.entity.kind === filter || filter === 'app' && item.entity.kind === 'builtin') &&
   `${item.title} ${item.description ?? ''}`.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru'));
@@ -238,7 +238,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     return [...metadata.values()].filter(item => needed.has(fieldEntityKey(item.entity)));
   }
   function placeSearch(): void {
-    searchInput.placeholder = mode === 'mine' ? 'Найти на моём поле' : 'Приложения, люди, сообщества';
+    searchInput.placeholder = mode === 'mine' ? 'Найти на моём поле' : 'Приложения, люди, комнаты';
     if (search.parentElement !== localSearch) localSearch.prepend(search);
     if (listButton.parentElement !== localSearch) localSearch.append(listButton);
   }
@@ -250,7 +250,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (queries[mode]) element.dataset.search = 'open';
     element.setAttribute('aria-label', mode === 'mine' ? 'Мои соты' : 'Поиск в Сотах');
     mineButton.setAttribute('aria-pressed', String(mode === 'mine')); searchButton.setAttribute('aria-pressed', String(mode === 'search'));
-    searchInput.value = queries[mode]; searchInput.placeholder = mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, сообщества';
+    searchInput.value = queries[mode]; searchInput.placeholder = mode === 'mine' ? 'Найти в моих сотах' : 'Приложения, люди, комнаты';
     searchInput.setAttribute('aria-label', searchInput.placeholder); clear.hidden = !searchInput.value;
     arrange.hidden = mode !== 'mine'; spaces.hidden = mode !== 'mine';
     contextSelector.setAttribute('aria-label', mode === 'mine' ? 'Мои пространства' : 'Раздел поиска');
@@ -327,7 +327,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (!empty.hidden && (element.dataset.mineState === 'error' || doc.shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))))) {
       empty.replaceChildren(el('h2', '', 'Доступ пока не подтверждён'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(loadMine()))); return;
     }
-    if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'В этом разделе пока пусто' : 'Здесь будет ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Добавьте приложение, человека или сообщество.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить на поле', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
+    if (!empty.hidden) empty.replaceChildren(el('h2', '', queries.mine ? 'Ничего не найдено' : filter !== 'all' ? 'В этом разделе пока пусто' : 'Здесь будет ваше пространство'), el('p', '', queries.mine ? 'Попробуйте другое название.' : 'Добавьте приложение, человека или комнату.'), button(queries.mine ? 'Очистить поиск' : filter !== 'all' ? 'Показать всё' : 'Добавить на поле', queries.mine ? 'close' : filter !== 'all' ? 'layers' : 'plus', 'sw-button-primary', () => {
       if (queries.mine) { searchInput.value = ''; inputChanged(); searchInput.focus(); }
       else if (filter !== 'all') { filter = 'all'; filtersByMode.mine = 'all'; updateChrome(); inputChanged(true); }
       else openAdd();
@@ -459,8 +459,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       element.dataset.searchState = page.status;
       empty.hidden = searchItems.length > 0;
       if (!searchItems.length) {
-        const title = filter === 'community' ? 'Сообщества не найдены' : filter === 'person' ? 'Люди не найдены' : filter === 'app' ? 'Приложения не найдены' : 'Пока ничего не найдено';
-        const hint = query ? 'Попробуйте другое название.' : filter === 'community' ? 'Здесь появятся доступные вам сообщества.' : filter === 'person' ? 'Здесь появятся люди, открывшие свой профиль для поиска.' : 'Здесь появятся доступные приложения, люди и сообщества.';
+        const title = filter === 'community' ? 'Комнаты не найдены' : filter === 'person' ? 'Люди не найдены' : filter === 'app' ? 'Приложения не найдены' : 'Пока ничего не найдено';
+        const hint = query ? 'Попробуйте другое название.' : filter === 'community' ? 'Здесь появятся доступные вам комнаты.' : filter === 'person' ? 'Здесь появятся люди, открывшие свой профиль для поиска.' : 'Здесь появятся доступные приложения, люди и комнаты.';
         empty.replaceChildren(el('h2', '', page.status === 'offline' ? 'Поиск ждёт подключения' : title), el('p', '', page.status === 'offline' ? 'Ваше поле остаётся доступным.' : hint), button(page.status === 'offline' ? 'Повторить' : 'На моё поле', page.status === 'offline' ? 'refresh' : 'back', 'sw-button-quiet', () => page.status === 'offline' ? run(searchDirectory()) : changeMode('mine')));
       }
       else if (page.status === 'partial') options.onMessage('Часть результатов временно недоступна. Можно повторить поиск.');
@@ -598,7 +598,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       for (const person of group.previewMembers.slice(0, 3)) { const face = avatar(person.displayName, person.avatarUrl, person.avatarColor, person.profileId, person.avatarRevision); face.title = person.displayName; members.append(face); }
       if (group.previewMembers.length) copy.append(members);
       copy.append(el('p', 'uf-preview-meta', nounCount(group.memberCount, 'участник', 'участника', 'участников')));
-      if (group.showcase) { const showcase = el('section', 'uf-preview-showcase'); showcase.append(el('h3', '', 'О сообществе'), el('p', '', group.showcase)); copy.append(showcase); }
+      if (group.showcase) { const showcase = el('section', 'uf-preview-showcase'); showcase.append(el('h3', '', 'О комнате'), el('p', '', group.showcase)); copy.append(showcase); }
       if (group.membership?.state === 'active') actions.append(button('Открыть чат', 'chat', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity))));
       else {
         const join = button(group.membership?.state === 'invited' ? 'Принять приглашение' : group.membership?.state === 'requested' ? 'Заявка отправлена' : group.joinPolicy === 'open' ? 'Вступить' : group.joinPolicy === 'request' ? 'Подать заявку' : 'По приглашению', 'people', 'sw-button-primary');
@@ -609,10 +609,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
             if (!current()) return; await loadMine(); if (!current()) return;
             const refreshed = metadata.get(fieldEntityKey(item.entity));
             if (refreshed && selected === selection && mode === selectedMode) openPreview(refreshed, shortcutId);
-            options.onMessage(result.community.membership?.state === 'active' ? 'Вы в сообществе' : 'Заявка отправлена');
+            options.onMessage(result.community.membership?.state === 'active' ? 'Вы в комнате' : 'Заявка отправлена');
           }).finally(() => { if (join.isConnected) join.disabled = false; }));
         });
-        actions.append(join, button('О сообществе', 'info', 'sw-button-quiet', () => options.onOpen(item, directory.getRecord(item.entity))));
+        actions.append(join, button('О комнате', 'info', 'sw-button-quiet', () => options.onOpen(item, directory.getRecord(item.entity))));
       }
     } else {
       const ownProfile = item.entity.kind === 'person' && item.entity.id === options.accountId;
@@ -781,7 +781,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         save.addEventListener('click', () => { if (!name.value.trim()) { name.focus(); return; } save.disabled = true; run(engine?.renameContext(context.contextId, name.value.trim()).then(() => editor.close()).finally(() => { save.disabled = false; })); });
         editor.body.append(labeledField('Название', name), save); name.focus();
       }), iconButton(`Убрать пространство ${context.title}`, 'close', () => {
-        instance.close(); const confirm = dialog('Убрать пространство?'); confirm.body.append(el('p', '', 'С поля исчезнут пространство и его ярлыки. Приложения, контакты и участие в сообществах сохранятся.'), button('Убрать с поля', 'close', 'sw-button-primary', () => run(engine?.removeContext(context.contextId, { removeShortcuts: true }).then(() => { confirm.close(); updateMineFilter(); }))));
+        instance.close(); const confirm = dialog('Убрать пространство?'); confirm.body.append(el('p', '', 'С поля исчезнут пространство и его ярлыки. Приложения, контакты и участие в комнатах сохранятся.'), button('Убрать с поля', 'close', 'sw-button-primary', () => run(engine?.removeContext(context.contextId, { removeShortcuts: true }).then(() => { confirm.close(); updateMineFilter(); }))));
       })); instance.body.append(row);
     }
     instance.body.append(button('Новое пространство', 'plus', 'sw-button-wide', () => { instance.close(); newContext(); }));
@@ -812,7 +812,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       instance.close(); queries.search = ''; filtersByMode.search = 'all';
       if (mode === 'search') { filter = 'all'; updateChrome(); route(); run(searchDirectory()); } else changeMode('search');
       searchInput.focus();
-    }), button('Новое пространство', 'layers', 'sw-button-wide', () => { instance.close(); newContext(); }), button('Создать сообщество', 'people', 'sw-button-wide', () => { instance.close(); options.onCreate('community'); }));
+    }), button('Новое пространство', 'layers', 'sw-button-wide', () => { instance.close(); newContext(); }), button('Создать комнату', 'people', 'sw-button-wide', () => { instance.close(); options.onCreate('community'); }));
     const availableHeading = el('h3', '', 'Уже доступно');
     instance.body.append(create, availableHeading, find, list);
     create.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });

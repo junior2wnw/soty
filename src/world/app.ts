@@ -1222,11 +1222,11 @@ class WorldApplication {
   private renderDiscovery(): void {
     if (this.deskAccount && !this.group) { this.renderCurrent(); return; }
     const workspace = el('div', 'sw-workspace'); const discovery = el('section', 'sw-discovery');
-    const mobileHeading = el('div', 'sw-mobile-heading sx-world-heading'); mobileHeading.append(heading('Общий мир', 'Приложения, люди, сообщества'));
+    const mobileHeading = el('div', 'sw-mobile-heading sx-world-heading'); mobileHeading.append(heading('Общий мир', 'Приложения, люди, комнаты'));
     const presentation=el('div','sx-presentation sx-world-presentation');presentation.setAttribute('role','group');presentation.setAttribute('aria-label','Вид общего мира');
     for(const [value,label,symbol] of [['list','Карточки','grid'],['field','Поле','cells']] as const){const choice=button(label,symbol,'',()=>{this.preferences.presentation=value;this.persist();presentation.querySelectorAll('button').forEach(node=>node.setAttribute('aria-pressed',String(node===choice)));this.renderSearchResults();});choice.setAttribute('aria-label',label);choice.setAttribute('aria-pressed',String(value===this.preferences.presentation));presentation.append(choice);}mobileHeading.append(presentation);
     const searchbar = el('div', 'sw-searchbar'); const search = el('label', 'sw-search');
-    const input = textInput(this.query, 'Люди и сообщества', 100); input.type = 'search'; input.setAttribute('aria-label', 'Поиск людей и сообществ');
+    const input = textInput(this.query, 'Люди и комнаты', 100); input.type = 'search'; input.setAttribute('aria-label', 'Поиск людей и комнат');
     const clear = iconButton('Очистить поиск', 'close', () => { input.value = ''; this.query = ''; input.focus(); void this.search(); }); clear.hidden = !this.query;
     input.addEventListener('input', () => {
       this.query = input.value; clear.hidden = !this.query;
@@ -1235,12 +1235,12 @@ class WorldApplication {
     });
     search.append(icon('search'), input, clear);
     const filters = el('div', 'sw-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Искать среди');
-    for (const [kind, label] of [['all', 'Все'], ['people', 'Люди'], ['communities', 'Сообщества']] as const) {
+    for (const [kind, label] of [['all', 'Все'], ['people', 'Люди'], ['communities', 'Комнаты']] as const) {
       const filter = button(label, undefined, this.kind === kind ? 'is-selected' : '', () => {
         this.kind = kind; filters.querySelectorAll('button').forEach(node => { node.classList.toggle('is-selected', node === filter); node.setAttribute('aria-pressed', String(node === filter)); }); void this.search();
       }); filter.setAttribute('aria-pressed', String(this.kind === kind)); filters.append(filter);
     }
-    const create = iconButton('Создать сообщество', 'plus', () => this.openCommunityForm()); filters.append(create);
+    const create = iconButton('Создать комнату', 'plus', () => this.openCommunityForm()); filters.append(create);
     searchbar.append(search, filters);
     const note = el('div', 'sw-search-result-note'); note.dataset.searchNote = '';
     const stage = el('div', 'sw-world-stage'); stage.dataset.worldStage = '';
@@ -1287,10 +1287,10 @@ class WorldApplication {
       this.field?.destroy(); this.field = null;
       if (this.discoveryStatus !== 'ready') {
         stage.replaceChildren();
-        if (this.discoveryStatus === 'loading') stage.append(this.loading('Ищем людей и сообщества…'));
+        if (this.discoveryStatus === 'loading') stage.append(this.loading('Ищем людей и комнаты…'));
         return;
       }
-      const empty = emptyState(this.query ? 'Пока никого не нашли' : 'Здесь начинается ваш круг', this.query ? 'Попробуйте другое имя или тему.' : 'Создайте сообщество и пригласите первых участников.', button('Создать сообщество', 'plus', 'sw-button-primary', () => this.openCommunityForm()));
+      const empty = emptyState(this.query ? 'Пока никого не нашли' : 'Здесь начинается ваш круг', this.query ? 'Попробуйте другое имя или тему.' : 'Создайте комнату и пригласите первых участников.', button('Создать комнату', 'plus', 'sw-button-primary', () => this.openCommunityForm()));
       if (!this.profile?.discoverable && !this.query) empty.append(button('Показать меня в мире', 'eye', 'sw-button-quiet', () => this.openVisibility()));
       if (this.discoveryPages.length > 1) empty.append(button('Предыдущая страница', 'back', 'sw-button-quiet', () => { void this.search(false, true); }));
       stage.replaceChildren(empty); return;
@@ -1314,7 +1314,7 @@ class WorldApplication {
     }
     if (this.discoveryPages.length > 1) controls.append(iconButton('Предыдущая страница', 'back', () => { void this.search(false, true); }));
     if (this.results.nextCursor) controls.append(iconButton('Следующая страница', 'next', () => { void this.search(true); }));
-    if(this.preferences.presentation==='field'){const legend=el('div','sx-field-legend');for(const [symbol,label] of [['cells','Приложение'],['person','Человек'],['people','Сообщество']]){const item=el('span');item.append(icon(symbol!),el('span','',label));legend.append(item);}controls.append(legend);}stage.append(controls);
+    if(this.preferences.presentation==='field'){const legend=el('div','sx-field-legend');for(const [symbol,label] of [['cells','Приложение'],['person','Человек'],['people','Комната']]){const item=el('span');item.append(icon(symbol!),el('span','',label));legend.append(item);}controls.append(legend);}stage.append(controls);
   }
 
   private async loadDiscoveryApps(sequence: number): Promise<void> {
@@ -1339,7 +1339,7 @@ class WorldApplication {
     card.append(copy, icon('next')); card.addEventListener('click', () => { void this.preview(entity); }); return card;
   }
 
-  private joinLabel(group: WorldCommunity): string { return group.joinPolicy === 'open' ? 'Открытое сообщество' : group.joinPolicy === 'request' ? 'По заявке' : 'По приглашению'; }
+  private joinLabel(group: WorldCommunity): string { return group.joinPolicy === 'open' ? 'Открытая комната' : group.joinPolicy === 'request' ? 'По заявке' : 'По приглашению'; }
   private tags(topics: string[]): HTMLElement { const tags = el('div', 'sw-tags'); topics.slice(0, 5).forEach((topic, index) => tags.append(badge(topic, undefined, ['sage', 'lilac', 'honey'][index % 3]))); return tags; }
   private faces(profiles: WorldIdentity[], count: number): HTMLElement { const row = el('div', 'sw-face-stack'); profiles.slice(0, 4).forEach(profile => row.append(avatar(profile.displayName, profile.avatarUrl, worldColor(profile.avatarColor), profile.profileId, profile.avatarRevision))); if (count > Math.min(4, profiles.length)) row.append(el('span', 'sw-face-more', `+${count - Math.min(4, profiles.length)}`)); return row; }
 
@@ -1356,9 +1356,9 @@ class WorldApplication {
       const summary = el('div', 'sw-side-summary'); summary.append(communityEmblem(group), el('h2', '', group.name), el('p', 'sw-side-description', group.description), this.tags(group.topics));
       const members = el('div', 'sw-preview-members'); const memberInfo = el('div', 'sw-preview-member-info'); memberInfo.append(el('p', 'sw-small-note', nounCount(group.memberCount, 'участник', 'участника', 'участников')), badge(this.joinLabel(group), group.joinPolicy === 'open' ? 'world' : 'lock', 'sage')); members.append(this.faces(group.previewMembers, group.memberCount), memberInfo);
       inner.append(summary, members);
-      if (group.showcase) { const about = el('details', 'sx-preview-about'); about.append(el('summary', '', 'О сообществе'), el('p', '', group.showcase)); inner.append(about); }
+      if (group.showcase) { const about = el('details', 'sx-preview-about'); about.append(el('summary', '', 'О комнате'), el('p', '', group.showcase)); inner.append(about); }
       if(group.membership?.state==='active'){const appsSection=el('section','sx-preview-apps');appsSection.append(el('h3','','Приложения'));const list=el('div','sx-preview-app-list');list.append(this.loading('Открываем приложения'));appsSection.append(list);inner.append(appsSection);void this.loadApps(group.communityId).then(apps=>{if(!side.isConnected||this.destroyed||this.selected!==entity)return;list.replaceChildren();for(const app of apps){const row=button(app.name,app.symbol||'grid','sx-preview-app',()=>{this.group=group;void this.openApplication(app);});row.append(icon('next'));list.append(row);}if(!apps.length)list.append(el('p','sw-muted','Пока нет приложений'));}).catch(()=>{if(list.isConnected)list.replaceChildren(el('p','sw-muted','Приложения не обновлены'));});}
-      const footer = el('div', 'sw-preview-footer'); footer.append(button(group.membership?.state === 'active' ? 'Открыть сообщество' : 'Посмотреть группу', 'arrow', 'sw-button-primary sw-button-large sw-button-wide', () => { void this.openGroup(group.communityId); })); inner.append(footer);
+      const footer = el('div', 'sw-preview-footer'); footer.append(button(group.membership?.state === 'active' ? 'Открыть комнату' : 'Посмотреть комнату', 'arrow', 'sw-button-primary sw-button-large sw-button-wide', () => { void this.openGroup(group.communityId); })); inner.append(footer);
     } else {
       const profile = entity.value;
       const accountCurrent = this.accountTask();
@@ -1393,12 +1393,12 @@ class WorldApplication {
     if (!this.group) this.groupReturn = this.view === 'world' || this.view === 'messages' ? this.view : 'mine';
     this.writeRoute(`community/${id}/${tab}`);
     this.cleanScreen(); const sequence = this.screenSequence;
-    this.main.replaceChildren(this.loading('Открываем сообщество'));
+    this.main.replaceChildren(this.loading('Открываем комнату'));
     try {
       const { community } = await this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: id });
       if (this.destroyed || sequence !== this.screenSequence) return;
       this.group = community; this.groupTab = tab; this.remember(`community/${id}/${tab}`, community.name, 'people'); this.renderGroup();
-    } catch (error) { if (this.destroyed || sequence !== this.screenSequence) return; this.main.replaceChildren(emptyState('Сообщество недоступно', errorText(error), button('В общий мир', 'back', 'sw-button-primary', () => this.navigate('world')))); }
+    } catch (error) { if (this.destroyed || sequence !== this.screenSequence) return; this.main.replaceChildren(emptyState('Комната недоступна', errorText(error), button('В общий мир', 'back', 'sw-button-primary', () => this.navigate('world')))); }
   }
 
   private renderGroup(): void {
@@ -1423,11 +1423,11 @@ class WorldApplication {
       actions.append(iconButton(group.pendingCount ? `Участники и управление, ${nounCount(group.pendingCount, 'новая заявка', 'новые заявки', 'новых заявок')}` : 'Участники и управление', 'people', () => this.openGroupManagement(group)));
       if (group.pendingCount) actions.append(button(`${group.pendingCount} ${group.pendingCount === 1 ? 'заявка' : 'заявки'}`, 'people', 'sw-button-small', () => this.openGroupManagement(group, 'requested')));
     } else actions.append(this.joinButton(group));
-    actions.append(iconButton('Поделиться группой', 'external', () => this.shareCommunity(group)));
-    if (group.permissions.canManage) actions.append(iconButton('Настроить сообщество', 'settings', () => this.openCommunityForm(group)));
+    actions.append(iconButton('Поделиться комнатой', 'external', () => this.shareCommunity(group)));
+    if (group.permissions.canManage) actions.append(iconButton('Настроить комнату', 'settings', () => this.openCommunityForm(group)));
     summary.append(actions);
-    const content = el('div', 'sw-community-content'); const tabs = el('div', 'sw-community-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Сообщество');
-    for (const [id, label] of [['about', 'О группе'], ['chat', 'Чат'], ['apps', 'Приложения']] as const) {
+    const content = el('div', 'sw-community-content'); const tabs = el('div', 'sw-community-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Комната');
+    for (const [id, label] of [['about', 'О комнате'], ['chat', 'Чат'], ['apps', 'Приложения']] as const) {
       const tab = button(label, undefined, this.groupTab === id ? 'is-selected' : '', () => { this.groupTab = id; this.renderGroup(); });
       tab.id = `sw-community-tab-${id}`; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', 'sw-community-panel'); tab.setAttribute('aria-selected', String(this.groupTab === id)); tab.tabIndex = this.groupTab === id ? 0 : -1;
       tab.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const order: GroupTab[] = ['about', 'chat', 'apps']; const index = order.indexOf(this.groupTab); this.groupTab = event.key === 'Home' ? 'about' : event.key === 'End' ? 'apps' : order[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]!; this.renderGroup(); this.main.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')?.focus(); }); tabs.append(tab);
@@ -1440,13 +1440,13 @@ class WorldApplication {
         checking = true;
         void this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId: group.communityId }).then(result => {
           if (this.destroyed || this.screenSequence !== sequence) return;
-          if (result.community.membership?.state !== group.membership?.state) { this.group = result.community; this.updateCommunity(result.community); if (result.community.membership?.state === 'active') { this.groupTab = 'chat'; this.toast('Вас приняли в сообщество'); } this.renderGroup(); }
+          if (result.community.membership?.state !== group.membership?.state) { this.group = result.community; this.updateCommunity(result.community); if (result.community.membership?.state === 'active') { this.groupTab = 'chat'; this.toast('Вас приняли в комнату'); } this.renderGroup(); }
         }).catch(() => { /* A visible retry remains available in the group navigation. */ }).finally(() => { checking = false; });
       }, 4500);
     }
     const body = el('div', `sw-community-body${this.groupTab === 'chat' ? ' is-chat-panel' : ''}`); body.id = 'sw-community-panel'; body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', `sw-community-tab-${this.groupTab}`); content.append(body);
     if (this.groupTab === 'chat' && group.membership?.state === 'active') { this.mountChat(body, group, true); return; }
-    if (this.groupTab === 'chat') { body.append(emptyState('Разговор начинается здесь', group.joinPolicy === 'invite' ? 'Организатор может пригласить вас в сообщество.' : 'Вступите, чтобы читать и писать в общий чат.', this.joinButton(group), 'chat')); return; }
+    if (this.groupTab === 'chat') { body.append(emptyState('Разговор начинается здесь', group.joinPolicy === 'invite' ? 'Организатор может пригласить вас в комнату.' : 'Вступите, чтобы читать и писать в общий чат.', this.joinButton(group), 'chat')); return; }
     if (this.groupTab === 'apps') { void this.renderApps(body, group); return; }
     const stack = el('div', 'sw-stack');
     const showcase = el('div', `sw-showcase sw-community-intro sw-color-${worldColor(group.color)}`); showcase.append(el('p', '', group.showcase || group.description || 'Здесь можно общаться и открывать общие приложения.'));
@@ -1466,7 +1466,7 @@ class WorldApplication {
         if (this.destroyed) return;
         this.updateCommunity(response.community);
         if (sequence === this.screenSequence && target.isConnected) { this.group = response.community; this.groupTab = response.community.membership?.state === 'active' ? 'chat' : 'about'; this.renderGroup(); }
-        this.toast(response.community.membership?.state === 'active' ? 'Вы в сообществе' : 'Заявка отправлена организатору');
+        this.toast(response.community.membership?.state === 'active' ? 'Вы в комнате' : 'Заявка отправлена организатору');
       }).catch(error => { target.disabled = false; this.toast(errorText(error), true); });
     }); target.disabled = state === 'requested' || state === 'banned' || (group.joinPolicy === 'invite' && state !== 'invited'); return target;
   }
@@ -1504,10 +1504,10 @@ class WorldApplication {
       onUpdate: next => { this.updateCommunity(next); if (this.group?.communityId === next.communityId) this.group = next; } });
     const community = (): WorldCommunity => target.record as WorldCommunity;
     mountedCurrent = this.mountConversation(parent, target, {
-      showHeader, emblem: () => communityEmblem(community()), identityLabel: () => `О сообществе ${target.name}`,
+      showHeader, emblem: () => communityEmblem(community()), identityLabel: () => `О комнате ${target.name}`,
       onIdentity: () => { void this.openGroup(target.id); },
       extraActions: () => [
-        { label: 'О сообществе', symbol: 'people', run: () => { void this.openGroup(target.id); } },
+        { label: 'О комнате', symbol: 'people', run: () => { void this.openGroup(target.id); } },
         { label: 'Участники', symbol: 'person', run: () => this.openGroupManagement(community()) },
       ],
       callButton: () => this.options.humanCalls && community().membership?.state === 'active' ? this.groupHumanCallButton(community()) : null,
@@ -1896,7 +1896,7 @@ class WorldApplication {
     const filters = el('div', 'sw-inbox-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Фильтр чатов'); let unreadOnly = false;
     const allFilter = button('Все', undefined, 'is-selected', () => { unreadOnly = false; renderList(); }); const unreadFilter = button('Непрочитанные', undefined, '', () => { unreadOnly = true; renderList(); }); filters.append(allFilter, unreadFilter);
     const conversations = el('div', 'sw-conversation-list'); const listStatus = el('div', 'sw-inbox-status'); listStatus.setAttribute('role', 'status');
-    const footer = button('Найти сообщество', 'world', 'sw-inbox-discover', () => this.findCommunities());
+    const footer = button('Найти комнату', 'world', 'sw-inbox-discover', () => this.findCommunities());
     list.append(top, search, filters, conversations, listStatus, footer);
     const room = el('div', 'sw-message-room');
     const paintConversation = (group: WorldCommunity): HTMLButtonElement => {
@@ -2093,7 +2093,7 @@ class WorldApplication {
     this.main.replaceChildren(createHome({
       cards, query:this.homeQuery, filter:this.homeFilter, presentation:this.preferences.homePresentation,
       communities:groups.map(group=>({ id:group.communityId, name:group.name, unread:group.unreadCount, open:()=>{void this.openGroup(group.communityId,'apps');}, people:group.previewMembers.map(person=>({name:person.displayName,...(person.avatarUrl?{avatarUrl:person.avatarUrl}:{}),profileId:person.profileId,...(person.avatarRevision!==undefined?{avatarRevision:person.avatarRevision}:{})})) })),
-      loading:this.homeStatus.apps==='loading', errors:Object.entries(this.homeStatus).filter(([,value])=>value==='error').map(([key])=>({apps:'Приложения не обновлены',devices:'Устройства не обновлены',communities:'Сообщества не обновлены',notes:'Записки не обновлены'} as Record<string,string>)[key]!),
+      loading:this.homeStatus.apps==='loading', errors:Object.entries(this.homeStatus).filter(([,value])=>value==='error').map(([key])=>({apps:'Приложения не обновлены',devices:'Устройства не обновлены',communities:'Комнаты не обновлены',notes:'Записки не обновлены'} as Record<string,string>)[key]!),
       create:()=>this.openAddApp(), discover:()=>this.navigate('world'), saved:()=>this.openSavedLibrary(), searchWorld:query=>this.searchEverything(query), assistant:()=>this.navigate('assistant'), retry:()=>{void this.loadPersonal();},
       changeFilter:value=>{this.homeFilter=value;}, changeQuery:value=>{this.homeQuery=value;},
       changePresentation:value=>{const restoreFocus = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest('.sx-presentation'));this.preferences.homePresentation=value;this.persist();this.renderPersonal();if(restoreFocus)this.main.querySelector<HTMLButtonElement>('.sx-presentation button[aria-pressed=true]')?.focus({preventScroll:true});},
@@ -2145,7 +2145,7 @@ class WorldApplication {
 
   private saveDesk(selectedSpace = false, selectedRoute = false, selectedView = false): void { if (this.deskAccount) saveDeskPreferences(this.deskAccount, this.desk, { selectedSpace, selectedRoute, selectedView }); }
   private remember(route: string, title: string, symbol: string): void { this.desk.recent = [{ route, title: title.slice(0, 100), symbol }, ...this.desk.recent.filter(item => item.route !== route)].slice(0, 6); this.saveDesk(); }
-  private searchCount(totals: WorldSearch['totals']): string { return `${totals.communitiesExact === false ? `${totals.communities}+ сообществ` : nounCount(totals.communities, 'сообщество', 'сообщества', 'сообществ')} · ${totals.peopleExact === false ? `${totals.people}+ человек` : nounCount(totals.people, 'человек', 'человека', 'человек')}`; }
+  private searchCount(totals: WorldSearch['totals']): string { return `${totals.communitiesExact === false ? `${totals.communities}+ комнат` : nounCount(totals.communities, 'комната', 'комнаты', 'комнат')} · ${totals.peopleExact === false ? `${totals.people}+ человек` : nounCount(totals.people, 'человек', 'человека', 'человек')}`; }
 
   private openResources(kind: 'all' | 'apps' | 'devices' = 'all'): void {
     const dialog = this.dialog(kind === 'apps' ? 'Приложения' : kind === 'devices' ? 'Устройства' : 'Мои подключения'); const list = el('div', 'sw-stack'); dialog.body.append(list, this.loading('Проверяем доступ'));
@@ -2191,7 +2191,7 @@ class WorldApplication {
       { title: 'Доступы и действия', detail: 'Разрешения и история', symbol: 'shield', action: () => this.navigate('access') },
       ...capabilities.map(item => ({ title: item.title, detail: item.detail, symbol: item.symbol, action: () => this.openCapability(item.id) })),
       ...this.apps.map(app => ({ title: app.name, detail: 'Приложение', symbol: 'grid', action: () => { this.writeRoute(`app/${app.appId}`); void this.openRoute(); } })),
-      ...this.communities.map(group => ({ title: group.name, detail: 'Сообщество', symbol: 'people', action: () => { void this.openGroup(group.communityId, 'chat'); } })),
+      ...this.communities.map(group => ({ title: group.name, detail: 'Комната', symbol: 'people', action: () => { void this.openGroup(group.communityId, 'chat'); } })),
       ], this.dialog('Быстрый переход'), query => this.searchEverything(query));
     });
   }
@@ -2251,7 +2251,7 @@ class WorldApplication {
     option('Приложение', 'grid', () => this.openAddApp());
     option('Записку', 'note', () => this.afterNoteSaved(() => this.openNotes('new')));
     option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
-    option('Сообщество', 'people', () => this.openCommunityForm());
+    option('Комнату', 'people', () => this.openCommunityForm());
     option('Создать с ИИ', 'sparkle', () => this.navigate('assistant'));
     option('Контакт', 'person', () => this.runHook(() => this.options.openAccount('people')));
     dialog.body.append(list);
@@ -2756,7 +2756,7 @@ class WorldApplication {
       void navigator.clipboard.writeText(url.href).then(() => { if (current()) status.textContent = 'Ссылка скопирована.'; }).catch(() => { if (current()) error.textContent = 'Не удалось скопировать ссылку. Попробуйте ещё раз.'; });
     });
     const actions = el('div', 'sw-row'); actions.append(save, verify);
-    const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Общение и сообщества'));
+    const advanced = el('details', 'sw-app-settings-details'); advanced.append(el('summary', '', 'Общение и комнаты'));
     const setting = (title: string, description: string, symbol: string, checked: boolean, update: (checked: boolean) => Promise<void>): void => {
       const row = el('div', 'sw-settings-row'); const copy = el('div', 'sw-grow'); copy.append(el('strong', '', title), el('p', '', description)); row.append(icon(symbol), copy, switchControl(title, checked, update)); advanced.append(row);
     };
@@ -2766,7 +2766,7 @@ class WorldApplication {
       catch (reason) { error.textContent = errorText(reason); throw reason; }
     };
     if (profile.audienceWriteVersion !== 1) setting('Показывать меня в общем мире', 'Настройка прежней версии сервера: профиль появится в общем поле и поиске.', 'eye', profile.discoverable === true, value => serverSetting('discoverable', value));
-    setting('Показывать мои сообщества', 'В профиле будут видны открытые группы, которые вы разрешили показывать.', 'people', this.profile.showMemberships === true, value => serverSetting('showMemberships', value));
+    setting('Показывать мои комнаты', 'В профиле будут видны открытые комнаты, которые вы разрешили показывать.', 'people', this.profile.showMemberships === true, value => serverSetting('showMemberships', value));
     const contact = el('select', 'sw-select');
     for (const [value, label] of [['everyone', 'Все видимые пользователи'], ['members', 'Участники общих групп'], ['nobody', 'Не принимать запросы']] as const) { const option = el('option', '', label); option.value = value; option.selected = this.profile.contactPolicy === value; contact.append(option); }
     contact.addEventListener('change', () => { contact.disabled = true; void serverSetting('contactPolicy', contact.value).catch(() => { contact.value = this.profile?.contactPolicy ?? 'everyone'; }).finally(() => { contact.disabled = false; }); });
@@ -2876,7 +2876,7 @@ class WorldApplication {
 
   private openCommunityForm(existing?: WorldCommunity, chat = false): void {
     const accountCurrent = this.accountTask(), returnTab = this.groupTab;
-    const dialog = this.dialog(existing ? 'Настроить сообщество' : chat ? 'Новый чат' : 'Создать сообщество'); const form = el('form');
+    const dialog = this.dialog(existing ? 'Настроить комнату' : chat ? 'Новый чат' : 'Создать комнату'); const form = el('form');
     const name = textInput(existing?.name ?? '', chat ? 'Например, Близкие' : 'Например, Фотоклуб', 80); name.required = true;
     const description = textInput(existing?.description ?? '', 'Что вас объединяет', 240);
     const topics = textInput(existing?.topics.join(', ') ?? '', 'Фото, прогулки, творчество', 240);
@@ -2884,12 +2884,13 @@ class WorldApplication {
     const access = el('select', 'sw-select'); for (const [value, label] of [['open', 'Любой может вступить'], ['request', 'По заявке'], ['invite', 'Только по приглашению']] as const) { const option = el('option', '', label); option.value = value; option.selected = (existing?.joinPolicy ?? (chat ? 'invite' : 'open')) === value; access.append(option); }
     const canChangeAccess = !existing || existing.membership?.role === 'owner'; access.disabled = !canChangeAccess;
     let color = worldColor(existing?.color), symbol = existing?.symbol ?? 'cells';
-    const styles = el('div', 'sw-stack'); styles.append(this.colorPicker(color, value => { color = worldColor(value); })); const icons = el('div', 'sw-setting-options'); icons.setAttribute('role', 'group'); icons.setAttribute('aria-label', 'Значок сообщества');
+    const styles = el('div', 'sw-stack'); styles.append(this.colorPicker(color, value => { color = worldColor(value); })); const icons = el('div', 'sw-setting-options'); icons.setAttribute('role', 'group'); icons.setAttribute('aria-label', 'Значок комнаты');
     const iconNames: Record<string, string> = { cells: 'Соты', tools: 'Мастерская', camera: 'Фотография', game: 'Игры', music: 'Музыка', bulb: 'Идеи', image: 'Галерея', people: 'Люди' };
     communityIcons.forEach(value => { const target = el('button', 'sw-choice-icon'); target.type = 'button'; target.setAttribute('aria-label', iconNames[value] ?? value); target.title = iconNames[value] ?? value; target.setAttribute('aria-pressed', String(value === symbol)); target.append(icon(value)); target.addEventListener('click', () => { symbol = value; icons.querySelectorAll('button').forEach(node => node.setAttribute('aria-pressed', String(node === target))); }); icons.append(target); }); styles.append(icons);
-    const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button(existing ? 'Сохранить' : chat ? 'Создать чат' : 'Создать сообщество', existing ? 'check' : 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit'; const requestId = crypto.randomUUID();
+    const error = el('div', 'sw-error'); error.setAttribute('role', 'alert'); const save = button(existing ? 'Сохранить' : chat ? 'Создать чат' : 'Создать комнату', existing ? 'check' : 'plus', 'sw-button-primary sw-button-wide'); save.type = 'submit'; const requestId = crypto.randomUUID();
     const optional = el('div', 'sw-stack'); optional.append(labeledField('Описание (необязательно)', description), labeledField('Темы (необязательно)', topics), labeledField('Облик', styles), labeledField('Витрина (необязательно)', showcase));
     form.append(labeledField(chat ? 'Название чата' : 'Название', name));
+    if (!existing && !chat) form.append(el('p', 'sw-small-note', 'Общий чат и приложения для участников.'));
     if (chat) form.append(el('p', 'sw-small-note', 'Чат доступен только приглашённым участникам. Их можно добавить после создания.'));
     else form.append(labeledField('Вступление', access));
     if (existing) form.append(optional);
@@ -2905,7 +2906,7 @@ class WorldApplication {
         this.group = response.community;
         this.groupTab = existing ? returnTab : 'about';
         this.writeRoute(`community/${response.community.communityId}/${this.groupTab}`); this.renderGroup();
-        this.toast(existing ? 'Сообщество обновлено' : 'Ваше сообщество готово');
+        this.toast(existing ? 'Комната обновлена' : 'Комната готова');
       }).catch(reason => { if (accountCurrent() && dialog.element.open) error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     }); dialog.body.append(form); name.focus();
   }
@@ -2981,7 +2982,7 @@ class WorldApplication {
         if (group.membership?.state === 'active') {
           const preferences = el('div', 'sw-stack');
           const visibleRow = el('div', 'sw-setting-row'); const visibleCopy = el('span'); visibleCopy.append(el('strong', '', 'Показывать в моём профиле'));
-          if (!this.profile?.discoverable || this.profile.showMemberships === false) visibleCopy.append(el('small', 'sw-muted', 'Разрешение сохранится. Сейчас ваши сообщества скрыты настройками профиля.'));
+          if (!this.profile?.discoverable || this.profile.showMemberships === false) visibleCopy.append(el('small', 'sw-muted', 'Разрешение сохранится. Сейчас ваши комнаты скрыты настройками профиля.'));
           const visible = switchControl('Показывать в моём профиле', group.membership.showInProfile, async next => {
             error.textContent = '';
             try { const result = await this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, showInProfile: next }); this.updateCommunity(result.community); if (this.group?.communityId === result.community.communityId) this.group = result.community; group = result.community; }
@@ -2989,8 +2990,8 @@ class WorldApplication {
           }); visibleRow.append(visibleCopy, visible); preferences.append(visibleRow);
           const muted = button(group.membership.muted ? 'Включить уведомления' : 'Отключить уведомления', 'bell', 'sw-button-quiet', () => { void this.api.request<{ community: WorldCommunity }>('world.membership.preferences', { communityId: group.communityId, muted: !group.membership?.muted }).then(result => { this.updateCommunity(result.community); this.group = result.community; dialog.close(); this.renderGroup(); }).catch(reason => { error.textContent = errorText(reason); }); });
           preferences.append(muted);
-          if (group.membership.role !== 'owner') preferences.append(button('Выйти из сообщества', 'exit', 'sw-button-quiet sw-button-danger', () => this.confirmAction('Выйти из сообщества?', 'Чат и приложения группы станут недоступны.', 'Выйти', async () => { await this.api.request('world.membership.leave', { communityId: group.communityId }); if (!accountCurrent()) return; this.communityEpoch++; dialog.close(); this.communities = this.communities.filter(item => item.communityId !== group.communityId); this.group = null; this.navigate('world'); })));
-          else preferences.append(el('p', 'sw-small-note', 'Чтобы выйти, передайте сообщество другому участнику через его меню.'));
+          if (group.membership.role !== 'owner') preferences.append(button('Выйти из комнаты', 'exit', 'sw-button-quiet sw-button-danger', () => this.confirmAction('Выйти из комнаты?', 'Чат и приложения комнаты станут недоступны.', 'Выйти', async () => { await this.api.request('world.membership.leave', { communityId: group.communityId }); if (!accountCurrent()) return; this.communityEpoch++; dialog.close(); this.communities = this.communities.filter(item => item.communityId !== group.communityId); this.group = null; this.navigate('world'); })));
+          else preferences.append(el('p', 'sw-small-note', 'Чтобы выйти, передайте комнату другому участнику через его меню.'));
           body.append(el('hr', 'sw-rule'), preferences);
         }
       } catch (reason) { if (dialog.element.open) body.replaceChildren(el('div', 'sw-error', errorText(reason)), button('Повторить', 'refresh', '', () => { void load(state); })); }
@@ -3005,7 +3006,7 @@ class WorldApplication {
     };
     if (group.membership?.role === 'owner') {
       action(member.role === 'moderator' ? 'Снять модератора' : 'Сделать модератором', 'people', 'world.membership.role', { role: member.role === 'moderator' ? 'member' : 'moderator' });
-      action('Передать сообщество', 'arrow', 'world.membership.transfer', { requestId: crypto.randomUUID() }, 'Этот участник станет владельцем и сможет управлять всем сообществом.');
+      action('Передать комнату', 'arrow', 'world.membership.transfer', { requestId: crypto.randomUUID() }, 'Этот участник станет владельцем и сможет управлять всей комнатой.');
     }
     action('Удалить из группы', 'exit', 'world.membership.remove', {}, 'Человек потеряет доступ к чату и приложениям. Сможет вступить заново по правилам группы.');
     action('Заблокировать участие', 'lock', 'world.membership.ban', {}, 'Человек потеряет доступ и не сможет вступить снова, пока вы не снимете ограничение.');
@@ -3020,8 +3021,8 @@ class WorldApplication {
 
   private shareCommunity(group: WorldCommunity): void {
     const url = new URL('/', new URL(location.href).origin); url.hash = `community/${group.communityId}/about`;
-    void navigator.clipboard.writeText(url.href).then(() => this.toast('Ссылка на сообщество скопирована')).catch(() => {
-      const dialog = this.dialog('Ссылка на сообщество'); const input = textInput(url.href); input.readOnly = true; dialog.body.append(labeledField('Ссылка', input), el('p', 'sw-muted', group.joinPolicy === 'invite' ? 'Увидят только участники и приглашённые.' : 'Откроется страница сообщества.')); input.select();
+    void navigator.clipboard.writeText(url.href).then(() => this.toast('Ссылка на комнату скопирована')).catch(() => {
+      const dialog = this.dialog('Ссылка на комнату'); const input = textInput(url.href); input.readOnly = true; dialog.body.append(labeledField('Ссылка', input), el('p', 'sw-muted', group.joinPolicy === 'invite' ? 'Увидят только участники и приглашённые.' : 'Откроется страница комнаты.')); input.select();
     });
   }
 
