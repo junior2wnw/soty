@@ -677,8 +677,9 @@ test('explicit legacy deep links stay exact on refusal; a new ordinary click rec
   f.app.cleanScreen();
 });
 function bootHint(f, frame) {
-  frame.emit('load'); const sent = frame.contentWindow.sent.at(-1); assert.ok(sent);
+  frame.emit('load'); const sent = frame.contentWindow.sent.findLast(value => value.data?.schema === 'soty.app-boot-watch.v1'); assert.ok(sent);
   assert.equal(sent.origin, 'https://runtime.example');
+  assert.equal(sent.data.appId, stageAppId); assert.match(sent.data.nonce, /^[A-Za-z0-9_-]{43}$/u);
   const data = { schema: 'soty.app-boot-failure.v1', appId: stageAppId, nonce: sent.data.nonce, error: 'app_session_check_failed' };
   return () => f.view.dispatchEvent(Object.assign(new Event('message'), { data, source: frame.contentWindow, origin: 'https://runtime.example', ports: [] }));
 }
@@ -863,6 +864,21 @@ test('actual stage uses one fresh launch per original open and offers a manual a
   f.app.cleanScreen(); assert.equal(f.timers.size, 0);
 });
 
+test('actual stage refuses a display-watch nonce as boot recovery while the separate recovery nonce still works', async t => {
+  let calls = 0;
+  const f = await recoveryStage(async () => { calls++; return { ...stageResponse('/'), launchBinding: stageBinding }; }); t.after(() => f.app.cleanScreen());
+  const frame = f.app.main.querySelector('iframe'); frame.emit('load');
+  const display = frame.contentWindow.sent.findLast(value => value.data.schema === 'soty.runtime-display-watch.v1');
+  const recovery = frame.contentWindow.sent.findLast(value => value.data.schema === 'soty.app-boot-watch.v1');
+  assert.ok(display); assert.ok(recovery); assert.match(display.data.nonce, /^[a-f0-9]{32}$/u); assert.match(recovery.data.nonce, /^[A-Za-z0-9_-]{43}$/u);
+  const emit = nonce => f.view.dispatchEvent(Object.assign(new Event('message'), { source: frame.contentWindow, origin: 'https://runtime.example', ports: [],
+    data: { schema: 'soty.app-boot-failure.v1', appId: stageAppId, nonce, error: 'app_session_check_failed' } }));
+  emit(display.data.nonce); await turn();
+  assert.equal(calls, 1); assert.equal(f.app.main.querySelector('iframe'), frame);
+  emit(recovery.data.nonce); await turn();
+  assert.equal(calls, 2); assert.notEqual(f.app.main.querySelector('iframe'), frame);
+});
+
 test('actual controller account ABA during recovery cannot mount or display a late former-account response', async () => {
   const pending = deferred(); let calls = 0;
   const f = await recoveryStage(async () => ++calls === 1 ? { ...stageResponse('/'), launchBinding: stageBinding } : pending.promise);
@@ -913,7 +929,9 @@ test('actual stage rejects source drift and lost ACK with a clear manual recover
 test('legacy launch response mounts its runtime without requiring new metadata or a recovery message channel', async () => {
   let calls = 0; const f = await recoveryStage(async () => { calls++; return stageResponse('/'); });
   const original = f.app.main.querySelector('iframe'); original.emit('load'); await turn();
-  assert.equal(original.contentWindow.sent.length, 0); assert.equal(calls, 1);
+  assert.equal(original.contentWindow.sent.some(value => value.data?.schema === 'soty.app-boot-watch.v1'), false);
+  assert.ok(original.contentWindow.sent.some(value => value.data?.schema === 'soty.runtime-display-watch.v1'));
+  assert.equal(calls, 1);
   assert.deepEqual(f.requests, [], 'legacy launch does not acquire a new Source-session dependency');
   assert.equal(f.timers.size, 0, 'neutral transport load is not a deadline or Native readiness attestation');
   assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 1);
