@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { assert, identifier, id, integer, text, limit, WorldError } from './validation.mjs';
+import { admitMessageAttachments, messageAttachments, publishMessageAttachments, removeMessageAttachments } from './attachments.mjs';
+import { requireDirectThread } from './direct-scope.mjs';
 
 export const DIRECT_OPERATIONS = Object.freeze(['world.direct.open','world.direct.get','world.direct.list',
   'world.direct.chat.list','world.direct.chat.send','world.direct.chat.remove','world.direct.chat.read','world.direct.preferences']);
@@ -26,7 +28,7 @@ export function directOperation(m, op, args, actor, now, authority) {
     const common = [...required,'threadId','expectedRelationshipId'];
     if (op === 'world.direct.get') closed(args,common);
     else if (op === 'world.direct.chat.list') closed(args,common,['before','after','limit']);
-    else if (op === 'world.direct.chat.send') closed(args,[...common,'clientId','text'],['replyTo']);
+    else if (op === 'world.direct.chat.send') closed(args,[...common,'clientId','text'],['replyTo','attachments']);
     else if (op === 'world.direct.chat.remove') closed(args,[...common,'messageId']);
     else if (op === 'world.direct.chat.read') closed(args,[...common,'throughSeq']);
     else closed(args,common,['pinned','muted']);
@@ -46,10 +48,7 @@ export function directOperation(m, op, args, actor, now, authority) {
     return Boolean(peer && relationship(peer) === row.relationship_id);
   };
   const find = () => {
-    identifier(args.threadId); identifier(args.expectedRelationshipId);
-    const row = m.get('SELECT * FROM world_direct_threads WHERE id=?',args.threadId);
-    assert(current(row) && row.relationship_id === args.expectedRelationshipId,'direct_not_found');
-    return row;
+    return requireDirectThread(m, args, actor, authority);
   };
   const readState = row => m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?',row.id,actor.accountId);
   const unread = row => m.get(`SELECT COUNT(*) AS n FROM world_direct_messages
@@ -64,12 +63,13 @@ export function directOperation(m, op, args, actor, now, authority) {
   const message = row => {
     const profile = m.person(row.author_id);
     const own = row.author_id === actor.accountId;
+    const attachments = row.deleted_at === null ? messageAttachments(m, row.id, 'direct') : [];
     if (own && peerReadSeq === undefined) peerReadSeq = m.get('SELECT last_read_seq FROM world_direct_read_state WHERE thread_id=? AND account_id<>?',row.thread_id,actor.accountId)?.last_read_seq ?? 0;
     const read = own && row.deleted_at === null && peerReadSeq >= row.seq;
     return {messageId:row.id,seq:row.seq,text:row.deleted_at === null ? row.text : '',
       author:profile ? m.identity(profile) : {profileId:row.author_id,displayName:null,avatarColor:null,avatarRevision:null,revision:null},
       createdAt:row.created_at,replyTo:row.reply_to,removed:row.deleted_at !== null,
-      ...(own ? {clientId:row.client_id,read} : {})};
+      ...(own ? {clientId:row.client_id,read} : {}),...(attachments.length ? {attachments} : {})};
   };
   if (op === 'world.direct.open') {
     const peer = identifier(args.peerAccountId), expected = identifier(args.expectedRelationshipId); identifier(args.requestId);
@@ -136,19 +136,22 @@ export function directOperation(m, op, args, actor, now, authority) {
     return {messages:(ascending ? page : page.reverse()).map(message),hasMore:rows.length>size};
   }
   if (op === 'world.direct.chat.send') {
-    const clientId = identifier(args.clientId), body = text(args.text,DIRECT_LIMITS.text,{empty:false,multiline:true});
+    const refs=args.attachments??[];assert(Array.isArray(refs)&&refs.length<=10&&new Set(refs).size===refs.length,'attachment_batch_limit');refs.forEach(identifier);
+    const clientId = identifier(args.clientId), body = text(args.text,DIRECT_LIMITS.text,{empty:refs.length>0,multiline:true});
     assert(body.isWellFormed(),'invalid_text');
     const replyTo = args.replyTo === undefined || args.replyTo === null ? null : identifier(args.replyTo);
     if (replyTo) assert(m.get('SELECT 1 FROM world_direct_messages WHERE id=? AND thread_id=?',replyTo,row.id),'message_not_found');
     const old = m.get('SELECT * FROM world_direct_messages WHERE thread_id=? AND author_id=? AND client_id=?',row.id,actor.accountId,clientId);
     if (old) {
-      assert(old.relationship_id === args.expectedRelationshipId && (old.deleted_at !== null || old.text === body && old.reply_to === replyTo),'request_conflict');
+      assert(old.relationship_id === args.expectedRelationshipId && (old.deleted_at !== null || old.text === body && old.reply_to === replyTo && JSON.stringify(messageAttachments(m,old.id,'direct').map(item=>item.attachmentId))===JSON.stringify(refs)),'request_conflict');
       return {message:message(old)};
     }
     m.rate('chat:'+actor.accountId,60,60_000,now);
     const messageId = id('directmsg');
+    const attachments=refs.length?admitMessageAttachments(m,refs,{kind:'direct',id:row.id,relationshipId:row.relationship_id},actor.accountId,now):[];
     m.run(`INSERT INTO world_direct_messages(id,thread_id,author_id,relationship_id,client_id,text,reply_to,created_at)
       VALUES (?,?,?,?,?,?,?,?)`,messageId,row.id,actor.accountId,row.relationship_id,clientId,body,replyTo,now);
+    publishMessageAttachments(m,attachments,messageId);
     m.emit({kind:'direct',conversationId:row.id,messageId});
     return {message:message(m.get('SELECT * FROM world_direct_messages WHERE id=?',messageId))};
   }
@@ -157,6 +160,7 @@ export function directOperation(m, op, args, actor, now, authority) {
     assert(item,'message_not_found'); assert(item.author_id === actor.accountId,'direct_permission_denied');
     if (item.deleted_at === null) {
       m.run("UPDATE world_direct_messages SET text='',deleted_at=?,deleted_by=? WHERE id=?",now,actor.accountId,item.id);
+      removeMessageAttachments(m,item.id,'direct');
       m.audit(actor.accountId,op,item.id,now);
     }
     return {removed:true};

@@ -187,7 +187,7 @@ test('v2 database upgrades to the current reader without changing profile conten
   assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name GLOB 'profile_avatar_*' OR name GLOB 'world_direct_*'").get().n, 0);
   removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("PRAGMA user_version=2; UPDATE world_meta SET value='2' WHERE key='schema_version'"); db.close();
-  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 6); assert.equal(migrated.schemaVersion, 6);
+  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 7); assert.equal(migrated.schemaVersion, 6);
   assert.deepEqual(f.search({ query: 'миграц' }).totals, { people: 1, communities: 1 });
   assert.equal(f.search({ query: privateGroup.communityId }).communities.length, 0);
   assert.equal(f.call(owner, 'profile.avatar.read', { profileId: owner.accountId }).avatarUrl, image);

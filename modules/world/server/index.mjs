@@ -12,16 +12,18 @@ import { AVATAR_OPERATIONS, avatarOperation } from './avatars.mjs';
 import { DIRECTORY_OPERATIONS, directoryMatches, directoryOperation } from './directory.mjs';
 import { FIELD_OPERATIONS, fieldOperation, migrateField } from './field.mjs';
 import { DIRECT_OPERATIONS, DIRECT_READ_OPERATIONS, directOperation } from './direct.mjs';
+import { ATTACHMENT_OPERATIONS, ATTACHMENT_READ_OPERATIONS, attachmentOperation } from './attachments.mjs';
 import { createCoverStore } from '../../cover-art/server/index.mjs';
 import { createLegacyAvatarAdapter } from '../../cover-art/server/legacy-avatar.mjs';
 import { profileAvatarStoreId } from './schema.mjs';
 
 export { WorldError, SCHEMA_VERSION };
-export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS, ...DIRECTORY_OPERATIONS, ...FIELD_OPERATIONS, ...DIRECT_OPERATIONS]);
+export const WORLD_OPERATIONS = Object.freeze([...PROFILE_OPERATIONS, ...COMMUNITY_OPERATIONS, ...CHAT_OPERATIONS, ...AVATAR_OPERATIONS, ...DIRECTORY_OPERATIONS, ...FIELD_OPERATIONS, ...DIRECT_OPERATIONS, ...ATTACHMENT_OPERATIONS]);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const READ_OPERATIONS = new Set(['world.profile.get', 'world.profile.view', 'world.discovery.search',
   ...DIRECTORY_OPERATIONS,
   'world.field.get', ...DIRECT_READ_OPERATIONS,
+  ...ATTACHMENT_READ_OPERATIONS,
   'world.community.get', 'world.community.list', 'world.membership.list', 'world.chat.list', 'world.profile.avatar.read', 'world.profile.avatars']);
 export const WORLD_PROFILE_COVER_OPERATIONS = Object.freeze(['world.profile.cover.status', 'world.profile.cover.prepare',
   'world.profile.cover.prepareFromVersion', 'world.profile.cover.commit', 'world.profile.cover.restore', 'world.profile.cover.remove',
@@ -45,13 +47,14 @@ function outsideModule(file) {
 
 /** Trusted service boundary only. Mount as a Connect extension after proof/device/account verification.
  * Do not expose execute directly as an HTTP handler and do not construct actor from request arguments. */
-export function createWorldService({ databasePath, projectId, clock = Date.now, withCurrentContacts, allowAudienceMigration = false, allowWorld6Migration = false, profileCoverDecoder, profileCoverRegistered = () => false } = {}) {
+export function createWorldService({ databasePath, projectId, clock = Date.now, withCurrentContacts, allowAudienceMigration = false, allowWorld6Migration = false, allowWorld7Migration = false, profileCoverDecoder, profileCoverRegistered = () => false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof clock === 'function', 'invalid_clock');
   assert(withCurrentContacts === undefined || typeof withCurrentContacts === 'function', 'invalid_contacts_authority');
   assert(typeof allowAudienceMigration === 'boolean', 'invalid_audience_migration_mode');
   assert(typeof allowWorld6Migration === 'boolean', 'invalid_world6_migration_mode');
+  assert(typeof allowWorld7Migration === 'boolean', 'invalid_world7_migration_mode');
   assert(profileCoverDecoder === undefined || profileCoverDecoder && typeof profileCoverDecoder.decode === 'function', 'invalid_profile_cover_decoder');
   assert(typeof profileCoverRegistered === 'function' && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(profileCoverRegistered.constructor?.name), 'invalid_profile_cover_registry');
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
@@ -59,10 +62,10 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     assert(outsideModule(file), 'database_must_be_outside_module');
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
-  const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false;
+  const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false, storageVersion;
   try {
     const migrationNow = clock(); assert(Number.isSafeInteger(migrationNow) && migrationNow >= 0, 'invalid_clock');
-    migrateWorld(db, projectId, { allowAudienceMigration, allowWorld6Migration, now: Math.max(1, migrationNow) }); migrateField(db);
+    storageVersion = migrateWorld(db, projectId, { allowAudienceMigration, allowWorld6Migration, allowWorld7Migration, now: Math.max(1, migrationNow) }); migrateField(db);
   } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
   db.function('world_directory_match', { deterministic: true }, directoryMatches);
@@ -70,6 +73,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
   let profileCoverStore, legacyAvatarAdapter, profileCoverEnabled = false, coverOperation = null;
   const m = createModel(db, event => { events.push(Object.freeze(event)); }, () => currentContactView,
     () => profileCoverReady());
+  m.schemaVersion = storageVersion;
   function profileCoverReady() {
     if (closed || !profileCoverEnabled || !profileCoverStore) return false;
     try { return WORLD_PROFILE_COVER_OPERATIONS.every(operation => profileCoverRegistered(operation) === true); } catch { return false; }
@@ -142,7 +146,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
   }
   const operations = new Set(WORLD_OPERATIONS);
   const service = {
-    projectId, schemaVersion: SCHEMA_VERSION, operations, profileCoverExtension: undefined,
+    projectId, schemaVersion: storageVersion, operations, profileCoverExtension: undefined,
     /** Host-only, synchronous authority boundary. Lock order is Connect -> World -> Apps.
      * Read predicates may use this connection; World operations and async work may not.
      * Only the downstream Apps transaction writes. This is not a cross-file commit. */
@@ -207,7 +211,10 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
               assert(withCurrentContacts && contacts && typeof contacts.relationshipId === 'function', 'direct_authority_unavailable');
               result = directOperation(m, op, args, actor, now, { projectId, relationshipId: peer => contacts.relationshipId(peer) });
             }
+            else if (ATTACHMENT_OPERATIONS.includes(op)) result = attachmentOperation(m, op, args, actor, now,
+              contacts && typeof contacts.relationshipId === 'function' ? { relationshipId: peer => contacts.relationshipId(peer) } : null);
             else result = avatarOperation(m, op, args, actor, now);
+            if (op === 'world.profile.get' && storageVersion === 7) result.profile.chatAttachmentsVersion = 1;
             if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
               const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);
               result = { ...result, community: row ? m.community(m.visibleGroup(row.id, actor.accountId), actor.accountId) : null };

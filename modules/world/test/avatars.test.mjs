@@ -102,7 +102,7 @@ test('schema v1 upgrades additively and active-community lookup changes immediat
   assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name GLOB 'profile_avatar_*' OR name GLOB 'world_direct_*'").get().n, 0);
   removeAudienceProjection(db); removeDiscoveryProjection(db);
   db.exec("DROP TABLE profile_avatars; ALTER TABLE profiles DROP COLUMN avatar_revision; PRAGMA user_version=1; UPDATE world_meta SET value='1' WHERE key='schema_version';"); db.close();
-  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
+  const migrated = f.open({ allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 7); assert.equal(migrated.schemaVersion, 6);
   assert.equal(migrated.execute({ actor: alice, op: 'world.profile.get' }).profile.avatarRevision, null);
   assert.equal(migrated.execute({ actor: alice, op: 'world.community.get', args: { communityId } }).community.name, 'Сохраняется');
   migrated.execute({ actor: alice, op: 'world.community.archive', args: { communityId, expectedRevision: 1 } });

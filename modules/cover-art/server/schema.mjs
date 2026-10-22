@@ -1,5 +1,5 @@
 export const COVER_SCHEMA_VERSION = 1;
-export const COVER_FORMATS = Object.freeze({ app: Object.freeze([12,13,14]), profile: Object.freeze([6]) });
+export const COVER_FORMATS = Object.freeze({ app: Object.freeze([12,13,14]), profile: Object.freeze([6,7]) });
 export function coverPrefix(kind) {
   if (kind === 'app') return 'app_cover';
   if (kind === 'profile') return 'profile_avatar';
@@ -64,7 +64,7 @@ export function assertCoverSchema(db, kind) {
   if (!COVER_FORMATS[kind]?.includes(version)) throw Object.assign(new Error('cover_schema_required'), { code: 'cover_schema_required' });
   if (kind === 'app' && db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value !== `soty.apps-registry.v${version}`)
     throw Object.assign(new Error('cover_schema_metadata_mismatch'), { code: 'cover_schema_metadata_mismatch' });
-  if (kind === 'profile' && (db.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get()?.value !== '6'
+  if (kind === 'profile' && (db.prepare("SELECT value FROM world_meta WHERE key='schema_version'").get()?.value !== String(version)
     || db.prepare("SELECT value FROM world_meta WHERE key='lineage'").get()?.value !== 'soty.world.sqlite.v1'))
     throw Object.assign(new Error('cover_schema_metadata_mismatch'), { code: 'cover_schema_metadata_mismatch' });
   for (const sql of coverSchemaStatements(kind)) {

@@ -58,7 +58,7 @@ export function worldSnapshot(path) {
   } finally { db.close(); }
 }
 export async function signedFixture(t, { legacy = false, withDecoder = true, withContacts = true, registerCover = true, decoder,
-  corruptAvatar = false } = {}) {
+  corruptAvatar = false, world7 = false } = {}) {
   const paths = temporaryStore(t), actors = [actor('Synthetic Alice'), actor('Synthetic Bob'), actor('Synthetic Carol')];
   let at = 1900000000000, serial = 0, world, connect, registered = new Set();
   const actualDecoder = decoder ?? createCoverDecoder();
@@ -75,9 +75,9 @@ export async function signedFixture(t, { legacy = false, withDecoder = true, wit
   connect.close(); connect = null;
   const legacyPixels = legacy ? seedWorld5(paths.worldPath, actors, { corruptAvatar, now: at }) : null;
   const legacyBefore = legacy ? worldSnapshot(paths.worldPath) : null;
-  function open(allowWorld6Migration = false) {
+  function open(allowWorld6Migration = false, allowWorld7Migration = world7) {
     registered = new Set();
-    world = createWorldService({ databasePath: paths.worldPath, projectId: PROJECT, clock: () => at, allowWorld6Migration,
+    world = createWorldService({ databasePath: paths.worldPath, projectId: PROJECT, clock: () => at, allowWorld6Migration, allowWorld7Migration,
       ...(withContacts ? { withCurrentContacts: (person, callback) => connect.withCurrentContacts(person, callback) } : {}),
       ...(withDecoder ? { profileCoverDecoder: actualDecoder } : {}), profileCoverRegistered: operation => registered.has(operation) });
     const extensions = [world, ...(registerCover && world.profileCoverExtension ? [world.profileCoverExtension] : [])];
@@ -102,7 +102,7 @@ export async function signedFixture(t, { legacy = false, withDecoder = true, wit
     return good(await rpc(right,'contacts.accept',{requestId:request.requestId})).relationshipId;}
   return {...paths,actors,rpc,proof,profile,status,publish,request,contact,legacyPixels,legacyBefore,registered:()=>registered,
     get world(){return world;},get connect(){return connect;},get now(){return at;},advance(ms){at+=ms;},
-    reopen(){connect.close();world.close();open(false);},readBytes:person=>rpc(person,'world.profile.cover.read',{expectedAccountId:person.accountId,targetId:person.accountId}),
+    reopen(options={}){connect.close();world.close();open(false,options.allowWorld7Migration??world7);},readBytes:person=>rpc(person,'world.profile.cover.read',{expectedAccountId:person.accountId,targetId:person.accountId}),
     asDataUrl,
   };
 }

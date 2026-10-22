@@ -55,7 +55,7 @@ test('World3 migrates to the combined audience/Direct/avatar format6, preserving
   const before = db.prepare('SELECT * FROM profiles ORDER BY account_id').all().map(row => ({ ...row }));
   const avatars = db.prepare('SELECT * FROM profile_avatars').all();
   const sequence = db.prepare('SELECT * FROM world_directory ORDER BY seq').all(); db.close();
-  service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 6); assert.equal(service.schemaVersion, 6);
+  service = createWorldService({ databasePath, projectId: PROJECT, allowAudienceMigration: true, allowWorld6Migration: true }); assert.equal(SCHEMA_VERSION, 7); assert.equal(service.schemaVersion, 6);
   const observed = new DatabaseSync(databasePath, { readOnly: true });
   try {
     assert.equal(observed.prepare('PRAGMA user_version').get().user_version, 6);

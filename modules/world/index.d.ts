@@ -13,6 +13,7 @@ export interface WorldIdentity {
   revision: number;
 }
 export interface WorldProfile extends WorldIdentity {
+  chatAttachmentsVersion?: 1;
   bio: string;
   interests: string[];
   audience?: WorldProfileAudience;
@@ -63,7 +64,11 @@ export interface WorldMessage {
   createdAt: number;
   replyTo: string | null;
   removed: boolean;
+  clientId?: string;
+  read?: boolean;
+  attachments?: WorldAttachment[];
 }
+export interface WorldAttachment { attachmentId: string; name: string; size: number; manifestSha256: string; fileSha256: string; chunks: number; mediaType: 'application/octet-stream' }
 export interface WorldSearchResult {
   people: WorldProfile[];
   communities: WorldCommunity[];
@@ -144,4 +149,6 @@ export interface WorldService {
 }
 export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number;
   allowAudienceMigration?: boolean;
+  allowWorld6Migration?: boolean;
+  allowWorld7Migration?: boolean;
   withCurrentContacts?: <T>(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, callback: (view: Readonly<WorldCurrentContacts>) => T) => T }): WorldService;

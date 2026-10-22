@@ -3,9 +3,10 @@ import { DISCOVERY_MIGRATION } from './discovery.mjs';
 import { DIRECT_SCHEMA_SQL, assertDirectSchema } from './direct-schema.mjs';
 import { coverSchemaStatements, coverSchemaSeed, assertCoverSchema } from '../../cover-art/server/schema.mjs';
 import { migrateLegacyAvatarTable, profileAvatarViewSql } from '../../cover-art/server/legacy-avatar.mjs';
+import { ATTACHMENT_SCHEMA, assertAttachmentSchema } from './attachment-schema.mjs';
 
 // Version4 is reserved for the separate attachment reader; it is not this layout.
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 const LINEAGE = 'soty.world.sqlite.v1';
 const AUDIENCE_COLUMN = "audience TEXT NOT NULL DEFAULT 'private' CHECK(audience IN('private','friends','link','public'))";
 const PROFILE_INSERT = `CREATE TRIGGER world_profile_directory_ai AFTER INSERT ON profiles WHEN new.audience='public' BEGIN
@@ -57,8 +58,9 @@ function assertLegacyAvatars(db) {
     || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
       WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL) LIMIT 1`).get()) throw new Error('world_avatar_schema_mismatch');
 }
-function assertUnifiedSchema(db, projectId) {
+function assertUnifiedSchema(db, projectId, attachments = false) {
   assertAudienceSchema(db); assertDirectSchema(db); assertCoverSchema(db, 'profile');
+  if (!attachments && db.prepare("SELECT 1 FROM sqlite_schema WHERE name GLOB 'world_chat_attach*' LIMIT 1").get()) throw new Error('world_attachment_partial_schema');
   if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type IN('index','trigger') AND tbl_name GLOB 'world_direct_*' AND name NOT GLOB 'world_direct_*' AND name NOT LIKE 'sqlite_%' LIMIT 1").get())
     throw new Error('world_direct_schema_mismatch');
   const expected = coverSchemaStatements('profile').map(sql => {
@@ -141,9 +143,10 @@ CREATE INDEX world_audit_target ON world_audit(target_id,seq);
 CREATE TABLE world_rate_limits (key TEXT PRIMARY KEY, bucket INTEGER NOT NULL, count INTEGER NOT NULL);
 `;
 
-export function migrateWorld(db, projectId, { allowAudienceMigration = false, allowWorld6Migration = false, now = Date.now() } = {}) {
+export function migrateWorld(db, projectId, { allowAudienceMigration = false, allowWorld6Migration = false, allowWorld7Migration = false, now = Date.now() } = {}) {
   if (typeof allowAudienceMigration !== 'boolean') throw new Error('invalid_audience_migration_mode');
   if (typeof allowWorld6Migration !== 'boolean') throw new Error('invalid_world6_migration_mode');
+  if (typeof allowWorld7Migration !== 'boolean') throw new Error('invalid_world7_migration_mode');
   if (!Number.isSafeInteger(now) || now < 1) throw new Error('invalid_world6_migration_time');
   const initialVersion = Number(db.prepare('PRAGMA user_version').get().user_version);
   admissionVersion(initialVersion);
@@ -200,11 +203,18 @@ export function migrateWorld(db, projectId, { allowAudienceMigration = false, al
       db.prepare("UPDATE world_meta SET value='6' WHERE key='schema_version'").run();
       db.exec('PRAGMA user_version=6'); version = 6;
     }
-    assertUnifiedSchema(db, projectId);
+    assertUnifiedSchema(db, projectId, version === 7);
+    if (version === 6 && allowWorld7Migration) {
+      for (const sql of ATTACHMENT_SCHEMA) db.exec(sql);
+      db.prepare("UPDATE world_meta SET value='7' WHERE key='schema_version'").run();
+      db.exec('PRAGMA user_version=7'); version = 7;
+    }
+    if (version === 7) assertAttachmentSchema(db);
     if (db.prepare('PRAGMA quick_check').all().some(row => row.quick_check !== 'ok') || db.prepare('PRAGMA foreign_key_check').get()) throw new Error('world_storage_corrupt');
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   // Admission/schema committed. A WAL setup failure is surfaced as an error;
   // it cannot undo the committed format and must not be reported as rollback.
   db.exec('PRAGMA journal_mode=WAL;');
+  return Number(db.prepare('PRAGMA user_version').get().user_version);
 }
