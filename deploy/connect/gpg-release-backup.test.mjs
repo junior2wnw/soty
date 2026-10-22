@@ -275,7 +275,7 @@ async function registerBackupLoggingRegressions({candidateFile,legacyArgsFile}) 
           if(!volume)throw Object.assign(Error('absent'),{code:'engine_http_404'});
           return volume;
         }
-        if(method==='GET'&&url==='/containers/json?all=1&limit=8')return [];
+        if(method==='GET'&&url==='/containers/json?all=1&limit=128')return [];
         throw Error('Unexpected port; no Docker process may start in this Source test');
       },
       create:async(_name,value)=>{actions.push('CREATE_CONTAINER');creates++;config=value;throw Error('TEST_STOP_AFTER_CAPTURE');},
