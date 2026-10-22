@@ -23,6 +23,7 @@ export interface UnifiedFieldScreenOptions {
   onViewStateChange?: (view: UnifiedFieldViewState) => void;
   onRoute(mode: UnifiedFieldMode, query: string, filter: FieldFilter): void;
   onOpen(entity: DirectoryEntity, record: DirectoryRecord | null): void;
+  directMessagesEnabled?: boolean;
   onCreate(kind: 'app' | 'community' | 'device' | 'person' | 'assistant'): void;
   onAppSettings?: (app: DirectoryApp) => void;
   onInspectOwn?: (entity: DirectoryEntity, record: DirectoryRecord | null, openPlacement?: () => void) => boolean;
@@ -625,8 +626,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       }
     } else {
       const ownProfile = item.entity.kind === 'person' && item.entity.id === options.accountId;
-      const open = button(ownProfile ? 'Редактировать профиль' : item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть', item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
-      if (item.entity.kind === 'person') open.setAttribute('aria-label', ownProfile ? 'Редактировать профиль' : 'Профиль и контакт');
+      const contact = item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact';
+      const openLabel = ownProfile ? 'Редактировать профиль' : contact ? options.directMessagesEnabled ? 'Написать' : 'Контакт' : item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть';
+      const open = button(openLabel, contact && options.directMessagesEnabled ? 'chat' : item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
+      if (item.entity.kind === 'person') open.setAttribute('aria-label', contact ? openLabel : ownProfile ? 'Редактировать профиль' : 'Профиль и контакт');
       else if (item.entity.kind === 'device') open.setAttribute('aria-label', 'Управление устройствами');
       open.disabled = !ownProfile && !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
     }
@@ -747,7 +750,13 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   function activate(entity: FieldDirectoryEntity, shortcutId?: string): void {
     if (!current()) return;
     const item = metadata.get(fieldEntityKey(entity.entity)); if (!item) return;
-    if (mode === 'mine' && !summary?.arranging && ['app', 'builtin'].includes(item.entity.kind)) { options.onOpen(item, directory.getRecord(item.entity)); return; }
+    const record = directory.getRecord(item.entity);
+    const confirmed = mineConfirmedGeneration === mineGeneration && mineKnownRefs.has(fieldEntityKey(item.entity));
+    const contact = confirmed && options.directMessagesEnabled === true && item.entity.kind === 'person' && item.entity.id !== options.accountId
+      && record && 'kind' in record && record.kind === 'contact' && record.peerAccountId === item.entity.id;
+    const joinedRoom = confirmed && item.entity.kind === 'community' && record && 'communityId' in record
+      && record.communityId === item.entity.id && record.membership?.state === 'active';
+    if (mode === 'mine' && !summary?.arranging && (['app', 'builtin'].includes(item.entity.kind) || contact || joinedRoom)) { options.onOpen(item, record); return; }
     openPreview(item, shortcutId);
   }
   function addToContext(item: DirectoryEntity): void {

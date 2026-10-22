@@ -49,7 +49,7 @@ function fakeState(accountId = 'acct_fixture', deviceId = 'dev_fixture') {
 }
 function fixture(t, overrides = {}) {
   const created = [], document = new EventPort(), window = new EventPort(); document.visibilityState = 'visible';
-  const element = (tagName, className = '', textContent = '') => { const node = Object.assign(new ElementPort(), { tagName: tagName.toUpperCase(), className, textContent }); created.push(node); return node; };
+  const element = (tagName, className = '', textContent = '') => { const node = Object.assign(new ElementPort(), { tagName: tagName.toUpperCase(), className, textContent }); node.focus = () => { node.focused = true; document.activeElement = node; }; created.push(node); return node; };
   let local = overrides.state ?? fakeState(), current = true, observer = null;
   const calls = { bootstrap: 0, acquire: 0, detect: 0, intents: [], account: [], cards: [] };
   const client = overrides.client ?? { getLocalState: async () => local,
@@ -378,4 +378,78 @@ test('genuine new-account registration happens only after the explicit create ac
   assert.ok(result.state.accountId); assert.equal(result.intent, null);
   assert.equal((await newcomer.client.getLocalState()).accountId, result.state.accountId);
   assert.equal(real.traffic.filter(op => op === 'bootstrap').length, 1);
+});
+
+
+// Native paste is observed after the browser has applied selection replacement/maxLength.
+const pasteEvent = (f, value, inputType = 'insertFromPaste') => {
+  const input = f.input(); input.value = value; input.emit('input', { inputType }); return input;
+};
+const hubPreview = f => descendants(f.host).find(node => node.className === 'ch-preview');
+const cardShown = f => descendants(f.host).some(node => node.tagName === 'IMG');
+
+test('shown friend QR removes the duplicate action and returns it when the card is replaced', async t => {
+  const f = fixture(t); f.mount(); const input = f.input(); input.focus(); await until(() => cardShown(f));
+  assert.equal(f.document.activeElement, input, 'initial card never steals focus');
+  assert.equal(f.find('Мой QR').hidden, true);
+  await f.paste(contact);
+  assert.equal(cardShown(f), false); assert.equal(f.find('Мой QR').hidden, false);
+  f.find('Мой QR').focus(); f.find('Мой QR').click(); await until(() => cardShown(f));
+  assert.equal(f.find('Мой QR').hidden, true);
+  assert.equal(f.document.activeElement, f.find('Скопировать ссылку'), 'focus moves from the hidden action to the visible card');
+  assert.equal(hubPreview(f).hidden, true, 'returning to my QR closes the previous connection purpose');
+  assert.equal(f.calls.intents.length, 0); assert.equal(f.calls.acquire, 0); assert.equal(f.calls.bootstrap, 0);
+});
+
+test('native paste previews each purpose without dispatch, lost draft, moved focus or a second action', async t => {
+  for (const [value, kind, label] of [
+    [contact, 'contact', 'Добавить человека'],
+    [`/?connect=device&request=${REQUEST}`, 'device', 'Подтвердить своё устройство'],
+    [ORIGIN + '/#soty-invite=' + 'x'.repeat(43), 'platform-invitation', 'Приглашение в Соты'],
+  ]) {
+    const f = fixture(t); f.mount(); await until(() => cardShown(f));
+    const input = f.input(); input.focus(); pasteEvent(f, value);
+    assert.equal(hubPreview(f).hidden, false); assert.equal(hubPreview(f).children[0].textContent, label);
+    assert.equal(input.value, value); assert.equal(input.focused, true); assert.notEqual(f.find('Продолжить').focused, true);
+    assert.equal(f.calls.intents.length, 0); assert.equal(f.records.length, 0); assert.equal(f.calls.acquire, 0); assert.equal(f.calls.bootstrap, 0);
+    f.find('Отмена').click(); assert.equal(input.value, value); assert.equal(hubPreview(f).hidden, true);
+    pasteEvent(f, value); f.find('Продолжить').click(); f.find('Продолжить').click();
+    await until(() => f.calls.intents.length === 1); await tick();
+    assert.equal(f.calls.intents.length, 1); assert.equal(f.calls.intents[0].intent.kind, kind);
+    if (kind === 'platform-invitation') {
+      assert.deepEqual(f.calls.intents[0].intent, { kind });
+      assert.equal(f.calls.intents[0].handoff.takePlatformInvitationLink(), value);
+      assert.equal(f.calls.intents[0].handoff.takePlatformInvitationLink(), null);
+    }
+  }
+});
+
+test('typing, absent paste metadata and invalid carriers keep explicit submit and never auto-route', async t => {
+  const f = fixture(t); f.mount(); await until(() => cardShown(f));
+  for (const value of ['https://other.test/?connect=contact&card=' + CARD, contact + '#profile/acct_other', contact + '&request=' + REQUEST]) {
+    pasteEvent(f, value); assert.equal(hubPreview(f).hidden, true); assert.equal(f.input().value, value);
+  }
+  pasteEvent(f, contact, 'insertText'); assert.equal(hubPreview(f).hidden, true);
+  f.input().emit('keydown', { key: 'Enter', isComposing: false });
+  assert.equal(hubPreview(f).hidden, false); assert.equal(f.input().value, ''); assert.equal(f.calls.intents.length, 0);
+  f.find('Отмена').click(); f.input().value = contact; f.input().emit('input', {});
+  assert.equal(hubPreview(f).hidden, true); f.find('Открыть ссылку').click();
+  assert.equal(hubPreview(f).hidden, false); assert.equal(f.calls.intents.length, 0);
+});
+
+test('editing or busy paste invalidates the old intent; late reads and disposed events cannot dispatch it', async t => {
+  const delayed = deferred(); let block = false, reads = 0;
+  const client = { getLocalState: () => { if (block) { reads++; return delayed.promise; } return Promise.resolve(fakeState()); },
+    bootstrap: async () => { throw new Error('not authorized'); }, extension: async () => ({ cardId: CARD }) };
+  const f = fixture(t, { client }), handle = f.mount(); await until(() => cardShown(f));
+  pasteEvent(f, contact); pasteEvent(f, 'unfinished draft', 'insertText');
+  assert.equal(hubPreview(f).hidden, true); assert.equal(f.input().value, 'unfinished draft');
+  pasteEvent(f, contact); block = true; f.find('Продолжить').click(); await until(() => reads === 1);
+  const device = `/?connect=device&request=${REQUEST}`; pasteEvent(f, device);
+  assert.equal(hubPreview(f).hidden, true); assert.equal(f.input().value, device);
+  block = false; delayed.resolve(fakeState()); await tick(); await tick(); assert.equal(f.calls.intents.length, 0);
+  f.find('Открыть ссылку').click(); f.find('Продолжить').click(); await until(() => f.calls.intents.length === 1);
+  assert.equal(f.calls.intents[0].intent.kind, 'device'); assert.equal(f.calls.intents[0].intent.id, REQUEST);
+  const input = f.input(); handle.dispose(); input.value = contact; input.emit('input', { inputType: 'insertFromPaste' });
+  await tick(); assert.equal(f.calls.intents.length, 1); assert.equal(f.host.children[0].children.length, 0);
 });

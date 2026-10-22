@@ -166,10 +166,13 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     update();
     if (options.entry && current.accountId && !pending) await finish(null);
   }
-  const previewIntent = (value: string): void => {
+  const clearPreview = (): void => {
+    sequence++; pending = null; platformHandoff = null; proceedButton = null; preview.hidden = true; preview.replaceChildren();
+  };
+  const previewIntent = (value: string, keepInput = false): void => {
     const intent = parseConnectionIntent(value, options.origin);
     if (!intent) { note('Это не поддерживаемая ссылка Сот. Проверьте полный адрес.'); return; }
-    stopCamera(); sequence++; pending = intent; input.value = ''; qrHost.replaceChildren();
+    stopCamera(); sequence++; pending = intent; if (!keepInput) input.value = ''; qrHost.replaceChildren(); update();
     let held = intent.kind === 'platform-invitation' ? value.trim() : null;
     platformHandoff = held ? { takePlatformInvitationLink() { const result = held; held = null; return result; } } : null;
     const labels = { contact: 'Добавить человека', device: 'Подтвердить своё устройство', 'legacy-room': 'Открыть приглашение в комнату',
@@ -187,14 +190,14 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
       await finish(intent, ticket);
     })(); });
     proceedButton = proceed;
-    const cancel = button('Отмена', 'close', '', () => { sequence++; pending = null; platformHandoff = null; proceedButton = null; preview.hidden = true; preview.replaceChildren(); note(''); input.focus();
+    const cancel = button('Отмена', 'close', '', () => { clearPreview(); note(''); input.focus();
       // Read-only cold completion must not wait for or be dropped by an older busy Continue.
       if (options.entry && state?.accountId) void finish(null).catch(error => note(friendly(error))); });
-    preview.append(proceed, cancel); preview.hidden = false; proceed.focus();
+    preview.append(proceed, cancel); preview.hidden = false; if (!keepInput) proceed.focus();
   };
   const showCard = async (): Promise<void> => {
-    stopCamera(); const ticket = ++sequence, current = await read();
-    qrHost.replaceChildren();
+    clearPreview(); stopCamera(); const ticket = ++sequence, current = await read();
+    qrHost.replaceChildren(); update();
     if (!current.accountId) { note('Откройте свой профиль на этом устройстве или создайте новый.'); return; }
     const card = await options.client.extension<ContactCard>('card.get', {}, { expectedAccountId: current.accountId });
     const after = await read();
@@ -210,11 +213,13 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
       try { await navigator.clipboard.writeText(url.href); note('Ссылка скопирована.'); }
       catch { if (live()) { link.hidden = false; link.focus(); link.select(); note('Скопируйте выделенную ссылку.'); } }
     })(); });
-    qrHost.replaceChildren(image, el('p', '', 'Добавить меня в друзья'), link, copy);
+    const restoreFocus = document.activeElement === show;
+    qrHost.replaceChildren(image, el('p', '', 'Добавить меня в друзья'), link, copy); update();
+    if (restoreFocus) copy.focus();
   };
   const pageHidden = (): boolean => document.visibilityState === 'hidden';
   const startCamera = async (): Promise<void> => {
-    stopCamera(); sequence++; qrHost.replaceChildren(); if (!live() || pageHidden()) return;
+    stopCamera(); sequence++; qrHost.replaceChildren(); update(); if (!live() || pageHidden()) return;
     const lease = captures.acquire('camera', owner);
     if (!lease) { note('Камера используется. Вставьте ссылку или выберите QR из файла.'); return; }
     const capture: Camera = { lease, cancelled: false, pending: true, stream: null }; camera = capture; stop.hidden = false;
@@ -260,6 +265,11 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
   });
   const paste = button('Открыть ссылку', 'next', '', () => { stopCamera(); if (live()) previewIntent(input.value); });
   input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); paste.click(); } });
+  input.addEventListener('input', event => {
+    if (!live()) return;
+    clearPreview();
+    if (!busy && state && (event as InputEvent).inputType === 'insertFromPaste' && parseConnectionIntent(input.value, options.origin)) previewIntent(input.value, true);
+  });
   const existing = button('Мой профиль на этом устройстве', 'phone', options.entry ? 'ch-primary' : '', () => { void run(() => openAccount('devices'))(); });
   const recovery = button('Восстановить профиль', 'lock', '', () => { void run(() => openAccount('recovery'))(); });
   const computer = button('Приложения с компьютера', 'laptop', '', () => { void run(async () => {
@@ -277,7 +287,7 @@ export function mountConnectionHub(host: HTMLElement, options: ConnectionHubOpti
     if (proceedButton) proceedButton.textContent = state?.accountId || pending?.kind === 'platform-invitation' ? 'Продолжить' : 'Открыть мой профиль';
     create.hidden = !options.entry || !state || Boolean(state.accountId); computer.disabled = !state?.accountId || !options.onConnectComputer;
     tools.dataset.account = state?.accountId ? 'ready' : 'empty';
-    show.hidden = !state?.accountId; computer.hidden = !state?.accountId || !options.onConnectComputer;
+    show.hidden = !state?.accountId || qrHost.children.length > 0; computer.hidden = !state?.accountId || !options.onConnectComputer;
   }
   update();
   tools.append(show, scan, fromFile, stop); accounts.append(existing, create, recovery, computer);

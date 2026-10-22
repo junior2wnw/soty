@@ -1124,6 +1124,7 @@ class WorldApplication {
       mode: this.view === 'world' ? 'search' : 'mine', query: this.view === 'world' ? this.query : this.homeQuery,
       filter: this.unifiedFieldFilter,
       filtersByMode: { mine: this.unifiedFieldFilters.mine, search: this.unifiedFieldFilters.world },
+      directMessagesEnabled: this.profile?.directMessagesVersion === 1,
       viewState: this.unifiedFieldView, ...(this.desk.pinnedApps ? { pinnedApps: this.desk.pinnedApps } : {}),
       onViewStateChange: view => { if (isCurrent()) { this.desk.fieldView = view; this.saveDesk(false, false, true); } },
       ...(this.options.fieldArt ? { resolveArt: this.options.fieldArt } : {}),

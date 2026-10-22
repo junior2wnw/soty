@@ -15,6 +15,6 @@
 
 @media(max-width:560px){
 .connection-hub .ch-scan-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.connection-hub .ch-scan-tools[data-account=empty],.connection-hub .ch-scan-tools:has(>.ch-stop:not([hidden])){grid-template-columns:repeat(2,minmax(0,1fr))}
+.connection-hub .ch-scan-tools[data-account=empty],.connection-hub .ch-scan-tools:has(>button:first-child[hidden]),.connection-hub .ch-scan-tools:has(>.ch-stop:not([hidden])){grid-template-columns:repeat(2,minmax(0,1fr))}
 .connection-hub .ch-scan-tools button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;min-height:64px;padding:8px 4px;font-size:12px;line-height:1.2;white-space:normal}
 }
