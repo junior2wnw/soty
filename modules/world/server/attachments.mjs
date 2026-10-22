@@ -68,12 +68,14 @@ export function attachmentOperation(m, op, args, actor, now, authority) {
     m.run("INSERT INTO world_chat_attachments(id,scope_kind,conversation_id,relationship_id,author_id,name,media_type,size,state,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,'pending',?,?)", attachmentId, scope.kind, scope.id, scope.relationshipId, actor.accountId, name, media, size, now, now + L.pendingMs);
     return { attachment: { ...publicRef(m.get('SELECT * FROM world_chat_attachments WHERE id=?', attachmentId)), state: 'pending' } };
   }
-  assert(item && item.scope_kind === scope.kind && item.conversation_id === scope.id, 'attachment_unavailable');
+  assert(item && item.scope_kind === scope.kind && item.conversation_id === scope.id
+    && item.relationship_id === scope.relationshipId, 'attachment_unavailable');
   if (reading) {
     const table = direct ? 'world_direct_messages' : 'messages', column = direct ? 'thread_id' : 'community_id';
-    const published = item.state === 'published' && m.get(`SELECT 1 FROM ${table} WHERE id=? AND ${column}=? AND deleted_at IS NULL`, item.message_id, scope.id);
-    assert(published || item.author_id === actor.accountId && item.relationship_id === scope.relationshipId && ['pending', 'complete'].includes(item.state) && item.expires_at > now, 'attachment_unavailable');
-  } else assert(item.author_id === actor.accountId && item.relationship_id === scope.relationshipId, 'attachment_unavailable');
+    const published = item.state === 'published' && m.get(`SELECT 1 FROM ${table} WHERE id=? AND ${column}=? AND deleted_at IS NULL${direct ? ' AND relationship_id=?' : ''}`,
+      item.message_id, scope.id, ...(direct ? [scope.relationshipId] : []));
+    assert(published || item.author_id === actor.accountId && ['pending', 'complete'].includes(item.state) && item.expires_at > now, 'attachment_unavailable');
+  } else assert(item.author_id === actor.accountId, 'attachment_unavailable');
   if (op === 'world.attachment.status') return { attachment: { ...publicRef(item), state: item.state }, receivedChunks: m.get('SELECT COUNT(*) AS n FROM world_chat_attachment_chunks WHERE attachment_id=?', attachmentId).n };
   if (op === 'world.attachment.cancel') {
     assert(item.state !== 'published', 'attachment_already_published');

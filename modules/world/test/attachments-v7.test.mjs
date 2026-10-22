@@ -96,3 +96,34 @@ test('chunk admission/manifest tamper, pending TTL and quota reservation stay bo
   good(await f.call(alice, 'world.attachment.begin', { ...scope, attachmentId: 'after_expiry', name: 'new.bin', size: 0, mediaType: '' }));
   const db = new DatabaseSync(f.worldPath, { readOnly: true }); try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM world_chat_attachment_chunks').get().n, 0); } finally { db.close(); }
 });
+
+test('signed direct file grants do not transfer to a re-added contact on the same historical thread', async t => {
+  const f = await attachmentHttpFixture(t), [alice, bob] = f.actors;
+  const relationshipId = await f.contact(alice, bob);
+  const first = good(await f.call(alice, 'world.direct.open', { expectedAccountId: alice.accountId, peerAccountId: bob.accountId,
+    expectedRelationshipId: relationshipId, requestId: 'file_first_relationship' })).current;
+  const scope = actor => ({ expectedAccountId: actor.accountId, threadId: first.threadId, expectedRelationshipId: relationshipId });
+  const original = Buffer.from('Original file belongs to the original contact grant');
+  const ref = await f.upload(alice, original, 'original.bin', scope(alice));
+  const sent = good(await f.call(alice, 'world.direct.chat.send', { ...scope(alice), clientId: 'file_old_relationship', text: 'Retained history', attachments: [ref.attachmentId] })).message;
+  assert.equal(good(await f.call(bob, 'world.attachment.status', { ...scope(bob), attachmentId: ref.attachmentId })).attachment.state, 'published');
+  assert.deepEqual(await f.readChunks(bob, ref, scope(bob)), original);
+  good(await f.call(bob, 'contacts.remove', { relationshipId }));
+  denied(await f.call(bob, 'world.attachment.read', { ...scope(bob), attachmentId: ref.attachmentId, index: 0 }), 'direct_not_found');
+  f.advance(1); const nextRelationshipId = await f.contact(alice, bob);
+  assert.notEqual(nextRelationshipId, relationshipId);
+  const reopened = good(await f.call(alice, 'world.direct.open', { expectedAccountId: alice.accountId, peerAccountId: bob.accountId,
+    expectedRelationshipId: nextRelationshipId, requestId: 'file_second_relationship' })).current;
+  assert.equal(reopened.threadId, first.threadId);
+  const next = actor => ({ ...scope(actor), expectedRelationshipId: nextRelationshipId });
+  // Explicit reopen retains text history; it does not renew the old file grant.
+  assert.equal(good(await f.call(bob, 'world.direct.chat.list', next(bob))).messages[0].messageId, sent.messageId);
+  for (const actor of [alice, bob]) for (const op of ['world.attachment.status', 'world.attachment.read']) {
+    await t.test(`${actor.label}: ${op} refuses old bytes under the new relationship`, async () => {
+      denied(await f.call(actor, op, { ...next(actor), attachmentId: ref.attachmentId, ...(op.endsWith('.read') ? { index: 0 } : {}) }), 'attachment_unavailable');
+    });
+  }
+  const current = await f.upload(alice, Buffer.from('Current relationship file'), 'current.bin', next(alice));
+  good(await f.call(alice, 'world.direct.chat.send', { ...next(alice), clientId: 'file_new_relationship', text: '', attachments: [current.attachmentId] }));
+  assert.deepEqual(await f.readChunks(bob, current, next(bob)), Buffer.from('Current relationship file'));
+});
