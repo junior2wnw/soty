@@ -40,6 +40,10 @@ import { HIVE_SELECTED_SOURCE } from '../../modules/apps/scoped-embed/resource-r
 // no source regex assertions, copied transition implementation or DOM package.
 const source = await readFile(process.env.SOTY_FIELD_RETURN_SOURCE ?? new URL('./app.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const appAst = ts.createSourceFile('app.js', compiled, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+const appConstructor = appAst.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
+const rootClickHandler = appConstructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+  && node.expression.expression.getText(appAst) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click').expression.arguments[1].getText(appAst);
 const stageSource = await readFile(process.env.SOTY_NEUTRAL_RUNTIME_STAGE_SOURCE ?? new URL('./app-stage.ts', import.meta.url), 'utf8');
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
@@ -180,9 +184,9 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, URL, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
-  vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
+  vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; };`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
-    document, navigator: view.navigator, crypto: globalThis.crypto, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
@@ -227,7 +231,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, ports, makeElement, mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, ports, makeElement, rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -350,17 +354,10 @@ test('notification click waits for durable work and preserves editing that start
 });
 
 test('the actual root capture leaves notification and Help controls operable while other work is dirty', () => {
-  const ast = ts.createSourceFile('app.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const declaration = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication');
-  const constructor = declaration.members.find(ts.isConstructorDeclaration);
-  const statement = constructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
-    && node.expression.expression.getText(ast) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click');
-  const callback = statement.expression.arguments[1], module = { exports: {} };
-  vm.runInNewContext(ts.transpileModule('exports.bind = function() { return ' + callback.getText(ast) + '; };', {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-  }).outputText, { exports: module.exports, Element: ElementPort });
+  const f = fixture();
   let guarded = 0, prevented = 0;
-  const app = { screenHasUnsavedChanges: () => true, afterNoteSaved() { guarded++; } }, capture = module.exports.bind.call(app);
+  f.app.screenHasUnsavedChanges = () => true; f.app.afterNoteSaved = () => guarded++;
+  const capture = f.rootClick;
   // A small CSS-selector DOM port, not a copy of the capture handler's policy.
   const surface = (className, parent = null) => {
     const node = new ElementPort(); node.tagName = parent ? 'button' : 'div'; node.className = className; node.parent = parent;
