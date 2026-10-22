@@ -19,7 +19,7 @@ function fixture() {
   let document;
   class Element extends EventTarget {
     children = []; dataset = {}; attributes = new Map(); parentElement = null; open = false; disabled = false;
-    classList = { add() {}, remove() {}, toggle() {} };
+    classList = { add: name => { this.className += ' ' + name; }, remove() {}, toggle() {} };
     constructor(tag = 'div', className = '', text = '') { super(); this.tagName = tag.toUpperCase(); this.className = className; this.textContent = text; }
     get isConnected() { return this === document.body || !!this.parentElement?.isConnected; }
     get tabIndex() { return this.attributes.has('tabindex') ? Number(this.attributes.get('tabindex')) : /^(BUTTON|INPUT|TEXTAREA|SUMMARY)$/.test(this.tagName) ? 0 : -1; }
@@ -70,6 +70,7 @@ function fixture() {
   const dom = { el, button, iconButton: (label, symbol, action) => button(label, symbol, 'sw-icon-button', action) };
   let settings, disposed = 0;
   const ports = { './dom': dom, './icons': { icon: () => el('svg') }, './types': { worldColor: value => value },
+    '../platform/origin-continuity': { createOriginContinuityLinks: () => null },
     './app-audience.mjs': audience, './app-launch.mjs': launch, './app-deployment.mjs': deployment,
     './app-settings': { mountAppSettings(options) { settings = options; return { dispose() { disposed++; }, requestClose(_trigger, afterClose) { options.onClose(afterClose); } }; } } };
   const globals = { document, location, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
@@ -83,7 +84,7 @@ function fixture() {
   let renders = 0;
   Object.assign(app, { root, main, deskAccount: 'account-A', accountGeneration: 1, screenSequence: 1, activeRoute: '#mine', destroyed: false,
     dialogs: new Set(), avatars: { observe() {} }, profile: { profileId: 'account-A' }, apps: [record], communities: [], group: null, view: 'mine', appStage: null,
-    appSettingsDialog: null, appSettingsRouteClose: null, api: {},
+    appSettingsDialog: null, appSettingsRouteClose: null, api: {}, options: {},
     renderPersonal() { renders++; render(); }, appStateLabel: () => 'Offline',
     openApplication() { const heading = el('h1', '', 'Preview'); heading.tabIndex = -1; main.replaceChildren(heading); app.screenSequence++; location.hash = '#preview'; heading.focus(); },
   });
@@ -253,4 +254,61 @@ test('Actual World close restores its Set only after matching release, preservin
   assert.equal(activeModal === raw, true); assert.equal(moves.length, before); assert.equal(releases.at(-1).expected === world.element, true); assert.equal(releases.at(-1).matched, false);
   assert.equal(helper.element.open, true); assert.equal(f.document.activeElement === focus, true); assert.equal(f.app.dialogs.size, 0);
   helper.close(); f.drain(); assert.equal(raw.open, true); assert.equal(f.document.activeElement === opener, true); raw.close(); raw.remove(); f.drain();
+});
+
+test('profile Help preserves developer docs and restores its original opener after managed or native close', () => {
+  for (const native of [false, true]) {
+    const f = fixture(), opener = f.opener(); opener.focus(); f.app.openProfileMenu();
+    const profile = [...f.app.dialogs][0], docs = profile.body.querySelector('a');
+    assert.equal(docs.href, '/agents'); assert.equal(docs.target, '_blank');
+    const help = profile.body.querySelectorAll('button').find(node => node.textContent === 'Помощь');
+    assert.equal(help.getAttribute('aria-haspopup'), 'dialog'); help.focus(); help.click();
+    const modal = [...f.app.dialogs][0]; assert.notEqual(modal, profile); assert.equal(profile.element.isConnected, false);
+    assert.equal(modal.element.getAttribute('aria-labelledby'), modal.element.querySelector('h2').id);
+    assert.equal(modal.body.querySelectorAll('details').length, 4); assert.equal(modal.body.querySelector('details').open, true);
+    if (native) modal.element.requestClose(); else {
+      const ast = ts.createSourceFile('app.js', appCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const constructor = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
+      const capture = constructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+        && node.expression.expression.getText(ast) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click').expression.arguments[1];
+      const module = { exports: {} }; vm.runInNewContext('exports.bind = function() { return ' + capture.getText(ast) + '; };', { exports: module.exports, Element: opener.constructor });
+      f.app.screenHasUnsavedChanges = () => true; f.app.afterNoteSaved = () => assert.fail('Dismissing Help must not drain unrelated work');
+      const close = modal.element.querySelector('button'), event = { target: close, defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
+      module.exports.bind.call(f.app)(event); assert.equal(event.defaultPrevented, false); close.click();
+    }
+    f.drain(); assert.equal(f.app.dialogs.size, 0); assert.equal(f.document.activeElement, opener);
+  }
+});
+
+test('Help shortcuts close before the real dirty guard, retain blocked work and reject a late account ABA', async () => {
+  for (const outcome of ['blocked', 'saved', 'account ABA']) {
+    const f = fixture(); let dirty = true, release, navigation = 0, warnings = 0;
+    f.app.screenHasUnsavedChanges = () => dirty;
+    f.app.flushScreen = () => new Promise(resolve => { release = resolve; });
+    f.app.toast = () => warnings++;
+    f.app.navigate = view => { assert.equal(view, 'mine'); navigation++; };
+    f.app.openHelp(); const modal = [...f.app.dialogs][0];
+    modal.body.querySelectorAll('button').find(node => node.textContent === 'Моё поле').click();
+    assert.equal(modal.element.isConnected, false); assert.equal(navigation, 0); assert.equal(f.app.noteActionPending, true);
+    if (outcome !== 'blocked') dirty = false;
+    if (outcome === 'account ABA') f.app.accountGeneration += 2;
+    release(); await new Promise(resolve => setImmediate(resolve)); f.drain();
+    assert.equal(navigation, outcome === 'saved' ? 1 : 0); assert.equal(warnings, outcome === 'blocked' ? 1 : 0);
+    assert.equal(f.app.noteActionPending, false);
+  }
+});
+
+test('removed Help and stale profile entries cannot run actions after close, account ABA or destruction', () => {
+  for (const boundary of ['closed', 'account ABA', 'destroy']) {
+    const f = fixture(); let calls = 0; f.app.afterNoteSaved = () => calls++;
+    f.app.openHelp(); const modal = [...f.app.dialogs][0], action = modal.body.querySelector('button');
+    if (boundary === 'closed') modal.close();
+    if (boundary === 'account ABA') f.app.accountGeneration += 2;
+    if (boundary === 'destroy') f.app.destroyed = true;
+    action.click(); f.drain(); assert.equal(calls, 0, boundary);
+  }
+  const f = fixture(); f.app.openProfileMenu(); const menu = [...f.app.dialogs][0];
+  const help = menu.body.querySelectorAll('button').find(node => node.textContent === 'Помощь');
+  f.app.accountGeneration += 2; help.click(); assert.equal(f.app.dialogs.size, 1);
 });

@@ -349,7 +349,7 @@ test('notification click waits for durable work and preserves editing that start
   await assert.rejects(result, /Сохраните/u); assert.deepEqual(late.navigations, []); assert.equal(edited, true);
 });
 
-test('the actual root capture handler leaves notification Retry and Close operable while other work is dirty', () => {
+test('the actual root capture leaves notification and Help controls operable while other work is dirty', () => {
   const ast = ts.createSourceFile('app.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const declaration = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication');
   const constructor = declaration.members.find(ts.isConstructorDeclaration);
@@ -373,7 +373,10 @@ test('the actual root capture handler leaves notification Retry and Close operab
   const toast = surface('sw-toast has-action'), retry = surface('sw-button', toast), close = surface('sw-button', toast);
   const event = target => ({ target, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
   capture(event(retry)); capture(event(close)); assert.equal(guarded, 0); assert.equal(prevented, 0);
-  capture(event(surface('sw-button', surface('ordinary-panel')))); assert.equal(guarded, 1); assert.equal(prevented, 1);
+  const help = surface('sw-help-dialog'), helpClose = surface('sw-icon-button', surface('sw-dialog-header', help));
+  capture(event(helpClose)); capture(event(surface('sw-button', help))); assert.equal(guarded, 0); assert.equal(prevented, 0);
+  capture(event(surface('sw-button', surface('sw-dialog')))); assert.equal(guarded, 1); assert.equal(prevented, 1);
+  capture(event(surface('sw-button', surface('ordinary-panel')))); assert.equal(guarded, 2); assert.equal(prevented, 2);
 });
 
 test('existing group chat mounts the common renderer with actual group authority and the original draft namespace', () => {

@@ -33,6 +33,12 @@
 .sx-mobile-profile, .sx-mobile-nav { display: none; }
 .sx-profile-menu { display: grid; gap: 4px; }
 .sx-profile-menu>.sw-button { justify-content: flex-start; white-space: normal; text-align: left; }
+.sw-help { display: grid; gap: 12px; line-height: 1.6; }
+.sw-help>h3,.sw-help>p { margin: 0; }
+.sw-help details { border-top: 1px solid var(--sw-line); }
+.sw-help summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 650; }
+.sw-help details p { margin: 0 0 12px; }
+.sw-help .sw-row { flex-wrap: wrap; }
 .sx-page-host { width: 100%; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .sx-assistant-fallback { padding: 28px; display: grid; gap: 20px; align-content: start; max-width: 720px; }
 .sx-home { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 24px; scrollbar-width: thin; scrollbar-color: var(--sw-control-border) transparent; overscroll-behavior: contain; }

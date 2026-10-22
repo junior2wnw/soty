@@ -299,7 +299,7 @@ class WorldApplication {
     });
     root.addEventListener('click', event => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
-      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast') || !this.screenHasUnsavedChanges()) return;
+      if (!target || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -972,12 +972,42 @@ class WorldApplication {
   }
 
   private openProfileMenu(): void {
+    const current = this.accountTask(), returnTarget = this.dialogReturnTarget();
     const menu=this.dialog('Профиль и настройки');const options=el('div','sx-profile-menu');
     const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
     options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
     if (this.options.notifications) options.append(entry('Уведомления', 'bell', () => this.openNotifications()));
     const continuity = createOriginContinuityLinks(); if (continuity) options.append(continuity);
+    const help = button('Помощь', 'info', 'sw-button-quiet', () => {
+      if (!current() || !menu.element.open) return;
+      menu.close({ restoreFocus: false }); this.openHelp(returnTarget);
+    });
+    help.setAttribute('aria-haspopup', 'dialog'); options.append(help);
     const docs = el('a', 'sw-button sw-button-quiet'); docs.href = '/agents'; docs.target = '_blank'; docs.rel = 'noopener'; docs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)'); docs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external')); options.append(docs); menu.body.append(options);
+  }
+
+  private openHelp(returnTarget = this.dialogReturnTarget()): void {
+    const current = this.accountTask(); if (!current()) return;
+    const dialog = this.dialog('Помощь', undefined, returnTarget), content = el('div', 'sw-help');
+    dialog.element.classList.add('sw-help-dialog');
+    content.append(el('h3', '', 'О Сотах'), el('p', '', 'Одно личное пространство для ваших приложений, людей и задач — с сохранением данных и контролем доступа.'));
+    const action = (label: string, symbol: string, run: () => void): HTMLButtonElement => button(label, symbol, 'sw-button-quiet', () => {
+      if (!current() || !dialog.element.open) return;
+      dialog.close({ restoreFocus: false }); this.afterNoteSaved(() => { if (current()) run(); });
+    });
+    const section = (title: string, text: string, ...actions: HTMLButtonElement[]): HTMLDetailsElement => {
+      const details = el('details'); details.append(el('summary', '', title), el('p', '', text));
+      if (actions.length) { const row = el('div', 'sw-row'); row.append(...actions); details.append(row); }
+      content.append(details); return details;
+    };
+    section('Как начать', 'Открывайте приложения со своего поля. Между личным полем и общим миром можно переключаться кнопками «Личное» и «Мир». Помощник доступен через меню → «В работе» → «Помощник и поручения».',
+      action('Моё поле', 'grid', () => this.navigate('mine')), action('Помощник', 'sparkle', () => this.navigate('assistant'))).open = true;
+    section('Поиск и управление полем', 'Ищите через лупу или Ctrl/⌘ + K, когда нет открытого окна. Тяните поле или прокручивайте. Масштаб меняется двумя пальцами, Ctrl/⌘ + колесом или кнопками −/+. В фокусе поля работают +/− и 0 — показать всё. Правая кнопка мыши или удержание соты открывают сведения о ней.',
+      action('Поиск', 'search', () => this.unifiedField ? this.unifiedField.focusSearch() : this.openQuickActions()));
+    section('Люди и устройства', 'Кнопка QR открывает подключения людей и устройств. Проверяйте, кого или какое устройство добавляете. Список подключённых устройств доступен в профиле → «Устройства».',
+      action('Подключить по QR-коду', 'qr', () => { void this.openConnections(); }), action('Устройства', 'laptop', () => this.openResources('devices')));
+    section('Обновление и открытая работа', 'Когда появится сообщение «Готова новая версия Сот», нажмите «Обновить». Соты сначала проверят сохранение открытой работы. Если обновление ждёт сохранения, завершите или сохраните действие и повторите. Не очищайте данные браузера для обновления.');
+    dialog.body.append(content);
   }
 
   private openSavedLibrary(): void {
