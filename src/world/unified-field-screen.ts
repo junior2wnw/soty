@@ -275,7 +275,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     contextKey = ''; if (summary) updateSummary(summary); placeSearch(); renderMineSearchResults();
   }
   function route(): void { options.onRoute(mode, queries[mode], filter); }
-  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); }
+  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else { updateMineFilter(); if (engine) revealReadyMine(engine); } }
   function inputChanged(immediate = false): void {
     closeList(false);
     queries[mode] = searchInput.value; clear.hidden = !searchInput.value; route();
@@ -869,6 +869,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     // Refresh the available directory on each opening so newly connected apps/devices are reachable.
     run(loadMine().then(() => { if (current() && instance.element.open) render(); }));
   }
+  function revealReadyMine(field: UnifiedField): void {
+    void field.ready.then(() => {
+      if (!current() || engine !== field || mode !== 'mine' || field.element.clientWidth <= 0 || field.element.clientHeight <= 0) return;
+      // Placed builtins are usable without a directory response. Cached refs
+      // keep their loading/unknown metadata and gain no display authority here.
+      if (field.snapshot().shortcuts.some(shortcut => BUILTINS.some(item => fieldEntityKey(item.entity) === fieldEntityKey(shortcut.entity)))) loading.hidden = true;
+    }).catch(error => { if (current() && engine === field) report(error); });
+  }
   function mountEngine(loaded: FieldPersistenceState): void {
     state = loaded;
     mineFilterAdmitted = false;
@@ -880,6 +888,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) inspect(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
+    revealReadyMine(field);
   }
   persistence.subscribe(applyPersistence);
   const ready = (async (): Promise<void> => {
@@ -896,6 +905,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const receipt = await persistence.commit(initial, { expectedRevision: 0, requestId: crypto.randomUUID() }); if (!current()) return;
       engine!.update({ document: receipt.document, revision: receipt.revision, entities: allMetadata() });
     }
+    if (mode === 'mine') revealReadyMine(engine!);
     const mineTask = loadMine();
     if (mode === 'search') await Promise.all([mineTask, searchDirectory()]); else await mineTask;
     if (!current()) return;
