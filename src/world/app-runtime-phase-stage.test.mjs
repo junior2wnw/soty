@@ -7,6 +7,7 @@ import{createAppRuntimePhaseTrace}from'./app-runtime-phase-trace.mjs';
 import{isScopedRuntimeProfile}from'./app-launch.mjs';
 import{createAppRuntimeDisplay}from'./app-runtime-display.mjs';
 import{captureSourcePin,matchesScopedCaptureContext}from'./app-project-capture.mjs';
+import{createBootDisplayClient}from'../../modules/apps/server/runtime-display-client.mjs';
 
 // Execute the production manual buttons, launch/watch/reset/route functions and
 // diagnostic dialog, with only DOM, network and unrelated stage sinks stubbed.
@@ -36,7 +37,7 @@ exports.harness=(host,options,state)=>{
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>null};
+ const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>state.binding??null};
  const button=host.button,el=host.el,emptyState=()=>host.el('div'),createDialog=host.createDialog;
  const appLaunchFailure=()=>({title:'Existing error',detail:'Existing detail'});
  ${declaration('runtimeTrace')}
@@ -48,7 +49,7 @@ exports.harness=(host,options,state)=>{
  ${fn('openRuntimeDiagnostics')}
  ${fn('updateRoute')}
  return{api:runtimeTrace,refresh:()=>refresh.action(),retry:()=>recoveryRetry.action(),initial:()=>launchRuntime(),automatic:()=>launchRuntime(true,()=>state.recoveryCurrent),route:()=>updateRoute({}),dialog:openRuntimeDiagnostics,
- frame:()=>runtime.querySelector('iframe'),pending:value=>runtimePending=value};
+ frame:()=>runtime.querySelector('iframe'),pending:value=>runtimePending=value,controls:()=>({recoveryRetry,externalRecovery,dismissRuntimeNotice})};
 };`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 
 class Node {
@@ -66,7 +67,7 @@ class Node {
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(presentation){
- const state={current:true,recoveryCurrent:true,calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],draft:'retained discussion draft'};
+ const state={current:true,recoveryCurrent:true,calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],reads:[],draft:'retained discussion draft'};
  let now=0,next=0;const tasks=new Map(),doc=new Node('document',state),view=new Node('window',state),runtime=new Node('runtime',state);
  Object.assign(view,{document:doc,performance:{now:()=>now},crypto:{randomUUID:()=> 'a'.repeat(32)},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
    setTimeout:(fn,ms)=>{const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
@@ -78,7 +79,7 @@ function fixture(presentation){
  let observedMessage=host.message.textContent;
  Object.defineProperty(host.message,'textContent',{get:()=>observedMessage,set:text=>{observedMessage=text;state.messages.push(text);}});
  const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
- const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){}},state);
+ const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){},api:{request:async(op,args)=>{state.reads.push({op,args});return state.context;}}},state);
  const tick=ms=>{const target=now+ms;while(true){const t=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!t||t[1].at>target)break;tasks.delete(t[0]);now=t[1].at;t[1].fn();}now=target;};
  return{h,state,tasks,tick,view,host};
 }
@@ -113,6 +114,31 @@ test('actual stage distinguishes load from a correlated Boot reply and preserves
  assert.equal(f.h.api.snapshot().events.at(-1).phase,'boot_failed');
  assert.equal(f.h.api.snapshot().events.filter(x=>x.phase==='boot_document_ack').length,1);
  assert.equal(f.state.calls.launch,1);assert.match(f.state.messages.at(-1),/запуск приложения не подтверждён/u);assert.equal(f.state.draft,'retained discussion draft');
+});
+
+test('actual stage exposes managed Boot failure after a fresh ready Source context without replaying launch or replacing its frame',async()=>{
+ const f=fixture(),source={id:'app.selected-workspace',version:1,digest:'a'.repeat(64)},expiresAt=Date.now()+120000;
+ f.state.binding={source,slot:{},handle:'synthetic-slot'};
+ f.state.context={ready:true,appId:'app-synthetic',scopedSource:source,target:{revision:1,digest:'b'.repeat(64)},expiresAt,
+  sourceSession:{ready:true,accessExpiresAt:expiresAt,sessionExpiresAt:expiresAt}};
+ await f.h.initial();const frame=f.h.frame(),child=new Node('boot-window',f.state);
+ const parent={postMessage(data,target){assert.equal(target,'https://shell.example');
+  f.view.emit('message',{source:child,origin:'https://frame.example',ports:[],data});}};
+ child.parent=parent;child.postMessage=(data,target)=>{assert.equal(target,'https://frame.example');
+  child.emit('message',{source:parent,origin:'https://shell.example',ports:[],data});};
+ frame.contentWindow=child;
+ // The managed Boot sender is byte-identical to the serving cbeb version.
+ // Execute its real watch/phase protocol; no browser paint claim is made here.
+ const bootContext=vm.createContext({window:child,setTimeout:f.view.setTimeout,clearTimeout:f.view.clearTimeout});
+ const boot=vm.runInContext(`(${createBootDisplayClient.toString()})({mode:'boot',parentOrigins:['https://shell.example']})`,bootContext);
+ boot.phase('boot_continuation_pending');f.tick(0);frame.emit('load');await flush();
+ assert.equal(f.host.message.textContent,'');assert.equal(f.h.controls().recoveryRetry.hidden,true);
+ assert.equal(f.state.reads.length,1);assert.equal(f.state.reads[0].op,'apps.scoped.context');
+ boot.phase('boot_failed');
+ assert.match(f.host.message.textContent,/Не удалось подтвердить запуск/u);assert.equal(f.host.message.hidden,false);
+ for(const control of Object.values(f.h.controls()))assert.equal(control.hidden,false);
+ assert.equal(f.h.frame(),frame);assert.equal(f.state.calls.launch,1);assert.equal(f.state.reads.length,1);
+ assert.equal(f.state.draft,'retained discussion draft');
 });
 
 test('actual diagnostic dialog arms/copies/clears only on explicit controls and never starts a launch',async()=>{

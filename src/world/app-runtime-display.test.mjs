@@ -76,6 +76,31 @@ test('Source-session ready preserves subsequent current-frame transport error wi
  assert.equal(f.api.snapshot().canExternal,true);assert.equal(f.api.snapshot().canDismiss,true);assert.equal(f.api.snapshot().busy,false);
  f.phase('boot_navigation');f.tick(12001);assert.equal(f.calls(),calls);assert.equal(f.api.snapshot().phase,'error');
 });
+test('Source-session ready cannot hide a later correlated managed Boot failure',async()=>{
+ const f=displayFixture('ready');f.tick(0);f.frame.emit('load');await tickFlush();
+ assert.equal(f.api.snapshot().phase,'ready');
+ for(const patch of [{source:{}},{origin:'https://wrong.example'},{ports:[{}]},
+  {data:{schema:'soty.runtime-display.v1',nonce:'b'.repeat(32),phase:'boot_failed'}},
+  {data:{schema:'soty.runtime-display.v1',nonce:'a'.repeat(32),phase:'boot_failed',url:'PRIVATE'}}]){
+  f.phase('boot_failed',patch);assert.equal(f.api.snapshot().phase,'ready');
+ }
+ f.phase('boot_navigation');assert.equal(f.api.snapshot().phase,'ready');
+ f.phase('boot_failed');assert.equal(f.api.snapshot().phase,'error');
+ assert.match(f.api.snapshot().message,/Не удалось подтвердить запуск/u);
+ assert.equal(f.api.snapshot().canRetry,true);assert.equal(f.api.snapshot().canExternal,true);
+ assert.equal(f.api.snapshot().canDismiss,true);assert.equal(f.api.snapshot().busy,false);
+ f.phase('boot_cookie_pending');f.tick(12001);assert.equal(f.api.snapshot().phase,'error');assert.equal(f.calls(),1);
+});
+
+test('a late managed Boot failure never revives a stale, disposed or dismissed ready display',async()=>{
+ for(const mode of ['stale','dispose','pagehide','dismiss']){
+  const f=displayFixture('ready');f.frame.emit('load');await tickFlush();
+  if(mode==='stale')f.stale();if(mode==='dispose')f.api.dispose();if(mode==='pagehide')f.view.emit('pagehide');
+  if(mode==='dismiss'){f.frame.emit('error');f.api.dismiss();}
+  const before=f.states.length;f.phase('boot_failed');assert.equal(f.states.length,before);assert.equal(f.calls(),1);
+ }
+});
+
 test('late errors never reactivate disposed/stale or manually dismissed/denied display choices',async()=>{
  for(const mode of ['stale','dispose','pagehide']){
   const f=displayFixture('ready');f.frame.emit('load');await tickFlush();const handler=[...f.frame.listeners.get('error')][0];

@@ -44,11 +44,11 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   const load=()=>{if(!live()||terminal)return;loaded=true;void check();};
   const error=()=>finish('error');
   const receive=event=>{
-    if(!live()||terminal&&phase!=='loaded'||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
+    if(!live()||terminal&&!['ready','loaded'].includes(phase)||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
     const v=fields(event.data,['schema','nonce','phase']);
     if(!v||v.schema!=='soty.runtime-display.v1'||v.nonce!==nonce||!PHASES.has(v.phase))return;
     if(v.phase==='boot_failed'){finish('error');return;}
-    if(terminal)return; // Neutral load must still surface a later explicit Boot failure.
+    if(terminal)return; // Session readiness or neutral load cannot hide a later explicit Boot failure.
     if(v.phase==='boot_inactive')return;
     phase=v.phase==='boot_admission_pending'?'boot':'authenticating';notify();
     if(v.phase==='boot_navigation')void check();
