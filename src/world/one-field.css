@@ -193,13 +193,15 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .sw-app[data-experience=one-field][data-agent-orb=ready]>.sw-topbar { display: none; }
   .sw-app[data-experience=one-field]>.sw-mobile-nav {
     position: absolute; inset: auto auto calc(24px + env(safe-area-inset-bottom,0px)) 50%; transform: translateX(-50%);
-    z-index: 30; display: flex; width: max-content; min-height: 48px; margin: 0; padding: 0;
-    border: 0; background: transparent; box-shadow: none;
+    z-index: 30; display: flex; align-items: center; gap: 4px; width: 148px; height: 48px; min-height: 48px; margin: 0; padding: 1px 3px;
+    border: 1px solid var(--sw-line); border-radius: 30px; background: var(--of-paper); box-shadow: none;
   }
+  .sw-app[data-experience=one-field]>.sw-mobile-nav>.sw-icon-button,
   .sw-app[data-experience=one-field]>.sw-mobile-nav>.of-menu-button {
-    display: flex; justify-content: center; gap: 14px; width: 148px; min-height: 48px; padding: 10px 24px;
-    border: 1px solid var(--sw-line); border-radius: 30px; color: var(--sw-ink); background: var(--of-paper); font-size: 16px;
+    display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 10px;
+    border: 0; border-radius: 50%; color: var(--sw-ink); background: transparent;
   }
+  .sw-app[data-experience=one-field]>.sw-mobile-nav>.of-menu-button>span { display: none; }
   .sw-app[data-experience=one-field]>.of-connect-button { inset: max(16px,env(safe-area-inset-top,0px)) 16px auto auto; width: 44px; height: 44px; padding: 10px; }
   .sw-app[data-experience=one-field]>.of-field-navigation { inset: max(16px,env(safe-area-inset-top,0px)) auto auto 16px; min-height: 44px; padding: 0; }
   .of-field-mode.sw-button { min-width: 68px; padding: 8px 10px; gap: 6px; }

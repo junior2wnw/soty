@@ -823,7 +823,9 @@ class WorldApplication {
       return control;
     };
     this.header.replaceChildren(search, add, menuButton());
-    this.mobileNav.replaceChildren(menuButton());
+    this.mobileNav.replaceChildren(
+      iconButton('Поиск', 'search', () => this.unifiedField ? this.unifiedField.focusSearch() : this.openQuickActions()),
+      iconButton('Создать', 'plus', () => this.openAddMenu()), menuButton());
     this.updateNavUnread(); this.unifiedField?.attachHeaderSearch(this.header);
   }
 

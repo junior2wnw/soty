@@ -76,7 +76,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const closeSearch = iconButton('Закрыть поиск', 'close', () => {
     if (searchInput.value || queries[mode]) { searchInput.value = ''; inputChanged(true); }
     element.dataset.search = 'closed';
-    focusFieldControl();
+    const opener = searchOpener; searchOpener = null;
+    if (isDialogFocusTarget(opener)) opener.focus({ preventScroll: true }); else focusFieldControl();
   });
   closeSearch.classList.add('uf-search-close'); search.append(closeSearch);
   const listButton = button('Список', 'list', 'uf-list-button', () => openList());
@@ -138,6 +139,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let mineBusy = false, queuedMine: ((admitted: boolean) => void) | null = null;
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
   let previewOpener: HTMLElement | null = null;
+  let searchOpener: HTMLElement | null = null;
   let listDialog: WorldDialog | null = null;
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
@@ -855,7 +857,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   return {
     element, ready,
     setMode(next, query, nextFilter) { if (!current()) return; closeList(false); if (query !== undefined) queries[next] = query; if (nextFilter) filtersByMode[next] = nextFilter; if (mode !== next) changeMode(next); else { filter = filtersByMode[mode]; updateChrome(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); } },
-    attachHeaderSearch(next) { header = next; placeSearch(); }, focusSearch() { element.dataset.search = 'open'; searchInput.focus(); },
+    attachHeaderSearch(next) { header = next; placeSearch(); },
+    focusSearch() {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && !search.contains(active)) searchOpener = active;
+      element.dataset.search = 'open'; searchInput.focus();
+    },
     openView: openViewTools, openList, arrange() { engine?.setArrange(!summary?.arranging); },
     async addEntity(ref) {
       await ready; if (!current()) return;
