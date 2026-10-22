@@ -3,6 +3,7 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {setImmediate} from 'node:timers/promises';
 import vm from 'node:vm';
+import {MessageChannel} from 'node:worker_threads';
 import ts from 'typescript';
 
 // Execute the actual page controller; browser install events and promises are
@@ -28,6 +29,84 @@ function fixture({standalone=false}={}) {
     },installed:()=>window.dispatchEvent(new Event('appinstalled')),
     standalone(){display.matches=true;display.dispatchEvent(new Event('change'));}};
 }
+
+function updateFixture(t) {
+  const window=new EventTarget(),document=new EventTarget(),display=new EventTarget(),workers=new EventTarget(),exports={};
+  document.visibilityState='visible';display.matches=false;let reloads=0,onActivate;
+  class ServiceWorker extends EventTarget {
+    scriptURL='https://soty.example/sw.js';
+    postMessage(message,[port]) {
+      if (message.type==='SOTY_ACTIVATE_UPDATE'&&onActivate) { onActivate(port);return; }
+      port.postMessage(message.type==='SOTY_OFFLINE_STATUS'?{offlineReady:true}:{ready:true});port.close();
+    }
+  }
+  const previous=new ServiceWorker(),next=new ServiceWorker(),registration=new EventTarget();
+  registration.waiting=null;registration.update=async()=>{};
+  workers.controller=previous;workers.register=async()=>registration;workers.ready=Promise.resolve(registration);
+  const context={exports,window,document,ServiceWorker,MessageChannel,AbortController,AbortSignal,Event,URL,
+    matchMedia:()=>display,navigator:{serviceWorker:workers,onLine:true},
+    location:{origin:'https://soty.example',reload(){reloads++;}},fetch:async()=>({ok:true,json:async()=>({ok:true})}),
+    setTimeout,clearTimeout,setInterval:()=>1,clearInterval(){}};
+  vm.runInNewContext(compiled,context,{timeout:1000});const control=exports.createPwaController();t.after(()=>control.destroy());
+  return {control,exports,reloads:()=>reloads,
+    offerUpdate(handler){registration.waiting=next;onActivate=handler;},
+    activate(){registration.waiting=null;workers.controller=next;workers.dispatchEvent(new Event('controllerchange'));},
+    commit(){const event=new Event('message');Object.assign(event,{source:next,data:{type:'SOTY_UPDATE_COMMIT'},ports:[]});workers.dispatchEvent(event);}};
+}
+
+test('a committed update reloads once when controllerchange arrives first',async t=>{
+  const f=updateFixture(t);await setImmediate();f.activate();await setImmediate();assert.equal(f.reloads(),0);
+  f.commit();await setImmediate();assert.equal(f.reloads(),1);
+});
+
+test('a normal commit before controllerchange still reloads once',async t=>{
+  const f=updateFixture(t);await setImmediate();f.commit();assert.equal(f.reloads(),0);
+  f.activate();await setImmediate();assert.equal(f.reloads(),1);
+});
+
+test('late commit preserves dirty work and an explicit retry saves before reload',async t=>{
+  const f=updateFixture(t);let saved=false;f.exports.registerUpdateGuard(()=>saved);await setImmediate();
+  f.activate();f.commit();await setImmediate();assert.equal(f.reloads(),0);assert.equal(f.control.get().update,'blocked');
+  assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
+  saved=true;assert.equal(await f.control.applyUpdate(),true);assert.equal(f.reloads(),1);
+});
+
+test('duplicate commit while saving does not reload twice',async t=>{
+  const f=updateFixture(t),save=pending();f.exports.registerUpdateGuard(()=>save.promise);await setImmediate();
+  f.activate();f.commit();f.commit();await setImmediate();assert.equal(f.reloads(),0);
+  save.resolve(true);await setImmediate();assert.equal(f.reloads(),1);
+});
+
+test('destroy during the activation save prevents late navigation',async t=>{
+  const f=updateFixture(t),save=pending();f.exports.registerUpdateGuard(()=>save.promise);await setImmediate();
+  f.commit();f.activate();await setImmediate();f.control.destroy();save.resolve(true);await setImmediate();assert.equal(f.reloads(),0);
+});
+
+test('a late activation ACK cannot hide a blocked save after controller change',async t=>{
+  const f=updateFixture(t);let saved=true;f.exports.registerUpdateGuard(()=>saved);await setImmediate();
+  f.offerUpdate(port=>{saved=false;f.activate();f.commit();void setImmediate().then(()=>{port.postMessage({ready:true});port.close();});});
+  assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);assert.equal(f.control.get().update,'blocked');
+  saved=true;assert.equal(await f.control.applyUpdate(),true);assert.equal(f.reloads(),1);
+});
+
+test('the acknowledged worker already controlling this page settles without a second message',async t=>{
+  const f=updateFixture(t);await setImmediate();
+  f.offerUpdate(port=>{f.activate();port.postMessage({ready:true});port.close();});
+  assert.equal(await f.control.applyUpdate(),true);await setImmediate();assert.equal(f.reloads(),1);
+});
+
+test('destroy while an explicit retry saves does not navigate the closed page',async t=>{
+  const f=updateFixture(t),save=pending();let decision=false;f.exports.registerUpdateGuard(()=>decision);await setImmediate();
+  f.activate();f.commit();await setImmediate();assert.equal(f.control.get().update,'blocked');
+  decision=save.promise;const retry=f.control.applyUpdate();await setImmediate();f.control.destroy();save.resolve(true);
+  assert.equal(await retry,false);assert.equal(f.reloads(),0);assert.equal(await f.control.applyUpdate(),false);
+});
+
+test('an explicit retry joining the automatic save flight shares one reload',async t=>{
+  const f=updateFixture(t),save=pending();f.exports.registerUpdateGuard(()=>save.promise);await setImmediate();
+  f.activate();f.commit();await setImmediate();const retry=f.control.applyUpdate();await setImmediate();
+  save.resolve(true);assert.equal(await retry,true);await setImmediate();assert.equal(f.reloads(),1);
+});
 
 for(const outcome of ['accepted','dismissed'])test(`appinstalled stays installed when an older prompt later resolves ${outcome}`,async t=>{
   const f=fixture();t.after(()=>f.control.destroy());const offer=f.offer();offer.prompt.resolve();

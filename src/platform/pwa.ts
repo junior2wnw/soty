@@ -100,6 +100,8 @@ export function createPwaController(): PwaController {
       void saveDrafts().then(ready => { port.postMessage({ ready }); port.close(); publish({ update: ready ? 'available' : 'blocked' }); });
     } else if (event.data?.type === 'SOTY_UPDATE_COMMIT') {
       reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
+      // The controller can change before this cross-worker message arrives.
+      if (navigator.serviceWorker.controller === source) controllerChanged();
     }
   };
   const controllerChanged = () => {
@@ -107,6 +109,7 @@ export function createPwaController(): PwaController {
     if (!reloadArmed || reloading) return;
     // Typing may resume between prepare and activation: recheck before navigation.
     void saveDrafts().then(ready => {
+      if (destroyed || !reloadArmed || reloading) return;
       if (!ready) { reloadArmed = false; publish({ update: 'blocked' }); return; }
       reloading = true; location.reload();
     });
@@ -154,14 +157,20 @@ export function createPwaController(): PwaController {
     applyUpdate() {
       if (updateFlight) return updateFlight;
       updateFlight = (async () => {
-        if (development || (!registration?.waiting && !reloadRequired)) return false;
+        if (destroyed || development || (!registration?.waiting && !reloadRequired)) return false;
         publish({ update: 'saving' });
         if (!await saveDrafts()) { publish({ update: 'blocked' }); return false; }
+        if (destroyed) return false;
+        if (reloading) return true;
         if (!registration?.waiting) { reloading = true; location.reload(); return true; }
         try {
-          const result = await workerRequest<{ ready?: boolean }>(registration.waiting, 'SOTY_ACTIVATE_UPDATE', 20_000);
+          const worker = registration.waiting;
+          const result = await workerRequest<{ ready?: boolean }>(worker, 'SOTY_ACTIVATE_UPDATE', 20_000);
           if (!result.ready) { publish({ update: 'blocked' }); return false; }
-          publish({ update: 'activating' }); return true;
+          if (destroyed || state.update === 'blocked') return false;
+          reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
+          if (navigator.serviceWorker.controller === worker) controllerChanged();
+          return true;
         } catch { publish({ update: 'failed' }); return false; }
       })().finally(() => { updateFlight = undefined; }); return updateFlight;
     },
