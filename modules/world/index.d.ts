@@ -145,6 +145,7 @@ export interface WorldService {
   subscribeMessages(listener: (event: WorldMessageEvent) => unknown): () => void;
   notificationRecipients(event: WorldMessageEvent): string[];
   canNotify(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, event: WorldMessageEvent): WorldNotificationTarget | null;
+  notificationTarget(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, event: WorldMessageEvent): WorldNotificationTarget | null;
   close(): void;
 }
 export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number;

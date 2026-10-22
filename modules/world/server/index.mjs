@@ -100,6 +100,26 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
     };
     return withCurrentContacts ? withCurrentContacts(actor, enter) : enter(null);
   }
+  function messageNotificationTarget(actor, event, delivery) {
+    assert(!closed, 'service_closed');
+    try { identifier(actor?.accountId); identifier(actor?.deviceId); } catch { return null; }
+    return withProfileAuthority(actor, () => {
+      db.exec('BEGIN');
+      try {
+        const item = notificationMessage(event); if (!item || item.author_id === actor.accountId) return null;
+        if (event.kind === 'room') {
+          const member = m.membership(item.community_id, actor.accountId);
+          return member?.state === 'active' && (!delivery || !member.muted && member.last_read_seq < item.seq)
+            ? { kind: 'room', communityId: item.community_id } : null;
+        }
+        const peer = item.account_low === actor.accountId ? item.account_high : item.account_high === actor.accountId ? item.account_low : null;
+        if (!peer || typeof currentContactView?.relationshipId !== 'function' || currentContactView.relationshipId(peer) !== item.current_relationship_id) return null;
+        const prefs = delivery ? m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, actor.accountId) : null;
+        return !delivery || !prefs?.muted && (prefs?.last_read_seq ?? 0) < item.seq
+          ? { kind: 'direct', threadId: item.thread_id, peerAccountId: peer, relationshipId: item.current_relationship_id } : null;
+      } finally { db.exec('COMMIT'); }
+    });
+  }
   async function profileCoverExecute({ op, args = {}, actor } = {}) {
     assert(profileCoverReady() && WORLD_PROFILE_COVER_OPERATIONS.includes(op), 'profile_cover_unavailable');
     const common = ['expectedAccountId', 'targetId'], expected = ['requestId', 'expectedTargetRevision', 'expectedPolicyEpoch', 'expectedCoverRevision'];
@@ -276,24 +296,8 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
       const prefs = m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, peer);
       return prefs?.muted || (prefs?.last_read_seq ?? 0) >= item.seq ? [] : [peer];
     },
-    canNotify(actor, event) {
-      assert(!closed, 'service_closed');
-      try { identifier(actor?.accountId); identifier(actor?.deviceId); } catch { return null; }
-      return withProfileAuthority(actor, () => {
-        db.exec('BEGIN');
-        try {
-          const item = notificationMessage(event); if (!item || item.author_id === actor.accountId) return null;
-          if (event.kind === 'room') {
-            const member = m.membership(item.community_id, actor.accountId);
-            return member?.state === 'active' && !member.muted && member.last_read_seq < item.seq ? { kind: 'room', communityId: item.community_id } : null;
-          }
-          const peer = item.account_low === actor.accountId ? item.account_high : item.account_high === actor.accountId ? item.account_low : null;
-          if (!peer || typeof currentContactView?.relationshipId !== 'function' || currentContactView.relationshipId(peer) !== item.current_relationship_id) return null;
-          const prefs = m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, actor.accountId);
-          return !prefs?.muted && (prefs?.last_read_seq ?? 0) < item.seq ? { kind: 'direct', threadId: item.thread_id, peerAccountId: peer, relationshipId: item.current_relationship_id } : null;
-        } finally { db.exec('COMMIT'); }
-      });
-    },
+    canNotify(actor, event) { return messageNotificationTarget(actor, event, true); },
+    notificationTarget(actor, event) { return messageNotificationTarget(actor, event, false); },
     subscribeMessages(listener) {
       assert(!closed && typeof listener === 'function', 'invalid_listener'); messageSubscribers.add(listener);
       return () => { messageSubscribers.delete(listener); };
