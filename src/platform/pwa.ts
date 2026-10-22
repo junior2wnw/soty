@@ -34,6 +34,7 @@ export function createPwaController(): PwaController {
   let prompt: InstallPrompt | undefined, registration: ServiceWorkerRegistration | undefined, destroyed = false, installGeneration = 0;
   let connectionFlight: Promise<void> | undefined, guardFlight: Promise<boolean> | undefined, updateFlight: Promise<boolean> | undefined;
   let reloadArmed = false, reloadRequired = false, reloading = false, lastUpdateCheck = 0;
+  let reloadWorker: ServiceWorker | undefined, requestedWorker: ServiceWorker | undefined;
   const listeners = new Set<(state: PwaState) => void>(), abort = new AbortController();
   const publish = (patch: Partial<PwaState>) => {
     if (destroyed || Object.entries(patch).every(([key, value]) => state[key as keyof PwaState] === value)) return;
@@ -99,20 +100,26 @@ export function createPwaController(): PwaController {
       publish({ update: 'saving' });
       void saveDrafts().then(ready => { port.postMessage({ ready }); port.close(); publish({ update: ready ? 'available' : 'blocked' }); });
     } else if (event.data?.type === 'SOTY_UPDATE_COMMIT') {
+      if (reloading || requestedWorker && source !== requestedWorker) return;
+      reloadWorker = source;
       reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
       // The controller can change before this cross-worker message arrives.
       if (navigator.serviceWorker.controller === source) controllerChanged();
     }
   };
-  const controllerChanged = () => {
+  const controllerChanged = async (): Promise<boolean> => {
     void refreshOffline();
-    if (!reloadArmed || reloading) return;
+    if (destroyed) return false;
+    if (reloading) return true;
+    const worker = reloadWorker;
+    if (!reloadArmed || !worker || navigator.serviceWorker.controller !== worker) return false;
     // Typing may resume between prepare and activation: recheck before navigation.
-    void saveDrafts().then(ready => {
-      if (destroyed || !reloadArmed || reloading) return;
-      if (!ready) { reloadArmed = false; publish({ update: 'blocked' }); return; }
-      reloading = true; location.reload();
-    });
+    const ready = await saveDrafts();
+    if (destroyed) return false;
+    if (reloading) return true;
+    if (!reloadArmed || reloadWorker !== worker || navigator.serviceWorker.controller !== worker) return false;
+    if (!ready) { reloadArmed = false; publish({ update: 'blocked' }); return false; }
+    reloading = true; reloadArmed = false; reloadRequired = false; location.reload(); publish({ update: 'idle' }); return true;
   };
   window.addEventListener('beforeinstallprompt', beforeInstall, { signal: abort.signal });
   window.addEventListener('appinstalled', appInstalled, { signal: abort.signal });
@@ -158,21 +165,37 @@ export function createPwaController(): PwaController {
       if (updateFlight) return updateFlight;
       updateFlight = (async () => {
         if (destroyed || development || (!registration?.waiting && !reloadRequired)) return false;
+        const worker = registration?.waiting;
+        requestedWorker = worker ?? reloadWorker;
         publish({ update: 'saving' });
+        if (!worker) {
+          if (!reloadWorker || navigator.serviceWorker.controller !== reloadWorker) { publish({ update: 'failed' }); return false; }
+          reloadArmed = true; return controllerChanged();
+        }
         if (!await saveDrafts()) { publish({ update: 'blocked' }); return false; }
         if (destroyed) return false;
         if (reloading) return true;
-        if (!registration?.waiting) { reloading = true; location.reload(); return true; }
+        if (registration?.waiting !== worker) {
+          if (reloadRequired && reloadWorker === worker && navigator.serviceWorker.controller === worker) return controllerChanged();
+          publish({ update: registration?.waiting ? 'available' : 'failed' }); return false;
+        }
         try {
-          const worker = registration.waiting;
           const result = await workerRequest<{ ready?: boolean }>(worker, 'SOTY_ACTIVATE_UPDATE', 20_000);
-          if (!result.ready) { publish({ update: 'blocked' }); return false; }
           if (destroyed || state.update === 'blocked') return false;
+          if (reloading) return true;
+          if (!result.ready) { publish({ update: 'blocked' }); return false; }
+          reloadWorker = worker;
           reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
-          if (navigator.serviceWorker.controller === worker) controllerChanged();
+          if (navigator.serviceWorker.controller === worker) return controllerChanged();
           return true;
-        } catch { publish({ update: 'failed' }); return false; }
-      })().finally(() => { updateFlight = undefined; }); return updateFlight;
+        } catch {
+          if (destroyed) return false;
+          if (reloading) return true;
+          // A lost reply cannot undo the same worker's verified commit and save.
+          if (reloadRequired && reloadWorker === worker && navigator.serviceWorker.controller === worker) return controllerChanged();
+          if (state.update !== 'blocked') publish({ update: 'failed' }); return false;
+        }
+      })().finally(() => { updateFlight = undefined; requestedWorker = undefined; }); return updateFlight;
     },
     destroy() { destroyed = true; installGeneration++; prompt = undefined; abort.abort(); clearInterval(interval); listeners.clear(); if (singleton) singleton = undefined; },
   };
