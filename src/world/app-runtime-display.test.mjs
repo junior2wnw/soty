@@ -62,8 +62,23 @@ test('explicit denial/error and unknown readiness stay honest, finite, dismissib
 });
 test('bounded progress traffic, duplicate loads and hostile phase spam never exceed three read-only checks',async()=>{
  const f=displayFixture();f.tick(0);for(let i=0;i<20;i++){f.frame.emit('load');f.phase('boot_navigation');await tickFlush();}f.tick(12000);
- assert.equal(f.calls(),3);assert.ok(f.sent.length<=4);assert.equal(JSON.stringify(f.states).includes('https:'),false);
+ assert.equal(f.calls(),3);assert.equal(f.sent.length,5);assert.equal(JSON.stringify(f.states).includes('https:'),false);
 });
+test('first document load sends one bounded watch before a fast ready response can cancel scheduled probes',async()=>{
+ const f=displayFixture('ready');f.tick(0);assert.equal(f.sent.length,1);
+ f.frame.emit('load');assert.equal(f.sent.length,2);await tickFlush();assert.equal(f.api.snapshot().phase,'ready');
+ for(let i=0;i<20;i++)f.frame.emit('load');f.tick(12001);
+ assert.equal(f.sent.length,2);assert.equal(f.calls(),1);
+});
+
+test('an old load cannot send a watch after account/route loss, disposal, pagehide or the deadline',()=>{
+ for(const mode of ['stale','dispose','pagehide','timeout']){
+  const f=displayFixture();f.tick(0);
+  if(mode==='stale')f.stale();if(mode==='dispose')f.api.dispose();if(mode==='pagehide')f.view.emit('pagehide');if(mode==='timeout')f.tick(12000);
+  const before=f.sent.length;f.frame.emit('load');assert.equal(f.sent.length,before);assert.equal(f.calls(),0);
+ }
+});
+
 test('load/navigation arriving during a pending Root read coalesce into one bounded fresh read',async()=>{
  const held=deferred();let n=0;const f=displayFixture(()=>++n===1?held.promise:'ready');f.tick(0);f.frame.emit('load');await tickFlush();
  f.frame.emit('load');f.phase('boot_navigation');f.phase('boot_navigation');assert.equal(f.calls(),1);

@@ -116,12 +116,14 @@ test('actual stage distinguishes load from a correlated Boot reply and preserves
  assert.equal(f.state.calls.launch,1);assert.match(f.state.messages.at(-1),/запуск приложения не подтверждён/u);assert.equal(f.state.draft,'retained discussion draft');
 });
 
-test('actual stage exposes managed Boot failure after a fresh ready Source context without replaying launch or replacing its frame',async()=>{
+for(const missedFirstProbe of [false,true])test(`actual stage exposes ready-to-failed Boot without replay or frame replacement; initial watch ${missedFirstProbe?'lost':'delivered'}`,async()=>{
  const f=fixture(),source={id:'app.selected-workspace',version:1,digest:'a'.repeat(64)},expiresAt=Date.now()+120000;
  f.state.binding={source,slot:{},handle:'synthetic-slot'};
  f.state.context={ready:true,appId:'app-synthetic',scopedSource:source,target:{revision:1,digest:'b'.repeat(64)},expiresAt,
   sourceSession:{ready:true,accessExpiresAt:expiresAt,sessionExpiresAt:expiresAt}};
- await f.h.initial();const frame=f.h.frame(),child=new Node('boot-window',f.state);
+ await f.h.initial();const frame=f.h.frame();
+ if(missedFirstProbe){f.tick(0);assert.equal(f.state.probes.filter(p=>p.data.schema==='soty.runtime-display-watch.v1').length,1);}
+ const child=new Node('boot-window',f.state);
  const parent={postMessage(data,target){assert.equal(target,'https://shell.example');
   f.view.emit('message',{source:child,origin:'https://frame.example',ports:[],data});}};
  child.parent=parent;child.postMessage=(data,target)=>{assert.equal(target,'https://frame.example');
@@ -131,7 +133,7 @@ test('actual stage exposes managed Boot failure after a fresh ready Source conte
  // Execute its real watch/phase protocol; no browser paint claim is made here.
  const bootContext=vm.createContext({window:child,setTimeout:f.view.setTimeout,clearTimeout:f.view.clearTimeout});
  const boot=vm.runInContext(`(${createBootDisplayClient.toString()})({mode:'boot',parentOrigins:['https://shell.example']})`,bootContext);
- boot.phase('boot_continuation_pending');f.tick(0);frame.emit('load');await flush();
+ boot.phase('boot_continuation_pending');if(!missedFirstProbe)f.tick(0);frame.emit('load');await flush();
  assert.equal(f.host.message.textContent,'');assert.equal(f.h.controls().recoveryRetry.hidden,true);
  assert.equal(f.state.reads.length,1);assert.equal(f.state.reads[0].op,'apps.scoped.context');
  boot.phase('boot_failed');

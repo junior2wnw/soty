@@ -41,7 +41,8 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
     }catch{ /* Unknown is not denial. The existing finite visible deadline wins. */ }
     finally{flight=false;if(queued){queued=false;void check();}}
   };
-  const load=()=>{if(!live()||terminal)return;loaded=true;void check();};
+  // A pre-load probe may reach about:blank; a fast ready read cancels later timers.
+  const load=()=>{if(!live()||terminal)return;if(!loaded){loaded=true;probe();}void check();};
   const error=()=>finish('error');
   const receive=event=>{
     if(!live()||terminal&&!['ready','loaded'].includes(phase)||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;
