@@ -38,6 +38,7 @@ export function chatOperation(m, op, args, actor, now) {
     m.rate('chat:' + actor.accountId, 60, 60_000, now);
     const messageId = id('msg');
     m.run('INSERT INTO messages(id,community_id,author_id,client_id,text,reply_to,created_at) VALUES (?,?,?,?,?,?,?)', messageId, row.id, actor.accountId, clientId, body, replyTo, now);
+    m.emit({ kind: 'room', conversationId: row.id, messageId });
     return { message: message(m.get('SELECT * FROM messages WHERE id=?', messageId)) };
   }
   if (op === 'world.chat.remove') {

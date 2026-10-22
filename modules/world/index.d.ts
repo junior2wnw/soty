@@ -113,6 +113,9 @@ export interface WorldFieldOperationMap {
   'world.directory.resolve': { args: WorldDirectoryResolveArgs; result: WorldDirectoryResolveResult };
 }
 export interface MembershipEvent { communityId: string; profileId: string | null; state: MembershipState | 'archived'; revision: number }
+export interface WorldMessageEvent { kind: 'room' | 'direct'; conversationId: string; messageId: string }
+export type WorldNotificationTarget = { kind: 'room'; communityId: string }
+  | { kind: 'direct'; threadId: string; peerAccountId: string; relationshipId: string };
 export interface WorldCurrentContacts {
   readonly accountId: string;
   readonly deviceId: string;
@@ -134,6 +137,9 @@ export interface WorldService {
   isGroupAdmin(accountId: string, communityId: string): boolean;
   canRequestContact(accountId: string, targetId: string): boolean;
   subscribeMembership(listener: (event: MembershipEvent) => unknown): () => void;
+  subscribeMessages(listener: (event: WorldMessageEvent) => unknown): () => void;
+  notificationRecipients(event: WorldMessageEvent): string[];
+  canNotify(actor: Readonly<Pick<WorldActor, 'accountId' | 'deviceId'>>, event: WorldMessageEvent): WorldNotificationTarget | null;
   close(): void;
 }
 export declare function createWorldService(options: { databasePath: string; projectId: string; clock?: () => number;

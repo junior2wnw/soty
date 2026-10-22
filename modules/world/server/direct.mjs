@@ -149,6 +149,7 @@ export function directOperation(m, op, args, actor, now, authority) {
     const messageId = id('directmsg');
     m.run(`INSERT INTO world_direct_messages(id,thread_id,author_id,relationship_id,client_id,text,reply_to,created_at)
       VALUES (?,?,?,?,?,?,?,?)`,messageId,row.id,actor.accountId,row.relationship_id,clientId,body,replyTo,now);
+    m.emit({kind:'direct',conversationId:row.id,messageId});
     return {message:message(m.get('SELECT * FROM world_direct_messages WHERE id=?',messageId))};
   }
   if (op === 'world.direct.chat.remove') {

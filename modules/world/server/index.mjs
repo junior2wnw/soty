@@ -66,7 +66,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
   } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
   db.function('world_directory_match', { deterministic: true }, directoryMatches);
-  const subscribers = new Set(); let events = [], currentContactView = null;
+  const subscribers = new Set(), messageSubscribers = new Set(); let events = [], currentContactView = null;
   let profileCoverStore, legacyAvatarAdapter, profileCoverEnabled = false, coverOperation = null;
   const m = createModel(db, event => { events.push(Object.freeze(event)); }, () => currentContactView,
     () => profileCoverReady());
@@ -77,6 +77,16 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
   function contactsFor(actor, contacts) {
     if (withCurrentContacts) assert(contacts && contacts.accountId === actor?.accountId && contacts.deviceId === actor?.deviceId
       && typeof contacts.has === 'function' && typeof contacts.accountIds === 'function', 'world_contacts_actor_mismatch');
+  }
+  function notificationMessage(event) {
+    if (!event || typeof event !== 'object' || Object.keys(event).sort().join(',') !== 'conversationId,kind,messageId'
+      || !['room', 'direct'].includes(event.kind)) return null;
+    try { identifier(event.conversationId); identifier(event.messageId); } catch { return null; }
+    return event.kind === 'room' ? m.get(`SELECT message.* FROM messages message JOIN communities room ON room.id=message.community_id
+      WHERE message.id=? AND message.community_id=? AND message.deleted_at IS NULL AND room.state='active'`, event.messageId, event.conversationId)
+      : m.get(`SELECT message.*,thread.account_low,thread.account_high,thread.relationship_id AS current_relationship_id
+        FROM world_direct_messages message JOIN world_direct_threads thread ON thread.id=message.thread_id
+        WHERE message.id=? AND message.thread_id=? AND message.deleted_at IS NULL AND message.relationship_id=thread.relationship_id`, event.messageId, event.conversationId);
   }
   function withProfileAuthority(actor, callback) {
     assert(!closed, 'service_closed'); assert(!authorityFenceActive && !db.isTransaction, 'world_authority_fence_nested');
@@ -206,7 +216,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
             db.exec('COMMIT');
           } catch (error) { db.exec('ROLLBACK'); events = []; throw error; }
           const committed = events; events = [];
-          for (const event of committed) for (const listener of subscribers) {
+          for (const event of committed) for (const listener of ['room', 'direct'].includes(event.kind) ? messageSubscribers : subscribers) {
             try { const pending = listener(event); if (pending && typeof pending.catch === 'function') pending.catch(() => {}); }
             catch { /* State is already durable. A failing consumer cannot undo revocation. */ }
           }
@@ -251,11 +261,41 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
       assert(!closed, 'service_closed'); identifier(accountId); identifier(targetId);
       return m.canRequestContact(accountId, targetId);
     },
+    notificationRecipients(event) {
+      assert(!closed, 'service_closed'); const item = notificationMessage(event); if (!item) return [];
+      if (event.kind === 'room') return m.all(`SELECT account_id FROM memberships WHERE community_id=? AND state='active'
+        AND account_id<>? AND muted=0 AND last_read_seq<? ORDER BY account_id`, item.community_id, item.author_id, item.seq).map(row => row.account_id);
+      const peer = item.author_id === item.account_low ? item.account_high : item.account_low;
+      const prefs = m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, peer);
+      return prefs?.muted || (prefs?.last_read_seq ?? 0) >= item.seq ? [] : [peer];
+    },
+    canNotify(actor, event) {
+      assert(!closed, 'service_closed');
+      try { identifier(actor?.accountId); identifier(actor?.deviceId); } catch { return null; }
+      return withProfileAuthority(actor, () => {
+        db.exec('BEGIN');
+        try {
+          const item = notificationMessage(event); if (!item || item.author_id === actor.accountId) return null;
+          if (event.kind === 'room') {
+            const member = m.membership(item.community_id, actor.accountId);
+            return member?.state === 'active' && !member.muted && member.last_read_seq < item.seq ? { kind: 'room', communityId: item.community_id } : null;
+          }
+          const peer = item.account_low === actor.accountId ? item.account_high : item.account_high === actor.accountId ? item.account_low : null;
+          if (!peer || typeof currentContactView?.relationshipId !== 'function' || currentContactView.relationshipId(peer) !== item.current_relationship_id) return null;
+          const prefs = m.get('SELECT * FROM world_direct_read_state WHERE thread_id=? AND account_id=?', item.thread_id, actor.accountId);
+          return !prefs?.muted && (prefs?.last_read_seq ?? 0) < item.seq ? { kind: 'direct', threadId: item.thread_id, peerAccountId: peer, relationshipId: item.current_relationship_id } : null;
+        } finally { db.exec('COMMIT'); }
+      });
+    },
+    subscribeMessages(listener) {
+      assert(!closed && typeof listener === 'function', 'invalid_listener'); messageSubscribers.add(listener);
+      return () => { messageSubscribers.delete(listener); };
+    },
     subscribeMembership(listener) {
       assert(!closed && typeof listener === 'function', 'invalid_listener'); subscribers.add(listener);
       return () => { subscribers.delete(listener); };
     },
-    close() { assert(!authorityFenceActive, 'world_authority_fence_active'); if (!closed) { closed = true; profileCoverStore?.dispose(); subscribers.clear(); db.close(); } },
+    close() { assert(!authorityFenceActive, 'world_authority_fence_active'); if (!closed) { closed = true; profileCoverStore?.dispose(); subscribers.clear(); messageSubscribers.clear(); db.close(); } },
   };
   try {
     // Legacy set needs no native decode. New upload is advertised only when the
