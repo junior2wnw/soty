@@ -179,7 +179,7 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
       owned.ready = true; clearTimeout(owned.readyTimer); phase = 'listening'; notify();
     } else if (event.type === 'input_audio_buffer.speech_started') {
       abortEditor(owned); editor = undefined; owned.inputGeneration++;
-      owned.speaking = true; owned.latestCallId = null; notify();
+      owned.speaking = true; owned.latestCallId = null; phase = 'listening'; code = null; notify();
     } else if (event.type === 'input_audio_buffer.committed') {
       if (id(event.item_id)) {
         if (event.item_id !== owned.latestUserItem) { abortEditor(owned); editor = undefined; owned.inputGeneration++; owned.latestCallId = null; }
@@ -299,9 +299,10 @@ export function createVoiceOrbClient({ client, accountId, audio, acquireCaptureL
     },
     async interrupt() {
       const owned = frame; if (!owned || owned.cleaned) return;
-      owned.controlGeneration++; abortEditor(owned); owned.latestCallId = null; audio.pause(); audio.muted = true; notify();
+      owned.controlGeneration++; abortEditor(owned); owned.latestCallId = null; audio.pause(); audio.muted = true;
+      phase = 'listening'; code = 'voice_orb_cancel_requested'; notify();
       try { if (owned.sessionId) await rpc('voice.orb.cancel', { sessionId: owned.sessionId }, owned); }
-      catch { if (!belongs(owned) || owned.stopping) return; code = 'voice_orb_unknown'; notify(); }
+      catch { if (!belongs(owned) || owned.stopping) return; phase = 'unknown'; code = 'voice_orb_unknown'; notify(); }
       // A cancel or buffer-clear ACK is not permission to resume stale queued audio.
       // Playback stays muted until the person explicitly selects play/resume.
     },

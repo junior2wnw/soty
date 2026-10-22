@@ -32,6 +32,7 @@ export function mountVoiceOrbPanel(host: HTMLElement, options: {
     const label = !value.configured ? 'Голос пока не подключён. Доступен текстовый помощник.'
       : value.code === 'voice_orb_busy' ? 'Сейчас микрофон занят другим разговором.'
       : value.code === 'voice_orb_accounting_pending' ? 'Разговор закрыт. Расход ещё уточняется.'
+      : value.code === 'voice_orb_cancel_requested' ? 'Остановка поручения запрошена. Можно дать новое; прежние изменения не отменяются.'
       : value.phase === 'unknown' ? 'Поручение или завершение не подтверждено. Автоматического повтора нет.'
       : ({ checking: 'Проверяем голосовой режим…', idle: 'Нажмите «Говорить».', connecting: 'Подключаем разговор…',
         listening: value.muted ? 'Микрофон выключен.' : 'Слушаю.', working: 'Помощник выполняет поручение…', ending: 'Завершаем разговор…',

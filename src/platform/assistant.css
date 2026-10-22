@@ -58,6 +58,10 @@
 .sw-assistant-source { min-width: 0; display: grid; gap: 3px; overflow-wrap: anywhere; font-size: 13px; }
 .sw-assistant-source small { font-size: 12px; }
 .sw-assistant-status { font-size: 12px; margin: 0; color: var(--sw-muted); }
+.sw-assistant-pending { min-width: 0; font-size: 12px; }
+.sw-assistant-pending summary { min-height: 44px; align-content: center; cursor: pointer; }
+.sw-assistant-pending-list { display: grid; gap: 6px; }
+.sw-assistant-pending-list > button { min-height: 44px; text-align: left; overflow-wrap: anywhere; white-space: normal; }
 .sw-assistant-status:empty, .sw-assistant-result:empty, .sw-assistant-events:empty, .sw-assistant-pane > .sw-error:empty { display: none; }
 .sw-assistant-events { margin: 0; padding: 0 0 0 18px; color: var(--sw-muted); font-size: 12px; max-height: 160px; overflow: auto; }
 .sw-assistant-events li { padding: 3px; overflow-wrap: anywhere; white-space: pre-wrap; }

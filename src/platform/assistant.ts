@@ -135,6 +135,9 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const resultArea = el('div', 'sw-assistant-result'), events = el('ol', 'sw-assistant-events'); events.setAttribute('aria-label', 'Последние действия');
   const stop = button('Остановить', 'close', 'sw-button-quiet', () => { void cancel(); }); stop.hidden = true;
   const checkPersonal = button('Проверить выполнение', 'refresh', 'sw-button-quiet', () => { void checkPersonalStatus(); }); checkPersonal.hidden = true;
+  const pendingPersonal = el('details', 'sw-assistant-pending');
+  const pendingSummary = el('summary'), pendingList = el('div', 'sw-assistant-pending-list');
+  pendingPersonal.append(pendingSummary, el('p', 'sw-muted', 'Проверка читает состояние прежней отправки и не повторяет поручение.'), pendingList); pendingPersonal.hidden = true;
   const form = el('form', 'sw-assistant-composer'), prompt = el('textarea', 'sw-input');
   prompt.rows = 3; prompt.maxLength = 16_000; prompt.value = draft.text; prompt.placeholder = 'Что хотите сделать?'; prompt.setAttribute('aria-label', 'Задача помощнику');
   const controls = el('div', 'sw-assistant-composer-controls'), saved = el('span', 'sw-muted'), send = button('Отправить', 'arrow', 'sw-button-primary'); send.type = 'submit';
@@ -146,7 +149,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
   const privilege = el('details', 'sw-muted sw-assistant-privilege');
   const privilegeText = el('p', '', 'Работает с правами вашего пользователя на выбранном устройстве.');
   privilege.append(el('summary', '', 'Возможности и доступ'), privilegeText);
-  pane.append(notice, target, thread, status, events, resultArea, stop, checkPersonal, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
+  pane.append(notice, target, thread, status, events, resultArea, stop, checkPersonal, pendingPersonal, error, form, privilege); layout.append(history, pane); root.append(header, layout); host.replaceChildren(root);
 
   const voiceHost = el('div'); pane.insertBefore(voiceHost, target);
   const voicePanel = mountVoiceOrbPanel(voiceHost, { client: options.client, accountId,
@@ -157,7 +160,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     if (personalTimer) clearTimeout(personalTimer);
     personalTimer = undefined;
     const state = personal?.view();
-    if (disposed || !mountCurrent() || mode !== 'personal' || checkingPersonal || personalStatusFailures >= 3 || state?.phase !== 'running') return;
+    if (disposed || !mountCurrent() || mode !== 'personal' || checkingPersonal || personalStatusFailures >= 3 || !state || !['running', 'cancel_requested'].includes(state.phase)) return;
     personalTimer = setTimeout(() => { personalTimer = undefined; void checkPersonalStatus(true); }, document.hidden ? 8000 : 3000);
   }
   async function checkPersonalStatus(automatic = false): Promise<void> {
@@ -190,11 +193,15 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     personalMode.setAttribute('aria-pressed', String(mode === 'personal')); deviceMode.setAttribute('aria-pressed', String(mode === 'device'));
     personalMode.disabled = deviceMode.disabled = sending || Boolean(mode === 'device' && drafts.read().pending);
     if (mode === 'personal') {
-      const state = conversation().view(); prompt.maxLength = 8000; prompt.readOnly = Boolean(state.requestId);
-      createApp.disabled = sending || Boolean(state.requestId);
-      send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || !prompt.value.trim();
+      const state = conversation().view(); prompt.maxLength = 8000; prompt.readOnly = Boolean(state.requestId) || state.reviewing;
+      createApp.disabled = sending || Boolean(state.requestId) || state.reviewing;
+      send.textContent = 'Отправить'; send.disabled = sending || !personalReady || Boolean(state.requestId) || state.reviewing || !prompt.value.trim();
+      newChat.replaceChildren(icon(state.reviewing ? 'back' : 'plus'), el('span', '', state.reviewing ? 'К черновику' : 'Новый разговор'));
+      newChat.setAttribute('aria-label', state.reviewing ? 'К черновику' : 'Новый разговор');
+      newChat.title = state.reviewing ? 'К черновику' : 'Новый разговор';
       newChat.disabled = sending; stop.hidden = !state.requestId; stop.disabled = state.phase === 'cancel_requested';
       checkPersonal.hidden = !state.requestId; checkPersonal.disabled = checkingPersonal;
+      renderPendingPersonal();
       saved.textContent = state.requestId ? 'Отправка сохранена · автоматического повтора нет' : prompt.value ? 'Черновик сохранён в этом окне' : '';
       privilegeText.textContent = 'Работает с вашими записками и разрешёнными источниками. Подтверждённые диалоги сохраняются. При явной настройке может поставить задачу на вашем устройстве в очередь; это ещё не означает её выполнение.';
       if (state.phase === 'running') {
@@ -210,6 +217,8 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       return;
     }
     createApp.disabled = false;
+    pendingPersonal.hidden = true;
+    newChat.replaceChildren(icon('plus'), el('span', '', 'Новый разговор')); newChat.setAttribute('aria-label', 'Новый разговор'); newChat.title = 'Новый разговор';
     checkPersonal.hidden = true;
     prompt.maxLength = 16000; privilegeText.textContent = 'Работает с правами вашего пользователя на выбранном устройстве.';
     draft = drafts.read();
@@ -236,6 +245,30 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     thread.querySelectorAll<HTMLButtonElement>('.sw-assistant-starters button').forEach(control => { control.disabled = waiting || sending; });
     const suggestions = thread.querySelector<HTMLElement>('.sw-assistant-starters');
     if (suggestions) suggestions.hidden = Boolean(prompt.value.trim()) || waiting || sending;
+  }
+
+  function renderPendingPersonal(): void {
+    const state = conversation().view(), other = state.pendingTasks.filter(item => item.requestId !== state.requestId);
+    pendingPersonal.hidden = !other.length || Boolean(state.requestId && !state.reviewing);
+    pendingSummary.textContent = `Неподтверждённые поручения (${other.length})`;
+    // Keep the existing focused button while status polling only changes progress.
+    const signature = JSON.stringify([sending, checkingPersonal, other]);
+    if (pendingList.dataset.tasks === signature) return;
+    pendingList.dataset.tasks = signature; pendingList.replaceChildren();
+    for (const task of other) {
+      const label = task.question.replace(/\s+/gu, ' ').slice(0, 100);
+      const item = button(`Проверить: ${label}`, 'refresh', 'sw-button-quiet', () => {
+        void (async () => {
+          if (sending || checkingPersonal || !await current()) return;
+          saveDraft(); answerNote?.dispose(); answerNote = undefined; allowNoteCreation.checked = false;
+          const restored = await conversation().restorePending(task.requestId);
+          if (!await current() || mode !== 'personal') return;
+          prompt.value = restored.draft; error.textContent = ''; welcome(); updateControls();
+          await checkPersonalStatus();
+        })().catch(cause => { if (!disposed) error.textContent = friendly(cause); });
+      });
+      item.disabled = sending || checkingPersonal; pendingList.append(item);
+    }
   }
   async function prepareApp(): Promise<void> {
     const revision = generation;
@@ -341,7 +374,7 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
     intro.append(starters); thread.append(intro);
   }
   async function reset(): Promise<void> {
-    if (mode === 'personal') { if (sending || !await current()) return; answerNote?.dispose(); answerNote = undefined; allowNoteCreation.checked = false; conversation().startNew(); prompt.value = ''; error.textContent = ''; welcome(); updateControls(); return; }
+    if (mode === 'personal') { if (sending || !await current()) return; answerNote?.dispose(); answerNote = undefined; allowNoteCreation.checked = false; conversation().startNew(); prompt.value = conversation().view().draft; error.textContent = ''; welcome(); updateControls(); return; }
     if (!await current() || sending || drafts.read().pending) return;
     try { draft = drafts.select({ conversationId: crypto.randomUUID(), cwd: cwd.value, deviceKey: hosts.value }); }
     catch (cause) { error.textContent = friendly(cause); return; }

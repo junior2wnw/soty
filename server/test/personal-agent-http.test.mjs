@@ -206,6 +206,28 @@ test('a lost signed turn ACK recovers its actual completed answer with readonly 
   assert.equal(JSON.parse(note.body).turns.length, 1);
 });
 
+test('retained UI recovery crosses actual signed Root HTTP and preserves a newer draft without model redispatch', async t => {
+  const f = await fixture(t), browser = await sharedBrowser(t, f), records = new Map(); let lose = true;
+  const storage = { getItem: key => records.get(key) ?? null, setItem: (key, value) => records.set(key, value) };
+  const client = { getLocalState: () => browser.client.getLocalState(), async extension(op, args, options) {
+    const result = await browser.client.extension(op, args, options);
+    if (op === 'agent.turn' && lose) { lose = false; throw new TypeError('synthetic lost completed turn response'); }
+    return result;
+  } };
+  const make = () => createPersonalAgentConversation({ accountId: browser.account.accountId, client, storage });
+  let ui = make(); t.after(() => ui.dispose()); await assert.rejects(ui.turn('Original core request'));
+  const id = ui.view().requestId, contextBefore = ui.view().contextId;
+  ui.startNew(); ui.saveDraft('Новый точный черновик'); ui.dispose(); ui = make();
+  assert.equal(ui.view().pendingTasks[0].requestId, id); assert.equal(f.calls.length, 1);
+  await ui.restorePending(id); const result = await ui.checkStatus();
+  assert.equal(result.phase, 'complete'); assert.equal(result.question, 'Original core request');
+  assert.equal(result.answer, 'Подтверждённый ответ'); assert.equal(result.reviewing, true); assert.equal(result.unconfirmed, 0);
+  ui.startNew(); assert.equal(ui.view().draft, 'Новый точный черновик'); assert.equal(ui.view().contextId, contextBefore);
+  assert.equal(f.calls.length, 1);
+  const foreign = await f.call(f.bob, 'agent.status', { requestId: id }); assert.equal(foreign.state, 'unavailable');
+  assert.equal(foreign.result, undefined); assert.equal(f.calls.length, 1);
+});
+
 test('portable generic runtime has an explicit bounded-budget local patch and verified source pin', async () => {
   const root = new URL('../../modules/personal-agent/runtime/vendor/', import.meta.url), pin = JSON.parse(await readFile(new URL('UPSTREAM.json', root))),
     bytes = await readFile(new URL('agent-runtime-core.ts', root));

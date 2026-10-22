@@ -8,10 +8,11 @@ type Client = {
   extension<T>(op: string, args: Record<string, unknown>, options: { expectedAccountId: string }): Promise<T>;
 };
 type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection; browser?: Record<string, unknown>; noteCreation?: true };
-type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string };
+type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string; reviewing?: true };
 export type PersonalAgentView = { phase: 'draft' | 'running' | 'complete' | 'unknown' | 'cancel_requested'; draft: string;
   editor?:{artifact:OtsovProjectArtifact;state:'available'|'opening'|'opened'|'unconfirmed';readback?:EditorReadback};
   contextId?: string; requestId?: string; question?: string; answer?: string; sources: SourcePresentation[]; unconfirmed: number;
+  reviewing: boolean; pendingTasks: { requestId: string; question: string }[];
   progress?: { stage: string; modelRounds: number; completedTools: number; elapsedMs: number; cancelRequested: boolean };
   sourceRecovery?: { reference: { capabilityId: string; version: number }; invocationId: string }[] };
 export type SourcePresentation = { title: string; observedAt: string | null; sourceStatus: string };
@@ -78,21 +79,22 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
   if (raw !== null) {
     if (raw.length > 80000) throw failure('assistant_storage_unavailable');
     let parsed: unknown; try { parsed = JSON.parse(raw); } catch { throw failure('assistant_storage_unavailable'); }
-    if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId']) || parsed.schema !== saved.schema
+    if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId', 'reviewing']) || parsed.schema !== saved.schema
       || typeof parsed.draft !== 'string' || parsed.draft.length > 8000 || !Array.isArray(parsed.pending) || parsed.pending.length > 8
-      || parsed.contextId !== undefined && !context(parsed.contextId)
+      || parsed.contextId !== undefined && !context(parsed.contextId) || parsed.reviewing !== undefined && parsed.reviewing !== true
       || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection', 'browser', 'noteCreation']) || !requestId(item.requestId)
         || item.noteCreation !== undefined && item.noteCreation !== true
         || item.selection !== undefined && !validSelection(item.selection)
         || typeof item.prompt !== 'string' || !item.prompt.trim() || item.prompt.length > 8000 || item.contextId !== undefined && !context(item.contextId))
       || new Set(parsed.pending.map(item => item.requestId)).size !== parsed.pending.length
       || parsed.active !== undefined && !parsed.pending.some(item => item.requestId === parsed.active)) throw failure('assistant_storage_unavailable');
-    saved = parsed as unknown as Saved; if (saved.active) { phase = 'unknown'; question = saved.draft; }
+    saved = parsed as unknown as Saved; if (saved.active) { phase = 'unknown'; question = saved.reviewing ? saved.pending.find(item => item.requestId === saved.active)!.prompt : saved.draft; }
   }
   const persist = (next: Saved) => { const text = JSON.stringify(next); if (text.length > 80000) throw failure('assistant_storage_unavailable'); storage.setItem(key, text); saved = next; };
   const mounted = () => { try { return !disposed && isCurrent() === true; } catch { return false; } };
   const current = async () => { if(!mounted())throw failure('authentication_required');const state=await client.getLocalState();if(state.accountId!==accountId||!mounted())throw failure('authentication_required');return state; };
-  const view = (): PersonalAgentView => ({ phase, draft: saved.draft, unconfirmed: saved.pending.length,
+  const view = (): PersonalAgentView => ({ phase, draft: saved.reviewing ? saved.pending.find(item => item.requestId === saved.active)?.prompt ?? '' : saved.draft,
+    unconfirmed: saved.pending.length, reviewing: saved.reviewing === true, pendingTasks: saved.pending.map(item => ({ requestId: item.requestId, question: item.prompt })),
     ...(saved.contextId ? { contextId: saved.contextId } : {}), ...(saved.active ? { requestId: saved.active } : {}),
     ...(question ? { question } : {}), ...(answer ? { answer } : {}), ...(editor ? { editor:{...editor,artifact:copyArtifact(editor.artifact),...(editor.readback?{readback:{...editor.readback}}:{})} } : {}), sources: sources.map(source => ({ ...source })),
     ...(progress ? { progress: { ...progress } } : {}), ...(sourceRecovery ? { sourceRecovery: sourceRecovery.map(entry => ({ ...entry, reference: { ...entry.reference } })) } : {}) });
@@ -104,7 +106,9 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     if(result.editorHandoff!==undefined&&!validArtifact(result.editorHandoff))throw failure('agent_output_invalid');
     const projectedSources = result.evidence === undefined ? [] : projectSources(result.evidence);
     if (!projectedSources) throw failure('agent_output_invalid');
-    persist({ schema: saved.schema, draft: '', pending: saved.pending.filter(item => item.requestId !== id), contextId: result.contextId });
+    persist(saved.reviewing ? { schema: saved.schema, draft: saved.draft, pending: saved.pending.filter(item => item.requestId !== id), reviewing: true,
+      ...(saved.contextId ? { contextId: saved.contextId } : {}) }
+      : { schema: saved.schema, draft: '', pending: saved.pending.filter(item => item.requestId !== id), contextId: result.contextId });
     completedId=id;editor=result.editorHandoff?{artifact:copyArtifact(result.editorHandoff),state:'available'}:undefined;
     answer = result.answer; sources = projectedSources; progress = undefined; sourceRecovery = undefined; phase = 'complete'; notify(); return view();
   };
@@ -119,20 +123,40 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
   };
   return {
     view,
-    saveDraft(text: string) { if (disposed || running || saved.active) return; if (text.length > 8000) throw failure('agent_invalid_input'); persist({ ...saved, draft: text }); },
+    saveDraft(text: string) { if (disposed || running || saved.active || saved.reviewing) return; if (text.length > 8000) throw failure('agent_invalid_input'); persist({ ...saved, draft: text }); },
     startNew() { if (disposed || running) throw failure('assistant_conversation_busy');
-      activeEditor?.abort.abort();completedId=undefined;editor=undefined;persist({ schema: saved.schema, draft: '', pending: saved.pending }); phase = 'draft'; question = undefined; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined; notify(); },
+      activeEditor?.abort.abort();completedId=undefined;editor=undefined;
+      persist({ schema: saved.schema, draft: saved.reviewing ? saved.draft : '', pending: saved.pending,
+        ...(saved.reviewing && saved.contextId ? { contextId: saved.contextId } : {}) });
+      phase = 'draft'; question = undefined; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined; notify(); },
+    async restorePending(id: string) {
+      await current();
+      if (running) throw failure('assistant_conversation_busy');
+      if (saved.active && !saved.reviewing) throw failure('agent_reconcile_required');
+      const intent = saved.pending.find(item => item.requestId === id);
+      if (!intent) throw failure('agent_turn_unavailable');
+      // Inspect the original ID without replacing a newer draft or granting its old selection.
+      persist({ ...saved, active: id, reviewing: true });
+      activeEditor?.abort.abort(); completedId = undefined; editor = undefined;
+      phase = 'unknown'; question = intent.prompt; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined;
+      notify(); return view();
+    },
     async turn(text: string, metadata?: WorldAssistantContext | null, permissions: { noteCreation?: true } = {}) {
       if (!own(permissions, ['noteCreation']) || permissions.noteCreation !== undefined && permissions.noteCreation !== true) throw failure('agent_invalid_input');
       const noteCreation = permissions.noteCreation === true;
-      if (running || saved.active) throw failure('agent_reconcile_required');
+      if (running || saved.active || saved.reviewing) throw failure('agent_reconcile_required');
       activeEditor?.abort.abort();
       if (!text.trim() || text.length > 8000 || saved.pending.length >= 8) throw failure('agent_capacity');
       const prompt = promptWithAppContext(text, metadata);
       const selection = metadata?.selection ? { ...metadata.selection } : undefined;
       let browser: Record<string, unknown> | null | undefined;
+      const turnIdentity = await current();
+      const turnIdentityCurrent = async () => {
+        const freshIdentity = await current();
+        if (freshIdentity.deviceId !== turnIdentity.deviceId || freshIdentity.localRevision !== turnIdentity.localRevision) throw failure('authentication_required');
+      };
       const turnCurrent = async () => {
-        await current();
+        await turnIdentityCurrent();
         if (browser) {
           const fresh = browserAssist?.binding();
           if (!fresh || Object.keys(browser).some(key => fresh[key] !== browser![key])) throw failure('agent_source_denied');
@@ -142,14 +166,14 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
         }
       };
       await turnCurrent();
-      if (running || saved.active) throw failure('agent_reconcile_required');
+      if (running || saved.active || saved.reviewing) throw failure('agent_reconcile_required');
       if (saved.pending.length >= 8) throw failure('agent_capacity');
       const id = idFactory(); if (!requestId(id) || saved.pending.some(item => item.requestId === id)) throw failure('agent_invalid_input');
       browser = browserAssist?.binding();
       if (browser && (!metadata || browser.appId !== metadata.appId)) throw failure('agent_source_denied');
       const intent: Request = { requestId: id, prompt, ...(noteCreation ? { noteCreation: true as const } : {}), ...(browser ? { browser } : {}), ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
       const editorIdentity=openProjectEditor?await current():undefined;await turnCurrent();
-      if(running||saved.active)throw failure('agent_reconcile_required');
+      if(running||saved.active||saved.reviewing)throw failure('agent_reconcile_required');
       // A storage failure precedes dispatch. Preserve the exact prompt, ID and context before asking the server.
       persist({ ...saved, draft: text, pending: [...saved.pending, intent], active: id });
       completedId=undefined;editor=undefined;
@@ -169,7 +193,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
           requested=copyArtifact(result.editorHandoff);
           try{if(editorIdentity)opening=await performEditor(requested,id,editorIdentity,()=>saved.active===id&&cancellationFor!==id&&running);}catch{}
         }
-        await current();if(saved.active!==id)throw failure('agent_reconcile_required');
+        await turnIdentityCurrent();if(saved.active!==id)throw failure('agent_reconcile_required');
         acceptAnswer(result,id);
         if(requested&&editor){editor={artifact:requested,state:opening?'opened':'unconfirmed',...(opening?{readback:opening}:{})};notify();}
         return view();
@@ -180,8 +204,11 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       const id = saved.active;
       if (!id || checking) return view();
       const intent = saved.pending.find(item => item.requestId === id)!;
+      let statusIdentity: Awaited<ReturnType<Client['getLocalState']>> | undefined;
       const intentCurrent = async () => {
-        await current();
+        const freshIdentity = await current();
+        statusIdentity ??= freshIdentity;
+        if (freshIdentity.deviceId !== statusIdentity.deviceId || freshIdentity.localRevision !== statusIdentity.localRevision) throw failure('authentication_required');
         if (intent.selection && readSelection) { const fresh = readSelection();
           if (!fresh || fresh.appId !== intent.selection.appId || fresh.handle !== intent.selection.handle) throw failure('agent_source_denied'); }
         if (intent.browser) { const fresh = browserAssist?.binding();

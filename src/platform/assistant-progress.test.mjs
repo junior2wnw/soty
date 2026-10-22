@@ -43,6 +43,7 @@ async function fixture(status) {
     textInput:(value,placeholder)=>Object.assign(el('input'),{value,placeholder}),labeledField:(_label,input)=>input};
   const client={getLocalState:async()=>({accountId}),async extension(op,args,options){calls.push({op,args,options});
     if(op==='apps.assistant.history')return{jobs:[],nextCursor:null};if(op==='apps.devices')return{devices:[]};
+    if(op==='agent.cancel')return{schema:'soty.personal-agent-cancel.v1',requestId:args.requestId,cancelRequested:true,remoteTerminationVerified:false};
     assert.equal(op,'agent.status');return status({id,calls,accountId});}};
   doc.hidden=false;doc.activeElement=null;const host=el('main');
   const dependencies={'../world/dom':dom,'../world/icons':{icon:()=>el('i')},'./assistant-state.mjs':state,'./device-key.mjs':device,
@@ -84,4 +85,25 @@ test('switching to device mode while status is pending cannot restart personal p
   const checking=f.click('Проверить выполнение');await entered.promise;await f.click('На компьютере');gate.resolve();await checking;
   assert.equal(f.timers.size,0);assert.equal(f.calls.filter(call=>call.op==='agent.status').length,1);
   assert.equal(f.calls.filter(call=>call.op==='agent.turn').length,0);
+});
+
+test('the actual assistant keeps checking a requested Stop until a terminal or unknown status arrives',async t=>{
+  let terminal=false;const f=await fixture(({id})=>({...running(id),...(terminal?{state:'unknown'}:{}),cancelRequested:terminal}));t.after(()=>f.handle.dispose());
+  await f.click('Проверить выполнение');await f.click('Остановить');
+  assert.equal(f.calls.filter(call=>call.op==='agent.cancel').length,1);assert.equal(f.timers.size,1);
+  await f.fire();assert.equal(f.timers.size,1);assert.match(f.host.textContent,/Остановка запрошена/u);
+  terminal=true;await f.fire();assert.equal(f.timers.size,0);assert.match(f.host.textContent,/Подтверждение не получено/u);
+  assert.equal(f.calls.filter(call=>call.op==='agent.turn').length,0);
+});
+
+test('the actual assistant exposes retained tasks and returns to the newer unsent draft without redispatch',async t=>{
+  const f=await fixture(({id})=>({...running(id),state:'unknown'}));t.after(()=>f.handle.dispose());
+  await f.click('Новый разговор');
+  const prompt=f.nodes.find(node=>node.tagName==='TEXTAREA');prompt.value='Новый несохранённый запрос';prompt.dispatchEvent(new Event('input'));await tick();
+  await f.click('Проверить: Original exact retained question');
+  assert.equal(prompt.value,'Original exact retained question');assert.equal(prompt.readOnly,true);
+  assert.equal(f.calls.filter(call=>call.op==='agent.status').length,1);
+  await f.click('К черновику');assert.equal(prompt.value,'Новый несохранённый запрос');assert.equal(prompt.readOnly,false);
+  assert.equal(f.calls.filter(call=>call.op==='agent.turn').length,0);
+  assert.match([...f.records.values()].find(text=>text.includes('review_poll_original_01')),/Новый несохранённый запрос/u);
 });

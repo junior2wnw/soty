@@ -66,6 +66,24 @@ test('interruption pauses immediately, requests backend cancellation and stays m
   await f.voice.resumePlayback(); assert.equal(f.audio.muted, false); assert.ok(f.audio.playCount > 0);
 });
 
+test('interrupting a delegated task immediately leaves Working and a late answer cannot restore it', async t => {
+  const held=deferred(),entered=deferred();
+  const f=fixture(t,{async rpc(op){if(op==='voice.orb.turn'){entered.resolve();await held.promise;throw Error('interrupted synthetic task');}}});
+  t.after(()=>held.resolve());await f.start();speak(f);await entered.promise;
+  assert.equal(f.voice.view().phase,'working');await f.voice.interrupt();
+  assert.equal(f.voice.view().phase,'listening');assert.equal(f.voice.view().code,'voice_orb_cancel_requested');assert.equal(f.audio.muted,true);
+  held.resolve();await flush();assert.equal(f.voice.view().phase,'listening');assert.equal(f.voice.view().answer,'');
+  f.peers[0].message({type:'input_audio_buffer.speech_started'});await flush();assert.equal(f.voice.view().code,null);
+  assert.equal(f.calls.filter(row=>row.op==='voice.orb.turn').length,1);
+});
+
+test('a failed signed interruption stays visibly unconfirmed until fresh speech', async t => {
+  const f=fixture(t,{async rpc(op){if(op==='voice.orb.cancel')throw Error('synthetic cancel outage');}});
+  await f.start();await f.voice.interrupt();assert.equal(f.voice.view().phase,'unknown');assert.equal(f.audio.muted,true);
+  assert.equal(f.voice.view().code,'voice_orb_unknown');assert.equal(f.voice.view().remoteTerminationVerified,false);
+  f.peers[0].message({type:'input_audio_buffer.speech_started'});await flush();assert.equal(f.voice.view().phase,'listening');assert.equal(f.voice.view().code,null);
+});
+
 test('duplicate delegation metadata and unknown response never automatically dispatch a second turn', async t => {
   const f = fixture(t, { async rpc(op) { if (op === 'voice.orb.turn') throw new Error('synthetic_network_unknown'); } });
   await f.start(); const metadata = { type: 'response.done', response: { status: 'completed', metadata: { soty_input: 'fixture_user' }, output: [{ type: 'function_call', status: 'completed', name: 'delegate_to_agent', call_id: 'once_task', arguments: '{"task":"Сделай записку"}' }] } };
