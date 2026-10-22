@@ -66,7 +66,7 @@ function startFixture(root,label=currentStorageReaders,probe=()=>readStorageForm
 test('v7 explicit empty is admissible and historical3..6 labels, formats and receipts keep their old key semantics',async t=>{
   const f=await folder(t),observed=await readStorageFormat(f.root);assert.deepEqual(observed,empty7());
   assert.deepEqual(assertStorageCompatible(image(OLD6),observed),observed);
-  const current=storageReaders(image());assert.deepEqual(current.world,[6]);assert.deepEqual(current.apps,[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
+  const current=storageReaders(image());assert.deepEqual(current.world,[6,7]);assert.deepEqual(current.apps,[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
   for(const version of [3,4,5,6]){
     const old=legacy(version),parsed=checkedStorageFormat(old.format);assert.deepEqual(parsed,old.format);storageReaders(image(old.label));
     assertStorageCompatible(image(old.label),old.format);

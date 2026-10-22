@@ -784,6 +784,8 @@ const worldLayouts = Object.freeze({
   '5:1': { objects: 42, digest: 'b8287f349c04e2ac24d63fc9a5f230545f02ef209e8781008503790986a4c1a3' },
   '6:0': { objects: 88, digest: 'f5e52f2f8330417f360b7b4d750926ae03e6fb274bbfe3184da2e8b5a596130a' },
   '6:1': { objects: 96, digest: '2ada5247d1f7919143e9bff51c539d988f143558257e1bbac8c8c9fb75f9bf2b' },
+  '7:0': { objects: 94, digest: 'b2813ad26c4ec8c79e0eef9876fb9073df75044d4c80bc16999573c6f9d780bc' },
+  '7:1': { objects: 102, digest: '2d2b575f236c4fce030c492de96aa56decb8fe19c633b5f3f6c5bb38c7e0ebb5' },
 });
 function recognizeFrozenLayout(db, pin) {
   if (!pin) fail('storage_format_unreadable');
@@ -820,7 +822,7 @@ export async function readWorldFormat(dataDir = '/data') {
   if (!file) return 'empty';
   return inspectDatabase(file, db => {
     const version = Number(db.prepare('PRAGMA user_version').get().user_version);
-    if (![3,5,6].includes(version)) fail('storage_format_unknown');
+    if (![3,5,6,7].includes(version)) fail('storage_format_unknown');
     const rows = db.prepare('SELECT key,CASE WHEN length(value)<=128 THEN value END AS value FROM world_meta LIMIT 5').all();
     const meta = Object.fromEntries(rows.map(row => [row.key,row.value])), field = meta.field_schema_version !== undefined;
     const keys = ['project_id','lineage','schema_version',...(field ? ['field_schema_version'] : [])].sort().join(',');
@@ -831,7 +833,7 @@ export async function readWorldFormat(dataDir = '/data') {
       || db.prepare(`SELECT 1 FROM profiles p LEFT JOIN profile_avatars a ON a.account_id=p.account_id
         WHERE (p.avatar_revision IS NULL)<>(a.account_id IS NULL)
           OR (p.avatar_revision IS NOT NULL AND (typeof(p.avatar_revision)<>'integer' OR p.avatar_revision<1 OR p.avatar_revision>p.revision)) LIMIT 1`).get()) fail('storage_format_unreadable');
-    if (version === 6) recognizeCoverStorage(db, 'profile_avatar');
+    if (version >= 6) recognizeCoverStorage(db, 'profile_avatar');
     return version;
   });
 }

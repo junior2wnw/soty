@@ -65,7 +65,7 @@ COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
 LABEL io.soty.universal.legacy="${LEGACY_UNIVERSAL_MODE}"
-LABEL io.soty.storage.readers="{\"version\":7,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4],\"world\":[6]}}"
+LABEL io.soty.storage.readers="{\"version\":7,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4],\"world\":[6,7]}}"
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]
