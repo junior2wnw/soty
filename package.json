@@ -62,6 +62,7 @@
     "sharp": "0.34.5",
     "tldts": "7.4.16",
     "trustlink-kernel": "git+https://github.com/junior2wnw/4-2-rf.git#082f47242177b56ac2548c3c5b8e8c264dbae500",
+    "web-push": "3.6.7",
     "ws": "^8.18.0",
     "yjs": "^13.6.21"
   },

@@ -34,6 +34,60 @@ function isSotyDocument(value) {
     || /^#(?:app|launch|notes|access|mine|library|community)(?:\/|\?|$)/u.test(url.hash);
 }
 
+const pushBindingCache = 'soty-notifications-v1';
+const pushBindingPath = '/__soty_push_binding';
+let pushBindingWork = Promise.resolve();
+const pushBindingId = value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
+function validPush(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).every(key => ['schema', 'notificationId', 'bindingId'].includes(key))
+    && value.schema === 'soty.push.v1' && typeof value.notificationId === 'string'
+    && /^[A-Za-z0-9_-]{32}$/u.test(value.notificationId) && pushBindingId(value.bindingId);
+}
+async function currentPushBinding() {
+  await pushBindingWork;
+  const response = await (await caches.open(pushBindingCache)).match(pushBindingPath);
+  try { const value=response ? await response.json() : null;return value?.enabled === true ? value.bindingId : null; } catch { return null; }
+}
+function updatePushBinding(data) {
+  const updating = pushBindingWork.then(async () => {
+    const cache = await caches.open(pushBindingCache);
+    if (data.type === 'SOTY_PUSH_BIND') {
+      await cache.put(pushBindingPath, new Response(JSON.stringify({ bindingId: data.bindingId, enabled: data.enabled }), { headers: { 'Content-Type': 'application/json' } }));
+    } else {
+      const prior = await cache.match(pushBindingPath);
+      if (prior && (await prior.json()).bindingId === data.bindingId) await cache.delete(pushBindingPath);
+    }
+    const shown = await self.registration.getNotifications?.() ?? [];
+    for (const notification of shown) {
+      const bound = notification.data?.bindingId;
+      if (pushBindingId(bound) && (data.type === 'SOTY_PUSH_BIND' ? !data.enabled || bound !== data.bindingId : bound === data.bindingId)) notification.close();
+    }
+  });
+  pushBindingWork = updating.catch(() => {});
+  return updating;
+}
+self.addEventListener('push', event => {
+  event.waitUntil((async () => {
+    let data;
+    try { if (!event.data || event.data.text().length > 1024) return; data = event.data.json(); } catch { return; }
+    if (!validPush(data) || await currentPushBinding() !== data.bindingId) return;
+    await self.registration.showNotification('Соты', { body: 'Новое сообщение', icon: '/icons/soty-192.png',
+      badge: '/icons/soty-192.png', tag: 'soty-' + data.notificationId, data, renotify: false });
+  })());
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const data = event.notification.data;
+    if (!validPush(data) || await currentPushBinding() !== data.bindingId) return;
+    // Only the fixed Soty shell and an opaque lookup ID cross this boundary.
+    // The signed app checks the current account/device/ACL before opening a chat.
+    const url = new URL(offlineShell, self.location.origin); url.searchParams.set('notification', data.notificationId);
+    await self.clients.openWindow(url.href);
+  })());
+});
+
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
@@ -61,7 +115,13 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data?.type === 'SOTY_OFFLINE_STATUS') {
+  if (['SOTY_PUSH_BIND', 'SOTY_PUSH_CLEAR'].includes(event.data?.type)) {
+    const source = event.source?.url;
+    if (!source || new URL(source).origin !== self.location.origin || !isSotyDocument(source)
+      || !pushBindingId(event.data.bindingId) || event.data.type === 'SOTY_PUSH_BIND' && typeof event.data.enabled !== 'boolean'
+      || Object.keys(event.data).some(key => !['type', 'bindingId', ...(event.data.type === 'SOTY_PUSH_BIND' ? ['enabled'] : [])].includes(key))) return;
+    event.waitUntil(updatePushBinding(event.data).then(() => event.ports[0]?.postMessage({ ok: true }), () => event.ports[0]?.postMessage({ ok: false })));
+  } else if (event.data?.type === 'SOTY_OFFLINE_STATUS') {
     event.waitUntil((async () => {
       const cache = await caches.open(cacheName);
       const ready = await Promise.all([...new Set([...shellUrls, ...buildAssets])].map(url => cache.match(url)));
