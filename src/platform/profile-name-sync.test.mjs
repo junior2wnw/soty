@@ -125,6 +125,7 @@ async function fixture(t) {
   const accountPort = { ...primary, extension: (operation, args = {}, context) => primary.extension(operation, JSON.parse(JSON.stringify(args)),
     context === undefined ? undefined : JSON.parse(JSON.stringify(context))) };
   const ports = {
+    './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); return { state, intent: null }; } },

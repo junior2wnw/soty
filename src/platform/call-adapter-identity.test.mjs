@@ -103,6 +103,7 @@ async function worldFixture({ failRead = false, failMount = false, failBootstrap
     removeEventListener(type, callback) { pageListeners.get(type)?.delete(callback); } };
   const binding = await compiled('./call-identity.ts');
   const adapter = await compiled('./world-adapter.ts', {
+    './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
     './connection-intent.mjs': connectionIntents,
     './connection-hub': { async ensureConnectionAccount(_host, options) { const state = await options.client.getLocalState(); if (!state.accountId) throw startupError; return { state, intent: null }; } },
