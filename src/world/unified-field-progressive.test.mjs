@@ -96,6 +96,7 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
     icon: () => node('svg'), iconButton: (label, _, onClick) => Object.assign(node('button', '', label), { onClick }),
     avatar: () => node('span', 'avatar'),
     kindLabel: kind => kind,
+    renderMineSearchResults() {},
     closeList() { state.listCloses++; }, closePreview() { state.previewClosed++; environment.preview?.remove(); environment.preview = null; delete environment.element.dataset.preview; environment.selected = null; },
   };
   vm.createContext(environment);

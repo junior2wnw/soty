@@ -81,6 +81,16 @@
   display: flex; gap: 8px; width: min(524px,calc(100% - 400px)); min-width: 0; padding: 0;
 }
 .sw-app[data-experience=one-field] .uf-screen:not([data-search=open])>.uf-local-search { display: none; }
+/* This finite top-to-bottom box follows the existing main grid row, so status
+   rows and the visible viewport reduce its space before results are laid out.
+   Only the real controls hit-test; unused space in the box still pans the field. */
+.sw-app[data-experience=one-field] .uf-local-search:has(>.uf-search-results:not([hidden])) {
+  bottom: var(--of-search-bottom-inset,16px); min-height: 0;
+  flex-flow: column nowrap; align-items: stretch; pointer-events: none;
+}
+.sw-app[data-experience=one-field] .uf-local-search:has(>.uf-search-results:not([hidden]))>* { pointer-events: auto; }
+.sw-app[data-experience=one-field] .uf-local-search:has(>.uf-search-results:not([hidden]))>.uf-global-search { flex: none; }
+.sw-app[data-experience=one-field] .uf-local-search>.uf-search-results { flex: 0 1 auto; min-height: 0; max-height: 264px; }
 .sw-app[data-experience=one-field] .uf-global-search {
   width: 100%; max-width: none; min-width: 0; min-height: 52px; margin: 0;
   padding: 3px 12px; gap: 10px; border: 1px solid var(--sw-line); border-radius: 28px;
@@ -189,11 +199,18 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .sw-app[data-experience=one-field] .sw-inbox .sw-human-call-join>span { display: none; }
 }
 @media (max-width:720px) {
+  .sw-app[data-experience=one-field] {
+    --of-compact-search-width: calc(100% - 84px);
+    --of-mobile-dock-height: 48px;
+    --of-mobile-dock-bottom: calc(24px + env(safe-area-inset-bottom,0px));
+    /* Same dock geometry plus a 16px gap, not a viewport-height guess. */
+    --of-search-bottom-inset: calc(var(--of-mobile-dock-bottom) + var(--of-mobile-dock-height) + 16px);
+  }
   .sw-app[data-experience=one-field]>.sw-topbar,
   .sw-app[data-experience=one-field][data-agent-orb=ready]>.sw-topbar { display: none; }
   .sw-app[data-experience=one-field]>.sw-mobile-nav {
-    position: absolute; inset: auto auto calc(24px + env(safe-area-inset-bottom,0px)) 50%; transform: translateX(-50%);
-    z-index: 30; display: flex; align-items: center; gap: 4px; width: 148px; height: 48px; min-height: 48px; margin: 0; padding: 1px 3px;
+    position: absolute; inset: auto auto var(--of-mobile-dock-bottom) 50%; transform: translateX(-50%);
+    z-index: 30; display: flex; align-items: center; gap: 4px; width: 148px; height: var(--of-mobile-dock-height); min-height: var(--of-mobile-dock-height); margin: 0; padding: 1px 3px;
     border: 1px solid var(--sw-line); border-radius: 30px; background: var(--of-paper); box-shadow: none;
   }
   .sw-app[data-experience=one-field]>.sw-mobile-nav>.sw-icon-button,
@@ -225,6 +242,22 @@ body:has(.sw-app[data-experience=one-field]) .of-menu-dialog {
   .of-sheet-handle { position: relative; display: block; width: 100%; min-width: 44px; height: 44px; min-height: 44px; margin: -10px auto 0; padding: 0; border: 0; background: transparent; touch-action: none; }
   .of-sheet-handle::before { content: ''; position: absolute; width: 42px; height: 5px; top: 14px; left: 50%; transform: translateX(-50%); border-radius: 5px; background: var(--sw-control-border); }
   .of-menu-grid>.sw-button { min-height: 88px; font-size: 13px; }
+}
+/* Compact only while the field search owns the main row; closing it restores
+   the unchanged switch/dock. Desktop width also reserves the existing toolbar. */
+@media (max-height:360px) {
+  .sw-app[data-experience=one-field]>.sw-main>.uf-screen[data-search=open] { min-height: 0; }
+  .sw-app[data-experience=one-field]:has(>.sw-main>.uf-screen[data-search=open])>:is(.of-field-navigation,.sw-mobile-nav) { display: none; }
+  .sw-app[data-experience=one-field]>.sw-main>.uf-screen[data-search=open]>.uf-local-search {
+    top: max(16px,env(safe-area-inset-top,0px)); left: 16px; transform: none;
+    width: var(--of-compact-search-width,min(524px,calc(100% - 275px))); --of-search-bottom-inset: 16px;
+  }
+}
+html[data-soty-keyboard=true] .sw-app[data-experience=one-field]>.sw-main>.uf-screen[data-search=open] { min-height: 0; }
+html[data-soty-keyboard=true] .sw-app[data-experience=one-field]:has(>.sw-main>.uf-screen[data-search=open])>:is(.of-field-navigation,.sw-mobile-nav) { display: none; }
+html[data-soty-keyboard=true] .sw-app[data-experience=one-field]>.sw-main>.uf-screen[data-search=open]>.uf-local-search {
+  top: max(16px,env(safe-area-inset-top,0px)); left: 16px; transform: none;
+  width: var(--of-compact-search-width,min(524px,calc(100% - 275px))); --of-search-bottom-inset: 16px;
 }
 @media (max-width:720px) and (max-height:480px) {
   .sw-app[data-experience=one-field]:not([data-human-call-incoming=true]):not([data-human-call-active=true]):has(>.sw-main>.of-app-surface:not(:fullscreen):not(.is-window-expanded)) { grid-template-rows: auto auto minmax(0,1fr); grid-template-areas: none; }

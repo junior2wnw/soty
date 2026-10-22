@@ -82,7 +82,12 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   closeSearch.classList.add('uf-search-close'); search.append(closeSearch);
   const listButton = button('Список', 'list', 'uf-list-button', () => openList());
   listButton.setAttribute('aria-haspopup', 'dialog'); listButton.setAttribute('aria-label', 'Соты списком');
-  const localSearch = el('div', 'uf-local-search'); localSearch.append(search, listButton);
+  const localSearch = el('div', 'uf-local-search');
+  const mineSearchResults = el('div', 'uf-search-results'); mineSearchResults.hidden = true;
+  mineSearchResults.setAttribute('role', 'group'); mineSearchResults.setAttribute('aria-label', 'Результаты на моём поле');
+  const mineSearchStatus = el('p', 'uf-search-result-status'); mineSearchStatus.setAttribute('role', 'status');
+  const mineSearchList = el('div', 'uf-search-result-list');
+  mineSearchResults.append(mineSearchStatus, mineSearchList); localSearch.append(search, listButton, mineSearchResults);
   const filters = el('div', 'uf-filters'); filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Какие объекты показать');
   const compactFilter = el('select', 'uf-compact-filter'); compactFilter.setAttribute('aria-label', 'Какие объекты показать'); filters.append(compactFilter);
   compactFilter.addEventListener('change', () => { filter = compactFilter.value as FieldFilter; filtersByMode[mode] = filter; updateChrome(); inputChanged(true); });
@@ -141,6 +146,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let previewOpener: HTMLElement | null = null;
   let searchOpener: HTMLElement | null = null;
   let listDialog: WorldDialog | null = null;
+  let mineSearchSignature = '';
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
   let firstResolve = !options.viewState?.mine;
@@ -265,7 +271,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     compactFilter.replaceChildren(...(['all', 'app', 'community', 'person', 'device'] as FieldFilter[]).filter(kind => mode !== 'search' || kind !== 'device').map(kind => { const option = el('option', '', labels[kind]); option.value = kind; return option; }));
     compactFilter.value = filter;
     if (focused instanceof HTMLElement && filters.contains(focused) && !focused.getClientRects().length) searchInput.focus({ preventScroll: true });
-    contextKey = ''; if (summary) updateSummary(summary); placeSearch();
+    contextKey = ''; if (summary) updateSummary(summary); placeSearch(); renderMineSearchResults();
   }
   function route(): void { options.onRoute(mode, queries[mode], filter); }
   function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else updateMineFilter(); }
@@ -313,6 +319,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function updateMineEmpty(doc: FieldDocument): void {
     if (mode !== 'mine') return;
+    renderMineSearchResults();
     if (mineResolvedGeneration !== mineGeneration && element.dataset.mineState !== 'error') {
       empty.hidden = true; emptyDocument = null; return;
     }
@@ -475,7 +482,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   async function loadMine(): Promise<void> {
     if (!engine || !current()) return; closeList(false); const generation = ++mineGeneration;
-    mineConfirmedGeneration = -1; empty.hidden = true; element.dataset.mineState = 'loading';
+    mineConfirmedGeneration = -1; empty.hidden = true; element.dataset.mineState = 'loading'; renderMineSearchResults();
     if (mineBusy) {
       queuedMine?.(false);
       if (!await new Promise<boolean>(resolve => { queuedMine = resolve; })) return;
@@ -668,6 +675,38 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     for (const context of doc.contexts) if (!query || matchingContexts.has(context.contextId) || includedContexts.has(context.contextId)) rows.push({ key: `context:${context.contextId}`, title: context.title, detail: 'Пространство', contextId: context.contextId });
     const find = localQuery.trim().toLocaleLowerCase('ru');
     return rows.filter(row => `${row.title} ${row.detail}`.toLocaleLowerCase('ru').includes(find));
+  }
+  function renderMineSearchResults(): void {
+    const query = queries.mine, needle = query.trim().toLocaleLowerCase('ru');
+    if (!current() || !engine || mode !== 'mine' || !needle || composing) {
+      mineSearchResults.hidden = true; mineSearchSignature = '';
+      mineSearchStatus.textContent = ''; mineSearchList.replaceChildren(); return;
+    }
+    const rows = listEntries().filter(row => row.entity || row.title.toLocaleLowerCase('ru').includes(needle));
+    const pending = mineConfirmedGeneration !== mineGeneration || element.dataset.mineState !== 'ready';
+    const signature = JSON.stringify([query, filter, pending, rows]);
+    if (signature === mineSearchSignature) return;
+    mineSearchSignature = signature; mineSearchResults.hidden = false;
+    mineSearchStatus.textContent = rows.length ? 'Найдено: ' + rows.length + (pending ? ' · часть сот ещё проверяется' : '')
+      : pending ? 'Доступ к сотам ещё не подтверждён.' : 'Ничего не найдено.';
+    mineSearchList.replaceChildren();
+    const capturedFilter = filter;
+    const live = (): boolean => current() && mode === 'mine' && queries.mine === query && filter === capturedFilter
+      && !composing && !mineSearchResults.hidden && mineSearchResults.isConnected;
+    for (const row of rows.slice(0, 6)) {
+      const action = button('', row.contextId ? 'layers' : 'next', 'uf-list-entry uf-search-result', () => {
+        if (!live() || !action.isConnected) return;
+        const fresh = listEntries().find(value => value.key === row.key);
+        if (!fresh) { mineSearchSignature = ''; renderMineSearchResults(); return; }
+        if (fresh.contextId) { closePreview(false); engine?.focusContext(fresh.contextId); }
+        else if (fresh.entity) { const item = metadata.get(fieldEntityKey(fresh.entity)); if (item) activate(item, fresh.shortcutId); }
+      });
+      const copy = el('span', 'uf-list-copy'); copy.append(el('strong', '', row.title), el('small', '', row.detail));
+      action.replaceChildren(icon(row.contextId ? 'layers' : 'next'), copy); mineSearchList.append(action);
+    }
+    if (rows.length > 6) mineSearchList.append(button('Открыть списком', 'list', 'uf-list-entry', () => {
+      if (live()) openList();
+    }));
   }
   function openList(): void {
     if (!current() || !engine || document.querySelector('dialog[open]')) return;
