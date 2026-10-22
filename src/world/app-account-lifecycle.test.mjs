@@ -119,14 +119,14 @@ test('ElementPort inline styles retain values across CSS names and camelCase wit
   element.style.removeProperty('--owned-test-value'); assert.equal(element.style.getPropertyValue('--owned-test-value'), '');
 });
 
-function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
+function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
   const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, crypto, btoa,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
-    navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
+    navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: coarse, addEventListener() {} }) });
   document.defaultView = view;
   view.MutationObserver = class { observe() {} disconnect() {} };
   const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [];
@@ -183,7 +183,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication;`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
     document, navigator: view.navigator, crypto: globalThis.crypto, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
-    setInterval: view.setInterval, ResizeObserver: class { observe() {} disconnect() {} },
+    setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
   const Controller = module.exports.TestController, app = Object.create(Controller.prototype);
@@ -2160,11 +2160,12 @@ for (const scenario of ['initial accepted send', 'later history poll', 'newer te
     Object.assign(f.ports['./dom'], { timeLabel: () => '12:00', avatar: () => f.makeElement('span') });
     f.app.chatDrafts = drafts; f.app.preferences = { motion: false };
     const target = { kind: 'direct', id: 'room_fixture', draftKey: 'room_fixture', name: 'Synthetic conversation', subtitle: 'Private', avatarContext: undefined,
+      record: { relationshipId: 'relationship_fixture' },
       canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
       async request(action) { if (action === 'list') return pollResponse ?? page.promise; throw Error(`Unexpected chat action: ${action}`); }, setUnread() {} };
     const parent = f.makeElement('div');
     f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
-    const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer'), send = composer.querySelector('button');
+    const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer'), send = composer.querySelector('.sw-button-primary');
     input.focus(); assert.equal(input.value, 'Original A');
     if (scenario === 'newer text and reply') drafts.edit('account-A', 'room_fixture', 'New draft B', 'reply_next');
     if (scenario === 'another tab already acknowledged') chatState.createChatDraftStore(storage).acknowledge('account-A', 'room_fixture', 'intent_original');
@@ -2186,3 +2187,23 @@ for (const scenario of ['initial accepted send', 'later history poll', 'newer te
     f.app.chatCleanup();
   });
 }
+
+for (const coarse of [false, true]) test(`chat composer keyboard: ${coarse ? 'touch Enter stays a newline; modified Enter sends' : 'desktop Enter sends'} without submitting composition`, async () => {
+  const f = fixture({ coarse }), disk = new Map();
+  f.app.chatDrafts = chatState.createChatDraftStore({ getItem: key => disk.get(key) ?? null, setItem: (key, value) => disk.set(key, value), removeItem: key => disk.delete(key) });
+  f.app.chatDrafts.edit('account-A', 'keyboard_room', 'Keyboard draft');
+  f.app.preferences = { motion: false };
+  const parent = f.makeElement('div'), target = { kind: 'community', id: 'keyboard_room', draftKey: 'keyboard_room', name: 'Keyboard fixture', record: {},
+    canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {}, async request() { return { messages: [], hasMore: false }; }, setUnread() {} };
+  f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer');
+  let submissions = 0, prevented = 0; composer.requestSubmit = () => { submissions++; };
+  const key = modifiers => input.emit('keydown', { key: 'Enter', keyCode: 13, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, isComposing: false,
+    preventDefault() { prevented++; }, ...modifiers });
+  key({ isComposing: true }); key({ keyCode: 229 }); key({ shiftKey: true });
+  assert.equal(submissions, 0); assert.equal(prevented, 0);
+  key({}); assert.equal(submissions, coarse ? 0 : 1); assert.equal(prevented, coarse ? 0 : 1);
+  if (coarse) { key({ ctrlKey: true }); key({ metaKey: true }); assert.equal(submissions, 2); assert.equal(prevented, 2); }
+  assert.equal(input.enterKeyHint, coarse ? 'enter' : 'send');
+  await turn(); f.app.chatCleanup();
+});

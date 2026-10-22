@@ -1,7 +1,10 @@
 const PREFIX = 'soty.chat.draft.v1:';
+const ATTACHMENT_PREFIX = 'soty.chat.draft.v2:';
 const empty = () => ({ text: '', replyTo: null, pending: null });
-const copy = value => ({ text: value.text, replyTo: value.replyTo, pending: value.pending ? { ...value.pending } : null });
 const replyId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(value) ? value : null;
+const refs = value => Array.isArray(value) && value.length <= 10 && value.every(item => replyId(item)) && new Set(value).size === value.length ? [...value] : [];
+const withRefs = value => refs(value).length ? { attachments: refs(value) } : {};
+const copy = value => ({ text: value.text, replyTo: value.replyTo, ...withRefs(value.attachments), pending: value.pending ? { ...value.pending, ...withRefs(value.pending.attachments) } : null });
 function decode(raw) {
   const value = empty();
   try {
@@ -9,7 +12,9 @@ function decode(raw) {
     if (item && typeof item.text === 'string' && item.text.length <= 6000) {
       value.text = item.text;
       value.replyTo = replyId(item.replyTo);
+      Object.assign(value, withRefs(item.attachments));
       if (item.pending && typeof item.pending.clientId === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(item.pending.clientId) && typeof item.pending.text === 'string' && item.pending.text.length <= 6000) value.pending = { clientId: item.pending.clientId, text: item.pending.text, replyTo: replyId(item.pending.replyTo) };
+      if (value.pending) Object.assign(value.pending, withRefs(item.pending.attachments));
     }
   } catch { /* Invalid local metadata is not executable data. */ }
   return value;
@@ -19,14 +24,20 @@ function decode(raw) {
 export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()) {
   const memory = new Map();
   const volatile = new Set();
+  const attachmentScopes = new Set();
   const listeners = new Map();
   const keyFor = (accountId, communityId) => PREFIX + encodeURIComponent(accountId) + ':' + encodeURIComponent(communityId);
+  function stored(key) {
+    const newer = storage.getItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length));
+    if (newer !== null && newer !== undefined) { attachmentScopes.add(key); return newer; }
+    return attachmentScopes.has(key) ? null : storage.getItem(key);
+  }
   const notify = (key, value) => { for (const listener of listeners.get(key) || []) listener(copy(value)); };
   function read(accountId, communityId) {
     const key = keyFor(accountId, communityId);
     if (!memory.has(key)) {
       let value = empty();
-      try { value = decode(storage.getItem(key)); } catch { /* The live session can still keep an in-memory draft. */ }
+      try { value = decode(stored(key)); } catch { /* The live session can still keep an in-memory draft. */ }
       memory.set(key, value);
     }
     return copy(memory.get(key));
@@ -36,7 +47,11 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     memory.set(key, copy(value));
     let durable = true;
     try {
-      if (value.text || value.replyTo || value.pending) storage.setItem(key, JSON.stringify(value));
+      // Attachment intents live in v2; an old tab cannot erase their refs/clientId.
+      // Keep its small empty tombstone so legacy v1 text cannot revive after ACK.
+      if (refs(value.attachments).length || refs(value.pending?.attachments).length) attachmentScopes.add(key);
+      if (attachmentScopes.has(key)) storage.setItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length), JSON.stringify(value));
+      else if (value.text || value.replyTo || value.pending) storage.setItem(key, JSON.stringify(value));
       else storage.removeItem(key);
       volatile.delete(key);
     } catch {
@@ -54,26 +69,46 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       if (replyTo !== undefined) value.replyTo = replyId(replyTo);
       return save(accountId, communityId, value);
     },
-    beginSend(accountId, communityId, text, replyTo) {
+    setAttachments(accountId, communityId, attachments) {
+      const value=read(accountId,communityId);delete value.attachments;Object.assign(value,withRefs(attachments));
+      return save(accountId,communityId,value);
+    },
+    beginSend(accountId, communityId, text, replyTo, attachments) {
+      const key = keyFor(accountId, communityId);
+      if (!volatile.has(key)) { try { memory.set(key, decode(stored(key))); } catch { /* Preserve the live draft. */ } }
       const value = read(accountId, communityId);
-      // Resolve an unknown ACK before another intent can replace its retry id.
-      // The editable next draft remains separate until this send is acknowledged.
-      if (value.pending) return { ...value.pending, durable: !volatile.has(keyFor(accountId, communityId)) };
       value.text = text;
       if (replyTo !== undefined) value.replyTo = replyId(replyTo);
-      value.pending = { clientId: makeId(), text, replyTo: value.replyTo };
+      if (attachments !== undefined) { delete value.attachments; Object.assign(value,withRefs(attachments)); }
+      // An attachment send can already have committed even when its ACK was
+      // lost. Keep that exact intent; edits are the next draft, not a new send.
+      if (!value.pending) value.pending = { clientId: makeId(), text, replyTo: value.replyTo, ...withRefs(value.attachments) };
       const durable = save(accountId, communityId, value);
       return { ...value.pending, durable };
     },
-    acknowledge(accountId, communityId, clientId) {
+    recoverPending(accountId, communityId, pending) {
+      const value=read(accountId,communityId);
+      const captured={clientId:pending.clientId,text:pending.text,replyTo:replyId(pending.replyTo),...withRefs(pending.attachments)};
+      if (JSON.stringify(value.pending)===JSON.stringify(captured)) return value;
+      value.pending=captured;save(accountId,communityId,value);return copy(value);
+    },
+    discardUnsubmitted(accountId, communityId, clientId) {
+      const value=read(accountId,communityId);
+      if(value.pending?.clientId===clientId){value.pending=null;save(accountId,communityId,value);}
+      return value;
+    },
+    acknowledge(accountId, communityId, clientId, acceptedAttachments) {
       const key = keyFor(accountId, communityId);
-      if (!volatile.has(key)) { try { memory.set(key, decode(storage.getItem(key))); } catch { /* A revoked storage permission must not erase the live copy. */ } }
+      if (!volatile.has(key)) { try { memory.set(key, decode(stored(key))); } catch { /* A revoked storage permission must not erase the live copy. */ } }
       const value = read(accountId, communityId);
       // A late ACK must never clear a newer draft or a later send.
-      // A reread may also settle another tab's ACK before its storage event arrives.
-      if (value.pending?.clientId !== clientId) { notify(key, value); return value; }
-      if (value.text.trim() === value.pending.text && value.replyTo === value.pending.replyTo) { value.text = ''; value.replyTo = null; }
-      value.pending = null; save(accountId, communityId, value);
+      const pending=value.pending?.clientId===clientId?value.pending:null;
+      const accepted=refs(acceptedAttachments??pending?.attachments);
+      if(!pending&&!refs(value.attachments).some(id=>accepted.includes(id))){notify(key,value);return value;}
+      if (pending && value.text.trim() === pending.text && value.replyTo === pending.replyTo
+        && JSON.stringify(refs(value.attachments)) === JSON.stringify(refs(pending.attachments))) { value.text = ''; value.replyTo = null; }
+      const remaining=refs(value.attachments).filter(id=>!accepted.includes(id));delete value.attachments;Object.assign(value,withRefs(remaining));
+      if(pending)value.pending=null;save(accountId, communityId, value);
       return copy(value);
     },
     retrySave(accountId, communityId) { return save(accountId, communityId, read(accountId, communityId)); },
@@ -82,10 +117,12 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       return () => { subscribers.delete(listener); if (!subscribers.size) listeners.delete(key); };
     },
     storageChanged(key) {
-      if (!key?.startsWith(PREFIX) || volatile.has(key)) return;
+      const newer=key?.startsWith(ATTACHMENT_PREFIX);
+      if (newer) key=PREFIX+key.slice(ATTACHMENT_PREFIX.length);
+      if (!key?.startsWith(PREFIX) || volatile.has(key) || !newer&&attachmentScopes.has(key)) return;
       const [accountId, communityId] = key.slice(PREFIX.length).split(':');
       if (!accountId || !communityId) return;
-      try { const value = decode(storage.getItem(key)); memory.set(key, value); notify(key, value); } catch { /* Keep the live copy if storage is no longer readable. */ }
+      try { const value = decode(stored(key)); memory.set(key, value); notify(key, value); } catch { /* Keep the live copy if storage is no longer readable. */ }
     },
     hasVolatile() { return volatile.size > 0; },
     isVolatile(accountId, communityId) { return volatile.has(keyFor(accountId, communityId)); },

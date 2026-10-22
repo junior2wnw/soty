@@ -3,6 +3,9 @@ import './world.css';
 import './product.css';
 import './shell.css';
 import './chat.css';
+import './attachments.css';
+import { createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
+import { attachmentImage } from './attachment-image.mjs';
 import './community.css';
 import { mountAppStage, type AppStageHandle, type AppStageOptions } from './app-stage';
 import { mountMicroWidgets, type MicroWidgetsHandle } from './micro-widgets';
@@ -1531,6 +1534,8 @@ class WorldApplication {
     const highlightTimers = new Set<ReturnType<typeof setTimeout>>();
     const known = new Map<string, WorldMessage>();
     const rows = new Map<string, HTMLElement>();
+    let outbox: AttachmentOutbox | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false, acknowledgingAttachments = false;
+    const attachmentScope: Record<string,string> = conversation.kind === 'direct' ? { threadId: conversation.id, expectedRelationshipId: (conversation.record as WorldDirectThread).relationshipId } : { communityId: conversation.id };
     const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
     const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
     let timelineDirty = false, searchMatches: string[] = [], unseen = 0;
@@ -1608,6 +1613,11 @@ class WorldApplication {
     const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, conversation.draftKey, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
     const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
     const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
+    const filePicker = el('input'); filePicker.type = 'file'; filePicker.multiple = true; filePicker.hidden = true;
+    const touchKeyboard = matchMedia('(pointer:coarse)').matches; input.enterKeyHint = touchKeyboard ? 'enter' : 'send'; input.setAttribute('aria-keyshortcuts', touchKeyboard ? 'Control+Enter Meta+Enter' : 'Enter');
+    const attach = iconButton('Прикрепить файлы', 'plus', () => filePicker.click()); attach.hidden = true;
+    const attachmentRail = el('div', 'sw-attachment-queue'); attachmentRail.hidden = true; attachmentRail.setAttribute('aria-label', 'Вложения перед отправкой');
+    const attachmentHint = el('div', 'sw-attachment-hint'); attachmentHint.hidden = true;
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
     const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = !initialDraft.pending; error.append(retrySend);
     const draftStatus = el('div', 'sw-chat-draft-status'); draftStatus.setAttribute('role', 'status');
@@ -1615,10 +1625,21 @@ class WorldApplication {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
-    const updateComposer = (): void => { const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending; input.disabled = accessClosed || !conversation.canWrite; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); send.disabled = sending || input.disabled || (!input.value.trim() && !pending); retrySend.disabled = sending || input.disabled; cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : pending ? 'Повторить прежнюю отправку' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
+    const updateComposer = (): void => {
+      const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending;
+      input.disabled = accessClosed || !conversation.canWrite;
+      input.placeholder = conversation.canWrite ? attachmentRows.length ? 'Сообщение или подпись к файлам' : 'Сообщение' : 'В этом чате доступно только чтение';
+      input.setAttribute('aria-label', `Сообщение в ${conversation.name}`);
+      const waitingForFiles = pending?.attachments?.length ? !outbox?.canSend() : !pending && attachmentRows.length > 0 && !outbox?.canSend();
+      send.disabled = sending || input.disabled || (!pending && !input.value.trim() && !outbox?.canSend()) || !!waitingForFiles;
+      retrySend.disabled = sending || input.disabled || !!waitingForFiles; attach.disabled = sending || input.disabled || !attachmentWritable;
+      cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready';
+      send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : pending ? 'Повторить прежнюю отправку' : 'Отправить сообщение');
+      limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`;
+    };
     const describeDraft = (): void => {
       const volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey);
-      const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending;
+      const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending && !draft.attachments?.length;
       draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : '';
       draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !draftStatus.textContent; downloadDraft.hidden = !volatile || !draft.text;
       retrySend.hidden = !draft.pending || sending;
@@ -1632,10 +1653,57 @@ class WorldApplication {
     input.addEventListener('input', () => { this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
     input.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229) return;
-      if (shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
+      if (touchKeyboard ? event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey : shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
       else if (event.key === 'Escape' && replyTo && !sending) { event.preventDefault(); cancelReply.click(); }
     });
-    composer.append(input, send); dock.append(reply, error, composer); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    const sizeLabel = (bytes: number): string => bytes < 1024 ? `${bytes} Б` : bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} КиБ` : `${(bytes / (1024 * 1024)).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} МиБ`;
+    const previewImage = async (name: string, blob: Blob): Promise<void> => {
+      const preview = await attachmentImage(blob); if (!active()) return;
+      const url = URL.createObjectURL(preview.blob), dialog = this.dialog(name, () => URL.revokeObjectURL(url));
+      dialog.element.classList.add('sw-attachment-viewer');
+      const image = el('img'); image.alt = name; image.src = url; image.width = preview.width; image.height = preview.height;
+      image.addEventListener('error', () => { image.replaceWith(el('p', 'sw-error', 'Предпросмотр недоступен. Скачайте оригинал.')); });
+      dialog.body.append(image);
+    };
+    const isRasterName = (name: string): boolean => /\.(?:png|jpe?g|webp)$/iu.test(name);
+    const renderAttachments = (): void => {
+      if (!active()) return;
+      attachmentRail.hidden = attachmentRows.length === 0; attachmentRail.replaceChildren();
+      attachmentHint.hidden = !attachmentRows.length && !outbox?.pendingIntent();
+      attachmentHint.textContent = outbox?.pendingIntent() ? 'Прежняя отправка ещё без подтверждения. Уточним её результат; ваши новые изменения останутся черновиком.' : attachmentWritable ? 'До 10 файлов, вместе до 25 МиБ. Подпись необязательна.' : 'Отправка файлов пока выключена. Очередь сохранена на устройстве; файл можно убрать.';
+      for (const item of attachmentRows) {
+        const card = el('div', 'sw-attachment-card'); card.dataset.attachmentId = item.attachmentId;
+        const info = el('div', 'sw-attachment-info'); info.append(el('strong', '', item.name));
+        const label = item.status === 'ready' ? 'Готов к отправке' : item.status === 'uploading' ? `Загружаем · ${Math.round(item.sent / Math.max(1, item.size) * 100)}%` : item.status === 'error' ? errorText({ code: item.error }) : item.status === 'cancel-pending' ? item.error ? 'Удаление пока не подтверждено' : 'Отменяем загрузку…' : 'В очереди';
+        info.append(el('span', '', `${sizeLabel(item.size)} · ${label}`)); card.append(info);
+        if (isRasterName(item.name)) card.append(iconButton(`Посмотреть ${item.name}`, 'eye', () => { void outbox?.localFile(item.attachmentId).then(file => previewImage(file.name, file.blob)).catch(reason => { if (active()) this.toast(errorText(reason), true); }); }));
+        if (item.status === 'uploading') { const progress = el('progress'); progress.max = Math.max(1,item.size); progress.value = item.sent; progress.setAttribute('aria-label', `Загрузка ${item.name}`); card.append(progress); }
+        if (item.status === 'error' || item.status === 'cancel-pending' && item.error) { const retry = iconButton(`Повторить ${item.name}`, 'refresh', () => { void outbox?.retry(item.attachmentId).catch(reason => { errorMessage.textContent = errorText(reason); }); }); retry.disabled = sending; card.append(retry); }
+        const remove = iconButton(`Убрать ${item.name}`, 'close', () => { void outbox?.remove(item.attachmentId).catch(reason => { errorMessage.textContent = errorText(reason); }); }); remove.disabled = sending || item.status === 'cancel-pending' || !!outbox?.isPending(item.attachmentId); card.append(remove); attachmentRail.append(card);
+      }
+      if (!acknowledgingAttachments) {
+        const accepted=outbox?.acceptedIntent(),pending=outbox?.pendingIntent();
+        if(accepted)this.chatDrafts.acknowledge(accountId,conversation.draftKey,accepted.clientId,accepted.attachments);
+        if(pending)this.chatDrafts.recoverPending(accountId,conversation.draftKey,pending);
+        this.chatDrafts.setAttachments(accountId,conversation.draftKey,attachmentRows.map(item=>item.attachmentId));
+      }
+      updateComposer();
+    };
+    const chooseFiles = (files: FileList | null): void => {
+      if (!files?.length || !outbox || attach.disabled) return;
+      if (files.length > 10) { errorMessage.textContent = errorText({code:'attachment_batch_limit'}); return; }
+      errorMessage.textContent = '';
+      void outbox.add(Array.from(files)).catch(reason => { if(active()) errorMessage.textContent = errorText(reason); });
+    };
+    filePicker.addEventListener('change',()=>{chooseFiles(filePicker.files);filePicker.value='';});
+    chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
+    chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
+    composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    const attachmentReady = this.profile?.chatAttachmentsVersion === 1 ? this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities', { ...attachmentScope, expectedAccountId: accountId }).then(result => {
+      if (!active()) return; attachmentWritable = result.writable; attach.hidden = !attachmentWritable;
+      if (result.readable) { outbox = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: initialDraft.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } }); return outbox.ready; }
+      updateComposer();
+    }).catch(reason => { if (active()) { attachmentWritable = false; attach.hidden = true; errorMessage.textContent = errorText(reason); updateComposer(); } }) : Promise.resolve();
     fitComposer(); updateComposer(); refreshReply();
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
@@ -1706,6 +1774,21 @@ class WorldApplication {
       if (!own) { const author = el('button', 'sw-message-author', message.author.displayName); author.type = 'button'; author.addEventListener('click', () => this.openPersonDialog(message.author)); body.append(author); }
       if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
       body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
+      if (!message.removed && message.attachments?.length) {
+        const files = el('div','sw-message-files');
+        for(const attachment of message.attachments) {
+          const fileRow = el('div', 'sw-message-file-row');
+          const download=button(attachment.name,'download','sw-message-file',()=>{
+            if(download.disabled)return;download.disabled=true;download.setAttribute('aria-busy','true');
+            void downloadAttachment({api:this.api,accountId,conversationScope:attachmentScope,attachment,current:active}).then(result=>{
+              if(!active())return;const url=URL.createObjectURL(result.blob),link=el('a');link.href=url;link.download=result.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+            }).catch(reason=>{if(active())this.toast(errorText(reason),true);}).finally(()=>{download.disabled=false;download.removeAttribute('aria-busy');});
+          }); download.setAttribute('aria-label',`Скачать ${attachment.name}`);download.append(el('small','',sizeLabel(attachment.size)));fileRow.append(download);
+          if (isRasterName(attachment.name)) { const preview = iconButton(`Посмотреть ${attachment.name}`, 'eye', () => { preview.disabled = true; void downloadAttachment({api:this.api,accountId,conversationScope:attachmentScope,attachment,current:active}).then(file => previewImage(file.name, file.blob)).catch(reason => { if (active()) this.toast(errorText(reason), true); }).finally(() => { preview.disabled = false; }); }); fileRow.append(preview); }
+          files.append(fileRow);
+        }
+        body.append(files);
+      }
       const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
       if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); if (message.read) { delivered.append(icon('check')); delivered.classList.add('is-read'); } const status = message.read ? conversation.kind === 'direct' ? 'Прочитано собеседником' : 'Прочитано участником' : 'Отправлено'; delivered.setAttribute('aria-label', status); delivered.title = status; meta.append(delivered); }
       body.append(meta); row.append(body);
@@ -1713,9 +1796,19 @@ class WorldApplication {
       return row;
     };
     const append = (message: WorldMessage): void => {
-      if (message.author.profileId === accountId && message.clientId && this.chatDrafts.read(accountId, conversation.draftKey).pending?.clientId === message.clientId) this.chatDrafts.acknowledge(accountId, conversation.draftKey, message.clientId);
+      const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending;
+      if (message.author.profileId === accountId && message.clientId && pending?.clientId === message.clientId) {
+        const ids = pending.attachments ?? [];
+        if (!ids.length) this.chatDrafts.acknowledge(accountId, conversation.draftKey, message.clientId);
+        else if (!acknowledgingAttachments) {
+          acknowledgingAttachments = true;
+          void attachmentReady.then(async () => { if (!outbox) throw Object.assign(Error('attachment_local_storage'), { code: 'attachment_local_storage' }); await outbox.acknowledge(ids, { ...pending, attachments: ids }); this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId, ids); })
+            .catch(reason => { if (active()) errorMessage.textContent = errorText(reason); })
+            .finally(() => { acknowledgingAttachments = false; if (active()) renderAttachments(); });
+        }
+      }
       const old = known.get(message.messageId);
-      if (old && old.removed === message.removed && old.text === message.text && old.read === message.read && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
+      if (old && old.removed === message.removed && old.text === message.text && old.read === message.read && JSON.stringify(old.attachments) === JSON.stringify(message.attachments) && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
       known.set(message.messageId, message); firstSeq = Math.min(firstSeq, message.seq); timelineDirty = true;
       messages.querySelector('.sw-empty')?.remove();
       const row = createMessage(message), existing = rows.get(message.messageId); rows.set(message.messageId, row);
@@ -1808,22 +1901,46 @@ class WorldApplication {
     };
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
-      event.preventDefault(); const text = input.value.trim(); if (send.disabled) return;
-      sending = true; const pending = this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo); describeDraft(); updateComposer();
+      event.preventDefault(); const text = input.value.trim(), attachmentIds=attachmentRows.map(item=>item.attachmentId), priorPending=this.chatDrafts.read(accountId,conversation.draftKey).pending; if (send.disabled) return;
+      sending = true; const pending = this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo,attachmentIds); describeDraft(); updateComposer();
+      let dispatched=false;
       errorMessage.textContent = ''; retrySend.hidden = true;
-      void conversation.request<{ message: WorldMessage }>('send', { clientId: pending.clientId, text: pending.text, replyTo: pending.replyTo }).then(response => {
-        const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId);
+      void (async()=>{
+        let submitted=pending;
+        if(pending.attachments?.length&&outbox){
+          const prepared=await outbox.prepareSend(pending);
+          if(prepared.state==='accepted'){
+            this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
+            if(active())void load();return;
+          }
+          submitted={...prepared.intent,durable:true};
+          this.chatDrafts.recoverPending(accountId,conversation.draftKey,prepared.intent);
+        }
+        if(!active())return;
+        const sentIds=submitted.attachments??[];
+        dispatched=true;
+        const response=await conversation.request<{message:WorldMessage}>('send',{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,...(sentIds.length?{attachments:sentIds,expectedAccountId:accountId}:{})});
+        acknowledgingAttachments=true;
+        try { if(sentIds.length)await outbox?.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds}); }
+        finally { acknowledgingAttachments=false; }
+        const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, submitted.clientId,sentIds);
         if (!active()) return;
         const stickToEnd = nearEnd(), position = capturePosition();
         append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
         updateJump(); notifyConversation(); void load();
-      }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); describeDraft(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
+      })().catch(async reason => {
+        if(!priorPending&&!dispatched&&reason?.code==='attachment_queue_changed'){
+          this.chatDrafts.discardUnsubmitted(accountId,conversation.draftKey,pending.clientId);
+          try{await outbox?.reconcile();}catch{/* The typed local storage error remains retryable. */}
+        }
+        if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; }
+      }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); describeDraft(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
     const previousCleanup = this.chatCleanup;
-    this.chatCleanup = () => { previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
+    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
     return active;
   }

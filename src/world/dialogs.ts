@@ -107,6 +107,21 @@ export function switchControl(label: string, checked: boolean, change: (next: bo
 export function errorText(error: unknown): string {
   const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   const messages: Record<string, string> = {
+    attachments_disabled: 'Отправка файлов пока недоступна. Черновик остаётся на устройстве.',
+    attachment_batch_limit: 'Можно приложить до 10 файлов, вместе не больше 25 МиБ.',
+    attachment_storage_quota: 'Место для файлов заполнено. Удалите ненужные сообщения с файлами или повторите позже.',
+    attachment_store_capacity: 'Хранилище файлов заполнено. Повторите позже.',
+    attachment_local_storage: 'Не удалось сохранить файлы на устройстве. Освободите место и повторите.',
+    attachment_unavailable: 'Файл сейчас недоступен. Проверьте доступ к разговору.',
+    attachment_not_ready: 'Файл ещё не готов. Дождитесь завершения загрузки.',
+    attachment_request_conflict: 'Этот файл изменился. Уберите его из черновика и приложите заново.',
+    attachment_integrity_failed: 'Не удалось проверить файл. Повторите загрузку.',
+    attachment_chunk_missing: 'Файл загрузился не полностью. Повторите загрузку.',
+    attachment_chunk_order: 'Загрузка прервалась. Повторите её с сохранённого файла.',
+    attachment_queue_changed: 'Вложения изменились в другой вкладке. Проверьте список перед отправкой.',
+    attachment_send_unconfirmed: 'Сначала подтвердите прежнюю отправку. Новые изменения останутся черновиком.',
+    attachment_context_changed: 'Аккаунт или разговор изменился. Откройте нужный чат ещё раз.',
+    attachment_image_unsupported: 'Предпросмотр этого файла недоступен. Скачайте оригинал.',
     ACTIVE_PROFILE_CHANGED: 'Аккаунт изменился. Проверьте выбранный аккаунт и повторите действие.',
     profile_contact_name_unsynced: 'Имя и описание сохранены. Обновление имени в контактах пока не подтверждено. Нажмите «Сохранить» ещё раз.',
     world_revision_conflict: 'Данные изменились. Обновите и повторите действие.',

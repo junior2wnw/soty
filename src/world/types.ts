@@ -17,6 +17,7 @@ export interface WorldProfile extends WorldIdentity {
   audience?: WorldProfileAudience;
   audienceWriteVersion?: 1;
   directMessagesVersion?: 1;
+  chatAttachmentsVersion?: 1;
   avatarWriteVersion?: 1;
   discoverable?: boolean;
   showPresence?: boolean;
@@ -59,7 +60,9 @@ export interface WorldMessage {
   /** Only the author receives the stable send intent and acknowledged read state. */
   clientId?: string;
   read?: boolean;
+  attachments?: WorldAttachment[];
 }
+export interface WorldAttachment { attachmentId: string; name: string; size: number; manifestSha256: string; fileSha256: string; chunks: number; mediaType: 'application/octet-stream' }
 export interface WorldMember extends WorldMembership { profile: WorldIdentity }
 export interface WorldDirectThread {
   schema: 'soty.world-direct.v1'; threadId: string; revision: number; relationshipId: string;
