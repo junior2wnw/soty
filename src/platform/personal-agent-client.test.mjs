@@ -181,10 +181,20 @@ test('review/reload/return preserves the newer conversation context and exact or
   const f = fixture(), ui = f.make(); await ui.turn('Previous completed conversation');
   f.outcome('unknown'); await assert.rejects(ui.turn('Previous pending followup')); const original = f.calls[1].args;
   ui.startNew(); f.outcome('complete'); await ui.turn('New conversation'); ui.saveDraft('New followup draft');
-  await ui.restorePending(original.requestId); const reopened = f.make();
-  assert.equal(reopened.view().reviewing, true); assert.equal(reopened.view().question, original.prompt);
-  reopened.startNew(); assert.equal(reopened.view().draft, 'New followup draft'); assert.equal(reopened.view().contextId, contextId);
+  const before=[...f.data.values()][0];await ui.restorePending(original.requestId);
+  assert.equal([...f.data.values()][0],before);const reopened = f.make();
+  assert.equal(reopened.view().reviewing, false); assert.equal(reopened.view().question, undefined);
+  assert.equal(reopened.view().draft, 'New followup draft'); assert.equal(reopened.view().contextId, contextId);
+  ui.startNew();assert.equal(ui.view().draft,'New followup draft');assert.equal(ui.view().contextId,contextId);
   assert.deepEqual(JSON.parse([...f.data.values()][0]).pending, [original]); assert.equal(f.calls.length, 3);
+});
+
+test('review and recovery write only the original closed v1 fields and keep unknown-field validation strict', async () => {
+  const f=fixture();f.outcome('unknown');const ui=f.make();await assert.rejects(ui.turn('Original v1 pending'));ui.startNew();ui.saveDraft('Newer v1 draft');
+  const before=[...f.data.values()][0];await ui.restorePending('browser_turn_1');assert.equal([...f.data.values()][0],before);
+  assert.deepEqual(Object.keys(JSON.parse(before)).sort(),['draft','pending','schema']);
+  ui.startNew();const invalid={...JSON.parse(before),reviewing:true};f.data.set('soty.personal-agent-ui.v1:account_one',JSON.stringify(invalid));
+  assert.throws(()=>f.make(),{code:'assistant_storage_unavailable'});assert.deepEqual(JSON.parse([...f.data.values()][0]),invalid);
 });
 
 test('retained tasks cannot be selected across an account change, while running or by an unknown ID', async () => {

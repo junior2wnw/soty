@@ -8,7 +8,7 @@ type Client = {
   extension<T>(op: string, args: Record<string, unknown>, options: { expectedAccountId: string }): Promise<T>;
 };
 type Request = { requestId: string; prompt: string; contextId?: string; selection?: WorldAssistantSelection; browser?: Record<string, unknown>; noteCreation?: true };
-type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string; reviewing?: true };
+type Saved = { schema: 'soty.personal-agent-ui.v1'; draft: string; pending: Request[]; active?: string; contextId?: string };
 export type PersonalAgentView = { phase: 'draft' | 'running' | 'complete' | 'unknown' | 'cancel_requested'; draft: string;
   editor?:{artifact:OtsovProjectArtifact;state:'available'|'opening'|'opened'|'unconfirmed';readback?:EditorReadback};
   contextId?: string; requestId?: string; question?: string; answer?: string; sources: SourcePresentation[]; unconfirmed: number;
@@ -73,29 +73,31 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
   let saved: Saved = { schema: 'soty.personal-agent-ui.v1', draft: '', pending: [] }, phase: PersonalAgentView['phase'] = 'draft';
   let editor:PersonalAgentView['editor'],completedId:string|undefined,activeEditor:{id:string;abort:AbortController}|undefined;
   let disposed = false, running = false, checking = false, answer: string | undefined, sources: SourcePresentation[] = [];
+  let reviewing = false, reviewingId: string | undefined;
   let progress: PersonalAgentView['progress'], question: string | undefined, sourceRecovery: PersonalAgentView['sourceRecovery'], cancellationFor: string | undefined;
   const notify = () => { try { onChange(); } catch { /* A renderer failure does not alter a committed server outcome. */ } };
   const raw = storage.getItem(key);
   if (raw !== null) {
     if (raw.length > 80000) throw failure('assistant_storage_unavailable');
     let parsed: unknown; try { parsed = JSON.parse(raw); } catch { throw failure('assistant_storage_unavailable'); }
-    if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId', 'reviewing']) || parsed.schema !== saved.schema
+    if (!own(parsed, ['schema', 'draft', 'pending', 'active', 'contextId']) || parsed.schema !== saved.schema
       || typeof parsed.draft !== 'string' || parsed.draft.length > 8000 || !Array.isArray(parsed.pending) || parsed.pending.length > 8
-      || parsed.contextId !== undefined && !context(parsed.contextId) || parsed.reviewing !== undefined && parsed.reviewing !== true
+      || parsed.contextId !== undefined && !context(parsed.contextId)
       || parsed.pending.some(item => !own(item, ['requestId', 'prompt', 'contextId', 'selection', 'browser', 'noteCreation']) || !requestId(item.requestId)
         || item.noteCreation !== undefined && item.noteCreation !== true
         || item.selection !== undefined && !validSelection(item.selection)
         || typeof item.prompt !== 'string' || !item.prompt.trim() || item.prompt.length > 8000 || item.contextId !== undefined && !context(item.contextId))
       || new Set(parsed.pending.map(item => item.requestId)).size !== parsed.pending.length
       || parsed.active !== undefined && !parsed.pending.some(item => item.requestId === parsed.active)) throw failure('assistant_storage_unavailable');
-    saved = parsed as unknown as Saved; if (saved.active) { phase = 'unknown'; question = saved.reviewing ? saved.pending.find(item => item.requestId === saved.active)!.prompt : saved.draft; }
+    saved = parsed as unknown as Saved; if (saved.active) { phase = 'unknown'; question = saved.draft; }
   }
   const persist = (next: Saved) => { const text = JSON.stringify(next); if (text.length > 80000) throw failure('assistant_storage_unavailable'); storage.setItem(key, text); saved = next; };
   const mounted = () => { try { return !disposed && isCurrent() === true; } catch { return false; } };
   const current = async () => { if(!mounted())throw failure('authentication_required');const state=await client.getLocalState();if(state.accountId!==accountId||!mounted())throw failure('authentication_required');return state; };
-  const view = (): PersonalAgentView => ({ phase, draft: saved.reviewing ? saved.pending.find(item => item.requestId === saved.active)?.prompt ?? '' : saved.draft,
-    unconfirmed: saved.pending.length, reviewing: saved.reviewing === true, pendingTasks: saved.pending.map(item => ({ requestId: item.requestId, question: item.prompt })),
-    ...(saved.contextId ? { contextId: saved.contextId } : {}), ...(saved.active ? { requestId: saved.active } : {}),
+  const activeId = () => reviewing ? reviewingId : saved.active;
+  const view = (): PersonalAgentView => ({ phase, draft: reviewing ? saved.pending.find(item => item.requestId === reviewingId)?.prompt ?? '' : saved.draft,
+    unconfirmed: saved.pending.length, reviewing, pendingTasks: saved.pending.map(item => ({ requestId: item.requestId, question: item.prompt })),
+    ...(saved.contextId ? { contextId: saved.contextId } : {}), ...(activeId() ? { requestId: activeId()! } : {}),
     ...(question ? { question } : {}), ...(answer ? { answer } : {}), ...(editor ? { editor:{...editor,artifact:copyArtifact(editor.artifact),...(editor.readback?{readback:{...editor.readback}}:{})} } : {}), sources: sources.map(source => ({ ...source })),
     ...(progress ? { progress: { ...progress } } : {}), ...(sourceRecovery ? { sourceRecovery: sourceRecovery.map(entry => ({ ...entry, reference: { ...entry.reference } })) } : {}) });
   const acceptAnswer = (result: unknown, id: string) => {
@@ -106,9 +108,9 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     if(result.editorHandoff!==undefined&&!validArtifact(result.editorHandoff))throw failure('agent_output_invalid');
     const projectedSources = result.evidence === undefined ? [] : projectSources(result.evidence);
     if (!projectedSources) throw failure('agent_output_invalid');
-    persist(saved.reviewing ? { schema: saved.schema, draft: saved.draft, pending: saved.pending.filter(item => item.requestId !== id), reviewing: true,
-      ...(saved.contextId ? { contextId: saved.contextId } : {}) }
+    persist(reviewing ? { ...saved, pending: saved.pending.filter(item => item.requestId !== id) }
       : { schema: saved.schema, draft: '', pending: saved.pending.filter(item => item.requestId !== id), contextId: result.contextId });
+    if (reviewing) reviewingId = undefined;
     completedId=id;editor=result.editorHandoff?{artifact:copyArtifact(result.editorHandoff),state:'available'}:undefined;
     answer = result.answer; sources = projectedSources; progress = undefined; sourceRecovery = undefined; phase = 'complete'; notify(); return view();
   };
@@ -123,20 +125,20 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
   };
   return {
     view,
-    saveDraft(text: string) { if (disposed || running || saved.active || saved.reviewing) return; if (text.length > 8000) throw failure('agent_invalid_input'); persist({ ...saved, draft: text }); },
+    saveDraft(text: string) { if (disposed || running || saved.active || reviewing) return; if (text.length > 8000) throw failure('agent_invalid_input'); persist({ ...saved, draft: text }); },
     startNew() { if (disposed || running) throw failure('assistant_conversation_busy');
       activeEditor?.abort.abort();completedId=undefined;editor=undefined;
-      persist({ schema: saved.schema, draft: saved.reviewing ? saved.draft : '', pending: saved.pending,
-        ...(saved.reviewing && saved.contextId ? { contextId: saved.contextId } : {}) });
+      if (!reviewing) persist({ schema: saved.schema, draft: '', pending: saved.pending });
+      reviewing = false; reviewingId = undefined;
       phase = 'draft'; question = undefined; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined; notify(); },
     async restorePending(id: string) {
       await current();
       if (running) throw failure('assistant_conversation_busy');
-      if (saved.active && !saved.reviewing) throw failure('agent_reconcile_required');
+      if (saved.active) throw failure('agent_reconcile_required');
       const intent = saved.pending.find(item => item.requestId === id);
       if (!intent) throw failure('agent_turn_unavailable');
-      // Inspect the original ID without replacing a newer draft or granting its old selection.
-      persist({ ...saved, active: id, reviewing: true });
+      // Presentation only: retain v1 bytes and the newer draft for old tabs/rollback.
+      reviewing = true; reviewingId = id;
       activeEditor?.abort.abort(); completedId = undefined; editor = undefined;
       phase = 'unknown'; question = intent.prompt; answer = undefined; sources = []; progress = undefined; sourceRecovery = undefined; cancellationFor = undefined;
       notify(); return view();
@@ -144,7 +146,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
     async turn(text: string, metadata?: WorldAssistantContext | null, permissions: { noteCreation?: true } = {}) {
       if (!own(permissions, ['noteCreation']) || permissions.noteCreation !== undefined && permissions.noteCreation !== true) throw failure('agent_invalid_input');
       const noteCreation = permissions.noteCreation === true;
-      if (running || saved.active || saved.reviewing) throw failure('agent_reconcile_required');
+      if (running || saved.active || reviewing) throw failure('agent_reconcile_required');
       activeEditor?.abort.abort();
       if (!text.trim() || text.length > 8000 || saved.pending.length >= 8) throw failure('agent_capacity');
       const prompt = promptWithAppContext(text, metadata);
@@ -166,14 +168,14 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
         }
       };
       await turnCurrent();
-      if (running || saved.active || saved.reviewing) throw failure('agent_reconcile_required');
+      if (running || saved.active || reviewing) throw failure('agent_reconcile_required');
       if (saved.pending.length >= 8) throw failure('agent_capacity');
       const id = idFactory(); if (!requestId(id) || saved.pending.some(item => item.requestId === id)) throw failure('agent_invalid_input');
       browser = browserAssist?.binding();
       if (browser && (!metadata || browser.appId !== metadata.appId)) throw failure('agent_source_denied');
       const intent: Request = { requestId: id, prompt, ...(noteCreation ? { noteCreation: true as const } : {}), ...(browser ? { browser } : {}), ...(selection ? { selection } : {}), ...(saved.contextId ? { contextId: saved.contextId } : {}) };
       const editorIdentity=openProjectEditor?await current():undefined;await turnCurrent();
-      if(running||saved.active||saved.reviewing)throw failure('agent_reconcile_required');
+      if(running||saved.active||reviewing)throw failure('agent_reconcile_required');
       // A storage failure precedes dispatch. Preserve the exact prompt, ID and context before asking the server.
       persist({ ...saved, draft: text, pending: [...saved.pending, intent], active: id });
       completedId=undefined;editor=undefined;
@@ -201,7 +203,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       finally { browserAbort.abort(); await pump; running = false; notify(); }
     },
     async checkStatus() {
-      const id = saved.active;
+      const id = activeId();
       if (!id || checking) return view();
       const intent = saved.pending.find(item => item.requestId === id)!;
       let statusIdentity: Awaited<ReturnType<Client['getLocalState']>> | undefined;
@@ -219,7 +221,7 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
         await intentCurrent();
         const result = await client.extension<Record<string, unknown>>('agent.status', { requestId: id }, { expectedAccountId: accountId });
         await intentCurrent();
-        if (saved.active !== id) return view();
+        if (activeId() !== id) return view();
         if (!own(result, ['ok', 'schema', 'requestId', 'state', 'stage', 'modelRounds', 'completedTools', 'elapsedMs', 'cancelRequested', 'result', 'sourceRecovery'])
           || result.ok !== undefined && result.ok !== true || result.schema !== 'soty.personal-agent-status.v1'
           || result.requestId !== id || typeof result.state !== 'string' || !['running', 'completed', 'unknown', 'unavailable'].includes(result.state)) throw failure('agent_output_invalid');
@@ -255,11 +257,11 @@ export function createPersonalAgentConversation({ accountId, client, storage, id
       catch(error){if(editor===active)editor={...active,state:'unconfirmed'};throw error;}finally{notify();}return view();},
     async cancel() {
       browserAssist?.revoke();
-      const id = saved.active??activeEditor?.id; if (!id) throw failure('agent_turn_unavailable');cancellationFor=id;activeEditor?.abort.abort();await current();
+      const id = activeId()??activeEditor?.id; if (!id) throw failure('agent_turn_unavailable');cancellationFor=id;activeEditor?.abort.abort();await current();
       const result = await client.extension<Record<string, unknown>>('agent.cancel', { requestId: id }, { expectedAccountId: accountId }); await current();
       if (!own(result, ['ok', 'schema', 'requestId', 'cancelRequested', 'remoteTerminationVerified']) || result.ok !== undefined && result.ok !== true || result.schema !== 'soty.personal-agent-cancel.v1'
         || result.requestId !== id || typeof result.cancelRequested !== 'boolean' || result.remoteTerminationVerified !== false) throw failure('agent_output_invalid');
-      if (saved.active === id && result.cancelRequested) { cancellationFor = id; phase = 'cancel_requested'; }
+      if (activeId() === id && result.cancelRequested) { cancellationFor = id; phase = 'cancel_requested'; }
       notify();
       return result;
     },
