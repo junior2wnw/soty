@@ -60,11 +60,16 @@ export function directOperation(m, op, args, actor, now, authority) {
       peer:{accountId:peer,label:profile?.display_name ?? null,avatarRevision:profile?.avatar_revision ?? null},
       unreadCount:unread(row),preferences:{pinned:Boolean(prefs?.pinned),muted:Boolean(prefs?.muted)},createdAt:row.created_at};
   };
+  let peerReadSeq;
   const message = row => {
     const profile = m.person(row.author_id);
+    const own = row.author_id === actor.accountId;
+    if (own && peerReadSeq === undefined) peerReadSeq = m.get('SELECT last_read_seq FROM world_direct_read_state WHERE thread_id=? AND account_id<>?',row.thread_id,actor.accountId)?.last_read_seq ?? 0;
+    const read = own && row.deleted_at === null && peerReadSeq >= row.seq;
     return {messageId:row.id,seq:row.seq,text:row.deleted_at === null ? row.text : '',
       author:profile ? m.identity(profile) : {profileId:row.author_id,displayName:null,avatarColor:null,avatarRevision:null,revision:null},
-      createdAt:row.created_at,replyTo:row.reply_to,removed:row.deleted_at !== null};
+      createdAt:row.created_at,replyTo:row.reply_to,removed:row.deleted_at !== null,
+      ...(own ? {clientId:row.client_id,readCount:Number(read)} : {})};
   };
   if (op === 'world.direct.open') {
     const peer = identifier(args.peerAccountId), expected = identifier(args.expectedRelationshipId); identifier(args.requestId);

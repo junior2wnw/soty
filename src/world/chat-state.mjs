@@ -56,9 +56,12 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     },
     beginSend(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId);
+      // Resolve an unknown ACK before another intent can replace its retry id.
+      // The editable next draft remains separate until this send is acknowledged.
+      if (value.pending) return { ...value.pending, durable: !volatile.has(keyFor(accountId, communityId)) };
       value.text = text;
       if (replyTo !== undefined) value.replyTo = replyId(replyTo);
-      if (value.pending?.text !== text || value.pending.replyTo !== value.replyTo) value.pending = { clientId: makeId(), text, replyTo: value.replyTo };
+      value.pending = { clientId: makeId(), text, replyTo: value.replyTo };
       const durable = save(accountId, communityId, value);
       return { ...value.pending, durable };
     },

@@ -1609,18 +1609,19 @@ class WorldApplication {
     const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
     const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
-    const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = true; error.append(retrySend);
+    const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = !initialDraft.pending; error.append(retrySend);
     const draftStatus = el('div', 'sw-chat-draft-status'); draftStatus.setAttribute('role', 'status');
     const downloadDraft = button('Скачать черновик', 'download', 'sw-button-small sw-button-quiet', () => {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
-    const updateComposer = (): void => { input.disabled = accessClosed || !conversation.canWrite; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); send.disabled = sending || input.disabled || !input.value.trim(); cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
+    const updateComposer = (): void => { const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending; input.disabled = accessClosed || !conversation.canWrite; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); send.disabled = sending || input.disabled || (!input.value.trim() && !pending); retrySend.disabled = sending || input.disabled; cancelReply.disabled = input.disabled; composer.setAttribute('aria-busy', String(sending)); send.dataset.state = sending ? 'sending' : 'ready'; send.setAttribute('aria-label', sending ? 'Отправляем сообщение' : pending ? 'Повторить прежнюю отправку' : 'Отправить сообщение'); limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`; };
     const describeDraft = (): void => {
       const volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey);
       const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending;
-      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : '';
-      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !volatile; downloadDraft.hidden = !volatile || !draft.text;
+      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : '';
+      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !draftStatus.textContent; downloadDraft.hidden = !volatile || !draft.text;
+      retrySend.hidden = !draft.pending || sending;
     };
     error.append(draftStatus, downloadDraft, limitStatus); describeDraft();
     const fitComposer = (): void => { const stick = nearEnd(); input.style.height = 'auto'; input.style.height = `${Math.min(144, Math.max(24, input.scrollHeight))}px`; if (stick) messages.scrollTop = messages.scrollHeight; };
@@ -1706,14 +1707,15 @@ class WorldApplication {
       if (message.replyTo) { const quote = el('button', 'sw-message-reply'); quote.type = 'button'; quote.dataset.replyTo = message.replyTo; quote.append(el('strong'), el('span')); quote.addEventListener('click', () => { if (message.replyTo) void jumpToMessage(message.replyTo); }); body.append(quote); }
       body.append(el('div', 'sw-message-text', message.removed ? 'Сообщение удалено' : message.text));
       const meta = el('div', 'sw-message-meta'); const time = el('time', '', timeLabel(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); time.title = new Date(message.createdAt).toLocaleString('ru-RU'); meta.append(time);
-      if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); delivered.setAttribute('aria-label', 'Отправлено'); delivered.title = 'Отправлено'; meta.append(delivered); }
+      if (own && !message.removed) { const delivered = el('span', 'sw-message-sent'); delivered.append(icon('check')); const count = message.readCount ?? 0; if (count > 0) { delivered.append(icon('check')); delivered.classList.add('is-read'); } const status = count > 0 ? conversation.kind === 'direct' ? 'Прочитано собеседником' : `Прочитали: ${count}` : 'Отправлено'; delivered.setAttribute('aria-label', status); delivered.title = status; meta.append(delivered); }
       body.append(meta); row.append(body);
       if (!message.removed) { const more = iconButton('Действия с сообщением', 'more', () => messageActions(message.messageId, more)); more.classList.add('sw-message-actions'); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false'); row.append(more); row.addEventListener('contextmenu', event => { if (window.getSelection()?.toString()) return; event.preventDefault(); messageActions(message.messageId, more); }); }
       return row;
     };
     const append = (message: WorldMessage): void => {
+      if (message.author.profileId === accountId && message.clientId && this.chatDrafts.read(accountId, conversation.draftKey).pending?.clientId === message.clientId) this.chatDrafts.acknowledge(accountId, conversation.draftKey, message.clientId);
       const old = known.get(message.messageId);
-      if (old && old.removed === message.removed && old.text === message.text && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
+      if (old && old.removed === message.removed && old.text === message.text && old.readCount === message.readCount && old.author.revision === message.author.revision && old.author.avatarRevision === message.author.avatarRevision) return;
       known.set(message.messageId, message); firstSeq = Math.min(firstSeq, message.seq); timelineDirty = true;
       messages.querySelector('.sw-empty')?.remove();
       const row = createMessage(message), existing = rows.get(message.messageId); rows.set(message.messageId, row);
@@ -1806,17 +1808,17 @@ class WorldApplication {
     };
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
-      event.preventDefault(); const text = input.value.trim(); if (!text || send.disabled) return;
+      event.preventDefault(); const text = input.value.trim(); if (send.disabled) return;
       sending = true; const pending = this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo); describeDraft(); updateComposer();
       errorMessage.textContent = ''; retrySend.hidden = true;
-      void conversation.request<{ message: WorldMessage }>('send', { clientId: pending.clientId, text, replyTo: pending.replyTo }).then(response => {
+      void conversation.request<{ message: WorldMessage }>('send', { clientId: pending.clientId, text: pending.text, replyTo: pending.replyTo }).then(response => {
         const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId);
         if (!active()) return;
         const stickToEnd = nearEnd(), position = capturePosition();
         append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
         updateJump(); notifyConversation(); void load();
-      }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
+      }).catch(reason => { if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; } }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); describeDraft(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
     const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);

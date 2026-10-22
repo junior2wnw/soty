@@ -61,6 +61,22 @@ test('open community explicitly grants membership; per-account revocation gates 
   assert.equal(f.call(alice, 'chat.list', { communityId: group.communityId }).messages.length, 1);
 });
 
+test('room read counts use acknowledged cursors and reveal send ids only to the author', t => {
+  const f = fixture(t), { communityId } = f.group();
+  f.call(bob, 'membership.join', { communityId }); f.call(eve, 'membership.join', { communityId });
+  const first = f.send(alice, communityId, 'First'), second = f.send(alice, communityId, 'Second');
+  assert.equal(first.readCount, 0); assert.equal(typeof first.clientId, 'string');
+  const peers = f.call(bob, 'chat.list', { communityId }).messages;
+  assert.equal(Object.hasOwn(peers[0], 'clientId'), false); assert.equal(Object.hasOwn(peers[0], 'readCount'), false);
+  f.call(bob, 'chat.read', { communityId, throughSeq: first.seq });
+  f.call(eve, 'chat.read', { communityId, throughSeq: second.seq });
+  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.readCount), [2, 1]);
+  f.call(alice, 'chat.read', { communityId, throughSeq: second.seq });
+  assert.deepEqual(f.call(alice, 'chat.list', { communityId }).messages.map(value => value.readCount), [2, 1], 'The author is not counted as a reader');
+  f.call(alice, 'chat.remove', { communityId, messageId: first.messageId });
+  assert.equal(f.call(alice, 'chat.list', { communityId }).messages[0].readCount, 0);
+});
+
 test('request groups require approval; moderators cannot promote themselves, remove owners or alter joining policy', t => {
   const f = fixture(t); const group = f.group(alice, { joinPolicy: 'request' }); const communityId = group.communityId;
   assert.equal(f.call(bob, 'membership.join', { communityId }).community.membership.state, 'requested');

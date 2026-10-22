@@ -94,6 +94,19 @@ test('send/reply/read/remove use one actor, stable client intent, thread boundar
   const page=await f.call(a,'world.direct.chat.list',{...base,limit:1});assert.equal(page.messages.length,1);assert.equal(page.hasMore,true);
 });
 
+test('direct send recovery metadata stays author-only and reads follow the exact current peer',async t=>{
+  const {f,a,b,c,rel}=await pair(t),thread=(await f.open(a,b,rel)).current,base=f.args(thread);
+  const sent=(await f.call(a,'world.direct.chat.send',{...base,clientId:'read_receipt_one',text:'Disposable private text'})).message;
+  assert.equal(sent.clientId,'read_receipt_one');assert.equal(sent.readCount,0);
+  const peerView=(await f.call(b,'world.direct.chat.list',base)).messages[0];
+  assert.equal(Object.hasOwn(peerView,'clientId'),false);assert.equal(Object.hasOwn(peerView,'readCount'),false);
+  await f.call(b,'world.direct.chat.read',{...base,throughSeq:sent.seq});f.reopen();
+  const read=(await f.call(a,'world.direct.chat.list',base)).messages[0];assert.equal(read.readCount,1);assert.equal(read.clientId,sent.clientId);
+  await f.rejected(c,'world.direct.chat.list',base,'direct_not_found');
+  await f.call(b,'contacts.block',{peerAccountId:a.accountId});
+  await f.rejected(a,'world.direct.chat.list',base,'direct_not_found');
+});
+
 test('direct identifiers never become old community, public directory, roster or group/App authority',async t=>{
   const {f,a,b,rel}=await pair(t),thread=(await f.open(a,b,rel)).current,actor=f.actors.get(a.accountId);
   f.db.exec('BEGIN');try {

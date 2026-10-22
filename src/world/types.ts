@@ -56,6 +56,9 @@ export interface WorldMessage {
   createdAt: number;
   replyTo: string | null;
   removed: boolean;
+  /** Only the author receives the stable send intent and current read count. */
+  clientId?: string;
+  readCount?: number;
 }
 export interface WorldMember extends WorldMembership { profile: WorldIdentity }
 export interface WorldDirectThread {

@@ -102,10 +102,12 @@ test('a reply survives reload and a lost ACK without creating a different reques
   assert.equal(acknowledged.text, ''); assert.equal(acknowledged.replyTo, null);
 });
 
-test('changing only the reply target creates a new request and a late ACK preserves it', () => {
+test('a changed reply stays a next draft until the unknown original send is acknowledged', () => {
   let request = 0; const drafts = createChatDraftStore(storage(), () => `request-${++request}`);
   const first = drafts.beginSend('alice', 'room', 'Да', 'msg-first');
   drafts.edit('alice', 'room', 'Да', 'msg-second');
+  const retry = drafts.beginSend('alice', 'room', 'Да', 'msg-second');
+  assert.equal(retry.clientId, first.clientId); assert.equal(retry.replyTo, 'msg-first');
   const late = drafts.acknowledge('alice', 'room', first.clientId);
   assert.equal(late.text, 'Да'); assert.equal(late.replyTo, 'msg-second');
   const second = drafts.beginSend('alice', 'room', 'Да');
@@ -114,10 +116,14 @@ test('changing only the reply target creates a new request and a late ACK preser
   assert.equal(drafts.read('alice', 'room').pending.clientId, second.clientId);
 });
 
-test('reply changes reset idempotency before a retry and legacy drafts remain readable', () => {
+test('reply changes cannot replace a lost send intent and legacy drafts remain readable', () => {
   const disk = storage(); let request = 0; const drafts = createChatDraftStore(disk, () => `request-${++request}`);
   const first = drafts.beginSend('alice', 'room', 'Да', 'msg-first');
-  const second = drafts.beginSend('alice', 'room', 'Да', 'msg-second');
+  drafts.edit('alice', 'room', 'Да', 'msg-second');
+  const retry = drafts.beginSend('alice', 'room', 'Да', 'msg-second');
+  assert.equal(retry.clientId, first.clientId); assert.equal(retry.replyTo, 'msg-first');
+  drafts.acknowledge('alice', 'room', first.clientId);
+  const second = drafts.beginSend('alice', 'room', 'Да');
   assert.notEqual(second.clientId, first.clientId);
   disk.setItem('soty.chat.draft.v1:bob:legacy', JSON.stringify({ text: 'До обновления', pending: { clientId: 'legacy-request', text: 'До обновления' } }));
   const legacy = createChatDraftStore(disk, () => assert.fail('Legacy sends remain replay safe'));
@@ -125,6 +131,35 @@ test('reply changes reset idempotency before a retry and legacy drafts remain re
   assert.equal(legacy.read('bob', 'legacy').replyTo, null);
   drafts.edit('alice', 'room', '', 'msg-empty-reply');
   assert.equal(createChatDraftStore(disk).read('alice', 'room').replyTo, 'msg-empty-reply');
+});
+
+test('lost SQL send ACK, changed next text and reload recover one original message before the next intent', async t => {
+  const { createWorldService } = await import('../../modules/world/server/index.mjs');
+  const world = createWorldService({ databasePath: ':memory:', projectId: 'lost-ack-recovery' }); t.after(() => world.close());
+  const alice = { accountId: 'acct_lost_alice', deviceId: 'dev_lost_alice', label: 'Alice' },
+    bob = { accountId: 'acct_lost_bob', deviceId: 'dev_lost_bob', label: 'Bob' },
+    call = (actor, op, args = {}) => world.execute({ actor, op: 'world.' + op, args });
+  call(alice, 'profile.get'); call(bob, 'profile.get');
+  const room = call(alice, 'community.create', { requestId: 'lost_room_001', name: 'Disposable recovery room' }).community.communityId;
+  call(bob, 'membership.join', { communityId: room });
+  const disk = storage(); let requests = 0, drafts = createChatDraftStore(disk, () => `lost_intent_${++requests}`);
+  const pending = drafts.beginSend(alice.accountId, room, 'Original message');
+  const accepted = call(alice, 'chat.send', { communityId: room, clientId: pending.clientId, text: pending.text }).message;
+  // The reply is deliberately lost after the real SQL transaction committed.
+  drafts.edit(alice.accountId, room, 'Next thought'); drafts = createChatDraftStore(disk, () => `lost_intent_${++requests}`);
+  const retry = drafts.beginSend(alice.accountId, room, 'Next thought');
+  assert.equal(retry.clientId, pending.clientId); assert.equal(retry.text, 'Original message');
+  assert.equal(call(alice, 'chat.send', { communityId: room, clientId: retry.clientId, text: retry.text }).message.messageId, accepted.messageId);
+  assert.equal(call(bob, 'chat.list', { communityId: room }).messages.length, 1);
+  const own = call(alice, 'chat.list', { communityId: room }).messages[0];
+  assert.equal(own.clientId, pending.clientId); assert.equal(own.readCount, 0);
+  assert.equal(Object.hasOwn(call(bob, 'chat.list', { communityId: room }).messages[0], 'clientId'), false);
+  drafts.acknowledge(alice.accountId, room, own.clientId);
+  assert.equal(drafts.read(alice.accountId, room).text, 'Next thought'); assert.equal(drafts.read(alice.accountId, room).pending, null);
+  const next = drafts.beginSend(alice.accountId, room, 'Next thought'); assert.notEqual(next.clientId, pending.clientId);
+  call(alice, 'chat.send', { communityId: room, clientId: next.clientId, text: next.text });
+  assert.deepEqual(call(bob, 'chat.list', { communityId: room }).messages.map(value => value.text), ['Original message', 'Next thought']);
+  assert.equal(requests, 2);
 });
 test('forward chat catch-up closes a gap larger than two pages in order', async () => {
   const rows = Array.from({ length: 155 }, (_, index) => ({ seq: 101 + index, messageId: `msg-${index}` }));

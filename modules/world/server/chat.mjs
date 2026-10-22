@@ -2,10 +2,14 @@ import { assert, exact, identifier, id, integer, text, limit } from './validatio
 
 export const CHAT_OPERATIONS = ['world.chat.list', 'world.chat.send', 'world.chat.remove', 'world.chat.read'];
 export function chatOperation(m, op, args, actor, now) {
+  let readers;
   function message(row) {
+    const own = row.author_id === actor.accountId;
+    if (own && !readers) readers = m.all("SELECT last_read_seq FROM memberships WHERE community_id=? AND account_id<>? AND state='active'", row.community_id, actor.accountId);
     return { messageId: row.id, seq: row.seq, text: row.deleted_at === null ? row.text : '',
       author: m.identity(m.person(row.author_id)), createdAt: row.created_at,
-      replyTo: row.reply_to, removed: row.deleted_at !== null };
+      replyTo: row.reply_to, removed: row.deleted_at !== null,
+      ...(own ? { clientId: row.client_id, readCount: row.deleted_at === null ? readers.filter(reader => reader.last_read_seq >= row.seq).length : 0 } : {}) };
   }
   if (op === 'world.chat.list') {
     exact(args, ['communityId'], ['after', 'before', 'limit']);

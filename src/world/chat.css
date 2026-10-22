@@ -270,3 +270,4 @@
 @media (min-width:721px) and (max-width:1100px) {
   html[data-soty-short-viewport=true] .sw-app .sw-chat-search { grid-template-columns: 18px minmax(60px,1fr) auto 44px 44px 44px; }
 }
+.sw-message-sent.is-read>.sw-icon+.sw-icon { margin-left: -8px; }
