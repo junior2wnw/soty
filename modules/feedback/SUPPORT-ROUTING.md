@@ -120,10 +120,16 @@ Exact retry readonly query возвращает только историчес�
 поддерживается и блокируется FK/immutable target; эти ограничения не отключались.
 
 Existing signed API/Connect SDK умеет выдавать и показывать точные resources.
-Нынешняя ручная форма `access-panel.ts` выдаёт только Notes, а Notes OAuth consent
-не выдаёт эти grants автоматически. Удобный явный выбор приложения/операций в
-существующем Connect UI — следующий отдельный UI шаг. Полная готовность такого
-grant UI этим Source slice не заявляется; default grants не расширены.
+В подготовленном UI собственное приложение → настройки доступа → «Подключить
+агента к обращениям» открывает прежнюю панель с текущим account/app preset.
+По умолчанию выдаются только list/get, режим обработки добавляет reply/status;
+context/submit/accept и delegation в этот ключ не входят. До выдачи видны срок,
+лимит, приложение и ограничения. Queue context подтверждается отдельно текущими
+правами владельца. Новый credential привязан к canonical Root origin + `/mcp`.
+Notes и его OAuth сохраняют прежнее отдельное назначение; default grants не
+расширены. Реализация и локальная проверка UI не означают production rollout
+или разрешение автоматически создать реальный ключ. Старый backend отключает
+новое подключение с объяснением.
 
 Проверены disposable actual Root composition: signed placement, normal grant
 неадминистративного owner, все7 операций, sibling/foreign/read-only/resource deny,

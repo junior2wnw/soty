@@ -815,7 +815,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
           if (typeof issued.token !== 'string' || !/^soty_cap_[A-Za-z0-9_-]{43}$/u.test(issued.token) || issued.credential?.audience !== currentAudience || issued.credential.grantId !== grant.grant.id || issued.credential.expiresAt !== expiresAt) throw new Error('unconfirmed');
           state.dirty = false; markChanged(); knownPrincipals.set(principalId, principal.principal);
           showSecret(state, issued.token, label, expiresAt, limit, { principalId, grantId, allowDelegation,
-            ...(target && installationId ? { feedback: { endpoint: currentAudience, appId: target.appId, installationId } } : {}) }); announce('Ограниченный ключ создан. Скопируйте его до закрытия.');
+            ...(target && installationId ? { feedback: { endpoint: currentAudience, appId: target.appId, installationId } } : {}) }); announce('Ограниченный ключ создан. Управляйте доступом в списке клиентов.');
           void loadPrincipals();
         } catch (error) {
           if (!dialogAlive(state)) return;

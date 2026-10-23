@@ -60,9 +60,12 @@ catalog → exact returned digest/schema → metadata read → разрешён�
 с устойчивым idempotencyKey/внутренним requestId → proof/readback → reporter accept.
 `feedback_context` — durable ensure receipt с настоящим installationId; при reuse
 это не заявление о создании новой installation. Оригинальные media Root MCP не
-возвращает автоматически. UI выдачи app grants ещё не готов: текущий access-panel
-выдаёт Notes; defaults/OAuth не расширялись. Это проверенный локальный server/SDK
-slice, а не заявление о live rollout. Контракт: [SUPPORT-ROUTING.md](../feedback/SUPPORT-ROUTING.md).
+возвращает автоматически. Подготовленный UI открывает существующую панель доступа
+из настроек своего приложения: чтение по умолчанию, ответы и смена статуса —
+отдельным выбором. Срок, лимит и приложение видны до выдачи ключа; отзыв — в списке
+клиентов. Notes и OAuth сохраняют прежние права. Проверенный Source/UI не является
+заявлением о live rollout или выданном разрешении. Контракт:
+[SUPPORT-ROUTING.md](../feedback/SUPPORT-ROUTING.md).
 
 `GET /p/PROJECT_ID` — форма и история отправителя. `GET /widget.js` — обычная
 кнопка, открывающая эту форму в доступном dialog/iframe. При запрете iframe/CSP
