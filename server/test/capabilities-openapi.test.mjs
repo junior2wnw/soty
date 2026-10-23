@@ -65,7 +65,8 @@ test('real HTTP responses validate with an independent JSON Schema 2020-12 imple
   assert.equal(documentResponse.status, 200); assert.ok(documentResponse.headers.etag);
   assert.equal(documentResponse.headers['cache-control'], 'public,no-cache');
   assert.equal(doc['x-soty-mcp'].endpoint, '/mcp', 'composed host documents its mounted MCP transport independently of native readiness');
-  assert.deepEqual(doc['x-soty-mcp'].tools, ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
+  assert.deepEqual(doc['x-soty-mcp'].tools, ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
+    'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
   assert.deepEqual(doc['x-soty-mcp'].protocolVersions, ['2026-07-28', '2025-11-25']);
   assert.equal(doc['x-soty-oauth-discovery'], undefined, 'no configured AS is invented for an ordinary service host');
   assert.doesNotMatch(doc.info.description, /No OAuth, MCP/u);

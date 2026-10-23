@@ -226,8 +226,9 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     accessAvailability: async () => {
       const response = await fetch('/api/capabilities/v1/status', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
       if (!response.ok) throw new TypeError('Capabilities unavailable');
-      const value = await response.json() as { notesCreateEnabled?: boolean; audience?: string | null };
-      return { notesCreateEnabled: value.notesCreateEnabled === true, audience: typeof value.audience === 'string' ? value.audience : null };
+      const value = await response.json() as { notesCreateEnabled?: boolean; audience?: string | null; appFeedbackEnabled?: boolean; mcpAudience?: string | null };
+      return { notesCreateEnabled: value.notesCreateEnabled === true, audience: typeof value.audience === 'string' ? value.audience : null,
+        appFeedbackEnabled: value.appFeedbackEnabled === true, mcpAudience: typeof value.mcpAudience === 'string' ? value.mcpAudience : null };
     },
   };
   const mount = (accountId: string | null): WorldAppHandle => {

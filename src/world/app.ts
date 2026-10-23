@@ -42,6 +42,7 @@ import { communityEmblem, createHexField, createHexFieldState, type HexField } f
 import { communityIcons, icon } from './icons';
 import { loadPreferences, savePreferences, type WorldPreferences, type WorldView } from './preferences';
 import { entityId, entityName, worldColor, worldColors, type WorldApi, type WorldAppOptions, type WorldAppRecord, type WorldAssistantHandle, type WorldCommunity, type WorldDevice, type WorldEntity, type WorldHumanCallState, type WorldMember, type WorldMessage, type WorldIdentity, type WorldProfile, type WorldSearch } from './types';
+import type { AppFeedbackGrantTarget } from './access-panel';
 import './one-field.css';
 import { bindSheetGripDismiss } from './sheet-grip-dismiss';
 import { createCommunityConversation, createDirectConversation, type ConversationTarget } from './conversation-target.mjs';
@@ -1085,13 +1086,13 @@ class WorldApplication {
     });
   }
 
-  private navigateReady(view: WorldView, chatId?: string): void {
+  private navigateReady(view: WorldView, chatId?: string, appFeedback?: AppFeedbackGrantTarget): void {
     if (view === 'mine' || view === 'world') this.unifiedFieldFilter = this.unifiedFieldFilters[view];
     this.selectedChat = view === 'messages' ? chatId : undefined;
     if (view === 'world') this.discoveryStatus = 'loading';
     this.writeRoute(view === 'messages' && chatId ? `messages/${chatId}` : view === 'mine' || view === 'world' ? this.unifiedFieldRoute(view) : view === 'assistant' ? `assistant/${this.assistantMode}` : view);
     this.view = view; this.preferences.view = view; this.persist(); this.group = null; this.selected = null;
-    this.renderNavigation(); this.renderCurrent();
+    this.renderNavigation(); this.renderCurrent(appFeedback);
     if (!this.unifiedField && view === 'world') void this.search();
     if (!this.unifiedField && view === 'mine') void this.loadPersonal();
     if (view === 'messages') {
@@ -1205,7 +1206,7 @@ class WorldApplication {
     return false;
   }
 
-  private renderCurrent(): void {
+  private renderCurrent(appFeedback?: AppFeedbackGrantTarget): void {
     if ((this.view === 'mine' || this.view === 'world') && !this.group) {
       if (!this.unifiedField) { this.cleanScreen(); this.renderUnifiedField(); }
       else this.unifiedField.setMode(this.view === 'world' ? 'search' : 'mine', this.view === 'world' ? this.query : this.homeQuery, this.unifiedFieldFilter);
@@ -1218,7 +1219,7 @@ class WorldApplication {
     else if (this.view === 'messages') this.renderMessages(this.selectedChat);
     else if (this.view === 'notes') this.renderNotes();
     else if (this.view === 'assistant') this.renderAssistant();
-    else if (this.view === 'access') this.renderAccess();
+    else if (this.view === 'access') this.renderAccess(appFeedback);
     else this.renderLibrary();
   }
 
@@ -1317,14 +1318,15 @@ class WorldApplication {
     }).catch(error => { if (host.isConnected && sequence === this.screenSequence) host.replaceChildren(emptyState('Помощник пока недоступен', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => this.navigate('assistant')))); });
   }
 
-  private renderAccess(): void {
+  private renderAccess(appFeedback?: AppFeedbackGrantTarget): void {
     const host = el('section', 'sw-access-host sx-page-host'); host.dataset.pwaIgnore = ''; this.main.replaceChildren(host);
     const accountId = this.profile?.profileId || this.deskAccount, sequence = this.screenSequence;
     if (!accountId) { host.append(emptyState('Нужен ваш аккаунт', 'Подключитесь, чтобы управлять доступом.')); return; }
     host.append(this.loading('Открываем доступы и действия'));
     void import('./access-panel').then(({ mountAccessPanel }) => {
       if (this.destroyed || sequence !== this.screenSequence || !host.isConnected) return;
-      this.accessHandle = mountAccessPanel(host, { api: this.api, accountId, ...(this.profile?.displayName ? { accountLabel: this.profile.displayName } : {}), ...(this.options.accessAvailability ? { availability: this.options.accessAvailability } : {}) });
+      this.accessHandle = mountAccessPanel(host, { api: this.api, accountId, ...(this.profile?.displayName ? { accountLabel: this.profile.displayName } : {}), ...(this.options.accessAvailability ? { availability: this.options.accessAvailability } : {}),
+        ...(appFeedback?.accountId === accountId ? { appFeedback } : {}) });
     }).catch(error => { if (host.isConnected) host.replaceChildren(emptyState('Не удалось открыть доступы', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => this.navigate('access')))); });
   }
 
@@ -2903,10 +2905,28 @@ class WorldApplication {
         });
       });
     }); cover.hidden = true;
+    const feedbackAccess = button('Подключить агента к обращениям', 'lock', 'sw-button-quiet sw-button-wide', () => {
+      if (!isCurrent() || feedbackAccess.disabled || !canManageFeedback) return;
+      handle?.requestClose(feedbackAccess, () => {
+        if (!accountCurrent() || this.screenSequence !== sequence) return;
+        this.afterNoteSaved(() => {
+          if (accountCurrent() && this.screenSequence === sequence) this.navigateReady('access', undefined, { accountId, appId: app.appId, name: app.name });
+        });
+      });
+    }); feedbackAccess.hidden = true; feedbackAccess.disabled = true;
+    const feedbackHint = el('p', 'sw-muted', 'Сервер пока не поддерживает подключение агента к обращениям приложения.'); feedbackHint.hidden = true;
+    let feedbackReady = false, canManageFeedback = false;
+    void this.options.accessAvailability?.().then(value => {
+      if (!isCurrent()) return;
+      feedbackReady = value.appFeedbackEnabled === true && typeof value.audience === 'string' && value.mcpAudience === `${value.audience}/mcp`;
+      feedbackAccess.disabled = !feedbackReady; feedbackHint.hidden = !canManageFeedback || feedbackReady;
+    }).catch(() => { /* Keep issuance unavailable on an old or unreachable backend. */ });
     handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent, compactAccess: quickAccess,
       onChanged: snapshot => {
         if (!isCurrent()) return;
         cover.hidden = !snapshot.actions.canEdit;
+        canManageFeedback = snapshot.actions.canEdit;
+        feedbackAccess.hidden = !canManageFeedback; feedbackHint.hidden = !canManageFeedback || feedbackReady;
         const before = JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel, app.entry]);
         const { entry: _previousEntry, ...metadata } = app;
         const entry = preferredInspectionEntry(snapshot);
@@ -2940,6 +2960,7 @@ class WorldApplication {
     });
     this.appSettingsRouteClose = resume => handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : undefined, resume);
     dialog.body.append(cover);
+    dialog.body.append(feedbackAccess, feedbackHint);
     if (openPlacement) dialog.body.append(button('Расположение на поле', 'cells', 'sw-button-quiet sw-button-wide', () => {
       if (isCurrent()) handle?.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : undefined, openPlacement);
     }));

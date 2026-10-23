@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 import { nativeHttpFixture, nativeIdentity, good } from './support/native-capability-http.mjs';
 import { APP_FEEDBACK_CATALOG, appFeedbackResource } from '../app-feedback-capabilities.js';
+import { fixture as accessPanelFixture, settle } from '../../src/world/test-support/access-panel-delegation.mjs';
 
 const until = async read => {
   const deadline = Date.now() + 5000;
@@ -107,6 +108,33 @@ function denied(response, codes = ['access_denied', 'apps_owner_required', 'apps
   const code = JSON.parse(response.body.result.content[0].text).error.code;
   assert.ok(codes.includes(code), code);
 }
+
+test('actual Access consent issues an exact read grant through signed Root, reads only its app and revokes through existing UI', { timeout: 20000 }, async t => {
+  const f = await fixture(t), accountId = f.accounts.get(f.owner).accountId;
+  const methods = ['apps.feedback.context', 'access.principals.list', 'access.grants.list', 'access.events.list', 'oauth.connections.list',
+    'access.invocations.list', 'access.principals.create', 'access.grants.issue', 'access.credentials.issue', 'access.grants.revoke'];
+  const handlers = Object.fromEntries(methods.map(method => [method, async args => good(await f.call(f.owner, method, args))]));
+  const ui = accessPanelFixture(t, { accountId, handlers, panelOptions: { appFeedback: { accountId, appId: f.appId, name: 'Selected placement' } },
+    availability: async () => (await f.http('/api/capabilities/v1/status')).body });
+  await until(() => ui.dialog()?.querySelector('form'));
+  const form = ui.dialog().querySelector('form'), name = form.querySelectorAll('input').find(node => node.type === 'text');
+  name.value = 'Disposable read agent'; name.dispatch('input'); form.dispatch('submit'); await ui.handle.flush(); await settle();
+  const secret = ui.dialog()?.querySelector('.sa-secret'); assert.ok(secret && /^soty_cap_[A-Za-z0-9_-]{43}$/u.test(secret.value), 'actual server confirms the UI grant and key');
+  const identity = { token: secret.value }, installationId = (await f.context(f.owner)).installationId;
+  assert.equal(successful(await f.invoke(identity, 'list', { appId: f.appId, installationId })).result.tickets.length, 0);
+  denied(await f.invoke(identity, 'list', { appId: f.siblingId, installationId: (await f.context(f.owner, f.siblingId)).installationId }));
+  denied(await f.invoke(identity, 'context', { appId: f.appId }));
+  const issued = ui.calls.find(call => call.method === 'access.grants.issue').args;
+  const grantId = ui.calls.find(call => call.method === 'access.credentials.issue').args.grantId;
+  ui.button('Готово, закрыть', ui.dialog()).click(); assert.equal(secret.value, '');
+  await until(() => ui.target('principal-' + issued.principalId)); ui.target('principal-' + issued.principalId).click();
+  await until(() => ui.target('revoke-grant-' + grantId));
+  ui.target('revoke-grant-' + grantId).click();
+  await until(() => ui.dialog()?.querySelectorAll('button').some(node => node.textContent === 'Отозвать доступ'));
+  ui.button('Отозвать доступ', ui.dialog()).click();
+  await ui.handle.flush(); await settle(); denied(await f.invoke(identity, 'list', { appId: f.appId, installationId }));
+  assert.equal(ui.calls.filter(call => call.method === 'access.grants.issue').length, 1);
+});
 // Delay only a real SDK Response stream at EOF. Authentication, Source reads,
 // persistence and the final transport authority gate remain unmodified.
 function holdSdkJsonEof() {

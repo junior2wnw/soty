@@ -298,7 +298,10 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   // Host-only service handle, like notesService/appsService; never part of an agent tool or HTTP DTO.
   app.locals.connectorService = connectors;
   app.locals.capabilitiesService = capabilities;
+  let servicesCleanup;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
+    appFeedbackReady: () => Boolean(!servicesCleanup && mcp && connect && universal?.feedback && appFeedback?.catalog.length === 7
+      && appFeedback.catalog.every(entry => capabilities.external?.contracts.some(contract => contract.capabilityId === entry.capabilityId && contract.version === entry.version))),
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience,appFeedback});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
@@ -343,7 +346,6 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     selectedRegistryConfigured: scopedEmbedRegistryConfigured,
     ...(reviews ? { reviewsPreparedness: reviews.preparedness() } : {}),
   });
-  let servicesCleanup;
   app.locals.closeServices = () => {
     if (servicesCleanup) return servicesCleanup;
     let complete, reject;

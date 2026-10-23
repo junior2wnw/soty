@@ -17,7 +17,7 @@ test('real signed owner, external HTTP create/get/replay and Notes read share on
   const f = await nativeHttpFixture(t), owner = nativeIdentity('Автор'), account = await f.bootstrap(owner);
   const identity = await f.issue(owner, account.accountId);
   const ready = await f.http('/api/capabilities/v1/status');
-  assert.deepEqual(ready.body, { notesCreateEnabled: true, audience: f.origin });
+  assert.deepEqual(ready.body, { notesCreateEnabled: true, audience: f.origin, appFeedbackEnabled: true, mcpAudience: f.origin + '/mcp' });
   const first = await post(f, identity.token);
   assert.equal(first.status, 201); assert.equal(first.body.reused, false);
   assert.equal(first.body.invocation.status, 'succeeded'); assert.equal(first.body.invocation.effectState, 'committed');

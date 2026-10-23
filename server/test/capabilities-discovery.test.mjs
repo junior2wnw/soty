@@ -89,7 +89,7 @@ test('full HTTP composition exposes exact public contracts without enabling Note
   }
   const status = await f.call(`${BASE}/status`, { headers: { 'if-none-match': '*' } });
   assert.equal(status.status, 200); assert.equal(status.headers['cache-control'], 'no-store');
-  assert.equal(status.headers.etag, undefined); assert.deepEqual(status.json(), { notesCreateEnabled: false, audience: null });
+  assert.equal(status.headers.etag, undefined); assert.deepEqual(status.json(), { notesCreateEnabled: false, audience: null, appFeedbackEnabled: false, mcpAudience: null });
   for (const path of ['/agents/missing', `${BASE}/missing`, '/api/capabilities/v2/catalog']) {
     const result = await f.call(path); assert.equal(result.status, 404, path);
     assert.equal(result.json().error.code, 'not_found'); assert.equal(result.headers['cache-control'], 'no-store');

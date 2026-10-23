@@ -133,7 +133,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: coarse, addEventListener() {} }) });
   document.defaultView = view;
   view.MutationObserver = class { observe() {} disconnect() {} };
-  const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [];
+  const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [], settingsMounts = [], settingsCloseRequests = [];
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
   const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
@@ -172,6 +172,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
+    './app-settings': { mountAppSettings(options) { settingsMounts.push(options); return { dispose() {}, requestClose(opener, afterClose) { settingsCloseRequests.push({ opener, finish: () => options.onClose(afterClose) }); } }; } },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => !!discussionCalls.unsaved, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };
   const dialogsModule = { exports: {} };
@@ -231,10 +232,72 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, ports, makeElement, rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+function feedbackSettingsFixture(availability = { notesCreateEnabled: false, audience: 'https://shell.example', appFeedbackEnabled: true, mcpAudience: 'https://shell.example/mcp' }) {
+  const f = fixture(), appId = 'app-' + 'a'.repeat(32), navigation = [];
+  f.app.options.accessAvailability = async () => availability;
+  f.app.navigateReady = (...args) => navigation.push(args);
+  const open = (canEdit = true) => {
+    f.app.openAppSettings({ appId, name: 'Selected app', status: 'ready', ownerAccountId: f.app.deskAccount }, undefined, { isCurrent: () => true, resolve: () => null });
+    f.settingsMounts.at(-1).onChanged({ app: { id: appId, name: 'Selected app', state: 'enabled', grants: { accountIds: [], communityIds: [] } },
+      actions: { canEdit }, source: { hostDeviceId: 'host', deviceName: 'Device', entryPath: '/', observation: { state: 'responding' } },
+      addresses: { aliases: [], canonical: null }, publication: { launchPolicy: 'private', activeDomainIds: [] } });
+    return f.dialogs.at(-1).body.querySelectorAll('button').find(node => node.textContent === 'Подключить агента к обращениям');
+  };
+  return { ...f, appId, navigation, open };
+}
+
+test('owned app agent entry passes exact account/app through the existing settings close guard', async () => {
+  const f = feedbackSettingsFixture(), entry = f.open(); await turn();
+  assert.equal(entry.hidden, false); assert.equal(entry.disabled, false);
+  entry.emit('click'); assert.equal(f.settingsCloseRequests.length, 1); assert.equal(f.navigation.length, 0);
+  assert.equal(f.settingsCloseRequests[0].opener, entry);
+  f.settingsCloseRequests[0].finish();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.navigation)), [['access', null, { accountId: 'account-A', appId: f.appId, name: 'Selected app' }]]);
+});
+
+test('feedback access cannot bypass an unsaved underlying editor after settings close', async () => {
+  const f = feedbackSettingsFixture(); let flushed = 0;
+  f.app.notesHandle = { hasUnsavedChanges: () => true, async flush() { flushed++; }, dispose() {} };
+  const entry = f.open(); await turn(); entry.emit('click'); f.settingsCloseRequests[0].finish(); await turn();
+  assert.equal(flushed, 1); assert.equal(f.navigation.length, 0); assert.match(f.app.lastToast, /Сначала сохраните/u);
+});
+
+test('actual access navigation and async panel mount receive the one-use exact app preset', async () => {
+  const f = feedbackSettingsFixture(), mounts = [];
+  f.ports['./access-panel'] = { mountAccessPanel(_host, options) { mounts.push(options); return { dispose() {} }; } };
+  f.app.navigateReady = f.Controller.prototype.navigateReady; f.app.renderCurrent = f.Controller.prototype.renderCurrent;
+  f.app.preferences = {}; f.app.persist = () => {}; f.app.writeRoute = route => { f.location.hash = '#' + route; f.app.activeRoute = f.location.hash; };
+  const entry = f.open(); await turn(); entry.emit('click'); f.settingsCloseRequests[0].finish(); await turn();
+  assert.equal(f.app.view, 'access'); assert.equal(mounts.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(mounts[0].appFeedback)), { accountId: 'account-A', appId: f.appId, name: 'Selected app' });
+  f.app.renderCurrent(); await turn();
+  assert.equal(mounts.length, 2); assert.equal(mounts[1].appFeedback, undefined, 'a generic remount cannot resume an old app consent');
+});
+
+test('account switch invalidates both deferred availability and a pending settings handoff', async () => {
+  const f = feedbackSettingsFixture(), held = deferred(); f.app.options.accessAvailability = () => held.promise;
+  const entry = f.open(); assert.equal(entry.disabled, true);
+  f.app.deskAccount = 'account-B'; f.app.accountGeneration++;
+  held.resolve({ appFeedbackEnabled: true, audience: 'https://shell.example', mcpAudience: 'https://shell.example/mcp' }); await turn();
+  assert.equal(entry.disabled, true); entry.emit('click'); assert.equal(f.settingsCloseRequests.length, 0);
+  const next = feedbackSettingsFixture(), nextEntry = next.open(); await turn(); nextEntry.emit('click');
+  next.app.deskAccount = 'account-B'; next.app.accountGeneration++; next.settingsCloseRequests[0].finish();
+  assert.equal(next.navigation.length, 0);
+});
+
+test('old backend explains disabled feedback entry and nonowners do not get an entry', async () => {
+  const f = feedbackSettingsFixture({ notesCreateEnabled: true, audience: 'https://shell.example' }), entry = f.open(); await turn();
+  assert.equal(entry.disabled, true); assert.equal(entry.hidden, false);
+  assert.ok(f.dialogs.at(-1).body.children.some(node => !node.hidden && node.textContent.includes('Сервер пока не поддерживает')));
+  entry.emit('click'); assert.equal(f.settingsCloseRequests.length, 0);
+  const other = feedbackSettingsFixture(), hiddenEntry = other.open(false); await turn();
+  assert.equal(hiddenEntry.hidden, true); hiddenEntry.emit('click'); assert.equal(other.settingsCloseRequests.length, 0);
+});
 
 test('persistent field modes use the real dirty-screen guard and reflect the selected space', async () => {
   const f = fixture(), gate = deferred(); let dirty = true;

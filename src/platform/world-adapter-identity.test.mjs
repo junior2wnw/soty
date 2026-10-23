@@ -11,6 +11,7 @@ test('actual world adapter keeps each controller and late contact action bound t
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} }, mounts = [], calls = [];
   let accountId = 'account-A', observer, bootstraps = 0, resets = 0;
+  let status = { notesCreateEnabled: false, audience: 'https://shell.example', appFeedbackEnabled: true, mcpAudience: 'https://shell.example/mcp' };
   const ports = {
     './notifications-client.mjs': { createNotificationsController() { return { async refresh() {}, dispose() {} }; } },
     './native-voice-descriptor.mjs': nativeVoiceDescriptor,
@@ -35,12 +36,14 @@ test('actual world adapter keeps each controller and late contact action bound t
     '../../modules/personal-agent/call/lifecycle.mjs': { createCallLifecycle() { return { snapshot: () => ({ state: 'idle', microphone: 'off', scope: null, code: null }), dispose() {} }; } },
   };
   vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ports[name], URL, AbortSignal, AbortController,
-    // This account-fence fixture exposes an unavailable capability service.
-    fetch: async () => ({ ok: false, status: 503 }),
+    fetch: async () => ({ ok: true, json: async () => status }),
     window: { location: { href: 'https://shell.example/#mine', origin: 'https://shell.example' }, addEventListener() {}, removeEventListener() {} },
   });
   await module.exports.startWorld({ isConnected: true });
   const first = mounts[0];
+  assert.deepEqual(JSON.parse(JSON.stringify(await first.options.accessAvailability())), status);
+  status = { notesCreateEnabled: true, audience: 'https://shell.example' };
+  assert.deepEqual(JSON.parse(JSON.stringify(await first.options.accessAvailability())), { ...status, appFeedbackEnabled: false, mcpAudience: null });
   accountId = 'account-B'; observer({ accountId, deviceId: accountId ? 'device-' + accountId : null });
   const second = mounts[1];
   await first.options.api.request('world.community.list', {});
@@ -49,7 +52,10 @@ test('actual world adapter keeps each controller and late contact action bound t
   assert.equal(first.destroyed, true); assert.equal(resets, 1); assert.equal(bootstraps, 0);
   assert.deepEqual(calls.map(value => value.context.expectedAccountId), ['account-A', 'account-B', 'account-A']);
   assert.deepEqual(calls[0].args, {}, 'client admission context does not alter strict product arguments');
+  await first.options.api.request('apps.feedback.context', { appId: 'app-' + 'a'.repeat(32) });
+  assert.deepEqual(calls.at(-1).args, { appId: 'app-' + 'a'.repeat(32) });
+  assert.equal(calls.at(-1).context.expectedAccountId, 'account-A', 'native feedback uses the same original account admission fence');
   accountId = null; observer({ accountId, deviceId: accountId ? 'device-' + accountId : null });
   await assert.rejects(mounts[2].options.api.request('world.profile.get'), { code: 'NO_LOCAL_PROFILE' });
-  assert.equal(calls.length, 3, 'a controller without identity cannot enqueue unchecked operations');
+  assert.equal(calls.length, 4, 'a controller without identity cannot enqueue unchecked operations');
 });

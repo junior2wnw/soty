@@ -192,7 +192,7 @@ function projectDelegation(value, audience) {
 }
 
 /** Host composition only. This is not a generic invocation/executor gateway. */
-export function attachCapabilitiesActions(app, { service, audience = '', ingressOptions, resourceMetadata = null } = {}) {
+export function attachCapabilitiesActions(app, { service, audience = '', ingressOptions, resourceMetadata = null, appFeedbackReady = () => false } = {}) {
   requireValue(service && typeof service.authenticateCredential === 'function', 'capability_configuration_invalid');
   requireValue(resourceMetadata === null || (audience !== ''
     && resourceMetadata === `${audience}/.well-known/oauth-protected-resource`), 'capability_configuration_invalid');
@@ -201,9 +201,11 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
   const host = audience ? new URL(audience).host : null;
   const secureResource = audience !== '' && new URL(audience).protocol === 'https:';
   const status = () => {
-    let ready = false;
+    let ready = false, feedbackReady = false;
     try { ready = Boolean(audience) && service.nativeNotes?.readiness().ready === true; } catch { /* Fail closed. */ }
-    return { notesCreateEnabled: ready, audience: audience || null };
+    try { feedbackReady = Boolean(audience) && appFeedbackReady() === true; } catch { /* Fail closed. */ }
+    return { notesCreateEnabled: ready, audience: audience || null, appFeedbackEnabled: feedbackReady,
+      mcpAudience: feedbackReady ? `${audience}/mcp` : null };
   };
   app.use(async (req, res, next) => {
     let lease, route;

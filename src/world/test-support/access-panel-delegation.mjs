@@ -83,6 +83,7 @@ export function fixture(t, initial = {}) {
   const host = make('main'); document.body.append(host);
   const data = { principals: [], grants: [], events: [], ...initial.data }, calls = [], handlers = new Map(), windowEvents = new Map();
   let currentAccount = 'owner_a', handle, created = 0, copied = 0;
+  const copiedValues = [];
   const dom = { el: make, button(label, symbol, name, action) { const node = make('button', `sw-button ${name ?? ''}`); node.type = 'button';
     if (symbol) node.append(make('svg')); node.append(make('span', '', label)); if (action) node.addEventListener('click', action); return node; },
     labeledField(label, input) { const node = make('label', 'sw-field'); node.append(make('span', '', label), input); return node; },
@@ -100,11 +101,12 @@ export function fixture(t, initial = {}) {
   vm.runInNewContext(sourceAccessCompiled,{module:sourceAccessModule,exports:sourceAccessModule.exports,require:name=>({'./dom':dom})[name]??{},document,crypto:{randomUUID},Date,Set,Map});
   vm.runInNewContext(compiled, { module, exports: module.exports, require: name => ({ './agent-source-access': sourceAccessModule.exports, './dom': dom, './dialogs': { createDialog }, './icons': { icon: () => make('svg') } })[name] ?? {},
     document, HTMLElement: Element, crypto: { randomUUID }, URL, Date, Set, Map,
-    navigator: { clipboard: { async writeText(value) { assert.ok(typeof value === 'string' && value.startsWith('soty_cap_'), 'synthetic secret only'); copied++; } } },
+    navigator: { clipboard: { async writeText(value) { assert.ok(typeof value === 'string' && (value === `soty_cap_${'q'.repeat(43)}` || value.includes(`Bearer soty_cap_${'q'.repeat(43)}`)), 'synthetic secret only'); copied++; copiedValues.push(value); } } },
     window: { addEventListener: (name, fn) => windowEvents.set(name, fn), removeEventListener: name => windowEvents.delete(name) },
   });
   const api = { async request(method, args) {
-    assert.equal(args.expectedAccountId, currentAccount, 'request remains bound to the mounted account');
+    if (method === 'apps.feedback.context') assert.deepEqual(Object.keys(args), ['appId'], 'native Feedback keeps its closed product DTO');
+    else assert.equal(args.expectedAccountId, currentAccount, 'access request remains bound to the mounted account');
     const copiedArgs = structuredClone(args); calls.push({ method, args: copiedArgs });
     if (method === 'agent.sources.list') return {accountId:currentAccount,deviceId:'synthetic-device',apps:[]};
     if (handlers.has(method)) return handlers.get(method)(copiedArgs);
@@ -121,12 +123,13 @@ export function fixture(t, initial = {}) {
     if (method === 'access.grants.revoke') { const item = data.grants.find(value => value.id === args.grantId); item.revokedAt = time + 1; return { grant: structuredClone(item) }; }
     throw new Error(`Unexpected synthetic operation ${method}`);
   } };
-  const controls = { availability: async () => ({ notesCreateEnabled: true, audience }) };
+  const controls = { availability: initial.availability ?? (async () => ({ notesCreateEnabled: true, audience })) };
   function mount(accountId = 'owner_a') { handle?.dispose(); currentAccount = accountId;
-    handle = module.exports.mountAccessPanel(host, { api, accountId, accountLabel: `Тест ${accountId}`, availability: () => controls.availability() }); return handle; }
-  mount(); t.after(() => handle?.dispose());
+    handle = module.exports.mountAccessPanel(host, { ...initial.panelOptions, api, accountId, accountLabel: `Тест ${accountId}`, availability: () => controls.availability() }); return handle; }
+  for (const [method, handler] of Object.entries(initial.handlers ?? {})) handlers.set(method, handler);
+  mount(initial.accountId ?? 'owner_a'); t.after(() => handle?.dispose());
   const button = (label, scope = document.body) => { const result = scope.querySelectorAll('button').find(node => node.textContent === label || node.getAttribute('aria-label') === label); assert.ok(result, `button missing: ${label}`); return result; };
-  return { document, host, data, calls, handlers, controls, mount, button, windowEvents, get handle() { return handle; }, get copied() { return copied; },
+  return { document, host, data, calls, handlers, controls, mount, button, windowEvents, copiedValues, get handle() { return handle; }, get copied() { return copied; },
     dialog: () => document.body.querySelector('dialog'), target: key => host.querySelectorAll('[data-sa-focus]').find(node => node.dataset.saFocus === key),
     writes: () => calls.filter(call => !call.method.endsWith('.list')),
     async openCreate() { button('Создать доступ по ключу').click(); await settle(); const form = document.body.querySelector('form'); assert.ok(form); return form; },

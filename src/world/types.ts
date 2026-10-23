@@ -161,7 +161,7 @@ export interface WorldAppOptions {
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;
   openAssistant?: (host: HTMLElement, context?: WorldAssistantMountContext) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
   openAppBuilder?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
-  accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null }>;
+  accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null; appFeedbackEnabled?: boolean; mcpAudience?: string | null }>;
   requestContact?: (profile: WorldIdentity) => void | Promise<void>;
   listDevices?: () => Promise<WorldDevice[]>;
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;

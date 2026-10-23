@@ -5,12 +5,14 @@ import type { WorldApi } from './types';
 import './access-panel.css';
 import { mountAgentSourceAccess } from './agent-source-access';
 
-export interface AccessAvailability { notesCreateEnabled: boolean; audience: string | null }
+export interface AccessAvailability { notesCreateEnabled: boolean; audience: string | null; appFeedbackEnabled?: boolean; mcpAudience?: string | null }
+export interface AppFeedbackGrantTarget { accountId: string; appId: string; name: string }
 export interface AccessPanelOptions {
   api: WorldApi;
   accountId: string;
   accountLabel?: string;
   availability?: () => Promise<AccessAvailability>;
+  appFeedback?: AppFeedbackGrantTarget;
 }
 export interface AccessPanelHandle { dispose(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean }
 interface Principal { id: string; accountId: string; clientId: string; label: string; state: string; createdAt: number; revokedAt: number | null; managedBy?: 'oauth' }
@@ -21,6 +23,7 @@ interface Connection {
 interface ConnectionTarget { kind: 'connection' | 'principal'; id: string; label: string; cursor: string | null }
 interface Budget { unit: string; limit: number; reserved: number; spent: number; remaining: number; uncertain: number }
 interface Grant {
+  accountId?: string;
   id: string; principalId: string; clientId: string; parentGrantId: string | null; rootGrantId: string;
   capabilities: { capabilityId: string; version: number }[]; resources: string[]; effects: string[]; recipients: string[];
   expiresAt: number; createdAt: number; revokedAt: number | null; allowDelegation: boolean; maxDepth: number; depth: number; budget?: Budget;
@@ -64,6 +67,7 @@ function dateLabel(time: number): string {
 }
 function grantName(grant: Grant): string {
   if (grant.capabilities.length === 1 && grant.capabilities[0]?.capabilityId === notesCapability.capabilityId) return 'Создание записок';
+  if (grant.capabilities.length > 0 && grant.capabilities.every(item => item.capabilityId.startsWith('apps.feedback.'))) return grant.effects.length ? 'Обработка обращений приложения' : 'Чтение обращений приложения';
   return grant.capabilities.length === 1 ? 'Функция приложения' : `${grant.capabilities.length} функции приложений`;
 }
 function stateBadge(text: string, tone = ''): HTMLElement {
@@ -75,12 +79,15 @@ function fact(label: string, value: string): HTMLElement {
   const row = el('div', 'sa-fact'); row.append(el('dt', '', label), el('dd', '', value)); return row;
 }
 function validAvailability(value: AccessAvailability | undefined): AccessAvailability {
-  if (!value || value.notesCreateEnabled !== true || typeof value.audience !== 'string') return { notesCreateEnabled: false, audience: null };
+  if (!value || typeof value.audience !== 'string') return { notesCreateEnabled: false, audience: null };
   try {
     const url = new URL(value.audience);
     if (url.username || url.password || url.search || url.hash || !['https:', 'http:', 'urn:', 'soty:'].includes(url.protocol)) return { notesCreateEnabled: false, audience: null };
     if (url.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return { notesCreateEnabled: false, audience: null };
-    return { notesCreateEnabled: true, audience: value.audience };
+    const appFeedbackEnabled = value.appFeedbackEnabled === true && ['https:', 'http:'].includes(url.protocol)
+      && value.audience === url.origin && value.mcpAudience === `${url.origin}/mcp`;
+    return { notesCreateEnabled: value.notesCreateEnabled === true, audience: value.notesCreateEnabled === true ? value.audience : null,
+      appFeedbackEnabled, mcpAudience: appFeedbackEnabled ? `${url.origin}/mcp` : null };
   } catch { return { notesCreateEnabled: false, audience: null }; }
 }
 
@@ -132,6 +139,9 @@ function connectionIdentity(label: string, id: string, compact = false): HTMLEle
 
 export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions): AccessPanelHandle {
   const { api, accountId } = options;
+  const selected = options.appFeedback;
+  const feedbackTarget = selected?.accountId === accountId && /^app-[a-f0-9]{32}$/u.test(selected.appId)
+    && string(selected.name, 64) ? Object.freeze({ accountId, appId: selected.appId, name: selected.name }) : null;
   const workspace = el('section', 'sa-access');
   workspace.setAttribute('aria-label', 'Доступы и действия');
   const instanceId = `sa-${crypto.randomUUID()}`;
@@ -144,8 +154,10 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   const tools = el('div', 'sa-header-tools');
   const refresh = iconButton('Обновить доступы', 'refresh', () => { void refreshView(); });
   const add = button('Создать доступ по ключу', 'plus', 'sw-button-primary', () => { void openCreate(); });
+  const addFeedback = feedbackTarget ? button('Подключить агента к обращениям', 'lock', 'sw-button-primary', () => { void openCreate(feedbackTarget); }) : null;
   add.disabled = true;
-  tools.append(refresh, add); header.append(heading, tools);
+  tools.append(refresh, addFeedback ?? add); header.append(heading, tools);
+  if (addFeedback) addFeedback.disabled = true;
   const availabilityHint = el('p', 'sa-availability', 'Проверяем доступность выдачи ключей…');
   availabilityHint.id = `${instanceId}-availability`; add.setAttribute('aria-describedby', availabilityHint.id);
   const tabs = el('div', 'sa-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Раздел доступа');
@@ -196,7 +208,9 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   async function request<T>(method: string, args: Record<string, unknown> = {}): Promise<T> {
     if (!alive()) throw new Error('access_panel_closed');
     try {
-      const result = await api.request<T>(method, { ...args, expectedAccountId: accountId });
+      // Native Feedback keeps closed product arguments; WorldApi binds its
+      // account at enqueue. Access operations also require it in their DTO.
+      const result = await api.request<T>(method, method === 'apps.feedback.context' ? args : { ...args, expectedAccountId: accountId });
       if (!alive()) throw new Error('access_panel_closed');
       return result;
     } catch (error) {
@@ -211,7 +225,8 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       state.clearSecret(); state.dirty = false;
       if (dialogState === state) dialogState = null;
     }, returnKey ? { isCurrent: () => alive() && view === 'clients' && workspace.isConnected,
-      resolve: () => [...content.querySelectorAll<HTMLElement>('[data-sa-focus]')].find(node => node.dataset.saFocus === returnKey) || content } : undefined);
+      resolve: () => [...content.querySelectorAll<HTMLElement>('[data-sa-focus]')].find(node => node.dataset.saFocus === returnKey) || content }
+      : feedbackTarget ? { isCurrent: () => alive() && workspace.isConnected, resolve: () => addFeedback?.disabled ? refresh : addFeedback } : undefined);
     const state: DialogState = { dialog, busy: false, dirty: false, keepBusyFocus: Boolean(returnKey), clearSecret: () => {} };
     dialog.element.classList.add('sa-dialog');
     dialog.element.addEventListener('cancel', event => { if (state.busy) event.preventDefault(); });
@@ -248,6 +263,10 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       ? 'Клиент с ключом получает только выбранные вами действия.'
       : 'Выдача новых ключей пока недоступна. Существующими доступами можно управлять.';
     availabilityHint.classList.toggle('is-ready', availability.notesCreateEnabled);
+    if (addFeedback) { addFeedback.disabled = availability.appFeedbackEnabled !== true || !availability.mcpAudience || mutations.size > 0;
+      addFeedback.title = addFeedback.disabled ? 'Сервер пока не поддерживает подключение агента к обращениям приложения.' : '';
+      availabilityHint.textContent = availability.appFeedbackEnabled === true ? `Агент получит только выбранные действия с обращениями приложения «${feedbackTarget!.name}».` : addFeedback.title;
+      availabilityHint.classList.toggle('is-ready', availability.appFeedbackEnabled === true); }
   }
   async function checkAvailability(): Promise<AccessAvailability> {
     const sequence = ++availabilityRequest;
@@ -683,24 +702,43 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     }
   }
 
-  async function openCreate(): Promise<void> {
-    const state = openDialog('Подключить клиента');
+  async function feedbackContext(target: AppFeedbackGrantTarget): Promise<string> {
+    const value = await request<{ readiness: string; context: { appId: string; installationId: string; canManage: boolean; ticketVisibility: string } }>('apps.feedback.context', { appId: target.appId });
+    if (value.readiness !== 'ready' || value.context?.appId !== target.appId || value.context.canManage !== true
+      || value.context.ticketVisibility !== 'reporter-and-support' || !/^fbi_[a-f0-9]{32}$/u.test(value.context.installationId)) throw new Error('feedback_context_unconfirmed');
+    return value.context.installationId;
+  }
+
+  async function openCreate(target: AppFeedbackGrantTarget | null = null): Promise<void> {
+    const state = openDialog(target ? 'Агент для обращений приложения' : 'Подключить клиента');
     state.dialog.body.append(el('p', 'sa-muted', 'Проверяем доступные действия…'));
     const current = await checkAvailability();
     if (!dialogAlive(state)) return;
-    if (!current.notesCreateEnabled || !current.audience) {
-      state.dialog.body.replaceChildren(el('p', '', 'Новое подключение пока недоступно.'), button('Закрыть', undefined, '', () => closeDialog())); return;
+    const audienceFor = (value: AccessAvailability) => target ? value.appFeedbackEnabled === true ? value.mcpAudience : null : value.notesCreateEnabled ? value.audience : null;
+    const currentAudience = audienceFor(current);
+    if (!currentAudience) {
+      state.dialog.body.replaceChildren(el('p', '', target ? 'Сервер пока не поддерживает подключение агента к обращениям приложения. Ключ не создан.' : 'Новое подключение пока недоступно.'), button('Закрыть', undefined, '', () => closeDialog())); return;
+    }
+    let installationId: string | null = null;
+    if (target) {
+      try { installationId = await feedbackContext(target); }
+      catch { if (dialogAlive(state)) state.dialog.body.replaceChildren(el('p', '', 'Не удалось подтвердить вашу очередь обращений. Ключ не создан.'), button('Закрыть', undefined, '', () => closeDialog())); return; }
+      if (!dialogAlive(state)) return;
     }
     const form = el('form', 'sa-create-form');
-    const name = textInput('', 'Например, мой помощник', 100); name.required = true; name.autocomplete = 'off';
+    const name = textInput(target ? `Агент · ${target.name}` : '', 'Например, мой помощник', 100); name.required = true; name.autocomplete = 'off';
     const expiry = el('select', 'sw-select');
     for (const [value, label] of [['1', 'На 1 час'], ['24', 'На 1 день'], ['168', 'На 7 дней']]) { const option = el('option', '', label); option.value = value!; option.selected = value === '24'; expiry.append(option); }
-    const count = el('input', 'sw-input'); count.type = 'number'; count.min = '1'; count.max = '1000'; count.step = '1'; count.value = '10'; count.required = true; count.inputMode = 'numeric';
+    const count = el('input', 'sw-input'); count.type = 'number'; count.min = '1'; count.max = '1000'; count.step = '1'; count.value = target ? '100' : '10'; count.required = true; count.inputMode = 'numeric';
     const pair = el('div', 'sa-form-pair'); pair.append(labeledField('Срок', expiry), labeledField('Лимит действий', count));
-    const consent = el('div', 'sa-consent-summary'); consent.append(icon('list'), el('div', '', 'Только создание новых личных записок'));
+    const consent = el('div', 'sa-consent-summary'); consent.append(icon('list'), el('div', '', target ? `Только обращения приложения «${target.name}»` : 'Только создание новых личных записок'));
+    const mode = el('select', 'sw-select sa-feedback-mode'); mode.setAttribute('aria-label', 'Права агента на обращения');
+    for (const [value, label] of [['read', 'Читать обращения'], ['triage', 'Читать, отвечать и менять статус']]) { const option = el('option', '', label); option.value = value!; option.selected = value === 'read'; mode.append(option); }
     const facts = el('dl', 'sa-consent-facts');
     const accountValue = options.accountLabel ? `${options.accountLabel} · ${accountId}` : accountId;
-    facts.append(fact('Аккаунт', accountValue), fact('Получатель текста', 'Записки в Сотах'), fact('Доступ к прежним запискам', 'Не предоставляется'));
+    facts.append(fact('Аккаунт', accountValue));
+    if (target) facts.append(fact('Приложение', `${target.name} · ${target.appId}`), fact('Обращения', 'Текст и переписка; вложения — только описание'), fact('Ограничения', 'Без других приложений, создания обращений, принятия результата и передачи доступа'));
+    else facts.append(fact('Получатель текста', 'Записки в Сотах'), fact('Доступ к прежним запискам', 'Не предоставляется'));
     const delegation = el('input', 'sa-delegation-check'); delegation.type = 'checkbox'; delegation.checked = false;
     delegation.id = `${instanceId}-delegation`; delegation.dataset.saDelegation = 'allow';
     const delegationLabel = el('label', 'sa-delegation'); delegationLabel.htmlFor = delegation.id;
@@ -715,9 +753,10 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     updateTotals();
     const message = el('p', 'sa-form-message'); message.setAttribute('role', 'alert');
     const submit = button('Создать ключ доступа', 'lock', 'sw-button-primary'); submit.type = 'submit';
-    form.append(labeledField('Название клиента', name), pair, consent, facts, delegationChoice, totals, message, submit);
+    form.append(labeledField('Название клиента', name), pair, consent, facts, ...(target ? [labeledField('Права агента', mode)] : [delegationChoice]), totals, message, submit);
     for (const input of [name, expiry, count]) input.addEventListener('input', () => { state.dirty = true; updateTotals(); });
     delegation.addEventListener('change', () => { state.dirty = true; updateTotals(); });
+    mode.addEventListener('change', () => { state.dirty = true; });
     let attempted = false;
     form.addEventListener('submit', event => {
       event.preventDefault(); if (!dialogAlive(state) || attempted || state.busy || !form.reportValidity()) return;
@@ -725,42 +764,65 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       if (!label || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000 || ![1, 24, 168].includes(hours)) { message.textContent = 'Укажите название, срок и целый лимит от 1 до 1000.'; return; }
       // Consent is the value actually submitted, never a field reread after an
       // availability check or another signed request has yielded.
-      const allowDelegation = delegation.checked;
+      const allowDelegation = !target && delegation.checked;
+      if (target && !['read', 'triage'].includes(mode.value)) { message.textContent = 'Выберите права агента.'; return; }
+      const capabilities = target ? ['list', 'get', ...(mode.value === 'triage' ? ['reply', 'status'] : [])].map(operation => ({ capabilityId: `apps.feedback.${operation}`, version: 1 })) : [notesCapability];
+      const resources = target ? ['apps.feedback', `apps.feedback:${target.appId}`] : ['notes:new'];
+      const effects = target ? mode.value === 'triage' ? ['update'] : [] : ['create'];
+      const recipients = target ? ['soty:app-feedback'] : ['soty:notes'];
       attempted = true;
       mutate(state, async () => {
-        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; delegation.disabled = true; message.textContent = 'Подключаем…';
+        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; delegation.disabled = true; mode.disabled = true; message.textContent = 'Подключаем…';
         let principalId: string | null = null, grantId: string | null = null;
-        let issuingKey = false;
+        let issuingKey = false, creatingPrincipal = false;
         try {
           const ready = await checkAvailability();
           if (!dialogAlive(state)) return;
-          if (!ready.notesCreateEnabled || !ready.audience || ready.audience !== current.audience) throw Object.assign(new Error('capability_disabled'), { code: 'capability_disabled' });
+          if (audienceFor(ready) !== currentAudience) throw Object.assign(new Error('capability_disabled'), { code: 'capability_disabled' });
+          if (target && await feedbackContext(target) !== installationId) throw new Error('feedback_context_unconfirmed');
+          if (!dialogAlive(state)) return;
+          creatingPrincipal = true;
           const principal = await request<{ principal: Principal }>('access.principals.create', { label, clientLabel: label });
           if (!dialogAlive(state)) return;
           if (!principal.principal?.id || principal.principal.accountId !== accountId) throw new Error('unconfirmed');
+          if (target && (!string(principal.principal.id, 180) || !string(principal.principal.clientId, 180) || principal.principal.state !== 'active')) throw new Error('unconfirmed');
           principalId = principal.principal.id;
           const expiresAt = Date.now() + hours * 60 * 60 * 1000;
-          const grant = await request<{ grant: Grant }>('access.grants.issue', { principalId, capabilities: [notesCapability], resources: ['notes:new'], effects: ['create'], recipients: ['soty:notes'],
+          const grant = await request<{ grant: Grant }>('access.grants.issue', { principalId, capabilities, resources, effects, recipients,
             expiresAt, allowDelegation, maxDepth: allowDelegation ? 1 : 0, budget: { unit: 'invocations', limit } });
           if (!dialogAlive(state)) return;
           if (!grant.grant?.id || grant.grant.principalId !== principalId || grant.grant.allowDelegation !== allowDelegation
             || grant.grant.maxDepth !== (allowDelegation ? 1 : 0)) throw new Error('unconfirmed');
+          if (target) {
+            const sameSet = (actual: unknown, expected: string[]) => Array.isArray(actual) && actual.length === expected.length && new Set(actual).size === actual.length && expected.every(item => actual.includes(item));
+            const value = grant.grant;
+            if (!string(value.id, 180) || value.accountId !== accountId || value.clientId !== principal.principal.clientId || value.parentGrantId !== null || value.rootGrantId !== value.id
+              || value.depth !== 0 || value.revokedAt !== null || value.expiresAt !== expiresAt
+              || !Array.isArray(value.capabilities) || !value.capabilities.every(item => record(item) && Object.keys(item).sort().join(',') === 'capabilityId,version' && item.version === 1)
+              || !sameSet(value.capabilities.map(item => item.capabilityId), capabilities.map(item => item.capabilityId))
+              || !sameSet(value.resources, resources) || !sameSet(value.effects, effects) || !sameSet(value.recipients, recipients)
+              || value.budget?.unit !== 'invocations' || value.budget.limit !== limit || value.budget.spent !== 0 || value.budget.reserved !== 0 || value.budget.remaining !== limit || value.budget.uncertain !== 0) throw new Error('unconfirmed');
+          }
           grantId = grant.grant.id;
           const stillReady = await checkAvailability();
           if (!dialogAlive(state)) return;
-          if (!stillReady.notesCreateEnabled || stillReady.audience !== ready.audience) throw Object.assign(new Error('capability_disabled'), { code: 'capability_disabled' });
-          issuingKey = true;
-          const issued = await request<{ token: string; credential: { id: string; grantId: string; audience: string; expiresAt: number } }>('access.credentials.issue', { grantId: grant.grant.id, audience: ready.audience, expiresAt });
+          if (audienceFor(stillReady) !== currentAudience) throw Object.assign(new Error('capability_disabled'), { code: 'capability_disabled' });
+          if (target && await feedbackContext(target) !== installationId) throw new Error('feedback_context_unconfirmed');
           if (!dialogAlive(state)) return;
-          if (typeof issued.token !== 'string' || !/^soty_cap_[A-Za-z0-9_-]{43}$/u.test(issued.token) || issued.credential?.audience !== ready.audience || issued.credential.grantId !== grant.grant.id || issued.credential.expiresAt !== expiresAt) throw new Error('unconfirmed');
+          issuingKey = true;
+          const issued = await request<{ token: string; credential: { id: string; grantId: string; audience: string; expiresAt: number } }>('access.credentials.issue', { grantId: grant.grant.id, audience: currentAudience, expiresAt });
+          if (!dialogAlive(state)) return;
+          if (typeof issued.token !== 'string' || !/^soty_cap_[A-Za-z0-9_-]{43}$/u.test(issued.token) || issued.credential?.audience !== currentAudience || issued.credential.grantId !== grant.grant.id || issued.credential.expiresAt !== expiresAt) throw new Error('unconfirmed');
           state.dirty = false; markChanged(); knownPrincipals.set(principalId, principal.principal);
-          showSecret(state, issued.token, label, expiresAt, limit, { principalId, grantId, allowDelegation }); announce('Ограниченный ключ создан. Скопируйте его до закрытия.');
+          showSecret(state, issued.token, label, expiresAt, limit, { principalId, grantId, allowDelegation,
+            ...(target && installationId ? { feedback: { endpoint: currentAudience, appId: target.appId, installationId } } : {}) }); announce('Ограниченный ключ создан. Скопируйте его до закрытия.');
           void loadPrincipals();
         } catch (error) {
           if (!dialogAlive(state)) return;
           message.textContent = issuingKey ? 'Ключ мог быть выдан, но ответ не подтверждён. Секрет нельзя восстановить. Проверьте доступ в списке клиентов и истории; перед новой выдачей отзовите прежний доступ.'
             : principalId ? 'Настройка не подтверждена. Проверьте созданный доступ в списке клиентов и истории; перед новой выдачей отзовите его.'
-              : codeOf(error) === 'capability_disabled' ? errorLabel(error) : 'Создание могло состояться, но ответ не подтверждён. Проверьте список клиентов и историю перед новой попыткой.';
+              : target && !creatingPrincipal ? 'Не удалось подтвердить доступность и ваши права на очередь обращений. Ключ не создан.'
+                : codeOf(error) === 'capability_disabled' ? errorLabel(error) : 'Создание могло состояться, но ответ не подтверждён. Проверьте список клиентов и историю перед новой попыткой.';
           submit.hidden = true;
           if (principalId) form.append(connectionIdentity('Код исполнителя', principalId));
           if (grantId) form.append(connectionIdentity('Код разрешения', grantId));
@@ -786,7 +848,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     state.dialog.body.replaceChildren(form); name.focus();
   }
 
-  function showSecret(state: DialogState, value: string, label: string, expiresAt: number, limit: number, access: { principalId: string; grantId: string; allowDelegation: boolean }) {
+  function showSecret(state: DialogState, value: string, label: string, expiresAt: number, limit: number, access: { principalId: string; grantId: string; allowDelegation: boolean; feedback?: { endpoint: string; appId: string; installationId: string } }) {
     let secret: string | null = value;
     state.dirty = true;
     const body = state.dialog.body;
@@ -815,12 +877,29 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       connectionIdentity('Код исполнителя', access.principalId), connectionIdentity('Код разрешения', access.grantId));
     if (access.allowDelegation) reference.append(el('p', 'sa-muted', 'Отзыв одного ключа не отключает уже подключённых помощников. Отзовите это разрешение или отключите клиента, чтобы закрыть и переданные доступы.'));
     body.replaceChildren(el('div', 'sa-key-mark'), info, summary, token, status, copy, reference, button('Готово, закрыть', undefined, '', () => { state.dirty = false; closeDialog(); }));
+    if (access.feedback) {
+      const connection = access.feedback;
+      summary.append(fact('MCP', connection.endpoint), fact('Приложение', connection.appId), fact('Очередь', connection.installationId));
+      const configuration = button('Скопировать параметры подключения', undefined, '', () => {
+        if (!secret || !dialogAlive(state)) return;
+        configuration.disabled = true;
+        void Promise.resolve().then(() => {
+          if (!secret || !dialogAlive(state)) return;
+          if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+          return navigator.clipboard.writeText(JSON.stringify({ endpoint: connection.endpoint, authorization: `Bearer ${secret}`, appId: connection.appId, installationId: connection.installationId }, null, 2));
+        }).then(() => { if (dialogAlive(state)) status.textContent = 'Параметры скопированы. Храните их как ключ доступа.'; })
+          .catch(() => { if (dialogAlive(state)) status.textContent = 'Не удалось скопировать параметры. Скопируйте ключ отдельно и используйте указанные MCP, приложение и очередь.'; })
+          .finally(() => { if (dialogAlive(state)) configuration.disabled = false; });
+      });
+      body.append(configuration);
+    }
     body.querySelector('.sa-key-mark')?.append(icon('check')); copy.focus();
   }
 
   const pageHidden = () => { closeDialog(true); };
   window.addEventListener('pagehide', pageHidden);
   selectView('clients'); void checkAvailability();
+  if (feedbackTarget) void openCreate(feedbackTarget);
   return {
     dispose() { if (disposed) return; disposed = true; window.removeEventListener('pagehide', pageHidden); erase(); },
     async flush() { await Promise.allSettled([...mutations]); await sourceAccess.flush(); },

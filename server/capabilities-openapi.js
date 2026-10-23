@@ -36,7 +36,9 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
   document.tags.push({ name: 'Private Notes', description: 'Create-only scope; own historical receipts contain no current Note content or existence check.' });
   const schemas = document.components.schemas;
   schemas.Status = object({ notesCreateEnabled: { type: 'boolean' }, audience: { type: ['string', 'null'], maxLength: 512,
-    description: 'Explicit canonical resource origin; null means the private HTTP surface is not configured. A configured origin does not imply execution is enabled.' } });
+    description: 'Explicit canonical resource origin; null means the private HTTP surface is not configured. A configured origin does not imply execution is enabled.' },
+    appFeedbackEnabled: { type: 'boolean', description: 'All seven application-feedback contracts and the MCP transport are configured. This is not authorization for an app.' },
+    mcpAudience: { type: ['string', 'null'], maxLength: 512, description: 'Canonical origin plus /mcp when application feedback is configured; null otherwise.' } });
   schemas.NativeDraftRequest = copy(note.inputSchema);
   schemas.NativeDraftRequest.properties.title['x-soty-max-utf16-code-units'] = 160;
   schemas.NativeDraftRequest.properties.body['x-soty-max-utf16-code-units'] = 100000;

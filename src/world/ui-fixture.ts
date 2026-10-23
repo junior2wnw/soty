@@ -12,6 +12,7 @@ if (!import.meta.env.DEV)
     throw new Error('UI fixture is development-only');
 const params = new URLSearchParams(location.search);
 const oneFieldFixture = params.get('layout') === 'one-field';
+const feedbackAccessSpecimen = params.get('appFeedback');
 // An explicit, development-only specimen for normal assistant composition.
 // It never calls a model, a computer or the production capabilities endpoint.
 const assistantSpecimen = params.get('assistant');
@@ -131,7 +132,44 @@ const addRegisteredProjection = (value: FixtureRegistration): void => {
     apps.push({ appId: value.appId, name: value.name, coverKey: 'notes', symbol: 'list', status: 'ready', ownerAccountId: self.profileId });
 };
 registrations.forEach(addRegisteredProjection);
+// This DEV-only specimen uses the real settings and Access components. Its
+// queue and keys are synthetic, in memory, and never sent to any server.
+const accessPrincipals: Record<string, unknown>[] = [], accessGrants: Record<string, unknown>[] = [];
+const feedbackAccess = (op: string, args: Record<string, unknown>): unknown => {
+    if (!['1', 'legacy'].includes(feedbackAccessSpecimen ?? '')) return undefined;
+    if (op === 'apps.feedback.context') {
+        const app = apps.find(value => value.appId === args.appId && value.ownerAccountId === self.profileId);
+        if (feedbackAccessSpecimen !== '1' || !app || Object.keys(args).join(',') !== 'appId') throw Object.assign(new Error('Synthetic queue unavailable'), { code: 'access_denied' });
+        return { readiness: 'ready', context: { appId: app.appId, installationId: 'fbi_' + app.appId.slice(4), canManage: true, ticketVisibility: 'reporter-and-support' } };
+    }
+    if (op === 'agent.sources.list') return { accountId: self.profileId, deviceId: 'qa-notebook', apps: [] };
+    if (op === 'oauth.connections.list') return { connections: [], nextCursor: null };
+    if (!op.startsWith('access.')) return undefined;
+    if (args.expectedAccountId !== self.profileId) throw Object.assign(new Error('Synthetic account changed'), { code: 'account_mismatch' });
+    if (op === 'access.principals.list') return { principals: structuredClone(accessPrincipals), cursor: null };
+    if (op === 'access.grants.list') return { grants: structuredClone(accessGrants.filter(value => value.principalId === args.principalId)), cursor: null };
+    if (op === 'access.events.list') return { events: [], cursor: null };
+    if (op === 'access.invocations.list') return { invocations: [], nextCursor: null };
+    if (feedbackAccessSpecimen !== '1') throw Object.assign(new Error('Synthetic legacy backend'), { code: 'capability_disabled' });
+    if (op === 'access.principals.create') {
+        const id = 'qa_principal_' + (accessPrincipals.length + 1);
+        const value = { id, accountId: self.profileId, clientId: 'qa_client_' + id, label: args.label, state: 'active', createdAt: Date.now(), revokedAt: null };
+        accessPrincipals.push(value); return { principal: structuredClone(value) };
+    }
+    if (op === 'access.grants.issue') {
+        const principal = accessPrincipals.find(value => value.id === args.principalId); if (!principal) throw Error('Synthetic principal absent');
+        const id = 'qa_grant_' + (accessGrants.length + 1), budget = args.budget as { unit: string; limit: number };
+        const value = { ...args, id, accountId: self.profileId, clientId: principal.clientId, parentGrantId: null, rootGrantId: id, depth: 0,
+            createdAt: Date.now(), revokedAt: null, budget: { ...budget, reserved: 0, spent: 0, remaining: budget.limit, uncertain: 0 } };
+        accessGrants.push(value); return { grant: structuredClone(value) };
+    }
+    if (op === 'access.credentials.issue') return { token: 'soty_cap_' + 'q'.repeat(43), credential: { id: 'qa_credential', grantId: args.grantId, audience: args.audience, expiresAt: args.expiresAt } };
+    if (op === 'access.grants.revoke') { const value = accessGrants.find(item => item.id === args.grantId); if (value) value.revokedAt = Date.now(); return { grant: structuredClone(value) }; }
+    if (op === 'access.principals.revoke') { const value = accessPrincipals.find(item => item.id === args.principalId); if (value) { value.state = 'revoked'; value.revokedAt = Date.now(); } return { principal: structuredClone(value) }; }
+    throw Object.assign(new Error('Synthetic access operation absent'), { code: 'fixture_unsupported' });
+};
 const api: WorldApi = { async request<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+        const access = feedbackAccess(op, args); if (access !== undefined) return access as T;
         const direct = fixtureDirect(op, args); if (direct !== undefined) return direct as T;
         let result: unknown;
         const group = groups.find(item => item.communityId === args.communityId) || groups[0]!;
@@ -385,7 +423,9 @@ const openConnections = async (): Promise<void> => {
   });
   await hub.closed;
 };
-const world = mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), openConnections, connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant });
+const world = mountWorldApp(document.querySelector<HTMLElement>('#app')!, { api, fieldArt: entity => resolveFieldAppArt({ ...(entity.entity.kind === 'app' ? { coverKey: apps.find(app => app.appId === entity.entity.id)?.coverKey ?? 'generic' } : entity.coverKey ? { coverKey: entity.coverKey } : {}) }), localAccount: async () => ({ accountId: self.profileId, label: self.displayName }), listApps: async (communityId) => apps.filter(app => !communityId || app.communityId === communityId), listDevices: async () => [{ deviceId: 'qa-notebook', label: 'Мой ноутбук', state: 'online' }], openLegacy: tool => toast(`Проверка оболочки: ${tool || 'Инструменты'}`), openAccount: () => toast('Профиль: локальный пример'), openConnections, connectDevice: action.connectDevice, agentCreate: action.agentCreate, openAppBuilder: host => action.mountAppBuilder(host), openAssistant: assistant,
+    ...(['1', 'legacy'].includes(feedbackAccessSpecimen ?? '') ? { accessAvailability: async () => ({ notesCreateEnabled: false, audience: location.origin,
+        appFeedbackEnabled: feedbackAccessSpecimen === '1', mcpAudience: feedbackAccessSpecimen === '1' ? location.origin + '/mcp' : null }) } : {}) });
 const marker = el('aside', 'sx-fixture-badge', 'Примеры · локальная проверка');
 marker.setAttribute('aria-label', 'Изолированный UI пример. Данные вымышленные, операции локальные.');
 document.body.append(marker);

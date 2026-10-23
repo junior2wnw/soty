@@ -18,7 +18,7 @@ export function nativeIdentity(label) {
 }
 export function good(value) { assert.equal(value.ok, true, value.error?.code); return value; }
 
-export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth, appOrigins = false } = {}) {
+export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth, appOrigins = false, universalAppsEnabled = true } = {}) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'soty-native-http-')));
   const nonce = randomUUID(), marker = join(directory, 'test-owner'); writeFileSync(marker, nonce, { flag: 'wx' });
   // Wire/authority fixtures own their document and never depend on a stale or
@@ -43,6 +43,7 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const create = enabled => createHttpApp(distDir, { dataDir: directory, connectOrigins: [origin],
+    universalAppsEnabled,
     capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
     ...(appOrigins ? { appOriginTemplate: `http://{appId}.localhost:${server.address().port}` } : {}),
     ...(oauth ? { oauth: oauth(origin) } : {}) });
