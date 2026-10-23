@@ -229,7 +229,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       : feedbackTarget ? { isCurrent: () => alive() && workspace.isConnected, resolve: () => addFeedback?.disabled ? refresh : addFeedback } : undefined);
     const state: DialogState = { dialog, busy: false, dirty: false, keepBusyFocus: Boolean(returnKey), clearSecret: () => {} };
     dialog.element.classList.add('sa-dialog');
-    dialog.element.addEventListener('cancel', event => { if (state.busy) event.preventDefault(); });
+    dialog.element.addEventListener('cancel', event => { event.preventDefault(); if (!state.busy) state.dialog.close(); });
     dialog.element.addEventListener('keydown', event => { if (state.busy && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); } });
     dialog.element.querySelector('.sw-dialog-header button')?.addEventListener('click', event => {
       if (state.busy) { event.preventDefault(); event.stopImmediatePropagation(); }

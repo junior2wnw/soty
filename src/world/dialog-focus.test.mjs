@@ -10,6 +10,11 @@ import * as deployment from './app-deployment.mjs';
 const compile = async file => ts.transpileModule(await readFile(new URL(file, import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsCode = await compile('./dialogs.ts'), appCode = await compile('./app.ts'), cardCode = await compile('./application-card.ts');
+const accessCode = await compile('./access-panel.ts');
+const accessAst = ts.createSourceFile('access-panel.js', accessCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+const accessMount = accessAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'mountAccessPanel');
+const accessDialogCode = ['closeDialog', 'openDialog'].map(name => accessMount.body.statements
+  .find(node => ts.isFunctionDeclaration(node) && node.name?.text === name).getText(accessAst)).join('\n');
 const appAst = ts.createSourceFile('app.js', appCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const appConstructor = appAst.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
 const rootClickHandler = appConstructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
@@ -86,6 +91,12 @@ function fixture() {
     URLSearchParams, setTimeout, clearTimeout, clearInterval, Event };
   function evaluate(code) { const module = { exports: {} }; vm.runInNewContext(code, { ...globals, module, exports: module.exports, require: name => ports[name] ?? {} }); return module.exports; }
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;
+  const { mountAccessDialogs } = evaluate(`const dialogs_1 = require('./dialogs');
+    exports.mountAccessDialogs = function({ workspace, feedbackTarget, addFeedback, refresh, alive }) {
+      const content = workspace, view = 'clients'; let dialogState = null;
+      ${accessDialogCode}
+      return { open: openDialog, isOpen: () => dialogState !== null };
+    };`);
   const { createApplicationCard } = evaluate(cardCode);
   const { TestController, bindRootClick } = evaluate(`${appCode}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; };`);
   const app = Object.create(TestController.prototype), main = el('main'), root = el('section'); main.tabIndex = -1; root.append(main); document.body.append(root);
@@ -103,7 +114,7 @@ function fixture() {
   const opener = () => main.querySelector('[data-app-action="inspect"]');
   const chain = () => { opener().focus(); opener().click(); const inspect = [...app.dialogs][0]; const next = inspect.body.querySelectorAll('button').find(node => node.textContent === 'Название и доступ'); next.focus(); next.click(); return app.appSettingsDialog; };
   const changed = () => settings.onChanged({ actions: { canEdit: true }, app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
-  return { document, location, el, app, main, dialogs, record, opener, chain, changed, rootClick: bindRootClick.call(app), settings: () => settings,
+  return { document, location, el, app, main, dialogs, mountAccessDialogs, record, opener, chain, changed, rootClick: bindRootClick.call(app), settings: () => settings,
     disposed: () => disposed, renders: () => renders, drain() { while (tasks.length) tasks.shift()(); } };
 }
 
@@ -139,6 +150,25 @@ test('native cancel can veto Escape/close; queued fallback respects intervening 
   modal.element.removeEventListener('cancel', veto); modal.element.requestClose();
   const other = f.el('button'); f.main.append(other); other.focus(); f.drain();
   assert.equal(count, 1); assert.equal(interrupted, true); assert.equal(f.document.activeElement, other); modal.close(); assert.equal(count, 1);
+});
+
+test('cross-route app consent manages native cancel before its close task and preserves busy/account focus guards', () => {
+  const f = fixture(); f.opener().focus();
+  const workspace = f.el('section'), connect = f.el('button', '', 'Подключить агента к обращениям'), refresh = f.el('button');
+  workspace.append(connect, refresh); f.main.replaceChildren(workspace); f.location.hash = '#access';
+  assert.equal(f.document.activeElement, f.document.body, 'the previous route opener has been removed');
+  let current = true;
+  const panel = f.mountAccessDialogs({ workspace, feedbackTarget: {}, addFeedback: connect, refresh, alive: () => current });
+  const state = panel.open('Агент для обращений приложения');
+  state.busy = true; state.dialog.element.requestClose();
+  assert.equal(state.dialog.element.open, true, 'a busy consent still vetoes native Escape');
+  state.busy = false; state.dialog.element.requestClose();
+  assert.equal(panel.isOpen(), false, 'managed cleanup must finish before the queued native close task');
+  assert.equal(f.document.activeElement, connect, 'return to the current app-scoped access action');
+  const next = f.el('button'); f.main.append(next); next.focus(); f.drain();
+  assert.equal(f.document.activeElement, next, 'the queued close cannot steal newer focus');
+  const stale = panel.open('Старое согласие'); current = false; stale.dialog.element.requestClose(); f.drain();
+  assert.notEqual(f.document.activeElement, connect, 'an invalidated account cannot restore its old target');
 });
 
 test('actual inspect → settings rename returns to the recreated same-app action, unchanged settings to surviving opener', () => {
