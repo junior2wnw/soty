@@ -72,7 +72,8 @@ export async function createPeremetrikaSignedRoot(t, source) {
     const catalog = peremetrikaReadCatalog({ capabilityId, appId, resourceId, binding: bridge.binding, kind: selection.kind });
     const options = { externalApplications: [{ appId, target: { revision: target.revision, digest: target.digest }, catalog, adapter: bridge.adapter }] };
     await app.locals.closeServices(); app = create(options); await ready();
-    const reference = app.locals.capabilitiesService.external.contracts[0];
+    const reference = app.locals.capabilitiesService.external.contracts.find(item => item.capabilityId === capabilityId);
+    assert.equal(reference?.capabilityId, capabilityId);
     const principal = (await client.extension('access.principals.create', { expectedAccountId: account.accountId, label: 'Synthetic selected reader' })).principal;
     const grant = (await client.extension('access.grants.issue', { expectedAccountId: account.accountId, principalId: principal.id,
       capabilities: [{ capabilityId, version: 1 }], resources: [resourceId], effects: [], recipients: [resourceId],

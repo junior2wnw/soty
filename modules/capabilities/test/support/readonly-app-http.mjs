@@ -402,7 +402,8 @@ export async function readonlyAppHttpFixture(
       (await ownerClient.extension('apps.list')).apps.find((item) => item.id === appId)?.state ===
       'ready',
   );
-  const reference = app.locals.capabilitiesService.external.contracts[0];
+  const reference = app.locals.capabilitiesService.external.contracts.find(item => item.capabilityId === catalog.capabilityId);
+  assert.equal(reference?.capabilityId, catalog.capabilityId);
   const principal = (
     await ownerClient.extension('access.principals.create', {
       expectedAccountId: owner.accountId,

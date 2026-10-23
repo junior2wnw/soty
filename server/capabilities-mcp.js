@@ -92,12 +92,12 @@ function checkedSdkFailure(response, buffer, body, headers) {
 
 /** Maintained SDK codec/dispatch, with a finite buffering and authority gate.
  * The Web Request is an identity key, never a serialized actor container. */
-export function attachCapabilitiesMcp(app, { service, origin = '', limits } = {}) {
+export function attachCapabilitiesMcp(app, { service, origin = '', limits, appFeedback } = {}) {
   requireValue(app && typeof app.use === 'function', 'capability_configuration_invalid');
   requireValue(validateDiscoveryOrigin({ discoveryOrigin: origin, shellOrigins: origin ? [origin] : [] }) === origin,
     'capability_configuration_invalid');
   const operations = createCapabilityOperations({ service, origin }), ingress = createMcpIngress(limits);
-  const externalOperations = createExternalCapabilityOperations({service,origin});
+  const externalOperations = createExternalCapabilityOperations({service,origin,appFeedback});
   const contexts = new WeakMap(), exchanges = new Set(), host = origin ? new URL(origin) : null;
   let closed = false;
   const sdk = createMcpHandler(({ requestInfo }) => {
@@ -109,7 +109,7 @@ export function attachCapabilitiesMcp(app, { service, origin = '', limits } = {}
     context.server = server;
     // SDK errors remain controlled protocol results; never log request data.
     server.onerror = () => {};
-    const tools = createMcpTools({ service, operations, context });
+    const tools = createMcpTools({ service, operations, context, appFeedback });
     server.setRequestHandler('tools/list', request => tools.list(request.params));
     server.setRequestHandler('tools/call', async request => server.projectCallToolResult(
       await tools.call(request.params), tools.outputSchema(request.params?.name)));

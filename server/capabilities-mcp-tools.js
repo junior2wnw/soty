@@ -62,8 +62,8 @@ const catalogCodes = new Set(['invalid_input', 'query_invalid', 'cursor_invalid'
 const errorResult = code => ({ isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code } }) }] });
 
 /** Request-local actor and invocation reference stay outside SDK authInfo/wire. */
-export function createMcpTools({ service, operations, context }) {
-  const external = createExternalCapabilityOperations({service,origin:context.origin ?? ''});
+export function createMcpTools({ service, operations, context, appFeedback }) {
+  const external = createExternalCapabilityOperations({service,origin:context.origin ?? '',appFeedback});
   async function externalCall(params) {
     if(Object.keys(params).some(key=>!['name','arguments','_meta'].includes(key))||!external.check(params.name,params.arguments??{}))return errorResult('invalid_input');
     try {

@@ -200,7 +200,7 @@ for (const withGuidance of [false, true]) test(`real signed Apps/Connect authori
     ...(withGuidance ? {guidance:[guidance]} : {})}]};
   await f.restart(options);
   const documentResponse = await fetch(f.origin + '/api/capabilities/v1/openapi.json'), document = await documentResponse.json();
-  const expectedApplicationTools = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel',
+  const expectedApplicationTools = ['apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query',
     ...(withGuidance ? ['apps_guidance_list', 'apps_guidance_get'] : [])];
   const expectedMcpTools = ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get',
     'apps_diagnose', 'apps_auth_guide', ...expectedApplicationTools];
@@ -208,7 +208,8 @@ for (const withGuidance of [false, true]) test(`real signed Apps/Connect authori
   assert.deepEqual(document['x-soty-mcp'].tools, expectedMcpTools);
   assert.equal(document.paths['/api/capabilities/v1/app-actions/invoke'].post.operationId, 'apps_invoke');
   assert.equal(JSON.stringify(document).includes(f.appId), false, 'public protocol documentation does not expose the private installed application');
-  const reference = f.service().locals.capabilitiesService.external.contracts[0];
+  const reference = f.service().locals.capabilitiesService.external.contracts.find(value => value.capabilityId === id);
+  assert.equal(reference?.capabilityId, id);
   const principal = (await f.owner.client.extension('access.principals.create',{expectedAccountId:f.owner.account.accountId,label:'Synthetic generic wire'})).principal;
   const grant = (await f.owner.client.extension('access.grants.issue',{expectedAccountId:f.owner.account.accountId,principalId:principal.id,
     capabilities:[{capabilityId:id,version:1}],resources:[resource],effects:['create'],recipients:[resource],expiresAt:Date.now()+600000,

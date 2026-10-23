@@ -36,6 +36,7 @@ import { approvedEmbedProfile } from '../modules/apps/scoped-embed/profile-dispa
 import { attachHumanIdentity } from './human-identity.js';
 import { captureExternalApplications, composeExternalApplications } from './external-applications.js';
 import { attachExternalCapabilities } from './external-capabilities.js';
+import { createAppFeedbackCapabilities } from './app-feedback-capabilities.js';
 import { captureUniversalPreparedness } from '../modules/app-contract/universal-preparedness.mjs';
 import { fenceClosingHttpSocket } from './http-closing-socket.mjs';
 import { createPersonalAgentComposition } from './personal-agent-composition.js';
@@ -86,6 +87,8 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
     nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
+  const appFeedback = universalEnabled ? createAppFeedbackCapabilities({ capabilities: () => capabilities,
+    connect: () => connect, apps: () => apps, feedback: () => universal.feedback }) : null;
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const domainProfile = appHosting.domainProfile || 'separate-site';
@@ -218,9 +221,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,
       catalog: [...BUILTIN_CAPABILITIES.map(entry => ({ ...entry,
-        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog)],
-      externalAdapters: composeExternalApplications(externalEntries.filter(entry=>!entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
-      readonlyQueries: composeExternalApplications(externalEntries.filter(entry=>entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}),
+        executionEnabled: entry.capabilityId === 'notes.createDraft' && entry.version === 1 && nativeNotesEnabled })),...externalEntries.map(entry=>entry.catalog), ...(appFeedback?.catalog ?? [])],
+      externalAdapters: [...composeExternalApplications(externalEntries.filter(entry=>!entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.effects ?? [])],
+      readonlyQueries: [...composeExternalApplications(externalEntries.filter(entry=>entry.readonly),{withConnectFence:action=>connect.withAuthorityFence(action),capabilities:()=>capabilities,apps:()=>apps}), ...(appFeedback?.queries ?? [])],
       externalGuidance: externalEntries.flatMap(entry=>entry.guidance),
       nativeNotes: { notes: notes.native, withAuthorityFence: action => {
         if (!connect) throw new AccessError('native_unavailable');
@@ -297,7 +300,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.locals.capabilitiesService = capabilities;
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
-  app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience});
+  app.locals.externalCapabilities = attachExternalCapabilities(app,{service:capabilities,origin:admittedCapabilityAudience,appFeedback});
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
     openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience), externalConfigured: Boolean(capabilities.external), guidanceConfigured: Boolean(capabilities.externalGuidance),queryConfigured:capabilities.external?.queryConfigured===true }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
@@ -315,7 +318,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     // MCP reads/replays use the existing keyless authority resolver even when
     // authorization-server issuance is off. Its adapter precedes the OAuth
     // fallback namespace guard and does not enable native execution.
-    app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience });
+    app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience, appFeedback });
     app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
     app.locals.humanIdentityStatus = attachHumanIdentity(app, { profile: humanProfile, service: human, distDir });
     unsubscribeRevocations = connect.subscribeRevocations(event => {

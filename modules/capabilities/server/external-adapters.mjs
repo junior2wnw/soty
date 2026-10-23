@@ -25,7 +25,7 @@ function pin(input) {
 // Capture trusted code once. Neither the contract nor an HTTP descriptor can
 // load a module, select a URL/command, supply a key or register these closures.
 export function captureExternalAdapters(input = []) {
-  assert(Array.isArray(input) && input.length <= 64, CODE);
+  assert(Array.isArray(input) && input.length <= 128, CODE);
   const seen = new Set();
   return Object.freeze(input.map(item => {
     const entry = object(item, ['contract', 'adapter']);
@@ -80,7 +80,7 @@ export function createExternalAdapterCoordinator({ entries, readonlyEntries = []
   integer(bounds.inflight, 1, 4, CODE); integer(bounds.callTimeoutMs, 1, 8000, CODE);
   assert(registry && typeof registry.get === 'function' && invocations && typeof invocations.inspectDispatch === 'function' && typeof authorize === 'function', CODE);
   const byKey = new Map();
-  assert(entries.length + readonlyEntries.length <= 64, 'external_adapter_invalid');
+  assert(entries.length + readonlyEntries.length <= 128, 'external_adapter_invalid');
   for (const value of [...entries,...readonlyEntries]) {
     const read = readonlyEntries.includes(value);
     const entry = registry.get(value.contract.capabilityId, value.contract.version);

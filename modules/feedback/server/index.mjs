@@ -147,7 +147,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
     },
     inspectInstallation(request) { requireThat(!closed, 'feedback_closed', 503); return providerReceipt(request); }
   });
-  function scoped(actor, args, callback) {
+  function scoped(actor, args, callback, provision = true, requireOwner = false) {
     authenticate(actor);
     const captured = Object.freeze({ accountId: actor.accountId, deviceId: actor.deviceId });
     let active = true, entered = false, outcome;
@@ -158,12 +158,13 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
         requireThat(object(context) && context.appId === args.appId && context.accountId === captured.accountId
           && typeof context.canManage === 'boolean' && context.canManage === (context.ownerId === captured.accountId),
         'feedback_authority_context_invalid', 500);
+        requireThat(!requireOwner || context.canManage, 'feedback_support_required', 403);
         id(context.ownerId); id(context.appId); authenticate(captured);
         const scope = { registryId, tenantId: context.ownerId, appId: context.appId, environmentId };
         const key = contractDigest({ scope, providerId: DEFAULT_FEEDBACK_PROFILE.feedback.provider.id });
         outcome = transaction(() => {
-          const row = install(scope, key);
-          if (args.installationId !== undefined) requireThat(args.installationId === row.id, 'feedback_installation_mismatch', 403);
+          const row = provision ? install(scope, key) : installation(key);
+          if (args.installationId !== undefined) requireThat(row && args.installationId === row.id, 'feedback_installation_mismatch', 403);
           const result = callback(context, row);
           authenticate(captured); return result;
         }, { actor: captured, args, provisioningKey: key });
@@ -179,30 +180,62 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
     requireThat(row && (row.reporter_id === actor.accountId || (context.canManage && row.owner_id === context.ownerId)), 'feedback_ticket_unavailable', 404);
     return row;
   }
-  function project(row, actor, context, includeBytes = false, summary = false) {
-    const attachments = db.prepare('SELECT * FROM feedback_attachments WHERE ticket_id=? ORDER BY ordinal').all(row.id).map(item => ({
+  function project(row, actor, context, includeBytes = false, summary = false, page = null) {
+    const attachments = db.prepare(`SELECT id,kind,name,mime_type,byte_length${includeBytes ? ',bytes' : ''} FROM feedback_attachments WHERE ticket_id=? ORDER BY ordinal`).all(row.id).map(item => ({
       id: item.id, kind: item.kind, name: item.name, mimeType: item.mime_type, byteLength: item.byte_length,
       ...(includeBytes ? { dataBase64: Buffer.from(item.bytes).toString('base64') } : {}) }));
-    const messages = summary ? [] : db.prepare('SELECT id,kind,body,created_at FROM feedback_messages WHERE ticket_id=? ORDER BY ordinal').all(row.id)
+    const messages = summary ? [] : db.prepare('SELECT id,kind,body,created_at FROM feedback_messages WHERE ticket_id=? ORDER BY ordinal LIMIT ? OFFSET ?')
+      .all(row.id, page?.limit ?? FEEDBACK_LIMITS.maxMessagesPerTicket, page?.offset ?? 0)
       .map(item => ({ id: item.id, kind: item.kind, body: item.body, createdAt: item.created_at }));
-    return { id: row.id, appId: row.app_id, installationId: row.installation_id, body: summary ? row.body.slice(0, 240) : row.body, status: row.status,
+    return { id: row.id, appId: row.app_id, installationId: row.installation_id, body: summary ? row.body.slice(0, 240).replace(/[\uD800-\uDBFF]$/u, '') : row.body, status: row.status,
       revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at, attachments, messages,
       canReply: true, canManage: context.canManage && row.owner_id === context.ownerId, canAccept: row.reporter_id === actor.accountId };
   }
-  function priorReceipt(actor, inbox, requestId, intentDigest) {
+  function findReceipt(actor, inbox, requestId, intentDigest) {
     id(requestId); const requestKey = hash(requestId);
     const prior = db.prepare('SELECT * FROM feedback_receipts WHERE installation_id=? AND account_id=? AND request_key=?').get(inbox.id, actor.accountId, requestKey);
     if (prior) { requireThat(prior.intent_digest === intentDigest, 'feedback_request_conflict', 409); return { value: JSON.parse(prior.result_json), requestKey }; }
-    requireThat(db.prepare('SELECT count(*) AS n FROM feedback_receipts WHERE installation_id=?').get(inbox.id).n < FEEDBACK_LIMITS.receiptsPerInstallation, 'feedback_receipt_capacity', 503);
     return { value: null, requestKey };
+  }
+  function priorReceipt(actor, inbox, requestId, intentDigest) {
+    const prior = findReceipt(actor, inbox, requestId, intentDigest);
+    if (prior.value) return prior;
+    requireThat(db.prepare('SELECT count(*) AS n FROM feedback_receipts WHERE installation_id=?').get(inbox.id).n < FEEDBACK_LIMITS.receiptsPerInstallation, 'feedback_receipt_capacity', 503);
+    return prior;
   }
   function saveReceipt(actor, inbox, requestKey, intentDigest, value) {
     if (stageReceipt) { stageReceipt(actor,inbox,requestKey,intentDigest,value); return; }
     db.prepare('INSERT INTO feedback_receipts VALUES (?,?,?,?,?)').run(inbox.id, actor.accountId, requestKey, intentDigest, JSON.stringify(value));
   }
-  return {
+  function writeInput(op, args) {
+    if (op === 'apps.feedback.submit') {
+      exact(args, ['appId', 'installationId', 'requestId', 'body', 'attachments']); body(args.body); id(args.installationId);
+      const media = validateFeedbackAttachments(args.attachments, { limits: { maxAttachments: FEEDBACK_LIMITS.maxAttachments,
+        totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } });
+      return { media, intent: hash(JSON.stringify(['feedback.submit.v1', args.appId, args.installationId, args.body,
+        media.map(item => [item.kind, item.name, item.mimeType, hash(item.bytes)])])) };
+    }
+    requireThat(['apps.feedback.reply', 'apps.feedback.status', 'apps.feedback.accept'].includes(op), 'unsupported_operation');
+    const kind = op.slice('apps.feedback.'.length);
+    exact(args, ['appId', 'installationId', 'ticketId', 'requestId', 'expectedRevision', ...(kind === 'reply' ? ['body'] : kind === 'status' ? ['status'] : [])]);
+    positive(args.expectedRevision);
+    if (kind === 'reply') body(args.body);
+    if (kind === 'status') requireThat(['in_progress', 'needs_action', 'ready_to_check'].includes(args.status), 'feedback_invalid_status');
+    return { intent: hash(JSON.stringify([op, args.appId, args.installationId, args.ticketId, args.expectedRevision, args.body ?? null, args.status ?? null])) };
+  }
+  const agentInput = ({ op, args, requestId }) => {
+    requireThat(operations.has(op), 'unsupported_operation');
+    requireThat(!Object.hasOwn(args, 'requestId'));
+    if (op === 'apps.feedback.context') {
+      exact(args, ['appId']); id(requestId);
+      return { input: { ...args, requestId }, intent: hash(JSON.stringify(['feedback.context.v1', args.appId])) };
+    }
+    const input = { ...args, requestId, ...(op === 'apps.feedback.submit' ? { attachments: [] } : {}) };
+    return { input, ...writeInput(op, input) };
+  };
+  const api = {
     operations, provider, schemaVersion: 1,
-    execute({ op, actor, args = {} }) {
+    execute({ op, actor, args = {} }, { requireOwner = false } = {}) {
       requireThat(operations.has(op), 'unsupported_operation');
       authenticate(actor);
       // Every inner receipt, reporter projection and authority check uses the
@@ -214,15 +247,10 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           entry: context.entry, title: context.title, recipientLabel: 'Владелец приложения', ticketVisibility: 'reporter-and-support',
           canSubmit: true, canManage: context.canManage, capabilities: { text: true, voice: true, screenshot: true, asr: false },
           limits: { bodyChars: FEEDBACK_LIMITS.bodyChars, totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes,
-            maxAttachments: FEEDBACK_LIMITS.maxAttachments, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } } }));
+            maxAttachments: FEEDBACK_LIMITS.maxAttachments, maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } } }), true, requireOwner);
       }
       if (op === 'apps.feedback.submit') {
-        exact(args, ['appId', 'installationId', 'requestId', 'body', 'attachments']); body(args.body); id(args.installationId);
-        const media = validateFeedbackAttachments(args.attachments, { limits: {
-          maxAttachments: FEEDBACK_LIMITS.maxAttachments, totalAttachmentBytes: FEEDBACK_LIMITS.totalAttachmentBytes,
-          maxAudioSeconds: FEEDBACK_LIMITS.maxAudioSeconds } });
-        const intent = hash(JSON.stringify(['feedback.submit.v1', args.appId, args.installationId, args.body,
-          media.map(item => [item.kind, item.name, item.mimeType, hash(item.bytes)])]));
+        const { media, intent } = writeInput(op, args);
         return scoped(actor, args, (context, inbox) => {
           const prior = priorReceipt(actor, inbox, args.requestId, intent);
           if (prior.value) { const current = ticket(actor, context, inbox, prior.value.ticketId); return { requestId: args.requestId, replayed: true, receipt: prior.value, ticket: project(current, actor, context) }; }
@@ -236,7 +264,7 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           const receipt = { ticketId, revision: 1, createdAt: timestamp };
           saveReceipt(actor, inbox, prior.requestKey, intent, receipt);
           return { requestId: args.requestId, replayed: false, receipt, ticket: project(ticket(actor, context, inbox, ticketId), actor, context) };
-        });
+        }, true, requireOwner);
       }
       if (op === 'apps.feedback.list') {
         exact(args, ['appId', 'installationId', 'limit', 'cursor'], ['appId', 'installationId']);
@@ -260,18 +288,14 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
           const page = rows.slice(0, limit), last = page.at(-1);
           return { tickets: page.map(row => project(row, actor, context, false, true)), nextCursor: rows.length > limit && last
             ? Buffer.from(JSON.stringify({ scope, createdAt: last.created_at, id: last.id })).toString('base64url') : null };
-        });
+        }, true, requireOwner);
       }
       if (op === 'apps.feedback.get') {
         exact(args, ['appId', 'installationId', 'ticketId']);
-        return scoped(actor, args, (context, inbox) => ({ ticket: project(ticket(actor, context, inbox, args.ticketId), actor, context, true) }));
+        return scoped(actor, args, (context, inbox) => ({ ticket: project(ticket(actor, context, inbox, args.ticketId), actor, context, true) }), true, requireOwner);
       }
       const kind = op === 'apps.feedback.reply' ? 'reply' : op === 'apps.feedback.status' ? 'status' : 'accept';
-      exact(args, ['appId', 'installationId', 'ticketId', 'requestId', 'expectedRevision', ...(kind === 'reply' ? ['body'] : kind === 'status' ? ['status'] : [])]);
-      positive(args.expectedRevision);
-      if (kind === 'reply') body(args.body);
-      if (kind === 'status') requireThat(['in_progress', 'needs_action', 'ready_to_check'].includes(args.status), 'feedback_invalid_status');
-      const intent = hash(JSON.stringify([op, args.appId, args.installationId, args.ticketId, args.expectedRevision, args.body ?? null, args.status ?? null]));
+      const { intent } = writeInput(op, args);
       return scoped(actor, args, (context, inbox) => {
         const row = ticket(actor, context, inbox, args.ticketId), prior = priorReceipt(actor, inbox, args.requestId, intent);
         if (prior.value) return { requestId: args.requestId, replayed: true, receipt: prior.value, ticket: project(row, actor, context) };
@@ -293,8 +317,55 @@ export function createFeedbackService({ databasePath, registryId = 'soty', envir
         db.prepare('UPDATE feedback_tickets SET status=?,revision=?,updated_at=? WHERE id=? AND revision=?').run(status, revision, timestamp, row.id, row.revision);
         const receipt = { ticketId: row.id, revision, createdAt: timestamp }; saveReceipt(actor, inbox, prior.requestKey, intent, receipt);
         return { requestId: args.requestId, replayed: false, receipt, ticket: project(ticket(actor, context, inbox, row.id), actor, context) };
-      });
+      }, true, requireOwner);
     },
+    // Trusted adapter port. Connect exposes only the original operations above.
+    agent: Object.freeze({
+      readReceipt(request) {
+        const { op, actor, args } = request, { input, intent } = agentInput(request);
+        return scoped(actor, input, (context, inbox) => {
+          if (!inbox) return null;
+          if (args.ticketId !== undefined) ticket(actor, context, inbox, args.ticketId);
+          return findReceipt(actor, inbox, input.requestId, intent).value;
+        }, false, true);
+      },
+      execute(request) {
+        const { op, actor, args } = request;
+        if (op === 'apps.feedback.list') {
+          const limit = args.limit ?? 10;
+          requireThat(Number.isSafeInteger(limit) && limit >= 1 && limit <= 10, 'feedback_invalid_limit');
+          const input = { ...args, limit };
+          if (input.cursor === '') delete input.cursor;
+          const value = api.execute({ op, actor, args: input }, { requireOwner: true });
+          return { ...value, nextCursor: value.nextCursor ?? '' };
+        }
+        if (op === 'apps.feedback.get') {
+          exact(args, ['appId', 'installationId', 'ticketId', 'messageOffset', 'messageLimit'], ['appId', 'installationId', 'ticketId']);
+          const { messageOffset: offset = 0, messageLimit: limit = 10, ...input } = args;
+          requireThat(Number.isSafeInteger(offset) && offset >= 0 && offset <= FEEDBACK_LIMITS.maxMessagesPerTicket
+            && Number.isSafeInteger(limit) && limit >= 1 && limit <= 20, 'feedback_invalid_limit');
+          return scoped(actor, input, (context, inbox) => {
+            const value = project(ticket(actor, context, inbox, input.ticketId), actor, context, false, false, { offset, limit });
+            const total = db.prepare('SELECT count(*) AS n FROM feedback_messages WHERE ticket_id=?').get(input.ticketId).n;
+            const result = { ticket: value, messagesPage: { offset, total, nextOffset: -1 } };
+            while (value.messages.length && Buffer.byteLength(JSON.stringify(result)) > 59000) value.messages.pop();
+            requireThat(value.messages.length || offset >= total, 'feedback_response_too_large', 503);
+            result.messagesPage.nextOffset = offset + value.messages.length < total ? offset + value.messages.length : -1;
+            return result;
+          }, false, true);
+        }
+        const { input, intent } = agentInput(request);
+        if (op !== 'apps.feedback.context') return api.execute({ op, actor, args: input }, { requireOwner: true });
+        return scoped(actor, input, (_context, inbox) => {
+          const prior = priorReceipt(actor, inbox, input.requestId, intent);
+          if (prior.value) return { replayed: true, receipt: prior.value };
+          const receipt = { installationId: inbox.id, revision: 1, createdAt: inbox.created_at };
+          saveReceipt(actor, inbox, prior.requestKey, intent, receipt);
+          return { replayed: false, receipt };
+        }, true, true);
+      }
+    }),
     close() { if (!closed) { db.close(); closed = true; } }
   };
+  return api;
 }

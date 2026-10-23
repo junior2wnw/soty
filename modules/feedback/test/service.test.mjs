@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createFeedbackService } from '../server/index.mjs';
@@ -26,6 +26,51 @@ function fixture(t, filename = ':memory:', limits = {}) {
     restart() { service.close(); service = createFeedbackService(options); } };
 }
 const fails = (fn, code) => assert.throws(fn, error => error.code === code);
+
+test('agent uses the existing installation and immutable domain receipts, including context and exact replay after restart', t => {
+  const folder = mkdtempSync(join(tmpdir(), 'soty-feedback-test-')), f = fixture(t, join(folder, 'feedback.sqlite'));
+  t.after(() => { assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-feedback-test-/); rmSync(folder, { recursive: true, force: true }); });
+  const actor = f.actor('owner'), input = { op: 'apps.feedback.context', actor, args: { appId: 'app_fixture' }, requestId: 'agent-context' };
+  assert.equal(f.service().agent.readReceipt(input), null);
+  const context = f.service().agent.execute(input);
+  assert.equal(f.context('owner').installationId, context.receipt.installationId);
+  f.restart();
+  assert.deepEqual(f.service().agent.readReceipt(input), context.receipt);
+  assert.equal(f.service().agent.execute(input).replayed, true);
+  const c = f.context(), sent = f.exec('one', 'submit', { appId: c.appId, installationId: c.installationId, requestId: 'report', body: 'Issue', attachments: [] });
+  const reply = { op: 'apps.feedback.reply', actor, requestId: 'agent-reply', args: { appId: c.appId, installationId: c.installationId,
+    ticketId: sent.receipt.ticketId, expectedRevision: 1, body: 'Answer' } };
+  assert.equal(f.service().agent.readReceipt(reply), null);
+  const answered = f.service().agent.execute(reply); f.restart();
+  assert.deepEqual(f.service().agent.readReceipt(reply), answered.receipt);
+  assert.equal(f.service().agent.execute(reply).replayed, true);
+  assert.equal(f.exec('owner', 'reply', { ...reply.args, requestId: reply.requestId }).replayed, true);
+  assert.equal(f.exec('owner', 'get', { appId: c.appId, installationId: c.installationId, ticketId: sent.receipt.ticketId }).ticket.messages.length, 1);
+  fails(() => f.service().agent.readReceipt({ ...reply, args: { ...reply.args, body: 'Changed' } }), 'feedback_request_conflict');
+});
+
+test('agent metadata pages omit original media and preserve the legacy original path and every long conversation page', t => {
+  const f = fixture(t), c = f.context(), actor = f.actor('owner');
+  const bytes = readFileSync(new URL('./fixtures/chrome.png', import.meta.url));
+  const sent = f.exec('one', 'submit', { appId: c.appId, installationId: c.installationId, requestId: 'media', body: '界'.repeat(8000),
+    attachments: [{ kind: 'image', name: 'selected.png', mimeType: 'image/png', dataBase64: bytes.toString('base64') }] });
+  let revision = 1;
+  for (let i = 0; i < 8; i++) revision = f.exec('owner', 'reply', { appId: c.appId, installationId: c.installationId,
+    ticketId: sent.receipt.ticketId, requestId: 'long-' + i, expectedRevision: revision, body: '界'.repeat(7000) + i }).ticket.revision;
+  let offset = 0, seen = [];
+  do {
+    const value = f.service().agent.execute({ op: 'apps.feedback.get', actor,
+      args: { appId: c.appId, installationId: c.installationId, ticketId: sent.receipt.ticketId, messageOffset: offset, messageLimit: 20 } });
+    assert.equal(JSON.stringify(value).includes('dataBase64'), false);
+    assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 60000);
+    assert.equal(value.ticket.attachments[0].byteLength, bytes.length);
+    assert.equal(value.messagesPage.total, 8); seen.push(...value.ticket.messages); offset = value.messagesPage.nextOffset;
+  } while (offset !== -1);
+  assert.equal(seen.length, 8); assert.equal(new Set(seen.map(row => row.id)).size, 8);
+  assert.equal(f.exec('owner', 'get', { appId: c.appId, installationId: c.installationId, ticketId: sent.receipt.ticketId }).ticket.attachments[0].dataBase64, bytes.toString('base64'));
+  const page = f.service().agent.execute({ op: 'apps.feedback.list', actor, args: { appId: c.appId, installationId: c.installationId } });
+  assert.equal(page.tickets.length, 1); assert.equal(page.nextCursor, ''); assert.equal(JSON.stringify(page).includes('dataBase64'), false);
+});
 
 test('durable text receipt survives restart, exact lost-ACK replay and source access checks', t => {
   const folder = mkdtempSync(join(tmpdir(), 'soty-feedback-test-'));

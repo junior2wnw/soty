@@ -92,7 +92,7 @@ export function createTrustedReadonlyQueryAdapter(options) {
   return adapter;
 }
 export function captureReadonlyQueryAdapters(input = []) {
-  assert(Array.isArray(input) && input.length <= 64, CODE);
+  assert(Array.isArray(input) && input.length <= 128, CODE);
   const seen = new Set();
   return Object.freeze(
     input.map((raw) => {

@@ -83,7 +83,8 @@ test('actual SDK modern discovery and legacy initialize/list expose checked tool
   for (const version of [MODERN, LEGACY]) {
     const listed = await wire(f, f.identity.token, envelope('tools/list', {}, version), { version });
     const tools = result(listed).tools;
-    assert.deepEqual(tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
+    assert.deepEqual(tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
+      'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
     assert.equal(listed.headers['mcp-session-id'], undefined);
     assert.equal(listed.headers['cache-control'], 'no-store');
     assert.match(listed.headers['content-type'], version === MODERN ? /^application\/json/u : /^text\/event-stream/u);
@@ -101,7 +102,8 @@ test('actual SDK modern discovery and legacy initialize/list expose checked tool
       const guide = success(await call(f, f.identity.token, 'apps_auth_guide', { mode }, version), tools[5].outputSchema);
       assert.equal(guide.applied, false); assert.equal(guide.productionEnabled, 'not_checked');
     }
-    for (const tool of tools.slice(4)) assert.equal(tool.annotations.readOnlyHint, true);
+    for (const tool of tools.slice(4, 6)) assert.equal(tool.annotations.readOnlyHint, true);
+    assert.equal(success(await call(f, f.identity.token, 'apps_catalog_search', {}, version)).items.length, 0, 'new private contracts need their own grants');
     toolError(await call(f, f.identity.token, 'apps_diagnose', { observations: { url: 'DO_NOT_RETURN_SECRET' } }, version), 'invalid_input');
     toolError(await call(f, f.identity.token, 'apps_auth_guide', { mode: 'human-oidc', token: 'DO_NOT_RETURN_SECRET' }, version), 'invalid_input');
     assert.equal((await call(f, null, 'apps_auth_guide', { mode: 'human-oidc' }, version)).status, 401);

@@ -50,6 +50,20 @@ Scope-тест с fixture bearer проверяет движок и HTTP tools, 
 Этот MCP не читает Root installation `fbi_…` автоматически. Существующую историю
 не переносить и новый проект вместо неё не создавать без отдельной задачи.
 
+Для существующих `fbi_…` queues локальный Root Source теперь содержит отдельный
+adapter семи `apps.feedback.*` contracts через уже существующие generic
+`apps_catalog_search/get`, `apps_query` и `apps_invoke`. Это не новые семь tools
+данного MCP и не новый сервер. Требуются явные grants нужных операций и точный
+resource `apps.feedback:app-<32hex>` поверх `apps.feedback`; current placement
+owner/Connect authority проверяется до эффекта и перед результатом. Полный путь:
+catalog → exact returned digest/schema → metadata read → разрешённые reply/status
+с устойчивым idempotencyKey/внутренним requestId → proof/readback → reporter accept.
+`feedback_context` — durable ensure receipt с настоящим installationId; при reuse
+это не заявление о создании новой installation. Оригинальные media Root MCP не
+возвращает автоматически. UI выдачи app grants ещё не готов: текущий access-panel
+выдаёт Notes; defaults/OAuth не расширялись. Это проверенный локальный server/SDK
+slice, а не заявление о live rollout. Контракт: [SUPPORT-ROUTING.md](../feedback/SUPPORT-ROUTING.md).
+
 `GET /p/PROJECT_ID` — форма и история отправителя. `GET /widget.js` — обычная
 кнопка, открывающая эту форму в доступном dialog/iframe. При запрете iframe/CSP
 используйте прямую ссылку. Код кнопки содержит только origin и публичный project ID.

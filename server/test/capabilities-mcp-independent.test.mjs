@@ -155,7 +155,8 @@ for (const revision of [MODERN, LEGACY]) {
       await client.connect(transport, { timeout: 5000 });
       assert.equal(transport.protocolVersion, revision);
       const listed = await client.listTools(undefined, { timeout: 5000 });
-      assert.deepEqual(listed.tools.map(item => item.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
+      assert.deepEqual(listed.tools.map(item => item.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
+        'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
       const input = { title: 'SDK independent title', body: 'Independent private source text', idempotencyKey: `independent-sdk-${revision}` };
       const created = checkedSuccess(await client.callTool({ name: 'notes_create_draft', arguments: input }, { timeout: 5000 }));
       assert.equal(created.invocation.status, 'succeeded'); assert.equal(created.reused, false);

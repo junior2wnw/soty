@@ -37,6 +37,30 @@ Feedback project. Размещатель уже читает первую чер
 
 ## Разобрать и проверить
 
+Для очереди размещения `fbi_…` локальный Root Source предоставляет семь fixed
+`apps.feedback.*` contracts через существующий `apps_catalog_search/get`.
+Нужен явный grant нужных операций с base resource `apps.feedback` и точным
+`apps.feedback:app-<32hex>`; наличие Root OAuth или знание appId его не заменяет.
+Сверь размещение по текущим owner данным, затем используй returned reference,
+точный текущий digest и его input schema. Сначала читай list/get; ответ/status
+выполняй в пределах поручения после чтения актуальной revision.
+`context` вызывается через `apps_invoke` как эффект с устойчивым idempotencyKey;
+durable artifact `feedback_context` возвращает installationId, не объявляя
+переиспользованную installation новой. List/get идут через
+`apps_query`, остальные — `apps_invoke`. Перед каждым новым чтением используй
+новый query intent: exact readonly replay возвращает только metadata квитанции.
+Get возвращает metadata вложений и bounded сообщения; следуй nextOffset до -1.
+Для reply/status сохраняй исходный idempotencyKey, input и expectedRevision:
+Root подставляет устойчивый внутренний requestId в прежний domain receipt.
+Проверь proof через `apps_invocation_get`, затем новым разрешённым чтением
+проверь текущий ticket. `ready_to_check` передаёт проверку reporter; `accept`
+не позволяет размещателю принять чужое обращение за автора.
+Это server/SDK slice, не готовая визуальная выдача grants: текущая ручная форма
+доступа выдаёт Notes. Source rollout и явно разрешённый grant проверяются отдельно.
+Standalone project MCP с10 tools и account-wide own-project OAuth — отдельный
+путь для `fp_…`, включая центральную очередь Сот. Он и `feedback_attachment_get`
+не читают эти `fbi_…` IDs.
+
 - `feedback_tickets_list` → `feedback_ticket_get`. Читай ограниченную страницу
   разговора; оригинал выбранного вложения — отдельно `feedback_attachment_get`.
   Не выгружай всё media в модель автоматически.

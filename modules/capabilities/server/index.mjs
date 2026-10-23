@@ -35,7 +35,7 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   const externalComposition = captureExternalAdapters(externalAdapters);
   const readonlyComposition = captureReadonlyQueryAdapters(readonlyQueries);
   const readonlyBounds = captureReadonlyQueryLimits(readonlyQueryLimits);
-  assert(externalComposition.length + readonlyComposition.length <= 64, 'external_adapter_invalid');
+  assert(externalComposition.length + readonlyComposition.length <= 128, 'external_adapter_invalid');
   const guidanceComposition = captureExternalGuidance(externalGuidance);
   for (const item of guidanceComposition) assert([...externalComposition, ...readonlyComposition].some(value => value.contract.capabilityId === item.contract.capabilityId
     && value.contract.version === item.contract.version && value.contract.digest === item.contract.digest), 'external_guidance_contract_mismatch');

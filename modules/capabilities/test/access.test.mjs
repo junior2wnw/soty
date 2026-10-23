@@ -50,6 +50,61 @@ function authorized(f, grant) {
   return { issued, actor: f.service.authenticateCredential({ token: issued.token, audience: AUDIENCE }) };
 }
 
+test('host owner ports require exact current leaf resources without widening the catalog descriptor', t => {
+  const f = fixture(t), principal = f.principal(), resource = 'apps.feedback:app-a';
+  const parent = f.grant(principal.id, { resources: [...CAP.resources, resource, 'apps.feedback:app-b'], allowDelegation: true, maxDepth: 2 });
+  const child = f.call('grants.derive', { parentGrantId: parent.id, principalId: principal.id,
+    capabilities: [{ capabilityId: CAP.capabilityId, version: 1 }], resources: [...CAP.resources, resource], effects: CAP.effects,
+    recipients: CAP.recipients, expiresAt: f.now() + 9000, allowDelegation: false, maxDepth: 0 }).grant;
+  const { actor } = authorized(f, child);
+  const authorization = f.service.authorize({ actor, capabilityId: CAP.capabilityId, version: 1 });
+  assert.deepEqual(authorization.resources, CAP.resources);
+  const ports = [
+    (requiredResources, callback) => f.service.withOwnerAuthority({ actor, requiredResources }, callback),
+    (requiredResources, callback) => f.service.withSnapshotOwnerAuthority({ authorization, requiredResources }, callback),
+  ];
+  for (const port of ports) {
+    assert.deepEqual(port([resource], owner => owner), OWNER_A);
+    let called = false;
+    for (const denied of [['apps.feedback:app-b'], [], ['bad resource'], [resource, resource], 'apps.feedback:app-a']) {
+      assert.throws(() => port(denied, () => { called = true; }), error => ['access_denied', 'invalid_scope'].includes(error.code));
+      assert.equal(called, false);
+    }
+    assert.deepEqual(port(undefined, owner => owner), OWNER_A);
+  }
+});
+
+test('both host owner ports recheck a revoked credential after the callback', t => {
+  for (const snapshot of [false, true]) {
+    const f = fixture(t), principal = f.principal(), resource = 'apps.feedback:app-a';
+    const grant = f.grant(principal.id, { resources: [...CAP.resources, resource] }), { actor } = authorized(f, grant);
+    const authorization = f.service.authorize({ actor, capabilityId: CAP.capabilityId, version: 1 });
+    const request = snapshot ? { authorization, requiredResources: [resource] } : { actor, requiredResources: [resource] };
+    const port = snapshot ? f.service.withSnapshotOwnerAuthority : f.service.withOwnerAuthority;
+    let entered = false;
+    assert.throws(() => port(request, () => { entered = true; f.call('grants.revoke', { grantId: grant.id }); }), hasCode('access_denied'));
+    assert.equal(entered, true);
+  }
+});
+
+test('both owner ports re-read required resources from the current leaf after callback attenuation', t => {
+  for (const snapshot of [false, true]) {
+    const f = fixture(t), principal = f.principal(), resource = 'apps.feedback:app-a';
+    const grant = f.grant(principal.id, { resources: [...CAP.resources, resource] }), { actor } = authorized(f, grant);
+    const authorization = f.service.authorize({ actor, capabilityId: CAP.capabilityId, version: 1 });
+    const requiredResources = [resource], request = snapshot ? { authorization, requiredResources } : { actor, requiredResources };
+    const port = snapshot ? f.service.withSnapshotOwnerAuthority : f.service.withOwnerAuthority;
+    assert.throws(() => port(request, () => {
+      requiredResources[0] = CAP.resources[0]; // A retained caller array cannot change the captured requirement.
+      const db = new DatabaseSync(f.databasePath);
+      try { db.prepare('UPDATE cap_grants SET resources_json=? WHERE id=?').run(JSON.stringify(CAP.resources), grant.id); }
+      finally { db.close(); }
+    }), hasCode('access_denied'));
+    assert.deepEqual(f.service.authorize({ actor, capabilityId: CAP.capabilityId, version: 1 }).resources, CAP.resources,
+      'ordinary static contract remains valid; the app-resource check causes the denial');
+  }
+});
+
 test('server-created actor is opaque, frozen, account-bound and rechecked after credential revoke', t => {
   const f = fixture(t); const principal = f.principal(); const grant = f.grant(principal.id);
   const { actor, issued } = authorized(f, grant);

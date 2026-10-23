@@ -57,7 +57,8 @@ test('actual SDK June negotiation lists effect and guidance tools, with exact re
     const notification = observed.find(row => row.method === 'notifications/initialized');
     assert.equal(notification?.version, JUNE); assert.equal(notification?.status, 202);
     const list = await client.listTools(undefined, { timeout: 5000 });
-    assert.deepEqual(list.tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide']);
+    assert.deepEqual(list.tools.map(tool => tool.name), ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get', 'apps_diagnose', 'apps_auth_guide',
+      'apps_catalog_search', 'apps_catalog_get', 'apps_invoke', 'apps_invocation_get', 'apps_invocation_cancel', 'apps_query']);
     const ru = success(await call('catalog_search', { query: 'заметка' }));
     const en = success(await call('catalog_search', { query: 'draft' }));
     const selected = ru.items.find(item => en.items.some(other => other.capabilityId === item.capabilityId && other.version === item.version));

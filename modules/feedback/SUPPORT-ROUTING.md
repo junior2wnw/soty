@@ -83,13 +83,53 @@ installation owner и не включать fake recipient, чтобы обой�
 Нужны actual OAuth negatives: другой проект того же owner, другой owner,
 readonly write, refresh/restart и revoke. Это предложение, production не изменён.
 
-Для внешнего Root MCP над уже существующими app queues сначала переиспользовать
-действующий `apps.feedback.*` путь и Apps/Connect authority. Если нужного tool нет,
-минимальный code slice — adapter существующих7 операций в текущем capability/MCP
-контуре: verified host actor, точный appId/installationId, fresh Apps fence,
-прежние receipts и requestId. Actor из JSON/OAuth accountId не подставлять вместо
-проверенной Connect authority. Новый сервер, registry или перенос в `fp_` не нужны.
-Этот внешний adapter здесь не реализован; действующий агентный контекст сохраняется.
+### Реализованный Source slice: очереди приложений через Root MCP
+
+В локальном Source подготовлен adapter семи `apps.feedback.*` операций в текущем
+Root capability/MCP контуре. Это серверный/API slice, не подтверждение его
+развёртывания или выдачи live grants. Действующие UI, API и агент Сот сохранены;
+нового сервера, registry, очереди, OAuth audience или копии истории нет.
+
+1. Под текущим размещателем выдаётся обычный signed Connect grant на выбранные
+   `apps.feedback.context/submit/list/get/reply/status/accept` версии1. Обязательны
+   base resource `apps.feedback` и точный дополнительный resource
+   `apps.feedback:app-<32hex>` для каждого разрешённого размещения; recipients —
+   `soty:app-feedback`, effects соответствуют выбранным операциям.
+2. Агент использует существующие `apps_catalog_search/get`, актуальные returned
+   reference/version/digest и `apps_query` (list/get) либо `apps_invoke` (остальные).
+   Отдельные семь MCP tools и per-app регистрация контрактов не создаются.
+3. `context` — операция с эффектом: она может создать installation metadata и
+   сохраняет квитанцию в прежней `feedback_receipts`. Её artifact даёт настоящий
+   `installationId`; он совпадает с действующим `fbi_…` данного размещения.
+4. Delegated credential отображается через существующий `withOwnerAuthority`
+   на своего текущего grant creator, включая обычного размещателя другого
+   аккаунта. Дополнительный resource проверяется по текущему leaf grant до и
+   после callback; сам host port новых прав не выдаёт. Apps owner/Connect fences
+   действуют до эффекта, чтения и перед выдачей HTTP/MCP результата.
+5. List возвращает до10 summaries, get — до20 сообщений в byte-bounded странице
+   с `messagesPage.nextOffset` (`-1` означает конец). Вложения — metadata-only:
+   SQL не читает BLOB. Старый явно выбранный UI/API get сохраняет оригиналы;
+   standalone `feedback_attachment_get` нельзя применять к `fbi_…` IDs.
+
+Записи используют прежние domain intent keys, `expectedRevision`, request receipts
+и общий capability ledger/budget. Exact retry одной записи не повторяет эффект.
+Exact retry readonly query возвращает только исторические metadata; для нового
+разрешённого чтения нужен новый query intent, а не автоматический повтор эффекта.
+Отзыв после законного COMMIT не отменяет запись: ответ скрывается, повтор после
+отзыва не создаёт вторую. Передача owner существующего placement сейчас не
+поддерживается и блокируется FK/immutable target; эти ограничения не отключались.
+
+Existing signed API/Connect SDK умеет выдавать и показывать точные resources.
+Нынешняя ручная форма `access-panel.ts` выдаёт только Notes, а Notes OAuth consent
+не выдаёт эти grants автоматически. Удобный явный выбор приложения/операций в
+существующем Connect UI — следующий отдельный UI шаг. Полная готовность такого
+grant UI этим Source slice не заявляется; default grants не расширены.
+
+Проверены disposable actual Root composition: signed placement, normal grant
+неадминистративного owner, все7 операций, sibling/foreign/read-only/resource deny,
+отзыв до dispatch и перед wire output, один эффект/replay/reload, metadata до I/O.
+Схемы БД прежние. Public Source admission остаётся64, внутреннее объединение
+ограничено catalog bound128, поэтому прежние64 Source +7 fixed contracts допустимы.
 
 Exact b2ac `core-feedback.js` не является таким adapter: его `CORE_SCOPE` жёстко
 равен `soty.core.feedback`, caller appId запрещён, owner берётся из configuration,
@@ -113,10 +153,12 @@ appId, текущий размещатель и Source/target pin из авто�
 не новая таблица, не схема авторизации и не автоматически сформированный реестр.
 Registry по умолчанию пуст; неизвестное приложение не становится нашим.
 
-Центральная очередь — адрес будущих наших обращений и общий рабочий вид.
+Центральная очередь — адрес обращений о Сотах и общий рабочий вид.
 Старые частные обращения не переносятся автоматически. Если core facade уже
 содержит историю, подключение должно сохранить её и показать источник отдельно;
 immutable tenant нельзя тихо переназначить новой очереди.
+Единый рабочий процесс может выбирать уже разрешённые `fp_…` и `fbi_…` источники
+без переноса их данных и без нового центрального router/registry.
 
 ## Следующее подключение частного управления агенту
 

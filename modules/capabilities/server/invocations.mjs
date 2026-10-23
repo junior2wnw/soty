@@ -52,7 +52,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   const run = (sql, ...args) => prepare(sql).run(...args);
   const now = () => integer(clock());
   const native = createNativeBaselineGuard({ db, error: code => new InvocationError(code) });
-  check(Array.isArray(readonlyContracts) && readonlyContracts.length <= 64, 'readonly_query_configuration_invalid');
+  check(Array.isArray(readonlyContracts) && readonlyContracts.length <= 128, 'readonly_query_configuration_invalid');
   const readonlyRefs = new Map();
   check(readonlyContracts.length===0 || typeof validateReadonlyInput==='function' && validateReadonlyInput.constructor?.name!=='AsyncFunction','readonly_query_configuration_invalid');
   for (const ref of readonlyContracts) {

@@ -16,7 +16,7 @@ function projected(value) {
   return { schema: 'soty.external-invocation.v1', invocation: Object.fromEntries(invocationFields.filter(key => Object.hasOwn(value.invocation,key)).map(key => [key,value.invocation[key]])),
     ...(value.reused === undefined ? {} : { reused: value.reused }) };
 }
-export function createExternalCapabilityOperations({ service, origin }) {
+export function createExternalCapabilityOperations({ service, origin, appFeedback }) {
   const legacy = createCapabilityOperations({ service, origin });
   function failure(error) {
     const statuses = { external_adapter_capacity:429, external_admission_limit:429, external_rate_limit:429, external_ledger_limit:429,
@@ -39,6 +39,7 @@ export function createExternalCapabilityOperations({ service, origin }) {
     async call({ actor, name, args = {} }) {
       requireThat(service.external, 'external_adapter_closed');
       requireThat(checks.has(name) && checks.get(name).input(args).valid);
+      appFeedback?.beforeCall({ actor, name, args });
       let result;
       if (name === 'apps_catalog_search') result = service.external.search({actor,...args});
       else if (name === 'apps_catalog_get') result = service.external.getContract({actor,...args});
@@ -54,6 +55,7 @@ export function createExternalCapabilityOperations({ service, origin }) {
     },
     recheck({ actor, name, args, value }) {
       requireThat(service.external, 'external_adapter_closed');
+      appFeedback?.recheck({ actor, name, args, value });
       if (name === 'apps_catalog_search' || name === 'apps_catalog_get') {
         const current = name === 'apps_catalog_search' ? service.external.search({actor,...args}) : service.external.getContract({actor,...args});
         requireThat(canonicalHash(current) === canonicalHash(value), 'access_denied');
@@ -70,8 +72,8 @@ const PREFIX = '/api/capabilities/v1/app-actions';
 const routeNames = Object.freeze({ ...EXTERNAL_HTTP_ROUTES, ...EXTERNAL_GUIDANCE_HTTP_ROUTES,...EXTERNAL_QUERY_HTTP_ROUTES });
 /** Same audience-bound service authority as MCP. Cookies/Host/JSON actor claims
  * never authenticate. The namespace stays reserved when no adapter is installed. */
-export function attachExternalCapabilities(app,{service,origin}) {
-  const operations = createExternalCapabilityOperations({service,origin}), ingress = createNativeIngress({limits:{bodyBytes:65536}});
+export function attachExternalCapabilities(app,{service,origin,appFeedback}) {
+  const operations = createExternalCapabilityOperations({service,origin,appFeedback}), ingress = createNativeIngress({limits:{bodyBytes:65536}});
   const host = origin ? new URL(origin) : null;
   function send(res,status,value) {
     if(res.destroyed||res.writableEnded)return; const body=Buffer.from(JSON.stringify(value)); requireThat(body.length<=512*1024,'projection_too_large');
