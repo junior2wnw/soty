@@ -67,7 +67,8 @@ vm.runInNewContext(dialogsCode, { module: dialogsModule, exports: dialogsModule.
 vm.runInNewContext(typesCode, { module: typesModule, exports: typesModule.exports, require: () => ({}) });
 vm.runInNewContext(`${appCode}\nexports.TestController = WorldApplication;`, {
   module: appModule, exports: appModule.exports,
-  require: name => name === './dom' ? dom : name === './dialogs' ? dialogsModule.exports : name === './types' ? typesModule.exports : {},
+  require: name => name === './dom' ? dom : name === './dialogs' ? dialogsModule.exports : name === './types' ? typesModule.exports
+    : name === './icons' ? { icon: () => element('svg') } : {},
 });
 
 async function fixture(t) {
@@ -143,6 +144,22 @@ async function fixture(t) {
     afterResponse(callback) { afterResponse = callback; }, failRename(value) { renameFailure = value; }, loseRenameReply() { loseRenameResponse = true; },
   };
 }
+
+test('the actual profile editor renders the fixed core support link beside its form', async t => {
+  const f = await fixture(t), original = f.current(); original.editProfile();
+  const nodes = descendants(original.dialogs.at(-1).body);
+  const links = nodes.filter(node => node.tagName === 'a' && node.className.includes('sw-core-support-link'));
+  assert.equal(links.length, 1);
+  const link = links[0], url = new URL(link.href);
+  assert.equal(url.href, 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749');
+  assert.equal(link.target, '_blank');
+  assert.deepEqual(link.rel.split(/\s+/u).sort(), ['noopener', 'noreferrer']);
+  assert.equal(link.attributes.get('aria-label'), 'Поддержка Сот (в новой вкладке)');
+  assert.equal(link.children.filter(node => node.tagName === 'svg').length, 2);
+  assert.equal(nodes.some(node => node.tagName === 'form'), true);
+  assert.equal(original.dialogs.at(-1).element.open, true);
+  assert.deepEqual(f.traffic, []);
+});
 
 test('one actual profile form save updates World, QR/card, request labels and saved local name', { timeout: 8000 }, async t => {
   const f = await fixture(t), original = f.current(), card = await f.primary.card();
