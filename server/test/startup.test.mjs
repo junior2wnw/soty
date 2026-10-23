@@ -96,13 +96,14 @@ test('actual HTTP closeServices body attempts every service in order despite fai
   const body = source.slice(source.indexOf('  let servicesCleanup;'), source.indexOf("  app.get('/api/apps/capabilities'"));
   const app = { locals: {} }, calls = []; let reentrant;
   const closer = name => ({ close() { calls.push(name); if (name === 'personal') { reentrant = app.locals.closeServices(); throw new Error('controlled private detail'); } } });
-  const values = { app, nativeSources: { enabled: true, ...closer('native') }, personal: closer('personal'), voice: closer('voice'), humanCalls: closer('humanCalls'),
+  const values = { app, nativeSources: { enabled: true, ...closer('native') }, push: closer('push'), orbVoice: closer('orbVoice'),
+    personal: closer('personal'), sourceAccess: closer('sourceAccess'), voice: closer('voice'), humanCalls: closer('humanCalls'),
     nativeRecovery: closer('nativeRecovery'), oauthCleanup: closer('oauthCleanup'), unsubscribeRevocations: () => calls.push('revocations'), mcp: closer('mcp'),
     human: closer('human'), universal: closer('universal'), managedReviews: closer('managedReviews'), apps: closer('apps'), world: closer('world'), notes: closer('notes'),
     capabilities: closer('capabilities'), connect: closer('connect'), connectors: { store: closer('connectorStore') } };
   new Function(...Object.keys(values), body)(...Object.values(values));
   const pending = app.locals.closeServices(); await assert.rejects(pending, { code: 'root_services_cleanup_failed' }); assert.equal(reentrant, pending); assert.equal(app.locals.closeServices(), pending);
-  assert.deepEqual(calls, ['native', 'personal', 'voice', 'humanCalls', 'nativeRecovery', 'oauthCleanup', 'revocations', 'mcp', 'human', 'universal', 'managedReviews', 'apps', 'world', 'notes', 'capabilities', 'connect', 'connectorStore']);
+  assert.deepEqual(calls, ['native', 'push', 'orbVoice', 'personal', 'sourceAccess', 'voice', 'humanCalls', 'nativeRecovery', 'oauthCleanup', 'revocations', 'mcp', 'human', 'universal', 'managedReviews', 'apps', 'world', 'notes', 'capabilities', 'connect', 'connectorStore']);
 });
 
 test('close rejects a pending start before cleanup completes and consumes a late listen error', async () => {
