@@ -1,0 +1,228 @@
+{
+  "schema": "soty.feedback-catalog-observer-source-lineage.v1",
+  "qualifiedScope": "core-reader7-next-cycle-20261023/core/qualified-preservation/deploy/connector",
+  "sourceBaseRevision": "ae4c75f62567bb7c6c0757bf48b66364818f144d",
+  "normalization": "CRLF to LF before inverse; restore only qualifiedCrlfLines afterwards",
+  "files": [
+    {
+      "path": "deploy/connector/root-state-observer.mjs",
+      "qualifiedSha256": "a30a91a8cfbe1e2eae568a814102fc95994a7477376c322faae6decd11ba204e",
+      "qualifiedLfSha256": "4561d607c4d404e246e7568974e4c7f5fb1217b0c58c90ab22e7ead7ec89d397",
+      "sourceLfSha256": "1d0c100218d20e267538dc3fc07a01fc3a0abeb4d11dd9cd84169ca880844daa",
+      "qualifiedCrlfLines": [
+        388
+      ],
+      "inverse": [
+        {
+          "newStart": 6,
+          "newEnd": 7,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 20,
+          "newEnd": 21,
+          "qualifiedLines": [
+            "  'root_state_cleanup_failed', 'root_state_unavailable']);\n"
+          ]
+        },
+        {
+          "newStart": 38,
+          "newEnd": 39,
+          "qualifiedLines": [
+            "    || Object.keys(input).some(key => !['source', 'ramRoot', 'limits'].includes(key))) refuse('root_state_invalid');\n"
+          ]
+        },
+        {
+          "newStart": 51,
+          "newEnd": 53,
+          "qualifiedLines": [
+            "  return { source, ramRoot, cap };\n"
+          ]
+        },
+        {
+          "newStart": 190,
+          "newEnd": 191,
+          "qualifiedLines": [
+            "async function runDatabase(file, cap, milliseconds, wal) {\n"
+          ]
+        },
+        {
+          "newStart": 193,
+          "newEnd": 194,
+          "qualifiedLines": [
+            "  const worker = new Worker(new URL(import.meta.url), { workerData: { kind: SCHEMA, file, cap, wal },\n"
+          ]
+        },
+        {
+          "newStart": 232,
+          "newEnd": 233,
+          "qualifiedLines": [
+            "    const { source, ramRoot, cap } = options(input), started = Date.now();\n"
+          ]
+        },
+        {
+          "newStart": 238,
+          "newEnd": 240,
+          "qualifiedLines": [
+            "    const sidecars = new Set(), dbDigests = new Map(); let tables = 0, rows = 0, records = 0, logicalBytes = 0;\n"
+          ]
+        },
+        {
+          "newStart": 260,
+          "newEnd": 262,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 263,
+          "newEnd": 264,
+          "qualifiedLines": [
+            "          rows: cap.rows - records, logicalBytes: cap.logicalBytes - logicalBytes }, cap.wallMs - (Date.now() - started), Boolean(wal));\n"
+          ]
+        },
+        {
+          "newStart": 266,
+          "newEnd": 271,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 273,
+          "newEnd": 274,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 279,
+          "newEnd": 282,
+          "qualifiedLines": [
+            "    const digest = hash(); frame(digest, SCHEMA); let files = 0, directories = 0;\n"
+          ]
+        },
+        {
+          "newStart": 284,
+          "newEnd": 285,
+          "qualifiedLines": [
+            "      frame(digest, JSON.stringify([rel, entry.kind, rights(entry.stat)]));\n"
+          ]
+        },
+        {
+          "newStart": 288,
+          "newEnd": 292,
+          "qualifiedLines": [
+            "        frame(digest, dbDigests.has(rel) ? 'sqlite' : 'raw');\n",
+            "        frame(digest, dbDigests.get(rel) ?? JSON.stringify([entry.stat.size.toString(), entry.sha256]));\n"
+          ]
+        },
+        {
+          "newStart": 296,
+          "newEnd": 299,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 309,
+          "newEnd": 310,
+          "qualifiedLines": [
+            "async function sqliteObservation(file, cap, wal) {\n"
+          ]
+        },
+        {
+          "newStart": 347,
+          "newEnd": 351,
+          "qualifiedLines": [
+            "    const digest = hash(); frame(digest, 'soty.root-sqlite-state.v1');\n"
+          ]
+        },
+        {
+          "newStart": 352,
+          "newEnd": 353,
+          "qualifiedLines": [
+            "      frame(digest, pragma); frame(digest, JSON.stringify(collection('PRAGMA ' + pragma)));\n"
+          ]
+        },
+        {
+          "newStart": 361,
+          "newEnd": 362,
+          "qualifiedLines": [
+            "    frame(digest, JSON.stringify(schema));\n"
+          ]
+        },
+        {
+          "newStart": 372,
+          "newEnd": 373,
+          "qualifiedLines": [
+            "    frame(digest, JSON.stringify(list));\n"
+          ]
+        },
+        {
+          "newStart": 380,
+          "newEnd": 382,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 389,
+          "newEnd": 390,
+          "qualifiedLines": [
+            "      const hashes = [];\n"
+          ]
+        },
+        {
+          "newStart": 398,
+          "newEnd": 400,
+          "qualifiedLines": [
+            "        rows++; hashes.push(record(row));\n"
+          ]
+        },
+        {
+          "newStart": 401,
+          "newEnd": 402,
+          "qualifiedLines": [
+            "      frame(digest, table.name); frame(digest, JSON.stringify(metadata));\n"
+          ]
+        },
+        {
+          "newStart": 403,
+          "newEnd": 404,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 405,
+          "newEnd": 409,
+          "qualifiedLines": [
+            "    return { ok: true, sha256: digest.digest('hex'), tables: tables.length, rows, records, logicalBytes };\n"
+          ]
+        },
+        {
+          "newStart": 413,
+          "newEnd": 414,
+          "qualifiedLines": [
+            "  try { parentPort.postMessage(await sqliteObservation(workerData.file, workerData.cap, workerData.wal)); }\n"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "deploy/connector/root-state-observer.test.mjs",
+      "qualifiedSha256": "916857675e9196fcda3dc56b6589b7cd15eedb3690fa19e00c5e965710493e9f",
+      "qualifiedLfSha256": "e4ff09da6c20da2f365587ed5a37ff966dd26f5b97970750d93980a22085972a",
+      "sourceLfSha256": "520cd786f691be35864bd092ee2e6181aad93852efe03ae2d805cd8fc16665d2",
+      "qualifiedCrlfLines": [
+        270
+      ],
+      "inverse": [
+        {
+          "newStart": 8,
+          "newEnd": 10,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 11,
+          "newEnd": 12,
+          "qualifiedLines": []
+        },
+        {
+          "newStart": 287,
+          "newEnd": 457,
+          "qualifiedLines": []
+        }
+      ]
+    }
+  ]
+}
