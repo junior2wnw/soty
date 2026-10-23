@@ -40,8 +40,9 @@ Native owner/ограниченный project credential определяет д
 Публичный projectId и website не дают права читать всю очередь и не доказывают
 владение сайтом. Внешний MCP имеет собственный OAuth/PKCE audience.
 
-`installed-catalog.mjs`, `source.mjs` и product-agent composition уже дают агенту
-Сот те же операции под текущими Source grants и Native authority. Это отдельный
+`installed-catalog.mjs`, `source.mjs` и product-agent composition предоставляют
+те же операции при установленном Source, текущих grants и Native authority.
+Добавленные catalog references по умолчанию не получают authority. Это отдельный
 путь от Root OAuth. Штатные receipts, requestId, expectedRevision, revocation,
 постраничное чтение, media metadata и reporter acceptance сохраняются.
 
@@ -54,6 +55,47 @@ registry и держит authority fence до эффекта. Это не рее
 он требует настоящий `supportOwnerAccountId` и не обращается к Feedback project.
 Он не подключён к новой целевой модели этим изменением. Не менять его immutable
 installation owner и не включать fake recipient, чтобы обойти отсутствие binding.
+
+## Очередь чужого приложения и самостоятельный проект
+
+Проверено по Source `a8ba2549d58db36f2896ec90bcf7045fca05389f`, 23.10.2026.
+Это два существующих пути; они не требуют нового общего router или копии данных.
+
+| Цель | Existing runtime и сохранение | Остаток |
+| --- | --- | --- |
+| Сообщить размещателю о его приложении | Stage «Сообщить проблему» → `apps.feedback.context/submit`; SQLite installation `fbi_…` привязана к owner/app/environment. | Для этого не нужен отдельный `fp_` project. Готовность конкретного live приложения проверяется отдельно. |
+| Размещателю обработать обращения | Та же форма → «История» → `apps.feedback.list/get/reply/status`; owner видит «Обращения приложения», reporter — только свои. Receipts/revisions сохраняются; результат принимает reporter через `accept`. | Сохранить действующий Apps/Connect authority и агентный контекст; историю не переносить. |
+| Обработать самостоятельный Feedback project | Cabinet `/` → свои проекты → очередь; внешний `/mcp` и10 tools используют те же `projects.sqlite`/Feedback engine своего deployment. | Это не Root `fbi_…`; website/название не являются binding к размещению. |
+| Подключить внешнего агента к project | OAuth/PKCE → `feedback_projects_list/integration_get/tickets_list/ticket_get`; записи с исходными requestId и expectedRevision. | Production consent сейчас даёт чтение/создание/изменения всех собственных проектов. ProjectId в input не сужает grant. |
+| Подключить агента Сот к project | `source_catalog` → actual reference/schema → `source_read_1/source_write_1/source_receipt_1`. | Требуются установленный Source и текущие grants; workspace не становится project-limited от одного projectId. |
+
+`service.issueCredential({projectId,readOnly,durationMs})` уже ограничивает доступ
+в движке. Но это host-only API: UI/MCP его не выдаёт, production
+`auth.authenticateBearer` принимает OAuth и создаёт account-wide actor. Existing
+`support-scope.test.mjs` подставляет fixture credential auth; его GREEN не доказывает
+такой production OAuth path. Действующий consent честно описывает широкий доступ.
+
+Минимальное продолжение для project-limited внешнего агента — выбор собственного
+проекта и read-only/manage в существующем OAuth consent, проверка выбора сервером,
+сохранение projectId/readOnly в существующем encrypted GrantLink и передача этих
+ограничений в уже существующий `service.actor`. Старые grants нельзя тихо
+переобозначать: сохранить их явный all-own смысл либо запросить новый consent.
+Нужны actual OAuth negatives: другой проект того же owner, другой owner,
+readonly write, refresh/restart и revoke. Это предложение, production не изменён.
+
+Для внешнего Root MCP над уже существующими app queues сначала переиспользовать
+действующий `apps.feedback.*` путь и Apps/Connect authority. Если нужного tool нет,
+минимальный code slice — adapter существующих7 операций в текущем capability/MCP
+контуре: verified host actor, точный appId/installationId, fresh Apps fence,
+прежние receipts и requestId. Actor из JSON/OAuth accountId не подставлять вместо
+проверенной Connect authority. Новый сервер, registry или перенос в `fp_` не нужны.
+Этот внешний adapter здесь не реализован; действующий агентный контекст сохраняется.
+
+Exact b2ac `core-feedback.js` не является таким adapter: его `CORE_SCOPE` жёстко
+равен `soty.core.feedback`, caller appId запрещён, owner берётся из configuration,
+а interface — signed Connect extension, без Root MCP binding. Его включение
+создаёт отдельную core installation; оно не открывает очереди размещателя.
+Не включать его ради app queues и не заменять им подтверждённую центральную форму.
 
 ## Контракт маршрутизации, ещё не включённый в runtime
 
