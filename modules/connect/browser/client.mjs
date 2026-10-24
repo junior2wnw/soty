@@ -12,6 +12,8 @@ const detachedVoiceOperations = new Set(['voice.orb.status', 'voice.orb.start', 
 const parallelMetadataReads = new Set([
   'world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get',
   'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
+  // Startup polls and visible covers must not hold the field's identity queue.
+  'call.inbox', 'notifications.status', 'apps.cover.read',
 ]);
 
 function requiredString(value, name, max = 256) {

@@ -10,6 +10,7 @@ const { validateState } = await import(new URL('./storage.mjs', pathToFileURL(so
 const { createConnectService } = await import(pathToFileURL(join(repo, 'modules/connect/server/index.mjs')));
 const projectId = 'progressive-connect-test', origin = 'https://progressive.fixture.invalid', endpoint = origin + '/rpc', scope = { projectId, endpoint };
 const reads = ['world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list'];
+const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read'];
 const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra'];
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise(done => setTimeout(done, 5));
@@ -29,7 +30,7 @@ async function fixture(t) {
   const state = { traffic: [], executed: [], active: 0, peak: 0, before: null, after: null };
   const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
     // Built-in operations must keep their genuine dispatcher and exact argument contracts.
-    operations: new Set([...reads, ...effects].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
+    operations: new Set([...reads, ...backgroundReads, ...effects].filter(op => !['contacts.list', 'contacts.requestAccount'].includes(op))),
     execute({ op, args, actor }) { state.executed.push({ op, accountId: actor.accountId, args: structuredClone(args) }); return { operation: op, args, accountId: actor.accountId, deviceId: actor.deviceId }; },
   }], canRequestContact: () => true });
   const clients = [];
@@ -66,6 +67,35 @@ test('signed profile, apps and local state finish while a community response is 
   const values = await Promise.all([held, profile, apps, local]);
   assert.equal(early, true, 'A read must release the browser state queue before awaiting its response'); assert.ok(values.every(value => value.accountId === f.a));
 });
+
+for (const operation of backgroundReads) {
+  test(`field reads and local navigation do not wait for a held ${operation}`, async t => {
+    const f = await fixture(t), entered = gate(), release = gate();
+    f.state.before = async body => { if (body.op === operation && body.proof) { entered.resolve(); await release.promise; } };
+    const held = f.primary.extension(operation, {}, f.context); await entered.promise;
+    let profileDone = false, appsDone = false, localDone = false;
+    const profile = f.primary.extension('world.profile.get', {}, f.context).then(value => { profileDone = true; return value; });
+    const apps = f.primary.extension('apps.directory.resolve', {}, f.context).then(value => { appsDone = true; return value; });
+    const local = f.primary.getLocalState().then(value => { localDone = true; return value; });
+    let early; try { early = await until(() => profileDone && appsDone && localDone); } finally { release.resolve(); }
+    await Promise.all([held, profile, apps, local]);
+    assert.equal(early, true, 'An optional background response must not hold the field or identity queue');
+  });
+  for (const phase of ['challenge', 'response']) {
+    test(`${operation} rejects an account round trip during its ${phase}`, async t => {
+      const f = await fixture(t), entered = gate(), release = gate();
+      f.state.after = async body => {
+        if (phase === 'challenge' ? body.op === 'challenge' && body.args.operation === operation : body.op === operation && body.proof) {
+          entered.resolve(); await release.promise;
+        }
+      };
+      const pending = outcome(f.primary.extension(operation, {}, f.context)); await entered.promise;
+      try { await f.other.switchProfile(f.b); await f.other.switchProfile(f.a); } finally { release.resolve(); }
+      assert.equal((await pending).error?.code, 'ACTIVE_PROFILE_CHANGED');
+      assert.equal(f.state.executed.length, phase === 'challenge' ? 0 : 1);
+    });
+  }
+}
 
 test('all nine exact bound reads overlap with unique real challenges and verified signatures', async t => {
   const f = await fixture(t), release = gate();
