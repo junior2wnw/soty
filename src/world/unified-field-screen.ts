@@ -44,7 +44,7 @@ export interface UnifiedFieldScreen {
 const BUILTINS: DirectoryEntity[] = [
   { entity: { kind: 'builtin', id: 'notes' }, title: 'Записки', symbol: 'note', coverKey: 'notes', source: 'builtin' },
   { entity: { kind: 'builtin', id: 'chess' }, title: 'Шахматы', symbol: 'chess', coverKey: 'chess', source: 'builtin' },
-  { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', source: 'builtin' },
+  { entity: { kind: 'builtin', id: 'assistant' }, title: 'Помощник', symbol: 'assistant', coverKey: 'assistant', source: 'builtin' },
 ];
 const labels: Record<FieldFilter, string> = { all: 'Всё', app: 'Приложения', person: 'Люди', community: 'Комнаты', device: 'Устройства' };
 const kindLabel = (kind: FieldEntityRef['kind']): string => ({ app: 'Приложение', builtin: 'Возможность Сот', person: 'Человек', community: 'Комната', device: 'Моё устройство' })[kind];

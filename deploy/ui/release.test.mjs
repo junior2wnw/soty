@@ -28,6 +28,23 @@ test('old hashed assets survive; reusing an immutable URL with different bytes r
   writeFileSync(path.join(old, 'assets/index-abcdefgh.js'), 'different bytes');
   assert.throws(() => createUiRelease(f.dist, [old]), { code: 'ui_immutable_url_conflict' });
 });
+
+test('only the public cover skill package is delivered and its documents update without becoming immutable', t => {
+  const f = fixture(t), selected = ['skills/index.json', 'skills/index.html', 'skills/soty-cover-art/SKILL.md',
+    'skills/soty-cover-art/references/runtime.md', 'skills/soty-cover-art/references/operator.md'];
+  const forbidden = ['skills/private/SKILL.md', 'skills/soty-cover-art/registry.json',
+    'skills/soty-cover-art/references/.env', 'skills/soty-cover-art/references/extra.md', 'agent/soty-cover-art/SKILL.md'];
+  fixtureDist(f.dist, Object.fromEntries([...selected, ...forbidden].map(name => [name, `document:${name}`])));
+  const skillIndex = JSON.stringify({skills:[{entrypoint:'/skills/soty-cover-art/SKILL.md',references:['/skills/soty-cover-art/references/runtime.md','/skills/soty-cover-art/references/operator.md']}]});
+  writeFileSync(path.join(f.dist, 'skills/index.json'), skillIndex);
+  const release = createUiRelease(f.dist);
+  for (const name of selected) { assert.equal(release.files.get(name).immutable, false); assert.equal(release.files.get(name).bytes.toString(), name==='skills/index.json'?skillIndex:`document:${name}`); }
+  for (const name of forbidden) assert.equal(release.files.has(name), false);
+  const old = fixtureDist(path.join(f.root, 'old'), {'skills/index.json':'old skill index'});
+  assert.equal(createUiRelease(f.dist, [old]).files.get('skills/index.json').bytes.toString(), skillIndex);
+  rmSync(path.join(f.dist, 'skills/soty-cover-art/references/runtime.md'));
+  assert.throws(() => createUiRelease(f.dist), {code:'ui_reference_not_in_release'});
+});
 test('a missing worker, HTML or manifest dependency cannot publish an incomplete shell', t => {
   for (const [name, text] of [['sw.js', 'const buildAssets = ["/agent/install.js"];\nconst classicAssets = [];\nconst shell = ["/"];'],
     ['index.html', '<script src="/assets/missing-12345678.js"></script>'], ['manifest.webmanifest', '{"icons":[{"src":"/icons/missing.png"}]}']]) {

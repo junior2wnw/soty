@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "profile": "field",
   "aliases": {
+    "assistant": "field-assistant",
     "canvas": "field-canvas",
     "chess": "field-chess",
     "hive": "field-hive",
@@ -11,12 +12,475 @@
   },
   "bindings": {
     "bind-014171b96ce7a4cfc8ea12c4f10db6a4fdaae05d41cb458ca4474343a50f3c0a": "field-tavysh",
+    "bind-0e25b261ceec30eca2ad507021bf65976aef7307f54417adf2d38fc210d5ce04": "art-f8949fb853684610bb0991998c153284",
     "bind-4c122b9b77cc5a4791f641594c8b4e025537527fbac6794a09e36cbb24582eff": "art-e1b1e5b009dd4b709666997c51c9b7dd",
+    "bind-4f26584201490c872dc37610569929e57ac55a681b304eabd1be51b14d390edb": "art-0f3f967a84fa48b2b8f3ca21f0aa41b9",
+    "bind-59d09e7df40dafa35f6f0e821a51fbfc5b6ee63cc749e99acacc12489ddd17bc": "art-b0a30bc3b98f440a840db7179da11639",
+    "bind-5ade6f2b9c40af22323c8d3ae14448226ada3f73213fba1fffe6a3da9df8fb1e": "art-d3f0d0387a244634bf20c1224c6913ce",
+    "bind-65381e20aa409e9b0121a75aa116e6d7ca018766d6266e77a0f6ebbbb71b784f": "art-4df22fdc8967422caa7452e262a3630d",
+    "bind-8f07a651abb8cdd6bfd6fa1c772ff979b1fd5054b7f956d244074f9414aabc1b": "art-2973e3ca883c493ead93df1d4e896641",
+    "bind-92a5bbf89112dc8b1f31e7edbd9e9abdd326459a08ffa612998b6a57aa8d575f": "art-f415369e7d8443158c6ae4aecab0c839",
+    "bind-b6dcec2aa3fc9735d1a7c42f8a20e72a28dd5f3a92bed0faf746312c7c699263": "art-66e9c4a30ed04baf9b1ae14181a3c16d",
+    "bind-c2c9771076337f2c610c9afca5b9a0b13d0b1c57e4ae3cd33cc874deafe3baf9": "art-17da23c3c4a74f3dbbd9c766cd728ae1",
+    "bind-c32174f394f33e54b87d4343cef54cd83f74b68443e11698d3297d53dba2fc1c": "art-4ce4f75ef3394fc38f67435117a93e73",
+    "bind-c32633d067842fc0de011e313f703ec58ed39239f0dbbee2a64230d82dba585c": "art-09cee690e50c48f18d126f108bf31965",
+    "bind-cacdc5519bf96ba3cdef3a4f5fde026610c7f67649e65337661ac01bc2d861e4": "art-e0984e6ebd6c4d83b118c9d9fdb7780c",
+    "bind-d50e3e5557f227ab0e554202d8b03182106fdce6a2604863f90edb9bd91c17db": "art-17e9a73d1dbe45498048bb595184784d",
     "bind-ed7232c5f5d14982b822da1b782c9c3677334f8e3ba191d4ed0cb6688e2c92f9": "field-hive",
     "chess": "field-chess",
     "notes": "field-notes"
   },
   "assets": {
+    "art-09cee690e50c48f18d126f108bf31965": {
+      "key": "art-09cee690e50c48f18d126f108bf31965",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#293341",
+        "accent": "#B3C8DE",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-09cee690e50c48f18d126f108bf31965/v001-b910ec3224b7/cover-160.0f1cc1cb8eae.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-09cee690e50c48f18d126f108bf31965/v001-b910ec3224b7/cover-320.78260ffcbec0.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-09cee690e50c48f18d126f108bf31965/v001-b910ec3224b7/cover-640.c31d5291e9a4.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-09cee690e50c48f18d126f108bf31965/v001-b910ec3224b7/cover-960.5662ada7da3a.webp",
+          "width": 960,
+          "height": 960
+        }
+      ]
+    },
+    "art-0f3f967a84fa48b2b8f3ca21f0aa41b9": {
+      "key": "art-0f3f967a84fa48b2b8f3ca21f0aa41b9",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#302C2B",
+        "accent": "#EDA889",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-0f3f967a84fa48b2b8f3ca21f0aa41b9/v001-c8c05d9499e2/cover-160.9c9f083deb3f.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-0f3f967a84fa48b2b8f3ca21f0aa41b9/v001-c8c05d9499e2/cover-320.74b66f63a49e.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-0f3f967a84fa48b2b8f3ca21f0aa41b9/v001-c8c05d9499e2/cover-640.66dd5ce26dac.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-0f3f967a84fa48b2b8f3ca21f0aa41b9/v001-c8c05d9499e2/cover-960.412ca17d6e0d.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-17da23c3c4a74f3dbbd9c766cd728ae1": {
+      "key": "art-17da23c3c4a74f3dbbd9c766cd728ae1",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#382B2D",
+        "accent": "#E8AAA5",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-17da23c3c4a74f3dbbd9c766cd728ae1/v001-c3c2d31d3eb2/cover-160.349c53369752.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-17da23c3c4a74f3dbbd9c766cd728ae1/v001-c3c2d31d3eb2/cover-320.d20ff0504434.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-17da23c3c4a74f3dbbd9c766cd728ae1/v001-c3c2d31d3eb2/cover-640.35f76ce950f9.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-17da23c3c4a74f3dbbd9c766cd728ae1/v001-c3c2d31d3eb2/cover-960.8b85ef62ec04.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-17e9a73d1dbe45498048bb595184784d": {
+      "key": "art-17e9a73d1dbe45498048bb595184784d",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#30342C",
+        "accent": "#C7DBA3",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-17e9a73d1dbe45498048bb595184784d/v001-b56b8e05bb60/cover-160.bd604cb4da5c.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-17e9a73d1dbe45498048bb595184784d/v001-b56b8e05bb60/cover-320.2cbec617936c.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-17e9a73d1dbe45498048bb595184784d/v001-b56b8e05bb60/cover-640.ded81d2e3b05.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-17e9a73d1dbe45498048bb595184784d/v001-b56b8e05bb60/cover-960.b8ea474ee3e9.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-2973e3ca883c493ead93df1d4e896641": {
+      "key": "art-2973e3ca883c493ead93df1d4e896641",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#392F2C",
+        "accent": "#E5B09B",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-2973e3ca883c493ead93df1d4e896641/v001-387e76852a09/cover-160.9e59d67454ef.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-2973e3ca883c493ead93df1d4e896641/v001-387e76852a09/cover-320.f6dc31965955.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-2973e3ca883c493ead93df1d4e896641/v001-387e76852a09/cover-640.c33b4e2094c6.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-2973e3ca883c493ead93df1d4e896641/v001-387e76852a09/cover-960.45fdb1265650.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-4ce4f75ef3394fc38f67435117a93e73": {
+      "key": "art-4ce4f75ef3394fc38f67435117a93e73",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#29333A",
+        "accent": "#C8B67D",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-4ce4f75ef3394fc38f67435117a93e73/v001-04b1aed4bcfb/cover-160.6ef74598b19b.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-4ce4f75ef3394fc38f67435117a93e73/v001-04b1aed4bcfb/cover-320.a1aec823de16.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-4ce4f75ef3394fc38f67435117a93e73/v001-04b1aed4bcfb/cover-640.cc6d54dc371f.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-4ce4f75ef3394fc38f67435117a93e73/v001-04b1aed4bcfb/cover-960.6a669bb47d1f.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-4df22fdc8967422caa7452e262a3630d": {
+      "key": "art-4df22fdc8967422caa7452e262a3630d",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#342E2C",
+        "accent": "#E3A48F",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-4df22fdc8967422caa7452e262a3630d/v001-1b0dc5bdab66/cover-160.4a804905c2f1.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-4df22fdc8967422caa7452e262a3630d/v001-1b0dc5bdab66/cover-320.57c3bba6529f.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-4df22fdc8967422caa7452e262a3630d/v001-1b0dc5bdab66/cover-640.64e7eed59d71.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-4df22fdc8967422caa7452e262a3630d/v001-1b0dc5bdab66/cover-960.bd1b2da04ee0.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-66e9c4a30ed04baf9b1ae14181a3c16d": {
+      "key": "art-66e9c4a30ed04baf9b1ae14181a3c16d",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#233632",
+        "accent": "#A8D8C5",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-66e9c4a30ed04baf9b1ae14181a3c16d/v001-420d8ad935da/cover-160.ca97c5f64f7e.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-66e9c4a30ed04baf9b1ae14181a3c16d/v001-420d8ad935da/cover-320.b40278363776.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-66e9c4a30ed04baf9b1ae14181a3c16d/v001-420d8ad935da/cover-640.f26f0843812e.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-66e9c4a30ed04baf9b1ae14181a3c16d/v001-420d8ad935da/cover-960.f142a6c4b9ed.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-b0a30bc3b98f440a840db7179da11639": {
+      "key": "art-b0a30bc3b98f440a840db7179da11639",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#23313B",
+        "accent": "#91D8E8",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-b0a30bc3b98f440a840db7179da11639/v001-c2e0dc9f5c84/cover-160.2bbb2163f57d.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-b0a30bc3b98f440a840db7179da11639/v001-c2e0dc9f5c84/cover-320.371ec938d641.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-b0a30bc3b98f440a840db7179da11639/v001-c2e0dc9f5c84/cover-640.a3e2fe4b3ab3.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-b0a30bc3b98f440a840db7179da11639/v001-c2e0dc9f5c84/cover-960.89d5beef4f1b.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-d3f0d0387a244634bf20c1224c6913ce": {
+      "key": "art-d3f0d0387a244634bf20c1224c6913ce",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#2C3430",
+        "accent": "#CAD7B4",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-d3f0d0387a244634bf20c1224c6913ce/v001-dd95b8fb8eee/cover-160.9ec766ab504b.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-d3f0d0387a244634bf20c1224c6913ce/v001-dd95b8fb8eee/cover-320.5c4f093968b0.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-d3f0d0387a244634bf20c1224c6913ce/v001-dd95b8fb8eee/cover-640.5bfd73d98bc7.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-d3f0d0387a244634bf20c1224c6913ce/v001-dd95b8fb8eee/cover-960.74caaf58a5f7.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-e0984e6ebd6c4d83b118c9d9fdb7780c": {
+      "key": "art-e0984e6ebd6c4d83b118c9d9fdb7780c",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#34332B",
+        "accent": "#E8D08F",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-e0984e6ebd6c4d83b118c9d9fdb7780c/v001-3091fcb77a92/cover-160.27dab940b911.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-e0984e6ebd6c4d83b118c9d9fdb7780c/v001-3091fcb77a92/cover-320.be6086728b35.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-e0984e6ebd6c4d83b118c9d9fdb7780c/v001-3091fcb77a92/cover-640.b3d9f325a727.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-e0984e6ebd6c4d83b118c9d9fdb7780c/v001-3091fcb77a92/cover-960.edb537767df5.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
     "art-e1b1e5b009dd4b709666997c51c9b7dd": {
       "key": "art-e1b1e5b009dd4b709666997c51c9b7dd",
       "version": 1,
@@ -57,6 +521,127 @@
         }
       ],
       "icon": "note"
+    },
+    "art-f415369e7d8443158c6ae4aecab0c839": {
+      "key": "art-f415369e7d8443158c6ae4aecab0c839",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#2C3532",
+        "accent": "#CBDAC2",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-f415369e7d8443158c6ae4aecab0c839/v001-4a73eb2d6057/cover-160.d2cb88c8348c.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-f415369e7d8443158c6ae4aecab0c839/v001-4a73eb2d6057/cover-320.ceeaab3ef482.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-f415369e7d8443158c6ae4aecab0c839/v001-4a73eb2d6057/cover-640.e3d6f4926c78.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-f415369e7d8443158c6ae4aecab0c839/v001-4a73eb2d6057/cover-960.1339b394e441.webp",
+          "width": 960,
+          "height": 960
+        }
+      ],
+      "icon": "app"
+    },
+    "art-f8949fb853684610bb0991998c153284": {
+      "key": "art-f8949fb853684610bb0991998c153284",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#441E25",
+        "accent": "#BD737C",
+        "ink": "#FFF5E7"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-f8949fb853684610bb0991998c153284/v001-675fe5b8cf7e/cover-160.c5e745270adc.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-f8949fb853684610bb0991998c153284/v001-675fe5b8cf7e/cover-320.188fd62bb52e.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-f8949fb853684610bb0991998c153284/v001-675fe5b8cf7e/cover-640.e2c08437502f.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-f8949fb853684610bb0991998c153284/v001-675fe5b8cf7e/cover-960.ef4cfc6d1cd1.webp",
+          "width": 960,
+          "height": 960
+        }
+      ]
+    },
+    "field-assistant": {
+      "key": "field-assistant",
+      "version": 1,
+      "alt": "Светящаяся стеклянная сфера помощника",
+      "palette": {
+        "base": "#2B3530",
+        "accent": "#C5D8BE",
+        "ink": "#F5F3EB"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/field-assistant/v001-7b26b40a460b/cover-160.2caea15e0bc9.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/field-assistant/v001-7b26b40a460b/cover-320.642d6bc70d75.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/field-assistant/v001-7b26b40a460b/cover-640.f841f585786e.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/field-assistant/v001-7b26b40a460b/cover-960.1a567182a466.webp",
+          "width": 960,
+          "height": 960
+        }
+      ]
     },
     "field-canvas": {
       "key": "field-canvas",

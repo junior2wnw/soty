@@ -80,6 +80,7 @@ export function mountCoverEditor(options: CoverEditorOptions): { dispose(): void
   const errorLine = el('p', 'sw-cover-error'); errorLine.setAttribute('role', 'alert');
   const pendingActions = el('div', 'sw-cover-toolbar'), recheck = button('Проверить результат', 'refresh'), cancelDraft = button('Отменить подготовку'); pendingActions.append(recheck, cancelDraft);
   const generation = el('p', 'sw-muted sw-cover-generation', 'Генерация изображений пока не подключена. Можно выбрать свою картинку.');
+  const agentGuide = el('a', '', 'Пайплайн обложек для агентов'); agentGuide.href = '/skills/index.html'; agentGuide.target = '_blank'; agentGuide.rel = 'noopener noreferrer'; generation.append(' ', agentGuide);
   const leave = el('div', 'sw-cover-leave'); leave.hidden = true; leave.setAttribute('role', 'group'); leave.setAttribute('aria-label', 'Закрыть редактор');
   const leaveText = el('p'), stay = button('Продолжить редактирование'), leaveNow = button('Закрыть редактор'); leave.append(leaveText, stay, leaveNow);
   form.append(instruction, toolbar, stage, cropFields, modes, statusLine, errorLine, pendingActions, history, generation, leave); dialog.body.append(form);

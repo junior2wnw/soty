@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "title": "Инструкции для агентов Сот",
+  "skills": [{
+    "name": "soty-cover-art",
+    "version": "2026-10-24",
+    "title": "Обложки приложений",
+    "description": "Назначение → предмет и стиль → мастер → настоящая сота → оптимизация → сохранение и откат",
+    "entrypoint": "/skills/soty-cover-art/SKILL.md",
+    "references": ["/skills/soty-cover-art/references/runtime.md", "/skills/soty-cover-art/references/operator.md"]
+  }]
+}
