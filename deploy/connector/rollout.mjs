@@ -135,21 +135,27 @@ export class Rollout {
   originalForComparison(current){
     const before=this.original.NetworkSettings?.Networks,after=current.NetworkSettings?.Networks;
     const prior=before?.bridge,next=after?.bridge;
+    const names=Object.keys(before||{}).sort(),currentNames=Object.keys(after||{}).sort();
     const empty=value=>value===undefined||value===null||value==='';
-    // Docker clears a generated default-bridge MAC after STOP. API1.45 may
-    // retain that exact address in both Config objects. Recover only the
-    // observed endpoint representation for comparison, never CREATE or START.
+    // Observed Docker STOP clears both generated endpoint MACs when the default
+    // bridge also has an attached bridge network. Recover only that stopped
+    // representation for comparison; all captured network intent stays exact.
     if(!this.originalStopConfirmed||current.Id!==this.original.Id||current.Image!==this.original.Image
       ||current.State.Running||current.State.Paused||current.State.Status!=='exited'
       ||!['bridge','default'].includes(this.original.HostConfig.NetworkMode)
       ||current.HostConfig.NetworkMode!==this.original.HostConfig.NetworkMode
       ||!((empty(this.original.Config.MacAddress)&&empty(current.Config.MacAddress))
         ||(this.original.Config.MacAddress===prior?.MacAddress&&current.Config.MacAddress===prior?.MacAddress))
-      ||Object.keys(before||{}).length!==1||Object.keys(after||{}).length!==1||!prior||!next
+      ||hash(names)!==hash(currentNames)||!prior||!next
       ||['IPAMConfig','Aliases','Links','DriverOpts'].some(key=>prior[key]!=null||next[key]!=null)
-      ||typeof prior.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(prior.MacAddress)
-      ||next.MacAddress!=='')return current;
-    const compared=clone(current);compared.NetworkSettings.Networks.bridge.MacAddress=prior.MacAddress;
+      ||names.some(name=>{
+        const previous=before[name],observed=after[name];
+        return typeof previous.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(previous.MacAddress)
+          ||observed.MacAddress!==''||previous.NetworkID!==observed.NetworkID
+          ||['IPAMConfig','Aliases','Links','DriverOpts','GwPriority'].some(key=>hash({value:previous[key]})!==hash({value:observed[key]}));
+      }))return current;
+    const compared=clone(current);
+    for(const name of names)compared.NetworkSettings.Networks[name].MacAddress=before[name].MacAddress;
     return compared;
   }
   async checkUniversalCurrent(){

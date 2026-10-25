@@ -223,6 +223,73 @@ function clearBridgeMacOnStop(f,{mode='bridge',afterStop=()=>{}}={}){
   return old;
 }
 
+const attachedNetwork='soty-account-ai',attachedMac='72:59:35:55:34:4a';
+function clearAttachedBridgeMacsOnStop(f,{afterStop=()=>{}}={}){
+  const old=clearBridgeMacOnStop(f,{afterStop:original=>{
+    original.NetworkSettings.Networks[attachedNetwork].MacAddress='';afterStop(original);
+  }});
+  old.NetworkSettings.Networks.bridge.NetworkID='1'.repeat(64);
+  old.NetworkSettings.Networks[attachedNetwork]={NetworkID:'2'.repeat(64),IPAMConfig:null,Aliases:['preserved-ai-alias'],
+    Links:null,DriverOpts:null,GwPriority:0,MacAddress:attachedMac};
+  return old;
+}
+
+test('confirmed STOP reconciles both observed bridge MACs without changing endpoint intent or the candidate',async t=>{
+  for(const reflected of [false,true]){
+    const f=await activeFeaturesUpdate(t),old=clearAttachedBridgeMacsOnStop(f);
+    if(reflected)old.Config.MacAddress=generatedBridgeMac;
+    await f.run.prepare(f.request);const config=structuredClone(f.run.config),original=structuredClone(f.run.original);
+    await f.run.promote();assert.equal(f.run.state.phase,'committed');
+    assert.deepEqual(f.run.config,config);assert.deepEqual(f.run.original,original);
+    assert.equal(old.NetworkSettings.Networks.bridge.MacAddress,'');assert.equal(old.NetworkSettings.Networks[attachedNetwork].MacAddress,'');
+    const endpoints=f.map.get(f.run.candidate.Id).NetworkSettings.Networks;
+    assert.equal(endpoints.bridge.MacAddress,generatedBridgeMac);assert.equal(endpoints[attachedNetwork].MacAddress,attachedMac);
+    assert.deepEqual(endpoints[attachedNetwork].Aliases,['preserved-ai-alias']);assert.equal(endpoints[attachedNetwork].GwPriority,0);
+  }
+});
+
+test('failed stopped-writer backup restores the exact two-network original before any candidate START',async t=>{
+  const f=await activeFeaturesUpdate(t),old=clearAttachedBridgeMacsOnStop(f);let calls=0;
+  f.run.record=async state=>{if(state.phase==='original_stopped'&&++calls===1)throw new SafeError('backup_failed');};
+  await f.run.prepare(f.request);await assert.rejects(f.run.promote(),/backup_failed/u);
+  assert.equal(f.run.state.phase,'restored');assert.equal(old.Id,args.originalId);assert.equal(old.State.Running,true);
+  assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('helper:enter'),false);
+  assert.equal(old.HostConfig.RestartPolicy.Name,'unless-stopped');
+});
+
+test('attached bridge STOP reconciliation rejects endpoint set, identity, policy and MAC drift',async t=>{
+  const changes={
+    added:old=>old.NetworkSettings.Networks.extra=structuredClone(old.NetworkSettings.Networks[attachedNetwork]),
+    removed:old=>delete old.NetworkSettings.Networks[attachedNetwork],
+    networkIdentity:old=>old.NetworkSettings.Networks[attachedNetwork].NetworkID='3'.repeat(64),
+    alias:old=>old.NetworkSettings.Networks[attachedNetwork].Aliases=['unapproved'],
+    priority:old=>old.NetworkSettings.Networks[attachedNetwork].GwPriority=1,
+    ipam:old=>old.NetworkSettings.Networks[attachedNetwork].IPAMConfig={IPv4Address:'172.28.0.4'},
+    links:old=>old.NetworkSettings.Networks[attachedNetwork].Links=['other:alias'],
+    driver:old=>old.NetworkSettings.Networks[attachedNetwork].DriverOpts={unapproved:'1'},
+    nonemptyMac:old=>old.NetworkSettings.Networks[attachedNetwork].MacAddress='02:42:ac:11:00:04',
+    nullMac:old=>old.NetworkSettings.Networks[attachedNetwork].MacAddress=null,
+    missingMac:old=>delete old.NetworkSettings.Networks[attachedNetwork].MacAddress,
+    customPrimary:old=>old.HostConfig.NetworkMode='custom',
+  };
+  for(const [name,afterStop]of Object.entries(changes))await t.test(name,async t=>{
+    const f=await activeFeaturesUpdate(t);clearAttachedBridgeMacsOnStop(f,{afterStop});await f.run.prepare(f.request);
+    await assert.rejects(f.run.promote());assert.equal(f.run.state.phase,'recovery_required');
+    assert.equal(f.events.includes('start-candidate'),false);assert.equal(f.events.includes('start-old'),false);
+  });
+});
+
+test('attached bridge cleared MACs cannot normalize before our STOP or on the candidate',async t=>{
+  for(const target of ['original','candidate']){
+    const f=await activeFeaturesUpdate(t);clearAttachedBridgeMacsOnStop(f);await f.run.prepare(f.request);
+    const current=target==='original'?f.map.get(args.originalId):f.map.get(f.run.candidate.Id);
+    for(const endpoint of Object.values(current.NetworkSettings.Networks))endpoint.MacAddress='';
+    if(target==='original')await assert.rejects(f.run.checkUniversalCurrent(),/universal_policy_rollout_mismatch/u);
+    else await assert.rejects(f.run.promote(),/candidate_configuration_mismatch/u);
+    assert.equal(f.events.some(event=>event.startsWith('stop:')),false);
+  }
+});
+
 test('universal promotion preserves generated bridge MAC intent after its confirmed original STOP',async t=>{
   for(const phase of ['legacy-baseline','features'])for(const mode of ['bridge','default']){
     const f=await fixture(t,{phase}),old=clearBridgeMacOnStop(f,{mode});
