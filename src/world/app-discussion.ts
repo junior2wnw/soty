@@ -10,12 +10,13 @@ import type { WorldApi } from './types';
 import { chatDayKey, chatDayLabel, shouldSendOnEnter } from './messenger.mjs';
 import { markAppDiscussionRead, appDiscussionInboxUnsupported, type AppDiscussionRead } from './app-inbox.mjs';
 
-export interface DiscussionSelection { conversationId?: string; administrative?: boolean; }
+export interface DiscussionSelection { conversationId?: string; messageId?: string; administrative?: boolean; }
 export interface AppDiscussionOptions extends EngagementStorageOptions {
   api: WorldApi; accountId: string; appId: string; entry: AppEntry | null; administrative?: boolean;
-  initialConversationId?: string; retainedEntry?: { domainId: string; path: string; origin?: string };
+  initialConversationId?: string; initialMessageId?: string; retainedEntry?: { domainId: string; path: string; origin?: string };
   isCurrent(): boolean; onConversationChange?(selection: DiscussionSelection): void; onClose?(): void;
   onReadConfirmed?(receipt: AppDiscussionRead): void;
+  messageLink?(conversationId: string, messageId: string): string;
 }
 export interface AppDiscussionHandle {
   dispose(): void; refresh(): Promise<void>; focus(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean;
@@ -37,6 +38,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   if (entry && entry.appId !== options.appId) throw controlledError('app_discussion_invalid_scope');
   const persistence = engagementStorage(host, options), view = host.ownerDocument.defaultView, document = host.ownerDocument;
   let administrative = options.administrative === true, requestedConversationId = options.initialConversationId;
+  let requestedMessageId = options.initialMessageId, positionedMessageId: string | undefined;
   // A resolved current conversation is a snapshot, not the user's selection.
   // Only an explicit archive route pins subsequent context reads to an ID.
   let resolvedConversationId: string | undefined;
@@ -85,7 +87,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   scroll.append(banner, archiveFold, olderBox, list, empty, retainedBox);
   const bottom = el('div', 'se-discussion-bottom');
   const status = el('p', 'se-status'); status.setAttribute('role', 'status'); status.dataset.engagementKey = 'discussion-status';
-  const latest = button('К последним сообщениям', 'down', 'se-discussion-new', () => { void refresh(); }); latest.dataset.engagementKey = 'discussion-latest';
+  const latest = button('К последним сообщениям', 'down', 'se-discussion-new', () => { if (requestedMessageId) void choose({ ...(requestedConversationId ? { conversationId: requestedConversationId } : {}), administrative }); else void refresh(); }); latest.dataset.engagementKey = 'discussion-latest';
   const pendingBox = el('div', 'se-pending'), pendingText = el('p', '', 'Результат отправки не подтверждён.'), pendingActions = el('div', 'se-actions');
   const pendingRetry = button('Проверить отправку', 'refresh', 'sw-button-quiet', () => { const expected = lastPending, model = activeDraft; if (expected && model && !busy) void send(model, { expectedPending: expected }); });
   pendingRetry.dataset.engagementKey = 'discussion-retry';
@@ -108,6 +110,11 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     const actions: HTMLButtonElement[] = [];
     if (canWrite()) { const respond = button('Ответить', 'back', 'se-message-menu-item', () => { closeMenu(); if (canWrite() && activeDraft && row.value.body) { edit(activeDraft.read().draft.text, row.value.id); input.focus({ preventScroll: true }); } }); respond.dataset.engagementKey = 'discussion-reply'; actions.push(respond); }
     actions.push(button('Копировать текст', 'list', 'se-message-menu-item', () => { closeMenu(true); if (!row.value.body) return; if (!view?.navigator.clipboard) { notice = 'Выделите текст сообщения, чтобы скопировать.'; render(); return; } void view.navigator.clipboard.writeText(row.value.body).then(() => { if (foreground()) { notice = 'Текст скопирован.'; render(); } }).catch(() => { if (foreground()) { notice = 'Не удалось скопировать. Выделите текст сообщения.'; render(); } }); }));
+    if (options.messageLink) actions.push(button('Скопировать ссылку', 'link', 'se-message-menu-item', () => {
+      closeMenu(true); if (!foreground() || !view?.navigator.clipboard) { notice = 'Копирование ссылки недоступно в этом браузере.'; render(); return; }
+      const link = options.messageLink!(row.value.conversationId, row.value.id);
+      void view.navigator.clipboard.writeText(link).then(() => { if (foreground()) { notice = 'Ссылка скопирована. Доступ к разговору остаётся прежним.'; render(); } }).catch(() => { if (foreground()) { notice = 'Не удалось скопировать ссылку.'; render(); } });
+    }));
     if (row.value.canRemove) { const remove = button('Удалить у всех', 'trash', 'se-message-menu-item is-danger', () => { closeMenu(true); removeMessage(row.value); }); remove.dataset.engagementKey = 'discussion-remove'; disabled(remove, busy || switching); actions.push(remove); }
     actions.forEach(action => action.setAttribute('role', 'menuitem')); menu.replaceChildren(...actions); menu.hidden = false;
     const bounds = root.getBoundingClientRect(), anchor = row.more.getBoundingClientRect();
@@ -324,7 +331,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     finally { busy = false; if (current()) render(); }
   }
   function newMessage(value: DiscussionMessage): MessageRow {
-    const item = el('li', 'se-message'); item.dataset.messageId = value.id;
+    const item = el('li', 'se-message'); item.dataset.messageId = value.id; item.tabIndex = -1;
     const day = el('div', 'se-message-day'); day.setAttribute('role', 'separator');
     const top = el('div', 'se-message-header'), author = el('span', 'se-message-author'), time = el('time'); top.append(author, time);
     const body = el('p', 'se-message-body'), replyLabel = el('span', 'se-message-reply');
@@ -439,6 +446,14 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       renderRetained(showComposer); renderArchives(); scheduleComposerFit();
       if (context && state?.messages.length && !previousConversation) scroll.scrollTop = scroll.scrollHeight;
       else restoreScroll(position);
+      for (const row of messages.values()) row.element.classList.toggle('se-message-anchor', row.value.id === requestedMessageId);
+      const anchor = requestedMessageId ? messages.get(requestedMessageId)?.element : undefined;
+      if (anchor && positionedMessageId !== requestedMessageId) {
+        positionedMessageId = requestedMessageId;
+        const bounds = scroll.getBoundingClientRect(), target = anchor.getBoundingClientRect();
+        scroll.scrollTop += target.top - bounds.top - Math.max(0, (bounds.height - target.height) / 2);
+        if (document.activeElement === document.body || document.activeElement === title || document.activeElement === refreshButton) anchor.focus({ preventScroll: true });
+      }
       scheduleVisibleRead();
     } finally { rendering = false; }
   }
@@ -472,7 +487,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     if (!current()) return;
     const admin = next.administrative === true;
     switching = true; selectionVersion++; stopPoll(); closeDialog(); closeMenu(); error = ''; notice = ''; archiveError = '';
-    requestedConversationId = next.conversationId; resolvedConversationId = undefined; activeDraft = null;
+    requestedConversationId = next.conversationId; requestedMessageId = next.messageId; positionedMessageId = undefined; resolvedConversationId = undefined; activeDraft = null;
     if (administrative !== admin) { administrative = admin; createFeed(); }
     else feed?.invalidate();
     switching = false; refreshRetained(); render(); await refresh();
@@ -483,7 +498,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     const sameSelection = next.conversationId
       ? next.conversationId === requestedConversationId && next.conversationId === context?.conversationId
       : !requestedConversationId && context?.isCurrent === true;
-    if ((next.administrative === true) === administrative && sameSelection) return;
+    if ((next.administrative === true) === administrative && sameSelection && next.messageId === requestedMessageId) return;
     // Selection clears the old feed and its archive buttons. Move only the
     // active opener to a stable landmark now; a later response never takes
     // focus back from the user's next Tab or click.
@@ -496,7 +511,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     if (!foreground() || !feed || switching || feed.read().loading) return;
     const token = selectionVersion, model = feed; error = ''; archiveError = ''; stopPoll();
     try {
-      const result = await model.load({ api: options.api, isCurrent: () => valid(token), ...(requestedConversationId ? { conversationId: requestedConversationId } : {}) });
+      const result = await model.load({ api: options.api, isCurrent: () => valid(token), ...(requestedConversationId ? { conversationId: requestedConversationId } : {}), ...(requestedMessageId ? { messageId: requestedMessageId } : {}) });
       if (!valid(token) || result === 'stale') return;
       archiveLoaded = false; refreshRetained(); render();
       if (archiveFold.open) await loadArchives(false);
@@ -547,7 +562,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       entry = next; refreshRetained();
       if (!administrative) { selectionVersion++; stopPoll(); createFeed(); render(); await refresh(); }
     },
-    focus() { if (!foreground()) return; (canWrite() ? input : refreshButton).focus(); },
+    focus() { if (!foreground()) return; (requestedMessageId ? messages.get(requestedMessageId)?.element ?? title : canWrite() ? input : refreshButton).focus(); },
     setVisible(value) {
       if (!current() || visible === value) return; visible = value; root.hidden = !value; selectionVersion++; closeDialog(); stopPoll();
       if (!value) { cancelComposerFit(); closeMenu(); feed?.invalidate(); onPageHide(); }

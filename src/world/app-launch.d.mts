@@ -2,7 +2,7 @@ export interface AppLaunchTarget { readonly appId: string; readonly domainId?: s
 export interface AppLaunchRequest extends AppLaunchTarget { readonly expectedAccountId: string; readonly instanceId?: string }
 export interface AppResolvedEntry { readonly appId: string; readonly domainId: string; readonly origin: string; readonly path: string }
 export interface AppLaunchBinding { readonly schema: 'soty.app-launch-binding.v1'; readonly policyEpoch: number; readonly targetRevision: number; readonly targetDigest: string; readonly profile: 'soty.relay-restricted.v1'; readonly bindingFloor: 1 | 2 }
-export interface AppLaunchPresentation { readonly panel: 'discussion'; readonly conversationId?: string; readonly administrative?: true }
+export interface AppLaunchPresentation { readonly panel: 'discussion'; readonly conversationId?: string; readonly messageId?: string; readonly administrative?: true }
 export interface AppLaunchIntent { readonly kind: 'app' | 'launch'; readonly takeInvitation?: () => string | null; readonly target: AppLaunchTarget; readonly communityId?: string; readonly presentation?: AppLaunchPresentation; readonly route: string }
 export interface AppLaunchPopup { opener: unknown; readonly closed: boolean; location: { replace(url: string): void }; close(): void }
 export class AppLaunchError extends Error { code: string; constructor(code: string) }

@@ -20,6 +20,19 @@ function fixture(t, overrides = {}) {
     t.after(() => state.dispose()); return state; };
   return { disk, lock, factory, state: factory() };
 }
+
+test('anchored feed requires the requested message, keeps an older window truthful and returns to latest explicitly', async t => {
+  const model = createAppDiscussionFeed({ accountId: 'A', appId: app, entry }); t.after(() => model.dispose());
+  const calls = [], options = { isCurrent: () => true, conversationId: conv, messageId: msg(5), api: { async request(op, args) {
+    calls.push({ op, args }); return { context: context(), messages: [message(4), message(5)], historyCursor: 'older', changeCursor: 'changes', anchor: { messageId: msg(5), hasNewer: true } };
+  } } };
+  assert.equal(await model.load(options), 'accepted'); assert.equal(calls[0].args.messageId, msg(5));
+  assert.equal(model.read().window, 'history'); assert.equal(model.read().hasNewer, true);
+  await assert.rejects(model.load({ ...options, messageId: msg(6) }), code('app_discussion_invalid_data'));
+  await assert.rejects(model.load({ ...options, conversationId: undefined }), code('app_discussion_invalid_data'));
+  await model.load({ ...options, messageId: undefined, api: { async request() { return { context: context(), messages: [message(7)], historyCursor: null, changeCursor: 'latest' }; } } });
+  assert.equal(model.read().window, 'latest'); assert.equal(model.read().hasNewer, false);
+});
 const reply = (pending, extra = {}) => ({ requestId: pending.args.requestId, replayed: false,
   receipt: { id: msg(1), conversationId: pending.scope.conversationId, createdAt: 1 }, ownCurrent: { removed: false },
   message: message(1, { conversationId: pending.scope.conversationId, body: pending.args.body, replyTo: pending.args.replyTo ?? null }), ...extra });

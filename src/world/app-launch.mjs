@@ -2,6 +2,7 @@ const appIdPattern = /^app-[a-f0-9]{32}$/u;
 const domainIdPattern = /^dom_[a-f0-9]{32}$/u;
 const contextIdPattern = /^[A-Za-z0-9_-]{3,160}$/u;
 const conversationIdPattern = /^conv_[a-f0-9]{32}$/u;
+const messageIdPattern = /^msg_[a-f0-9]{32}$/u;
 
 import {captureSourcePin} from './app-project-capture.mjs';
 
@@ -88,11 +89,13 @@ export function normalizeAppLaunchTarget(value) {
 function normalizePresentation(value) {
   if (value === undefined) return undefined;
   requireValue(value && typeof value === 'object' && !Array.isArray(value)
-    && Object.keys(value).every(key => ['panel', 'conversationId', 'administrative'].includes(key))
+    && Object.keys(value).every(key => ['panel', 'conversationId', 'messageId', 'administrative'].includes(key))
     && value.panel === 'discussion', 'invalid_app_route');
   if (value.conversationId !== undefined) requireValue(typeof value.conversationId === 'string' && conversationIdPattern.test(value.conversationId), 'invalid_app_route');
+  if (value.messageId !== undefined) requireValue(value.conversationId !== undefined && typeof value.messageId === 'string' && messageIdPattern.test(value.messageId), 'invalid_app_route');
   if (value.administrative !== undefined) requireValue(value.administrative === true, 'invalid_app_route');
   return Object.freeze({ panel: 'discussion', ...(value.conversationId === undefined ? {} : { conversationId: value.conversationId }),
+    ...(value.messageId === undefined ? {} : { messageId: value.messageId }),
     ...(value.administrative === undefined ? {} : { administrative: true }) });
 }
 
@@ -105,6 +108,7 @@ export function formatAppLaunchRoute(value, communityId, presentation) {
   if (panel) {
     parameters.set('panel', 'discussion');
     if (panel.conversationId !== undefined) parameters.set('conversation', panel.conversationId);
+    if (panel.messageId !== undefined) parameters.set('message', panel.messageId);
     if (panel.administrative) parameters.set('admin', '1');
   }
   return `${base}${parameters.size ? `?${parameters}` : ''}`;
@@ -118,11 +122,12 @@ export function parseAppLaunchRoute(hash) {
   requireValue(source.length <= 32768 && !source.includes('#'), 'invalid_app_route');
   const queryAt = source.indexOf('?'), parts = (queryAt < 0 ? source : source.slice(0, queryAt)).split('/');
   const parameters = new URLSearchParams(queryAt < 0 ? '' : source.slice(queryAt + 1));
-  requireValue([...parameters.keys()].every(key => ['path', 'panel', 'conversation', 'admin', 'invitation'].includes(key) && parameters.getAll(key).length === 1), 'invalid_app_route');
-  requireValue(parameters.has('panel') || (!parameters.has('conversation') && !parameters.has('admin')), 'invalid_app_route');
+  requireValue([...parameters.keys()].every(key => ['path', 'panel', 'conversation', 'message', 'admin', 'invitation'].includes(key) && parameters.getAll(key).length === 1), 'invalid_app_route');
+  requireValue(parameters.has('panel') || (!parameters.has('conversation') && !parameters.has('message') && !parameters.has('admin')), 'invalid_app_route');
   if (parameters.has('admin')) requireValue(parameters.get('admin') === '1', 'invalid_app_route');
   const presentation = parameters.has('panel') ? normalizePresentation({ panel: parameters.get('panel'),
     ...(parameters.has('conversation') ? { conversationId: parameters.get('conversation') } : {}),
+    ...(parameters.has('message') ? { messageId: parameters.get('message') } : {}),
     ...(parameters.has('admin') ? { administrative: true } : {}) }) : undefined;
   requireValue(parts[0] === 'launch' ? parts.length === 3 : parts.length === 2 || parts.length === 3, 'invalid_app_route');
   let id, context;

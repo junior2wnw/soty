@@ -315,13 +315,17 @@ export function createAppDiscussionFeed({ accountId, appId, entry: rawEntry, adm
     async load(options) {
       const selected = options.conversationId;
       check(selected === undefined || typeof selected === 'string' && CONV.test(selected));
+      const anchor = options.messageId;
+      check(anchor === undefined || selected !== undefined && typeof anchor === 'string' && MESSAGE.test(anchor));
       return request('load', options, async (fetch, current) => {
         const nextWindow = state.windowRevision + 1; state = { ...empty(), windowRevision: nextWindow }; emit();
-        const value = await fetch('context', { ...args(), ...(selected ? { conversationId: selected } : {}) });
+        const value = await fetch('context', { ...args(), ...(selected ? { conversationId: selected } : {}), ...(anchor ? { messageId: anchor } : {}) });
         if (!value || !current()) return 'stale';
         const context = contextValue(value.context, selected), messages = pageMessages(value.messages, context, 30);
+        if (anchor) check(value.anchor?.messageId === anchor && typeof value.anchor.hasNewer === 'boolean' && messages.some(row => row.id === anchor));
         check(fits(messages));
         state = { ...empty(), context, messages, historyCursor: cursorValue(value.historyCursor), changeCursor: cursorValue(value.changeCursor), windowRevision: nextWindow };
+        if (anchor && value.anchor.hasNewer) { state.window = 'history'; state.hasNewer = true; }
         check(state.changeCursor !== null); return 'accepted';
       });
     },

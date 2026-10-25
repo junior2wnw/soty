@@ -120,6 +120,36 @@ async function environment(t, overrides = {}) {
     advance(ms = 2500) { clock += ms; }, reopen(extra = {}) { service.close(); service = open(extra); return service; } };
 }
 
+test('inbox discovers an actually visited public discussion on another device after restart and rechecks a closed audience', async t => {
+  const f = await environment(t), app = f.app({ accountIds: [] }), address = f.alias(app.id);
+  f.publish(app.id, [address]);
+  const scope = f.entry(app.id, address), conversation = f.context(scope, reader).context.conversationId;
+  f.send(scope, conversation, 'Public service message', owner); f.reopen();
+  const value = f.call('apps.discussion.inbox', { entries: [], includeKnown: true }, phone);
+  assert.equal(value.discussions.length, 1); const row = value.discussions[0];
+  assert.equal(row.appId, app.id); assert.equal(row.conversationId, conversation); assert.equal(row.entry.domainId, address.id);
+  assert.equal(row.lastMessage.preview, 'Public service message'); assert.equal(row.unreadCount, 1); safe(value);
+  f.publish(app.id, [], 'restricted');
+  assert.deepEqual(f.call('apps.discussion.inbox', { entries: [], includeKnown: true }, phone).discussions, []);
+});
+
+test('exact message links fetch a bounded historical window, redact removals and never bypass app/conversation authority', async t => {
+  const f = await environment(t), app = f.app(), scope = f.entry(app.id), conversationId = f.context(scope).context.conversationId;
+  const sent = []; for (let n = 0; n < 45; n++) sent.push(f.send(scope, conversationId, `Anchor specimen ${n}`, owner).message);
+  const messageId = sent[34].id;
+  const value = f.call('apps.discussion.context', { ...scope, conversationId, messageId }, reader);
+  assert.equal(value.messages.length, 30); assert.equal(value.messages.at(-1).id, messageId);
+  assert.deepEqual(value.anchor, { messageId, hasNewer: true }); assert.ok(value.historyCursor); safe(value);
+  const older = f.call('apps.discussion.history', { ...scope, conversationId, cursor: value.historyCursor }, reader);
+  assert.equal(older.messages.length, 5); assert.equal(new Set([...older.messages, ...value.messages].map(row => row.id)).size, 35);
+  f.call('apps.discussion.remove', { appId: app.id, conversationId, messageId }, owner);
+  assert.equal(f.call('apps.discussion.context', { ...scope, conversationId, messageId }, reader).messages.at(-1).body, null);
+  assert.throws(() => f.call('apps.discussion.context', { ...scope, conversationId, messageId }, other), code('app_unavailable'));
+  const foreign = f.app(), foreignScope = f.entry(foreign.id), foreignConversation = f.context(foreignScope).context.conversationId;
+  assert.throws(() => f.call('apps.discussion.context', { ...foreignScope, conversationId: foreignConversation, messageId }, reader), code('app_unavailable'));
+  assert.throws(() => f.call('apps.discussion.context', { ...scope, messageId }, reader), code('invalid_discussion_conv'));
+});
+
 test('D2 first use is native app discussion with minimal author identity, no World profile and no live source', async t => {
   const f = await environment(t), app = f.app(), scope = f.entry(app.id);
   await until(() => f.inspect(app.id).source.observation.state === 'offline', 'server processed the disconnected source');

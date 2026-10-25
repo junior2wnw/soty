@@ -2324,7 +2324,7 @@ class WorldApplication {
           const fresh = this.applicationDiscussions.find(item => item.appId === value.appId);
           if (!fresh || !active()) return;
           const intent = parseAppLaunchRoute(formatAppLaunchRoute({ appId: fresh.appId, domainId: fresh.entry.domainId, path: fresh.entry.path }, undefined,
-            { panel: 'discussion', ...(fresh.conversationId ? { conversationId: fresh.conversationId } : {}) }));
+            { panel: 'discussion', ...(fresh.conversationId ? { conversationId: fresh.conversationId, ...(fresh.lastMessage ? { messageId: fresh.lastMessage.id } : {}) } : {}) }));
           if (intent) void this.openApplication({ appId: fresh.appId, name: fresh.name, status: 'unknown', entry: fresh.entry }, intent);
         }); conversationRows.set(key, row); }
         row.dataset.communityId = key; row.dataset.entityId = key;

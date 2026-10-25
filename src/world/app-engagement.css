@@ -74,6 +74,7 @@
 .se-archive-list .sw-button[aria-pressed=true] { background:var(--sw-selected); }
 .se-discussion-messages { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:12px; }
 .se-message { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) 28px; gap:0 4px; align-items:center; }
+.se-message-anchor { outline:2px solid var(--sw-focus); outline-offset:3px; border-radius:8px; }
 .se-message-content { min-width:0; max-width:100%; justify-self:start; }
 .se-message[data-own=true] .se-message-content { justify-self:end; }
 .se-message-day { grid-column:1/-1; justify-self:center; margin:4px 0 12px; padding:4px 10px; border-radius:99px; background:var(--sw-surface-subtle); color:var(--sw-muted); font-size:11px; line-height:1.4; }

@@ -7,6 +7,14 @@ const appId = `app-${'a'.repeat(32)}`, domainId = `dom_${'b'.repeat(32)}`;
 const shellUrl = 'https://soty.example/#mine';
 const boot = (token = 'A') => `https://demo.apps.example/_soty/boot?path=%2Freader%3Fpage%3D2#${token.repeat(43)}`;
 const target = Object.freeze({ appId, domainId, path: '/reader?page=2' });
+
+test('message presentation roundtrips its exact conversation and anchor; malformed or unscoped anchors are rejected', () => {
+  const presentation = { panel: 'discussion', conversationId: `conv_${'c'.repeat(32)}`, messageId: `msg_${'d'.repeat(32)}` };
+  const route = formatAppLaunchRoute(target, undefined, presentation);
+  assert.deepEqual(parseAppLaunchRoute(`#${route}`).presentation, presentation);
+  for (const suffix of [`message=${presentation.messageId}`, `panel=discussion&message=${presentation.messageId}`, `panel=discussion&conversation=${presentation.conversationId}&message=bad`, `panel=discussion&conversation=${presentation.conversationId}&message=${presentation.messageId}&message=${presentation.messageId}`])
+    assert.throws(() => parseAppLaunchRoute(`#launch/${appId}/${domainId}?${suffix}`), error => error.code === 'invalid_app_route');
+});
 const scopedReply=()=>({url:boot(),runtimeProfile:'soty.selected-human-embed.v2',scopedCloseHandle:'C'.repeat(43),
   scopedSource:{id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'}});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };

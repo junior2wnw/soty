@@ -184,10 +184,10 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     if (at < decoded.at || at - decoded.at > CURSOR_TTL) return null;
     return decoded.state;
   }
-  function history(base, row, input) {
+  function history(base, row, input, window) {
     const context = contextView(base, row), limit = input.limit ?? 30;
-    const state = input.cursor === undefined ? { upper: row.message_seq, before: row.message_seq + 1 }
-      : readCursor(input.cursor, base, 'history', row.id);
+    const state = window ?? (input.cursor === undefined ? { upper: row.message_seq, before: row.message_seq + 1 }
+      : readCursor(input.cursor, base, 'history', row.id));
     if (!state) return { context, messages: [], nextCursor: null, resetRequired: true };
     assertApps(Number.isSafeInteger(state.upper) && state.upper >= 0 && state.upper <= row.message_seq
       && Number.isSafeInteger(state.before) && state.before >= 1 && state.before <= state.upper + 1, 'invalid_discussion_cursor');
@@ -208,10 +208,13 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
   function initial(actor, input) {
     const base = access(actor, input, input.conversationId === undefined);
     const row = selected(base, input.conversationId ?? base.head?.current_id);
-    const value = history(base, row, {});
+    const anchor = input.messageId === undefined ? null : db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(row.id, input.messageId);
+    assertApps(input.messageId === undefined || anchor, 'app_unavailable', 404);
+    const value = history(base, row, {}, anchor ? { upper: row.message_seq, before: anchor.seq + 1 } : undefined);
     remember(base);
     return { context: value.context, messages: value.messages, historyCursor: value.nextCursor,
-      changeCursor: cursor(base, 'changes', row.id, { after: row.change_seq }) };
+      changeCursor: cursor(base, 'changes', row.id, { after: row.change_seq }),
+      ...(anchor ? { anchor: { messageId: input.messageId, hasNewer: anchor.seq < row.message_seq } } : {}) };
   }
   function changes(base, row, input) {
     const context = contextView(base, row), state = readCursor(input.cursor, base, 'changes', row.id);
@@ -444,7 +447,7 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const common = ['appId', 'domainId', 'path', 'administrative'];
     exact(args, action === 'remove' ? ['appId', 'conversationId', 'messageId']
       : action === 'send' ? ['appId', 'conversationId', 'domainId', 'path', 'requestId', 'body', 'replyTo']
-        : [...common, ...(action === 'archives' ? [] : ['conversationId']), ...(action === 'context' ? [] : ['cursor', 'limit'])]);
+        : [...common, ...(action === 'archives' ? [] : ['conversationId']), ...(action === 'context' ? ['messageId'] : ['cursor', 'limit'])]);
     const input = { appId: appId(args.appId) };
     if (action === 'remove') return { ...input, conversationId: identifier(args.conversationId, 'conv'), messageId: identifier(args.messageId, 'msg') };
     if (Object.hasOwn(args, 'administrative')) assertApps(args.administrative === true, 'invalid_discussion_mode');
@@ -456,6 +459,9 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
       if (action !== 'context') assertApps(input.domainId !== undefined && input.path !== undefined, 'invalid_discussion_entry');
     }
     if (action !== 'archives' && (action !== 'context' || args.conversationId !== undefined)) input.conversationId = identifier(args.conversationId, 'conv');
+    if (action === 'context' && args.messageId !== undefined) {
+      assertApps(input.conversationId !== undefined, 'invalid_discussion_conv'); input.messageId = identifier(args.messageId, 'msg');
+    }
     if (action === 'send') return { ...input, requestId: textId(args.requestId), body: bodyText(args.body),
       ...(args.replyTo === undefined ? {} : { replyTo: identifier(args.replyTo, 'msg') }) };
     if (action !== 'context') {

@@ -588,11 +588,19 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       entry: selectedEntry, ...(retainedEntry ? { retainedEntry } : {}),
       ...(presentation.administrative ? { administrative: true } : {}),
       ...(presentation.conversationId ? { initialConversationId: presentation.conversationId } : {}), isCurrent: current,
+      ...(presentation.messageId ? { initialMessageId: presentation.messageId } : {}),
       onConversationChange: selection => { void navigatePresentation({ panel: 'discussion',
         ...(selection.conversationId ? { conversationId: selection.conversationId } : {}),
+        ...(selection.messageId ? { messageId: selection.messageId } : {}),
         ...(selection.administrative ? { administrative: true } : {}) }); },
       onClose: () => { void navigatePresentation(undefined, true); },
       onReadConfirmed: receipt => { if (current()) options.onDiscussionRead?.(receipt); },
+      messageLink: (conversationId, messageId) => {
+        const url = new URL(view.location.href);
+        url.hash = formatAppLaunchRoute(selectedEntry ?? initial.target, selectedEntry ? undefined : initial.communityId, { panel: 'discussion', conversationId, messageId,
+          ...(intent.presentation?.administrative ? { administrative: true } : {}) });
+        return url.href;
+      },
     });
     showPanel();
   }
@@ -749,7 +757,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         const selection = intent.presentation;
         try {
           if (selection && discussion) await discussion.updateSelection({
-            ...(selection.conversationId ? { conversationId: selection.conversationId } : {}), administrative: !!selection.administrative });
+            ...(selection.conversationId ? { conversationId: selection.conversationId } : {}), ...(selection.messageId ? { messageId: selection.messageId } : {}), administrative: !!selection.administrative });
         } catch {
           if (current() && applied === presentationVersion) {
             // A refused selection must not leave an archive URL describing a

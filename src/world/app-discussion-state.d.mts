@@ -49,7 +49,7 @@ export interface AppDiscussionFeed {
     archives: DiscussionContext[]; nextArchiveCursor: string | null; loading: boolean; stale: boolean; resetRequired: boolean;
     hasNewer: boolean; window: 'latest' | 'history'; windowRevision: number; error: string | null };
   subscribe(listener: () => void): () => void;
-  load(options: { api: WorldApi; isCurrent(): boolean; conversationId?: string }): Promise<'accepted' | 'stale'>;
+  load(options: { api: WorldApi; isCurrent(): boolean; conversationId?: string; messageId?: string }): Promise<'accepted' | 'stale'>;
   older(options: { api: WorldApi; isCurrent(): boolean }): Promise<'accepted' | 'stale' | 'reset'>;
   poll(options: { api: WorldApi; isCurrent(): boolean }): Promise<'accepted' | 'stale' | 'reset'>;
   archives(options: { api: WorldApi; isCurrent(): boolean; older?: boolean }): Promise<'accepted' | 'stale' | 'reset'>;
