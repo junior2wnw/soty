@@ -10,6 +10,7 @@ import * as deployment from './app-deployment.mjs';
 const compile = async file => ts.transpileModule(await readFile(new URL(file, import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsCode = await compile('./dialogs.ts'), appCode = await compile('./app.ts'), cardCode = await compile('./application-card.ts');
+const accountCenterCode = await compile('./account-center.ts');
 const accessCode = await compile('./access-panel.ts');
 const accessAst = ts.createSourceFile('access-panel.js', accessCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const accessMount = accessAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'mountAccessPanel');
@@ -24,7 +25,7 @@ const rootClickHandler = appConstructor.body.statements.find(node => ts.isExpres
 // helper and controller; only the browser platform and the settings form are
 // ports. Actual layout, native keyboard and the real form have a separate page.
 function fixture() {
-  const tasks = [], listeners = new Map(), location = { hash: '#mine' };
+  const tasks = [], listeners = new Map(), location = { hash: '#mine' }, openedWindows = [];
   let document;
   class Element extends EventTarget {
     children = []; dataset = {}; attributes = new Map(); parentElement = null; open = false; disabled = false;
@@ -87,10 +88,11 @@ function fixture() {
     '../platform/origin-continuity': { createOriginContinuityLinks: () => null },
     './app-audience.mjs': audience, './app-launch.mjs': launch, './app-deployment.mjs': deployment,
     './app-settings': { mountAppSettings(options) { settings = options; return { dispose() { disposed++; }, requestClose(_trigger, afterClose) { options.onClose(afterClose); } }; } } };
-  const globals = { document, location, Element, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
+  const globals = { document, location, window: { open: (...args) => { openedWindows.push(args); return null; } }, Element, HTMLElement: Element, getComputedStyle: () => ({ visibility: 'visible' }), crypto: { randomUUID: () => String(Math.random()) },
     URLSearchParams, setTimeout, clearTimeout, clearInterval, Event };
   function evaluate(code) { const module = { exports: {} }; vm.runInNewContext(code, { ...globals, module, exports: module.exports, require: name => ports[name] ?? {} }); return module.exports; }
   const dialogs = evaluate(dialogsCode); ports['./dialogs'] = dialogs;
+  ports['./account-center'] = evaluate(accountCenterCode);
   const { mountAccessDialogs } = evaluate(`const dialogs_1 = require('./dialogs');
     exports.mountAccessDialogs = function({ workspace, feedbackTarget, addFeedback, refresh, alive }) {
       const content = workspace, view = 'clients'; let dialogState = null;
@@ -114,8 +116,16 @@ function fixture() {
   const opener = () => main.querySelector('[data-app-action="inspect"]');
   const chain = () => { opener().focus(); opener().click(); const inspect = [...app.dialogs][0]; const next = inspect.body.querySelectorAll('button').find(node => node.textContent === 'Название и доступ'); next.focus(); next.click(); return app.appSettingsDialog; };
   const changed = () => settings.onChanged({ actions: { canEdit: true }, app: { name: 'Renamed', state: 'enabled', grants: record.grants }, source: { hostDeviceId: 'host', deviceName: 'Fixture', observation: { state: 'offline' } }, publication: { launchPolicy: 'restricted', activeDomainIds: [] }, addresses: { aliases: [] } });
-  return { document, location, el, app, main, dialogs, mountAccessDialogs, record, opener, chain, changed, rootClick: bindRootClick.call(app), settings: () => settings,
+  return { document, location, el, app, main, dialogs, mountAccessDialogs, record, opener, chain, changed, openedWindows, rootClick: bindRootClick.call(app), settings: () => settings,
     disposed: () => disposed, renders: () => renders, drain() { while (tasks.length) tasks.shift()(); } };
+}
+
+function profileData(f) {
+  f.app.openProfileMenu(); const menu = [...f.app.dialogs][0];
+  assert.equal(menu.body.querySelectorAll('[data-account-section]').length, 6, 'the actual AccountCenter renders its categories');
+  const data = menu.body.querySelector('[data-account-section="data"]'); data.focus(); data.click();
+  assert.equal(data.getAttribute('aria-current'), 'page');
+  return menu;
 }
 
 function bubbleTab(target, shiftKey = false) {
@@ -297,11 +307,12 @@ test('Actual World close restores its Set only after matching release, preservin
 
 test('profile Help preserves developer docs and restores its original opener after managed or native close', () => {
   for (const native of [false, true]) {
-    const f = fixture(), opener = f.opener(); opener.focus(); f.app.openProfileMenu();
-    const profile = [...f.app.dialogs][0], docs = profile.body.querySelector('a');
-    assert.equal(docs.href, '/agents'); assert.equal(docs.target, '_blank');
-    const help = profile.body.querySelectorAll('button').find(node => node.textContent === 'Помощь');
-    assert.equal(help.getAttribute('aria-haspopup'), 'dialog'); help.focus(); help.click();
+    const f = fixture(), opener = f.opener(); opener.focus();
+    const developerMenu = profileData(f), docs = developerMenu.body.querySelector('[data-account-action="developers"]');
+    assert.equal(f.dialogs.isDialogFocusTarget(docs), true); docs.focus(); docs.click(); f.drain();
+    assert.deepEqual(f.openedWindows, [['/agents', '_blank', 'noopener']]); assert.equal(f.app.dialogs.size, 0);
+    opener.focus(); const profile = profileData(f), help = profile.body.querySelector('[data-account-action="help"]');
+    assert.equal(f.dialogs.isDialogFocusTarget(help), true); help.focus(); help.click();
     const modal = [...f.app.dialogs][0]; assert.notEqual(modal, profile); assert.equal(profile.element.isConnected, false);
     assert.equal(modal.element.getAttribute('aria-labelledby'), modal.element.querySelector('h2').id);
     assert.equal(modal.body.querySelectorAll('details').length, 4); assert.equal(modal.body.querySelector('details').open, true);
@@ -333,31 +344,36 @@ test('Help shortcuts close before the real dirty guard, retain blocked work and 
   }
 });
 
-test('Core support stays keyboard reachable in profile and Help, and leaves dirty work in its current window', () => {
-  for (const entry of ['profile', 'Help']) {
+test('Core support stays keyboard reachable through profile Help and direct Help, and leaves dirty work in its current window', () => {
+  for (const entry of ['profile Help', 'Help']) {
     const f = fixture(), draft = f.el('textarea'), frame = f.el('iframe'); draft.value = 'Unsaved private work'; f.main.append(draft, frame);
     const screen = f.app.screenSequence, children = [...f.main.children]; let guarded = 0;
     f.app.screenHasUnsavedChanges = () => true;
     f.app.afterNoteSaved = () => guarded++;
     f.app.navigate = () => assert.fail('Support must not navigate the working window');
-    if (entry === 'profile') f.app.openProfileMenu(); else f.app.openHelp();
+    if (entry === 'profile Help') profileData(f).body.querySelector('[data-account-action="help"]').click(); else f.app.openHelp();
     const modal = [...f.app.dialogs][0], support = modal.body.querySelector('.sw-core-support-link');
     assert.ok(support, entry); assert.equal(support.tagName, 'A');
     assert.equal(support.href, 'https://feedback.4-2.xn--p1ai/p/fp_e10dd963e039c476c9139a9a2a7d4749');
     assert.equal(support.target, '_blank'); assert.equal(support.rel, 'noopener noreferrer');
     assert.equal(support.getAttribute('aria-label'), 'Поддержка Сот (в новой вкладке)');
     assert.equal(f.dialogs.isDialogFocusTarget(support), true); support.focus(); assert.equal(f.document.activeElement, support);
-    if (entry === 'profile') { const first = modal.element.querySelector('button'); first.focus(); bubbleTab(first, true); assert.equal(f.document.activeElement, support); }
+    const stops = modal.element.querySelectorAll('button, input, textarea, select, summary, a[href], [tabindex]').filter(f.dialogs.isDialogFocusTarget);
+    assert.ok(stops.includes(support)); stops[0].focus(); bubbleTab(stops[0], true); assert.equal(f.document.activeElement, stops.at(-1));
     const event = { target: support, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() {} };
     f.rootClick(event); support.click();
     assert.equal(event.defaultPrevented, false); assert.equal(guarded, 0);
     assert.equal(modal.element.open, true); assert.equal(f.app.screenSequence, screen);
     assert.deepEqual(f.main.children, children); assert.equal(draft.value, 'Unsaved private work'); assert.equal(frame.isConnected, true);
-    if (entry === 'profile') {
-      const docs = modal.body.querySelector('a'); event.target = docs;
+    if (entry === 'profile Help') {
+      // Help delegates its own actions and is intentionally exempt from the root
+      // guard. Exercise ownership/destination checks outside that exemption.
+      const guide = modal.body.querySelector('a'); assert.equal(guide.href, '/help/interaction.html'); f.main.append(guide, support);
+      event.target = support; f.rootClick(event); assert.equal(event.defaultPrevented, false); assert.equal(guarded, 0);
+      event.target = guide;
       f.rootClick(event);
       assert.equal(event.defaultPrevented, true); assert.equal(guarded, 1, 'Other links retain the existing dirty-work guard');
-      const foreign = f.el('a', 'sw-core-support-link'); foreign.target = support.target; foreign.rel = support.rel; modal.body.append(foreign);
+      const foreign = f.el('a', 'sw-core-support-link'); foreign.target = support.target; foreign.rel = support.rel; f.main.append(foreign);
       for (const href of ['https://unrelated.example/support', support.href]) {
         foreign.href = href; event.target = foreign; event.defaultPrevented = false; f.rootClick(event);
         assert.equal(event.defaultPrevented, true, 'A class or matching URL cannot forge an owned support anchor');
@@ -404,7 +420,12 @@ test('removed Help and stale profile entries cannot run actions after close, acc
     if (boundary === 'destroy') f.app.destroyed = true;
     action.click(); f.drain(); assert.equal(calls, 0, boundary);
   }
-  const f = fixture(); f.app.openProfileMenu(); const menu = [...f.app.dialogs][0];
-  const help = menu.body.querySelectorAll('button').find(node => node.textContent === 'Помощь');
-  f.app.accountGeneration += 2; help.click(); assert.equal(f.app.dialogs.size, 1);
+  for (const boundary of ['closed', 'account ABA', 'destroy']) {
+    const f = fixture(), menu = profileData(f), help = menu.body.querySelector('[data-account-action="help"]'), docs = menu.body.querySelector('[data-account-action="developers"]');
+    if (boundary === 'closed') menu.close();
+    if (boundary === 'account ABA') f.app.accountGeneration += 2;
+    if (boundary === 'destroy') f.app.destroyed = true;
+    help.click(); docs.click(); f.drain();
+    assert.equal(f.app.dialogs.size, boundary === 'closed' ? 0 : 1, boundary); assert.deepEqual(f.openedWindows, [], boundary);
+  }
 });
