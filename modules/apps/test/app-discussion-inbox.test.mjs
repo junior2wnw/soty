@@ -32,6 +32,18 @@ test('revoked known entries and their private activity cannot affect visible inb
   assert.equal(after.nextCursor, null); assert.ok(!JSON.stringify(after).includes('PRIVATE'));
 });
 
+test('SQL program reuse is confined to one inbox call and never caches a revoked authority result', t => {
+  const f = fixture(t), entry = f.seed(); f.post(entry, 'Granted at first');
+  const prepare = f.db.prepare;
+  assert.equal(call(f.model, 'inbox', { entries: [entry] }, reader).discussions.length, 1);
+  assert.equal(f.db.prepare, prepare);
+  f.rotate(entry, []);
+  assert.deepEqual(call(f.model, 'inbox', { entries: [entry] }, reader).discussions, []);
+  assert.equal(f.db.prepare, prepare);
+  assert.throws(() => call(f.model, 'inbox', { cursor: 'bad' }, reader), code('invalid_discussion_cursor'));
+  assert.equal(f.db.prepare, prepare, 'failed reads restore the original connection method too');
+});
+
 function temporary(t) {
   const parent = resolve(tmpdir()), directory = mkdtempSync(join(parent, 'soty-discussion-inbox-'));
   return { directory, cleanup() { assert(directory.startsWith(parent + sep)); assert(/^soty-discussion-inbox-/u.test(directory.slice(parent.length + 1))); rmSync(directory, { recursive: true, force: true }); } };

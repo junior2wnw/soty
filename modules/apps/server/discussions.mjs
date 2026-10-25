@@ -348,6 +348,23 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
       && db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(conversationId, marker.messageId)?.seq === marker.sequence;
   }
   function inbox(actor, input) {
+    // Synchronous, one-read reuse of SQL programs only. Each get/all still
+    // reads current rows under the same Apps/World authority transaction.
+    // No result or authorization decision survives this call.
+    const original = db.prepare, programs = new Map();
+    db.prepare = function (sql) {
+      let statement = programs.get(sql);
+      if (!statement) {
+        statement = original.call(db, sql);
+        if (programs.size >= 256) programs.delete(programs.keys().next().value);
+        programs.set(sql, statement);
+      }
+      return statement;
+    };
+    try { return readInbox(actor, input); }
+    finally { db.prepare = original; programs.clear(); }
+  }
+  function readInbox(actor, input) {
     // The synthetic scope is used only by the existing encrypted cursor codec.
     const pageScope = { actor, app: { id: 'inbox' }, entry: null, administrative: false };
     const at = timestamp(now()), state = input.cursor === undefined ? { upper: at, beforeAt: null, beforeId: null }

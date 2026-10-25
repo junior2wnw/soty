@@ -200,7 +200,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse, isCurrentFriend,
       readStore: discussionReads,
       knownEntries(actor) {
-        return { apps: appCandidates(actor).filter(app => app.state === 'enabled' && (canUse(actor, app) || app.owner_account_id === actor.accountId)).map(app => ({ appId: app.id })),
+        return { apps: appCandidates(actor, true).filter(app => app.state === 'enabled' && (canUse(actor, app) || app.owner_account_id === actor.accountId)).map(app => ({ appId: app.id })),
           saved: db.prepare('SELECT app_id,domain_id,path,updated_at FROM app_saved_entries WHERE account_id=? ORDER BY saved_revision DESC').all(actor.accountId)
             .map(entry => ({ appId: entry.app_id, domainId: entry.domain_id, path: entry.path, at: entry.updated_at })) };
       },
@@ -395,8 +395,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
     return { schema: 'soty.app-catalog.v1', apps };
   }
-  function appCandidates(actor) {
+  function appCandidates(actor, discussionsOnly = false) {
     const audienceCandidates = hasAudienceSchema(db);
+    const discussion = discussionsOnly ? ` AND EXISTS(SELECT 1 FROM app_discussion_heads h
+      JOIN app_discussion_conversations c ON c.id=h.current_id WHERE h.app_id=local_apps.id AND c.message_seq>0)` : '';
     return typeof activeCommunityIds === 'function' ? db.prepare(`SELECT * FROM local_apps WHERE id IN (
       SELECT id FROM local_apps WHERE owner_account_id=? UNION
       SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=?
@@ -404,9 +406,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN (SELECT value FROM json_each(?))
         ${audienceCandidates ? 'AND NOT EXISTS(SELECT 1 FROM app_audiences mode WHERE mode.app_id=local_app_grants.app_id)' : ''}
       ${audienceCandidates ? `UNION SELECT a.id FROM local_apps a JOIN app_audiences mode ON mode.app_id=a.id
-        WHERE mode.audience='friends' AND a.owner_account_id IN(SELECT value FROM json_each(?))` : ''}) ORDER BY created_at`)
+        WHERE mode.audience='friends' AND a.owner_account_id IN(SELECT value FROM json_each(?))` : ''})${discussion} ORDER BY created_at`)
       .all(actor.accountId, actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId)),
-        ...(audienceCandidates ? [JSON.stringify(currentContactIds(actor))] : [])) : db.prepare('SELECT * FROM local_apps ORDER BY created_at').all();
+        ...(audienceCandidates ? [JSON.stringify(currentContactIds(actor))] : [])) : db.prepare(`SELECT * FROM local_apps WHERE 1=1${discussion} ORDER BY created_at`).all();
   }
   function publicApp(app, actor) {
     // One statement observes the current app, target and publication together.
