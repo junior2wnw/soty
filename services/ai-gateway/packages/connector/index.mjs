@@ -142,7 +142,7 @@ export function createConnector(options = {}) {
     if (results.some((x) => x.status === 'rejected')) metricWriteError = 'observation_persistence_failed';
   }
 
-  async function perform(provider, model, body, { signal, timeoutMs, purpose, logicalRequestId, attempts, callback }) {
+  async function perform(provider, model, body, { signal, timeoutMs, purpose, logicalRequestId, attempts, callback, beforeDispatch }) {
     const started = now();
     const monotonicStart = performance.now();
     const controller = new AbortController();
@@ -156,17 +156,34 @@ export function createConnector(options = {}) {
     let recorded = false;
     let ttftMs = null;
     let observedUsage = null;
+    let dispatched = false;
+    const advertisedPrice = catalog.models().find(entry => entry.id === model);
+    let priceSnapshot = advertisedPrice ? { inputRate: advertisedPrice.inputPriceMicrorublesPerMillion, outputRate: advertisedPrice.outputPriceMicrorublesPerMillion } : null;
     const cleanup = () => { clearTimeout(timer); clearTimeout(firstTimer); signal?.removeEventListener('abort', abort); release?.(); release = undefined; };
     const record = async ({ outcome, usage, errorCode, retryAfterMs: retryMs, toolsVerified = false }) => {
       if (recorded) return;
       recorded = true;
-      const event = { logicalRequestId, providerId: provider.id, model, purpose, outcome, profile: body.tools?.length ? 'tools' : body.response_format?.type === 'json_object' ? 'json_object' : 'text', toolsVerified, startedAt: new Date(started).toISOString(), checkedAt: new Date(now()).toISOString(), durationMs: Math.round(performance.now() - monotonicStart), ttftMs, inputTokens: usage?.prompt_tokens ?? null, outputTokens: usage?.completion_tokens ?? null, errorCode: errorCode ?? null, retryAfterMs: retryMs ?? 0 };
+      const event = { logicalRequestId, providerId: provider.id, model, purpose, outcome, dispatched, priceSnapshot, profile: body.tools?.length ? 'tools' : body.response_format?.type === 'json_object' ? 'json_object' : 'text', toolsVerified, startedAt: new Date(started).toISOString(), checkedAt: new Date(now()).toISOString(), durationMs: Math.round(performance.now() - monotonicStart), ttftMs, inputTokens: usage?.prompt_tokens ?? null, outputTokens: usage?.completion_tokens ?? null, errorCode: errorCode ?? null, retryAfterMs: retryMs ?? 0 };
       attempts.push(event);
-      await observe(event, callback);
+      if (dispatched) await observe(event, callback);
+      else {
+        const writes = await Promise.allSettled([options.onAttempt, callback].filter(Boolean).map(fn => fn(event)));
+        if (writes.some(result => result.status === 'rejected')) metricWriteError = 'observation_persistence_failed';
+      }
     };
     try {
       release = await queues.get(provider.id).acquire(controller.signal);
+      if (controller.signal.aborted) throw safeError(null, controller.signal);
+      if (beforeDispatch) {
+        try {
+          const admission = await beforeDispatch({ providerId: provider.id, model, signal: controller.signal });
+          if (admission?.priceSnapshot) priceSnapshot = admission.priceSnapshot;
+        }
+        catch (error) { throw new ConnectorError(/^[a-z][a-z0-9_]{0,79}$/.test(error?.code ?? '') ? error.code : 'dispatch_authorization_denied', Number(error.status) >= 400 && Number(error.status) <= 599 ? Number(error.status) : 403, { retryable: false }); }
+      }
+      if (controller.signal.aborted) throw safeError(null, controller.signal);
       if (body.stream) firstTimer = setTimeout(() => controller.abort(new ConnectorError('upstream_first_useful_timeout', 504)), Math.min(timeoutMs, limits.firstUsefulMs));
+      dispatched = true;
       const response = await fetchImpl(`${provider.baseUrl}/chat/completions`, {
         method: 'POST', headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json', Accept: body.stream ? 'text/event-stream' : 'application/json' },
         body: JSON.stringify({ ...body, model }), signal: controller.signal, redirect: 'error',
@@ -205,6 +222,7 @@ export function createConnector(options = {}) {
     } catch (raw) {
       const error = safeError(raw, controller.signal);
       await record({ outcome: ['request_canceled', 'race_loser'].includes(error.code) ? 'canceled' : 'error', usage: raw?.safeUsage ?? observedUsage, errorCode: error.code, retryAfterMs: error.retryAfterMs });
+      error.noUpstreamDispatch = attempts.every(attempt => !attempt.dispatched);
       throw error;
     } finally { if (!handedStream) cleanup(); }
   }
@@ -234,7 +252,7 @@ export function createConnector(options = {}) {
     }).map((provider) => ({ provider, model }));
   }
 
-  async function complete({ body, signal, logicalRequestId = crypto.randomUUID(), policy = {}, onAttempt, purpose = 'inference' }) {
+  async function complete({ body, signal, logicalRequestId = crypto.randomUUID(), policy = {}, onAttempt, beforeDispatch, purpose = 'inference' }) {
     const started = now();
     if (!live || providers.length === 0) throw new ConnectorError('connector_not_configured', 503, { retryAfter: 10 });
     if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 4096 || typeof body.model !== 'string' || (body.n !== undefined && body.n !== 1)) throw new ConnectorError('invalid_chat_request', 400, { retryable: false });
@@ -287,10 +305,14 @@ export function createConnector(options = {}) {
     if (routing === 'race' && routes.length > 1) {
       const controllers = routes.map(() => new AbortController());
       const joinedSignals = controllers.map((controller) => signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
-      const pending = routes.map(({ provider, model }, index) => perform(provider, model, body, { signal: joinedSignals[index], timeoutMs: remaining(), purpose, logicalRequestId, attempts, callback: onAttempt }).then((result) => ({ result, index })));
+      const pending = routes.map(({ provider, model }, index) => perform(provider, model, body, { signal: joinedSignals[index], timeoutMs: remaining(), purpose, logicalRequestId, attempts, callback: onAttempt, beforeDispatch }).then((result) => ({ result, index })));
       let winner;
       try { winner = await Promise.any(pending); }
-      catch (error) { throw error.errors?.find((e) => !e.retryable) ?? error.errors?.[0] ?? new ConnectorError('upstream_unavailable'); }
+      catch (error) {
+        const failure = error.errors?.find((e) => !e.retryable) ?? error.errors?.[0] ?? new ConnectorError('upstream_unavailable');
+        failure.noUpstreamDispatch = attempts.every(attempt => !attempt.dispatched);
+        throw failure;
+      }
       controllers.forEach((controller, index) => { if (index !== winner.index) controller.abort(new ConnectorError('race_loser', 499, { retryable: false })); });
       await Promise.allSettled(pending.map(async (promise, index) => { if (index !== winner.index) { const losing = await promise; await losing.result.cancel?.(); } }));
       return winner.result;
@@ -299,7 +321,7 @@ export function createConnector(options = {}) {
     for (const [index, { provider, model }] of routes.entries()) {
       if (signal?.aborted) throw safeError(null, signal);
       if (remaining() < 500) break;
-      try { return await perform(provider, model, body, { signal, timeoutMs: index === 0 && routes.length > 1 ? Math.min(limits.primaryMs, remaining()) : remaining(), purpose, logicalRequestId, attempts, callback: onAttempt }); }
+      try { return await perform(provider, model, body, { signal, timeoutMs: index === 0 && routes.length > 1 ? Math.min(limits.primaryMs, remaining()) : remaining(), purpose, logicalRequestId, attempts, callback: onAttempt, beforeDispatch }); }
       catch (error) { lastError = error; if (!error.retryable || error.code === 'request_canceled') throw error; }
     }
     throw lastError ?? new ConnectorError('request_deadline_exceeded', 504);

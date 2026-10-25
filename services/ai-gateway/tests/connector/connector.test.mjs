@@ -31,6 +31,49 @@ function instance(providers, more = {}) {
 
 const chat = (body = {}) => ({ model: MODEL, messages: [{ role: 'user', content: 'synthetic' }], max_tokens: 20, ...body });
 
+async function until(predicate) {
+  const deadline = Date.now() + 3000;
+  while (!predicate()) { if (Date.now() >= deadline) throw new Error('Synthetic condition timed out'); await new Promise(resolve => setTimeout(resolve, 5)); }
+}
+
+test('final authorization runs after queue admission; queued revocation and abort dispatch nothing', async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const source = await provider(async (body, res, index) => { if (index === 1) await gate; res.end(JSON.stringify(completion(body.model))); });
+  let admitted = 0; let active = true;
+  const connector = instance([source], { providerConcurrency: 1, timeouts: { deadlineMs: 10000, primaryMs: 9000 } });
+  const beforeDispatch = async () => { admitted++; if (!active) throw Object.assign(new Error('Denied'), { code: 'authorization_changed', status: 403 }); };
+  try {
+    const first = connector.complete({ body: chat(), beforeDispatch });
+    await until(() => source.received.length === 1);
+    const revoked = connector.complete({ body: chat(), beforeDispatch }).catch(error => error);
+    const canceledController = new AbortController();
+    const canceled = connector.complete({ body: chat(), beforeDispatch, signal: canceledController.signal }).catch(error => error);
+    await until(() => connector.snapshot().providers[0].queued === 2);
+    active = false; canceledController.abort(); release();
+    await first;
+    assert.equal((await revoked).code, 'authorization_changed');
+    assert.equal((await revoked).noUpstreamDispatch, true);
+    assert.equal((await canceled).code, 'request_canceled');
+    assert.equal(source.received.length, 1); assert.equal(admitted, 2);
+    assert.equal(connector.snapshot().providers[0].queued, 0);
+  } finally { release(); await source.close(); }
+});
+
+test('fallback reauthorizes every provider attempt and stops after authority is revoked', async () => {
+  let active = true; const admitted = [];
+  const first = await provider((_body, response) => { active = false; response.statusCode = 503; response.end(); });
+  const second = await provider((body, response) => response.end(JSON.stringify(completion(body.model))));
+  try {
+    const connector = instance([first, second]);
+    const failure = await connector.complete({ body: chat(), beforeDispatch: async candidate => {
+      admitted.push(candidate.providerId);
+      if (!active) throw Object.assign(new Error('Denied'), { code: 'dispatch_authorization_denied', status: 403 });
+    } }).catch(error => error);
+    assert.equal(failure.code, 'dispatch_authorization_denied'); assert.equal(failure.noUpstreamDispatch, false);
+    assert.deepEqual(admitted, ['provider0', 'provider1']); assert.equal(first.received.length, 1); assert.equal(second.received.length, 0);
+  } finally { await first.close(); await second.close(); }
+});
+
 test('same model fallback preserves parameters and cached usage, at most two attempts', async () => {
   const first = await provider((body, res) => { res.statusCode = 503; res.end(); });
   const second = await provider((body, res) => { res.end(JSON.stringify(completion(body.model))); });

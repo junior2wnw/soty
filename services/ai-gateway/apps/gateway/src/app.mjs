@@ -6,7 +6,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { registerInstallations } from '../../../packages/installation/index.mjs';
 import { resolveAlias } from '../../../packages/connector/index.mjs';
-import { DomainError, fingerprint, safeEqual, validateChatBody, estimateReservationTokens, csvCell } from '../../../packages/domain/index.mjs';
+import { DomainError, fingerprint, safeEqual, validateChatBody, estimateReservationTokens, csvCell, publicDigest } from '../../../packages/domain/index.mjs';
+import { publicSotyModels } from './soty-policy.mjs';
 
 const COOKIE = 'soty_workspace';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -68,7 +69,7 @@ function rateLimiter({ maxEntries = 50000 } = {}) {
   };
 }
 
-export async function createApp({ store, connector, baseUrl, staticDirectory, cookieSecure = true, admin = false, installEnabled = true, trustProxy = false, releaseId = 'development', customerDeadlineMs = 55_000 }) {
+export async function createApp({ store, connector, baseUrl, staticDirectory, cookieSecure = true, admin = false, installEnabled = true, trustProxy = false, releaseId = 'development', customerDeadlineMs = 55_000, sotyBridge = null }) {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576, requestTimeout: 60_000, connectionTimeout: Math.max(65_000, customerDeadlineMs + 10_000), keepAliveTimeout: 5000, trustProxy });
   const allowedOrigin = new URL(baseUrl).origin;
   const checkRate = rateLimiter();
@@ -76,6 +77,14 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
   app.decorateRequest('csrfToken', null);
   app.decorateRequest('serverRequestId', null);
   app.decorateRequest('sessionExpiresAt', null);
+  app.decorateRequest('bridgeRawBody', null);
+  app.decorateRequest('sotyProof', null);
+  const parseJson = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
+    request.bridgeRawBody = body;
+    parseJson(request, body.toString('utf8'), done);
+  });
 
   function originGuard(request) {
     const origin = request.headers.origin;
@@ -104,7 +113,7 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
     reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'strict-origin-when-cross-origin');
     reply.header('X-Frame-Options', 'DENY').header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     const path = request.url.split('?')[0];
-    if (path.startsWith('/api/') || path.startsWith('/setup/')) reply.header('Cache-Control', 'no-store');
+    if (path.startsWith('/api/') || path.startsWith('/setup/') || path.startsWith('/internal/')) reply.header('Cache-Control', 'no-store');
     if (path === '/api/session' || path.startsWith('/setup/')) {
       const ipKey = fingerprint(`rate:${request.ip}`, store.pepper);
       checkRate(`${path}:${ipKey}`, path === '/api/session' ? 20 : 10, 60_000);
@@ -215,7 +224,54 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
 
   app.post('/api/chat', async (request, reply) => inference(request, reply, await store.getChatKey(request.workspaceId)));
 
-  async function inference(request, reply, key) {
+  if (sotyBridge) {
+    function serviceRoute(method, path, operation, handler) {
+      app.route({ method, url: `/internal/soty/v1${path}`, preHandler: async request => {
+        const proof = await sotyBridge.verify({ method: request.method, path: request.raw.url, body: request.bridgeRawBody ?? '', headers: request.headers });
+        if (proof.operation !== operation || (proof.deviceId === 'service:provisioner' && !['account.ensure', 'account.status'].includes(operation))) throw new DomainError('bridge_scope_denied', 'Недопустимая служебная операция.', 403);
+        if (proof.deviceId.startsWith('service:') && operation.startsWith('keys.')) throw new DomainError('bridge_scope_denied', 'Ключами управляет владелец аккаунта.', 403);
+        request.sotyProof = proof;
+      }, handler });
+    }
+    const status = async request => {
+      const models = connector.models();
+      const account = await store.sotyAccountStatus(request.sotyProof, { models, configured: connector.snapshot?.().configured ?? true });
+      return { ...account, models: publicSotyModels(models) };
+    };
+    serviceRoute('POST', '/accounts/ensure', 'account.ensure', async request => {
+      if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) || Object.keys(request.body).length) throw new DomainError('invalid_ensure_request', 'Параметры подключения берутся из проверенного аккаунта.');
+      await store.ensureSotyAccount(request.sotyProof); return status(request);
+    });
+    serviceRoute('GET', '/account', 'account.status', status);
+    serviceRoute('POST', '/chat/completions', 'chat.complete', async (request, reply) => {
+      const account = await store.sotyAccount(request.sotyProof);
+      return inference(request, reply, await store.getChatKey(account.tenant_id), request.sotyProof);
+    });
+    serviceRoute('GET', '/requests/:id', 'request.receipt', async request => {
+      if (!UUID.test(request.params.id)) throw new DomainError('request_not_found', 'Запрос не найден.', 404);
+      const account = await store.sotyAccount(request.sotyProof);
+      return store.requestReceipt(account.tenant_id, request.params.id);
+    });
+    serviceRoute('GET', '/keys', 'keys.list', async request => {
+      const account = await store.sotyAccount(request.sotyProof);
+      return { keys: (await store.listKeys(account.tenant_id)).filter(key => key.purpose === 'customer') };
+    });
+    for (const action of ['create', 'update', 'rotate', 'revoke']) serviceRoute('POST', `/keys/${action}`, `keys.${action}`, async (request, reply) => {
+      const account = await store.sotyAccount(request.sotyProof);
+      const input = request.body;
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DomainError('invalid_key_request', 'Некорректные параметры ключа.');
+      const idempotencyKey = publicDigest(JSON.stringify([request.sotyProof.iss, request.sotyProof.accountId, request.sotyProof.requestId]));
+      if (action === 'create') return reply.code(201).send(await store.createKeyOperation(account.tenant_id, input, idempotencyKey));
+      const { keyId, expectedPolicyRevision, ...change } = input;
+      if (!UUID.test(keyId)) throw new DomainError('key_not_found', 'Ключ не найден.', 404);
+      if (action !== 'update' && expectedPolicyRevision !== undefined) throw new DomainError('invalid_key_request', 'Неизвестные параметры ключа.');
+      if (['rotate', 'revoke'].includes(action) && Object.keys(change).length) throw new DomainError('invalid_key_request', 'Неизвестные параметры ключа.');
+      if (action === 'rotate') return store.rotateKey(account.tenant_id, keyId, idempotencyKey);
+      return store.patchKeyOperation(account.tenant_id, keyId, action === 'revoke' ? { status: 'revoked' } : change, idempotencyKey, `key.${action}`, expectedPolicyRevision);
+    });
+  }
+
+  async function inference(request, reply, key, proof = null) {
     validateChatBody(request.body);
     const body = { ...request.body };
     const workspaceSettings = (await store.pool.query('SELECT settings FROM tenants WHERE id=$1', [key.tenant_id])).rows[0]?.settings ?? {};
@@ -228,19 +284,25 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
     const maxOutput = body.max_completion_tokens ?? body.max_tokens ?? Math.min(key.limits.maxOutputTokens ?? 2048, 2048);
     if (body.max_completion_tokens === undefined) body.max_tokens = maxOutput;
     const estimate = estimateReservationTokens(body, maxOutput);
-    const idempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey = proof ? publicDigest(JSON.stringify([proof.iss, proof.accountId, proof.requestId])) : request.headers['idempotency-key'];
     if (idempotencyKey && (typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 200)) throw new DomainError('invalid_idempotency_key', 'Idempotency-Key: от 8 до 200 символов.');
-    const reservation = await store.reserve({ key, model, ...estimate, inputRate: model.inputPriceMicrorublesPerMillion ?? null, outputRate: model.outputPriceMicrorublesPerMillion ?? null, body: { ...body, autoFallback }, idempotencyKey, autoFallback });
+    const sourceContext = proof ? { issuer: proof.iss, accountId: proof.accountId, deviceId: proof.deviceId, requestId: proof.requestId, authorizationId: proof.authorizationId, bodySha256: proof.bodySha256 } : {};
+    const controller = new AbortController();
+    const disconnected = () => { if (!reply.raw.writableFinished) controller.abort(new DomainError('client_disconnected', 'Клиент закрыл соединение.', 499)); };
+    reply.raw.once('close', disconnected);
+    let reservation;
+    try { reservation = await store.reserve({ key, model, ...estimate, inputRate: model.inputPriceMicrorublesPerMillion ?? null, outputRate: model.outputPriceMicrorublesPerMillion ?? null, body: { ...body, autoFallback }, idempotencyKey, autoFallback, sourceContext }); }
+    catch (error) { reply.raw.off('close', disconnected); throw error; }
     if (reservation.replay) {
+      reply.raw.off('close', disconnected);
       if (body.stream) throw new DomainError('stream_replay_unavailable', 'Повтор этого потока не отправлен поставщику. Получите статус по исходному запросу.', 409, { requestId: reservation.request.id });
       reply.header('X-Soty-Request-Id', reservation.request.id).header('X-Idempotent-Replay', 'true');
       return store.replay(reservation.request);
     }
-    const start = performance.now(); const controller = new AbortController();
+    const start = performance.now();
     let timer = setTimeout(() => controller.abort(new DomainError('upstream_timeout', 'Превышено время ожидания.', 504)), customerDeadlineMs);
-    const disconnected = () => { if (!reply.raw.writableFinished) controller.abort(new DomainError('client_disconnected', 'Клиент закрыл соединение.', 499)); };
-    reply.raw.once('close', disconnected);
     let completed = false;
+    const admittedPrices = new Map();
     try {
       const eligibleModels = autoFallback ? connector.models().filter(candidate => {
         if (key.allowed_models && !key.allowed_models.includes(candidate.id)) return false;
@@ -249,7 +311,23 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
       }).map(candidate => candidate.id) : key.allowed_models;
       const priceCeiling = model.inputPriceMicrorublesPerMillion != null && model.outputPriceMicrorublesPerMillion != null
         ? (BigInt(model.inputPriceMicrorublesPerMillion) > BigInt(model.outputPriceMicrorublesPerMillion) ? model.inputPriceMicrorublesPerMillion : model.outputPriceMicrorublesPerMillion) : null;
-      const result = await connector.complete({ body, signal: controller.signal, logicalRequestId: reservation.id, policy: { autoFallback, allowedModels: eligibleModels, strategy: workspaceSettings.routingMode, maxPriceMicrorublesPerMillion: priceCeiling }, purpose: key.purpose });
+      const beforeDispatch = async ({ providerId, model: candidate, signal }) => {
+        if (signal.aborted) throw new DomainError('request_canceled', 'Запрос отменён.', 499);
+        const actualModel = connector.models().find(entry => entry.id === candidate);
+        if (!key.legacy && (actualModel?.inputPriceMicrorublesPerMillion == null || actualModel?.outputPriceMicrorublesPerMillion == null
+          || BigInt(actualModel.inputPriceMicrorublesPerMillion) > BigInt(model.inputPriceMicrorublesPerMillion ?? 0)
+          || BigInt(actualModel.outputPriceMicrorublesPerMillion) > BigInt(model.outputPriceMicrorublesPerMillion ?? 0))) throw new DomainError('price_changed', 'Тариф модели изменился до отправки запроса.', 409);
+        const priceSnapshot = actualModel?.inputPriceMicrorublesPerMillion != null && actualModel?.outputPriceMicrorublesPerMillion != null
+          ? { inputRate: actualModel.inputPriceMicrorublesPerMillion, outputRate: actualModel.outputPriceMicrorublesPerMillion } : null;
+        await store.admitDispatch({ key, reservation, model: candidate });
+        if (proof) await sotyBridge.authorizeDispatch({ proof, gatewayRequestId: reservation.id, providerId, model: candidate, signal });
+        if (signal.aborted) throw new DomainError('request_canceled', 'Запрос отменён.', 499);
+        await store.admitDispatch({ key, reservation, model: candidate, commit: true });
+        admittedPrices.set(`${providerId}:${candidate}`, priceSnapshot);
+        return { priceSnapshot };
+      };
+      const result = await connector.complete({ body, signal: controller.signal, logicalRequestId: reservation.id, policy: { autoFallback, allowedModels: eligibleModels, strategy: workspaceSettings.routingMode, maxPriceMicrorublesPerMillion: priceCeiling }, purpose: key.purpose, beforeDispatch });
+      if (controller.signal.aborted) throw new DomainError('request_canceled', 'Запрос отменён.', 499);
       reply.header('X-Soty-Request-Id', reservation.id).header('X-Actual-Model', result.model ?? model.id);
       if (result.kind === 'stream') {
         clearTimeout(timer); timer = setTimeout(() => controller.abort(), 600_000);
@@ -260,17 +338,17 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
         await pipeline(Readable.fromWeb(result.stream), reply.raw, { signal: controller.signal });
         const terminal = await result.completion;
         if (terminal?.outcome && !['success', 'completed'].includes(terminal.outcome)) throw new DomainError('incomplete_stream', 'Поток модели оборвался.', 502);
-        await store.finish(reservation.id, { outcome: 'completed', usage: terminal?.usage, model: result.model, providerId: result.providerId, durationMs: performance.now() - start, finishReason: terminal?.finishReason });
+        await store.finish(reservation.id, { outcome: 'completed', usage: terminal?.usage, model: result.model, providerId: result.providerId, durationMs: performance.now() - start, finishReason: terminal?.finishReason, reportedPriceSnapshot: admittedPrices.get(`${result.providerId}:${result.model}`) });
         completed = true; return reply;
       }
-      const settled = await store.finish(reservation.id, { outcome: 'completed', usage: result.usage ?? result.body.usage, model: result.model, providerId: result.providerId, durationMs: performance.now() - start, finishReason: result.body.choices?.[0]?.finish_reason, response: result.body });
+      const settled = await store.finish(reservation.id, { outcome: 'completed', usage: result.usage ?? result.body.usage, model: result.model, providerId: result.providerId, durationMs: performance.now() - start, finishReason: result.body.choices?.[0]?.finish_reason, response: result.body, reportedPriceSnapshot: admittedPrices.get(`${result.providerId}:${result.model}`) });
       completed = true;
       reply.header('X-Soty-Cost-Microrubles', settled.chargeMicrorubles);
       return result.body;
     } catch (error) {
       if (!completed) {
         const preflightCodes = ['connector_not_configured', 'invalid_chat_request', 'request_too_large', 'invalid_stream_parameter', 'json_schema_not_supported', 'invalid_token_limit', 'model_not_found', 'model_not_allowed', 'no_healthy_route', 'invalid_routing_strategy'];
-        try { await store.finish(reservation.id, { outcome: 'failed', errorCode: safeError(error).code, durationMs: performance.now() - start, noUpstreamDispatch: preflightCodes.includes(error.code) }); }
+        try { await store.finish(reservation.id, { outcome: 'failed', errorCode: safeError(error).code, durationMs: performance.now() - start, noUpstreamDispatch: error.noUpstreamDispatch === true || preflightCodes.includes(error.code) }); }
         catch { /* Durable hold is reconciled after its lease; inference is never repeated here. */ }
       }
       throw error;
@@ -290,7 +368,7 @@ export async function createApp({ store, connector, baseUrl, staticDirectory, co
     app.get('/*', async (request, reply) => {
       let path;
       try { path = decodeURIComponent(request.url.split('?')[0]); } catch { return reply.code(400).send(); }
-      if (path.startsWith('/api/') || path.startsWith('/v1/') || path.startsWith('/setup/')) throw new DomainError('not_found', 'Маршрут не найден.', 404);
+      if (path.startsWith('/api/') || path.startsWith('/v1/') || path.startsWith('/setup/') || path.startsWith('/internal/')) throw new DomainError('not_found', 'Маршрут не найден.', 404);
       let filename = resolve(root, `.${path}`);
       if (filename !== root && !filename.startsWith(root + sep)) return reply.code(404).send();
       if (path.split('/').some(segment => segment.startsWith('.'))) return reply.code(404).send();

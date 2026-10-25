@@ -47,4 +47,5 @@ test('bridge rejects unknown keys, wrong audience, malformed/ambiguous proof and
   }
   assert.throws(() => signer.headers({ ...input, authorizationId: undefined }), { code: 'bridge_invalid' });
   assert.throws(() => signer.headers({ ...input, body: { not: 'exact bytes' } }), { code: 'bridge_invalid' });
+  assert.throws(() => createBridgeVerifier({ audience, issuers: [{ issuer, kid: 'first', publicKey: keys.privateKey }], claimNonce: async () => true }));
 });

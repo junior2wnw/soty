@@ -32,6 +32,7 @@ function valid(proof, now) {
 }
 
 function key(input, type) {
+  if (type === 'public' && (input?.type === 'private' || (typeof input === 'string' && input.includes('PRIVATE KEY')))) throw new Error('Invalid bridge verification configuration.');
   const result = input?.type === type ? input : type === 'private' ? createPrivateKey(input) : createPublicKey(input);
   if (result.asymmetricKeyType !== 'ed25519' || result.type !== type) throw new Error('Invalid bridge signing configuration.');
   return result;
