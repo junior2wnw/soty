@@ -30,6 +30,7 @@ export interface UnifiedFieldScreenOptions {
   onCreateMenu?: () => void;
   onOpenMore?: () => void;
   onSearchVisibilityChange?(): void;
+  onKnownAppEntries?(entries: DirectoryApp['entry'][]): void;
   onInspectOwn?: (entity: DirectoryEntity, record: DirectoryRecord | null, openPlacement?: () => void) => boolean;
   onMessage(message: string, error?: boolean): void;
   onContextChange?(contextId: string): void;
@@ -165,6 +166,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let header: HTMLElement | null = null, contextKey = '', statusKey = '', composing = false;
   let emptyDocument: FieldDocument | null = null, emptyScope = '', metadataRevision = 0, emptyMetadataRevision = -1;
   let firstResolve = !options.viewState?.mine;
+  let knownAppSignature = '';
   const wide = matchMedia('(min-width: 901px)');
   let viewPercent: HTMLOutputElement | null = null;
   const report = (error: unknown): void => { if (current()) options.onMessage(errorText(error), true); };
@@ -359,6 +361,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }));
   }
   function updateSummary(next: UnifiedFieldSummary): void {
+    const documentChanged = next.document !== summary?.document;
     if (summary && (next.document !== summary.document || next.focusContextId !== summary.focusContextId || next.arranging !== summary.arranging)) closeList(false);
     if (next.mode === 'mine' && next.focusContextId !== summary?.focusContextId && current()) options.onContextChange?.(next.focusContextId);
     if (mode === 'mine' && selected?.shortcutId) {
@@ -366,6 +369,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       if (!inspected || next.focusContextId && inspected.contextId !== next.focusContextId) closePreview(false);
     }
     summary = next; arrange.setAttribute('aria-pressed', String(next.arranging)); arrange.querySelector('span')!.textContent = next.arranging ? 'Готово' : 'Расставить';
+    if (documentChanged) publishKnownApps(next.document);
     element.dataset.arranging = String(next.arranging);
     element.dataset.focusContext = next.focusContextId;
     arrangeHint.hidden = !next.arranging;
@@ -376,6 +380,17 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const key = JSON.stringify(contexts.map(context => [context.contextId, context.title]));
     if (contextKey !== key) { contextKey = key; contextSelector.replaceChildren(el('option', '', mode === 'mine' ? 'Все пространства' : 'Все результаты'), ...contexts.map(context => { const option = el('option', '', context.title); option.value = context.contextId; return option; })); contextSelector.firstElementChild!.setAttribute('value', ''); }
     contextSelector.value = next.focusContextId || ''; updateMineEmpty(next.document); updateStatus();
+  }
+  function publishKnownApps(document = engine?.snapshot()): void {
+    if (!current() || !document || !options.onKnownAppEntries) return;
+    const entries = new Map<string, DirectoryApp['entry']>();
+    for (const shortcut of document.shortcuts) {
+      if (shortcut.entity.kind !== 'app' || !mineKnownRefs.has(fieldEntityKey(shortcut.entity))) continue;
+      const record = directory.getRecord(shortcut.entity);
+      if (record && 'entry' in record) entries.set(record.entry.appId, record.entry);
+    }
+    const values = [...entries.values()], signature = JSON.stringify(values);
+    if (signature !== knownAppSignature) { knownAppSignature = signature; options.onKnownAppEntries(values); }
   }
   function updateStatus(): void {
     if (!state) return;
@@ -539,6 +554,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       resolved.items.push(...batch.items); resolved.unavailable.push(...batch.unavailable); resolved.errors.push(...batch.errors);
       mineConfirmedGeneration = generation;
       engine!.update({ entities: allMetadata() }); updateMineFilter(); loading.hidden = true;
+      publishKnownApps();
       if (batch.items.some(item => item.entity.kind === 'app')) element.dataset.startupAppsAt ??= String(Date.now());
       if (selected && batch.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
     };

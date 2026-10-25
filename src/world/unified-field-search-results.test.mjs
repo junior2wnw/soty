@@ -27,16 +27,16 @@ const wiringEnd = statements.findIndex(node => node.getText(parsed).startsWith("
 assert.ok(wiringEnd > statements.indexOf(input));
 const code = ts.transpileModule([
   ...['BUILTINS', 'kindLabel', 'matches'].map(name => print(declaration(parsed.statements, name))),
-  ...construction.map(print), print(declaration(statements, 'mineSearchSignature')),
-  ...['listEntries', 'activate', 'renderMineSearchResults', 'updateMineFilter', 'updateMineEmpty'].map(name => print(named(statements, name))),
+  ...construction.map(print), print(declaration(statements, 'mineSearchSignature')), print(declaration(statements, 'knownAppSignature')),
+  ...['listEntries', 'activate', 'renderMineSearchResults', 'updateMineFilter', 'updateMineEmpty', 'publishKnownApps'].map(name => print(named(statements, name))),
   ...statements.slice(statements.indexOf(input), wiringEnd).map(print),
-  'Object.assign(exports, { inputChanged, render: renderMineSearchResults, entries: listEntries, surface: mineSearchResults, status: mineSearchStatus, list: mineSearchList });',
+  'Object.assign(exports, { inputChanged, render: renderMineSearchResults, entries: listEntries, publishKnownApps, surface: mineSearchResults, status: mineSearchStatus, list: mineSearchList });',
 ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 
 // The maintained production functions execute together. Only DOM, routing,
 // source records and the renderer are ports; no new search algorithm is copied.
 function harness() {
-  const calls = { open: [], preview: [], context: [], list: 0, focus: 0, route: [], writes: 0, camera: 0, close: 0 };
+  const calls = { open: [], preview: [], context: [], knownApps: [], list: 0, focus: 0, route: [], writes: 0, camera: 0, close: 0 };
   class NodePort {
     children = []; hidden = false; isConnected = true; attributes = new Map(); handlers = new Map(); parent = null;
     constructor(tag = 'div', className = '', textContent = '') { Object.assign(this, { tag, className, textContent }); }
@@ -72,7 +72,7 @@ function harness() {
     summary: { document, arranging: false }, fieldEntityKey, current: () => live,
     directory: { getRecord: ref => records.get(fieldEntityKey(ref)) || null }, allMetadata: () => [...metadata.values()],
     el: node, icon: () => node('svg'), button: (text, symbol, className, onClick) => Object.assign(node('button', className, text), { onClick }),
-    options: { onOpen: (item, record) => calls.open.push({ item, record }) },
+    options: { onOpen: (item, record) => calls.open.push({ item, record }), onKnownAppEntries: entries => calls.knownApps.push(entries) },
     openPreview: (item, shortcutId) => calls.preview.push({ item, shortcutId }), closePreview() {},
     closeList() {}, openList() { calls.list++; }, closeSearch: { click() { calls.close++; } },
     route() { calls.route.push(environment.queries.mine); },
@@ -101,6 +101,22 @@ function harness() {
   return { api, environment, calls, notes, apps, document, metadata, records, before, buttons, text, emit, enter, searchInput,
     retire() { live = false; }, assertUnchanged() { assert.equal(JSON.stringify(document), before); assert.equal(calls.writes, 0); assert.equal(calls.camera, 0); } };
 }
+
+test('only freshly resolved apps actually placed on the personal field enter the shared inbox', () => {
+  const h = harness(), own = h.apps[0].entity, unplaced = { kind: 'app', id: 'app-' + 'f'.repeat(32) };
+  const makeRecord = ref => ({ id: ref.id, entry: { appId: ref.id, domainId: 'dom_' + 'a'.repeat(32), origin: 'https://app.example', path: '/exact?q=a%2Bb' } });
+  h.records.set(fieldEntityKey(own), makeRecord(own));
+  h.records.set(fieldEntityKey(unplaced), makeRecord(unplaced));
+  h.environment.mineKnownRefs.add(fieldEntityKey(unplaced));
+  h.document.shortcuts.push({ ...h.document.shortcuts[0], shortcutId: 'duplicate-app' });
+  h.api.publishKnownApps();
+  assert.deepEqual(Array.from(h.calls.knownApps.at(-1), value => value.appId), [own.id]);
+  h.api.publishKnownApps(); assert.equal(h.calls.knownApps.length, 1, 'unchanged metadata does not start another inbox request');
+  h.environment.mineKnownRefs.delete(fieldEntityKey(own)); h.api.publishKnownApps();
+  assert.equal(h.calls.knownApps.at(-1).length, 0, 'an unconfirmed cached ref is not a discovery request');
+  h.environment.mineKnownRefs.add(fieldEntityKey(own)); h.retire(); h.api.publishKnownApps();
+  assert.equal(h.calls.knownApps.length, 2, 'a departed field cannot publish to another account');
+});
 
 test('actual input exposes offscreen Notes from another context and opens it directly without camera or layout changes', () => {
   const h = harness(), layout = geometry.layoutUnifiedField(h.document, [...h.metadata.values()]);

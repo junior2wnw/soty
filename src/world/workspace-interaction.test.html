@@ -18,7 +18,7 @@ const entry={appId:APP,domainId:DOMAIN,origin:'https://runtime.workspace.invalid
 const profile={profileId:ACCOUNT,displayName:'Анна · тестовый профиль',bio:'Локальный стенд навигации',interests:[],avatarColor:'#77a18a',revision:1,directMessagesVersion:1};
 const app={id:APP,name:'Доска с длинным понятным названием проекта',ownerAccountId:ACCOUNT,state:'ready',createdAt:1,updatedAt:1,access:'owner',canManage:true,entry};
 const savedEntries=[...Array.from({length:20},(_,i)=>({appId:'app-'+(i+1).toString(16).padStart(32,'0'),domainId:DOMAIN,origin:entry.origin,path:'/fixture/'+i,label:'Другой проект '+(i+1),savedRevision:21-i,updatedAt:1800000000000+i,current:{name:'Другой проект '+(i+1),status:'ready',canManage:true}})),{...entry,label:app.name,savedRevision:1,updatedAt:1800000000000,current:{name:app.name,status:'ready',canManage:true}}];
-let field={schema:'soty.field.v1',contexts:[{contextId:'workspace',title:'Работа',x:0,y:0}],shortcuts:[{shortcutId:'fixture-app',entity:{kind:'app',id:APP},contextId:'workspace',slot:[0,0]}]}, revision=1, launchCount=0, unread=1;
+let field={schema:'soty.field.v1',contexts:[{contextId:'workspace',title:'Работа',x:0,y:0}],shortcuts:[{shortcutId:'fixture-app',entity:{kind:'app',id:APP},contextId:'workspace',slot:[0,0]}]}, revision=1, launchCount=0, unread=1, inboxMode='normal';
 const hash=async doc=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(doc))))].map(n=>n.toString(16).padStart(2,'0')).join('');
 const envelope=async()=>({document:structuredClone(field),revision,contentHash:await hash(field),updatedAt:1800000000000});
 const messages=[{id:'msg_'+'d'.repeat(32),conversationId:CONVERSATION,author:{accountId:'fixture-peer',label:'Участник'},body:'Здесь обсуждаем работу приложения.',replyTo:null,createdAt:1800000000000,removedAt:null,canRemove:false}];
@@ -44,7 +44,11 @@ const api={async request(operation,args={}){
  if(operation==='apps.entry.get')return {entry:structuredClone(entry)};
  if(operation==='apps.saved.list')return {revision:21,entries:structuredClone(savedEntries.slice(args.cursor?20:0,args.cursor?40:20)),nextCursor:args.cursor?null:'fixture_saved_page2'};
  if(operation==='apps.saved.get')return {revision:21,entry:structuredClone(savedEntries.find(value=>value.appId===args.appId)??null)};
- if(operation==='apps.discussion.inbox')return {schema:'soty.app-discussion.inbox.v1',readState:'synced',checkedAt:1800000000001,discussions:[{appId:APP,name:app.name,entry,conversationId:CONVERSATION,unreadCount:unread,lastMessage:{id:messages.at(-1).id,author:messages.at(-1).author,preview:messages.at(-1).body,createdAt:messages.at(-1).createdAt}}]};
+ if(operation==='apps.discussion.inbox'){
+  const result={schema:'soty.app-discussion.inbox.v1',readState:inboxMode==='unknown'?'unavailable':'synced',checkedAt:1800000000001,nextCursor:null,resetRequired:false,discussions:[{appId:APP,name:app.name,entry,source:args.entries?.some(value=>value.appId===APP)?'requested':'known',conversationId:CONVERSATION,unreadCount:inboxMode==='unknown'?null:unread,lastMessage:{id:messages.at(-1).id,author:messages.at(-1).author,preview:messages.at(-1).body,createdAt:messages.at(-1).createdAt}}]};
+  if(inboxMode==='paged'){if(!args.cursor)result.nextCursor='fixture-inbox-empty';else if(args.cursor==='fixture-inbox-empty'){result.discussions=[];result.nextCursor='fixture-inbox-last';}else {const id='app-'+'e'.repeat(32);result.discussions=[{...result.discussions[0],appId:id,name:'Разговор с другого устройства',entry:{...entry,appId:id,path:'/other-device'},source:'known',conversationId:'conv_'+'f'.repeat(32)}];}}
+  return result;
+ }
  if(operation==='apps.discussion.read'){unread=0;return {schema:'soty.app-discussion.read.v1',appId:APP,conversationId:CONVERSATION,messageId:args.messageId,unreadCount:0,readAt:1800000000002};}
  if(operation==='apps.discussion.context')return {context:context(),messages:structuredClone(messages),historyCursor:null,changeCursor:'fixture_changes'};
  if(operation==='apps.discussion.changes')return {context:context(),changes:[],nextCursor:'fixture_changes',hasMore:false,resetRequired:false};
@@ -55,5 +59,5 @@ const api={async request(operation,args={}){
 const mount=mountWorldApp(document.querySelector('#workspace-host'),{api,localAccount:async()=>({accountId:ACCOUNT,label:profile.displayName}),
  openApp:async(_app,args)=>{launchCount++;return {entry:{...entry,...(args.path?{path:args.path}:{})},url:entry.origin+'/_soty/boot?'+new URLSearchParams({path:args.path??entry.path})+'#'+'t'.repeat(43)}},
  openAccount(){},openLegacy(){},connectDevice(){},agentCreate(){}});
-window.workspaceQa={read:()=>({launchCount,frames:document.querySelectorAll('iframe').length,errors:[...errors],calls:calls.map(value=>value.operation),unread}),refresh:()=>mount.refresh(),appId:APP,domainId:DOMAIN,conversationId:CONVERSATION};
+window.workspaceQa={read:()=>({launchCount,frames:document.querySelectorAll('iframe').length,errors:[...errors],calls:calls.map(value=>value.operation),inboxRequests:calls.filter(value=>value.operation==='apps.discussion.inbox').map(value=>value.args),unread}),setInboxMode:value=>{inboxMode=value;},refresh:()=>mount.refresh(),appId:APP,domainId:DOMAIN,conversationId:CONVERSATION};
 </script></body></html>

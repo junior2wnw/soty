@@ -19,7 +19,7 @@ import { createHome, createAppCard, type AppCardData, type HomeFilter } from './
 import { resolveAppArt } from './app-art.mjs';
 import { createUnifiedFieldScreen, type FieldFilter, type UnifiedFieldScreen } from './unified-field-screen';
 import type { UnifiedFieldViewState } from './unified-field';
-import { createFieldDirectory, type DirectoryApp, type DirectoryContact, type DirectoryPerson } from './field-directory';
+import type { DirectoryApp, DirectoryContact, DirectoryPerson } from './field-directory';
 import { createBrandMark } from './brand';
 import { createOriginContinuityLinks } from '../platform/origin-continuity';
 import { observeVisibleViewport } from './visible-viewport';
@@ -32,11 +32,11 @@ import { createApplicationCard } from './application-card';
 import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { createAudienceControl } from './audience-control';
 import { createProfileAudienceState } from './profile-audience-state.mjs';
-import { formatAppLaunchRoute, parseAppLaunchRoute, validateAppEntry, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding } from './app-launch.mjs';
+import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry, type AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSettings } from './app-settings';
 import { mountAccountCenter, type AccountAction } from './account-center';
-import { createAppSavedLibraryState, type AppEntry } from './app-saved-state.mjs';
-import { loadAppDiscussionInbox, recentAppDiscussionTargets, type AppDiscussionInboxRow } from './app-inbox.mjs';
+import type { AppEntry } from './app-saved-state.mjs';
+import { loadAppDiscussionInbox, type AppDiscussionInboxRow } from './app-inbox.mjs';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
 import { AvatarHydrator, prepareAvatar } from './avatars';
@@ -200,10 +200,15 @@ class WorldApplication {
   private directThreadsLoaded = false;
   private applicationDiscussions: AppDiscussionInboxRow[] = [];
   private applicationInboxEntries: AppEntry[] = [];
-  private applicationInboxStatus: 'unknown' | 'ready' | 'partial' | 'unavailable' = 'unknown';
+  private applicationFieldEntries: AppEntry[] = [];
+  private applicationInboxStatus: 'unknown' | 'ready' | 'unavailable' = 'unknown';
+  private applicationInboxNextCursor: string | null = null;
+  private applicationInboxPages = 1;
   private applicationInboxSequence = 0;
   private applicationInboxPending = false;
   private applicationInboxScheduled = false;
+  private applicationInboxDirty = false;
+  private applicationInboxAttemptedAt = 0;
   private applicationReadState: 'synced' | 'unavailable' = 'synced';
   private messagesView = { query: '', unreadOnly: false, scroll: 0 };
   private directLabels = new Map<string, string>();
@@ -653,10 +658,7 @@ class WorldApplication {
       };
       this.syncFieldOutbox();
       this.renderNavigation();
-      if (this.applicationInboxStatus === 'unknown' && !this.applicationInboxScheduled) {
-        this.applicationInboxScheduled = true;
-        window.setTimeout(() => { if (accountCurrent()) { this.applicationInboxScheduled = false; void this.refreshApplicationInbox(true); } }, 0);
-      }
+      if (this.applicationInboxStatus === 'unknown') this.queueApplicationInbox(false);
       // A chat deep link needs its membership result; other screens can render now.
       if (!this.routeLoaded && /^#messages(?:\/|\?|$)/u.test(location.hash)) {
         const requestedRoute = location.hash;
@@ -733,7 +735,9 @@ class WorldApplication {
     this.deskAccount = next; this.accountGeneration++; this.homeRequest++; this.agentOrb?.setAccount(next);
     this.applicationReturn = null; this.pendingReturnPresentation = null;
     this.savedLibraryView = { pages: 1, scroll: 0 };
-    this.applicationInboxSequence++; this.applicationInboxPending = false; this.applicationInboxEntries = [];
+    this.applicationInboxSequence++; this.applicationInboxPending = false; this.applicationInboxEntries = []; this.applicationFieldEntries = [];
+    this.applicationInboxNextCursor = null; this.applicationInboxPages = 1; this.applicationInboxDirty = false;
+    this.applicationInboxAttemptedAt = 0;
     this.applicationInboxScheduled = false; this.applicationReadState = 'synced';
     this.applicationDiscussions = []; this.applicationInboxStatus = 'unknown'; this.messagesView = { query: '', unreadOnly: false, scroll: 0 };
     this.widgets?.setAccount(next);
@@ -1014,8 +1018,9 @@ class WorldApplication {
     const unread=this.communities.filter(group=>group.membership?.state==='active'&&!group.membership.muted).reduce((sum,group)=>sum+Math.max(0,group.unreadCount),0)
       +(this.directThreads ?? []).filter(thread=>!thread.preferences.muted).reduce((sum,thread)=>sum+Math.max(0,thread.unreadCount),0)
       +this.applicationDiscussions.reduce((sum, row) => sum + (row.unreadCount ?? 0), 0);
-    for (const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')) nav.setAttribute('aria-label', unread ? `Сообщения · непрочитанных: ${unread}` : 'Сообщения');
-    for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread);}
+    const incomplete = !!this.applicationInboxNextCursor || this.applicationReadState === 'unavailable' || this.applicationInboxStatus !== 'ready';
+    for (const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')) nav.setAttribute('aria-label', unread ? `Сообщения · непрочитанных${incomplete ? ' не меньше' : ':'} ${unread}` : 'Сообщения');
+    for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread)+(incomplete?'+':'');}
   }
 
   private openProfileMenu(): void {
@@ -1038,65 +1043,46 @@ class WorldApplication {
     const continuity = createOriginContinuityLinks(); if (continuity) menu.body.append(continuity);
   }
 
-  private async refreshApplicationInbox(refreshEntries = false): Promise<void> {
+  private queueApplicationInbox(force = true): void {
+    if (!this.deskAccount || this.destroyed) return;
+    this.applicationInboxDirty ||= force;
+    if (this.applicationInboxPending) return;
+    if (this.applicationInboxScheduled) return;
+    const current = this.accountTask(); this.applicationInboxScheduled = true;
+    window.setTimeout(() => { if (current()) {
+      this.applicationInboxScheduled = false;
+      if (this.applicationInboxDirty || this.applicationInboxStatus === 'unknown') void this.refreshApplicationInbox();
+    } }, 0);
+  }
+
+  private async refreshApplicationInbox(older = false): Promise<void> {
     if (this.applicationInboxPending || !this.deskAccount || this.destroyed) return;
+    if (older && !this.applicationInboxNextCursor) return;
     const current = this.accountTask(), accountId = this.deskAccount, sequence = ++this.applicationInboxSequence;
     const live = (): boolean => current() && sequence === this.applicationInboxSequence;
-    this.applicationInboxPending = true;
+    this.applicationInboxPending = true; this.applicationInboxDirty = false; this.applicationInboxAttemptedAt = Date.now();
+    this.root.dispatchEvent(new Event('soty:app-inbox-updated'));
     try {
-      let partial = false;
-      if (refreshEntries || !this.applicationInboxEntries.length) {
-        const saved = createAppSavedLibraryState({ accountId });
-        const [apps, library] = await Promise.allSettled([this.loadApps(undefined, false), (async () => {
-          try {
-            await saved.load({ api: this.api, isCurrent: live });
-            while (live() && saved.read().nextCursor) { if (await saved.load({ api: this.api, isCurrent: live, older: true }) !== 'accepted') break; }
-            return saved.read().entries.filter(entry => entry.current);
-          } finally { saved.dispose(); }
-        })()]);
-        if (!live()) return;
-        partial = apps.status !== 'fulfilled' || library.status !== 'fulfilled';
-        const sourceApps = apps.status === 'fulfilled' ? apps.value : this.apps;
-        const directory = createFieldDirectory({ api: this.api, accountId, isCurrent: live });
-        let resolvedEntries: AppEntry[] = [];
-        try {
-          const refs = sourceApps.filter(app => !app.entry).map(app => ({ kind: 'app' as const, id: app.appId }));
-          if (refs.length) {
-            const resolved = await directory.resolve(refs);
-            if (!live()) return;
-            partial ||= !!resolved.errors.length;
-            resolvedEntries = resolved.items.flatMap(item => {
-              const record = directory.getRecord(item.entity);
-              return record && 'entry' in record ? [(record as DirectoryApp).entry] : [];
-            });
-          }
-        } finally { directory.dispose(); }
-        const recentTargets = recentAppDiscussionTargets(this.desk.recent), recentEntries: AppEntry[] = [];
-        let recentIndex = 0;
-        await Promise.all(Array.from({ length: Math.min(3, recentTargets.length) }, async () => {
-          while (live() && recentIndex < recentTargets.length) {
-            const target = recentTargets[recentIndex++]!;
-            try {
-              const value = await this.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...target, expectedAccountId: accountId });
-              if (live()) recentEntries.push(validateAppEntry(value.entry, target, location.href));
-            } catch (error) {
-              const code = String((error as { code?: unknown })?.code ?? '');
-              if (!['app_unavailable', 'apps_access_denied', 'app_access_revoked'].includes(code)) partial = true;
-            }
-          }
-        }));
-        if (!live()) return;
-        this.applicationInboxEntries = [...(library.status === 'fulfilled' ? library.value : []), ...recentEntries,
-          ...sourceApps.flatMap(app => app.entry ? [{ appId: app.appId, ...app.entry }] : []), ...resolvedEntries];
-      }
-      const value = await loadAppDiscussionInbox({ api: this.api, accountId, entries: this.applicationInboxEntries, isCurrent: live });
+      // Root supplies Saved, ownership, grants and participation. Only already
+      // resolved field/window targets need an explicit request from this shell.
+      const value = await loadAppDiscussionInbox({ api: this.api, accountId, isCurrent: live,
+        ...(older ? { cursor: this.applicationInboxNextCursor, maxKnownPages: 1 }
+          : { entries: [...this.applicationInboxEntries, ...this.applicationFieldEntries], maxKnownPages: this.applicationInboxPages }) });
       if (!live() || !value) return;
-      this.applicationDiscussions = value.discussions.filter(row => !!row.conversationId);
-      this.applicationInboxStatus = value.supported ? partial ? 'partial' : 'ready' : 'unavailable';
-      this.applicationReadState = value.readState ?? 'synced';
+      if (value.resetRequired) { this.applicationInboxNextCursor = null; this.applicationInboxPages = 1; if (older) this.applicationInboxDirty = true; else this.applicationInboxStatus = 'unavailable'; return; }
+      const rows = value.discussions.filter(row => !!row.conversationId);
+      if (older && value.supported) {
+        const merged = new Map(this.applicationDiscussions.map(row => [row.appId, row]));
+        for (const row of rows) if (!merged.has(row.appId) || row.source === 'requested' || merged.get(row.appId)?.source !== 'requested') merged.set(row.appId, row);
+        this.applicationDiscussions = [...merged.values()];
+      } else this.applicationDiscussions = rows;
+      this.applicationInboxNextCursor = value.nextCursor;
+      this.applicationInboxPages = older ? this.applicationInboxPages + value.knownPages : Math.max(1, value.knownPages);
+      this.applicationInboxStatus = value.supported ? 'ready' : 'unavailable';
+      this.applicationReadState = older && this.applicationReadState === 'unavailable' ? 'unavailable' : value.readState ?? 'synced';
       this.updateNavUnread(); this.root.dispatchEvent(new Event('soty:app-inbox-updated'));
     } catch { if (live()) { this.applicationInboxStatus = 'unavailable'; this.root.dispatchEvent(new Event('soty:app-inbox-updated')); } }
-    finally { if (sequence === this.applicationInboxSequence) this.applicationInboxPending = false; }
+    finally { if (live()) { this.applicationInboxPending = false; this.root.dispatchEvent(new Event('soty:app-inbox-updated')); if (this.applicationInboxDirty) this.queueApplicationInbox(); } }
   }
 
   private coreSupportLink(): HTMLAnchorElement {
@@ -1154,7 +1140,7 @@ class WorldApplication {
       });
     };
     library = mountAppLibrary(host, { api: this.api, accountId, viewState: this.savedLibraryView, isCurrent: () => accountCurrent() && dialog.element.open,
-      onChanged: () => { void this.refreshApplicationInbox(true); }, openEntry: entry => open(entry), discussEntry: entry => open(entry, true) });
+      onChanged: () => { this.queueApplicationInbox(); }, openEntry: entry => open(entry), discussEntry: entry => open(entry, true) });
   }
 
   private openAppCardActions(app: WorldAppRecord): void {
@@ -1379,6 +1365,10 @@ class WorldApplication {
       onCreateMenu: () => this.openAddMenu(),
       onOpenMore: () => this.openFieldMenu(),
       onSearchVisibilityChange: () => this.syncWorkspaceNavigation(),
+      onKnownAppEntries: entries => {
+        if (!isCurrent() || JSON.stringify(entries) === JSON.stringify(this.applicationFieldEntries)) return;
+        this.applicationFieldEntries = entries; this.queueApplicationInbox();
+      },
       onViewStateChange: view => { if (isCurrent()) { this.desk.fieldView = view; this.saveDesk(false, false, true); } },
       ...(this.options.fieldArt ? { resolveArt: this.options.fieldArt } : {}),
       onMessage: (message, error) => { if (isCurrent()) this.toast(message, error); },
@@ -2254,6 +2244,7 @@ class WorldApplication {
   }
 
   private renderMessages(selectedId?: string): void {
+    this.chatCleanup?.(); this.chatCleanup = null;
     const restoreHeadingFocus = document.activeElement instanceof HTMLElement && document.activeElement.matches('.sw-inbox-head h1');
     const restoreConversationFocus = document.activeElement instanceof HTMLElement && document.activeElement.matches('.sw-conversation') ? document.activeElement.dataset.communityId : undefined;
     const groups = this.communities.filter(group => group.membership?.state === 'active'); const accountId = this.profile?.profileId ?? this.deskAccount;
@@ -2276,6 +2267,14 @@ class WorldApplication {
     const footer = button('Найти комнату', 'world', 'sw-inbox-discover', () => this.findCommunities());
     list.append(top, search, filters, conversations, listStatus, footer);
     const applicationStatus = el('p', 'sw-inbox-status'); applicationStatus.setAttribute('role', 'status'); list.append(applicationStatus);
+    const moreApplications = button('Ещё обсуждения', 'plus', 'sw-inbox-discover', () => {
+      const hadFocus = document.activeElement === moreApplications, previous = new Set(this.applicationDiscussions.map(row => `app:${row.appId}`));
+      void this.refreshApplicationInbox(true).then(() => {
+        if (active() && hadFocus && moreApplications.hidden && (document.activeElement === document.body || document.activeElement === moreApplications))
+          Array.from(conversations.querySelectorAll<HTMLButtonElement>('[data-entity-id]')).find(row => !previous.has(row.dataset.entityId ?? ''))?.focus({ preventScroll: true });
+      });
+    });
+    moreApplications.hidden = true; list.append(moreApplications);
     const room = el('div', 'sw-message-room');
     const paintConversation = (group: WorldCommunity): HTMLButtonElement => {
       let target = conversationRows.get(group.communityId);
@@ -2335,17 +2334,19 @@ class WorldApplication {
         if (value.lastMessage) { const time = el('time', '', chatListTime(value.lastMessage.createdAt)); time.dateTime = new Date(value.lastMessage.createdAt).toISOString(); head.append(time); }
         sub.append(el('span', 'sw-conversation-preview', value.lastMessage ? `${value.lastMessage.author.accountId === accountId ? 'Вы' : value.lastMessage.author.label}: ${value.lastMessage.preview}` : 'Обсуждение приложения'));
         if (value.unreadCount) sub.append(el('span', 'sw-message-count', value.unreadCount > 99 ? '99+' : String(value.unreadCount)));
-        if (value.unreadCount === null) sub.append(el('small', 'sw-muted', 'Прочтение не синхронизировано'));
         copy.append(head, el('small', 'sw-muted', 'Обсуждение приложения'), sub); row.replaceChildren(icon('grid'), copy); return row;
       })];
       orderedRows.sort((a, b) => Number(b.dataset.inboxPinned === 'true') - Number(a.dataset.inboxPinned === 'true')
         || Number(b.dataset.inboxTime ?? 0) - Number(a.dataset.inboxTime ?? 0));
       conversations.replaceChildren(...orderedRows); listStatus.textContent = '';
-      const appStatus = this.applicationReadState === 'unavailable' ? 'Состояние прочтения обсуждений пока не синхронизировано.'
-        : this.applicationInboxStatus === 'ready' ? '' : this.applicationInboxStatus === 'partial' ? 'Часть обсуждений приложений пока не обновилась.'
-        : this.applicationInboxStatus === 'unavailable' ? 'Обсуждения приложений пока недоступны. Открытые разговоры сохраняют свои черновики.' : 'Проверяем обсуждения приложений…';
+      const appStatus = this.applicationInboxStatus === 'unavailable' ? 'Обсуждения приложений пока недоступны. Открытые разговоры сохраняют свои черновики.'
+        : this.applicationReadState === 'unavailable' ? 'Состояние прочтения обсуждений пока не синхронизировано.'
+        : this.applicationInboxStatus === 'ready' ? '' : 'Проверяем обсуждения приложений…';
       if (applicationStatus.textContent !== appStatus) applicationStatus.textContent = appStatus; applicationStatus.hidden = !appStatus;
+      moreApplications.hidden = !this.applicationInboxNextCursor; moreApplications.disabled = this.applicationInboxPending;
+      moreApplications.setAttribute('aria-busy', String(this.applicationInboxPending));
       if (!groups.length && !this.directThreads.length && !appRows.length) {
+        if (this.applicationInboxNextCursor) listStatus.textContent = 'Другие обсуждения ещё не загружены.';
         const actions = el('div', 'sw-stack sw-inbox-start-actions');
         const invite = button('', 'people', 'sw-button-primary', () => this.runHook(() => this.options.openAccount('people')));
         invite.setAttribute('aria-label', 'Пригласить по QR или ссылке');
@@ -2356,7 +2357,8 @@ class WorldApplication {
         actions.append(invite, button('Создать чат', 'plus', 'sw-button-quiet', () => this.openCommunityForm(undefined, true)));
         conversations.append(emptyState('Начните разговор', 'Добавьте человека или создайте чат для своих.', actions, 'chat'));
       }
-      else if (!visible.length && !directRows.length && !appRows.length) listStatus.textContent = needle ? 'Разговор не найден' : this.applicationInboxStatus === 'ready' && this.applicationReadState === 'synced' ? 'Все сообщения прочитаны' : 'Нет непрочитанных среди проверенных разговоров';
+      else if (!visible.length && !directRows.length && !appRows.length) listStatus.textContent = needle ? this.applicationInboxNextCursor ? 'Разговор не найден среди загруженных. Можно показать ещё обсуждения.' : 'Разговор не найден'
+        : this.applicationInboxStatus === 'ready' && this.applicationReadState === 'synced' && !this.applicationInboxNextCursor ? 'Все сообщения прочитаны' : 'Нет непрочитанных среди проверенных разговоров';
       if (focused) conversationRows.get(focused)?.focus({ preventScroll: true });
     };
     query.addEventListener('input', renderList); query.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229) return; if (event.key === 'Escape' && query.value) { event.preventDefault(); clearSearch.click(); } else if (event.key === 'ArrowDown') { event.preventDefault(); conversations.querySelector<HTMLButtonElement>('button')?.focus(); } });
@@ -2369,12 +2371,11 @@ class WorldApplication {
     });
     const subscribeDrafts = (): void => { for (const group of groups) if (!unsubscribers.has(group.communityId)) unsubscribers.set(group.communityId, this.chatDrafts.subscribe(accountId, group.communityId, () => { if (!active()) return; const current = groups.find(item => item.communityId === group.communityId); if (current && conversationRows.get(group.communityId)?.isConnected) paintConversation(current); })); };
     subscribeDrafts();
-    const previousCleanup = this.chatCleanup;
     const applicationUpdated = (): void => { if (active()) renderList(); };
     this.root.addEventListener('soty:app-inbox-updated', applicationUpdated);
     let inboxTimer: ReturnType<typeof setInterval> | undefined;
     const returned = (): void => { if (document.visibilityState === 'visible') void refreshInbox(); };
-    this.chatCleanup = () => { this.messagesView.scroll = conversations.scrollTop; this.root.removeEventListener('soty:app-inbox-updated', applicationUpdated); previousCleanup?.(); unsubscribers.forEach(unsubscribe => unsubscribe()); if (inboxTimer) clearInterval(inboxTimer); document.removeEventListener('visibilitychange', returned); };
+    this.chatCleanup = () => { this.messagesView.scroll = conversations.scrollTop; this.root.removeEventListener('soty:app-inbox-updated', applicationUpdated); unsubscribers.forEach(unsubscribe => unsubscribe()); if (inboxTimer) clearInterval(inboxTimer); document.removeEventListener('visibilitychange', returned); };
     screen.append(list, room); this.main.replaceChildren(screen);
     renderList();
     conversations.scrollTop = this.messagesView.scroll;
@@ -2429,9 +2430,10 @@ class WorldApplication {
     const refreshVisiblePreviews = (): void => { if (!active()) return; for (const group of groups) if (group.communityId !== selectedId && visibleConversation(group.communityId)) pendingPreviews.add(group.communityId); for (const thread of this.directThreads) if (thread.threadId !== selectedId && visibleConversation(thread.threadId)) pendingPreviews.add(thread.threadId); startPreviews(); };
     conversations.addEventListener('scroll', refreshVisiblePreviews, { passive: true });
     const refreshInbox = async (): Promise<void> => {
+      if (refreshing || !active() || document.visibilityState === 'hidden') return;
       void this.refreshApplicationInbox();
       void refreshDirect();
-      if (refreshing || !active() || document.visibilityState === 'hidden') return; refreshing = true;
+      refreshing = true;
       const updateBefore = selectedUpdate, communityEpoch = this.communityEpoch, communityRead = ++this.communityReadSequence;
       try {
         const response = await this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}); if (!active() || communityEpoch !== this.communityEpoch || communityRead < this.communityAppliedReadSequence) return;
@@ -2454,7 +2456,11 @@ class WorldApplication {
       } catch { /* Existing conversations and drafts remain usable while metadata is offline. */ }
       finally { refreshing = false; }
     };
-    startPreviews(); void refreshDirect(); void this.refreshApplicationInbox(); inboxTimer = setInterval(() => { void refreshInbox(); }, 6000); document.addEventListener('visibilitychange', returned);
+    startPreviews(); void refreshDirect();
+    // Membership metadata may remount this list several times during one boot.
+    // Reuse that account's fresh inbox instead of multiplying identical reads.
+    if (this.applicationInboxDirty || this.applicationInboxStatus === 'unknown' || Date.now() - this.applicationInboxAttemptedAt >= 5000) void this.refreshApplicationInbox();
+    inboxTimer = setInterval(() => { void refreshInbox(); }, 6000); document.addEventListener('visibilitychange', returned);
   }
 
   private async loadPersonal(only?: HomeSection): Promise<void> {
@@ -2852,10 +2858,13 @@ class WorldApplication {
         if (!current()) return;
         this.remember(next.route, value.name, 'grid');
         const entry = stage.entry();
-        if (entry) this.applicationInboxEntries = [entry, ...this.applicationInboxEntries.filter(value => value.appId !== entry.appId)];
+        if (entry && !this.applicationInboxEntries.some(value => value.appId === entry.appId && value.domainId === entry.domainId && value.origin === entry.origin && value.path === entry.path)) {
+          this.applicationInboxEntries = [entry, ...this.applicationInboxEntries.filter(value => value.appId !== entry.appId)]; this.applicationInboxDirty = true;
+        }
       },
       onDiscussionRead: receipt => {
         if (!current()) return;
+        this.applicationInboxDirty = true;
         this.applicationDiscussions = this.applicationDiscussions.map(row => row.appId === receipt.appId && row.conversationId === receipt.conversationId
           ? { ...row, unreadCount: receipt.unreadCount } : row);
         this.updateNavUnread(); this.root.dispatchEvent(new Event('soty:app-inbox-updated'));

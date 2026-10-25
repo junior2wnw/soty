@@ -1,24 +1,90 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadAppDiscussionInbox, markAppDiscussionRead, recentAppDiscussionTargets } from './app-inbox.mjs';
-import { formatAppLaunchRoute } from './app-launch.mjs';
+import { loadAppDiscussionInbox, markAppDiscussionRead } from './app-inbox.mjs';
 const appId = `app-${'a'.repeat(32)}`, entry = { appId, domainId: `dom_${'b'.repeat(32)}`, origin: 'https://work.example', path: '/my?q=a%2Bb' };
-const row = () => ({ appId, name: 'Работа', entry, conversationId: `conv_${'c'.repeat(32)}`, unreadCount: 2,
+const row = () => ({ appId, source: 'requested', name: 'Работа', entry, conversationId: `conv_${'c'.repeat(32)}`, unreadCount: 2,
   lastMessage: { id: `msg_${'d'.repeat(32)}`, author: { accountId: 'B', label: 'Участник' }, preview: 'Сообщение', createdAt: 1800000000000 } });
-const response = discussions => ({ schema: 'soty.app-discussion.inbox.v1', discussions, checkedAt: 1800000000001 });
-
-test('recent discussion discovery retains exact named paths and ignores malformed or generic history', () => {
-  const target = { appId, domainId: entry.domainId, path: entry.path };
-  const route = formatAppLaunchRoute(target, undefined, { panel: 'discussion', conversationId: row().conversationId });
-  assert.deepEqual(recentAppDiscussionTargets([{ route }, { route }, { route: 'https://foreign.invalid' }, { route: 'messages' }, { route: 'app/' + appId }]), [target]);
-});
+const response = discussions => ({ schema: 'soty.app-discussion.inbox.v1', discussions, readState: 'synced', nextCursor: null, resetRequired: false, checkedAt: 1800000000001 });
 
 test('inbox uses exact permitted locations without launch/admission and retains server unread', async () => {
   const calls = [], api = { request: async (operation, args) => { calls.push([operation, args]); return response([row()]); } };
   const value = await loadAppDiscussionInbox({ api, accountId: 'A', entries: [entry, entry], isCurrent: () => true });
   assert.equal(calls.length, 1); assert.equal(calls[0][0], 'apps.discussion.inbox');
-  assert.deepEqual(calls[0][1], { expectedAccountId: 'A', entries: [{ appId, domainId: entry.domainId, path: entry.path }] });
+  assert.deepEqual(calls[0][1], { expectedAccountId: 'A', entries: [{ appId, domainId: entry.domainId, path: entry.path }], includeKnown: true });
   assert.equal(value.discussions[0].unreadCount, 2);
+});
+
+test('a cold inbox discovers other-device participation with one server call and no client catalogue', async () => {
+  const calls = [], api = { request: async (op, args) => { calls.push([op, args]); return response([{ ...row(), source: 'known' }]); } };
+  const result = await loadAppDiscussionInbox({ api, accountId: 'B', entries: [], isCurrent: () => true });
+  assert.deepEqual(calls, [['apps.discussion.inbox', { expectedAccountId: 'B', entries: [], includeKnown: true }]]);
+  assert.equal(result.discussions[0].entry.path, entry.path); assert.equal(result.knownPages, 1);
+});
+
+test('a fresh known fallback may use a new location without modifying the saved request', async () => {
+  const original = structuredClone(entry), current = { ...entry, domainId: `dom_${'e'.repeat(32)}`, origin: 'https://new.example', path: '/new' };
+  const result = await loadAppDiscussionInbox({ api: { request: async () => response([{ ...row(), source: 'known', entry: current }]) },
+    accountId: 'A', entries: [entry], isCurrent: () => true });
+  assert.deepEqual(result.discussions[0].entry, current); assert.deepEqual(entry, original);
+});
+
+test('cursor pages continue through an empty intermediate page and preserve exact requested priority', async () => {
+  const calls = [], current = { ...entry, path: '/current' };
+  const pages = [{ ...response([row()]), nextCursor: 'first' }, { ...response([]), nextCursor: 'second' },
+    response([{ ...row(), source: 'known', entry: current }])];
+  const result = await loadAppDiscussionInbox({ api: { request: async (op, args) => { calls.push(args); return pages.shift(); } },
+    accountId: 'A', entries: [entry], maxKnownPages: 3, isCurrent: () => true });
+  assert.equal(calls.length, 3); assert.equal(calls[1].cursor, 'first'); assert.deepEqual(calls[1].entries, []);
+  assert.equal(calls[2].cursor, 'second'); assert.equal(result.discussions.length, 1);
+  assert.equal(result.discussions[0].entry.path, entry.path); assert.equal(result.nextCursor, null);
+});
+
+test('empty discovery pages continue within a bound and expose their remaining cursor', async () => {
+  let calls = 0;
+  const result = await loadAppDiscussionInbox({ api: { request: async () => ({ ...response([]), nextCursor: `page-${++calls}` }) },
+    accountId: 'A', entries: [], isCurrent: () => true });
+  assert.equal(calls, 3); assert.equal(result.nextCursor, 'page-3'); assert.equal(result.knownPages, 3);
+  const following = await loadAppDiscussionInbox({ api: { request: async (op, args) => {
+    assert.equal(args.cursor, 'page-3'); assert.deepEqual(args.entries, []); return response([{ ...row(), source: 'known' }]);
+  } }, accountId: 'A', cursor: result.nextCursor, isCurrent: () => true });
+  assert.equal(following.discussions.length, 1); assert.equal(following.nextCursor, null);
+});
+
+test('additional exact batches disable server discovery and retain the first page continuation', async () => {
+  const entries = Array.from({ length: 51 }, (_, i) => ({ ...entry, appId: `app-${i.toString(16).padStart(32, '0')}` }));
+  const calls = [];
+  const result = await loadAppDiscussionInbox({ api: { request: async (op, args) => {
+    calls.push(args); return { ...response(args.entries.map(value => ({ ...row(), appId: value.appId, entry: { ...entry, appId: value.appId } }))),
+      nextCursor: args.includeKnown ? 'continuation' : null };
+  } }, accountId: 'A', entries, isCurrent: () => true });
+  assert.equal(calls.length, 2); assert.equal(calls[0].entries.length, 50); assert.equal(calls[1].entries.length, 1);
+  assert.equal(calls[1].includeKnown, false); assert.equal(calls[1].cursor, undefined);
+  assert.equal(result.discussions.length, 51); assert.equal(result.nextCursor, 'continuation');
+});
+
+test('stale cursor returns a reset request without merging a partial list', async () => {
+  const result = await loadAppDiscussionInbox({ api: { request: async () => ({ ...response([]), resetRequired: true, readState: 'unavailable' }) },
+    accountId: 'A', cursor: 'expired', isCurrent: () => true });
+  assert.equal(result.resetRequired, true); assert.deepEqual(result.discussions, []);
+});
+
+test('malformed or repeated cursors, unrequested locations and unknown source cannot extend discovery', async () => {
+  for (const value of [response([{ ...row(), source: 'invented' }]), response([row()]), { ...response([]), nextCursor: 'x'.repeat(2049) },
+    { ...response([]), nextCursor: 'bad\n' }, { ...response([]), resetRequired: 'no' }]) {
+    await assert.rejects(loadAppDiscussionInbox({ api: { request: async () => value }, accountId: 'A', entries: [], isCurrent: () => true }));
+  }
+  let calls = 0;
+  await assert.rejects(loadAppDiscussionInbox({ api: { request: async () => { calls++; return { ...response([]), nextCursor: 'loop' }; } },
+    accountId: 'A', entries: [], isCurrent: () => true }));
+  assert.equal(calls, 2);
+});
+
+test('profile switches between discovery pages discard all preceding account data', async () => {
+  let current = true, calls = 0;
+  const result = await loadAppDiscussionInbox({ api: { request: async () => { if (++calls === 2) current = false;
+    return { ...response([{ ...row(), source: 'known' }]), nextCursor: 'next' + calls };
+  } }, accountId: 'A', entries: [], maxKnownPages: 2, isCurrent: () => current });
+  assert.equal(result, null); assert.equal(calls, 2);
 });
 
 test('empty or unsupported app inbox does not manufacture known unread', async () => {

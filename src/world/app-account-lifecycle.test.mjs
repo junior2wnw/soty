@@ -103,6 +103,7 @@ class ElementPort {
   addEventListener(type, fn) { if (!this.handlers.has(type)) this.handlers.set(type, new Set()); this.handlers.get(type).add(fn);this.listeners.set(type,fn); }
   removeEventListener(type, fn) { this.handlers.get(type)?.delete(fn); }
   emit(type, event = {}) { for (const fn of [...this.handlers.get(type) || []]) fn(event); }
+  dispatchEvent(event) { this.emit(event.type, event); return !event.defaultPrevented; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -222,7 +223,8 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     profile: { profileId: initial, displayName: `private-${initial}` }, communities: [{ communityId: `group-${initial}` }],
     apps: [{ appId: `app-${initial}`, name: `private-${initial}` }], devices: [{ deviceId: `device-${initial}` }], homeNotes: [{ noteId: `note-${initial}` }],
     group: null, selected: null, selectedChat: `chat-${initial}`, groupReturn: 'world', groupTab: 'apps', directThreads: [], directThreadsLoaded: false, directLabels: new Map(), directOpenSequence: 0, directProjectionEpoch: 0,
-    applicationDiscussions: [], applicationInboxEntries: [], applicationInboxStatus: 'unknown', applicationInboxSequence: 0,
+    applicationDiscussions: [], applicationInboxEntries: [], applicationFieldEntries: [], applicationInboxStatus: 'unknown', applicationInboxSequence: 0,
+    applicationInboxNextCursor: null, applicationInboxPages: 1, applicationInboxDirty: false, applicationInboxAttemptedAt: 0,
     applicationInboxPending: false, applicationInboxScheduled: false, applicationReadState: 'synced', messagesView: { query: '', unreadOnly: false, scroll: 0 },
     applicationReturn: null, pendingReturnPresentation: null,
     homeState: { slots: new Map([['private-slot', initial]]), scroll: 20, fieldX: 3, fieldY: 9, communityId: 'private-group', focusId: 'private-focus', focusControl: null, lens: 'all', pinned: new Set(['old-pin']) },
@@ -259,6 +261,60 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
+
+test('cold application inbox uses the single server discovery API and refresh retains loaded pages', async () => {
+  const f = fixture(), calls = [], appId = 'app-' + 'a'.repeat(32);
+  const makeRow = (id, source = 'known') => ({ appId: id, name: 'Shared app', source,
+    entry: { appId: id, domainId: 'dom_' + 'b'.repeat(32), origin: 'https://app.example', path: '/board?q=a%2Bb' },
+    conversationId: 'conv_' + id.slice(4), unreadCount: 1, lastMessage: null });
+  const first = makeRow(appId), second = makeRow('app-' + 'c'.repeat(32));
+  f.app.api = { request: async (op, args) => { calls.push({ op, args });
+    assert.equal(op, 'apps.discussion.inbox');
+    return { schema: 'soty.app-discussion.inbox.v1', checkedAt: 1, readState: 'synced', resetRequired: false,
+      discussions: [args.cursor ? second : first], nextCursor: args.cursor ? null : 'second-page' };
+  } };
+  await f.app.refreshApplicationInbox();
+  assert.equal(calls.length, 1); assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args.entries)), []);
+  assert.equal(f.app.applicationDiscussions.length, 1); assert.equal(f.app.applicationInboxNextCursor, 'second-page');
+  await f.app.refreshApplicationInbox(true);
+  assert.equal(f.app.applicationDiscussions.length, 2); assert.equal(f.app.applicationInboxPages, 2);
+  assert.equal(f.app.applicationInboxNextCursor, null);
+  await f.app.refreshApplicationInbox();
+  assert.equal(calls.length, 4); assert.equal(f.app.applicationDiscussions.length, 2);
+  assert.equal(calls[3].args.cursor, 'second-page', 'normal polling refreshes already loaded pages instead of hiding them');
+});
+
+test('inbox pagination cannot publish the preceding profile after an account switch', async () => {
+  const f = fixture(), held = deferred(); f.app.api = { request: () => held.promise };
+  f.app.applicationInboxNextCursor = 'older';
+  const pending = f.app.refreshApplicationInbox(true);
+  f.app.deskAccount = 'account-B'; f.app.accountGeneration++;
+  held.resolve({ schema: 'soty.app-discussion.inbox.v1', discussions: [], checkedAt: 1,
+    nextCursor: null, resetRequired: false, readState: 'synced' });
+  await pending;
+  assert.equal(f.app.applicationInboxNextCursor, 'older');
+  assert.equal(f.app.applicationInboxPages, 1, 'stale work cannot mutate pagination for the new account');
+});
+
+test('a hidden, replaced or already polling Messages screen issues no extra application inbox calls', async () => {
+  const method = appAst.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication')
+    .members.find(node => node.name?.getText(appAst) === 'renderMessages');
+  const poll = method.body.statements.find(node => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some(item => item.name.getText(appAst) === 'refreshInbox'))
+    .declarationList.declarations.find(item => item.name.getText(appAst) === 'refreshInbox').initializer;
+  let active = false, apps = 0, direct = 0, communities = 0;
+  const held = deferred(), environment = { exports: {}, active: () => active, refreshing: false, selectedUpdate: 0,
+    document: { visibilityState: 'visible' }, refreshDirect() { direct++; } };
+  vm.runInNewContext(`exports.make = function () { return ${poll.getText(appAst)}; };`, environment);
+  const run = environment.exports.make.call({ refreshApplicationInbox() { apps++; }, communityEpoch: 0, communityReadSequence: 0,
+    api: { request() { communities++; return held.promise; } } });
+  await run(); assert.equal(apps, 0);
+  active = true; environment.document.visibilityState = 'hidden'; await run(); assert.equal(apps, 0);
+  environment.document.visibilityState = 'visible'; const pending = run(); await run();
+  assert.equal(apps, 1); assert.equal(direct, 1); assert.equal(communities, 1);
+  active = false; held.resolve({ communities: [] }); await pending;
+  assert.equal(environment.refreshing, false);
+});
 
 function feedbackSettingsFixture(availability = { notesCreateEnabled: false, audience: 'https://shell.example', appFeedbackEnabled: true, mcpAudience: 'https://shell.example/mcp' }) {
   const f = fixture(), appId = 'app-' + 'a'.repeat(32), navigation = [];
