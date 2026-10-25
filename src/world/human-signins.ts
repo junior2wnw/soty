@@ -113,7 +113,7 @@ export function mountHumanSignins(options: HumanSigninsOptions): { dispose(): vo
     }
     const status = el('p', error ? 'sw-error' : 'sw-human-signins-status', error || message || (busy === 'load' ? 'Загружаем входы…' : ''));
     status.setAttribute('role', error ? 'alert' : 'status'); status.setAttribute('aria-live', 'polite'); status.tabIndex = -1; status.dataset.signinControl = 'status';
-    root.replaceChildren(profile, filters, el('p', 'sw-human-signins-profile', 'Короткие сессии приложений внутри Сот (Root Source) в этот список не входят.'), status);
+    root.replaceChildren(profile, filters, el('p', 'sw-human-signins-profile', 'Приложения с доступом по текущему профилю Сот здесь не перечисляются.'), status);
     if (!options.deviceId) root.append(el('p', 'sw-human-signins-note', 'Текущее устройство не подтверждено. Список можно читать; для отзыва заново откройте настройки профиля.'));
     if (!storage) root.append(el('p', 'sw-human-signins-note', 'На этом устройстве недоступно сохранение проверки. Список можно читать; отзыв не отправляется.'));
     if (localUnreadable || pending) {
@@ -168,8 +168,8 @@ export function mountHumanSignins(options: HumanSigninsOptions): { dispose(): vo
     }
     root.append(control('refresh', 'Обновить список', () => { void load(false); }, Boolean(busy)));
     const explanation = el('details', 'sw-human-signins-explanation');
-    explanation.append(el('summary', '', 'Какой доступ здесь показан'), el('p', '', 'Здесь показаны входы через Соты и запомненные согласия этого профиля. Приложения на короткой сессии внутри Сот (Root Source) сюда не входят: пустой список не означает отсутствие доступа к ним.'),
-      el('p', '', 'Отзыв блокирует дальнейшую проверку и продление входа издателем Сот. Собственная сессия приложения может завершиться при следующей проверке. Это не обещание немедленного выхода из его Native-сайта.'),
+    explanation.append(el('summary', '', 'Какой доступ здесь показан'), el('p', '', 'Здесь показаны входы во внешние приложения через Соты и запомненные согласия. Доступ приложений внутри Сот определяется текущим профилем и правами в самих приложениях. Пустой список не означает отсутствие доступа к ним.'),
+      el('p', '', 'Отзыв прекращает дальнейшее подтверждение и продление входа через Соты. Собственная сессия приложения может завершиться при следующей проверке.'),
       el('p', '', 'Разрешённые действия ИИ и приложений, доступ к данным и устройства размещения управляются отдельно.'));
     root.append(explanation); if (focusKey) focus(focusKey);
   }

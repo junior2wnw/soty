@@ -136,6 +136,7 @@ test('malformed or foreign revoke acknowledgements stay unknown and retain the o
 
 test('the default capability read uses the verified Apps endpoint; null expiry and Source exclusions do not imply forever or no access',async()=>{
   let url,cache;const f=mount({rows:[{...family,expiresAt:null,clientLabel:'<img src=x onerror=bad()>'}],fetcher:async(input,options)=>{url=input;cache=options.cache;return{ok:true,json:async()=>({humanSignins:caps})};}});
-  await f.settled();assert.equal(url,'/api/apps/capabilities');assert.equal(cache,'no-store');assert.match(f.text(),/это не бессрочный вход/u);assert.match(f.text(),/пустой список не означает отсутствие доступа/u);
+  await f.settled();assert.equal(url,'/api/apps/capabilities');assert.equal(cache,'no-store');assert.match(f.text(),/это не бессрочный вход/u);assert.match(f.text(),/Пустой список не означает отсутствие доступа/u);
+  assert.doesNotMatch(f.text(),/Root Source|Native/u);
   assert.equal(f.host.all().some(node=>node.tagName==='img'),false);
 });
