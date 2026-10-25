@@ -36,10 +36,19 @@ the original immutable receipt, separately from current publication state.
 
 ## Current authority, revocation and ports
 
+While a current pair exists, an old Source-only request cannot silently remove
+the standalone URL. Prepare and promote both require an explicit exact
+`nativeEntryAction:{action:'remove',origin,targetRevision,targetDigest}`, or a
+new independently probed pairing. Prepare echoes the exact removal preview.
+Missing, stale or different actions return409 `native_pair_action_required`
+before effects. An agent may prepare the same unchanged reviewed Native scope
+and its technical ACK automatically; this is not new Human authentication or a
+new exposure scope. A new scope still needs the owner's explicit approval.
+
 The reader inspects **only the latest overall Source promotion receipt** for
 the app. It requires v2 and the current exact primary target. It never searches
-history for an old Native ACK. A subsequent Source-only promotion, even back to
-the same Source revision, closes the Native entry. Replaying an older paired
+history for an old Native ACK. A subsequent explicitly acknowledged removal,
+even back to the same Source revision, closes the Native entry. Replaying an older paired
 receipt does not reopen it. A Native rollback is another explicit ordinary
 Source promotion; it needs its own fresh probe and publication ACK.
 
@@ -55,8 +64,8 @@ app revocation releases it. No historical target reserves a port forever.
 
 Owner publication/inspection reads expose an optional `nativeEntry` summary
 with `runtimeReady:false`. This is a configuration record, not a reachability
-claim. The existing v1 source editor does not silently preserve or acknowledge
-Native exposure. An editor offering paired source replacement must display the
+claim. The existing v1 source editor cannot silently remove or acknowledge
+Native exposure: its implicit update is rejected while paired. An editor offering paired source replacement must display the
 two entries and their independent acknowledgment before its signed mutation.
 
 ## Fixed operator ingress and Native SDK guard
@@ -116,7 +125,11 @@ host's separately configured current-channel audit bound.
 
 An old Root does not understand the new Native surface and its old ingress
 cannot admit retained Native1 while Source2 is active. It must fail closed;
-it is not an available Native fallback. A compatible rollback can explicitly
+it is not an available Native fallback or a permitted paired-app control-plane
+writer. A historical binary cannot enforce an API field it predates; do not run
+it as a mixed authoritative writer against a paired production registry. The
+mixed-reader test proves its old v1 promotion closes Native on a new reader
+rather than resurrecting a historical ACK. A compatible rollback can explicitly
 promote the original Native target under the current reader, or keep the new
 reader while rolling the Source application back to a separately reviewed pin.
 Neither rollback edits immutable historical receipts.

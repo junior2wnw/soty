@@ -22,6 +22,8 @@ const turn = () => new Promise(done => setImmediate(done));
 async function until(callback) { const end = Date.now() + 5000; while (!callback()) { assert.ok(Date.now() < end, 'fixture deadline'); await new Promise(done => setTimeout(done, 10)); } }
 const ack = target => ({ scope: target.profile === 'soty.relay-restricted.v1' ? 'whole-port' : 'authenticated-workspace',
   targetRevision: target.revision, targetDigest: target.digest, profile: target.profile });
+const removal = f => ({ action: 'remove', origin: f.profile.nativeOrigin, targetRevision: 1,
+  targetDigest: f.db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(f.appId).digest });
 
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'soty-dual-entry-')), databasePath = join(directory, 'apps.sqlite');
@@ -72,7 +74,7 @@ function fixture(t, options = {}) {
   const prepare = extra => sources.execute({ op: 'apps.source.prepare', actor: owner, args: prepareArgs(extra) });
   const intent = (prepared, requestId = 'fixture_pair', extra = {}) => ({ appId, requestId, preparationId: prepared.preparationId,
     expectedPolicyEpoch: prepared.expectedPolicyEpoch, expectedTargetRevision: prepared.expectedTargetRevision,
-    launchPolicy: 'anyone', listed: true, exposureAck: ack(prepared.target), nativeExposureAck: ack(prepared.nativeEntry.target), ...extra });
+    launchPolicy: 'anyone', listed: true, exposureAck: ack(prepared.target), nativeExposureAck: ack(prepared.nativeEntry.target), ...(prepared.nativeEntryAction ? { nativeEntryAction: prepared.nativeEntryAction } : {}), ...extra });
   const promote = args => sources.execute({ op: 'apps.source.promote', actor: owner, args });
   const requireEntry = () => requireNativeEntry({ db, appId, origin: profile.nativeOrigin, primaryDigest: target.digest,
     nativeDigest: db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(appId).digest, scopedAdmission: admissions });
@@ -110,16 +112,36 @@ test('pair independently probes both exact targets and needs a new whole-port AC
 
 test('last overall promotion controls Native entry; historical v2 replay cannot reopen after no-pair promotion or Native rollback', async t => {
   const f = fixture(t), first = await f.prepare(), original = f.intent(first); f.promote(original);
-  const next = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined });
+  const next = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
   const removed = f.promote({ ...f.intent({ ...next, nativeEntry: first.nativeEntry }, 'fixture_without_pair'), nativeExposureAck: undefined });
   assert.equal(removed.current.nativeEntry, undefined);
   assert.equal(readPairedNativeEntry(f.db, f.appId), null); assert.throws(f.requireEntry, { code: 'app_native_entry_closed' });
   assert.equal(f.promote(original).replayed, true); assert.equal(readPairedNativeEntry(f.db, f.appId), null);
   const again = await f.prepare({ source: undefined, targetRevision: 2 }); f.promote(f.intent(again, 'fixture_new_pair'));
   assert.equal(f.requireEntry().committedPolicyEpoch, 4);
-  const back = await f.prepare({ source: undefined, targetRevision: 1, nativeEntry: undefined });
+  const back = await f.prepare({ source: undefined, targetRevision: 1, nativeEntry: undefined, nativeEntryAction: removal(f) });
   f.promote({ ...f.intent({ ...back, nativeEntry: first.nativeEntry }, 'fixture_native_rollback'), nativeExposureAck: undefined });
   assert.equal(readPairedNativeEntry(f.db, f.appId), null); assert.equal(f.get().target.profile, 'soty.relay-restricted.v1');
+});
+
+test('an active pair rejects old implicit removal before a probe and requires the exact displayed removal action again at commit', async t => {
+  const f = fixture(t), paired = await f.prepare(); f.promote(f.intent(paired));
+  const before = f.rows(), probes = f.probes.length;
+  await assert.rejects(f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined }),
+    { code: 'native_pair_action_required', status: 409 });
+  await assert.rejects(f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined,
+    nativeEntryAction: { ...removal(f), origin: 'https://wrong.apps.test' } }), { code: 'native_pair_action_required', status: 409 });
+  assert.deepEqual(f.rows(), before); assert.equal(f.probes.length, probes);
+  const prepared = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
+  assert.deepEqual(prepared.nativeEntryAction, removal(f));
+  const intent = { ...f.intent({ ...prepared, nativeEntry: paired.nativeEntry }, 'fixture_explicit_removal'), nativeExposureAck: undefined };
+  assert.throws(() => f.promote({ ...intent, nativeEntryAction: undefined }), { code: 'native_pair_action_required', status: 409 });
+  assert.throws(() => f.promote({ ...intent, nativeEntryAction: { ...intent.nativeEntryAction, targetDigest: 'e'.repeat(64) } }),
+    { code: 'native_pair_action_required', status: 409 });
+  assert.deepEqual(f.rows(), before); assert.equal(f.requireEntry().target.revision, 1);
+  const result = f.promote(intent);
+  assert.equal(result.receipt.schema, 'soty.app-source-receipt.v2'); assert.deepEqual(result.receipt.nativeEntryAction, removal(f));
+  assert.equal(result.current.nativeEntry, undefined); assert.equal(readPairedNativeEntry(f.db, f.appId), null);
 });
 
 test('current publication, bound aliases, immutable source pin and enable/revoke govern both entries', async t => {
@@ -157,7 +179,7 @@ test('both candidate proofs remain mandatory at commit; a paired Native port can
   f.verifier(undefined); f.promote(intent);
   assert.throws(() => assertNativePortAvailable(f.db, 'different-app', f.target.connectorKey, 63345), { code: 'app_port_already_registered' });
   assert.doesNotThrow(() => assertNativePortAvailable(f.db, f.appId, f.target.connectorKey, 63345));
-  const noPair = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined });
+  const noPair = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
   f.promote({ ...f.intent({ ...noPair, nativeEntry: prepared.nativeEntry }, 'fixture_free_native'), nativeExposureAck: undefined });
   assert.doesNotThrow(() => assertNativePortAvailable(f.db, 'different-app', f.target.connectorKey, 63345));
 });
@@ -225,7 +247,7 @@ test('actual Root HTTP ingress uses current primary binding plus Native receipt,
   assert.throws(() => live.service.execute({ op: 'apps.register', actor: f.owner, args: { hostDeviceId: f.identity.hostDeviceId,
     connectorId: f.identity.connectorId, port: 63345, entryPath: '/', name: 'Copied Native', grants: { accountIds: [], communityIds: [] } } }),
   { code: 'app_port_already_registered' });
-  const next = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined });
+  const next = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
   live.promote({ ...f.intent({ ...next, nativeEntry: prepared.nativeEntry }, 'fixture_live_unpair'), nativeExposureAck: undefined });
   assert.equal((await live.check()).status, 403);
   assert.equal(live.promote(f.intent(prepared)).replayed, true); assert.equal((await live.check()).status, 403);
@@ -277,7 +299,7 @@ test('real HTTP/WS Native guard stops active streams and commands after Source u
   await new Promise((done, reject) => { ws.once('open', done); ws.once('error', reject); });
   await until(() => dataFrames >= 2);
   ws.send('synthetic Native command'); await until(() => effects === 2);
-  const next = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined });
+  const next = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
   const revokedAt = performance.now(), closed = new Promise(done => ws.once('close', done));
   live.promote({ ...f.intent({ ...next, nativeEntry: prepared.nativeEntry }, 'fixture_guard_unpair'), nativeExposureAck: undefined });
   assert.equal(await http(), 403); const effectsAfterRevoke = effects;
@@ -336,3 +358,16 @@ test('current reader restarts from the durable pair; actual preceding Root ingre
   assert.equal((await restarted.check()).status, 403, 'latest v1 receipt closes Native on the new reader too');
   assert.equal(f.promote(pairedIntent).replayed, true); assert.equal((await restarted.check()).status, 403);
 });
+
+test('a Root wall clock 8 seconds ahead cannot lengthen or prematurely expire a local monotonic Native lease', async t => {
+  const f = fixture(t), prepared = await f.prepare(); f.promote(f.intent(prepared));
+  f.advance(8000);
+  const live = await liveRoot(t, f); await live.ready(); await turn();
+  const guard = nativeGuard(f, live); f.cleanup(() => guard.close());
+  const started = performance.now(), lease = await guard.acquire();
+  guard.assertCurrent(lease);
+  await new Promise(done => setTimeout(done, 100)); guard.assertCurrent(lease);
+  await new Promise(done => setTimeout(done, Math.max(1, 1010 - (performance.now() - started))));
+  assert.throws(() => guard.assertCurrent(lease), { code: 'native_entry_lease_closed' });
+});
+
