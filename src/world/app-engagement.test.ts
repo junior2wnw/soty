@@ -41,6 +41,7 @@ function type(value: string): HTMLTextAreaElement { const input = key<HTMLTextAr
 const paint = (): Promise<void> => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 const AUTOSIZE_CASE = 'Многострочный черновик читается после восстановления и изменения размера без потери позиции';
 const ARCHIVE_FOCUS_CASE = 'Переходы в архив и обратно сохраняют фокус, поздний ответ не забирает его';
+const MESSAGE_ANCHOR_CASE = 'Точная ссылка открывает сообщение без iframe; последние сообщения сохраняют черновик';
 const scopedBrowserKeys = new Set<string>(), errors: string[] = [];
 let mounted: { dispose(): void } | null = null, restoreFrames: (() => void) | null = null;
 let generation = 0, running = false, theme: 'light' | 'dark' = 'dark';
@@ -129,7 +130,12 @@ function backend(forcedAccountId?: string): Backend {
           savedReceipts.set(requestId, clone(result)); value = result;
           if (f.loseSave) { f.loseSave = false; throw new TypeError('synthetic lost save response'); }
         }
-      } else if (op === 'apps.discussion.context') value = { context: f.context(conversationId, admin), messages: clone(f.messages.get(conversationId) ?? []), historyCursor: 'history_fixture', changeCursor: 'changes_fixture' };
+      } else if (op === 'apps.discussion.context') {
+        const all = f.messages.get(conversationId) ?? [], anchor = args.messageId ? all.findIndex(row => row.id === args.messageId) : -1;
+        if (args.messageId && anchor < 0) throw error('app_unavailable');
+        value = { context: f.context(conversationId, admin), messages: clone(args.messageId ? all.slice(Math.max(0, anchor - 29), anchor + 1) : all.slice(-30)), historyCursor: 'history_fixture', changeCursor: 'changes_fixture',
+          ...(args.messageId ? { anchor: { messageId: args.messageId, hasNewer: anchor < all.length - 1 } } : {}) };
+      }
       else if (op === 'apps.discussion.history') value = { context: f.context(conversationId, admin), messages: [], nextCursor: null, resetRequired: f.resetHistory };
       else if (op === 'apps.discussion.changes') value = { context: f.context(conversationId, admin), changes: (f.messages.get(conversationId) ?? []).map(message => ({ type: message.body === null ? 'removed' : 'message', message: clone(message) })), nextCursor: 'changes_fixture_after', hasMore: false, resetRequired: false };
       else if (op === 'apps.discussion.archives') value = { entries: [...f.messages.keys()].filter(id => id !== f.current && f.messages.get(id)!.length).map(id => f.context(id, admin)), nextCursor: null, resetRequired: false };
@@ -193,6 +199,21 @@ async function archives(): Promise<void> {
 }
 
 const cases: Array<[string, () => Promise<void>]> = [
+  [MESSAGE_ANCHOR_CASE, async () => {
+    const f = backend(); for (let n = 0; n < 45; n++) f.message(`Сообщение по ссылке ${n}`);
+    const message = f.messages.get(CURRENT)![12]!, h = stage(f, { panel: 'discussion', conversationId: CURRENT, messageId: message.id });
+    await h.ready;
+    await until(() => host.querySelector<HTMLElement>('.se-message-anchor')?.dataset.messageId === message.id, 'exact anchor highlighted');
+    const anchor = host.querySelector<HTMLElement>('.se-message-anchor')!, scroll = host.querySelector<HTMLElement>('.se-discussion-scroll')!;
+    assert(f.launchCount === 0 && !host.querySelector('iframe'), 'cold anchor created application runtime');
+    const rectangle = anchor.getBoundingClientRect(), viewport = scroll.getBoundingClientRect();
+    assert(rectangle.top >= viewport.top - 1 && rectangle.bottom <= viewport.bottom + 1, 'anchor is outside its scroll viewport');
+    type('Черновик рядом с сообщением'); await h.flush(); click('discussion-latest');
+    await until(() => !parseAppLaunchRoute(location.hash)?.presentation?.messageId && !host.querySelector('.se-message-anchor'), 'latest clears only message selection');
+    assert((await readyComposer()).value === 'Черновик рядом с сообщением', 'latest lost same-conversation draft');
+    assert(f.launchCount === 0 && !host.querySelector('iframe'), 'latest created application runtime');
+    output.dataset.messageAnchorMetrics = JSON.stringify({ messageId: message.id, rowCount: host.querySelectorAll('.se-message').length, launchCount: f.launchCount, withinScrollViewport: true, draftPreserved: true });
+  }],
   ['Панель, архив и Back сохраняют iframe и введённое состояние', async () => {
     const f = backend(), h = stage(f); await h.ready; const frame = await frameOf(), win = frame.contentWindow;
     const field = frame.contentDocument!.querySelector<HTMLInputElement>('#runtime-value')!; field.value = 'runtime state must survive';
@@ -514,7 +535,7 @@ const cases: Array<[string, () => Promise<void>]> = [
 async function run(): Promise<void> {
   if (running) return; running = true; output.dataset.testStatus = 'running'; errors.length = 0;
   const requestedCase = new URL(location.href).searchParams.get('case');
-  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : null;
+  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : requestedCase === 'message-anchor' ? MESSAGE_ANCHOR_CASE : null;
   const selected = selectedName ? cases.filter(([name]) => name === selectedName) : cases;
   delete output.dataset.autosizeMetrics;
   delete output.dataset.archiveFocusMetrics;
