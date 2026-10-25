@@ -322,13 +322,22 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     return { id: row.id, conversationId: row.conversation_id, removed: true };
   }
   function unread(actor, app, row) {
-    const through = readStore.get(actor.accountId, app.id, row.id);
-    assertApps(through <= row.message_seq, 'apps_discussion_read_state_conflict', 503);
+    if (!readStore) return null;
+    let marker;
+    try { marker = readStore.get(actor.accountId, app.id, row.id); }
+    catch { return null; }
+    // Sequence numbers may be reused after an independent Apps restore.
+    // Only the exact surviving message can anchor a read watermark.
+    if (marker && !validMarker(row.id, marker)) return null;
+    const through = marker?.sequence ?? 0;
     return db.prepare(`SELECT count(*) AS n FROM app_discussion_messages WHERE conversation_id=? AND seq>?
       AND removed_at IS NULL AND author_account_id<>?`).get(row.id, through, actor.accountId).n;
   }
+  function validMarker(conversationId, marker) {
+    return Number.isSafeInteger(marker.sequence) && marker.sequence >= 1
+      && db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(conversationId, marker.messageId)?.seq === marker.sequence;
+  }
   function inbox(actor, entries) {
-    assertApps(readStore, 'apps_discussion_read_unavailable', 503);
     const discussions = [], included = new Set();
     for (const entry of entries) {
       if (included.has(entry.appId)) continue;
@@ -341,9 +350,10 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
       included.add(entry.appId);
       discussions.push({ appId: base.app.id, name: base.app.name, entry: base.entry, conversationId: row?.id ?? null,
         lastMessage: last ? { id: last.id, author: { accountId: last.author_account_id, label: last.author_label }, preview: Array.from(last.body).slice(0, 160).join(''), createdAt: last.created_at } : null,
-        unreadCount: row ? unread(actor, base.app, row) : 0 });
+        unreadCount: row ? unread(actor, base.app, row) : readStore ? 0 : null });
     }
-    return { schema: 'soty.app-discussion.inbox.v1', discussions, checkedAt: timestamp(now()) };
+    return { schema: 'soty.app-discussion.inbox.v1', discussions,
+      readState: readStore && discussions.every(row => row.unreadCount !== null) ? 'synced' : 'unavailable', checkedAt: timestamp(now()) };
   }
   function markRead(actor, input) {
     assertApps(readStore, 'apps_discussion_read_unavailable', 503);
@@ -351,7 +361,9 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     assertApps(row.id === base.head.current_id, 'apps_discussion_stale', 409);
     const message = db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(row.id, input.messageId);
     assertApps(message, 'app_unavailable', 404);
-    const receipt = readStore.mark(actor.accountId, base.app.id, row.id, message.seq);
+    const previous = readStore.get(actor.accountId, base.app.id, row.id);
+    const receipt = readStore.mark(actor.accountId, base.app.id, row.id, message.seq, input.messageId,
+      { resetInvalid: previous !== null && !validMarker(row.id, previous) });
     return { schema: 'soty.app-discussion.read.v1', appId: base.app.id, conversationId: row.id,
       messageId: input.messageId, unreadCount: unread(actor, base.app, row), readAt: receipt.readAt };
   }

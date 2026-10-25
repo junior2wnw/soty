@@ -193,7 +193,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
     directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry });
-    discussionReads = createDiscussionReadStore({ filename: databasePath === ':memory:' ? ':memory:' : `${databasePath}.reads.sqlite`, now });
+    // Read markers are optional metadata. Their failure must not prevent Apps
+    // or Root from starting; inbox reports unknown, never a false zero unread.
+    try { discussionReads = createDiscussionReadStore({ filename: databasePath === ':memory:' ? ':memory:' : `${databasePath}.reads.sqlite`, now }); }
+    catch { discussionReads = undefined; }
     discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse, isCurrentFriend,
       readStore: discussionReads,
       readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
