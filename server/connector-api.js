@@ -8,10 +8,10 @@ const jsonParser = express.json({ limit: "1mb", type: "application/json" });
 const resultJsonParser = express.json({ limit: "6mb", type: "application/json" });
 const modelJsonParser = express.json({ limit: "4mb", type: "application/json" });
 
-export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
+export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountAi } = {}) {
   const root = dataDir || "data";
   const store = createConnectorStore(root, storeOptions);
-  const modelProxy = createGonkaProxy({ store, ...gonka });
+  const modelProxy = createGonkaProxy({ store, ...gonka, accountAi });
   const applicationAuthenticator = createApplicationTokenAuthenticator(gonka?.applicationTokens, {
     filePath: gonka?.applicationTokensFile
   });

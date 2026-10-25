@@ -28,6 +28,7 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   // container label from the previous application.
   delete config.Labels[storageReaderLabel];
   delete config.Labels[universalModeLabel];
+  delete config.Labels['io.soty.account-ai'];
   const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
   addApprovedPolicy(result,applicationPolicy);return universalPolicy?applyUniversalPolicy(result,universalPolicy):result;
 }
@@ -112,6 +113,16 @@ export class Rollout {
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
+    this.candidateHealthSha256=this.healthSha256;
+    if(universalReceipt?.environment.some(item=>item.name==='SOTY_ACCOUNT_AI_CONFIG_FILE')){
+      // This explicit, privately witnessed feature changes only the AI
+      // transport and routing authority. Model choices and public paths stay
+      // subject to the original readiness fence; rollback checks the old hash.
+      const expected=clone(baseline.modelProxies);
+      expected.agentModelProxy.transport='account-scoped-server-bridge';
+      for(const name of ['agentModelProxy','applicationModelProxy'])expected[name].providerStrategy='account-gateway';
+      this.candidateHealthSha256=hash(expected);
+    }
     this.originalPolicySha256=baseline.applicationPolicySha256||null;
     const configurationSha256=universalReceipt?hash({schema:'soty.universal-public-configuration.v1',originalId:old.Id,originalImage:old.Image,
       candidateImage:image.Id,revision:args.revision,transaction:args.transaction,policyDigest:universalReceipt.policyDigest}):this.fingerprint;
@@ -124,21 +135,27 @@ export class Rollout {
   originalForComparison(current){
     const before=this.original.NetworkSettings?.Networks,after=current.NetworkSettings?.Networks;
     const prior=before?.bridge,next=after?.bridge;
+    const names=Object.keys(before||{}).sort(),currentNames=Object.keys(after||{}).sort();
     const empty=value=>value===undefined||value===null||value==='';
-    // Docker clears a generated default-bridge MAC after STOP. API1.45 may
-    // retain that exact address in both Config objects. Recover only the
-    // observed endpoint representation for comparison, never CREATE or START.
+    // Observed Docker STOP clears both generated endpoint MACs when the default
+    // bridge also has an attached bridge network. Recover only that stopped
+    // representation for comparison; all captured network intent stays exact.
     if(!this.originalStopConfirmed||current.Id!==this.original.Id||current.Image!==this.original.Image
       ||current.State.Running||current.State.Paused||current.State.Status!=='exited'
       ||!['bridge','default'].includes(this.original.HostConfig.NetworkMode)
       ||current.HostConfig.NetworkMode!==this.original.HostConfig.NetworkMode
       ||!((empty(this.original.Config.MacAddress)&&empty(current.Config.MacAddress))
         ||(this.original.Config.MacAddress===prior?.MacAddress&&current.Config.MacAddress===prior?.MacAddress))
-      ||Object.keys(before||{}).length!==1||Object.keys(after||{}).length!==1||!prior||!next
+      ||hash(names)!==hash(currentNames)||!prior||!next
       ||['IPAMConfig','Aliases','Links','DriverOpts'].some(key=>prior[key]!=null||next[key]!=null)
-      ||typeof prior.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(prior.MacAddress)
-      ||next.MacAddress!=='')return current;
-    const compared=clone(current);compared.NetworkSettings.Networks.bridge.MacAddress=prior.MacAddress;
+      ||names.some(name=>{
+        const previous=before[name],observed=after[name];
+        return typeof previous.MacAddress!=='string'||!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu.test(previous.MacAddress)
+          ||observed.MacAddress!==''||previous.NetworkID!==observed.NetworkID
+          ||['IPAMConfig','Aliases','Links','DriverOpts','GwPriority'].some(key=>hash({value:previous[key]})!==hash({value:observed[key]}));
+      }))return current;
+    const compared=clone(current);
+    for(const name of names)compared.NetworkSettings.Networks[name].MacAddress=before[name].MacAddress;
     return compared;
   }
   async checkUniversalCurrent(){
@@ -205,7 +222,7 @@ export class Rollout {
       await this.note('candidate_started');
       const running=await this.engine.inspect(this.candidate.Id);this.validateCandidate(running);
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
-      requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
+      requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.candidateHealthSha256,'candidate_model_readiness_changed');
       requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
       if(this.args.universalPolicy){
         await this.checkUniversalCurrent();

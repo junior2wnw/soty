@@ -56,6 +56,7 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/modules ./modules
+COPY --from=build /app/services/ai-gateway/packages/soty-bridge ./services/ai-gateway/packages/soty-bridge
 COPY --from=build /app/src/transport/human-call-ice.mjs ./src/transport/human-call-ice.mjs
 COPY --from=build /app/src/world/feedback-media.mjs ./src/world/feedback-media.mjs
 ARG LEGACY_UNIVERSAL_MODE=0
@@ -64,6 +65,7 @@ RUN --network=none node --input-type=module -e "await import('./server/startup.j
 COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
+LABEL io.soty.account-ai="1"
 LABEL io.soty.universal.legacy="${LEGACY_UNIVERSAL_MODE}"
 LABEL io.soty.storage.readers="{\"version\":7,\"readers\":{\"rooms\":[1,2],\"apps\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],\"notes\":[1,2],\"capabilities\":[1,2,3],\"appRegistration\":[1],\"feedback\":[1],\"humanIdentity\":[1,2,3],\"connect\":[3,4],\"world\":[6,7]}}"
 VOLUME ["/data"]

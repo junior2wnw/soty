@@ -1,0 +1,27 @@
+# Non-secret deployment overlay. Keep the existing private runtime.env unchanged.
+services:
+  gateway:
+    image: sha256:d2b7c2468c95e6112663ad8c772a868ea295101ee4d05df5186890b6f291466d
+    build: !reset null
+    pull_policy: never
+    environment:
+      RELEASE_ID: eeb2cb75660af60247df82ba19ae3f9fd83fbfed
+      SOTY_BRIDGE_CONFIG_FILE: /run/secrets/soty-account-ai-gateway.json
+    volumes:
+      - type: bind
+        source: /home/ai2/.config/soty/account-ai-20261025/bundle/gateway.json
+        target: /run/secrets/soty-account-ai-gateway.json
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      default:
+        gw_priority: 0
+      soty-account-ai:
+        gw_priority: 0
+        aliases:
+          - inference-commerce-gateway-1
+networks:
+  soty-account-ai:
+    external: true
+    name: soty-account-ai

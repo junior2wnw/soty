@@ -44,6 +44,7 @@ import { createNativeVoiceComposition } from './native-voice-composition.js';
 import { createVoiceOrbComposition } from './voice-orb-composition.js';
 import { createHumanCallModule } from './human-call-module.js';
 import { createPushService, pushConfigurationFromEnvironment } from './push-service.js';
+import { createAccountAiService } from './account-ai.js';
 import { captureNativeSourceHandlers } from './native-source-handlers.js';
 
 // Startup remains synchronous for callers. Its error privately retains the
@@ -69,7 +70,7 @@ export function createHttpApp(distDir, options = {}) {
 }
 
 function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(env.SOTY_LOCAL_CONNECTOR_PORT || 49424), universalAppsEnabled = env.SOTY_UNIVERSAL_APPS_ENABLED !== 'false', humanIdentity, humanIdentityRenewalMigration = false, humanIdentityDeviceConsentMigration = false, humanIdentityRenewalLimits, reviewsConfiguration, allowReviewsFixtureOrigins = false, externalApplications,
-  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, localExecutorCurrent = false } = {}, nativeSources) {
+  allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowWorld7Migration = false, scopedEmbedProfiles = [], scopedEmbedRegistryConfigured = false, personalAgent, accountAi, agentSourceAccess, managedReviewsSource, nativeVoice, voiceOrb, notifications, localExecutorCurrent = false } = {}, nativeSources) {
   if (typeof allowAudienceMigration !== 'boolean') throw new AccessError('apps_audience_migration_configuration_invalid');
   if (typeof allowWorld7Migration !== 'boolean') throw new AccessError('world_attachment_migration_configuration_invalid');
   if (typeof localExecutorCurrent !== 'boolean') throw new AccessError('local_executor_configuration_invalid');
@@ -86,7 +87,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
-    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess;
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService;
   const appFeedback = universalEnabled ? createAppFeedbackCapabilities({ capabilities: () => capabilities,
     connect: () => connect, apps: () => apps, feedback: () => universal.feedback }) : null;
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
@@ -175,7 +176,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     };
     close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
-    for (const service of [push, orbVoice, voice, personal, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
+    for (const service of [push, orbVoice, voice, personal, accountAiService, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
     }
     close(() => connectors?.store.close());
@@ -183,12 +184,25 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     if (error && (typeof error === 'object' || typeof error === 'function')) rejectedStarts.set(error, cleanup);
   };
   try {
+    if (accountAi) {
+      accountAiService = createAccountAiService({ configuration: accountAi, getConnect: () => connect,
+        admitNewWork: () => Boolean(connectors && !connectors.store.maintenance()),
+        databasePath: path.join(dataDir || path.resolve('data'), 'account-ai', 'bridge.sqlite') });
+      app.post('/internal/soty-ai/v1/authorize-dispatch', express.raw({ type: 'application/json', limit: '16kb' }), (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        if (!Buffer.isBuffer(req.body)) { res.status(403).json({ authorized: false }); return; }
+        let body; try { body = new TextDecoder('utf-8', { fatal: true }).decode(req.body); }
+        catch { res.status(403).json({ authorized: false }); return; }
+        void accountAiService.authorizeDispatch({ method: req.method, route: req.originalUrl, body, headers: req.headers })
+          .then(value => res.json(value), () => res.status(403).json({ authorized: false }));
+      }, (_error, _req, res, _next) => { res.status(403).set('Cache-Control', 'no-store').json({ authorized: false }); });
+    }
     sourceAccess = createAgentSourceAccess({ entries: externalEntries, getConnect: () => connect, getCapabilities: () => capabilities,
       getApps: () => apps, configuration: agentSourceAccess, databasePath: path.join(dataDir || path.resolve('data'), 'agent-source-access', 'credentials.sqlite'),
       audience: admittedCapabilityAudience ? admittedCapabilityAudience.replace(/\/$/u, '') + '/mcp' : null,
       legacyResolver: personalAgent?.sourceCredentialFor });
     personal = createPersonalAgentComposition({ getConnect: () => connect, getServices: () => ({ notes, capabilities, apps, connectors }),
-      configuration: { ...personalAgent, sourceReferences: personalAgent?.sourceReferences ?? externalEntries.map(entry => entry.contract),
+      configuration: { ...personalAgent, ...(accountAiService ? { enabled: true, gateway: { accountBridge: accountAiService } } : {}), sourceReferences: personalAgent?.sourceReferences ?? externalEntries.map(entry => entry.contract),
         sourceCredentialFor: sourceAccess.sourceCredentialFor } });
     voice=createNativeVoiceComposition({getConnect:()=>connect,getServices:()=>({capabilities}),agent:personal,configuration:nativeVoice});
     orbVoice = createVoiceOrbComposition({ getConnect: () => connect, agent: personal, configuration: voiceOrb });
@@ -208,8 +222,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
         if (!capabilities?.nativeNotes) throw new AccessError('native_unavailable');
         return capabilities.nativeNotes.verifyContext(token, mode);
       } });
-    connectors = attachConnectorApi(app, { dataDir, gonka,
-      ...(localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? { storeOptions: {
+    connectors = attachConnectorApi(app, { dataDir, gonka, accountAi: accountAiService,
+      ...(accountAiService || localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? { storeOptions: {
+        ...(accountAiService ? { legacyModelSponsorEligible: binding => apps?.isUnownedConnector({ linkId: binding.linkId, hostDeviceId: binding.deviceId, connectorId: binding.connectorId }) === true } : {}),
         ownedJobActive: job => {
           const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
           if (!connect?.isActorActive(actor)) return false;
@@ -309,7 +324,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   try {
     const coverExtensions = [world.profileCoverExtension, apps.coverExtension].filter(Boolean);
     const extensions = [world, universal?.appsExtension ?? apps, apps.sourcePreparationExtension, appJobs, notes, capabilities, humanCalls, push,
-      ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
+      ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     // Connect validates every operation and duplicate before returning. Advertise
@@ -326,6 +341,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     unsubscribeRevocations = connect.subscribeRevocations(event => {
       apps.invalidateAccess(event); connectors.store.recheckModelAuthorizations();
     });
+    accountAiService?.start();
     // Timers start only after actual Connect and provider admission. Disabled
     // issuance still permits bounded keyless cleanup and committed recovery.
     nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
@@ -337,6 +353,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
   app.locals.personalAgent = personal; app.locals.nativeVoice=voice; app.locals.voiceOrb = orbVoice;
+  app.locals.accountAi = accountAiService;
   app.locals.captureUniversalPreparedness = () => captureUniversalPreparedness({
     compiledLegacyMode: forcedLegacyMode, universalConfigured: Boolean(universal), reviewsConfigured: Boolean(reviews && universal?.reviews),
     humanProfile, humanHttpEnabled: app.locals.humanIdentityStatus.enabled,
@@ -357,6 +374,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       await attempt(() => push.close());
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
+      await attempt(() => accountAiService?.close());
       await attempt(() => sourceAccess.close());
       await attempt(() => voice.close());
       await attempt(() => humanCalls.close());

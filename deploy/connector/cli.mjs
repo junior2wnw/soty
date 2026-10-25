@@ -5,7 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {DockerApi,SafeError} from './docker-api.mjs';
 import {Rollout} from './rollout.mjs';
 import {productionMaintenance,readiness,universalMeasurement} from './runtime.mjs';
-import {journal} from './journal.mjs';
+import {createReleaseJournal} from './journal.mjs';
 import {readApprovedPolicy} from './application-policy.mjs';
 import {openUniversalCliPolicy} from './universal-cli-policy.mjs';
 import {readUniversalLocalFile,parseUniversalLocalJson} from './universal-policy.mjs';
@@ -20,9 +20,10 @@ async function receipt(file,context){
   const bytes=await descriptor.readFile();require(bytes.length<=65536,'receipt_file_invalid');return parseUniversalLocalJson(bytes);
  }finally{await descriptor.close();}
 }
-export async function runConnectorCli(argv){
+export async function runConnectorCli(argv,{afterJournal}={}){
  let lock,lockPath,universal;
  try{
+  require(afterJournal===undefined||typeof afterJournal==='function','journal_checkpoint_invalid');
   const [action,...rest]=argv,opts=Object.create(null);require(['prepare','promote'].includes(action)&&rest.length%2===0&&rest.length<=40);
   for(let i=0;i<rest.length;i+=2){const flag=rest[i];require(typeof flag==='string'&&flag.startsWith('--')&&flags.has(flag.slice(2))&&!Object.hasOwn(opts,flag.slice(2))&&typeof rest[i+1]==='string'&&rest[i+1].length>0);opts[flag.slice(2)]=rest[i+1];}
   require(opts.journal);
@@ -45,7 +46,7 @@ export async function runConnectorCli(argv){
   }
   const engine=new DockerApi(socket?{socketPath:socket}:{});
   const run=new Rollout({engine,maintenance:productionMaintenance(engine),ready:readiness(opts['health-origin']||'http://127.0.0.1:18182'),
-   universalMeasurement:universalMeasurement(engine),allowUniversalFixture:fixture,record:state=>journal(opts.journal,state)});
+   universalMeasurement:universalMeasurement(engine),allowUniversalFixture:fixture,record:createReleaseJournal(opts.journal,{afterJournal})});
   if(action==='prepare'){
    if(universal){await run.guard(args);const published=await universal.publishWitness();args.universalWitnessId=published.witnessId;}
    await run.prepare(args);

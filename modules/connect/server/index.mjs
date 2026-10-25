@@ -131,9 +131,9 @@ function publicError(error) {
   return { ok: false, error: { code: error instanceof ConnectError ? error.code : 'storage_unavailable',
     message: error instanceof ConnectError ? error.message : 'Connect storage is unavailable' } };
 }
-function extensionResult(result) {
+function extensionResult(result, maxBytes = MAX_ARGS_BYTES) {
   assert(record(result) && !Object.hasOwn(result, 'ok') && !Object.hasOwn(result, 'error'), 'invalid_extension_result');
-  assert(Buffer.byteLength(canonicalJson(result), 'utf8') <= MAX_ARGS_BYTES, 'extension_result_too_large');
+  assert(Buffer.byteLength(canonicalJson(result), 'utf8') <= maxBytes, 'extension_result_too_large');
   return result;
 }
 function extensionError(error) {
@@ -173,20 +173,23 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   assert(typeof initializePlatformInvitations === 'boolean', 'invalid_platform_initialization');
   assert(Array.isArray(platformAdminAccountIds) && platformAdminAccountIds.length <= 32 && platformAdminAccountIds.every(id => typeof id === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(id)), 'invalid_platform_admins');
   assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
-  const extensionOperations = new Map();
+  const extensionOperations = new Map(), extensionResultLimits = new Map();
   for (const extension of extensions) {
     const sync = extension && typeof extension.execute === 'function' && extension.execute.constructor.name !== 'AsyncFunction';
     const async = extension && typeof extension.executeAsync === 'function';
     assert(extension && extension.operations instanceof Set && ((sync && !extension.executeAsync) || (async && !extension.execute)), 'invalid_extension');
+    assert(extension.maxResultBytes === undefined || Number.isSafeInteger(extension.maxResultBytes)
+      && extension.maxResultBytes >= 1024 && extension.maxResultBytes <= 8 * 1024 * 1024, 'invalid_extension_result_limit');
     for (const operation of extension.operations) {
       assert(typeof operation === 'string' && /^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
         && operation.length <= 100 && !OPERATIONS.has(operation) && operation !== 'card.resolve'
         && !extensionOperations.has(operation), 'invalid_extension_operation');
       extensionOperations.set(operation, extension);
+      extensionResultLimits.set(operation, extension.maxResultBytes ?? MAX_ARGS_BYTES);
     }
   }
   const supports = operation => OPERATIONS.has(operation) || extensionOperations.has(operation);
-  const revocationListeners = new Set();
+  const revocationListeners = new Set(), accountListeners = new Set();
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') {
     assert(!moduleContains(file), 'database_must_be_outside_module');
@@ -533,7 +536,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           result.catch(() => {});
           fail('invalid_extension_result');
         }
-        return extensionResult(result);
+        return extensionResult(result, extensionResultLimits.get(op));
       } catch (error) {
         throw extensionError(error);
       } finally { activeActorRef = null; }
@@ -759,7 +762,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     projectId,
     schemaVersion: SCHEMA_VERSION,
     readerEpoch: READER_EPOCH,
-    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); } },
+    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); accountListeners.clear(); } },
     withAuthorityFence,
     withActorAuthorityFence,
     /** Host-only current reciprocal contact predicate inside this actor's fence.
@@ -780,6 +783,22 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       assert(typeof listener === 'function', 'invalid_listener');
       revocationListeners.add(listener);
       return () => revocationListeners.delete(listener);
+    },
+    /** Private host provisioning projection. This is not an RPC or actor grant.
+     * The accounts table is the durable work source; after-commit events only
+     * accelerate reconciliation and may be lost during process shutdown. */
+    listAccountIds({ after = '', limit = 100 } = {}) {
+      assert(typeof after === 'string' && (after === '' || /^acct_[A-Za-z0-9_-]{32}$/u.test(after)), 'invalid_account_cursor');
+      assert(Number.isSafeInteger(limit) && limit >= 1 && limit <= 500, 'invalid_account_limit');
+      return withAuthorityFence(() => Object.freeze(all('SELECT id FROM accounts WHERE id>? ORDER BY id LIMIT ?', after, limit).map(row => row.id)));
+    },
+    hasAccount(accountId) {
+      if (closed || typeof accountId !== 'string') return false;
+      return withAuthorityFence(() => Boolean(get('SELECT 1 FROM accounts WHERE id=?', accountId)));
+    },
+    subscribeAccountCreated(listener) {
+      assert(!closed && typeof listener === 'function', 'invalid_listener'); accountListeners.add(listener);
+      return () => accountListeners.delete(listener);
     },
     async handle(input) {
       try {
@@ -827,7 +846,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         const deviceId = deviceIdForKey(publicJwk);
         const signature = base64(proof.signature, 64, 'invalid_signature');
         const digest = sha256(argsJson);
-        let deferred = null;
+        let deferred = null, createdAccountId = null;
         const reply = transaction(() => {
           cleanup(timestamp);
           const challenge = get('SELECT * FROM challenges WHERE id=?', proof.challengeId);
@@ -854,8 +873,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
               db.exec('RELEASE connect_action');
               return { ok: true };
             }
+            const previousAccount = op === 'bootstrap' ? installation(deviceId)?.account_id : null;
             const result = act(op, args, { origin, publicJwk, publicJson, deviceId, digest }, timestamp);
             db.exec('RELEASE connect_action');
+            if (op === 'bootstrap' && !previousAccount) createdAccountId = result.accountId;
             return { ok: true, ...result };
           } catch (error) {
             db.exec('ROLLBACK TO connect_action');
@@ -863,13 +884,17 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             return publicError(error);
           }
         });
+        if (reply.ok && createdAccountId) {
+          const event = Object.freeze({ accountId: createdAccountId });
+          for (const listener of accountListeners) { try { listener(event); } catch { /* Reconciliation repairs missed delivery. */ } }
+        }
         if (reply.ok && deferred) {
           // Proof and rate limit are committed before external I/O. Never hold an SQLite
           // transaction across an await. Async modules recheck authorization at commit and
           // persist their own request IDs for safe retry after a lost network response.
           try {
             const value = await extensionOperations.get(op).executeAsync({ op, ...deferred });
-            return { ok: true, ...extensionResult(value) };
+            return { ok: true, ...extensionResult(value, extensionResultLimits.get(op)) };
           } catch (error) { return publicError(extensionError(error)); }
         }
         if (reply.ok && op === 'device.revoke') {

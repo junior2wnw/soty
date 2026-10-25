@@ -14,6 +14,7 @@ const parallelMetadataReads = new Set([
   'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list',
   // Startup polls and visible covers must not hold the field's identity queue.
   'call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox',
+  'ai.account.get', 'ai.keys.list',
 ]);
 
 function requiredString(value, name, max = 256) {
@@ -185,7 +186,9 @@ export function createClientWithStorage(options, storage) {
       response = await fetcher(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonicalJson({ protocol: 1, ...body }),
         credentials: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal });
       const text = await response.text();
-      if (text.length > 3 * 1024 * 1024) throw new ConnectError('INVALID_SERVER_RESPONSE', 'The server response was too large.');
+      const keyList = Boolean(body.proof && body.op === 'ai.keys.list'), maximum = (keyList ? 8 : 3) * 1024 * 1024;
+      if (text.length > maximum || keyList && new TextEncoder().encode(text).byteLength > maximum)
+        throw new ConnectError('INVALID_SERVER_RESPONSE', 'The server response was too large.');
       let value;
       try { value = JSON.parse(text); } catch { throw new ConnectError('INVALID_SERVER_RESPONSE', 'The server did not return JSON.'); }
       if (!response.ok || value?.ok !== true) {

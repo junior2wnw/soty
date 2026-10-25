@@ -31,11 +31,11 @@ function fixture(extra = {}) {
   return { host, panel, calls, retire: () => { current = false; }, action: id => host.all().find(node => node.dataset.accountAction === id), section: id => host.all().find(node => node.dataset.accountSection === id) };
 }
 
-test('one centre exposes five categories; appearance and notification categories reach the canonical editor directly', () => {
+test('one centre exposes scoped categories; appearance, notifications and accepted AI settings reach their canonical editors directly', () => {
   const f = fixture();
-  assert.equal(f.host.all().filter(node => node.dataset.accountSection).length, 5);
-  f.section('appearance').click(); f.section('notifications').click();
-  assert.deepEqual(f.calls, ['appearance', 'notifications']);
+  assert.equal(f.host.all().filter(node => node.dataset.accountSection).length, 6);
+  f.section('appearance').click(); f.section('notifications').click(); f.section('ai').click();
+  assert.deepEqual(f.calls, ['appearance', 'notifications', 'ai-api']);
   assert.ok(f.action('edit-profile')); assert.equal(f.host.all().filter(node => node.tagName === 'img').length, 0);
 });
 

@@ -85,6 +85,31 @@ test('product extension signs a captured payload with the existing browser ident
   client.dispose();
 });
 
+test('only signed key-list responses receive the larger finite browser response bound', async t => {
+  const payload = 'x'.repeat(4 * 1024 * 1024);
+  const f = fixture(t, { extensions: [{ operations: new Set(['ai.keys.list', 'world.large']), maxResultBytes: 8 * 1024 * 1024,
+    execute: () => ({ data: payload }) }] });
+  const { client } = f.client(); t.after(() => client.dispose()); const account = await client.bootstrap('A');
+  assert.equal((await client.extension('ai.keys.list', { expectedAccountId: account.accountId })).data.length, payload.length);
+  await assert.rejects(client.extension('world.large', {}), { code: 'INVALID_SERVER_RESPONSE' });
+  f.mutateResponse((body, result) => body.proof && body.op === 'ai.keys.list' ? { ok: true, data: 'x'.repeat(8 * 1024 * 1024) } : result);
+  await assert.rejects(client.extension('ai.keys.list', { expectedAccountId: account.accountId }), { code: 'INVALID_SERVER_RESPONSE' });
+});
+
+test('parallel AI metadata reads retain account and local-generation fences', async t => {
+  let enter, release; const entered = new Promise(done => { enter = done; }), gate = new Promise(done => { release = done; });
+  const f = fixture(t, { extensions: [{ operations: new Set(['ai.account.get', 'ai.keys.list']),
+    async executeAsync({ op, actor }) { if (op === 'ai.account.get') { enter(); await gate; } return { accountId: actor.accountId }; } }] });
+  const { client } = f.client(); t.after(() => { release(); client.dispose(); }); const account = await client.bootstrap('A');
+  const context = { expectedAccountId: account.accountId }, metadata = client.extension('ai.account.get', context, context); await entered;
+  try {
+    const keys = client.extension('ai.keys.list', context, context);
+    const result = await Promise.race([keys, new Promise((_, reject) => setTimeout(() => reject(new Error('key metadata waited for account metadata')), 500))]);
+    assert.equal(result.accountId, account.accountId);
+    await assert.rejects(client.extension('ai.keys.list', context, { expectedAccountId: 'acct_' + 'F'.repeat(32) }), { code: 'ACTIVE_PROFILE_CHANGED' });
+  } finally { release(); await metadata; }
+});
+
 test('browser/server canonical JSON, digest, key identity and native nonextractable keys agree', async t => {
   const value = { z: ['Ж', -0, true, null], a: { b: 2, a: 1 } };
   assert.equal(canonicalJson(value), serverCanonicalJson(value));

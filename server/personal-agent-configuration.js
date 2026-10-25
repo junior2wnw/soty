@@ -50,10 +50,11 @@ async function receiptJson(response) {
 /** Actual process-entry binding. Default OFF; no environment dump or credential generation.
  * The file is an explicit installed host billing/account allowlist, never proof of a live
  * Root actor, local device, Source grant or commerce key. Those services check current authority. */
-export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = fetch } = {}) {
+export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = fetch, accountAiMode = false } = {}) {
   try {
     const flag = field(env, 'SOTY_PERSONAL_AGENT_ENABLED'); need(['', '0', '1'].includes(flag));
-    if (flag !== '1') return { personalAgent: { enabled: false } };
+    if (flag !== '1' && !accountAiMode) return { personalAgent: { enabled: false } };
+    if (accountAiMode && !field(env, 'SOTY_PERSONAL_AGENT_CONFIG_FILE')) return { personalAgent: { enabled: true, historyEnabled: true } };
     const value = privateFile(field(env, 'SOTY_PERSONAL_AGENT_CONFIG_FILE'));
     fields(value, ['schema', 'gateway', 'accountIds'], ['localTargets', 'capacity', 'sourceAccess']); need(value.schema === 'soty.personal-agent-installed.v1');
     let agentSourceAccess;
@@ -70,6 +71,20 @@ export function loadPersonalAgentConfiguration(env = process.env, { fetchImpl = 
       fields(value.capacity, [], ['maxAccountContexts', 'maxRetainedTurns']);
       need(Object.values(value.capacity).every(limit => Number.isSafeInteger(limit) && limit >= 1 && limit <= 65536));
       capacity = Object.freeze({ ...value.capacity });
+    }
+    if (accountAiMode) {
+      const targets = new Map(), localTargets = value.localTargets ?? [];
+      need(Array.isArray(localTargets) && localTargets.length <= 128);
+      for (const entry of localTargets) {
+        fields(entry, ['accountId', 'hostDeviceId', 'connectorId', 'cwd']); identifier(entry.accountId, 96); identifier(entry.hostDeviceId, 180); identifier(entry.connectorId, 180);
+        need(!targets.has(entry.accountId) && typeof entry.cwd === 'string' && entry.cwd.length <= 2000 && entry.cwd === entry.cwd.trim()
+          && !/[\u0000-\u001f]/u.test(entry.cwd) && (path.posix.isAbsolute(entry.cwd) || path.win32.isAbsolute(entry.cwd)));
+        targets.set(entry.accountId, Object.freeze({ hostDeviceId: entry.hostDeviceId, connectorId: entry.connectorId, cwd: entry.cwd }));
+      }
+      // Preserve installed tools, encrypted Sources and capacity. Shared billing
+      // secrets and account admission do not participate in account AI mode.
+      return { ...(agentSourceAccess ? { agentSourceAccess } : {}), personalAgent: { enabled: true, historyEnabled: true,
+        ...(capacity ? { capacity } : {}), ...(targets.size ? { localTargetFor: ({ actor }) => targets.get(actor.accountId) ?? null } : {}) } };
     }
     fields(value.gateway, ['origin', 'billingTenant', 'inferenceBearer', 'managementSession']);
     const gateway = value.gateway, origin = new URL(gateway.origin);

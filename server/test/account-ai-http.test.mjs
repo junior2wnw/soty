@@ -1,0 +1,276 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer, request } from 'node:http';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { createHttpApp } from '../http-app.js';
+import { digestArgs } from '../../modules/connect/server/index.mjs';
+import { captureAccountAiConfiguration, ROOT_AI_ISSUER, GATEWAY_AI_ISSUER, GATEWAY_AI_AUDIENCE, ROOT_AI_AUDIENCE } from '../account-ai-configuration.js';
+import { createBridgeSigner, createBridgeVerifier } from '../../services/ai-gateway/packages/soty-bridge/index.mjs';
+import { createLocalAppsRuntime } from '../../scripts/agent-modules/local-apps.mjs';
+import { createSignedConnectHttpClient } from './support/signed-connect-client.mjs';
+import { createConnectorStore } from '../connector-store.js';
+import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
+import { gonkaModelLimitsFor } from '../../scripts/agent-modules/opencode-release.mjs';
+
+const MODEL = 'zai-org/GLM-5.3-Flash';
+const good = value => { assert.equal(value.ok, true, value.error?.code || value.error); return value; };
+const identity = () => { const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }); return { key: pair.privateKey, publicJwk: pair.publicKey.export({ format: 'jwk' }) }; };
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; };
+const body = { model: MODEL, messages: [{ role: 'user', content: 'Synthetic route test' }], stream: false };
+
+async function fixture(t, { applicationModels = [MODEL], accountEnabled = true } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'soty-account-ai-http-')), dist = join(directory, 'dist');
+  await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Account AI transport fixture</title>');
+  const rootKeys = generateKeyPairSync('ed25519'), gatewayKeys = generateKeyPairSync('ed25519'), nonce = new Set(), accounts = new Map();
+  const verify = createBridgeVerifier({ audience: GATEWAY_AI_AUDIENCE, issuers: [{ issuer: ROOT_AI_ISSUER, kid: 'fixture-root', publicKey: rootKeys.publicKey }], claimNonce(proof) { if (nonce.has(proof.jti)) return false; nonce.add(proof.jti); return true; } });
+  const signer = createBridgeSigner({ issuer: GATEWAY_AI_ISSUER, audience: ROOT_AI_AUDIENCE, kid: 'fixture-gateway', privateKey: gatewayKeys.privateKey });
+  const state = { dispatches: [], callbacks: [], bypass: 0, hold: null, origins: [], receipts: new Map(), keyRows: [] }, sockets = new Set(), runtimes = [];
+  let origin, app;
+  const gateway = createServer(async (req, res) => {
+    try {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk); const encoded = Buffer.concat(chunks).toString('utf8');
+      const proof = await verify.verify({ method: req.method, path: req.url, body: encoded, headers: req.headers });
+      res.setHeader('content-type', 'application/json');
+      if (req.url.endsWith('/accounts/ensure') || req.url.endsWith('/account')) {
+        if (!accounts.has(proof.accountId)) accounts.set(proof.accountId, { schema: 'soty.ai-account.v1', accountId: proof.accountId, state: 'ready',
+          defaultKey: { id: randomUUID(), name: 'Internal', status: 'active', createdAt: new Date().toISOString() },
+          allowance: { kind: 'included', unit: 'microrubles', grantedMicrorubles: '50000000', availableMicrorubles: '50000000', heldMicrorubles: '0', spentMicrorubles: '0', pendingMicrorubles: '0', limits: { dailyMicrorubles: '5000000' } },
+          usage: { requests: 0, tokens: 0, inputTokens: 0, outputTokens: 0 }, models: [{ id: MODEL, status: 'healthy' }], updatedAt: new Date().toISOString() });
+        res.end(JSON.stringify(accounts.get(proof.accountId))); return;
+      }
+      if (req.url.startsWith('/internal/soty/v1/requests/')) {
+        const receipt = state.receipts.get(proof.accountId + ':' + req.url.split('/').at(-1));
+        res.writeHead(receipt ? 200 : 404).end(JSON.stringify(receipt ? { request: receipt } : {})); return;
+      }
+      if (req.url === '/internal/soty/v1/keys') { res.end(JSON.stringify({ keys: state.keyRows })); return; }
+      if (req.url.endsWith('/chat/completions')) {
+        const input = JSON.parse(encoded), requestId = randomUUID();
+        if (state.hold) { const gate = state.hold; state.hold = null; gate.entered.resolve(); await gate.release.promise; }
+        const callback = JSON.stringify({ issuer: ROOT_AI_ISSUER, accountId: proof.accountId, deviceId: proof.deviceId, authorizationId: proof.authorizationId,
+          requestId: proof.requestId, gatewayRequestId: requestId, bodySha256: createHash('sha256').update(encoded).digest('hex'), providerId: 'synthetic', model: input.model });
+        const headers = signer.headers({ method: 'POST', path: '/internal/soty-ai/v1/authorize-dispatch', body: callback, operation: 'dispatch.authorize',
+          accountId: proof.accountId, deviceId: proof.deviceId, requestId: proof.requestId, authorizationId: proof.authorizationId });
+        const decision = await fetch(origin + '/internal/soty-ai/v1/authorize-dispatch', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: callback });
+        state.callbacks.push({ proof, status: decision.status });
+        if (decision.status !== 200) { res.writeHead(403).end('{"error":{"code":"authority_revoked"}}'); return; }
+        state.dispatches.push({ proof, body: input });
+        res.setHeader('x-soty-request-id', requestId);
+        if (Array.isArray(input.tools) && input.tools.some(tool => tool.function?.name === 'finish_answer')) {
+          state.receipts.set(proof.accountId + ':' + requestId, { id: requestId, logicalRequestId: proof.requestId, status: 'completed',
+            model_requested: MODEL, model_resolved: MODEL, input_tokens: '3', output_tokens: '2', charge_urub: '7' });
+          res.end(JSON.stringify({ id: 'synthetic-native-completion', model: MODEL,
+            choices: [{ index: 0, message: { role: 'assistant', tool_calls: [{ id: 'native-final', type: 'function', function: {
+              name: 'finish_answer', arguments: JSON.stringify({ answer: 'Подтверждённый личный ответ', selectedEvidenceIds: [], claims: [] }) } }] }, finish_reason: 'tool_calls' }],
+            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } })); return;
+        }
+        if (input.stream) { res.setHeader('content-type', 'text/event-stream'); res.write('data: {"choices":[{"delta":{"content":"сота"}}]}\n\n'); res.end('data: [DONE]\n\n'); }
+        else res.end(JSON.stringify({ model: input.model, choices: [{ message: { role: 'assistant', content: 'Synthetic account response' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+        return;
+      }
+      res.writeHead(404).end('{}');
+    } catch { if (!res.destroyed && !res.headersSent) res.writeHead(403).end('{}'); }
+  });
+  gateway.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  await new Promise(done => gateway.listen(0, '127.0.0.1', done)); const gatewayOrigin = `http://127.0.0.1:${gateway.address().port}`;
+  const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
+  server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  server.on('upgrade', (req, socket, head) => { if (!app?.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
+  await new Promise(done => server.listen(0, '127.0.0.1', done)); origin = `http://127.0.0.1:${server.address().port}`;
+  const sponsor = 'svc_' + 'S'.repeat(32), applicationToken = 'synthetic_application_token_'.padEnd(48, 'a'), legacyToken = randomBytes(32).toString('base64url');
+  const configuration = captureAccountAiConfiguration({ schema: 'soty.account-ai-installed.v1', issuer: ROOT_AI_ISSUER, gatewayOrigin,
+    signing: { kid: 'fixture-root', privateKey: rootKeys.privateKey.export({ format: 'pem', type: 'pkcs8' }) },
+    gatewaySigner: { issuer: GATEWAY_AI_ISSUER, kid: 'fixture-gateway', publicKey: gatewayKeys.publicKey.export({ format: 'pem', type: 'spki' }) },
+    applications: [{ appId: 'synthetic_app', accountId: sponsor, models: applicationModels }],
+    legacyConnectors: [{ connectorId: 'sponsored-connector', accountId: sponsor, models: [MODEL], tokenHash: createHash('sha256').update(legacyToken).digest('hex') }] }, { allowLoopbackFixture: true });
+  app = createHttpApp(dist, { env: {}, dataDir: join(directory, 'data'), connectOrigins: [origin], ...(accountEnabled ? { accountAi: configuration } : {}),
+    universalAppsEnabled: false, personalAgent: { enabled: false }, localExecutorCurrent: false,
+    appOriginTemplate: `http://{appId}.localhost:${server.address().port}`, appHosting: { domainProfile: 'separate-site', namedAppZone: '', discoveryOrigin: '' },
+    gonka: { baseUrl: 'https://must-not-call.invalid/v1', apiKey: 'synthetic-legacy-provider-key', applicationTokens: JSON.stringify({ synthetic_app: applicationToken }),
+      applicationTokensFile: '', fetchImpl: async () => { state.bypass++; throw Error('provider bypass forbidden'); } } });
+  t.after(async () => { state.hold?.release.resolve(); runtimes.forEach(runtime => runtime.stop()); await app.locals.closeServices(); sockets.forEach(socket => socket.destroy());
+    await Promise.all([new Promise(done => server.close(done)), new Promise(done => gateway.close(done))]);
+    const target = await realpath(directory); assert.equal(dirname(target), await realpath(tmpdir())); assert.match(target, /soty-account-ai-http-/u); await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  async function call(actor, op, args = {}) {
+    const post = value => fetch(origin + '/api/connect/rpc', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ protocol: 1, ...value }) }).then(response => response.json());
+    const challenge = good(await post({ op: 'challenge', args: { operation: op, digest: digestArgs(args) } }));
+    return post({ op, args, proof: { challengeId: challenge.challengeId, publicJwk: actor.publicJwk, signature: sign('sha256', Buffer.from(challenge.message), { key: actor.key, dsaEncoding: 'ieee-p1363' }).toString('base64url') } });
+  }
+  const alice = identity(), a = good(await call(alice, 'bootstrap', { label: 'A', encryptionPublicJwk: alice.publicJwk }));
+  const bob = identity(), b = good(await call(bob, 'bootstrap', { label: 'B', encryptionPublicJwk: bob.publicJwk }));
+  const store = app.locals.connectorService.store;
+  async function claimDevice({ binding, token }) {
+    const runtime = createLocalAppsRuntime({ randomSecret: () => randomBytes(32).toString('base64url'), digest: value => createHash('sha256').update(value).digest('hex'), createWebSocket: url => new globalThis.WebSocket(url), httpRequest: request,
+      encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') }, { identity: binding, token, serverUrl: origin });
+    runtimes.push(runtime); runtime.start(); const deadline = Date.now() + 5000;
+    while (!runtime.status().connected) { assert.ok(Date.now() < deadline); await new Promise(done => setTimeout(done, 10)); }
+    const proof = await runtime.claim(); good(await call(alice, 'apps.claim', { hostDeviceId: proof.hostDeviceId, connectorId: proof.connectorId, claimCode: proof.claimCode }));
+  }
+  async function device({ connectorId = randomUUID(), claim = false, token = connectorId === 'sponsored-connector' ? legacyToken : randomBytes(32).toString('base64url') } = {}) {
+    const binding = { linkId: randomBytes(32).toString('base64url'), hostDeviceId: 'fixture-host-' + randomUUID(), connectorId };
+    good(await fetch(origin + '/api/connectors/register', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ linkId: binding.linkId, deviceId: binding.hostDeviceId, connectorId, capabilities: ['agent', 'command', 'script'], agent: { id: 'opencode', provider: 'gonka', available: true } }) }).then(response => response.json()));
+    if (claim) await claimDevice({ binding, token });
+    return { token, binding, auth: { linkId: binding.linkId, deviceId: binding.hostDeviceId, connectorId, token }, target: { hostDeviceId: binding.hostDeviceId, connectorId } };
+  }
+  const model = (token, input = body, application = false) => fetch(origin + (application ? '/api/inference/v1' : '/api/connectors/gonka/v1') + '/chat/completions', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(input) });
+  return { origin, app, state, accounts, sponsor, applicationToken, alice, bob, a, b, call, device, claimDevice, model, store, dataDir: join(directory, 'data'),
+    removeClaim(source) { const db = new DatabaseSync(join(directory, 'data', 'apps', 'registry.sqlite'));
+      try { db.prepare('DELETE FROM app_devices WHERE connector_key=?').run([source.binding.linkId, source.binding.hostDeviceId, source.binding.connectorId].join('|')); } finally { db.close(); } },
+    hold() { const gate = { entered: deferred(), release: deferred() }; state.hold = gate; return gate; } };
+}
+
+test('actual Root composition automatically provisions signed accounts and enables native mode without old allowlist', async t => {
+  const f = await fixture(t); let actor; const original = f.app.locals.connectService.withActorAuthorityFence;
+  f.app.locals.connectService.withActorAuthorityFence = (value, action) => { actor = value; return original(value, action); };
+  const a = good(await f.call(f.alice, 'ai.account.get', { expectedAccountId: f.a.accountId }));
+  const b = good(await f.call(f.bob, 'ai.account.get', { expectedAccountId: f.b.accountId }));
+  assert.equal(a.state, 'ready'); assert.equal(b.state, 'ready'); assert.notEqual(a.defaultKey.id, b.defaultKey.id);
+  assert.equal(f.app.locals.personalAgent.status().configured, true); assert.equal(f.app.locals.personalAgent.modelEligible(actor), true);
+  assert.equal(f.state.bypass, 0);
+  const unsigned = await fetch(f.origin + '/internal/soty-ai/v1/authorize-dispatch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(unsigned.status, 403); assert.deepEqual(await unsigned.json(), { authorized: false });
+});
+
+test('real static application route preserves JSON/SSE and bills explicit service sponsor through final signed callback', async t => {
+  const f = await fixture(t);
+  const json = await f.model(f.applicationToken, body, true); assert.equal(json.status, 200); assert.equal((await json.json()).choices[0].message.content, 'Synthetic account response');
+  const stream = await f.model(f.applicationToken, { ...body, stream: true }, true); assert.equal(stream.status, 200); assert.match(stream.headers.get('content-type'), /text\/event-stream/u);
+  assert.equal(await stream.text(), 'data: {"choices":[{"delta":{"content":"сота"}}]}\n\ndata: [DONE]\n\n');
+  assert.equal(f.state.dispatches.length, 2);
+  for (const entry of f.state.dispatches) { assert.equal(entry.proof.accountId, f.sponsor); assert.equal(entry.proof.deviceId, 'service:application:synthetic_app'); }
+  assert.equal(f.state.bypass, 0);
+  for (const suffix of ['models', 'health']) {
+    const response = await fetch(f.origin + '/api/inference/v1/' + suffix, { headers: { authorization: 'Bearer ' + f.applicationToken } }); assert.equal(response.status, 200);
+    const value = await response.json(); assert.deepEqual((value.data ?? value.models).map(model => model.id), [MODEL]);
+  }
+});
+
+test('account MiniMax accepts the actual installed OpenCode output limit for static and owned clients, with strict neighboring bounds', async t => {
+  const model = 'MiniMaxAI/MiniMax-M2.7', maximum = gonkaModelLimitsFor(model).output;
+  assert.equal(maximum, 32768, 'a client output-limit change must deliberately update Root admission and finite gateway policy together');
+  const f = await fixture(t, { applicationModels: [MODEL, model] }), source = await f.device({ claim: true });
+  good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...source.target, requestId: 'minimax-client-request', conversationId: 'minimax-client-conversation', text: 'Synthetic task', cwd: '' }));
+  assert.equal(good(await f.store.poll(source.auth, 0)).jobs.length, 1);
+  for (const [token, application] of [[f.applicationToken, true], [source.token, false]]) for (const field of ['max_tokens', 'max_completion_tokens']) {
+    const accepted = await f.model(token, { ...body, model, [field]: maximum }, application); assert.equal(accepted.status, 200); assert.equal((await accepted.json()).model, model);
+    assert.equal(f.state.dispatches.at(-1).body[field], maximum); assert.equal(f.state.dispatches.at(-1).proof.accountId, application ? f.sponsor : f.a.accountId);
+    const count = f.state.dispatches.length;
+    const excessive = await f.model(token, { ...body, model, [field]: maximum + 1 }, application); assert.equal(excessive.status, 400); await excessive.text();
+    const glm = await f.model(token, { ...body, model: MODEL, [field]: gonkaModelLimitsFor(MODEL).output + 1 }, application); assert.equal(glm.status, 400); await glm.text();
+    assert.equal(f.state.dispatches.length, count, 'rejected limits never reach the account gateway');
+  }
+  assert.equal(f.state.bypass, 0);
+});
+
+test('legacy direct-provider mode retains the 8192 MiniMax ceiling', async t => {
+  const f = await fixture(t, { accountEnabled: false });
+  for (const field of ['max_tokens', 'max_completion_tokens']) {
+    const result = await f.model(f.applicationToken, { ...body, model: 'MiniMaxAI/MiniMax-M2.7', [field]: gonkaModelLimitsFor('MiniMaxAI/MiniMax-M2.7').output }, true);
+    assert.equal(result.status, 400); await result.text();
+  }
+  assert.equal(f.state.bypass, 0); assert.equal(f.state.dispatches.length, 0);
+});
+
+test('signed owner key-list supports 200 bounded full policies above the default Connect response cap', async t => {
+  const f = await fixture(t), allowedModels = Array.from({ length: 100 }, (_, index) => 'fixture-model-' + index + '-'.repeat(220));
+  f.state.keyRows = Array.from({ length: 200 }, (_, index) => ({ id: randomUUID(), name: 'Key ' + index, prefix: 'soty…test', status: index ? 'revoked' : 'active',
+    limits: { dailyMicrorubles: '1000000' }, allowedModels, policyRevision: 1 }));
+  assert.ok(Buffer.byteLength(JSON.stringify(f.state.keyRows)) > 2 * 1024 * 1024);
+  let stored = null;
+  const storage = { async read() { return structuredClone(stored); }, async claim(value) { stored ??= structuredClone(value); return structuredClone(stored); },
+    async compareAndSwap(revision, value) { assert.equal(stored.localRevision, revision); stored = structuredClone(value); return structuredClone(stored); } };
+  const client = createClientWithStorage({ projectId: 'soty', endpoint: f.origin + '/api/connect/rpc',
+    fetch: (url, init) => fetch(url, { ...init, headers: { ...init.headers, origin: f.origin } }) }, storage); t.after(() => client.dispose());
+  const account = await client.bootstrap('Large key-list browser');
+  const result = await client.extension('ai.keys.list', { expectedAccountId: account.accountId }); assert.equal(result.keys.length, 200); assert.equal(result.keys[0].status, 'active');
+  assert.deepEqual(result.keys[199].allowedModels, allowedModels);
+});
+
+test('actual native agent.turn uses exact GLM bridge and settled owner receipt before user answer/history; second device shares account', async t => {
+  const f = await fixture(t), one = createSignedConnectHttpClient({ origin: f.origin }), second = createSignedConnectHttpClient({ origin: f.origin });
+  const account = await one.bootstrap('Native account'), start = await second.enrollmentStart('Second device');
+  await one.call('enrollment.approve', { requestId: start.requestId, wrappedKey: { schema: 'fixture.encrypted', ciphertext: 'opaque-fixture' } });
+  await second.call('enrollment.finish', { requestId: start.requestId, expectedAccountId: account.accountId });
+  const before = await one.call('ai.account.get', { expectedAccountId: account.accountId });
+  const answer = await one.call('agent.turn', { requestId: 'native-user-turn', prompt: 'Составь короткую фразу.' });
+  assert.equal(answer.status, 'complete'); assert.equal(answer.answer, 'Подтверждённый личный ответ');
+  const native = f.state.dispatches.at(-1); assert.equal(native.proof.accountId, account.accountId); assert.equal(native.body.model, MODEL); assert.equal(native.body.autoFallback, false);
+  assert.equal(f.state.receipts.size, 1);
+  const after = await second.call('ai.account.get', { expectedAccountId: account.accountId }); assert.equal(before.defaultKey.id, after.defaultKey.id);
+  const notes = await second.call('notes.list', { expectedAccountId: account.accountId }); assert.equal(notes.notes.length, 1);
+  const foreign = good(await f.call(f.bob, 'notes.list', { expectedAccountId: f.b.accountId })); assert.equal(foreign.notes.length, 0);
+  assert.equal(f.state.bypass, 0);
+});
+
+test('unowned device fails closed while explicit legacy sponsor and owned leased job use distinct validated billing identities', async t => {
+  const f = await fixture(t), unknown = await f.device();
+  const denied = await f.model(unknown.token, { ...body, accountId: f.a.accountId }); assert.equal(denied.status, 403); await denied.text(); assert.equal(f.state.dispatches.length, 0);
+  const sponsored = await f.device({ connectorId: 'sponsored-connector' });
+  const sponsor = await f.model(sponsored.token); assert.equal(sponsor.status, 200); await sponsor.text(); assert.equal(f.state.dispatches.at(-1).proof.accountId, f.sponsor);
+  const owned = await f.device({ claim: true });
+  const queued = good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...owned.target, requestId: 'owned-model-request', conversationId: 'owned-conversation', text: 'Synthetic task', cwd: '' }));
+  const beforeLease = await f.model(owned.token); assert.equal(beforeLease.status, 403); await beforeLease.text();
+  const lease = good(await f.store.poll(owned.auth, 0)); assert.equal(lease.jobs.length, 1);
+  const result = await f.model(owned.token, { ...body, accountId: f.b.accountId }); assert.equal(result.status, 200); await result.text();
+  assert.equal(f.state.dispatches.at(-1).proof.accountId, f.a.accountId); assert.equal(f.state.dispatches.at(-1).proof.deviceId, f.a.deviceId);
+  assert.equal(f.state.bypass, 0);
+});
+
+test('real queued connector cancellation invalidates final callback before any upstream work', async t => {
+  const f = await fixture(t), owned = await f.device({ claim: true });
+  good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...owned.target, requestId: 'queued-cancel-request', conversationId: 'queued-conversation', text: 'Synthetic task', cwd: '' }));
+  const lease = good(await f.store.poll(owned.auth, 0)).jobs[0], gate = f.hold(), pending = f.model(owned.token); await gate.entered.promise;
+  good(await f.call(f.alice, 'apps.agent.cancel', { expectedAccountId: f.a.accountId, ...owned.target, jobId: lease.id })); gate.release.resolve();
+  const response = await pending; assert.equal(response.status, 403); await response.text(); assert.equal(f.state.dispatches.length, 0);
+  assert.equal(f.state.bypass, 0);
+});
+
+test('legacy sponsorship requires the exact pinned installation secret, not a self-registered connector id', async t => {
+  const f = await fixture(t), attacker = await f.device({ connectorId: 'sponsored-connector', token: randomBytes(32).toString('base64url') });
+  const result = await f.model(attacker.token); assert.equal(result.status, 403); await result.text();
+  assert.equal(f.state.dispatches.length, 0); assert.equal(f.state.bypass, 0);
+});
+
+test('actual Root deployment maintenance keeps account reads available and blocks new native, service and key work', async t => {
+  const f = await fixture(t); await writeFile(f.store.maintenancePath, '{}');
+  const status = good(await f.call(f.alice, 'ai.account.get', { expectedAccountId: f.a.accountId })); assert.equal(status.state, 'ready');
+  const mutation = await f.call(f.alice, 'ai.keys.create', { expectedAccountId: f.a.accountId, operationId: 'maintenance-create', name: 'Maintenance key' }); assert.equal(mutation.error.code, 'ai_maintenance');
+  const service = await f.model(f.applicationToken, body, true); assert.equal(service.status, 503); await service.text();
+  const native = await f.call(f.alice, 'agent.turn', { requestId: 'maintenance-native', prompt: 'Draft a phrase.' }); assert.equal(native.ok, false);
+  assert.equal(f.app.locals.accountAi.admissionStatus().accepting, false); assert.equal(f.state.dispatches.length, 0); assert.equal(f.state.bypass, 0);
+  await rm(f.store.maintenancePath);
+  const admitted = await f.model(f.applicationToken, body, true); assert.equal(admitted.status, 200); await admitted.text();
+});
+
+test('claim without any owner job retires legacy sponsor authority permanently across removal, registration and reload', async t => {
+  const f = await fixture(t), source = await f.device({ connectorId: 'sponsored-connector' });
+  const before = await f.model(source.token); assert.equal(before.status, 200); await before.text();
+  await f.claimDevice(source);
+  const denied = await f.model(source.token); assert.equal(denied.status, 403); await denied.text();
+  assert.equal(f.store.state.jobs.length, 0); assert.equal(f.store.state.connectors[0].accountOwned, true);
+  f.removeClaim(source);
+  good(await f.store.register({ linkId: source.binding.linkId, deviceId: source.binding.hostDeviceId, connectorId: source.binding.connectorId,
+    accountOwned: false, capabilities: ['agent'], agent: { id: 'opencode', provider: 'gonka', available: true } }, source.token));
+  const after = await f.model(source.token); assert.equal(after.status, 403); await after.text(); assert.equal(f.state.dispatches.length, 1);
+  await f.store.close();
+  const reloaded = createConnectorStore(f.dataDir, { legacyModelSponsorEligible: () => true });
+  try { await reloaded.ready; assert.equal(reloaded.state.connectors[0].accountOwned, true); assert.equal(await reloaded.captureLegacyModelAuthorization(source.token), false); }
+  finally { await reloaded.close(); }
+});
+
+test('a cancelled owned lease never switches the same pinned credential to legacy sponsor billing', async t => {
+  const f = await fixture(t), source = await f.device({ connectorId: 'sponsored-connector', claim: true });
+  good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...source.target, requestId: 'sponsor-owned-request', conversationId: 'sponsor-owned-conversation', text: 'Synthetic task', cwd: '' }));
+  const lease = good(await f.store.poll(source.auth, 0)).jobs[0], authority = await f.store.captureModelAuthorization(source.token);
+  const result = await f.model(source.token); assert.equal(result.status, 200); await result.text(); assert.equal(f.state.dispatches.at(-1).proof.accountId, f.a.accountId);
+  good(await f.call(f.alice, 'apps.agent.cancel', { expectedAccountId: f.a.accountId, ...source.target, jobId: lease.id }));
+  assert.equal(authority.assertCurrent(), false);
+  const denied = await f.model(source.token); assert.equal(denied.status, 403); await denied.text();
+  f.removeClaim(source);
+  const removed = await f.model(source.token); assert.equal(removed.status, 403); await removed.text(); assert.equal(f.state.dispatches.length, 1);
+});

@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createInferenceRelay, createProviderQueue } from "./inference-relay.js";
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 
 export const defaultGonkaProxyModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
 export const miniMaxProxyModel = "MiniMaxAI/MiniMax-M2.7";
@@ -13,6 +15,7 @@ const maxConcurrentPerInstallation = 100;
 
 export function createGonkaProxy({
   store,
+  accountAi,
   baseUrl = process.env.SOTY_GONKA_BASE_URL || "https://gate.joingonka.ai/v1",
   apiKey = process.env.SOTY_GONKA_API_KEY || "",
   model = defaultGonkaProxyModel,
@@ -33,6 +36,7 @@ export function createGonkaProxy({
   onEvent = process.env.SOTY_GONKA_LOG_METRICS === "1" ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`) : undefined,
   fetchImpl = fetch
 } = {}) {
+  if (accountAi) return createAccountModelProxy({ store, accountAi });
   const upstreamBaseUrl = safeUpstreamBaseUrl(baseUrl);
   const upstreamKey = safeSecret(apiKey);
   const requestTimeoutMs = safeInteger(timeoutMs, 10_000, 10 * 60_000, 55_000);
@@ -151,7 +155,7 @@ export function createApplicationTokenAuthenticator(
   const environmentEntries = applicationTokenEntries(value);
   const fileResult = applicationTokenFileEntries(filePath);
   const entries = fileResult.ok ? mergeApplicationTokenEntries(environmentEntries, fileResult.entries) : [];
-  const authenticate = async (token) => {
+  const current = (token) => {
     if (!token) return false;
     const digest = createHash("sha256").update(token).digest();
     for (const entry of entries) {
@@ -159,8 +163,82 @@ export function createApplicationTokenAuthenticator(
     }
     return false;
   };
+  const authenticate = async token => current(token);
+  authenticate.current = current;
   authenticate.ready = entries.length > 0;
   return authenticate;
+}
+
+/** Enabled account mode has no direct-provider relay or shared bearer fallback.
+ * The existing endpoints and JSON/SSE bodies remain OpenAI compatible. */
+export function createAccountModelProxy({ store, accountAi }) {
+  const ready = Boolean(store && accountAi?.configured), models = [...supportedModels];
+  async function capture(req, authenticateToken) {
+    const token = bearerToken(req);
+    if (!ready || !token) throw Object.assign(new Error('model-authorization-denied'), { status: ready ? 401 : 503 });
+    const authorization = await (authenticateToken ? authenticateToken(token) : store.captureModelAuthorization(token));
+    if (authenticateToken) {
+      if (typeof authorization !== 'string' || typeof authenticateToken.current !== 'function') throw Object.assign(new Error('model-authorization-denied'), { status: 403 });
+      return accountAi.captureApplication(authorization, () => authenticateToken.current(token) === authorization);
+    }
+    if (authorization && typeof authorization === 'object') return accountAi.captureConnector(authorization);
+    const legacy = await store.captureLegacyModelAuthorization(token);
+    return accountAi.captureConnector(legacy);
+  }
+  function denied(res, error) {
+    if (res.headersSent || res.destroyed) { if (!res.destroyed) res.end(); return; }
+    respondJson(res, error?.status || 403, { error: { message: 'model-account-access-unavailable', type: 'account_access_error' } });
+  }
+  return {
+    ready, model: defaultGonkaProxyModel, upstreamModel: defaultGonkaProxyModel, providerStrategy: 'account-gateway',
+    models, routing: 'client-choice', transport: 'account-scoped-server-bridge', upstreamStatus: () => [],
+    async handleModels(req, res, { authenticateToken } = {}) {
+      try { const bound = await capture(req, authenticateToken); bound.guard();
+        respondJson(res, 200, { object: 'list', data: models.filter(id => !bound.allowedModels || bound.allowedModels.includes(id)).map(id => ({ id, object: 'model', created: 0, owned_by: 'soty' })) }); }
+      catch (error) { denied(res, error); }
+    },
+    async handleHealth(req, res, { authenticateToken } = {}) {
+      try { const bound = await capture(req, authenticateToken); bound.guard();
+        respondJson(res, 200, { ok: true, configured: true, routing: 'client-choice', providerStrategy: 'account-gateway', liveProbe: false,
+          models: models.filter(id => !bound.allowedModels || bound.allowedModels.includes(id)).map(id => ({ id, providers: [] })) }); }
+      catch (error) { denied(res, error); }
+    },
+    async handleChatCompletions(req, res, { authenticateToken } = {}) {
+      let bound;
+      try { bound = await capture(req, authenticateToken); bound.guard(); } catch (error) { denied(res, error); return; }
+      const body = cleanChatRequest(req.body, { accountMode: true });
+      if (!body) { respondJson(res, 400, { error: { message: 'invalid-model-request', type: 'invalid_request_error' } }); return; }
+      if (Buffer.byteLength(JSON.stringify(body)) > maxRequestBytes) { respondJson(res, 413, { error: { message: 'model-request-too-large', type: 'invalid_request_error' } }); return; }
+      const suppliedId = req.headers['idempotency-key'];
+      if (suppliedId !== undefined && (typeof suppliedId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/u.test(suppliedId))) {
+        respondJson(res, 400, { error: { message: 'invalid-idempotency-key', type: 'invalid_request_error' } }); return;
+      }
+      const requestId = 'proxy-' + createHash('sha256').update(JSON.stringify({ accountId: bound.accountId, deviceId: bound.deviceId, id: suppliedId ?? randomUUID() })).digest('hex');
+      const controller = new AbortController(), disconnected = () => controller.abort();
+      res.once('close', disconnected); let reader;
+      try {
+        const response = await bound.complete({ requestId, body: { ...body, autoFallback: body.autoFallback ?? true }, signal: controller.signal });
+        bound.guard();
+        if (res.destroyed || controller.signal.aborted) { await response.body?.cancel(); return; }
+        res.status(response.status); res.setHeader('Cache-Control', 'no-store');
+        for (const header of ['content-type', 'x-soty-request-id', 'x-actual-model', 'x-soty-cost-microrubles', 'x-idempotent-replay', 'retry-after']) {
+          const value = response.headers.get(header); if (value) res.setHeader(header, value);
+        }
+        if (response.body) {
+          reader = response.body.getReader();
+          for (;;) { bound.guard(); const { done, value } = await reader.read(); bound.guard();
+            if (done) break; if (controller.signal.aborted || res.destroyed) break;
+            if (!res.write(value)) await once(res, 'drain', { signal: controller.signal }); }
+        }
+        if (!res.destroyed) res.end();
+      } catch (error) {
+        if (!res.headersSent) denied(res, error); else if (!res.destroyed) res.destroy();
+      } finally {
+        controller.abort(); res.removeListener('close', disconnected);
+        try { await reader?.cancel(); } catch {} reader?.releaseLock();
+      }
+    },
+  };
 }
 
 function applicationTokenFileEntries(filePath) {
@@ -228,14 +306,15 @@ function uniqueApplicationTokenEntries(entries) {
   return { ok: true, entries };
 }
 
-function cleanChatRequest(value) {
+function cleanChatRequest(value, { accountMode = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const selectedModel = resolveClientModel(value.model);
   if (!selectedModel || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 2_048) return null;
   if (value.stream != null && typeof value.stream !== "boolean") return null;
   if (value.n != null && value.n !== 1) return null;
+  const maximumOutput = accountMode && selectedModel === miniMaxProxyModel ? 32_768 : 8_192;
   for (const name of ["max_tokens", "max_completion_tokens"]) {
-    if (value[name] != null && (!Number.isSafeInteger(value[name]) || value[name] < 1 || value[name] > 8_192)) return null;
+    if (value[name] != null && (!Number.isSafeInteger(value[name]) || value[name] < 1 || value[name] > maximumOutput)) return null;
   }
   const body = { ...value, model: selectedModel };
   if (selectedModel === miniMaxProxyModel && Array.isArray(value.tools)) {

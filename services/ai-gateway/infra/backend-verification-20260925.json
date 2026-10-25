@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-24T21:31:43.131Z",
+  "status": "passed",
+  "host": "ssh dev",
+  "runner": "node:24-alpine isolated Docker runner",
+  "nodeVersion": "v24.21.0",
+  "command": "npm test",
+  "resolvedCommand": "node --test tests/backend/*.test.mjs tests/connector/*.test.mjs tests/installation/*.test.mjs",
+  "database": {
+    "kind": "PostgreSQL",
+    "database": "inference_test",
+    "dedicated": true,
+    "isolatedSchema": true,
+    "schemaCleanupPassed": true
+  },
+  "results": {
+    "tests": 52,
+    "pass": 52,
+    "fail": 0,
+    "skipped": 0,
+    "cancelled": 0,
+    "todo": 0,
+    "durationMilliseconds": 2510.558598
+  },
+  "groups": {
+    "backend": 24,
+    "connector": 26,
+    "installation": 2
+  },
+  "sourceSnapshotSha256": "e28928ddead32e18ff58a365f8f199692b287550f4b4ada72932e25fc390d120",
+  "latestCalendarRangeChecks": true,
+  "ledgerMigration004Checked": true,
+  "realProviderCalls": 0,
+  "credentialsRecorded": false,
+  "qualificationMigration005Checked": true,
+  "qualificationPersistenceWithoutFakeHealth": true,
+  "probeSubcap": {
+    "probeMicrorubles": "10000000",
+    "globalMicrorubles": "50000000",
+    "customerHeadroomVerified": true,
+    "timezone": "Asia/Yekaterinburg"
+  }
+}

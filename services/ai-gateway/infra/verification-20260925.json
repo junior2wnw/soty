@@ -1,0 +1,64 @@
+{
+  "checked_at_utc": "2026-09-24T21:18:00Z",
+  "public_site": "https://inference.pochinit.online",
+  "public_root_http": 200,
+  "public_readyz_http": 200,
+  "trusted_tls_verified_from_windows": true,
+  "caddy": {
+    "version": "2.11.2",
+    "reload": "SIGUSR1",
+    "main_pid_before_and_after": 3768,
+    "other_hostname_blocks_preserved": true,
+    "previous_config_encrypted_backup": "soty:/var/backups/inference-commerce/caddy-20260924T211048Z-0e99db1b.aead"
+  },
+  "legacy_inventory": {
+    "actual_source": "SSH dev soty-online-chat",
+    "source_revision": "d9585cd2285e2f2288f607c86356848a6c9cc127",
+    "timeweb_role": "existing reverse proxy to DEV",
+    "application_credentials": 4,
+    "agent_bindings": 16,
+    "unique_agent_credentials": 6,
+    "fingerprints_match_source": true,
+    "old_legacy_http_without_credential": 401,
+    "old_legacy_routes_changed_by_this_deployment": false
+  },
+  "monitoring": {
+    "enabled": true,
+    "evaluation_interval_seconds": 10,
+    "maximum_inflight_probes": 2,
+    "daily_global_service_budget_urub": "50000000",
+    "probe_reservation_urub": "50000",
+    "cost_basis": "configured retail estimate, not confirmed upstream invoice",
+    "sample_probe_observations": 15,
+    "sample_successes": 14,
+    "sample_errors": 1,
+    "sample_service_spent_urub": "192600",
+    "sample_service_held_urub": "0"
+  },
+  "backup_restore": {
+    "encrypted_artifact": "soty:/var/backups/inference-commerce/inference-20260924T211708Z-6ab8ef07.pgdump.aead",
+    "ciphertext_bytes": 58663,
+    "encryption": "AES-256-GCM",
+    "key_protection": "Windows DPAPI current user; outside repository and both servers",
+    "authenticated_roundtrip": true,
+    "isolated_restore_passed": true,
+    "restored_schema_migrations": 4,
+    "restored_tenants": 14,
+    "restored_keys": 12,
+    "restored_credentials": 12,
+    "restored_ledger_transactions": 2,
+    "unbalanced_transactions": 0,
+    "wallet_mismatches": 0,
+    "invalid_holds": 0,
+    "temporary_restore_databases_remaining": 0,
+    "automatic_schedule_configured": false,
+    "rpo": "time since the latest manual backup"
+  },
+  "connector_tests": {
+    "command": "node --test tests/connector/connector.test.mjs",
+    "passed": 21,
+    "failed": 0,
+    "external_paid_requests": 0
+  },
+  "note": "This is a dated verification receipt, not live UI seed data or a public SLA. The final application release is recorded separately."
+}

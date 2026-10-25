@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-24T21:34:21.735Z",
+  "site": "https://inference.pochinit.online/",
+  "status": "passed",
+  "testedBuild": {
+    "javascript": "index-DhjI7DrA.js",
+    "stylesheet": "index-CWqnTvBR.css",
+    "releaseId": "pilot-20260925-e"
+  },
+  "geometry": [
+    {
+      "width": 1536,
+      "height": 1024,
+      "clientWidth": 1536,
+      "scrollWidth": 1536,
+      "scrollHeight": 1024,
+      "models": {
+        "x": 64,
+        "y": 139,
+        "width": 459.33,
+        "height": 120
+      },
+      "spend": {
+        "x": 64,
+        "y": 285,
+        "width": 855.77,
+        "height": 506
+      },
+      "connect": {
+        "x": 933.77,
+        "y": 285,
+        "width": 538.22,
+        "height": 506
+      },
+      "keys": {
+        "x": 64,
+        "y": 806,
+        "width": 1408,
+        "height": 181
+      },
+      "metricDividerX": 427.41,
+      "bars": 7
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 1079,
+      "models": {
+        "x": 12,
+        "y": 84,
+        "width": 366,
+        "height": 87
+      },
+      "spend": {
+        "x": 12,
+        "y": 515,
+        "width": 366,
+        "height": 344
+      },
+      "connect": {
+        "x": 12,
+        "y": 376,
+        "width": 366,
+        "height": 123
+      },
+      "keys": {
+        "x": 12,
+        "y": 868,
+        "width": 366,
+        "height": 166
+      },
+      "metricDividerX": 195,
+      "bars": 7
+    },
+    {
+      "width": 320,
+      "height": 780,
+      "clientWidth": 320,
+      "scrollWidth": 320,
+      "scrollHeight": 1095,
+      "models": {
+        "x": 10,
+        "y": 84,
+        "width": 300,
+        "height": 87
+      },
+      "spend": {
+        "x": 10,
+        "y": 515,
+        "width": 300,
+        "height": 344
+      },
+      "connect": {
+        "x": 10,
+        "y": 376,
+        "width": 300,
+        "height": 123
+      },
+      "keys": {
+        "x": 10,
+        "y": 868,
+        "width": 300,
+        "height": 182
+      },
+      "metricDividerX": 160,
+      "bars": 7
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "clientWidth": 768,
+      "scrollWidth": 768,
+      "scrollHeight": 1024,
+      "models": {
+        "x": 32,
+        "y": 139,
+        "width": 228,
+        "height": 120
+      },
+      "spend": {
+        "x": 32,
+        "y": 285,
+        "width": 369.06,
+        "height": 506
+      },
+      "connect": {
+        "x": 415.06,
+        "y": 285,
+        "width": 320.92,
+        "height": 506
+      },
+      "keys": {
+        "x": 32,
+        "y": 806,
+        "width": 704,
+        "height": 181
+      },
+      "metricDividerX": 190.03,
+      "bars": 7
+    }
+  ],
+  "keyboard": {
+    "backgroundInert": true,
+    "nameFocused": true,
+    "wrappedToSubmit": true,
+    "wrappedToClose": true,
+    "focusRestored": true,
+    "arrowNavigation": true
+  },
+  "mobileSheet": {
+    "width": 390,
+    "viewport": 390,
+    "overflow": false
+  },
+  "keyLifecycle": {
+    "initialFocusOnName": true,
+    "createdMasked": true,
+    "expirySaved": true,
+    "dailyLimitSaved": true,
+    "rpmSaved": true,
+    "initialModelsStatus": 200,
+    "rotationConfirmationVisible": true,
+    "rotatedMasked": true,
+    "secretChanged": true,
+    "sameKeyAndAccounting": true,
+    "oldDuringOverlapStatus": 200,
+    "newAfterRotationStatus": 200,
+    "revoked": true,
+    "oldAfterRevokeStatus": 401,
+    "newAfterRevokeStatus": 401
+  },
+  "pwa": {
+    "freshContext": true,
+    "cacheCount": 1,
+    "scriptCount": 1,
+    "styleCount": 1,
+    "apiCount": 0,
+    "shellCached": true,
+    "controlled": true,
+    "offlineShellRendered": true,
+    "offlineNoticeShown": true,
+    "fakeDataAbsent": true
+  },
+  "workspace": {
+    "racePersisted": true,
+    "racePersistedAfterReload": true,
+    "fallbackRestored": true,
+    "reloadDisplayBugFound": true,
+    "sourceFixApplied": true,
+    "retestPending": false
+  },
+  "safety": {
+    "inferenceRequestsMade": 0,
+    "secretsWrittenToFiles": false,
+    "testKeysCreated": 1,
+    "testKeysRevoked": 1,
+    "secretSnapshotsTaken": 0
+  },
+  "screenshots": [
+    "frontend-1536-final.png",
+    "frontend-390-final.png"
+  ],
+  "baselineBuild": {
+    "javascript": "index-ubg1nxhj.js",
+    "sameStylesheet": true,
+    "checks": [
+      "geometry",
+      "key_lifecycle",
+      "keyboard"
+    ],
+    "codeChangedAfterBaseline": "Workspace setting state synchronizes after dashboard arrives on reload."
+  }
+}

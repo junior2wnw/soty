@@ -1,9 +1,9 @@
 import './account-center.css';
 import { avatar, button, el } from './dom';
 
-export type AccountSection = 'profile' | 'notifications' | 'appearance' | 'security' | 'data';
+export type AccountSection = 'profile' | 'notifications' | 'appearance' | 'ai' | 'security' | 'data';
 export type AccountAction = 'edit-profile' | 'profile-visibility' | 'switch-profile' | 'appearance' | 'notifications'
-  | 'auth-devices' | 'recovery' | 'data-export' | 'agent-access' | 'device-status' | 'help' | 'developers';
+  | 'auth-devices' | 'recovery' | 'data-export' | 'ai-api' | 'agent-access' | 'device-status' | 'help' | 'developers';
 export interface AccountCenterOptions {
   host: HTMLElement;
   identity: { displayName: string; bio?: string; avatarUrl?: string | null; profileId?: string; avatarRevision?: number | null; color?: string };
@@ -25,6 +25,7 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     ['profile', 'Профиль', 'person', 'Имя, фото и видимость для других людей'],
     ['notifications', 'Уведомления', 'bell', 'Получение уведомлений на этом устройстве'],
     ['appearance', 'Вид и управление', 'sun', 'Тема и управление в этом браузере'],
+    ['ai', 'ИИ и API', 'assistant', 'Использование ИИ и ключи API этого профиля'],
     ['security', 'Безопасность', 'shield', 'Входы в профиль и разрешённые действия'],
     ['data', 'Данные и помощь', 'folder', 'Копии, состояние Сот и поддержка'],
   ];
@@ -53,10 +54,12 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     } else if (section === 'notifications') {
       action('notifications', 'Настроить уведомления', 'bell', 'Этот профиль и этот браузер');
       body.append(el('p', 'sw-muted', 'Тихий режим отдельного разговора меняется в самом разговоре.'));
+    } else if (section === 'ai') {
+      action('ai-api', 'ИИ и API', 'assistant', 'Использование ИИ и ключи API этого профиля');
     } else if (section === 'security') {
       action('auth-devices', 'Устройства входа', 'phone', 'Устройства с доступом к этому профилю');
       action('recovery', 'Восстановление профиля', 'lock', 'Запасной способ входа · это не копия данных');
-      action('agent-access', 'Приложения и ИИ', 'shield', 'Разрешения, сроки и история действий');
+      action('agent-access', 'Разрешения приложений', 'shield', 'Разрешения, сроки и история действий');
       body.append(el('p', 'sw-muted', 'Компьютеры, где работают приложения, находятся в управлении размещением. Отзыв входа и выключение компьютера — разные действия.'));
     } else {
       action('device-status', 'Соты на этом устройстве', 'phone', 'Установка, обновление и доступность без сети');
@@ -70,6 +73,7 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     // Frequent categories lead straight to their canonical editor, without an extra landing page.
     if (next === 'appearance' && available('appearance')) { invoke('appearance'); return; }
     if (next === 'notifications' && available('notifications')) { invoke('notifications'); return; }
+    if (next === 'ai' && available('ai-api')) { invoke('ai-api'); return; }
     section = next; render();
   };
   for (const [id, label, icon, hint] of sections) {
