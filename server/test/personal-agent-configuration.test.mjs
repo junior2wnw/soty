@@ -42,6 +42,21 @@ test('private process entry defaults off without reading any config or activatin
   for (const value of ['true', ' 1', '2']) assert.throws(() => loadPersonalAgentConfiguration({ SOTY_PERSONAL_AGENT_ENABLED: value }), closed);
 });
 
+test('account mode preserves installed tools and encrypted Sources while discarding legacy billing admission', async t => {
+  const f = await files(t), value = profile(), sourceKey = Buffer.alloc(32, 7).toString('base64url');
+  value.capacity = { maxRetainedTurns: 256 };
+  value.sourceAccess = { schema: 1, keyId: 'fixture-source-key', key: sourceKey };
+  value.gateway = null; value.accountIds = [];
+  await f.save(value);
+  const configuration = loadPersonalAgentConfiguration({ ...f.env, SOTY_PERSONAL_AGENT_ENABLED: '0' }, { accountAiMode: true });
+  assert.equal(configuration.personalAgent.enabled, true); assert.equal(configuration.personalAgent.gateway, undefined);
+  assert.deepEqual(configuration.personalAgent.capacity, value.capacity);
+  assert.equal(configuration.personalAgent.localTargetFor({ actor: { accountId: 'fixture_owner_A' } }).cwd, 'C:\\fixture-workspace');
+  assert.equal(configuration.agentSourceAccess.key.toString('base64url'), sourceKey);
+  assert.equal(JSON.stringify(configuration.personalAgent).includes('inferenceBearer'), false);
+  assert.deepEqual(loadPersonalAgentConfiguration({}, { accountAiMode: true }), { personalAgent: { enabled: true, historyEnabled: true } });
+});
+
 test('installed billing/account/device options are exact private closures and never payload authority', async t => {
   const f = await files(t); await f.save(profile()); const { personalAgent: config } = loadPersonalAgentConfiguration(f.env);
   assert.equal(config.enabled, true); assert.equal(config.historyEnabled, true);

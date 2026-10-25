@@ -186,7 +186,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
   }
   const supports = operation => OPERATIONS.has(operation) || extensionOperations.has(operation);
-  const revocationListeners = new Set();
+  const revocationListeners = new Set(), accountListeners = new Set();
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') {
     assert(!moduleContains(file), 'database_must_be_outside_module');
@@ -759,7 +759,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     projectId,
     schemaVersion: SCHEMA_VERSION,
     readerEpoch: READER_EPOCH,
-    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); } },
+    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); accountListeners.clear(); } },
     withAuthorityFence,
     withActorAuthorityFence,
     /** Host-only current reciprocal contact predicate inside this actor's fence.
@@ -780,6 +780,22 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
       assert(typeof listener === 'function', 'invalid_listener');
       revocationListeners.add(listener);
       return () => revocationListeners.delete(listener);
+    },
+    /** Private host provisioning projection. This is not an RPC or actor grant.
+     * The accounts table is the durable work source; after-commit events only
+     * accelerate reconciliation and may be lost during process shutdown. */
+    listAccountIds({ after = '', limit = 100 } = {}) {
+      assert(typeof after === 'string' && (after === '' || /^acct_[A-Za-z0-9_-]{32}$/u.test(after)), 'invalid_account_cursor');
+      assert(Number.isSafeInteger(limit) && limit >= 1 && limit <= 500, 'invalid_account_limit');
+      return withAuthorityFence(() => Object.freeze(all('SELECT id FROM accounts WHERE id>? ORDER BY id LIMIT ?', after, limit).map(row => row.id)));
+    },
+    hasAccount(accountId) {
+      if (closed || typeof accountId !== 'string') return false;
+      return withAuthorityFence(() => Boolean(get('SELECT 1 FROM accounts WHERE id=?', accountId)));
+    },
+    subscribeAccountCreated(listener) {
+      assert(!closed && typeof listener === 'function', 'invalid_listener'); accountListeners.add(listener);
+      return () => accountListeners.delete(listener);
     },
     async handle(input) {
       try {
@@ -827,7 +843,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         const deviceId = deviceIdForKey(publicJwk);
         const signature = base64(proof.signature, 64, 'invalid_signature');
         const digest = sha256(argsJson);
-        let deferred = null;
+        let deferred = null, createdAccountId = null;
         const reply = transaction(() => {
           cleanup(timestamp);
           const challenge = get('SELECT * FROM challenges WHERE id=?', proof.challengeId);
@@ -854,8 +870,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
               db.exec('RELEASE connect_action');
               return { ok: true };
             }
+            const previousAccount = op === 'bootstrap' ? installation(deviceId)?.account_id : null;
             const result = act(op, args, { origin, publicJwk, publicJson, deviceId, digest }, timestamp);
             db.exec('RELEASE connect_action');
+            if (op === 'bootstrap' && !previousAccount) createdAccountId = result.accountId;
             return { ok: true, ...result };
           } catch (error) {
             db.exec('ROLLBACK TO connect_action');
@@ -863,6 +881,10 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             return publicError(error);
           }
         });
+        if (reply.ok && createdAccountId) {
+          const event = Object.freeze({ accountId: createdAccountId });
+          for (const listener of accountListeners) { try { listener(event); } catch { /* Reconciliation repairs missed delivery. */ } }
+        }
         if (reply.ok && deferred) {
           // Proof and rate limit are committed before external I/O. Never hold an SQLite
           // transaction across an await. Async modules recheck authorization at commit and

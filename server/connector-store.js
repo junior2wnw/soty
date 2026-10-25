@@ -3,7 +3,7 @@ import { ConnectorPersistence, metadata, connectorStoreClosed } from "./connecto
 import path from "node:path";
 import { statSync } from "node:fs";
 import { EventEmitter } from "node:events";
-import { captureConnectorModelAuthorization, recheckConnectorModelAuthorizations } from './connector-model-authorization.js';
+import { captureConnectorModelAuthorization, captureLegacyConnectorModelAuthorization, recheckConnectorModelAuthorizations } from './connector-model-authorization.js';
 
 // Keep v2 so the current production rollback image can still read connectors
 // and jobs. Older code safely drops the additive accessGrants collection.
@@ -126,6 +126,11 @@ class ConnectorStore {
   }
 
   async authenticateModelToken(token) { return Boolean(await this.captureModelAuthorization(token)); }
+  async captureLegacyModelAuthorization(token) {
+    await this.writeQueue; await this.readable();
+    const secret = safeToken(token); if (!secret) return false;
+    return captureLegacyConnectorModelAuthorization(this, hashToken(secret), { sameHash, hashToken, changeKey, freshMs: connectorFreshMs });
+  }
   recheckModelAuthorizations() { recheckConnectorModelAuthorizations(this); }
 
   async createAccessGrant(ownerLinkId, input) {

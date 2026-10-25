@@ -55,7 +55,7 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
   const sourceCredentialFor = configuration.sourceCredentialFor;
   const sourceBound = references.length === 0 || typeof sourceCredentialFor === 'function';
   const gateway = configuration.gateway ?? {};
-  simple(gateway, [], ['gatewayOrigin', 'billingTenant', 'keyRef', 'resolveCredential', 'readReceipt', 'authorizeActor',
+  simple(gateway, [], ['accountBridge', 'gatewayOrigin', 'billingTenant', 'keyRef', 'resolveCredential', 'readReceipt', 'authorizeActor',
     'fetchImpl', 'allowLoopbackFixture', 'receiptWaitMs']);
   const transport = createPersonalAgentTransport(enabled ? gateway : {});
   let closed = false;
@@ -697,6 +697,10 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     // context, runtime turn or public operation is created by this probe.
     modelEligible(actor) {
       if (closed || !module.status().configured) return false;
+      if (gateway.accountBridge) {
+        try { transport.bind({ actor, scope: null, turnId: 'voice-readonly-eligibility',
+          assertCurrent: () => current(actor, () => true) }).guard(); return true; } catch { return false; }
+      }
       try { return current(actor, () => {
         transport.bind({ actor, scope: null, turnId: 'voice-readonly-eligibility',
           assertCurrent: () => need(!closed, 'agent_closed') }).guard();

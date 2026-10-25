@@ -12,6 +12,7 @@ import { fenceClosingUpgrade } from './http-closing-socket.mjs';
 import { loadCapabilityConfiguration } from './capabilities-configuration.js';
 import { loadUniversalConfiguration } from './universal-configuration.js';
 import { loadPersonalAgentConfiguration } from './personal-agent-configuration.js';
+import { loadAccountAiConfiguration } from './account-ai-configuration.js';
 import { loadNativeVoiceConfiguration } from './native-voice-configuration.js';
 import { loadVoiceOrbConfiguration } from './voice-orb-configuration.js';
 import { loadInstalledApplicationsEntry } from './installed-applications-entry.js';
@@ -85,14 +86,15 @@ export async function createRootStartup({ env: rawEnv, rootDir = path.resolve(pa
   }
   try {
     const capabilityConfiguration = loadCapabilityConfiguration(env), universalConfiguration = loadUniversalConfiguration(env);
-    const personalAgentConfiguration = loadPersonalAgentConfiguration(env), nativeVoiceConfiguration = loadNativeVoiceConfiguration(env.SOTY_NATIVE_VOICE_CONFIG || '');
+    const accountAiConfiguration = loadAccountAiConfiguration(env);
+    const personalAgentConfiguration = loadPersonalAgentConfiguration(env, { accountAiMode: Boolean(accountAiConfiguration.accountAi) }), nativeVoiceConfiguration = loadNativeVoiceConfiguration(env.SOTY_NATIVE_VOICE_CONFIG || '');
     voiceOrbConfiguration = loadVoiceOrbConfiguration(env, { dataDir: path.resolve(dataDir) });
     installedApplications = await loadInstalledApplicationsEntry(env);
     const personalAgent = { ...personalAgentConfiguration.personalAgent, browserPilotEnabled: true,
       sourceReferences: installedApplications.sourceReferences,
       ...(installedApplications.sourceCredentialFor ? { sourceCredentialFor: installedApplications.sourceCredentialFor } : {}) };
     try { app = createHttpApp(distDir, { env, dataDir, trafficTunnel, ...capabilityConfiguration, ...universalConfiguration,
-      ...personalAgentConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration, voiceOrb: voiceOrbConfiguration.voiceOrb,
+      ...personalAgentConfiguration, ...accountAiConfiguration, ...installedApplications.httpOptions, personalAgent, ...nativeVoiceConfiguration, voiceOrb: voiceOrbConfiguration.voiceOrb,
       allowWorld7Migration: attachmentsFlag === '1',
       ...httpOptions, env, gonka: rootGonkaOptions(env) }); }
     catch (error) { await waitForRejectedHttpStart(error); throw error; }

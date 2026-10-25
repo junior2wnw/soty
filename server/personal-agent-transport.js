@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
 import { GLM_MODEL } from '../modules/personal-agent/provider/index.mjs';
 import { canonical, fields, identifier } from '../modules/personal-agent/provider/validation.mjs';
+import { isAccountAiService } from './account-ai.js';
 
 const errors = new WeakMap(), transports = new WeakSet();
 const SAFE_CODES = new Set(['agent_unavailable', 'agent_invalid_input', 'agent_gateway_configuration_invalid', 'agent_transport_unavailable',
@@ -19,14 +20,17 @@ const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-
 /** Host-only fixed billing binding. This uses the existing commerce POST, never its raw connector.complete().
  * readReceipt must be a current tenant-scoped Source reader; an inference key cannot read /api/requests.
  * resolveCredential/authorizeActor/readReceipt are installed code, not JSON or declarations of authority. */
-export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, keyRef, resolveCredential,
+export function createPersonalAgentTransport({ accountBridge, gatewayOrigin, billingTenant, keyRef, resolveCredential,
   readReceipt, authorizeActor, fetchImpl = fetch, allowLoopbackFixture = false, receiptWaitMs = 3000 } = {}) {
   requireValue(Number.isSafeInteger(receiptWaitMs) && receiptWaitMs >= 1 && receiptWaitMs <= 3000, 'agent_gateway_configuration_invalid');
-  const missing = ['gatewayOrigin', 'billingTenant', 'keyRef', 'resolveCredential', 'readReceipt', 'authorizeActor']
+  const bridgeMode = accountBridge !== undefined;
+  if (bridgeMode) requireValue(isAccountAiService(accountBridge)
+    && [gatewayOrigin, billingTenant, keyRef, resolveCredential, readReceipt, authorizeActor].every(value => value === undefined), 'agent_gateway_configuration_invalid');
+  const missing = bridgeMode ? [] : ['gatewayOrigin', 'billingTenant', 'keyRef', 'resolveCredential', 'readReceipt', 'authorizeActor']
     .filter(name => ({ gatewayOrigin, billingTenant, keyRef, resolveCredential, readReceipt, authorizeActor })[name] === undefined);
   const configured = missing.length === 0;
   let endpoint;
-  if (configured) {
+  if (configured && !bridgeMode) {
     requireValue(typeof gatewayOrigin === 'string', 'agent_gateway_configuration_invalid');
     let origin; try { origin = new URL(gatewayOrigin); } catch { throw agentError('agent_gateway_configuration_invalid'); }
     requireValue(origin.origin === gatewayOrigin && !origin.username && !origin.password && !origin.search && !origin.hash
@@ -40,10 +44,13 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
   function bind({ actor, scope, turnId, assertCurrent }) {
     requireValue(configured && !closed, 'agent_transport_unavailable');
     requireValue(typeof assertCurrent === 'function');
+    const boundAccount = bridgeMode ? accountBridge.capture({ actor, assertCurrent }) : null;
+    const boundTenant = bridgeMode ? actor.accountId : billingTenant;
     const rounds = new Map();
     const guard = () => {
       requireValue(!closed, 'agent_transport_unavailable'); assertCurrent();
-      requireValue(authorizeActor({ actor, billingTenant, keyRef, model: GLM_MODEL }) === true, 'agent_model_access_denied');
+      if (bridgeMode) { boundAccount.guard(); requireValue(accountBridge.eligible(actor), 'agent_model_access_denied'); }
+      else requireValue(authorizeActor({ actor, billingTenant, keyRef, model: GLM_MODEL }) === true, 'agent_model_access_denied');
     };
     const keyFor = requestId => `soty-agent-${createHash('sha256').update(canonical({ scope, turnId, requestId })).digest('hex')}`;
     async function complete(request) {
@@ -55,16 +62,20 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
       const previous = rounds.get(request.requestId);
       if (previous) throw agentError(previous.digest === request.requestDigest ? 'agent_reconcile_required' : 'agent_intent_conflict');
       requireValue(rounds.size < 8, 'agent_round_limit');
-      const round = { digest: request.requestDigest, state: 'unknown', requestId: null }; rounds.set(request.requestId, round);
+      const round = { digest: request.requestDigest, state: 'unknown', requestId: null, logicalRequestId: keyFor(request.requestId) }; rounds.set(request.requestId, round);
       let response;
       try {
+        if (bridgeMode) {
+          response = await boundAccount.complete({ requestId: round.logicalRequestId, body: { ...request.body, autoFallback: false }, signal: request.signal });
+        } else {
         const credential = await resolveCredential(keyRef); guard();
         requireValue(credential && credential.keyRef === keyRef && credential.tenantId === billingTenant
           && typeof credential.bearer === 'string' && /^[^\s\u0000-\u001f]{20,512}$/u.test(credential.bearer), 'agent_key_binding_invalid');
         requireValue(!request.signal.aborted, 'agent_cancelled');
         response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', signal: request.signal,
           headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${credential.bearer}`,
-            'Idempotency-Key': keyFor(request.requestId) }, body: JSON.stringify({ ...request.body, autoFallback: false }) });
+            'Idempotency-Key': round.logicalRequestId }, body: JSON.stringify({ ...request.body, autoFallback: false }) });
+        }
         guard();
         if (request.signal.aborted) { void response.body?.cancel().catch(() => {}); throw agentError('agent_cancelled'); }
         const reservedId = response.headers.get('x-soty-request-id');
@@ -84,8 +95,9 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
         let proof;
         for (let attempt = 0; attempt < 8; attempt++) {
           guard(); requireValue(!deadlineSignal.aborted, 'agent_accounting_unknown');
-          proof = await readReceipt({ billingTenant, keyRef, requestId: round.requestId, signal: deadlineSignal }); guard();
-          fields(proof, ['tenantId', 'request']); requireValue(proof.tenantId === billingTenant, 'agent_key_binding_invalid');
+          proof = bridgeMode ? await boundAccount.readReceipt({ requestId: round.requestId, logicalRequestId: round.logicalRequestId, signal: deadlineSignal })
+            : await readReceipt({ billingTenant, keyRef, requestId: round.requestId, signal: deadlineSignal }); guard();
+          fields(proof, ['tenantId', 'request']); requireValue(proof.tenantId === boundTenant, 'agent_key_binding_invalid');
           if (proof.request.id !== round.requestId || proof.request.status !== 'running') break;
           if (attempt === 7) throw agentError('agent_accounting_unknown');
           await wait(Math.min(50 * 2 ** attempt, 800), undefined, { signal: deadlineSignal });
@@ -93,7 +105,7 @@ export function createPersonalAgentTransport({ gatewayOrigin, billingTenant, key
         requireValue(!signal?.aborted, 'agent_cancelled');
         // The approved Source reader enforces tenant/key scope; this closed receipt is not an actor/grant.
         fields(proof, ['tenantId', 'request']);
-        requireValue(proof.tenantId === billingTenant, 'agent_key_binding_invalid');
+        requireValue(proof.tenantId === boundTenant, 'agent_key_binding_invalid');
         const receipt = proof.request;
         requireValue(receipt.id === round.requestId && receipt.model_requested === GLM_MODEL && receipt.model_resolved === GLM_MODEL
           && receipt.status === 'completed', 'agent_accounting_unknown');
