@@ -37,6 +37,14 @@ legacy rollout. Latest-data requires a fresh 32-hex transaction and refuses
 queued-job preservation and legacy recovery. It does not enable a schema,
 Source, Native, issuer, grant, model, or new configuration input.
 
+Latest-data approval uses `noPendingConnectorJobsObserved:true` and
+`fullStoppedWriterBackupRequired:true`, plus the exact prepared
+`originalLifecycle` (StartedAt, restart count and running PID projection).
+It does not require or infer `legacyNoPendingWritesObserved`. Connector count0
+is not a claim that every Apps/World/Native HTTP request has drained. The
+supervised restart may interrupt unanswered calls while retaining acknowledged
+durable state. Legacy approval fields and behavior stay unchanged.
+
 This mode runs the pinned host-owned `deploy/connect/maintenance-probe.mjs`
 source through the existing bounded maintenance helpers. Only status, enter and
 leave are allowed; the marker belongs to that exact transaction. There is no
@@ -86,6 +94,13 @@ unresolved outcome instead of treating it as a confirmed completed failure.
 The callback is an operator trust boundary, not a cryptographic attestation of
 arbitrary caller-supplied JSON. Exact-image Linux backup/restore and failure
 qualification remain mandatory.
+
+Before backup the exact stopped original must have ExitCode0, OOMKilled:false,
+Paused:false, Restarting:false, exited status and PID0, with the same StartedAt
+and restart count captured at prepare. The confirmed FinishedAt is also checked
+after backup and before restoration. Dirty, missing or changed lifecycle proof
+leaves `recovery_required`, restart fenced, without another START. The approval,
+prepared journal and fresh running original must agree before STOP.
 
 Leave remains the admission boundary. There is no blind rollback of an admitted
 or unresolved transaction. After an admitted release, perform a **new reviewed

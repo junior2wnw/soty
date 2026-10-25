@@ -17,6 +17,13 @@ const modernArgs = { ...args, transaction: 'f'.repeat(32), rollbackMode: 'latest
 const backupReceipt = transaction => ({ ok: true, encrypted: true, operationId: transaction,
   sourceCheckpointSha256: '1'.repeat(64), volume: { sha256: '2'.repeat(64), bytes: 100, entries: 2, fileBytes: 10, inventorySha256: '3'.repeat(64) },
   configuration: { sha256: '4'.repeat(64), bytes: 100, entries: 2, fileBytes: 10, inventorySha256: '5'.repeat(64) } });
+function originalLifecycle(f){
+  const original=f.map.get(args.originalId);original.RestartCount=0;
+  Object.assign(original.State,{Pid:1234,StartedAt:'2026-10-25T00:00:00.000000000Z',FinishedAt:'0001-01-01T00:00:00Z',ExitCode:0,OOMKilled:false,Paused:false,Restarting:false});
+  const stop=f.engine.stop,start=f.engine.start;
+  f.engine.stop=async id=>{await stop(id);if(id===args.originalId)Object.assign(f.map.get(id).State,{Pid:0,FinishedAt:'2026-10-25T00:00:01.000000000Z'});};
+  f.engine.start=async id=>{await start(id);if(id===args.originalId)Object.assign(f.map.get(id).State,{Pid:2345,StartedAt:'2026-10-25T00:00:02.000000000Z'});};
+}
 
 async function setup(t) {
   const dataDir = await mkdtemp(path.join(await realpath(tmpdir()), 'soty-latest-data-'));
@@ -31,7 +38,7 @@ async function setup(t) {
   const db = new DatabaseSync(bridge);
   db.exec('CREATE TABLE callback_nonces (issuer TEXT NOT NULL,kid TEXT NOT NULL,jti TEXT NOT NULL,expires_at INTEGER NOT NULL,PRIMARY KEY(issuer,kid,jti)); CREATE INDEX callback_nonce_expiry ON callback_nonces(expires_at);');
   db.prepare('INSERT INTO callback_nonces VALUES (?,?,?,?)').run('fixture-issuer', 'fixture-kid', 'before-candidate', 1); db.close();
-  const f = fixture();
+  const f = fixture(); originalLifecycle(f);
   f.run.maintenance = async verb => { assert.notEqual(verb, 'rollback', 'latest-data must never call legacy rollback');
     f.events.push('modern:' + verb); return probe({ dataDir, verb, transaction: modernArgs.transaction,
       ...(process.platform === 'win32' ? { sync: async () => {} } : {}) }); };
@@ -153,6 +160,35 @@ test('backup callback exceptions cannot put private messages or error codes in t
   assert.equal(f.run.state.phase, 'restored'); assert.doesNotMatch(JSON.stringify(f.records), /synthetic-private-backup/u);
 });
 
+test('dirty or unstable original STOP is fenced before backup, enter and either application START',async t=>{
+  for(const failure of ['exit','oom','restarting','paused','pid','finished','started','restart-count']){
+    const f=await setup(t);await f.run.prepare(modernArgs);const stop=f.engine.stop;
+    f.engine.stop=async id=>{await stop(id);if(id!==args.originalId)return;const old=f.map.get(id);
+      if(failure==='exit')old.State.ExitCode=137;
+      if(failure==='oom')old.State.OOMKilled=true;
+      if(failure==='restarting')old.State.Restarting=true;
+      if(failure==='paused')old.State.Paused=true;
+      if(failure==='pid')old.State.Pid=1234;
+      if(failure==='finished')old.State.FinishedAt='0001-01-01T00:00:00Z';
+      if(failure==='started')old.State.StartedAt='2026-10-24T00:00:00.000000000Z';
+      if(failure==='restart-count')old.RestartCount++;
+    };
+    await assert.rejects(f.run.promote());assert.equal(f.run.state.phase,'recovery_required');assert.equal(f.backups(),0);
+    assert.equal(f.events.includes('modern:enter'),false);assert.equal(f.events.includes('start-old'),false);assert.equal(f.events.includes('start-candidate'),false);
+    assert.deepEqual(f.map.get(args.originalId).HostConfig.RestartPolicy,{Name:'no',MaximumRetryCount:0});
+  }
+});
+
+test('original restart before STOP or lifecycle drift during backup cannot be accepted as quiescence',async t=>{
+  const before=await setup(t);await before.run.prepare(modernArgs);before.map.get(args.originalId).RestartCount++;
+  await assert.rejects(before.run.promote(),/original_lifecycle_changed/);assert.equal(before.run.state.phase,'aborted');
+  assert.equal(before.events.some(event=>event.startsWith('stop:')),false);
+  const after=await setup(t);await after.run.prepare(modernArgs);const backup=after.run.fullEncryptedBackup;
+  after.run.fullEncryptedBackup=async input=>{const result=await backup(input);after.map.get(args.originalId).State.FinishedAt='2026-10-25T00:00:03.000000000Z';return result;};
+  await assert.rejects(after.run.promote(),/original_lifecycle_changed/);assert.equal(after.run.state.phase,'recovery_required');
+  assert.equal(after.events.includes('start-old'),false);assert.equal(after.events.includes('start-candidate'),false);
+});
+
 test('latest-data refuses queued preservation, legacy recovery, short transactions and prepared mode drift', async t => {
   for (const change of [{ preserveQueuedSha256: '0'.repeat(64) }, { legacyRecovery: true }, { transaction: args.transaction }, { rollbackMode: 'arbitrary' }]) {
     const f = await setup(t); await assert.rejects(f.run.prepare({ ...modernArgs, ...change }));
@@ -186,7 +222,7 @@ test('active jobs, an incompatible latest-data reader and an ambiguous leave ref
 });
 
 test('production latest-data helper uses pinned host probe and refuses the legacy rollback verb', async () => {
-  const f = fixture(); await f.run.prepare(modernArgs);
+  const f = fixture(); originalLifecycle(f); await f.run.prepare(modernArgs);
   f.engine.helperOutput = async () => ({ ok: true, schema: 'soty.connect.maintenance.v1', count: 0, maintenance: false, owned: false });
   let body; const create = f.engine.create; f.engine.create = async (name, config) => { body = structuredClone(config); return create(name, config); };
   const maintenance = productionMaintenance(f.engine, { maxPolls: 2, sleep: async () => {} }); await maintenance('status', f.run);

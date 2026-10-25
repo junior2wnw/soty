@@ -59,6 +59,18 @@ export function checkedFullEncryptedBackup(value,transaction){
     &&value.operationId===transaction&&digest(value.sourceCheckpointSha256)&&artifact(value.volume)&&artifact(value.configuration),'full_encrypted_backup_invalid');
   return clone(value);
 }
+export function checkedOriginalLifecycle(runtime,{stopped=false,expected,finishedAt}={}){
+  const s=runtime?.State,started=Date.parse(s?.StartedAt),finished=Date.parse(s?.FinishedAt);
+  requireThat(s&&Number.isSafeInteger(runtime.RestartCount)&&runtime.RestartCount>=0&&typeof s.StartedAt==='string'&&started>0
+    &&Number.isSafeInteger(s.Pid)&&s.Paused===false&&s.Restarting===false&&s.OOMKilled===false
+    &&(stopped?s.Running===false&&s.Status==='exited'&&s.Pid===0&&s.ExitCode===0&&typeof s.FinishedAt==='string'&&finished>=started
+      :s.Running===true&&s.Status==='running'&&s.Pid>0),stopped?'original_stop_not_clean':'original_lifecycle_invalid');
+  const value={startedAt:s.StartedAt,restartCount:runtime.RestartCount,pid:s.Pid};
+  if(expected)requireThat(value.startedAt===expected.startedAt&&value.restartCount===expected.restartCount
+    &&(stopped||value.pid===expected.pid),'original_lifecycle_changed');
+  if(finishedAt!==undefined)requireThat(s.FinishedAt===finishedAt,'original_lifecycle_changed');
+  return {...value,...(stopped?{finishedAt:s.FinishedAt}:{})};
+}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
   constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,fullEncryptedBackup,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,fullEncryptedBackup,record,attempts,sleep});this.state={phase:'new'};}
@@ -102,6 +114,7 @@ export class Rollout {
     if(args.rollbackMode==='latest-data')requireThat(/^[a-f0-9]{32}$/u.test(args.transaction)&&!args.preserveQueuedSha256&&!args.legacyRecovery,'latest_data_mode_invalid');
     let old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
     requireThat(old.State.Running,'original_not_running');
+    const originalLifecycle=args.rollbackMode==='latest-data'?checkedOriginalLifecycle(old):undefined;
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
     storageReaders(image);
     // The automatic fallback is this exact old image, not a separately built
@@ -152,7 +165,7 @@ export class Rollout {
     this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,storageProbeImage:args.storageProbeImage,revision:args.revision,transaction:args.transaction,configurationSha256,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null,
       ...(universalReceipt?{universalPolicyDigest:universalReceipt.policyDigest,universalWitnessId:args.universalWitnessId||null,universalPhase:universalReceipt.phase}: {})};
     if(args.legacyRecovery)this.state.legacyRecovery=true;
-    if(args.rollbackMode)this.state.rollbackMode=args.rollbackMode;
+    if(args.rollbackMode){this.state.rollbackMode=args.rollbackMode;this.state.originalLifecycle=originalLifecycle;}
   }
   universalBinding(preservationFingerprint){return {preservationFingerprint,originalId:this.args.originalId,originalImage:this.args.originalImage,
     candidateImage:this.args.candidateImage,revision:this.args.revision,transaction:this.args.transaction};}
@@ -229,6 +242,7 @@ export class Rollout {
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
       const originalNow=await this.engine.inspect(this.original.Id);
       requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(this.candidateConfiguration(originalNow))===this.fingerprint,'original_configuration_changed');
+      if(this.latestData())checkedOriginalLifecycle(originalNow,{expected:this.state.originalLifecycle});
       await this.checkUniversalCurrent();
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&!s.maintenance,'precheck_not_quiescent');
@@ -238,8 +252,11 @@ export class Rollout {
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;this.originalStopConfirmed=true;
       // A full coordinated backup must see the stopped writer fenced against
       // daemon restart, before either maintenance admission or a new START.
-      if(this.latestData())await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
-      await this.note('original_stopped');
+      if(this.latestData()){
+        await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
+        this.stoppedOriginalLifecycle=checkedOriginalLifecycle(await this.engine.inspect(this.original.Id),{stopped:true,expected:this.state.originalLifecycle});
+      }
+      await this.note('original_stopped',this.latestData()?{stoppedOriginalLifecycle:this.stoppedOriginalLifecycle}:{});
       if(!this.latestData())await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256),'offline_admission_race');
       if(this.latestData()){
@@ -257,6 +274,7 @@ export class Rollout {
         await this.checkOriginalPreserved();
         const source=await this.engine.inspect(this.original.Id);
         requireThat(!source.State.Running&&hash(source.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'backup_source_changed');
+        checkedOriginalLifecycle(source,{stopped:true,expected:this.state.originalLifecycle,finishedAt:this.stoppedOriginalLifecycle.finishedAt});
         await this.guardStart(this.original.Id);
         await this.note('backed_up',{fullEncryptedBackup:backup});
         s=await this.status();requireThat(s.count===0&&!s.maintenance,'offline_admission_race');
@@ -290,6 +308,7 @@ export class Rollout {
       if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed'});
       if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
         ||(this.latestData()&&['backup_helper_unresolved','full_encrypted_backup_unresolved'].includes(error.code))
+        ||(this.latestData()&&stopped&&['original_stop_not_clean','original_lifecycle_changed','original_lifecycle_invalid'].includes(error.code))
         ||(error.code==='operation_unresolved'&&(this.state.applicationStart?.state==='starting'||this.state.restartPolicyIntent))){await this.note('recovery_required',{failureCode:error.code});throw error;}
       if(leaveAttempted){await this.note('recovery_required',{failureCode:'leave_boundary_ambiguous'});throw new SafeError('leave_boundary_ambiguous');}
       try{
@@ -304,7 +323,10 @@ export class Rollout {
         if(this.latestData())requireThat(!(await this.engine.inspect(candidate.Id)).State.Running,'candidate_stop_unconfirmed');
         // Refuse before the legacy connector rollback helper can mutate storage.
         await this.restoreOriginalCode();
-        if(this.latestData())await this.checkOriginalPreserved();
+        if(this.latestData()){
+          await this.checkOriginalPreserved();
+          checkedOriginalLifecycle(await this.engine.inspect(this.original.Id),{stopped:true,expected:this.state.originalLifecycle,finishedAt:this.stoppedOriginalLifecycle?.finishedAt});
+        }
         await this.guardStart(this.original.Id);
         if(this.latestData()){
           let current=await this.status();

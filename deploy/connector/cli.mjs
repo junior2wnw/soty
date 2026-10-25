@@ -3,7 +3,7 @@ import {readFile,open,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {DockerApi,SafeError} from './docker-api.mjs';
-import {Rollout} from './rollout.mjs';
+import {Rollout,hash} from './rollout.mjs';
 import {productionMaintenance,readiness,universalMeasurement} from './runtime.mjs';
 import {createReleaseJournal} from './journal.mjs';
 import {readApprovedPolicy} from './application-policy.mjs';
@@ -56,12 +56,15 @@ export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}
    require(approval.approved===true&&approval.originalId===args.originalId&&approval.candidateId===prior.candidateId&&approval.configurationSha256===prior.configurationSha256&&approval.revision===args.revision,'supervised_receipt_mismatch');
    require(approval.rollbackMode===args.rollbackMode&&prior.rollbackMode===args.rollbackMode,'supervised_rollback_mode_mismatch');
    require(approval.storageProbeImage===args.storageProbeImage&&prior.storageProbeImage===args.storageProbeImage,'supervised_storage_probe_mismatch');
-   require(args.legacyRecovery?approval.legacyRecovery===true&&prior.legacyRecovery===true&&approval.legacyNoAssignedJobsObserved===true:approval.legacyNoPendingWritesObserved===true,'supervised_drain_or_recovery_receipt_missing');
+   if(args.rollbackMode==='latest-data')require(approval.noPendingConnectorJobsObserved===true&&approval.fullStoppedWriterBackupRequired===true,'supervised_latest_data_prerequisites_missing');
+   else require(args.legacyRecovery?approval.legacyRecovery===true&&prior.legacyRecovery===true&&approval.legacyNoAssignedJobsObserved===true:approval.legacyNoPendingWritesObserved===true,'supervised_drain_or_recovery_receipt_missing');
    require((approval.preserveQueuedSha256||null)===(args.preserveQueuedSha256||null)&&(prior.preserveQueuedSha256||null)===(args.preserveQueuedSha256||null),'supervised_queued_receipt_mismatch');
    require((approval.applicationPolicySha256||null)===(args.applicationPolicy?.sha256||null)&&(prior.applicationPolicySha256||null)===(args.applicationPolicy?.sha256||null),'supervised_policy_receipt_mismatch');
    require((approval.universalPolicyDigest||null)===(universal?.policyDigest||null)&&(prior.universalPolicyDigest||null)===(universal?.policyDigest||null)
     &&(approval.universalWitnessId||null)===(universal?.witnessId||null)&&(prior.universalWitnessId||null)===(universal?.witnessId||null),'supervised_universal_receipt_mismatch');
    await run.guard(args);
+   if(args.rollbackMode==='latest-data')require(approval.originalLifecycle&&prior.originalLifecycle
+    &&hash(approval.originalLifecycle)===hash(prior.originalLifecycle)&&hash(prior.originalLifecycle)===hash(run.state.originalLifecycle),'supervised_original_lifecycle_mismatch');
    require(prior.phase==='prepared'&&prior.originalId===args.originalId&&prior.candidateImage===args.candidateImage&&prior.transaction===args.transaction
     &&prior.configurationSha256===run.state.configurationSha256&&prior.modelReadinessSha256===run.healthSha256,'prepared_receipt_mismatch');
    run.candidate=await engine.inspect(prior.candidateId);run.validateCandidate(run.candidate,{stopped:true});
