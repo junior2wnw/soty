@@ -8,3 +8,14 @@ export async function journal(file,value) {
   if(process.platform!=='win32'){const dir=await open(path.dirname(file),'r');try{await dir.sync();}finally{await dir.close();}}}
  catch(error){if(fd)await fd.close();await unlink(tmp).catch(()=>{});throw error;}
 }
+// A failed checkpoint is recorded again by recovery in the same phase. It
+// must not run its external operation twice or prevent recovery from starting.
+export function createReleaseJournal(file,{afterJournal}={}) {
+ const visited=new Set();
+ return async state=>{
+  await journal(file,state);
+  if(afterJournal&&!visited.has(state.phase)){
+   visited.add(state.phase);await afterJournal(state);
+  }
+ };
+}
