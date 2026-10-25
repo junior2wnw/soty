@@ -71,8 +71,10 @@ test('only the public cover skill package is delivered and its documents update 
   assert.throws(() => createUiRelease(f.dist), {code:'ui_reference_not_in_release'});
 });
 function skillDist(t) {
-  const f = fixture(t), names = [...PUBLIC_SKILL_FILES, 'help/interaction.html'];
+  const f = fixture(t), names = [...PUBLIC_SKILL_FILES, 'help/interaction.html', 'sdk/source-app/index.json'];
   fixtureDist(f.dist, Object.fromEntries(names.map(name => [name, readFileSync(new URL('../../public/' + name, import.meta.url), 'utf8')])));
+  const name=JSON.parse(readFileSync(path.join(f.dist,'sdk/source-app/index.json'))).artifact.url.slice(1);
+  writeFileSync(path.join(f.dist,name),readFileSync(new URL('../../public/'+name,import.meta.url)));
   return { ...f, names };
 }
 
@@ -100,6 +102,10 @@ test('missing deploy reference, forbidden catalogue reference or broken user-gui
   fixtureDist(forbidden.dist, { 'skills/soty-app-deploy/references/private.md': 'synthetic-private-value' });
   writeFileSync(path.join(forbidden.dist, 'skills/index.json'), JSON.stringify(index));
   assert.throws(() => createUiRelease(forbidden.dist), { code: 'ui_reference_not_in_release' });
+  const sdk = skillDist(t), catalogue = JSON.parse(readFileSync(path.join(sdk.dist, 'skills/index.json')));
+  catalogue.resources[0].index='/sdk/source-app/private.json';
+  writeFileSync(path.join(sdk.dist, 'skills/index.json'), JSON.stringify(catalogue));
+  assert.throws(() => createUiRelease(sdk.dist), { code: 'ui_reference_not_in_release' });
   const help = skillDist(t); writeFileSync(path.join(help.dist, 'help/interaction.html'), '<a href="/help/private.json">Unpublished</a>');
   assert.throws(() => createUiRelease(help.dist), { code: 'ui_reference_not_in_release' });
 });

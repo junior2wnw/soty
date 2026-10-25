@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {createServer} from 'node:net';
 import {request as httpRequest} from 'node:http';
-import {STANDARD_SELECTED_SOURCE_V2} from '../server/standard-profile.mjs';
+import {STANDARD_SELECTED_SOURCE_V2,STANDARD_ROOT_WORKSPACE_SOURCE} from '../server/standard-profile.mjs';
 import {loadSourceOperatorConfiguration,sourceOperatorStatus,disposeSourceOperatorConfiguration,withSourceOperatorConfiguration} from '../install/config.mjs';
 import {initializeInstalledSource,startInstalledSource,inspectInstalledSource} from '../install/runtime.mjs';
 import {renderSourceNativePortal} from '../install/native-portal.mjs';
@@ -49,6 +49,21 @@ test('exact public Native HTTPS origin is separate from fixed private listener/R
   const portal=renderSourceNativePortal(h);assert.match(portal,/method GET\s+path \/soty\/connect/u);assert.match(portal,/method POST\s+path \/soty\/authorize/u);
   assert.match(portal,/header_up Host native\.example\.test/u);assert.match(portal,/respond 404/u);assert.equal(portal.includes('x-root-account'),false);
   assert.equal(portal.includes('/api/embed'),false);assert.equal(portal.includes('source.key'),false);
+});
+
+test('explicit Root workspace Source-only permits the exact embed origin without claiming a standalone Native site',async t=>{
+  const f=await fixture(t),{rp,...base}=f.config;
+  const config={...base,schema:'soty.root-workspace.operator.v1',transportKeyFile:rp.transportKeyFile,
+    profile:{...base.profile,sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeOrigin:base.profile.embedOrigin,
+      resource:{...base.profile.resource,selection:{...base.profile.resource.selection,kind:'soty.workspace.v1'}}},
+    native:{resourceTitle:'Source only',domainModule:join(f.directory,'source','domain.mjs'),uiDirectory:join(f.directory,'source','assets')},policy:{personalWorkspaces:false}};
+  await f.save(config);const handle=await loadSourceOperatorConfiguration(f.path);f.cleanup(()=>disposeSourceOperatorConfiguration(handle));
+  const status=sourceOperatorStatus(handle);assert.equal(status.authentication,'RootSSO300');assert.equal(status.nativeReachability,'source-only');
+  assert.equal(status.connected,false);assert.equal(status.longReady,false);assert.equal(status.sourceNativePolicy.personalWorkspaces,false);
+  assert.throws(()=>renderSourceNativePortal(handle),error=>error.code==='source_install_native_portal_not_applicable');
+  for(const nativeOrigin of [base.profile.embedOrigin+':444','http://'+new URL(base.profile.embedOrigin).host]){
+    await f.save({...config,profile:{...config.profile,nativeOrigin}});await assert.rejects(loadSourceOperatorConfiguration(f.path));
+  }
 });
 
 test('actual installed ordinary Source starts on internal port for public HTTPS Native host; init creates no principal/grant, spoofed Root header stays denied',{timeout:15000},async t=>{

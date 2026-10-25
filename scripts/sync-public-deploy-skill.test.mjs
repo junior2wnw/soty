@@ -39,6 +39,16 @@ test('unpackaged relative references fail before any public copy is written', t 
   assert.equal(existsSync(join(root, 'public')), false);
 });
 
+test('only the exact public SDK index is an allowed outside-package reference', t => {
+  const root = fixture(t), entry = join(root, 'skills/soty-app-deploy/SKILL.md'), source = readFileSync(entry);
+  writeFileSync(entry, Buffer.concat([source, Buffer.from('\n[SDK](/sdk/source-app/index.json)\n')]));
+  assert.equal(syncPublicDeploySkill(root).ok, true);
+  for (const target of ['/sdk/source-app/private.json', '/sdk/source-app/index.json?other=1', '/sdk/source-app/index.json/extra', '/sdk/other/index.json']) {
+    writeFileSync(entry, Buffer.concat([source, Buffer.from('\n[forbidden](' + target + ')\n')]));
+    assert.throws(() => syncPublicDeploySkill(root), { code: 'public_skill_reference_missing' });
+  }
+});
+
 test('unexpected public payload is refused and preserved, not silently published or deleted', t => {
   const root = fixture(t); syncPublicDeploySkill(root);
   const privateFile = join(root, 'public/skills/soty-app-deploy/references/private.json'); writeFileSync(privateFile, 'synthetic-private-value');

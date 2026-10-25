@@ -94,8 +94,10 @@ export function createUiRelease(dist, retained = []) {
     urls.forEach(requireUrl);
   }
   for (const icon of JSON.parse(files.get('manifest.webmanifest').bytes).icons ?? []) requireUrl(icon.src);
-  if (files.has('skills/index.json')) for (const skill of JSON.parse(files.get('skills/index.json').bytes).skills ?? []) {
-    requireUrl(skill.entrypoint); (skill.references ?? []).forEach(requireUrl);
+  if (files.has('skills/index.json')) {
+    const catalogue=JSON.parse(files.get('skills/index.json').bytes);
+    for (const skill of catalogue.skills ?? []) { requireUrl(skill.entrypoint); (skill.references ?? []).forEach(requireUrl); }
+    for (const resource of catalogue.resources ?? []) requireUrl(resource.index);
   }
   for (const document of ['skills/index.html', 'help/interaction.html']) if (files.has(document)) {
     for (const match of files.get(document).bytes.toString().matchAll(/(?:src|href)="(\/[^"#?]*)"/gu)) requireUrl(match[1]);

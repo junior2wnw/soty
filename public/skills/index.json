@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "title": "Инструкции для агентов Сот",
+  "resources": [{"name":"source-sdk","status":"preview","index":"/sdk/source-app/index.json"}],
   "skills": [{
     "name": "soty-cover-art",
     "version": "2026-10-25",

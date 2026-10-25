@@ -34,6 +34,7 @@ async function nativeFactory({realm,initialize,directory}) {
     await writeFile(join(folder,'secrets','cipher.key'),realm.cipherKey.toString('base64url')+'\n',{mode:0o600});
     await writeFile(join(folder,'secrets','transport.key'),realm.key.toString('base64url')+'\n',{mode:0o600});
     const checked=cli('check','--config',configPath);assert.equal(checked.authentication,'RootSSO300');assert.equal(checked.connected,false);
+    assert.equal(checked.nativeReachability,'source-only');assert.equal(checked.nativeOrigin,realm.embedded);
     const installed=cli('init','--config',configPath);assert.equal(installed.nativePrincipalsCreated,0);assert.equal(installed.nativeReader,'soty.sqlite-root-workspace.v1');
     const doctor=cli('doctor','--config',configPath);assert.equal(doctor.integrity,'missing');assert.equal(doctor.currentAuthority,'not_checked');assert.equal(doctor.releaseReady,false);
   }
@@ -44,8 +45,8 @@ async function nativeFactory({realm,initialize,directory}) {
     async close(){try{await app.close();}finally{disposeSourceOperatorConfiguration(handle);}}});
 }
 
-test('reading-list quickstart uses shared host and one connect through actual Root; private data, restart receipt and revoke', {timeout:120000},async t=>{
-  const f=await createOrdinaryInstalledFixture(t,{workspace:true,realmIds:['reading'],withoutRpClients:['reading'],
+test('same-origin Source-only reading-list quickstart: installed CLI and actual Root connect, private data, restart receipt and revoke', {timeout:120000},async t=>{
+  const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['reading'],withoutRpClients:['reading'],
     sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,
     connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
   const realm=f.realms[0],clients=[],paths=[];

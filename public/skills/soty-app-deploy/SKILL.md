@@ -65,8 +65,11 @@ description: "Размещает и обновляет веб-проекты к�
    restore/cleanup/build прочитай [подготовку и восстановление](references/recovery.md).
 3. Из корня репозитория Сот вызови:
 
-       node scripts/soty-app-release.mjs init --project PROJECT --name NAME --port PORT --entry-path /
+       node scripts/soty-app-release.mjs init --project PROJECT --name NAME --port PORT --entry-path ENTRY_PATH
 
+   `ENTRY_PATH` берётся из работающего сервера: для Source SDK это `/embed`,
+   для обычного сайта — его фактическая начальная страница. Проверь ответ этого
+   пути до init: `/` не является универсальным значением.
    Команда пишет строгий .soty/app.json без commands, URLs, credentials и grants.
    Если манифест уже другой, сравни намерение и исправь конкретную разницу;
    не удаляй файл ради прохождения проверки.

@@ -55,7 +55,7 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
   for(const [index,realmId]of(options.realmIds??['board','library']).entries()){
     const port=options.nativePorts?.[index]??await freePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port:options.registrationPorts?.[index]??port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
-    const appId=created.app.id,embedded='https://'+appId+'.localhost:'+appTlsPort,native='http://localhost:'+port;
+    const appId=created.app.id,embedded='https://'+appId+'.localhost:'+appTlsPort,native=options.sourceOnly?embedded:'http://localhost:'+port;
     const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:['ordinary_installed_link_123456789012',claim.hostDeviceId,claim.connectorId].join('|'),port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'};target.digest=runtimeTargetDigest(target);
     const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'ordinary_installed_link_123456789012',hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId},target:{revision:2,digest:target.digest},sourceProfile:options.sourceProfile??STANDARD_SELECTED_SOURCE_V2,
       resource:{registryId:'soty',environmentId:'production',tenantId:owner.account.accountId,appId,resourceId:'ordinary:'+realmId,selection:{kind:options.workspace?'soty.workspace.v1':'soty.resource.v1',nativeId:'selected',incarnationId:'one'}},

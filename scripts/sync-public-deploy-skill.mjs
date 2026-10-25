@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { resolve, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PUBLIC_SKILL_FILES } from '../deploy/ui/release.mjs';
+import { SOURCE_SDK_INDEX } from '../modules/source-app/package-contract.mjs';
 
 const prefix = 'skills/soty-app-deploy/';
 export const deploySkillFiles = Object.freeze(PUBLIC_SKILL_FILES.filter(name => name.startsWith(prefix)));
@@ -22,6 +23,7 @@ function linksArePackaged(source, name) {
   for (const match of source.toString('utf8').matchAll(/\]\(([^\s)]+)\)/gu)) {
     const target = match[1].split('#')[0];
     if (!target || /^https?:\/\//u.test(target)) continue;
+    if (target === '/' + SOURCE_SDK_INDEX) continue;
     if (target.startsWith('/') || /^[a-z][a-z0-9+.-]*:/iu.test(target)
       || !deploySkillFiles.includes(posix.normalize(posix.join(posix.dirname(name), target)))) fail('public_skill_reference_missing');
   }

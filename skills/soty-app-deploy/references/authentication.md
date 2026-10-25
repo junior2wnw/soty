@@ -28,8 +28,8 @@ SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Ес
 CLI `soty-source`. Не копируй в каждое приложение свои подписи, Source cookies,
 nonce, криптографию или механизм COMMIT/recovery. Preview-пакет и локальная
 квалификация не означают, что этот режим уже включён на production Root.
-После проверенного выпуска получи SDK index с доверенного Root:
-`/sdk/source-app/index.json`. Проверь sourceCommit/version, размер и SHA256
+После проверенного выпуска открой [SDK index и SHA256](/sdk/source-app/index.json)
+на доверенном Root. Проверь sourceCommit/version, размер и SHA256
 архива `/sdk/source-app/<SHA256>.tgz` до исполнения кода. Установка в собственный
 проект: `npm install --ignore-scripts --save-exact ./source-app-<SHA256>.tgz`,
 затем `npm exec --offline -- soty-source --help`. Runtime shrinkwrap закрепляет
@@ -43,18 +43,31 @@ Root/connector держат до64 exact approved profiles при startup. Но�
 candidate проходит prepare/promote без restart. Это не self-service admission
 произвольных приложений и не wildcard Source.
 
+После установки полная инструкция находится в
+`./node_modules/@soty/source-app/install/README.md`, приватный workspace config
+создают по `./node_modules/@soty/source-app/install/operator.workspace.template.json`.
+Рабочий пример data callbacks —
+`./node_modules/@soty/source-app/dist/templates/reading-list/domain.mjs`;
+`author --template reading-list` копирует его и готовые UI assets в ваш проект.
+Сборка SDK и `dist` из checkout автору не нужны: используются файлы из проверенного
+архива. Команды ниже выполняются из своей папки с установленным пакетом.
+
 Короткий путь для **нового** SQLite приложения:
 
 ```text
-soty-source author --title "Мой проект" --template reading-list
-soty-source check --config PRIVATE_FILE
-soty-source init --config PRIVATE_FILE
-soty-source serve --config PRIVATE_FILE
+npm exec --offline -- soty-source author --title "Мой проект" --template reading-list
+npm exec --offline -- soty-source check --config PRIVATE_FILE
+npm exec --offline -- soty-source init --config PRIVATE_FILE
+npm exec --offline -- soty-source serve --config PRIVATE_FILE
 ```
 
 Оператор один раз задаёт утверждённые appId/profile/target/issuer/connector pins,
 private config и два server-only ключа. Режим задаётся явно:
 `soty.root-workspace.operator.v1`; старый Ordinary/OIDC не становится SourceSSO.
+Для Source-only workspace допустимы одинаковые `nativeOrigin` и `embedOrigin`:
+это один Source вход с `nativeReachability:source-only`, без обещания отдельного
+Native сайта. Фактический Native/OIDC/парный вход требует различных hostname,
+своей Native identity/ACL и проверки app-policy. Entry Source SDK — `/embed`.
 Optional `createSqliteRootWorkspaceHost` принимает только data callbacks,
 проверяет Native SQL и создаёт новый личный ресурс по verified issuer/sub лишь
 при явной `personalWorkspaces:true` policy. Root app owner не получает чужие

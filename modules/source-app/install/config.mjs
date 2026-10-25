@@ -46,7 +46,8 @@ export async function loadSourceOperatorConfiguration(path){
   const keyFiles=[storage.cipherKeyFile,rp.transportKeyFile,...(workspace?[]:[rp.clientSecretFile])];
   check(new Set(keyFiles).size===keyFiles.length,'source_install_config_invalid',503);
   const nativeUrl=new URL(profile.nativeOrigin);
-  check(profile.nativeOrigin!==profile.embedOrigin&&nativeUrl.hostname!==new URL(profile.embedOrigin).hostname,'source_install_native_origin_invalid',503);
+  const sourceOnly=workspace&&profile.nativeOrigin===profile.embedOrigin;
+  check(sourceOnly||profile.nativeOrigin!==profile.embedOrigin&&nativeUrl.hostname!==new URL(profile.embedOrigin).hostname,'source_install_native_origin_invalid',503);
   check(nativeUrl.protocol==='https:'||['localhost','127.0.0.1'].includes(nativeUrl.hostname)
     &&Number(nativeUrl.port)===listener.port,'source_install_native_origin_invalid',503);
   const secretRoot=join(dirname(path),'secrets'),secretDirectory=await lstat(secretRoot);
@@ -75,7 +76,8 @@ export async function loadSourceOperatorConfiguration(path){
 export function withSourceOperatorConfiguration(handle,action){const value=contexts.get(handle);check(value&&!value.disposed&&typeof action==='function','source_install_config_invalid',503);return action(value.options,value.config);}
 export function sourceOperatorStatus(handle){return withSourceOperatorConfiguration(handle,(options,cfg)=>({schema:'soty.source-install-status.v1',
   configured:true,appId:options.profile.appId,sourceProfile:options.profile.sourceProfile,authentication:cfg.schema==='soty.root-workspace.operator.v1'?'RootSSO300':'Basic300',
-  nativeOrigin:options.profile.nativeOrigin,nativeReachability:new URL(options.profile.nativeOrigin).protocol==='https:'?'public-https-unverified':'same-machine-loopback',
+  nativeOrigin:options.profile.nativeOrigin,nativeReachability:cfg.schema==='soty.root-workspace.operator.v1'&&options.profile.nativeOrigin===options.profile.embedOrigin?'source-only':
+    new URL(options.profile.nativeOrigin).protocol==='https:'?'public-https-unverified':'same-machine-loopback',
   listenerLoopback:true,sourceNativePolicy:cfg.schema==='soty.root-workspace.operator.v1'?{personalWorkspaces:cfg.policy.personalWorkspaces}:
     {newEmptyGuest:cfg.policy.newEmptyGuest,linkedLogin:cfg.policy.linkedLogin},
   jobsReady:false,longReady:false,connected:false}));}

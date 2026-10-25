@@ -39,10 +39,10 @@ restart Root. Пакет не делает self-service admission и не доб
 Начните в пустой папке проекта:
 
 ```text
-soty-source author --title "Мой список" --template reading-list
-soty-source check --config /private/operator.json
-soty-source init --config /private/operator.json
-soty-source serve --config /private/operator.json
+npm exec --offline -- soty-source author --title "Мой список" --template reading-list
+npm exec --offline -- soty-source check --config /private/operator.json
+npm exec --offline -- soty-source init --config /private/operator.json
+npm exec --offline -- soty-source serve --config /private/operator.json
 ```
 
 `author` создаёт `.soty/author.json` и `source/{domain.mjs,assets/...}` без запуска
@@ -55,8 +55,11 @@ COMMIT и неизменяемая квитанция реализованы о�
 Между `author` и `check` оператор заполняет
 [`operator.workspace.template.json`](operator.workspace.template.json) из
 **утверждённого Root profile**, а не из пожеланий автора: тот же неизменяемый
-appId, точный target revision/digest, коннектор, issuer/client/resource и два
-различных hostname. Placeholder-шаблон намеренно не принимается loader.
+appId, точный target revision/digest, коннектор и issuer/client/resource.
+Для Source-only workspace `nativeOrigin === embedOrigin`: отдельный Native
+сайт не обещается, safe status — `nativeReachability:source-only`. Только при
+действительно отдельном Native/OIDC/парном входе нужны два различных hostname
+и его собственная identity/ACL. Placeholder-шаблон намеренно не принимается loader.
 Проверенный source profile — `soty.standard-workspace@2`, а не Ordinary/OIDC.
 Root RP client secret этому режиму не нужен. Два отдельных ключа
 `secrets/{transport,cipher}.key` содержат canonical base64url32 случайных байта;
