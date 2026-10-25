@@ -287,7 +287,10 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       // Recheck after all SQL too: slow synchronous work must not extend a
       // preparation lease, and a failure rolls back every write above.
       authenticate(actor); verification(entry, actor); freshAt(entry);
-      return { receipt, replayed: false, current: changed.current };
+      // Paired entry state is derived from this last receipt. Project current
+      // only AFTER inserting it, including when the new promotion unpairs.
+      const projected = publications.execute({ op: 'apps.publication.get', actor, args: { appId: intent.id } });
+      return { receipt, replayed: false, current: projected };
     });
     const entry = preparations.get(intent.preparationId); if (entry) { entry.controller.abort(); forget(entry); }
     // Replayed receipts may describe an older target. Reconcile the CURRENT

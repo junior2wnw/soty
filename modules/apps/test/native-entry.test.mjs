@@ -98,6 +98,7 @@ test('pair independently probes both exact targets and needs a new whole-port AC
   }
   const result = f.promote(intent); assert.equal(result.receipt.schema, 'soty.app-source-receipt.v2');
   assert.equal(result.receipt.nativeEntry.origin, f.profile.nativeOrigin);
+  assert.equal(result.current.nativeEntry.origin, f.profile.nativeOrigin);
   assert.equal(result.current.activeTargetRevision, 2); assert.equal(result.current.policyEpoch, 2);
   assert.equal(f.requireEntry().target.revision, 1); assert.equal(f.rows().app_source_receipts.length, 1);
   const saved = f.rows(); f.advance(60000); f.reopen();
@@ -110,7 +111,8 @@ test('pair independently probes both exact targets and needs a new whole-port AC
 test('last overall promotion controls Native entry; historical v2 replay cannot reopen after no-pair promotion or Native rollback', async t => {
   const f = fixture(t), first = await f.prepare(), original = f.intent(first); f.promote(original);
   const next = await f.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined });
-  f.promote({ ...f.intent({ ...next, nativeEntry: first.nativeEntry }, 'fixture_without_pair'), nativeExposureAck: undefined });
+  const removed = f.promote({ ...f.intent({ ...next, nativeEntry: first.nativeEntry }, 'fixture_without_pair'), nativeExposureAck: undefined });
+  assert.equal(removed.current.nativeEntry, undefined);
   assert.equal(readPairedNativeEntry(f.db, f.appId), null); assert.throws(f.requireEntry, { code: 'app_native_entry_closed' });
   assert.equal(f.promote(original).replayed, true); assert.equal(readPairedNativeEntry(f.db, f.appId), null);
   const again = await f.prepare({ source: undefined, targetRevision: 2 }); f.promote(f.intent(again, 'fixture_new_pair'));
