@@ -14,7 +14,7 @@ import { createReviewsService } from '../../modules/reviews/server/index.mjs';
 import { loadPersonalAgentConfiguration } from '../../server/personal-agent-configuration.js';
 import { captureAccountAiConfiguration } from '../../server/account-ai-configuration.js';
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
-import { validateHumanIdentityRenewalLimits } from '../../server/universal-configuration.js';
+import { loadUniversalConfiguration, validateHumanIdentityRenewalLimits } from '../../server/universal-configuration.js';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
   captureSelectedPreparedness, UNIVERSAL_RUNTIME_SCHEMA } from '../../modules/app-contract/universal-preparedness.mjs';
 
@@ -238,11 +238,16 @@ function approvedNativeTransport(value) {
 export async function prepareUniversalPolicy(input, options = { shellOrigins: [] }) {
   const files = []; let context;
   try {
-    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'accountAi', 'expectedCurrentPreparednessSha256', 'installedApplications']);
+    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'accountAi', 'expectedCurrentPreparednessSha256', 'installedApplications', 'featureSelectedEmbed']);
     check(plan.schema === UNIVERSAL_POLICY_SCHEMA && ['legacy-baseline', 'features'].includes(plan.phase));
     check(plan.expectedCurrentPreparednessSha256 === undefined || plan.phase === 'features'
       && typeof plan.expectedCurrentPreparednessSha256 === 'string' && HEX.test(plan.expectedCurrentPreparednessSha256));
     check(plan.installedApplications === undefined || plan.phase === 'features');
+    if (plan.featureSelectedEmbed !== undefined) {
+      closed(plan.featureSelectedEmbed, ['source', 'sha256']); exactPath(plan.featureSelectedEmbed.source);
+      check(plan.phase === 'features' && plan.expectedCurrentPreparednessSha256 !== undefined && plan.selected
+        && typeof plan.featureSelectedEmbed.sha256 === 'string' && HEX.test(plan.featureSelectedEmbed.sha256), 'universal_policy_selected_feature_invalid');
+    }
     check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected && !plan.personalAgent && !plan.accountAi);
     context = await filesystemContext(options);
     let human = { configured: false }, reviews = validateReviews({ providers: [], bindings: [] });
@@ -260,13 +265,33 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       reviews = validateReviews(parse(file.bytes));
       check(createHash('sha256').update(file.bytes).digest('hex') === plan.reviews.sha256, 'universal_policy_reviews_hash_mismatch');
     }
-    let selected;
+    let selected, featureSelectedEmbed;
     if (plan.selected !== undefined && plan.selected !== null) {
       closed(plan.selected, ['source', 'migrationConfigured']); exactPath(plan.selected.source);
       check(typeof plan.selected.migrationConfigured === 'boolean' && !files.some(file => file.source === plan.selected.source));
-      const file = await readBounded(plan.selected.source, 'private', context, 131072); file.target = selectedTarget; files.push(file);
-      const registry = parse(file.bytes, 131072); closed(registry, ['schema', 'profiles']);
+      let file = await readBounded(plan.selected.source, 'private', context, 131072); file.target = selectedTarget; files.push(file);
+      let registry = parse(file.bytes, 131072); closed(registry, ['schema', 'profiles']);
       check(registry.schema === 'soty.selected-embed-registry.v1');
+      if (plan.featureSelectedEmbed !== undefined) {
+        const currentFile = file, currentRegistry = registry, proposed = plan.featureSelectedEmbed;
+        check(!files.some(value => value.source === proposed.source), 'universal_policy_selected_feature_invalid');
+        const currentSelected = captureSelectedPreparedness({ profiles: currentRegistry.profiles, migrationConfigured: plan.selected.migrationConfigured,
+          ...(currentRegistry.profiles.some(profile => profile.schema === 'soty.selected-human-embed.v2')
+            ? { resourceMigrationConfigured: plan.selected.migrationConfigured } : {}) });
+        file = await readBounded(proposed.source, 'private', context, 131072); files.push(file);
+        check(createHash('sha256').update(file.bytes).digest('hex') === proposed.sha256, 'universal_policy_selected_feature_hash_mismatch');
+        registry = parse(file.bytes, 131072); closed(registry, ['schema', 'profiles']);
+        check(registry.schema === 'soty.selected-embed-registry.v1' && Array.isArray(registry.profiles)
+          && registry.profiles.length === currentRegistry.profiles.length + 1
+          && canonicalJson(registry.profiles.slice(0, -1)) === canonicalJson(currentRegistry.profiles), 'universal_policy_selected_feature_profiles_changed');
+        const loaded = loadUniversalConfiguration({ [settings.universal]: 'true', [settings.selected]: file.source }, { legacyMode: false });
+        check(loaded.scopedEmbedRegistryConfigured === true && canonicalJson(loaded.scopedEmbedProfiles) === canonicalJson(registry.profiles),
+          'universal_policy_selected_feature_invalid');
+        // Capture both files privately; only the new immutable pathname is mounted into the candidate.
+        delete currentFile.target; file.target = selectedTarget;
+        featureSelectedEmbed = { source: file.source, sha256: proposed.sha256, currentSource: currentFile.source,
+          currentSha256: createHash('sha256').update(currentFile.bytes).digest('hex'), currentSelected };
+      }
       const resourceProfiles = registry.profiles.some(profile => profile.schema === 'soty.selected-human-embed.v2');
       selected = captureSelectedPreparedness({ profiles: registry.profiles, migrationConfigured: plan.selected.migrationConfigured,
         ...(resourceProfiles ? { resourceMigrationConfigured: plan.selected.migrationConfigured } : {}) });
@@ -339,15 +364,16 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
         ...(Object.hasOwn(selected, 'resourceMigrationConfigured') ? [{ name: settings.selectedResourceMigration,
           value: selected.resourceMigrationConfigured ? '1' : '0' }] : [])] : []),
     ])];
-    const mounts = files.map(file => ({ source: file.source, target: file.target, readOnly: true, visibility: file.visibility }));
+    const mounts = files.filter(file => file.target !== undefined).map(file => ({ source: file.source, target: file.target, readOnly: true, visibility: file.visibility }));
     const publicValue = { schema: UNIVERSAL_POLICY_SCHEMA, phase: plan.phase, fixtureOnly: context.fixtureRoot !== null, environment, mounts,
       human, reviews: { ...reviews, ...(plan.reviews ? { fileSha256: plan.reviews.sha256 } : {}) }, ...(selected ? { selected } : {}),
+      ...(featureSelectedEmbed ? { featureSelectedEmbed } : {}),
       ...(plan.expectedCurrentPreparednessSha256 === undefined ? {} : { expectedCurrentPreparednessSha256: plan.expectedCurrentPreparednessSha256 }) };
     const receipt = freeze({ ...publicValue, policyDigest: digest(publicValue) }), handle = Object.freeze(Object.create(null));
     handles.set(handle, { active: true, context, files, receipt });
     // The runtime loader reads the approved pathname independently. Recheck the
     // captured bytes and file identity before granting a handle for that read.
-    if (personalAgent || installedApplications || accountAi) await assertUniversalPolicyCurrent(handle);
+    if (personalAgent || installedApplications || accountAi || featureSelectedEmbed) await assertUniversalPolicyCurrent(handle);
     return handle;
   } catch (error) { files.forEach(file => file.bytes.fill(0)); if (error instanceof SafeError) throw error; fail(); }
 }
@@ -452,6 +478,13 @@ export function applyUniversalPolicy(config, handle) {
   const receipt = stateFor(handle).receipt; let next;
   try { next = structuredClone(config); } catch { fail('universal_policy_configuration_invalid'); }
   check(next && typeof next === 'object' && next.HostConfig && typeof next.HostConfig === 'object', 'universal_policy_configuration_invalid');
+  const feature = receipt.featureSelectedEmbed;
+  if (feature) {
+    const matches = (next.HostConfig.Mounts || []).filter(mount => overlaps(path.posix.normalize(mount.Target || '/'), selectedTarget));
+    check(matches.length === 1 && canonicalJson(matches[0]) === canonicalJson({ Type: 'bind', Source: feature.currentSource,
+      Target: selectedTarget, ReadOnly: true }), 'universal_policy_selected_feature_mount_mismatch');
+    matches[0].Source = feature.source;
+  }
   check(next.Env === undefined || Array.isArray(next.Env) && next.Env.every(value => typeof value === 'string'), 'universal_policy_configuration_invalid');
   const expected = new Map(receipt.environment.map(({ name, value }) => [name, value]));
   for (const name of receipt.phase === 'legacy-baseline' ? [settings.operator] : [...Object.values(settings),
@@ -476,7 +509,23 @@ export function applyUniversalPolicy(config, handle) {
   }
   next.Env ||= [];
   for (const { name, value } of receipt.environment) if (!next.Env.some(item => item.startsWith(name + '='))) next.Env.push(name + '=' + value);
+  if (feature) {
+    const preserved = structuredClone(next);
+    preserved.HostConfig.Mounts.find(mount => mount.Target === selectedTarget).Source = feature.currentSource;
+    check(canonicalJson(preserved) === canonicalJson(config), 'universal_policy_selected_feature_other_configuration');
+  }
   return next;
+}
+
+/** A registry-only feature keeps the actual OLD bind and loaded server capture as its rollback authority. */
+export function assertSelectedEmbedFeatureOriginal(handle, original, observed, { allowFixture = false } = {}) {
+  const receipt = stateFor(handle).receipt, feature = receipt.featureSelectedEmbed;
+  if (!feature) return;
+  const matches = (original.Mounts || []).filter(mount => overlaps(path.posix.normalize(mount.Destination || '/'), selectedTarget));
+  check(matches.length === 1 && matches[0].Type === 'bind' && matches[0].Source === feature.currentSource && matches[0].RW === false,
+    'universal_policy_selected_feature_mount_mismatch');
+  check(canonicalJson(observed.selected ?? null) === canonicalJson(feature.currentSelected), 'universal_policy_selected_feature_current_mismatch');
+  assertUniversalPreparedness(handle, { ...observed, selected: receipt.selected }, { allowFixture });
 }
 
 /** Image inspect objects are supplied by the existing exact-ID rollout fence.
@@ -484,6 +533,7 @@ export function applyUniversalPolicy(config, handle) {
 export function assertUniversalImagePrerequisites(handle, { candidateImage, originalImage }) {
   const receipt = stateFor(handle).receipt;
   try {
+    if (receipt.featureSelectedEmbed) check(candidateImage.Id === originalImage.Id, 'universal_policy_selected_feature_image_mismatch');
     const candidate = storageReaders(candidateImage), original = storageReaders(originalImage);
     check([5, 6, 7].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');

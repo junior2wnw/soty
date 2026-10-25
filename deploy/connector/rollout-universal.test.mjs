@@ -1,10 +1,11 @@
+import { applyUniversalPolicy, assertSelectedEmbedFeatureOriginal, assertUniversalPreparedness, assertUniversalPolicyCurrent, selectedTarget, humanPrivateTarget } from './universal-policy.mjs';
 import { currentObservation } from './test-support/current-storage-observation.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, realpath, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomBytes, generateKeyPairSync } from 'node:crypto';
+import { randomBytes, generateKeyPairSync, createHash } from 'node:crypto';
 import { fixture as engineFixture, args } from './test-support/rollout-engine.mjs';
 import { Rollout, createConfig, preservationHash, hash } from './rollout.mjs';
 import { prepareUniversalPolicy, publicUniversalPolicy, sealUniversalPolicy, restoreUniversalPolicy, disposeUniversalPolicy,
@@ -13,6 +14,7 @@ import { createHumanIdentityHostProfile } from '../../modules/human-identity/pro
 import { SafeError } from './docker-api.mjs';
 import { storageReaderLabel, currentStorageReaders } from './storage-guard.mjs';
 import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
+import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
 
 const origin = 'https://soty.fixture.invalid', random = () => randomBytes(32).toString('base64url');
 const privateJwk = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
@@ -488,4 +490,194 @@ test('activation failure is journaled once and survives secondary rollback failu
   failBeforeCandidateStart(f,{change:s=>delete s.StartedAt});
   await assert.rejects(f.run.promote(),/recovery_required/u);
   assert.equal(f.run.state.activationFailureCode,'first_activation_failure');assert.equal(f.run.state.failureCode,'rollback_failed');
+});
+
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const failCode = code => error => error.code === code && error.message === code && !error.cause;
+async function prepared(t, f, plan = f.plan) { const handle = await prepareUniversalPolicy(plan, f.options); f.handles.push(handle); return handle; }
+
+async function selectedFeatureFixture(t) {
+  const f = await fixture(t, { human: true }), source = path.join(f.root, 'current-selected.json'), nextSource = path.join(f.root, 'next-selected.json');
+  const base = { schema: 'soty.selected-human-embed.v2', connector: { linkId: 'source-link', hostDeviceId: 'source-device', connectorId: 'source-connector' }, target: { revision: 2, digest: '5'.repeat(64) }, issuer: origin + '/human-identity', clientId: f.configuration.clients[0].id, parentOrigin: origin, embedOrigin: 'https://source.fixture.invalid', nativeOrigin: 'https://native.fixture.invalid' };
+  const profiles = Array.from({ length: 9 }, (_, i) => {
+    const appId = 'app-' + String(i + 1).padStart(32, '0');
+    return { ...base, appId, schema: 'soty.selected-human-embed.v2', sourceProfile: STANDARD_ROOT_WORKSPACE_SOURCE,
+      resource: { registryId: 'soty', tenantId: 'owner.fixture', environmentId: 'production', appId, resourceId: 'personal',
+        selection: { kind: 'soty.workspace.v1', nativeId: 'fixture-' + i, incarnationId: 'v1' } } };
+  });
+  const registry = { schema: 'soty.selected-embed-registry.v1', profiles: profiles.slice(0, 8) };
+  const nextRegistry = { ...registry, profiles }, oldBytes = JSON.stringify(registry), nextBytes = JSON.stringify(nextRegistry);
+  await writeFile(source, oldBytes, { mode: 0o600 }); await writeFile(nextSource, nextBytes, { mode: 0o600 });
+  const oldPlan = { ...f.plan, selected: { source, migrationConfigured: true } }, oldPolicy = await prepared(t, f, oldPlan);
+  const current = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true, reviewsConfigured: true,
+    humanProfile: f.humanProfile, humanHttpEnabled: true,
+    selectedProfiles: registry.profiles, selectedRegistryConfigured: true, selectedMigrationConfigured: true, selectedResourceMigrationConfigured: true });
+  const plan = { ...oldPlan, expectedCurrentPreparednessSha256: hash(current),
+    featureSelectedEmbed: { source: nextSource, sha256: sha(nextBytes) } };
+  const config = applyUniversalPolicy(createConfig(f.map.get(args.originalId), args.originalImage, args.transaction, args.revision), oldPolicy);
+  const actual = { Mounts: config.HostConfig.Mounts.map(mount => ({ Type: mount.Type, Source: mount.Source, Destination: mount.Target, RW: !mount.ReadOnly })) };
+  return { ...f, source, nextSource, registry, nextRegistry, oldBytes, nextBytes, oldPlan, plan, config, actual, current };
+}
+
+test('selected feature keeps old8 intact and mounts only independently pinned new9 through the actual loader and sealed witness', async t => {
+  const f = await selectedFeatureFixture(t), handle = await prepared(t, f), receipt = publicUniversalPolicy(handle);
+  const before = structuredClone(f.config), applied = applyUniversalPolicy(f.config, handle);
+  assert.deepEqual(f.config, before); assert.equal(await readFile(f.source, 'utf8'), f.oldBytes);
+  assert.equal(receipt.selected.profileCount, 9); assert.equal(receipt.featureSelectedEmbed.currentSelected.profileCount, 8);
+  assert.equal(receipt.featureSelectedEmbed.currentSha256, sha(f.oldBytes));
+  assert.deepEqual(receipt.mounts.filter(mount => mount.target === selectedTarget).map(mount => mount.source), [f.nextSource]);
+  assert.deepEqual(applied.Env, before.Env); assert.deepEqual(applied.HostConfig.Binds, before.HostConfig.Binds);
+  applied.HostConfig.Mounts.find(mount => mount.Target === selectedTarget).Source = f.source;
+  assert.deepEqual(applied, before);
+  const oldLoaded = loadUniversalConfiguration({ SOTY_SELECTED_EMBED_REGISTRY_FILE: f.source }, { legacyMode: false });
+  const newLoaded = loadUniversalConfiguration({ SOTY_SELECTED_EMBED_REGISTRY_FILE: f.nextSource }, { legacyMode: false });
+  assert.equal(oldLoaded.scopedEmbedProfiles.length, 8); assert.deepEqual(newLoaded.scopedEmbedProfiles, f.nextRegistry.profiles);
+  assertSelectedEmbedFeatureOriginal(handle, f.actual, f.current, { allowFixture: true });
+  const target = { ...f.current, selected: receipt.selected };
+  assert.equal(assertUniversalPreparedness(handle, target, { allowFixture: true }).ok, true);
+  const key = randomBytes(32), keyId = 'separate-selected-custody', sealed = await sealUniversalPolicy(handle, { key, keyId });
+  const restored = await restoreUniversalPolicy(f.plan, sealed.packet, f.options, { key, keyId, expectedWitnessId: sealed.witnessId });
+  t.after(() => disposeUniversalPolicy(restored)); assert.deepEqual(publicUniversalPolicy(restored), receipt);
+  assert.equal(sealed.packet.includes(Buffer.from(f.oldBytes)), false); assert.equal(sealed.packet.includes(Buffer.from(f.nextBytes)), false);
+});
+
+test('selected feature rejects extra authority, absent old CAS, same path, wrong SHA and altered/removed/reordered prior profiles', async t => {
+  const f = await selectedFeatureFixture(t);
+  for (const featureSelectedEmbed of [null, true, { ...f.plan.featureSelectedEmbed, target: '/foreign' },
+    { ...f.plan.featureSelectedEmbed, sha256: 'A'.repeat(64) }, { ...f.plan.featureSelectedEmbed, actor: {} }])
+    await assert.rejects(prepareUniversalPolicy({ ...f.plan, featureSelectedEmbed }, f.options));
+  for (const patch of [{ expectedCurrentPreparednessSha256: undefined }, { phase: 'legacy-baseline' }, { selected: null }])
+    await assert.rejects(prepareUniversalPolicy({ ...f.plan, ...patch }, f.options));
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, featureSelectedEmbed: { source: f.source, sha256: sha(f.oldBytes) } }, f.options),
+    failCode('universal_policy_selected_feature_invalid'));
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, featureSelectedEmbed: { ...f.plan.featureSelectedEmbed, sha256: '0'.repeat(64) } }, f.options),
+    failCode('universal_policy_selected_feature_hash_mismatch'));
+  const changes = [f.nextRegistry.profiles.slice(1), [...f.nextRegistry.profiles].reverse(),
+    [{ ...f.nextRegistry.profiles[0], clientId: 'foreign' }, ...f.nextRegistry.profiles.slice(1)],
+    [...f.nextRegistry.profiles, { ...f.nextRegistry.profiles.at(-1), target: { revision: 3, digest: '9'.repeat(64) } }]];
+  for (const profiles of changes) {
+    const bytes = JSON.stringify({ ...f.nextRegistry, profiles }); await writeFile(f.nextSource, bytes);
+    await assert.rejects(prepareUniversalPolicy({ ...f.plan, featureSelectedEmbed: { source: f.nextSource, sha256: sha(bytes) } }, f.options),
+      failCode('universal_policy_selected_feature_profiles_changed'));
+  }
+  const invalid = { ...f.nextRegistry, profiles: [...f.registry.profiles, { ...f.nextRegistry.profiles.at(-1), parentOrigin: 'https://foreign.invalid' }] };
+  const bytes = JSON.stringify(invalid); await writeFile(f.nextSource, bytes);
+  await assert.rejects(prepareUniversalPolicy({ ...f.plan, featureSelectedEmbed: { source: f.nextSource, sha256: sha(bytes) } }, f.options));
+});
+
+test('selected feature refuses RW/foreign/duplicate/legacy/parent binds and any other configuration delta', async t => {
+  const f = await selectedFeatureFixture(t), handle = await prepared(t, f);
+  for (const mutate of [
+    c => { c.HostConfig.Mounts.find(m => m.Target === selectedTarget).ReadOnly = false; },
+    c => { c.HostConfig.Mounts.find(m => m.Target === selectedTarget).Source = f.nextSource; },
+    c => { c.HostConfig.Mounts.push({ Type: 'bind', Source: f.source, Target: selectedTarget, ReadOnly: true }); },
+    c => { c.HostConfig.Mounts.find(m => m.Target === selectedTarget).Target = '/run/config'; },
+    c => { c.HostConfig.Binds.push(f.source + ':' + selectedTarget + ':ro'); },
+    c => { c.Env = c.Env.filter(value => !value.startsWith('SOTY_HUMAN_IDENTITY_ENABLED=')); },
+    c => { c.HostConfig.Mounts = c.HostConfig.Mounts.filter(m => m.Target !== humanPrivateTarget); },
+  ]) { const changed = structuredClone(f.config); mutate(changed); assert.throws(() => applyUniversalPolicy(changed, handle)); }
+  for (const mutate of [
+    c => { c.Mounts.find(m => m.Destination === selectedTarget).RW = true; },
+    c => { c.Mounts.find(m => m.Destination === selectedTarget).Source = f.nextSource; },
+    c => { c.Mounts.push({ Type: 'bind', Source: f.source, Destination: selectedTarget, RW: false }); },
+  ]) { const changed = structuredClone(f.actual); mutate(changed);
+    assert.throws(() => assertSelectedEmbedFeatureOriginal(handle, changed, f.current, { allowFixture: true }), failCode('universal_policy_selected_feature_mount_mismatch')); }
+  assert.throws(() => assertSelectedEmbedFeatureOriginal(handle, f.actual, { ...f.current, selected: publicUniversalPolicy(handle).selected }, { allowFixture: true }),
+    failCode('universal_policy_selected_feature_current_mismatch'));
+  assert.throws(() => assertSelectedEmbedFeatureOriginal(handle, f.actual, { ...f.current, human: { ...f.current.human, clientsDigest: '0'.repeat(64) } }, { allowFixture: true }),
+    failCode('universal_policy_runtime_mismatch'));
+});
+
+test('selected feature witness fences both unchanged old file and new candidate identity/bytes across processes', async t => {
+  for (const which of ['source', 'nextSource']) await t.test(which, async t => {
+    const f = await selectedFeatureFixture(t), handle = await prepared(t, f), key = randomBytes(32), keyId = 'both-selected-files';
+    const sealed = await sealUniversalPolicy(handle, { key, keyId });
+    const replacement = path.join(f.root, 'replacement.json'); await writeFile(replacement, await readFile(f[which]), { mode: 0o600 });
+    await rename(replacement, f[which]);
+    await assert.rejects(restoreUniversalPolicy(f.plan, sealed.packet, f.options, { key, keyId, expectedWitnessId: sealed.witnessId }),
+      failCode('universal_policy_witness_mismatch'));
+    await assert.rejects(assertUniversalPolicyCurrent(handle), failCode('universal_policy_file_changed'));
+  });
+});
+
+async function activeSelectedReplacement(t) {
+  const f = await selectedFeatureFixture(t), old = f.map.get(args.originalId);
+  const { HostConfig, NetworkingConfig, ...Config } = f.config;
+  old.Config = Config; old.HostConfig = HostConfig;
+  old.Mounts.push(...f.actual.Mounts.filter(mount => mount.Type === 'bind'));
+  const inspectImage = f.engine.image;
+  f.engine.image = async id => { const image = await inspectImage(id); image.Config.Labels[universalModeLabel] = '0'; return image; };
+  const handle = await prepared(t, f), receipt = publicUniversalPolicy(handle), target = { ...f.current, selected: receipt.selected };
+  f.request = { ...f.request, candidateImage: args.originalImage, universalPolicy: handle };
+  f.run.universalMeasurement = async id => id === args.originalId ? f.current : target;
+  return { ...f, target, old };
+}
+
+test('selected feature exact-image rollout uses old8 current CAS and refuses any unapproved actual candidate configuration', async t => {
+  const f = await activeSelectedReplacement(t), originalConfig = structuredClone(f.old.Config), originalHost = structuredClone(f.old.HostConfig);
+  await assert.rejects(f.run.prepare({ ...f.request, candidateImage: args.candidateImage }), failCode('universal_policy_selected_feature_image_mismatch'));
+  assert.deepEqual(f.events, []);
+  await f.run.prepare(f.request);
+  assert.deepEqual(f.old.Config, originalConfig); assert.deepEqual(f.old.HostConfig, originalHost);
+  assert.equal(f.run.config.HostConfig.Mounts.find(m => m.Target === selectedTarget).Source, f.nextSource);
+  assert.equal(await readFile(f.source, 'utf8'), f.oldBytes);
+  const candidate = f.map.get(f.run.candidate.Id);
+  for (const mutate of [
+    c => { c.Config.Env[0] = 'DATA_DIR=/foreign'; },
+    c => { c.HostConfig.Mounts.find(m => m.Target === humanPrivateTarget).Source = f.nextSource; },
+    c => { c.HostConfig.Mounts.find(m => m.Target === selectedTarget).ReadOnly = false; },
+    c => { c.HostConfig.Binds.push('/foreign:/elsewhere:ro'); },
+  ]) { const changed = structuredClone(candidate); mutate(changed);
+    assert.throws(() => f.run.validateCandidate(changed, { stopped: true }), failCode('candidate_configuration_mismatch')); }
+  const beforeEvents = [...f.events]; f.run.universalMeasurement = async () => f.target;
+  await assert.rejects(f.run.guard(f.request), failCode('universal_current_runtime_mismatch'));
+  assert.deepEqual(f.events, beforeEvents); assert.equal(f.events.some(event => event.startsWith('stop:')), false);
+});
+
+test('selected feature refuses original restart if either held registry drifts after STOP', async t => {
+  for (const which of ['source', 'nextSource']) await t.test(which, async t => {
+    const f = await activeSelectedReplacement(t); await f.run.prepare(f.request); await f.engine.stop(args.originalId);
+    await writeFile(f[which], (await readFile(f[which], 'utf8')) + '\n');
+    await assert.rejects(f.run.startApplication(args.originalId), failCode('universal_policy_file_changed'));
+    assert.equal(f.events.includes('start-old'), false); assert.equal(f.old.State.Running, false);
+  });
+});
+
+test('selected feature latest-data failure backs up unchanged old8 and restores its code/config without a legacy DATA rewind', async t => {
+  const f = await activeSelectedReplacement(t);
+  f.request = { ...f.request, transaction: 'f'.repeat(32), rollbackMode: 'latest-data' };
+  f.old.RestartCount = 0;
+  Object.assign(f.old.State, { Pid: 1234, StartedAt: '2026-10-25T00:00:00Z', FinishedAt: '0001-01-01T00:00:00Z',
+    ExitCode: 0, OOMKilled: false, Paused: false, Restarting: false });
+  const stop = f.engine.stop, start = f.engine.start;
+  f.engine.stop = async id => { await stop(id); if (id === args.originalId) Object.assign(f.old.State, { Pid: 0, FinishedAt: '2026-10-25T00:00:01Z' }); };
+  f.engine.start = async id => { await start(id); if (id === args.originalId) Object.assign(f.old.State, { Pid: 2345, StartedAt: '2026-10-25T00:00:02Z' }); };
+  let maintenance = false, backups = 0;
+  f.run.maintenance = async verb => {
+    assert.notEqual(verb, 'rollback'); if (verb === 'enter') maintenance = true; if (verb === 'leave') maintenance = false;
+    return { ok: true, schema: 'soty.connect.maintenance.v1', count: 0, maintenance, owned: maintenance };
+  };
+  f.run.fullEncryptedBackup = async input => {
+    assert.equal(f.old.State.Running, false); assert.equal(input.containerId, args.originalId);
+    assert.equal(f.old.Mounts.find(m => m.Destination === selectedTarget).Source, f.source);
+    assert.equal(await readFile(f.source, 'utf8'), f.oldBytes); assert.equal(await readFile(f.nextSource, 'utf8'), f.nextBytes); backups++;
+    // Existing injected receipt contract only; actual GPG/Docker remain separate qualification gates.
+    const artifact = { sha256: '1'.repeat(64), bytes: 100, entries: 1, fileBytes: 10, inventorySha256: '2'.repeat(64) };
+    return { ok: true, encrypted: true, operationId: input.transaction, sourceCheckpointSha256: '3'.repeat(64), volume: artifact, configuration: artifact };
+  };
+  const ready = f.run.ready;
+  f.run.ready = async (kind, run) => {
+    if (kind === 'candidate') {
+      if (!f.old.State.Running) throw new SafeError('selected_feature_readiness_failure');
+      const oldHealth = await ready('original', run);
+      return { ...oldHealth, storageReady: true, maintenance: true, schema: 'soty.connector-storage-ready.v1' };
+    }
+    return ready(kind, run);
+  };
+  await f.run.prepare(f.request); await assert.rejects(f.run.promote(), failCode('selected_feature_readiness_failure'));
+  assert.equal(backups, 1); assert.equal(f.run.state.phase, 'restored'); assert.equal(f.old.State.Running, true);
+  assert.equal(f.old.HostConfig.Mounts.find(m => m.Target === selectedTarget).Source, f.source);
+  assert.equal(loadUniversalConfiguration({ SOTY_SELECTED_EMBED_REGISTRY_FILE: f.source }, { legacyMode: false }).scopedEmbedProfiles.length, 8);
+  assert.equal(await readFile(f.source, 'utf8'), f.oldBytes); assert.equal(await readFile(f.nextSource, 'utf8'), f.nextBytes);
+  assert.equal(f.events.filter(event => event === 'start-candidate').length, 1); assert.equal(f.events.filter(event => event === 'start-old').length, 1);
 });

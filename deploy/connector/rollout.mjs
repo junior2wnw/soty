@@ -4,7 +4,7 @@ import { SafeError } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
 import { applyUniversalPolicy, publicUniversalPolicy, bindUniversalRollout, assertUniversalPolicyCurrent,
-  assertUniversalImagePrerequisites, assertUniversalPreparedness, universalModeLabel } from './universal-policy.mjs';
+  assertUniversalImagePrerequisites, assertUniversalPreparedness, assertSelectedEmbedFeatureOriginal, universalModeLabel } from './universal-policy.mjs';
 import { captureUniversalPreparedness, validateUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
@@ -139,6 +139,7 @@ export class Rollout {
           // it never substitutes the proposed profile for that observation.
           requireThat(observed.compiledLegacyMode===false&&observed.universalConfigured===true
             &&hash(observed)===universalReceipt.expectedCurrentPreparednessSha256,'universal_current_runtime_mismatch');
+          assertSelectedEmbedFeatureOriginal(args.universalPolicy,old,observed,{allowFixture:this.allowUniversalFixture});
         }else{
           const expected=captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanHttpEnabled:false,humanProfile:null});
           requireThat(hash(observed)===hash(expected),'universal_baseline_runtime_mismatch');
@@ -147,7 +148,7 @@ export class Rollout {
       requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
     }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');
     if(this.installedModuleRotation){const measured=old;old=installedModuleOriginalForRollout(this.installedModuleRotation,measured);this.originalPolicySuspended=hash(measured.HostConfig.RestartPolicy)!==hash(old.HostConfig.RestartPolicy);}
-    this.args=args;this.original=old;this.candidateImageLabels=clone(image.Config.Labels);this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=this.candidateConfiguration(old);this.fingerprint=preservationHash(this.config);
+    this.args=args;this.selectedEmbedFeature=Boolean(universalReceipt?.featureSelectedEmbed);this.original=old;this.candidateImageLabels=clone(image.Config.Labels);this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=this.candidateConfiguration(old);this.fingerprint=preservationHash(this.config);
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
@@ -213,6 +214,7 @@ export class Rollout {
     if(this.candidate)this.validateCandidate(await this.engine.inspect(this.candidate.Id));
   }
   async checkOriginalPreserved(){
+    if(this.selectedEmbedFeature)await assertUniversalPolicyCurrent(this.args.universalPolicy);
     const current=await this.engine.inspect(this.original.Id);
     requireThat(current.Id===this.original.Id&&current.Image===this.original.Image,'original_identity_mismatch');
     requireThat(hash(current.HostConfig.RestartPolicy)===hash(this.original.HostConfig.RestartPolicy)

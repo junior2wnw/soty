@@ -79,8 +79,13 @@ const result = await runConnectorCli(argv, {
 
 Here `backupStopped` is the export of
 `deploy/connect/gpg-release-backup.mjs`, **not** the older `backup.mjs` helper.
-The GPG mechanism encrypts/authenticates the complete volume and all effective
-bind configuration separately with Docker logging disabled. Use its existing
+The GPG mechanism encrypts/authenticates the complete volume and inspected host
+bind sources separately with Docker logging disabled. Verify that the host file
+bytes still match the original container's effective file binds: an atomic host
+pathname replacement can leave a running file bind on the old inode while the
+backup reads the new pathname. Inspect mount names alone do not prove this
+equality. Keep old sources intact and use the registry feature input below.
+Use its existing
 qualified Node24/GPG/GNU-tar and CurrentUser-DPAPI/SSH-stdin custody path; no key
 may enter argv, Env, an env-file, logs or an unencrypted artifact. The driver
 owns bounded invocation and key-buffer disposal. A valid closed full GPG
@@ -183,6 +188,62 @@ Exact Root-signed workspace2 Source profiles reuse a registered current Human
 client without an RP callback. Older Source profiles retain their exact callback
 checks. Native actor, app, current child and finite action-grant checks remain
 independent of this deployment input.
+
+## Updating an existing selected registry
+
+A registry-only feature update uses the existing `--universal-plan` channel and
+the SAME exact mode0 application image for original and candidate. No backend
+build or new per-application CLI is needed. Keep `selected.source` at the OLD
+private host file, and explicitly approve a distinct NEW private file:
+
+```json
+{
+  "selected": {
+    "source": "/home/operator/.config/soty/selected-current.json",
+    "migrationConfigured": true
+  },
+  "featureSelectedEmbed": {
+    "source": "/home/operator/.config/soty/selected-next.json",
+    "sha256": "EXACT_SHA256_OF_NEW_FILE_BYTES"
+  },
+  "expectedCurrentPreparednessSha256": "EXACT_CURRENT_LOADED_OPERATOR_DTO_SHA256"
+}
+```
+
+These are fields in the complete existing `features` plan; retain its Human,
+reviews, personal-agent, account-AI and installed-module inputs. The new field is
+closed to `source` and `sha256`. The actual existing startup loader and profile
+validators must accept the NEW file. It must append exactly one approved profile
+and preserve every prior profile, value and order. Neither file is rewritten.
+Both files' private bytes, identities and parent chains enter the existing
+encrypted witness. Only the NEW file becomes the candidate's fixed RO bind at
+`/run/config/soty-selected-embed.json`. The OLD actual bind and loaded registry
+must match the witnessed old source and old profile DTO. The entire candidate
+configuration must equal its input after projecting just this one Source back;
+no Env changes, other mounts, extra mount options or ignored fields are allowed.
+
+Use the existing CLI flags for `prepare`, including `--rollback-mode latest-data`,
+`--universal-plan`, separate custody/witness files and reviewed shell origins.
+For `promote`, use the maintained `runConnectorCli(argv, {fullEncryptedBackup})`
+operator port above with those same flags and the exact supervised receipt.
+Standalone `cli.mjs promote` cannot supply the required backup callback and
+refuses before STOP. Policy preparation/sealing is not runtime admission.
+
+The running server's private operator socket reports its loaded registry, not
+a fresh import of the host pathname. The expected-current digest remains OLD
+through prepare and promotion preflight. Never CAS the live OLD pathname to
+NEW bytes first, or substitute the proposed candidate DTO's digest for current.
+After an actual successful new START/admission, take the next operation's current
+digest from the newly running operator. Full stopped-writer backup reads OLD
+host bytes matching the OLD bind. Pre-admission failed readiness uses the
+existing latest-DATA rollback, preserved old configuration and storage guard;
+it does not restore DATA, keys, or either registry file.
+
+After a downstream Source2 admission or route promotion depends on the ninth
+profile, the old eight-profile Root is no longer a blind operational fallback,
+even though its image can read the latest DATA. Review/reverse those admission
+dependencies or use a compatible registry/configuration under the normal guards.
+Preserve late writes; do not rewind DATA to make a former configuration work.
 
 The existing `soty.universal-rollout-policy.v1` feature plan may explicitly include `"personalAgent": {"source": "/home/operator/.config/soty/personal-agent.json"}`. Omission or `null` sets `SOTY_PERSONAL_AGENT_ENABLED=0`; enabling is refused in `legacy-baseline`. The two-step baseline/features image and storage gates are unchanged.
 
