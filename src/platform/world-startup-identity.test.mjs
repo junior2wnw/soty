@@ -76,6 +76,22 @@ test('startup identity event tickets reject an account A to B to A stale read', 
   assert.equal(f.reads, 2); assert.equal(f.requests[0].context.expectedAccountId, 'account-A');
 });
 
+test('startup request timings contain only fixed operation names and numbers; stale profiles cannot append to the current trace', async t => {
+  const f = fixture(t); f.root.dataset = {}; await f.start();
+  const old = f.mounts[0].options.api, held = deferred();
+  f.client.extension = async method => method === 'world.profile.get' ? held.promise : {};
+  const pending = old.request('world.profile.get', { privateInput: 'never-in-diagnostics' });
+  f.change(state('account-B', 'device-B')); held.resolve({ secret: 'never-in-diagnostics' }); await pending;
+  assert.deepEqual(JSON.parse(f.root.dataset.startupRequestTimings), []);
+  const current = f.mounts.at(-1).options.api;
+  await current.request('world.field.get', { privateInput: 'never-in-diagnostics' });
+  await current.request('unknown.private-operation', { privateInput: 'never-in-diagnostics' });
+  const trace = JSON.parse(f.root.dataset.startupRequestTimings);
+  assert.equal(trace.length, 1); assert.equal(trace[0].operation, 'world.field.get'); assert.equal(trace[0].ok, true);
+  assert.equal(typeof trace[0].startedAt, 'number'); assert.ok(trace[0].completedAt >= trace[0].startedAt);
+  assert.equal(/never-in-diagnostics|account-B|device-B|private-operation/u.test(JSON.stringify(trace)), false);
+});
+
 test('startup never follows an entry intent after its device changes within the same account', async t => {
   const durable = deferred(), f = fixture(t, { read: (index, selected) => index === 1 ? durable.promise : selected }), running = f.start({ kind: 'profile', id: 'profile123', route: '#profile/profile123' });
   await until(() => f.reads === 1); f.change(state('account-A', 'device-new')); durable.resolve(state()); await running;

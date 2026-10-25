@@ -3404,6 +3404,18 @@ class WorldApplication {
       if (response.profile.profileId !== profileId) throw new Error('Сервер не подтвердил этот профиль.');
       pending.remove(); const full = response.profile; identity(full);
       copy.append(el('p', 'sw-muted', full.bio)); dialog.body.append(this.tags(full.interests));
+      if (this.profile?.directMessagesVersion === 1 && full.profileId !== this.profile.profileId) {
+        const actions = el('div', 'sw-row'); dialog.body.append(actions);
+        void this.api.request<{ contacts: Omit<DirectoryContact, 'kind'>[] }>('contacts.list', {}).then(result => {
+          if (!accountCurrent() || !dialog.element.open) return;
+          const contact = result.contacts.find(value => value.peerAccountId === full.profileId);
+          if (!contact) return;
+          actions.append(button('Написать', 'chat', 'sw-button-primary', () => {
+            if (!accountCurrent() || !dialog.element.open) return;
+            dialog.close(); void this.openDirectContact(contact);
+          }));
+        }).catch(() => { /* Profile viewing remains available; the server rechecks a conversation when opened. */ });
+      }
       if (response.canRequestContact && full.profileId !== this.profile?.profileId && this.options.requestContact) {
         const target = button('Добавить в контакты', 'person', 'sw-button-primary sw-button-wide', () => {
           if (!accountCurrent() || !dialog.element.open) return;

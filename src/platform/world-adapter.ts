@@ -11,6 +11,8 @@ import { takeConnectionNavigation } from './connection-navigation.mjs';
 import { createNativeVoiceDescriptor } from './native-voice-descriptor.mjs';
 import { createNotificationsController, type NotificationsController } from './notifications-client.mjs';
 import type { ConnectIntent, ConnectTab } from '../../modules/connect/ui/index.mjs';
+const startupReadOperations = new Set(['world.profile.get', 'world.community.list', 'world.field.get', 'world.directory.resolve',
+  'apps.directory.resolve', 'apps.directory.search', 'apps.saved.list', 'apps.list', 'apps.discussion.inbox']);
 // The existing browser-neutral JS owner is tested directly; its runtime is unchanged.
 // @ts-expect-error The reviewed JS component has no TypeScript declaration.
 import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';
@@ -344,9 +346,20 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     currentCallView = humanCalls;
     // Each controller keeps its original admission context. An old callback
     // cannot adopt a new account merely because the shared selection changed.
+    const traceStartedAt = Date.now(), requestTimings: { operation: string; startedAt: number; completedAt: number; ok: boolean }[] = [];
+    if (root.dataset) root.dataset.startupRequestTimings = '[]';
     const api = { request: <T>(method: string, args?: Record<string, unknown>): Promise<T> => {
       if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
-      return accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
+      const startedAt = Date.now(), result = accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
+      if (!startupReadOperations.has(method) || startedAt - traceStartedAt > 30000) return result;
+      const trace = (ok: boolean) => {
+        try {
+          if (!current() || !root.dataset || requestTimings.length >= 32) return;
+          requestTimings.push({ operation: method, startedAt, completedAt: Date.now(), ok });
+          root.dataset.startupRequestTimings = JSON.stringify(requestTimings);
+        } catch { /* Diagnostics must never change a request result. */ }
+      };
+      return result.then(value => { trace(true); return value; }, error => { trace(false); throw error; });
     } };
     let mounted: WorldAppHandle;
     const ownNotifications = accountId ? createNotificationsController({ client: accountClient, accountId,

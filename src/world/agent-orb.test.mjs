@@ -193,6 +193,20 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
     },
   };
 }
+
+test('assistant leaves the whole offline status readable at 320px and returns to its preferred dock after dismissal', () => {
+  const f = fixture({ width: 320, height: 568 });
+  const banner = f.el('aside', 'sw-pwa-banner');
+  const bounds = { left: 0, top: 0, right: 320, bottom: 78, width: 320, height: 78 };
+  banner.getBoundingClientRect = () => bounds;
+  f.root.append(banner); f.agent.setAccount('A');
+  const projected = f.orb.getBoundingClientRect();
+  assert.ok(projected.top >= bounds.bottom + 6, 'status text is an obstacle even without a button');
+  assert.equal(f.saved.size, 0, 'a temporary status never changes the account placement preference');
+  banner.remove(); f.agent.raise();
+  assert.equal(f.orb.getBoundingClientRect().top, 6);
+  assert.equal(f.orb.dataset.docked, 'true'); f.agent.dispose();
+});
 function event(type, properties = {}) { const value = new Event(type, { cancelable: true, bubbles: true }); for (const [name, property] of Object.entries(properties)) Object.defineProperty(value, name, { value: property }); return value; }
 const pointer = (node, type, properties = {}) => node.dispatchEvent(event(type, { button: 0, isPrimary: true, pointerType: 'touch', pointerId: 1, clientX: 300, clientY: 20, ...properties }));
 function bubbleKey(f, target, key, properties = {}) {

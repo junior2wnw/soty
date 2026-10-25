@@ -79,7 +79,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
     return response.contacts.map(value => {
       const record = toRecord(value);
       const entity: FieldEntity = { kind: 'person', id: value.peerAccountId };
-      return { record, item: { entity, title: value.label, description: 'В контактах', source: 'member' as const } };
+      return { record, item: { entity, title: value.label, description: 'Личный разговор · в контактах', source: 'member' as const } };
     });
   }
   const encode = (value: FederationCursor): string => JSON.stringify(value);
