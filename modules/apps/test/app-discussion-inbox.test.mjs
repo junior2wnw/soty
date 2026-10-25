@@ -23,7 +23,7 @@ function temporary(t) {
   return { directory, cleanup() { assert(directory.startsWith(parent + sep)); assert(/^soty-discussion-inbox-/u.test(directory.slice(parent.length + 1))); rmSync(directory, { recursive: true, force: true }); } };
 }
 
-function fixture(t, { filename = ':memory:', databaseFilename = ':memory:', initialClock = 1000, withoutReads = false } = {}) {
+function fixture(t, { filename = ':memory:', databaseFilename = ':memory:', initialClock = 1000, withoutReads = false, knownEntries } = {}) {
   const db = new DatabaseSync(databaseFilename); db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1234');
   const template = 'https://{appId}.inbox.test'; migrateAppsSchema(db, { legacyTemplate: template });
   let clock = initialClock, active = true, closed = false;
@@ -32,12 +32,16 @@ function fixture(t, { filename = ':memory:', databaseFilename = ':memory:', init
     const model = createDiscussionRegistry({ db, now: () => clock,
       assertActor: actor => { if (!active || !['owner', 'reader', 'stranger'].includes(actor.accountId)) throw new AppsError('apps_authentication_required', 401); },
       withAuthorityFence: fn => fn(), canUse, authorLabel: actor => actor.label ?? 'Участник',
+      knownEntries,
       readStore: withoutReads ? undefined : createDiscussionReadStore({ filename, now: () => clock }),
       resolveEntry: input => {
         assert.equal(db.isTransaction, true);
         const app = db.prepare('SELECT * FROM local_apps WHERE id=?').get(input.appId);
-        const domain = db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(input.appId, input.domainId);
-        return app && domain && canUse(input.actor, app) ? { appId: app.id, domainId: domain.id, origin: domain.origin, path: input.path } : null;
+        const domain = input.domainId === undefined ? db.prepare('SELECT * FROM app_domains WHERE app_id=?').get(input.appId)
+          : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(input.appId, input.domainId);
+        const policy = app && db.prepare('SELECT launch_policy FROM app_publications WHERE app_id=?').get(app.id);
+        return app && domain && (canUse(input.actor, app) || policy?.launch_policy === 'anyone')
+          ? { appId: app.id, domainId: domain.id, origin: domain.origin, path: input.path ?? app.entry_path } : null;
       } });
     models.push(model); return model;
   }
@@ -61,10 +65,15 @@ function fixture(t, { filename = ':memory:', databaseFilename = ':memory:', init
     const context = call(model, 'context', entry, actor).context;
     return call(model, 'send', { ...entry, conversationId: context.conversationId, requestId: 'request_' + ++requestSerial, body }, actor).message;
   }
-  function rotate(entry, accounts) {
+  function rotate(entry, accounts, mode = 'restricted') {
     db.exec('BEGIN');
     try {
       db.prepare('UPDATE local_apps SET grants_json=? WHERE id=?').run(JSON.stringify({ accountIds: accounts, communityIds: [] }), entry.appId);
+      if (mode === 'anyone') {
+        const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=1').get(entry.appId);
+        const ack = { targetRevision: target.revision, targetDigest: target.digest, profile: target.profile, scope: 'whole-port' };
+        db.prepare('UPDATE app_publications SET launch_policy=?,exposure_ack_revision=active_target_revision,exposure_ack_json=? WHERE app_id=?').run(mode, JSON.stringify(ack), entry.appId);
+      } else db.prepare('UPDATE app_publications SET launch_policy=? WHERE app_id=?').run(mode, entry.appId);
       syncDiscussionAudienceInTransaction(db, entry.appId, clock); db.exec('COMMIT');
     } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error; }
   }
@@ -133,11 +142,12 @@ test('bounded read metadata replaces old generations without evicting another ac
   const store = createDiscussionReadStore({ maxRows: 2, maxPerAccount: 1, now: () => 123 });
   try {
     const a = 'conv_' + 'a'.repeat(32), b = 'conv_' + 'b'.repeat(32), message = n => 'msg_' + n.repeat(32);
-    store.mark('reader', id(1), a, 4, message('a')); assert.equal(store.mark('reader', id(1), a, 1, message('b')).readSequence, 4);
-    store.mark('reader', id(1), b, 1, message('c')); assert.equal(store.get('reader', id(1), a), null);
-    assert.throws(() => store.mark('reader', id(2), a, 1, message('d')), code('apps_discussion_read_capacity'));
-    store.mark('owner', id(1), a, 2, message('e'));
-    assert.throws(() => store.mark('stranger', id(1), a, 1, message('f')), code('apps_discussion_read_capacity'));
+    const entry = n => ({ appId: id(n), domainId: 'dom_' + 'a'.repeat(32), path: '/exact#entry' });
+    store.mark('reader', entry(1), a, 4, message('a')); assert.equal(store.mark('reader', entry(1), a, 1, message('b')).readSequence, 4);
+    store.mark('reader', entry(1), b, 1, message('c')); assert.equal(store.get('reader', id(1), a), null);
+    assert.throws(() => store.mark('reader', entry(2), a, 1, message('d')), code('apps_discussion_read_capacity'));
+    store.mark('owner', entry(1), a, 2, message('e'));
+    assert.throws(() => store.mark('stranger', entry(1), a, 1, message('f')), code('apps_discussion_read_capacity'));
     assert.equal(store.get('reader', id(1), b).sequence, 1); assert.equal(store.get('owner', id(1), a).sequence, 2);
   } finally { store.close(); }
 });
@@ -189,4 +199,49 @@ for (const healBeforeReuse of [true, false]) test(`an independent Apps restore c
     assert.equal(readSecond().unreadCount, 1);
   }
   assert.equal(view().readState, 'synced'); assert.equal(view().discussions[0].unreadCount, 1);
+});
+
+test('a viewed public discussion is discovered on another device without Saved or grants; explicit batches can disable discovery', t => {
+  const { directory, cleanup } = temporary(t), filename = join(directory, 'reads.sqlite');
+  const f = fixture(t, { filename }), entry = f.seed(); t.after(cleanup);
+  f.rotate(entry, [], 'anyone'); f.post(entry, 'Public conversation');
+  assert.deepEqual(call(f.model, 'inbox', {}, reader).discussions, []);
+  call(f.model, 'context', entry, reader); f.model.close(); const otherDevice = f.registry();
+  const result = call(otherDevice, 'inbox', {}, { ...reader, deviceId: 'reader_second_device' });
+  assert.equal(result.discussions.length, 1); assert.equal(result.discussions[0].source, 'known');
+  assert.equal(result.discussions[0].entry.path, entry.path); assert.equal(result.discussions[0].unreadCount, 1);
+  assert.deepEqual(call(otherDevice, 'inbox', { entries: [], includeKnown: false }, reader).discussions, []);
+  f.rotate(entry, []); assert.deepEqual(call(otherDevice, 'inbox', {}, reader).discussions, []);
+});
+
+test('historical authored participation remains discoverable when optional metadata is absent', t => {
+  const f = fixture(t, { withoutReads: true }), entry = f.seed(); f.rotate(entry, [], 'anyone'); f.post(entry, 'My historical message', stranger);
+  const result = call(f.model, 'inbox', {}, { ...stranger, deviceId: 'second_device' });
+  assert.equal(result.discussions.length, 1); assert.equal(result.discussions[0].source, 'known');
+  assert.equal(result.discussions[0].lastMessage.preview, 'My historical message'); assert.equal(result.discussions[0].unreadCount, null);
+  assert.equal(result.readState, 'unavailable'); assert.deepEqual(call(f.model, 'inbox', {}, reader).discussions, []);
+});
+
+test('known Saved and app targets compose in one inbox call without creating heads or replacing an unavailable Saved entry', t => {
+  const saved = [], apps = [], f = fixture(t, { knownEntries: () => ({ saved, apps }) }), entry = f.seed(), untouched = f.seed(2);
+  f.post(entry, 'Hello'); saved.push({ ...entry, path: '/saved?view=board#exact', at: 1000 }); apps.push({ appId: untouched.appId });
+  const result = call(f.model, 'inbox', {}, reader);
+  assert.equal(result.discussions.length, 1); assert.equal(result.discussions[0].entry.path, '/saved?view=board#exact');
+  assert.equal(result.discussions[0].source, 'known'); assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_discussion_heads WHERE app_id=?').get(untouched.appId).n, 0);
+  const invalid = { ...entry, domainId: 'dom_' + 'f'.repeat(32), path: '/previous' };
+  const fallback = call(f.model, 'inbox', { entries: [invalid] }, reader).discussions[0];
+  assert.equal(fallback.source, 'known'); assert.equal(fallback.entry.path, '/saved?view=board#exact'); assert.equal(invalid.path, '/previous');
+});
+
+test('inbox pagination is actor/device bound, deduplicates targets and resets after a registry restart', t => {
+  const f = fixture(t);
+  for (let n = 1; n <= 4; n++) { const entry = f.seed(n); f.post(entry, 'Message ' + n); call(f.model, 'context', entry, reader); }
+  const first = call(f.model, 'inbox', { limit: 1 }, reader), rows = [...first.discussions]; let cursor = first.nextCursor;
+  assert.equal(first.discussions.length, 1); assert.ok(cursor);
+  assert.throws(() => call(f.model, 'inbox', { cursor, limit: 1 }, owner), code('invalid_discussion_cursor'));
+  assert.throws(() => call(f.model, 'inbox', { cursor, limit: 1 }, { ...reader, deviceId: 'other_device' }), code('invalid_discussion_cursor'));
+  for (let page = 0; cursor && page < 8; page++) { const result = call(f.model, 'inbox', { cursor, limit: 1 }, reader); rows.push(...result.discussions); cursor = result.nextCursor; }
+  assert.equal(cursor, null); assert.equal(rows.length, 4); assert.equal(new Set(rows.map(row => row.appId)).size, 4);
+  f.model.close(); const reopened = f.registry();
+  assert.equal(call(reopened, 'inbox', { cursor: first.nextCursor }, reader).resetRequired, true);
 });

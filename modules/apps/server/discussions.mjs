@@ -44,10 +44,11 @@ export function syncDiscussionAudienceInTransaction(db, id, at) {
   return true;
 }
 
-export function createDiscussionRegistry({ db, now = Date.now, assertActor, withAuthorityFence, resolveEntry, readStore,
+export function createDiscussionRegistry({ db, now = Date.now, assertActor, withAuthorityFence, resolveEntry, readStore, knownEntries,
   canUse, isCurrentFriend = () => false, readCommunityAuthority, authorLabel, limits: configured = {} }) {
   assertApps(db && [now, assertActor, resolveEntry, canUse, authorLabel].every(value => typeof value === 'function'),
     'apps_discussion_dependencies_required', 500);
+  assertApps(knownEntries === undefined || typeof knownEntries === 'function', 'apps_discussion_dependencies_required', 500);
   exact(configured, Object.keys(DISCUSSION_LIMITS));
   const limits = { ...DISCUSSION_LIMITS, ...configured };
   for (const [key, value] of Object.entries(limits)) assertApps(Number.isSafeInteger(value) && value > 0 && value <= DISCUSSION_LIMITS[key], 'invalid_discussion_limits');
@@ -59,6 +60,11 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const row = db.prepare('SELECT * FROM app_discussion_usage WHERE id=1').get();
     assertApps(row, 'apps_registry_corrupt', 500); return row;
   };
+  function remember(base) {
+    if (!readStore || base.administrative || !base.entry || !base.head) return;
+    try { readStore.remember(base.actor.accountId, base.entry, base.head.current_id); }
+    catch { /* An optional recent entry cannot turn a successful message into a retry. */ }
+  }
   function headFor(id, create) {
     const audience = readDiscussionAudience(db, id);
     let head = db.prepare('SELECT * FROM app_discussion_heads WHERE app_id=?').get(id);
@@ -203,6 +209,7 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const base = access(actor, input, input.conversationId === undefined);
     const row = selected(base, input.conversationId ?? base.head?.current_id);
     const value = history(base, row, {});
+    remember(base);
     return { context: value.context, messages: value.messages, historyCursor: value.nextCursor,
       changeCursor: cursor(base, 'changes', row.id, { after: row.change_seq }) };
   }
@@ -259,7 +266,7 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
   }
   function replyView(actor, input, row, replayed) {
     let message = null;
-    try { const base = access(actor, input); selected(base, row.conversation_id); message = messageView(base, row); }
+    try { const base = access(actor, input); selected(base, row.conversation_id); message = messageView(base, row); remember(base); }
     catch (error) { if (!(error instanceof AppsError) || error.code !== 'app_unavailable') throw error; }
     return { requestId: input.requestId, replayed, receipt: { id: row.id, conversationId: row.conversation_id, createdAt: row.created_at },
       ownCurrent: { removed: row.removed_at !== null }, message };
@@ -337,23 +344,72 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     return Number.isSafeInteger(marker.sequence) && marker.sequence >= 1
       && db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(conversationId, marker.messageId)?.seq === marker.sequence;
   }
-  function inbox(actor, entries) {
-    const discussions = [], included = new Set();
-    for (const entry of entries) {
-      if (included.has(entry.appId)) continue;
+  function inbox(actor, input) {
+    // The synthetic scope is used only by the existing encrypted cursor codec.
+    const pageScope = { actor, app: { id: 'inbox' }, entry: null, administrative: false };
+    const at = timestamp(now()), state = input.cursor === undefined ? { upper: at, beforeAt: null, beforeId: null }
+      : readCursor(input.cursor, pageScope, 'inbox', null);
+    if (!state) return { schema: 'soty.app-discussion.inbox.v1', discussions: [], readState: 'unavailable', nextCursor: null, resetRequired: true, checkedAt: at };
+    assertApps(Number.isSafeInteger(state.upper) && state.upper >= 0 && state.upper <= at
+      && (state.beforeAt === null && state.beforeId === null || Number.isSafeInteger(state.beforeAt) && state.beforeAt >= 0
+        && state.beforeAt <= state.upper && typeof state.beforeId === 'string' && /^app-[a-f0-9]{32}$/u.test(state.beforeId)), 'invalid_discussion_cursor');
+    const discussions = [], included = new Set(); let metadataReady = Boolean(readStore);
+    function project(entry, source, visited = false) {
       let base;
       try { base = access(actor, entry); }
-      catch (error) { if (error instanceof AppsError && error.code === 'app_unavailable') continue; throw error; }
+      catch (error) { if (error instanceof AppsError && error.code === 'app_unavailable') return null; throw error; }
       const row = currentConversation(base);
-      if (row && !authority(base, [row])(row)) continue;
+      if (row && !authority(base, [row])(row) || source === 'known' && !visited && !row?.message_seq) return null;
       const last = row && db.prepare('SELECT * FROM app_discussion_messages WHERE conversation_id=? AND removed_at IS NULL ORDER BY seq DESC LIMIT 1').get(row.id);
-      included.add(entry.appId);
-      discussions.push({ appId: base.app.id, name: base.app.name, entry: base.entry, conversationId: row?.id ?? null,
+      return { appId: base.app.id, name: base.app.name, entry: base.entry, conversationId: row?.id ?? null, source,
         lastMessage: last ? { id: last.id, author: { accountId: last.author_account_id, label: last.author_label }, preview: Array.from(last.body).slice(0, 160).join(''), createdAt: last.created_at } : null,
-        unreadCount: row ? unread(actor, base.app, row) : readStore ? 0 : null });
+        unreadCount: row ? unread(actor, base.app, row) : readStore ? 0 : null };
     }
+    for (const entry of input.entries) {
+      if (included.has(entry.appId)) continue;
+      const row = project(entry, 'requested'); if (row) { discussions.push(row); included.add(row.appId); }
+    }
+    const candidates = new Map();
+    function add(entry, priority, activityAt = 0, visited = false) {
+      appId(entry.appId);
+      const value = candidates.get(entry.appId) ?? { appId: entry.appId, hints: [], at: 0, visited: false };
+      value.hints.push({ entry, priority }); value.at = Math.max(value.at, activityAt); value.visited ||= visited; candidates.set(entry.appId, value);
+    }
+    if (input.includeKnown) {
+      try { for (const entry of readStore?.entries(actor.accountId) ?? []) add(entry, 0, entry.at, true); }
+      catch { metadataReady = false; }
+      if (knownEntries) {
+        const known = synchronous(knownEntries(actor), 'apps_async_authority');
+        assertApps(known && Array.isArray(known.saved) && Array.isArray(known.apps), 'apps_discussion_dependencies_required', 500);
+        for (const entry of known.saved) add(entry, 1, entry.at);
+        for (const entry of known.apps) add(entry, 2);
+      }
+      // This existing (author,request_key) index finds only this actor's actual
+      // participation, including old discussions created before the inbox UI.
+      for (const row of db.prepare('SELECT app_id,max(created_at) AS at FROM app_discussion_messages WHERE author_account_id=? GROUP BY app_id').all(actor.accountId)) add({ appId: row.app_id }, 3, row.at, true);
+      for (const value of candidates.values()) {
+        const latest = db.prepare('SELECT m.created_at FROM app_discussion_heads h JOIN app_discussion_messages m ON m.conversation_id=h.current_id WHERE h.app_id=? ORDER BY m.seq DESC LIMIT 1').get(value.appId);
+        value.at = Math.max(value.at, latest?.created_at ?? 0);
+        value.hints.sort((a, b) => a.priority - b.priority);
+        value.hints.push({ entry: { appId: value.appId }, priority: 4 });
+      }
+    }
+    const remaining = [...candidates.values()].filter(value => value.at <= state.upper && (state.beforeAt === null
+      || value.at < state.beforeAt || value.at === state.beforeAt && value.appId > state.beforeId))
+      .sort((a, b) => b.at - a.at || a.appId.localeCompare(b.appId));
+    let before = { ...state }, index = 0;
+    for (; index < remaining.length; index++) {
+      const value = remaining[index];
+      if (discussions.length >= input.limit) break;
+      let row = null;
+      if (!included.has(value.appId)) for (const hint of value.hints) { row = project(hint.entry, 'known', value.visited); if (row) break; }
+      if (row && bytes({ discussions: [...discussions, row] }) > RESPONSE_BYTES - 8192) break;
+      before = { upper: state.upper, beforeAt: value.at, beforeId: value.appId };
+      if (row) { discussions.push(row); included.add(row.appId); }
+    }
+    const nextCursor = index < remaining.length ? cursor(pageScope, 'inbox', null, before) : null;
     return { schema: 'soty.app-discussion.inbox.v1', discussions,
-      readState: readStore && discussions.every(row => row.unreadCount !== null) ? 'synced' : 'unavailable', checkedAt: timestamp(now()) };
+      readState: metadataReady && discussions.every(row => row.unreadCount !== null) ? 'synced' : 'unavailable', nextCursor, resetRequired: false, checkedAt: at };
   }
   function markRead(actor, input) {
     assertApps(readStore, 'apps_discussion_read_unavailable', 503);
@@ -362,7 +418,7 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const message = db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(row.id, input.messageId);
     assertApps(message, 'app_unavailable', 404);
     const previous = readStore.get(actor.accountId, base.app.id, row.id);
-    const receipt = readStore.mark(actor.accountId, base.app.id, row.id, message.seq, input.messageId,
+    const receipt = readStore.mark(actor.accountId, base.entry, row.id, message.seq, input.messageId,
       { resetInvalid: previous !== null && !validMarker(row.id, previous) });
     return { schema: 'soty.app-discussion.read.v1', appId: base.app.id, conversationId: row.id,
       messageId: input.messageId, unreadCount: unread(actor, base.app, row), readAt: receipt.readAt };
@@ -370,12 +426,15 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
   function normalize(op, args) {
     const action = op.slice('apps.discussion.'.length);
     if (action === 'inbox') {
-      exact(args, ['entries']);
-      assertApps(Array.isArray(args.entries) && args.entries.length <= 50, 'invalid_discussion_entries');
-      return args.entries.map(entry => {
+      exact(args, ['entries', 'includeKnown', 'cursor', 'limit']);
+      const entries = args.entries === undefined ? [] : args.entries, limit = pageLimit(args.limit, 50, 50);
+      assertApps(Array.isArray(entries) && entries.length <= limit && bytes(entries) <= 32768, 'invalid_discussion_entries');
+      assertApps(args.includeKnown === undefined || typeof args.includeKnown === 'boolean', 'invalid_discussion_entries');
+      if (args.cursor !== undefined) assertApps(args.includeKnown !== false && entries.length === 0 && typeof args.cursor === 'string' && args.cursor.length <= 2048, 'invalid_discussion_cursor');
+      return { entries: entries.map(entry => {
         exact(entry, ['appId', 'domainId', 'path']);
         return { appId: appId(entry.appId), domainId: identifier(entry.domainId, 'dom'), path: createLaunchPath(entry.path).entryPath };
-      });
+      }), includeKnown: args.includeKnown !== false, limit, ...(args.cursor === undefined ? {} : { cursor: args.cursor }) };
     }
     if (action === 'read') {
       exact(args, ['appId', 'domainId', 'path', 'conversationId', 'messageId']);
