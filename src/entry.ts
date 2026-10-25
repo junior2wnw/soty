@@ -4,12 +4,15 @@ import { loadPreferences } from './world/preferences';
 import { applyThemePreferences } from './world/theme/theme';
 import './platform/connect-theme.css';
 import { getPwaController } from './platform/pwa';
+import { recordStartupTiming } from './platform/startup-timing';
 
 applyThemePreferences(loadPreferences());
 getPwaController();
 
 const root = document.querySelector<HTMLElement>('#app')!;
 root.dataset.startupEntryAt = String(Date.now());
+recordStartupTiming(root);
+window.addEventListener('load', () => { window.setTimeout(() => recordStartupTiming(root), 0); }, { once: true });
 const url = new URL(window.location.href);
 const consent = /^\/oauth\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
 const humanLogin = /^\/human-identity\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
@@ -46,9 +49,9 @@ async function start(): Promise<void> {
 }
 
 void start().catch(() => {
-  const failure = document.createElement('div'); failure.className = 'soty-start';
+  const failure = document.createElement('div'); failure.className = 'soty-start'; failure.setAttribute('role', 'alert');
   const title = document.createElement('h1'); title.textContent = 'Не удалось открыть Соты';
-  const text = document.createElement('p'); text.textContent = 'Проверьте соединение. Ваши данные сохранены.';
+  const text = document.createElement('p'); text.textContent = 'Запуск прервался. Состояние профиля и сохранения пока не проверено. Незавершённую работу в других вкладках сохраните перед повторным открытием.';
   const retry = document.createElement('button'); retry.textContent = 'Повторить';
   retry.addEventListener('click', () => window.location.reload());
   failure.append(title, text, retry); root.replaceChildren(failure);

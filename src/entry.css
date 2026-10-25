@@ -3,7 +3,7 @@ body[data-soty-surface="world"] { margin:0; background:var(--sw-bg); color:var(-
 body[data-soty-surface="world"] #app { min-height:100dvh; }
 .soty-start { min-height:100dvh; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:20px; padding:24px; box-sizing:border-box; text-align:center; }
 .soty-start h1 { font-size:24px; margin:0; font-weight:600; }
-.soty-start p { margin:0; color:var(--sw-muted); }
+.soty-start p { max-width:64ch; margin:0; color:var(--sw-muted); }
 .soty-start button { min-height:48px; border:0; border-radius:16px; padding:12px 28px; background:var(--sw-honey); color:var(--sw-on-accent); font:inherit; cursor:pointer; }
 .soty-start button:focus-visible { outline:3px solid var(--sw-focus); outline-offset:4px; }
 .soty-start-mark { --hex-width:52px; background:var(--sw-honey); animation:soty-breathe 1.4s ease-in-out infinite alternate; }
