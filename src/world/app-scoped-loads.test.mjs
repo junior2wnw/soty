@@ -129,11 +129,11 @@ test('actual Stage W2 warning yields to current Native status after Source ACK a
       commit(old,next){assert.equal(old.slot,binding.slot);binding=next;commits++;return true;},
       onState:state=>{states.push(state);display(state);}});
     assert.equal(await helper.refresh(),false);assert.equal(commits,0);assert.equal(states.at(-1),'login_required');
-    assert.equal(ports.message.textContent,'Обновление доступа пока не подтверждено. Данные сохранены.');
+    assert.equal(ports.message.textContent,'Обновление доступа пока не подтверждено. Состояние данных приложения не проверено.');
     allowed=!permanentRevoke;
     assert.equal(await helper.refresh(),!permanentRevoke);assert.equal(commits,permanentRevoke?0:1);
     assert.equal(states.at(-1),permanentRevoke?'login_required':'ready');
-    assert.equal(ports.message.textContent,permanentRevoke?'Обновление доступа пока не подтверждено. Данные сохранены.':native.message);
+    assert.equal(ports.message.textContent,permanentRevoke?'Обновление доступа пока не подтверждено. Состояние данных приложения не проверено.':native.message);
     assert.equal(ports.api.owner(),permanentRevoke?'renewal':'runtime');
     if(!permanentRevoke&&['unconfirmed','authenticating'].includes(runtimePhase)){
       // Ownership accepts a later current observer delivery. A timed-out display
