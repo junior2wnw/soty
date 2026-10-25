@@ -184,8 +184,8 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
         const value = await acquire({ requestId }, false, signal), after = capture();
         if (context !== value || value.context.generation !== before.context.context.generation
           || value.role !== before.context.role || canonical(value.selection) !== canonical(before.context.selection)
-          || (value.context.ref !== before.context.context.ref
-            && (!digest(before.context.continuityDigest) || value.continuityDigest !== before.context.continuityDigest))) {
+          || (before.context.continuityDigest !== undefined && value.continuityDigest !== before.context.continuityDigest)
+          || (value.context.ref !== before.context.context.ref && !digest(before.context.continuityDigest))) {
           invalidate(); fail('source_client_context_changed', 409);
         }
         return after;
