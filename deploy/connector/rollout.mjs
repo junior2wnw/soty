@@ -112,6 +112,16 @@ export class Rollout {
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
+    this.candidateHealthSha256=this.healthSha256;
+    if(universalReceipt?.environment.some(item=>item.name==='SOTY_ACCOUNT_AI_CONFIG_FILE')){
+      // This explicit, privately witnessed feature changes only the AI
+      // transport and routing authority. Model choices and public paths stay
+      // subject to the original readiness fence; rollback checks the old hash.
+      const expected=clone(baseline.modelProxies);
+      expected.agentModelProxy.transport='account-scoped-server-bridge';
+      for(const name of ['agentModelProxy','applicationModelProxy'])expected[name].providerStrategy='account-gateway';
+      this.candidateHealthSha256=hash(expected);
+    }
     this.originalPolicySha256=baseline.applicationPolicySha256||null;
     const configurationSha256=universalReceipt?hash({schema:'soty.universal-public-configuration.v1',originalId:old.Id,originalImage:old.Image,
       candidateImage:image.Id,revision:args.revision,transaction:args.transaction,policyDigest:universalReceipt.policyDigest}):this.fingerprint;
@@ -205,7 +215,7 @@ export class Rollout {
       await this.note('candidate_started');
       const running=await this.engine.inspect(this.candidate.Id);this.validateCandidate(running);
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
-      requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
+      requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.candidateHealthSha256,'candidate_model_readiness_changed');
       requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
       if(this.args.universalPolicy){
         await this.checkUniversalCurrent();

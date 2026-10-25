@@ -8,6 +8,9 @@ import { prepareUniversalPolicy, publicUniversalPolicy, assertUniversalPolicyCur
   applyUniversalPolicy, assertUniversalImagePrerequisites, sealUniversalPolicy, restoreUniversalPolicy,
   UNIVERSAL_POLICY_SCHEMA, universalModeLabel, accountAiPrivateTarget } from './universal-policy.mjs';
 import { currentStorageReaders, storageReaderLabel } from './storage-guard.mjs';
+import { captureUniversalPreparedness } from '../../modules/app-contract/universal-preparedness.mjs';
+import { hash } from './rollout.mjs';
+import { fixture as engineFixture, args as rolloutArgs } from './test-support/rollout-engine.mjs';
 
 const code = expected => error => error.code === expected && error.message === expected && !error.cause;
 const base = () => ({ Env: ['DATA_DIR=/data'], HostConfig: { Mounts: [] } });
@@ -69,4 +72,34 @@ test('account AI requires its qualified image capability and rejects shadowed fi
   assert.doesNotThrow(() => assertUniversalImagePrerequisites(handle, { candidateImage: image('1'), originalImage: image() }));
   assert.throws(() => applyUniversalPolicy({ ...base(), Env: ['SOTY_ACCOUNT_AI_CONFIG_FILE=/unapproved'] }, handle), code('universal_policy_preexisting_configuration'));
   assert.throws(() => applyUniversalPolicy({ ...base(), HostConfig: { Mounts: [{ Type: 'bind', Source: f.root, Target: '/run/secrets', ReadOnly: true }] } }, handle), code('universal_policy_preexisting_configuration'));
+});
+
+for (const changedModel of [false, true]) test(`guarded account AI handoff ${changedModel ? 'rejects an unrelated model change and restores the old reader' : 'admits only the approved transport transition'}`, async t => {
+  const f = await fixture(t), engine = engineFixture();
+  const measurement = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true,
+    reviewsConfigured: true, humanHttpEnabled: false, humanProfile: null });
+  const handle = await f.prepare({ ...f.plan, expectedCurrentPreparednessSha256: hash(measurement) });
+  const imageRead = engine.engine.image;
+  engine.engine.image = async id => { const value = await imageRead(id); value.Config.Labels[universalModeLabel] = '0';
+    if (id === rolloutArgs.candidateImage) value.Config.Labels['io.soty.account-ai'] = '1'; return value; };
+  const ready = engine.run.ready;
+  engine.run.ready = async kind => { const value = structuredClone(await ready(kind));
+    if (kind === 'candidate') {
+      value.modelProxies.agentModelProxy.transport = 'account-scoped-server-bridge';
+      for (const name of ['agentModelProxy', 'applicationModelProxy']) value.modelProxies[name].providerStrategy = 'account-gateway';
+      if (changedModel) value.modelProxies.agentModelProxy.model = 'unapproved-model';
+    }
+    return value;
+  };
+  engine.run.allowUniversalFixture = true; engine.run.universalMeasurement = async () => measurement;
+  const key = Buffer.alloc(32, 23), sealed = await sealUniversalPolicy(handle, { key, keyId: 'test-handoff' });
+  t.after(() => { key.fill(0); sealed.packet.fill(0); });
+  await engine.run.prepare({ ...rolloutArgs, universalPolicy: handle, universalWitnessId: sealed.witnessId });
+  if (changedModel) {
+    await assert.rejects(engine.run.promote(), code('candidate_model_readiness_changed'));
+    assert.equal(engine.map.get(rolloutArgs.originalId).State.Running, true);
+  } else {
+    await engine.run.promote(); assert.equal(engine.map.get(rolloutArgs.originalId).State.Running, false);
+    assert.equal(engine.map.get(engine.run.candidate.Id).State.Running, true);
+  }
 });
