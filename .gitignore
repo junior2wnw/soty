@@ -33,6 +33,7 @@ scripts/sotyctl.ps1
 /upstream/
 
 output/
+modules/source-app/python/__pycache__/
 .local/
 
 /scripts/app-art/jobs/

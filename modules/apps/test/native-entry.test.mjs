@@ -199,14 +199,14 @@ async function liveRoot(t, f, factory = createAppsService, { actors = [], profil
   const ws = new WebSocket('ws://127.0.0.1:' + server.address().port + '/api/apps/channel'); ws.on('error', () => {});
   f.cleanup(async () => { try { ws.terminate(); service.close(); } finally {
     for (const socket of sockets) socket.destroy(); server.closeAllConnections(); await new Promise(done => server.close(done)); } });
-  let welcome = false; const bound = new Set(), probes = [];
+  let welcome = false, bound; const probes = [];
   ws.on('message', bytes => {
     const frame = JSON.parse(bytes);
     if (frame.type === 'ready') welcome = true;
     if (frame.type === 'binding-set') {
       ws.send(JSON.stringify({ type: 'binding-ack', channelId: frame.channelId, syncId: frame.syncId, appId: frame.target.appId,
         revision: frame.target.revision, digest: frame.target.digest, profile: frame.target.profile }));
-      bound.add(frame.target.revision);
+      bound = frame.target.revision;
     }
     if (frame.type === 'target-prepare') { probes.push(frame); ws.send(JSON.stringify({ type: 'target-prepared', channelId: frame.channelId,
       nonce: frame.nonce, appId: frame.target.appId, revision: frame.target.revision, digest: frame.target.digest,
@@ -230,7 +230,7 @@ async function liveRoot(t, f, factory = createAppsService, { actors = [], profil
       ...headers }).filter(([, value]) => value !== undefined)) }, res => { const chunks = []; res.on('data', part => chunks.push(part)); res.once('end', () => done({
       status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') })); }); req.on('error', reject); req.end();
   });
-  return { service, server, ws, probes, get, prepare, promote, check, ready: (revision = 2) => until(() => bound.has(revision)) };
+  return { service, server, ws, probes, get, prepare, promote, check, ready: (revision = 2) => until(() => bound === revision) };
 }
 
 test('new directory cards prefer the admitted current Source while exact saved Native links remain unchanged', async t => {
