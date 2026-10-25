@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { canonicalOAuthJson } from '../capabilities/server/oauth-profile.mjs';
 import { requireHuman as need, closed, data, digest } from './profile.mjs';
 
@@ -37,7 +37,11 @@ export function createHumanSigninManagement({ db, key, keyId, issuer, schemaVers
     need(available && db.isTransaction, 'human_identity_signins_unavailable', 503);
     const device = scope === 'current-device' ? ' AND device_id=?' : '';
     const params = [actor.accountId, ...(device ? [actor.deviceId] : [])];
-    const grants = db.prepare('SELECT * FROM human_identity_grant_bindings WHERE account_id=?' + device + ' LIMIT ?')
+    const grants = db.prepare(`SELECT b.*,CASE WHEN b.stay_in_app_seconds=86400 THEN NULL ELSE e.expires_at END AS short_expires_at
+      FROM human_identity_grant_bindings b LEFT JOIN
+      (SELECT grant_hash,max(expires_at) AS expires_at FROM human_identity_artifacts
+       WHERE model IN ('Grant','AccessToken') AND grant_hash IS NOT NULL GROUP BY grant_hash) e ON e.grant_hash=b.grant_hash
+      WHERE b.account_id=?` + device + ' LIMIT ?')
       .all(...params, rowLimits.grantBindings + 1);
     const consents = schemaVersion === 3
       ? db.prepare('SELECT * FROM human_identity_device_consents WHERE account_id=?' + device + ' LIMIT ?').all(...params, rowLimits.consents + 1) : [];
@@ -49,9 +53,8 @@ export function createHumanSigninManagement({ db, key, keyId, issuer, schemaVers
     const { kind, row } = entry, entryId = locator(entry), current = clientAuthority(row.client_id);
     const activeDevice = actorActive({ accountId: row.account_id, deviceId: row.device_id }) === true;
     const activeClient = Boolean(current && current.generation === row.client_generation && current.client.profileDigest === row.profile_digest);
-    const expiry = kind === 'oidc-session' ? row.session_expires_at
-      ?? db.prepare("SELECT max(expires_at) AS value FROM human_identity_artifacts WHERE model IN ('Grant','AccessToken') AND grant_hash=?")
-        .get(row.grant_hash).value : null;
+    const expiry = kind === 'oidc-session' ? row.stay_in_app_seconds === 86400
+      ? row.session_expires_at : row.short_expires_at : null;
     const expired = expiry !== null && expiry <= epoch();
     const version = expected(entry);
     return { entryId, kind, clientId: row.client_id, clientLabel: current?.client.label ?? row.client_id,
@@ -91,15 +94,25 @@ export function createHumanSigninManagement({ db, key, keyId, issuer, schemaVers
     need(args.expectedAccountId === actor.accountId, 'human_identity_account_mismatch', 403);
     const limit = args.limit ?? HUMAN_SIGNIN_LIMITS.page;
     need(Number.isSafeInteger(limit) && limit >= 1 && limit <= HUMAN_SIGNIN_LIMITS.page, 'human_identity_signins_limit_invalid');
-    const entries = all(actor, args.scope).filter(entry => entry.row.revoked_at === null)
-      .map(entry => project(entry, actor, args.scope)).sort((a, b) => b.createdAt - a.createdAt
-        || (a.entryId < b.entryId ? -1 : a.entryId > b.entryId ? 1 : 0));
-    const snapshot = digest(entries), offset = args.cursor === undefined ? 0 : readCursor(args.cursor, actor, args.scope, snapshot);
+    const entries = all(actor, args.scope).filter(entry => entry.row.revoked_at === null);
+    const sortKey = entry => entry.kind + ':' + (entry.row.grant_hash ?? entry.row.consent_hash);
+    entries.sort((a, b) => b.row.created_at - a.row.created_at || (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
+    const clients = [...new Set(entries.map(entry => entry.row.client_id))].sort();
+    const heads = clients.length ? db.prepare(`SELECT client_id,profile_digest,generation,active FROM human_identity_client_heads
+      WHERE client_id IN (${clients.map(() => '?').join(',')}) ORDER BY client_id`).all(...clients) : [];
+    // Hash each small validated ledger record independently. Do not relax the
+    // OAuth16KiB artifact grammar merely to fingerprint a bounded large list.
+    const hash = createHash('sha256').update('soty.human-signins-snapshot.v1\0');
+    for (const entry of entries) hash.update(digest([entry.kind, entry.row])).update('\0');
+    for (const head of heads) hash.update(digest(head)).update('\0');
+    const snapshot = hash.digest('hex'), offset = args.cursor === undefined ? 0 : readCursor(args.cursor, actor, args.scope, snapshot);
     need(offset <= entries.length, 'human_identity_signins_cursor_invalid');
-    const page = entries.slice(offset, offset + limit);
+    const page = entries.slice(offset, offset + limit).map(entry => project(entry, actor, args.scope));
     const result = { schema: 'soty.human-signins.v1', scope: args.scope, capabilities, entries: page,
       nextCursor: offset + page.length < entries.length ? cursor(actor, args.scope, snapshot, offset + page.length) : null };
-    need(Buffer.byteLength(canonicalOAuthJson(result)) <= HUMAN_SIGNIN_LIMITS.resultBytes,
+    // The closed DTO is constructed here from checked scalar fields, not from
+    // caller objects or token artifacts; its own API response budget is32KiB.
+    need(Buffer.byteLength(JSON.stringify(result)) <= HUMAN_SIGNIN_LIMITS.resultBytes,
       'human_identity_signins_capacity', 503);
     return result;
   }

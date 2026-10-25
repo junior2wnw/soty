@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { environment } from './support/renewal-fixture.mjs';
 import { createHumanIdentityService } from '../service.mjs';
+import { createHumanSigninManagement } from '../signins.mjs';
 
 const LIST = 'identity.human.signins.list', REVOKE = 'identity.human.signins.revoke', CHECK = 'identity.human.signins.checkRevoke';
 const list = (f, signer = f.actor, extra = {}) => signer.client.extension(LIST,
@@ -19,6 +20,46 @@ async function remember(f, signer = f.actor, rp = f.rps[0]) {
   const finished = await f.complete(flow); assert.equal((await flow.session.request(finished.callback)).status, 200);
   return flow;
 }
+
+for (const deviceConsent of [false, true]) test(`ordinary short OIDC expiry uses actual artifacts in schema ${deviceConsent ? 3 : 2}`, { timeout: 20000 }, async t => {
+  const f = await environment(t, { deviceConsent });
+  await f.login(f.rps[0], f.actor, f.freshWire());
+  const entry = (await list(f)).entries[0];
+  const stored = rows(f, db => db.prepare(`SELECT b.stay_in_app_seconds,b.session_expires_at,max(a.expires_at) AS expires
+    FROM human_identity_grant_bindings b JOIN human_identity_artifacts a ON a.grant_hash=b.grant_hash
+    WHERE a.model IN ('Grant','AccessToken') GROUP BY b.grant_hash`).get());
+  assert.equal(stored.stay_in_app_seconds, 0); assert.equal(stored.session_expires_at, null);
+  assert.equal(entry.renewable, false); assert.equal(entry.status, 'active');
+  assert.equal(entry.expiresAt, stored.expires * 1000); assert.ok(entry.expiresAt > Date.now());
+});
+
+test('list fingerprints the bounded ledger but projects only its requested page, with no expiry SQL per family', { timeout: 20000 }, async t => {
+  const f = await environment(t);
+  for (let i = 0; i < 4; i++) await f.login(f.rps[0], f.actor, f.freshWire());
+  const db = new DatabaseSync(f.identityPath, { readOnly: true }), encryption = f.profile.encryptionKey();
+  let statements = 0, clients = 0, devices = 0;
+  const port = { get isTransaction() { return db.isTransaction; }, prepare(sql) { statements++; return db.prepare(sql); } };
+  const management = createHumanSigninManagement({ db: port, key: encryption.key, keyId: encryption.keyId,
+    issuer: f.issuer, schemaVersion: 2, epoch: () => Math.floor(Date.now() / 1000), rowLimits: { grantBindings: 4096, consents: 4096 },
+    clientAuthority() { clients++; return null; }, actorActive() { devices++; return true; } });
+  try {
+    db.exec('BEGIN');
+    const page = management.execute(LIST, f.actor.account, { expectedAccountId: f.actor.account.accountId, scope: 'current-device', limit: 1 });
+    assert.equal(page.entries.length, 1); assert.ok(page.nextCursor);
+    assert.equal(statements, 2, 'one joined family expiry read and one current-head snapshot read, independent of family count');
+    assert.equal(clients, 1); assert.equal(devices, 1, 'live metadata is projected only for the requested page');
+  } finally { if (db.isTransaction) db.exec('ROLLBACK'); db.close(); encryption.key.fill(0); }
+});
+
+test('a full20row UTF8 page fits its own response budget without widening OAuth artifact limits', { timeout: 30000 }, async t => {
+  const f = await environment(t);
+  await f.configureClients(clients => clients.map(client => ({ ...client, version: client.version + 1, label: '界'.repeat(120) })));
+  for (let i = 0; i < 20; i++) await f.login(f.rps[0], f.actor, f.freshWire());
+  const page = await list(f);
+  assert.equal(page.entries.length, 20); assert.equal(page.nextCursor, null);
+  const bytes = Buffer.byteLength(JSON.stringify(page));
+  assert.ok(bytes > 16384 && bytes <= 32768, 'large API DTO is distinct from a16KiB OAuth token artifact');
+});
 
 test('real signed Human management lists only issuer authorization metadata and closes one exact family', { timeout: 20000 }, async t => {
   const f = await environment(t);
