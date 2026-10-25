@@ -145,6 +145,7 @@ function thinEntities(values: readonly FieldDirectoryEntity[]): FieldDirectoryEn
       if (value.source && ['public', 'member', 'owner', 'builtin'].includes(value.source)) result.source = value.source;
       if (Number.isFinite(value.updatedAt)) result.updatedAt = value.updatedAt!;
       if (entity.kind === 'person' && typeof value.avatarRevision === 'number' && Number.isSafeInteger(value.avatarRevision) && value.avatarRevision > 0) result.avatarRevision = value.avatarRevision;
+      if (entity.kind === 'person' && (value.personAction === 'chat' || value.personAction === 'profile')) result.personAction = value.personAction;
       if (Number.isSafeInteger(value.unreadCount) && value.unreadCount! > 0) result.unreadCount = value.unreadCount!;
       if (entity.kind === 'device' && typeof value.online === 'boolean') result.online = value.online;
       return [result];
@@ -343,7 +344,9 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (!src && entity.avatarRevision && entity.avatarRevision > 0) {
         face.classList.add('sw-avatar'); face.dataset.profileId = entity.entity.id; face.dataset.avatarRevision = String(entity.avatarRevision); face.dataset.avatarLabel = initials(entity.title);
       }
-      const label = el('span', 'uf-label uf-person-label'); label.append(el('span', 'uf-label-text', entity.title)); target.append(face, label, hexFrame(metrics.radius));
+      const label = el('span', 'uf-label uf-person-label');
+      label.append(el('span', 'uf-label-text', entity.title), el('span', 'uf-person-action', entity.personAction === 'chat' ? 'Личный чат' : 'Профиль'));
+      target.append(face, label, hexFrame(metrics.radius));
     } else if (kind === 'device') {
       const inner = el('span', 'uf-device-inner'), label = el('span', 'uf-label'); label.append(el('span', 'uf-label-text', entity.title)); inner.append(icon(entity.symbol || 'laptop', 'uf-device-icon'), label);
       // An online signal without a recent observation is not a live presence claim.
@@ -501,7 +504,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       } else { inspectElements.get(node.shortcutId)?.remove(); inspectElements.delete(node.shortcutId); }
       target.classList.toggle('is-selected', node.shortcutId === selectedId); target.classList.toggle('is-moving', node.shortcutId === moving?.shortcutId);
       target.setAttribute('aria-label', preview ? contextFocus[mode] === node.contextId ? `Приблизить: ${node.entity.title}`
-        : `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.entity.description ? `. ${node.entity.description}` : ''}`);
+        : `Открыть пространство ${current.contexts.find(context => context.contextId === node.contextId)?.title ?? ''}` : `${node.entity.title}${node.kind === 'person' ? node.entity.personAction === 'chat' ? '. Личный чат' : '. Профиль' : ''}${node.entity.description ? `. ${node.entity.description}` : ''}`);
       target.tabIndex = target.disabled || level === 'overview' && !arranging ? -1 : node.shortcutId === activeId ? 0 : -1;
     }
     for (const [id, target] of nodeElements) if (!keep.has(id)) { target.remove(); nodeElements.delete(id); inspectElements.get(id)?.remove(); inspectElements.delete(id); }

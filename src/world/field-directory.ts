@@ -6,6 +6,7 @@ export interface DirectoryApi { request<T>(operation: string, args?: Record<stri
 export interface DirectoryEntity {
   entity: FieldEntity; title: string; description?: string; symbol?: string; color?: string; avatarUrl?: string; avatarRevision?: number | null; coverKey?: string;
   source: 'public' | 'member' | 'owner' | 'builtin'; updatedAt?: number; unreadCount?: number; online?: boolean;
+  personAction?: 'chat' | 'profile';
 }
 export interface DirectoryApp {
   id: string; name: string; ownerAccountId: string; state: 'ready' | 'starting' | 'stopped' | 'offline';
@@ -32,7 +33,8 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
   const records = new Map<string, DirectoryRecord>();
   const check = (): void => { if (disposed || !isCurrent()) { records.clear(); fail('directory_account_changed'); } };
   const remember = (ref: FieldEntity, value: DirectoryRecord): void => {
-    check(); const key = fieldEntityKey(ref); records.delete(key); records.set(key, value);
+    check(); const key = ('kind' in value && value.kind === 'contact' ? 'contact:' : '') + fieldEntityKey(ref);
+    records.delete(key); records.set(key, value);
     if (records.size > 512) records.delete(records.keys().next().value!);
   };
   const request = async <T>(operation: string, args: Record<string, unknown>): Promise<T> => {
@@ -41,7 +43,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
   };
   const person = (value: DirectoryPerson, source: DirectoryEntity['source'] = 'public'): DirectoryEntity => {
     const entity: FieldEntity = { kind: 'person', id: value.profileId }; remember(entity, value);
-    return { entity, title: value.displayName, ...(value.bio ? { description: value.bio } : {}), color: value.avatarColor, source,
+    return { entity, title: value.displayName, personAction: 'profile', ...(value.bio ? { description: value.bio } : {}), color: value.avatarColor, source,
       ...(value.avatarUrl ? { avatarUrl: value.avatarUrl } : {}), ...(value.avatarRevision !== undefined ? { avatarRevision: value.avatarRevision } : {}) };
   };
   const community = (value: WorldCommunity): DirectoryEntity => {
@@ -79,7 +81,7 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
     return response.contacts.map(value => {
       const record = toRecord(value);
       const entity: FieldEntity = { kind: 'person', id: value.peerAccountId };
-      return { record, item: { entity, title: value.label, description: 'Личный разговор · в контактах', source: 'member' as const } };
+      return { record, item: { entity, title: value.label, personAction: 'chat' as const, description: 'Личный разговор · в контактах', source: 'member' as const } };
     });
   }
   const encode = (value: FederationCursor): string => JSON.stringify(value);
@@ -250,7 +252,11 @@ export function createFieldDirectory({ api, accountId, isCurrent = () => true }:
       return result;
     },
     resolve,
-    getRecord(ref: FieldEntity): DirectoryRecord | null { check(); return records.get(fieldEntityKey(ref)) ?? null; },
+    getRecord(ref: FieldEntity, personAction?: DirectoryEntity['personAction']): DirectoryRecord | null {
+      check(); const key = fieldEntityKey(ref);
+      return personAction === 'chat' ? records.get('contact:' + key) ?? null
+        : records.get(key) ?? (personAction === 'profile' ? null : records.get('contact:' + key) ?? null);
+    },
     dispose(): void { disposed = true; records.clear(); },
   });
 }

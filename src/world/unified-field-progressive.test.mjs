@@ -24,7 +24,7 @@ const printer = ts.createPrinter();
 const named = (nodes, name) => { const n = nodes.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name); assert.ok(n, name); return n; };
 const screenParsed = parse(sourcePath), screen = named(screenParsed.statements, 'createUnifiedFieldScreen');
 const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
-  + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, searchDirectory, openPreview });');
+  + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, searchDirectory, openPreview, allMetadata });');
 const directoryPath = process.argv[4] ? resolve(process.argv[4]) : join(repo, 'src/world/field-directory.ts');
 const directoryCode = compile(readFileSync(directoryPath, 'utf8'));
 const contractCode = compile(readFileSync(join(repo, 'modules/field/contract.mjs'), 'utf8'));
@@ -49,7 +49,7 @@ const app = (id, title = 'Готовое приложение') => ({ id, name: 
 const person = ref => ({ profileId: ref.id, displayName: 'Готовый человек', avatarColor: '#abcdef', revision: 1 });
 const documentFor = refs => ({ schema: 'soty.field.v1', contexts: [{ contextId: 'studio', title: 'Студия', x: 0, y: 0 }],
   shortcuts: refs.map((entity, i) => ({ shortcutId: `shortcut_${i}`, entity, contextId: 'studio', slot: [i * 3, 0] })) });
-function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGate, pageGate, appGate, unavailable = false, worldFailure = false, mode = 'mine', searchApps = false, communitySearchGate, peopleSearchGate, searchAppGate } = {}) {
+function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGate, pageGate, appGate, unavailable = false, worldFailure = false, mode = 'mine', searchApps = false, communitySearchGate, peopleSearchGate, searchAppGate, contacts = [], searchPeople = [] } = {}) {
   let current = true, sourceGeneration = 1, inFlight = 0, resolveActive = 0;
   const state = { calls: [], updates: [], maxInFlight: 0, maxResolveInFlight: 0, empties: [], pages: 0, previewClosed: 0, listCloses: 0 };
   const api = { async request(op, args) {
@@ -60,8 +60,8 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
       if (op === 'apps.directory.resolve') { if (appGate) await appGate(args.appIds); return { items: args.appIds.map(id => ({ ref: { kind: 'app', id }, available: !unavailable, ...(unavailable ? {} : { app: app(id) }) })) }; }
       if (op === 'world.directory.resolve') { if (worldGate) await worldGate.promise; if (worldFailure) throw Object.assign(new Error('Synthetic offline source'), { code: 'NETWORK_ERROR' }); return { items: args.entities.map(ref => ({ ref, available: true, access: 'member', person: person(ref) })) }; }
       if (op === 'apps.devices') { if (deviceGate) await deviceGate.promise; return { devices: [] }; }
-      if (op === 'contacts.list') return { contacts: [] };
-      if (op === 'world.directory.search') { state.pages++; if (pageGate) await pageGate.promise; if (args.kind === 'communities' && communitySearchGate) await communitySearchGate.promise; if (args.kind === 'people' && peopleSearchGate) await peopleSearchGate.promise; return { people: [], communities: [], nextCursor: null }; }
+      if (op === 'contacts.list') return { contacts };
+      if (op === 'world.directory.search') { state.pages++; if (pageGate) await pageGate.promise; if (args.kind === 'communities' && communitySearchGate) await communitySearchGate.promise; if (args.kind === 'people' && peopleSearchGate) await peopleSearchGate.promise; return { people: args.kind === 'people' ? searchPeople : [], communities: [], nextCursor: null }; }
       if (op === 'apps.directory.search') { if (searchAppGate) await searchAppGate.promise; return { apps: searchApps ? [app(appRef(1).id)] : [], nextCursor: null }; }
       throw new Error('Unexpected synthetic operation');
     } finally { inFlight--; if (op.endsWith('.directory.resolve')) resolveActive--; }
@@ -96,7 +96,7 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
     icon: () => node('svg'), iconButton: (label, _, onClick) => Object.assign(node('button', '', label), { onClick }),
     avatar: () => node('span', 'avatar'),
     kindLabel: kind => kind,
-    renderMineSearchResults() {},
+    renderMineSearchResults() {}, publishKnownApps() {},
     closeList() { state.listCloses++; }, closePreview() { state.previewClosed++; environment.preview?.remove(); environment.preview = null; delete environment.element.dataset.preview; environment.selected = null; },
   };
   vm.createContext(environment);
@@ -121,6 +121,26 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
 
 }
 const hasFreshApp = h => h.field.getLayout().nodes.some(n => n.entity.title === 'Готовое приложение');
+
+test('a late public person search preserves Mine contact action, and a late private refresh never paints its nickname into Search', async () => {
+  const peopleSearchGate = deferred(), h = harness({ refs: [personRef], peopleSearchGate,
+    contacts: [{ peerAccountId: personRef.id, relationshipId: 'relationship_1', label: 'Private nickname', createdAt: 1 }],
+    searchPeople: [{ ...person(personRef), displayName: 'Public person' }] });
+  await h.api.loadMine();
+  assert.equal(h.field.getLayout().nodes[0].entity.personAction, 'chat');
+  h.environment.mode = 'search'; h.field.update({ mode: 'search', entities: h.api.allMetadata() });
+  assert.equal(h.field.getLayout().nodes.length, 0, 'switching surfaces clears private display before a public response');
+  const search = h.api.searchDirectory(); await settle(); peopleSearchGate.resolve(); await search;
+  assert.deepEqual(h.field.getLayout().nodes.map(node => node.entity.title), ['Public person']);
+  await h.api.loadMine();
+  assert.deepEqual(h.field.getLayout().nodes.map(node => node.entity.title), ['Public person']);
+  assert.equal(h.field.getLayout().nodes[0].entity.personAction, 'profile');
+  assert.equal(h.environment.metadata.get(fieldEntityKey(personRef)).title, 'Private nickname');
+  assert.equal(h.directory.getRecord(h.doc.shortcuts[0].entity, 'chat').relationshipId, 'relationship_1');
+  h.environment.mode = 'mine'; h.field.update({ mode: 'mine', entities: h.api.allMetadata() });
+  assert.equal(h.field.getLayout().nodes[0].entity.title, 'Private nickname');
+  assert.equal(h.field.getLayout().nodes[0].entity.personAction, 'chat');
+});
 
 test('the shared VM uses the unchanged strict contract without accepting foreign or malicious prototypes', () => {
   const h = harness({ refs: [] }), sameRealm = vm.runInContext('({ kind: "app", id: "app-' + '1'.repeat(32) + '" })', h.environment);

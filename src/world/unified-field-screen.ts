@@ -252,12 +252,21 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (mode === 'mine') instance.body.append(button('Собрать рядом', 'cells', 'sw-button-wide', () => { instance.close({ restoreFocus: false }); openCompactPreview(); }));
     if (mode === 'mine') instance.body.append(button('Мои пространства', 'layers', 'sw-button-wide', () => { instance.close(); manageContexts(); }));
   }
-  function merge(items: readonly DirectoryEntity[]): void { for (const item of items) metadata.set(fieldEntityKey(item.entity), item); metadataRevision++; }
+  function merge(items: readonly DirectoryEntity[], publicSearch = false): void {
+    for (const item of items) {
+      const key = fieldEntityKey(item.entity);
+      if (publicSearch && metadata.get(key)?.personAction === 'chat') continue;
+      metadata.set(key, item);
+    }
+    metadataRevision++;
+  }
   function pruneMetadata(): void {
     const keep = new Set([...allMetadata(), ...available].map(item => fieldEntityKey(item.entity)));
+    for (const shortcut of (engine?.snapshot() ?? state?.document)?.shortcuts ?? []) keep.add(fieldEntityKey(shortcut.entity));
     for (const key of metadata.keys()) if (!keep.has(key)) metadata.delete(key);
   }
   function allMetadata(): DirectoryEntity[] {
+    if (mode === 'search') return [...new Map([...BUILTINS, ...searchItems].map(item => [fieldEntityKey(item.entity), item])).values()];
     const needed = new Set([...BUILTINS, ...searchItems].map(item => fieldEntityKey(item.entity)));
     for (const shortcut of (engine?.snapshot() ?? state?.document)?.shortcuts ?? []) needed.add(fieldEntityKey(shortcut.entity));
     return [...metadata.values()].filter(item => needed.has(fieldEntityKey(item.entity)));
@@ -292,7 +301,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     contextKey = ''; if (summary) updateSummary(summary); placeSearch(); renderMineSearchResults();
   }
   function route(): void { options.onRoute(mode, queries[mode], filter); }
-  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else { updateMineFilter(); if (engine) revealReadyMine(engine); } }
+  function changeMode(next: UnifiedFieldMode): void { if (next === mode) return; closeList(false); closePreview(false); emptyDocument = null; filtersByMode[mode] = filter; mode = next; filter = filtersByMode[mode]; if (filter === 'device' && mode === 'search') filter = 'all'; engine?.cancel(); engine?.update({ mode, entities: allMetadata() }); updateChrome(); route(); if (mode === 'search') run(searchDirectory()); else { updateMineFilter(); if (engine) revealReadyMine(engine); } }
   function inputChanged(immediate = false): void {
     closeList(false);
     queries[mode] = searchInput.value; clear.hidden = !searchInput.value; route();
@@ -469,7 +478,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       resultSize = combined.length;
       const next = combined.slice(0, 256), changed = searchResponseScope !== scope || JSON.stringify(next) !== JSON.stringify(searchItems);
       if (selected && (searchResponseScope !== scope || !progress && !append && !combined.some(item => fieldEntityKey(item.entity) === fieldEntityKey(selected!.item.entity)))) closePreview(false);
-      searchItems = next; merge(items); searchResponseScope = scope; pruneMetadata();
+      searchItems = next; merge(items, true); searchResponseScope = scope; pruneMetadata();
       if (changed) {
         const scene = searchPlacement.update(scope, searchItems, allMetadata()); activeSearchScene = scene;
         engine?.update({ entities: allMetadata(), searchDocument: scene, scope });
@@ -588,7 +597,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       mineResolvedGeneration = generation;
       element.dataset.mineState = engine.snapshot().shortcuts.some(shortcut => !mineKnownRefs.has(fieldEntityKey(shortcut.entity))) ? 'unknown' : 'ready';
       engine.update({ entities: allMetadata() }); updateMineFilter();
-      if (selected) {
+      if (selected && mode === 'mine') {
         const latest = metadata.get(fieldEntityKey(selected.item.entity));
         if (!latest || resolved.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
         else if (JSON.stringify(latest) !== JSON.stringify(selected.item)) openPreview(latest, selected.shortcutId);
@@ -637,7 +646,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     }
     if (item.entity.kind === 'person') copy.prepend(avatar(item.title, item.avatarUrl, item.color, item.entity.id, item.avatarRevision));
     if (item.description) copy.append(el('p', '', item.description));
-    const record = directory.getRecord(item.entity), actions = el('div', 'uf-preview-actions');
+    const record = directory.getRecord(item.entity, item.personAction), actions = el('div', 'uf-preview-actions');
     if (record && 'kind' in record && record.kind === 'contact') copy.append(el('p', 'uf-preview-meta', 'Ваш контакт'));
     if (item.entity.kind === 'community' && record && 'communityId' in record) {
       const group = record as WorldCommunity;
@@ -667,7 +676,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const ownProfile = item.entity.kind === 'person' && item.entity.id === options.accountId;
       const contact = item.entity.kind === 'person' && record && 'kind' in record && record.kind === 'contact';
       const openLabel = ownProfile ? 'Редактировать профиль' : contact ? options.directMessagesEnabled ? 'Написать' : 'Контакт' : item.entity.kind === 'person' ? 'Профиль' : item.entity.kind === 'device' ? 'Устройства' : 'Открыть';
-      const open = button(openLabel, contact && options.directMessagesEnabled ? 'chat' : item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity)));
+      const open = button(openLabel, contact && options.directMessagesEnabled ? 'chat' : item.entity.kind === 'person' ? 'person' : 'external', 'sw-button-primary', () => options.onOpen(item, directory.getRecord(item.entity, item.personAction)));
       if (item.entity.kind === 'person') open.setAttribute('aria-label', contact ? openLabel : ownProfile ? 'Редактировать профиль' : 'Профиль и контакт');
       else if (item.entity.kind === 'device') open.setAttribute('aria-label', 'Управление устройствами');
       open.disabled = !ownProfile && !record && ['person', 'device', 'community'].includes(item.entity.kind); actions.append(open);
@@ -689,7 +698,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         || !capturedEngine.snapshot().shortcuts.some(value => value.shortcutId === shortcutId && fieldEntityKey(value.entity) === entityKey)) return;
       const fresh = metadata.get(fieldEntityKey(item.entity)); if (fresh) openPreview(fresh, shortcutId);
     } : undefined;
-    if (!options.onInspectOwn?.(item, directory.getRecord(item.entity), placement)) openPreview(item, shortcutId);
+    if (!options.onInspectOwn?.(item, directory.getRecord(item.entity, item.personAction), placement)) openPreview(item, shortcutId);
   }
   function closeList(restoreFocus = true): void {
     const instance = listDialog; listDialog = null; instance?.close({ restoreFocus });
@@ -704,13 +713,13 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const entries = new Map<string, { key: string; title: string; detail: string; entity: FieldEntityRef; shortcutId: string; contexts: Set<string> }>();
     const includedContexts = new Set<string>();
     for (const shortcut of doc.shortcuts) {
-      const key = fieldEntityKey(shortcut.entity), item = metadata.get(key);
-      if (!known.has(key) || !item || (item.entity.kind === 'builtin' ? !BUILTINS.some(builtin => fieldEntityKey(builtin.entity) === key) : (!privateReady || !directory.getRecord(item.entity)))) continue;
+      const key = fieldEntityKey(shortcut.entity), item = mode === 'search' ? searchItems.find(value => fieldEntityKey(value.entity) === key) : metadata.get(key);
+      if (!known.has(key) || !item || (item.entity.kind === 'builtin' ? !BUILTINS.some(builtin => fieldEntityKey(builtin.entity) === key) : (!privateReady || !directory.getRecord(item.entity, item.personAction)))) continue;
       if (mode === 'mine' && !matches(item, matchingContexts.has(shortcut.contextId) ? '' : queries.mine, filter)) continue;
       const context = doc.contexts.find(value => value.contextId === shortcut.contextId); if (!context) continue;
       includedContexts.add(context.contextId);
       let entry = entries.get(key);
-      if (!entry) { entry = { key, title: item.title, detail: kindLabel(item.entity.kind), entity: item.entity, shortcutId: shortcut.shortcutId, contexts: new Set() }; entries.set(key, entry); }
+      if (!entry) { entry = { key, title: item.title, detail: item.entity.kind === 'person' ? item.personAction === 'chat' ? 'Личный чат' : 'Профиль' : kindLabel(item.entity.kind), entity: item.entity, shortcutId: shortcut.shortcutId, contexts: new Set() }; entries.set(key, entry); }
       entry.contexts.add(context.title);
     }
     const rows: { key: string; title: string; detail: string; entity?: FieldEntityRef; shortcutId?: string; contextId?: string }[] = [...entries.values()].map(({ contexts, ...entry }) => ({ ...entry, detail: `${entry.detail} · ${[...contexts].join(', ')}` }));
@@ -789,8 +798,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function activate(entity: FieldDirectoryEntity, shortcutId?: string, source?: { presentation: 'list'; listQuery: string }): void {
     if (!current()) return;
-    const item = metadata.get(fieldEntityKey(entity.entity)); if (!item) return;
-    const record = directory.getRecord(item.entity);
+    const key = fieldEntityKey(entity.entity), item = mode === 'search' ? searchItems.find(value => fieldEntityKey(value.entity) === key) : metadata.get(key); if (!item) return;
+    const record = directory.getRecord(item.entity, item.personAction);
     const confirmed = mineConfirmedGeneration === mineGeneration && mineKnownRefs.has(fieldEntityKey(item.entity));
     const contact = confirmed && options.directMessagesEnabled === true && item.entity.kind === 'person' && item.entity.id !== options.accountId
       && record && 'kind' in record && record.kind === 'contact' && record.peerAccountId === item.entity.id;
@@ -925,7 +934,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const field = createUnifiedField({ accountId: options.accountId, document: loaded.document, revision: loaded.projectedRevision,
       mode, entities: allMetadata(), readableMobileFocus: true, dimNonMatches: true, ...(options.viewState ? { viewState: options.viewState } : {}), commit: (doc, context) => persistence.commit(doc, context),
       onViewStateChange: view => { if (current()) options.onViewStateChange?.(view); },
-      onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) inspect(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
+      onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) inspect(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? searchItems.find(value => fieldEntityKey(value.entity) === fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
     element.dataset.startupLayoutAt ??= String(Date.now());

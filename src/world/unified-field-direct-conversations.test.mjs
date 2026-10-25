@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
+import { createFieldDirectory } from './field-directory.ts';
 
 const root = process.env.SOTY_REVIEW_FIELD_ROOT
   ? pathToFileURL(resolve(process.env.SOTY_REVIEW_FIELD_ROOT) + sep) : new URL('../../', import.meta.url);
@@ -63,7 +64,7 @@ function harness(kind = 'person', { version = 1, state = 'active', mode = 'mine'
   element.querySelector = () => fieldControl; document.activeElement = fieldControl;
   const environment = {
     exports: {}, mode, current: () => live, isCurrent: () => live, deskAccount: 'account_001',
-    profile: { directMessagesVersion: version }, metadata: new Map([[key, item]]), mineKnownRefs: new Set([key]),
+    profile: { directMessagesVersion: version }, metadata: new Map([[key, item]]), searchItems: [item], mineKnownRefs: new Set([key]),
     mineGeneration: 2, mineConfirmedGeneration: 2, summary: { arranging: false },
     directory: { getRecord: ref => records.get(fieldEntityKey(ref)) || null },
     fieldEntityKey, element, document, HTMLElement: NodePort, searchInput: node('input'),
@@ -93,6 +94,32 @@ test('confirmed Mine contact reaches the existing guarded DM consumer with its e
   assert.equal(h.calls.notes, 1); assert.equal(h.calls.direct.length, 1);
   assert.equal(h.calls.direct[0], h.record); assert.equal(h.calls.accounts.length, 0);
   assert.equal(h.preview(), null); assert.equal(h.calls.focus, 0);
+});
+
+test('confirmed contact remains one activation after real public search; fresh contact removal closes that route', async () => {
+  const h = harness(), ref = h.item.entity;
+  let active = true;
+  const directory = createFieldDirectory({ accountId: 'account_001', api: { async request(op, args) {
+    if (op === 'contacts.list') return { contacts: active ? [{ peerAccountId: ref.id, relationshipId: 'relationship_1', label: 'Private nickname', createdAt: 1 }] : [] };
+    if (op === 'world.directory.search') return { people: args.kind === 'people' ? [{ profileId: ref.id, displayName: 'Public name', avatarColor: '#abcdef', revision: 1 }] : [], communities: [], nextCursor: null };
+    if (op === 'apps.directory.search') return { apps: [], nextCursor: null };
+    if (op === 'apps.devices') return { devices: [] };
+    throw Error('Unexpected operation ' + op);
+  } } });
+  const mine = await directory.loadMine(); Object.assign(h.item, mine.items[0]);
+  h.environment.directory = directory;
+  const publicPage = await directory.search({ kinds: ['person'] }); h.tap();
+  assert.equal(h.calls.direct.length, 1); assert.equal(h.calls.direct[0].relationshipId, 'relationship_1');
+  assert.equal(h.preview(), null);
+  h.environment.mode = 'search'; h.environment.searchItems = publicPage.items; h.tap();
+  assert.equal(h.preview().attributes.get('aria-label'), 'Об объекте: Public name');
+  assert.ok(h.buttons().some(node => node.textContent === 'Профиль'));
+  assert.equal(h.buttons().some(node => node.textContent === 'Написать'), false, 'public profile action never borrows a private contact record');
+  assert.equal(h.calls.direct.length, 1);
+  h.environment.mode = 'mine'; h.environment.closePreview(false);
+  active = false; await directory.loadMine(); h.tap();
+  assert.equal(h.calls.direct.length, 1, 'removed contact cannot use its old conversation projection');
+  assert.ok(h.preview()); directory.dispose();
 });
 
 test('joined Mine room requests the existing chat consumer, while every unjoined state remains a preview', () => {

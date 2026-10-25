@@ -115,3 +115,28 @@ test('large own contact lists do not evict loaded apps; contact cache remains th
   const blocked = await directory.resolve([ref]); assert.deepEqual(blocked.unavailable, [ref]); assert.equal(directory.getRecord(ref), null);
   assert.ok(directory.getRecord({ kind: 'app', id: actual.id })); directory.dispose();
 });
+
+test('public search and profile resolve cannot replace a confirmed contact or publish its private nickname', async () => {
+  const ref = { kind: 'person', id: 'peer_shared' }, profile = { ...person(1), profileId: ref.id, displayName: 'Public person' };
+  let active = true;
+  const directory = createFieldDirectory({ accountId: 'owner', api: { async request(op, args) {
+    if (op === 'contacts.list') return { contacts: active ? [{ relationshipId: 'relationship_1', peerAccountId: ref.id, label: 'Private nickname', createdAt: 1 }] : [] };
+    if (op === 'apps.devices') return { devices: [] };
+    if (op === 'apps.directory.search') return { apps: [], nextCursor: null };
+    if (op === 'world.directory.search') return { people: args.kind === 'people' ? [profile] : [], communities: [], nextCursor: null };
+    if (op === 'world.directory.resolve') return { items: [{ ref, available: true, person: profile }] };
+    throw Error('Unexpected operation ' + op);
+  } } });
+  const mine = await directory.loadMine(), contact = mine.items.find(value => value.entity.id === ref.id);
+  const publicPage = await directory.search({ kinds: ['person'] });
+  assert.equal(directory.getRecord(ref, 'chat')?.kind, 'contact', 'public search must preserve the exact confirmed conversation record');
+  assert.equal(contact.personAction, 'chat'); assert.equal(contact.title, 'Private nickname');
+  assert.equal(publicPage.items[0].personAction, 'profile'); assert.equal(publicPage.items[0].title, 'Public person');
+  assert.equal(JSON.stringify(publicPage).includes('Private nickname'), false);
+  assert.equal(directory.getRecord(ref, 'profile').displayName, 'Public person');
+  await directory.resolve([ref]);
+  assert.equal(directory.getRecord(ref, 'chat')?.relationshipId, 'relationship_1');
+  active = false; await directory.loadMine();
+  assert.equal(directory.getRecord(ref, 'chat'), null, 'a fresh contact list removes the old conversation action');
+  assert.equal(directory.getRecord(ref, 'profile').displayName, 'Public person'); directory.dispose();
+});

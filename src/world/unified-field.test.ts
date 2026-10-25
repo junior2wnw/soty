@@ -32,6 +32,7 @@ for (let i = 0; i < count; i++) {
   const contextId = initial.contexts[Math.min(Math.floor(i / (contextCount > 1 ? 10 : count)), contextCount - 1)]!.contextId;
   initial = applyFieldCommand(initial, { type: 'add-shortcut', shortcutId: `shortcut-${i}`, entity, contextId }).document;
   items.push({ entity, title: kind === 'person' ? `Человек ${i}` : kind === 'device' ? 'Ноутбук · тест' : i % 3 === 0 ? `HIVE ${i}` : i % 3 === 1 ? `Canvas ${i}` : `Pulse ${i}`,
+    ...(kind === 'person' ? { personAction: i % 10 === 3 ? 'chat' as const : 'profile' as const } : {}),
     coverKey: ['hive', 'canvas', 'pulse'][i % 3]!, symbol: kind === 'person' ? 'user' : kind === 'device' ? 'laptop' : 'cells', source: 'owner' });
 }
 let revision = 0, behavior: 'saved' | 'volatile' | 'quota' | 'conflict' | 'replay-newer' | 'delayed' = 'saved';

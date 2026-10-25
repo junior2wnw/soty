@@ -1,6 +1,6 @@
 import type {FieldContext,FieldShortcut,FieldDocument,FieldEntityRef} from '../../modules/field/contract.mjs';
 import type {FieldBounds,FieldPoint} from './unified-field-camera.mjs';
-export interface FieldDirectoryEntity {entity:FieldEntityRef;title:string;description?:string;symbol?:string;color?:string;avatarUrl?:string;avatarRevision?:number|null;coverKey?:string;source?:'public'|'member'|'owner'|'builtin';updatedAt?:number;unreadCount?:number;online?:boolean}
+export interface FieldDirectoryEntity {entity:FieldEntityRef;title:string;description?:string;symbol?:string;color?:string;avatarUrl?:string;avatarRevision?:number|null;coverKey?:string;source?:'public'|'member'|'owner'|'builtin';updatedAt?:number;unreadCount?:number;online?:boolean;personAction?:'chat'|'profile'}
 export interface FieldScene {contexts:FieldContext[];shortcuts:FieldShortcut[]}
 export interface UnifiedFieldMetrics {radius:number;gap:number;placementRadius:number;placementGap:number;person:number;personLabel:number;personLabelWidth:number;deviceWidth:number;deviceHeight:number;contextTitleWidth:number;contextTitleHeight:number;contourPadding:number;contextGap:number}
 export interface FieldNode {shortcutId:string;entity:FieldDirectoryEntity;contextId:string;slot:[number,number];kind:FieldEntityRef['kind'];cx:number;cy:number;x:number;y:number;width:number;height:number;footprint:FieldPoint[];bounds:FieldBounds}
