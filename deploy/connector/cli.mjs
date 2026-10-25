@@ -12,7 +12,7 @@ import {readUniversalLocalFile,parseUniversalLocalJson} from './universal-policy
 // Never print inspect, request/config bodies, private fingerprints, helper logs or error causes.
 const flags=new Set(['journal','original-id','original-image','candidate-image','storage-probe-image','revision','transaction','preserve-queued-sha256',
   'legacy-recovery','policy-file','policy-sha256','reviewed-receipt','health-origin','docker-socket','universal-plan','universal-custody-file',
-  'universal-witness-file','universal-shell-origins','fixture-root','fixture-mode']);
+  'universal-witness-file','universal-shell-origins','fixture-root','fixture-mode','rollback-mode']);
 const require=(ok,code='invalid_cli')=>{if(!ok)throw new SafeError(code);};
 async function receipt(file,context){
  if(context){const input=await readUniversalLocalFile(file,context,{privateFile:true});try{return parseUniversalLocalJson(input.bytes);}finally{input.dispose();}}
@@ -20,10 +20,11 @@ async function receipt(file,context){
   const bytes=await descriptor.readFile();require(bytes.length<=65536,'receipt_file_invalid');return parseUniversalLocalJson(bytes);
  }finally{await descriptor.close();}
 }
-export async function runConnectorCli(argv,{afterJournal}={}){
+export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}){
  let lock,lockPath,universal;
  try{
   require(afterJournal===undefined||typeof afterJournal==='function','journal_checkpoint_invalid');
+  require(fullEncryptedBackup===undefined||typeof fullEncryptedBackup==='function','full_encrypted_backup_invalid');
   const [action,...rest]=argv,opts=Object.create(null);require(['prepare','promote'].includes(action)&&rest.length%2===0&&rest.length<=40);
   for(let i=0;i<rest.length;i+=2){const flag=rest[i];require(typeof flag==='string'&&flag.startsWith('--')&&flags.has(flag.slice(2))&&!Object.hasOwn(opts,flag.slice(2))&&typeof rest[i+1]==='string'&&rest[i+1].length>0);opts[flag.slice(2)]=rest[i+1];}
   require(opts.journal);
@@ -33,6 +34,7 @@ export async function runConnectorCli(argv,{afterJournal}={}){
   require(universalRequested||!opts['universal-shell-origins']&&!fixture,'universal_cli_invalid');
   const context=universalRequested?{shellOrigins,...(fixture?{fixtureRoot:opts['fixture-root']}: {})}:null;
   const args={originalId:opts['original-id'],originalImage:opts['original-image'],candidateImage:opts['candidate-image'],storageProbeImage:opts['storage-probe-image'],revision:opts.revision,transaction:opts.transaction};
+  if(opts['rollback-mode']){require(opts['rollback-mode']==='latest-data','rollback_mode_invalid');args.rollbackMode=opts['rollback-mode'];}
   if(opts['preserve-queued-sha256'])args.preserveQueuedSha256=opts['preserve-queued-sha256'];
   if(opts['legacy-recovery']){require(opts['legacy-recovery']==='committed-state','invalid_recovery_mode');args.legacyRecovery=true;}
   if(opts['policy-file']||opts['policy-sha256'])args.applicationPolicy=await readApprovedPolicy(opts['policy-file'],opts['policy-sha256']);
@@ -46,12 +48,13 @@ export async function runConnectorCli(argv,{afterJournal}={}){
   }
   const engine=new DockerApi(socket?{socketPath:socket}:{});
   const run=new Rollout({engine,maintenance:productionMaintenance(engine),ready:readiness(opts['health-origin']||'http://127.0.0.1:18182'),
-   universalMeasurement:universalMeasurement(engine),allowUniversalFixture:fixture,record:createReleaseJournal(opts.journal,{afterJournal})});
+   universalMeasurement:universalMeasurement(engine),allowUniversalFixture:fixture,fullEncryptedBackup,record:createReleaseJournal(opts.journal,{afterJournal})});
   if(action==='prepare'){
    if(universal){await run.guard(args);const published=await universal.publishWitness();args.universalWitnessId=published.witnessId;}
    await run.prepare(args);
   }else{
    require(approval.approved===true&&approval.originalId===args.originalId&&approval.candidateId===prior.candidateId&&approval.configurationSha256===prior.configurationSha256&&approval.revision===args.revision,'supervised_receipt_mismatch');
+   require(approval.rollbackMode===args.rollbackMode&&prior.rollbackMode===args.rollbackMode,'supervised_rollback_mode_mismatch');
    require(approval.storageProbeImage===args.storageProbeImage&&prior.storageProbeImage===args.storageProbeImage,'supervised_storage_probe_mismatch');
    require(args.legacyRecovery?approval.legacyRecovery===true&&prior.legacyRecovery===true&&approval.legacyNoAssignedJobsObserved===true:approval.legacyNoPendingWritesObserved===true,'supervised_drain_or_recovery_receipt_missing');
    require((approval.preserveQueuedSha256||null)===(args.preserveQueuedSha256||null)&&(prior.preserveQueuedSha256||null)===(args.preserveQueuedSha256||null),'supervised_queued_receipt_mismatch');

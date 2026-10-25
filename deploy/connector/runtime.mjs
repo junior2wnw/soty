@@ -1,5 +1,6 @@
 import { SafeError,httpJson } from './docker-api.mjs';
-import { createConfig,safeStatus,pendingMatches } from './rollout.mjs';
+import { readFile } from 'node:fs/promises';
+import { createConfig,safeStatus,safeLatestDataStatus,pendingMatches } from './rollout.mjs';
 const label='io.soty.connector-rollout';
 /** Host-only measurement bridge; the engine owns its fixed command/protocol. */
 export function universalMeasurement(engine) {
@@ -10,11 +11,20 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
  let sequence=0;
  return async (verb,run)=>{
    if(!['status','enter','leave','rollback'].includes(verb))throw new SafeError('maintenance_verb_invalid');
+   const latestData=run.args.rollbackMode==='latest-data';
+   if(latestData&&verb==='rollback')throw new SafeError('latest_data_rollback_forbidden');
    const name=`soty-connector-helper-${run.args.transaction}-${++sequence}`;
    const source=createConfig(run.original,run.args.candidateImage,run.args.transaction);
    // Existing mounts/Env stay memory-only. Helper has no published port, network,
    // restart policy, devices/capabilities, or original traffic entrypoint.
    const body={Image:run.args.candidateImage,Env:source.Env,User:source.User,WorkingDir:source.WorkingDir||'/app',Entrypoint:['node'],Cmd:['server/connector-maintenance.js',verb],Tty:false,Labels:{[label]:run.args.transaction,[label+'.helper']:verb},HostConfig:{Binds:source.HostConfig.Binds,Mounts:source.HostConfig.Mounts,GroupAdd:source.HostConfig.GroupAdd,UsernsMode:source.HostConfig.UsernsMode,NetworkMode:'none',RestartPolicy:{Name:'no'},ReadonlyRootfs:true,Memory:805306368,NanoCpus:500000000,PidsLimit:64,CapDrop:['ALL'],SecurityOpt:['no-new-privileges'],Tmpfs:{'/tmp':'rw,noexec,nosuid,size=16777216'}},NetworkingConfig:{EndpointsConfig:{}}};
+   if(latestData){
+     if(!/^[a-f0-9]{32}$/u.test(run.args.transaction)||run.args.preserveQueuedSha256)throw new SafeError('latest_data_mode_invalid');
+     const script=await readFile(new URL('../connect/maintenance-probe.mjs',import.meta.url),'utf8');
+     body.Env=[...(source.Env||[]).filter(value=>!value.startsWith('SOTY_CONNECT_PROBE=')),'SOTY_CONNECT_PROBE=1'];
+     body.Cmd=['--input-type=module','-e',script,verb,run.args.transaction];
+     body.Labels[label+'.rollback-mode']='latest-data';
+   }
    if(run.args.preserveQueuedSha256 && ['enter','rollback'].includes(verb))body.Cmd.push('--preserve-queued-sha256',run.args.preserveQueuedSha256);
    const receipt={name,verb,state:'creating'};
    await run.note(run.state.phase,{maintenanceHelper:receipt});
@@ -28,6 +38,7 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
    }
    if(!owned){await run.note(run.state.phase,{maintenanceHelper:{...receipt,state:'create_unresolved'}});throw new SafeError('maintenance_helper_unresolved');}
    if(owned.Name!=='/'+name||owned.Image!==run.args.candidateImage||owned.Config.Labels?.[label]!==run.args.transaction||owned.Config.Labels?.[label+'.helper']!==verb)throw new SafeError('maintenance_helper_identity');
+   if(latestData&&owned.Config.Labels?.[label+'.rollback-mode']!=='latest-data')throw new SafeError('maintenance_helper_identity');
    receipt.id=owned.Id;
    // A retained helper from an earlier ambiguous START must not execute twice.
    if(owned.State.Running||owned.State.Status!=='created'){
@@ -42,7 +53,7 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
    if(final.State.ExitCode!==0)throw new SafeError('maintenance_helper_failed');
    const output=await engine.helperOutput(owned.Id);
    if(verb==='rollback'&&(output?.rollback!=='legacy-json'||!pendingMatches(output,run.args.preserveQueuedSha256)||!Number.isSafeInteger(output?.bytes)||!/^[a-f0-9]{64}$/.test(output?.sha256||'')))throw new SafeError('rollback_receipt_invalid');
-   const result=safeStatus(verb==='rollback'?{...output,activeJobs:output.activeJobs||[]}:output);
+   const result=latestData?safeLatestDataStatus(output):safeStatus(verb==='rollback'?{...output,activeJobs:output.activeJobs||[]}:output);
    // Failed/ambiguous helper is retained for supervised ID-specific inspection;
    // successful helper can be removed without volumes and without force.
    await engine.remove(owned.Id);

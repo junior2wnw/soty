@@ -43,10 +43,31 @@ export function preservationHash(config) {
   if(!c.MacAddress&&primary?.MacAddress)c.MacAddress=primary.MacAddress;
   return hash(c);
 }
+export function safeLatestDataStatus(s){
+  requireThat(s?.schema==='soty.connect.maintenance.v1'&&Object.keys(s).sort().join(',')==='count,maintenance,ok,owned,schema'&&s.ok===true
+    &&Number.isSafeInteger(s.count)&&s.count>=0&&typeof s.maintenance==='boolean'&&typeof s.owned==='boolean'
+    &&(!s.owned||s.maintenance),'maintenance_status_invalid');
+  return {ok:true,schema:s.schema,count:s.count,maintenance:s.maintenance,owned:s.owned};
+}
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');requireThat(s.queuedSha256==null||(/^[a-f0-9]{64}$/.test(s.queuedSha256)&&s.count>0&&s.activeJobs.every(j=>j.status==='queued')),'maintenance_queued_fingerprint_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,queuedSha256:s.queuedSha256||null};}
+export function checkedFullEncryptedBackup(value,transaction){
+  const exact=(object,keys)=>object&&typeof object==='object'&&!Array.isArray(object)&&Object.keys(object).sort().join(',')===keys;
+  const digest=value=>typeof value==='string'&&/^[a-f0-9]{64}$/u.test(value);
+  const artifact=value=>exact(value,'bytes,entries,fileBytes,inventorySha256,sha256')&&digest(value.sha256)&&digest(value.inventorySha256)
+    &&['bytes','entries','fileBytes'].every(key=>Number.isSafeInteger(value[key])&&value[key]>=0)&&value.bytes>0&&value.entries>0;
+  requireThat(exact(value,'configuration,encrypted,ok,operationId,sourceCheckpointSha256,volume')&&value.ok===true&&value.encrypted===true
+    &&value.operationId===transaction&&digest(value.sourceCheckpointSha256)&&artifact(value.volume)&&artifact(value.configuration),'full_encrypted_backup_invalid');
+  return clone(value);
+}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
-  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,record,attempts,sleep});this.state={phase:'new'};}
+  constructor({engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture=false,installedModuleRotation,fullEncryptedBackup,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,universalMeasurement,allowUniversalFixture,installedModuleRotation,fullEncryptedBackup,record,attempts,sleep});this.state={phase:'new'};}
+  latestData(){return this.args?.rollbackMode==='latest-data';}
+  checkedMaintenance(value){
+    const status=this.latestData()?safeLatestDataStatus(value):safeStatus(value);
+    if(this.latestData())requireThat(!status.maintenance||status.owned,'maintenance_not_owned');
+    return status;
+  }
   candidateConfiguration(original){const candidateBase=this.installedModuleRotation?installedModuleCandidateBase(this.installedModuleRotation,original,this.args.universalPolicy,this.args.candidateImage):original;return createConfig(candidateBase,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy);}
   async restoreOriginalCode(){if(this.installedModuleRotation)await restoreInstalledModuleOriginal(this.installedModuleRotation);}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
@@ -77,6 +98,8 @@ export class Rollout {
     args={...args};
     requireThat(/^[a-f0-9]{64}$/.test(args.originalId)&&/^sha256:[a-f0-9]{64}$/.test(args.originalImage)&&/^sha256:[a-f0-9]{64}$/.test(args.candidateImage)&&/^[a-f0-9]{40}$/.test(args.revision)&&/^[a-f0-9]{16,40}$/.test(args.transaction),'invalid_exact_guards');
     requireThat(!args.preserveQueuedSha256||/^[a-f0-9]{64}$/.test(args.preserveQueuedSha256),'invalid_queued_fingerprint');
+    requireThat(args.rollbackMode===undefined||args.rollbackMode==='latest-data','rollback_mode_invalid');
+    if(args.rollbackMode==='latest-data')requireThat(/^[a-f0-9]{32}$/u.test(args.transaction)&&!args.preserveQueuedSha256&&!args.legacyRecovery,'latest_data_mode_invalid');
     let old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
     requireThat(old.State.Running,'original_not_running');
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
@@ -129,6 +152,7 @@ export class Rollout {
     this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,storageProbeImage:args.storageProbeImage,revision:args.revision,transaction:args.transaction,configurationSha256,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null,
       ...(universalReceipt?{universalPolicyDigest:universalReceipt.policyDigest,universalWitnessId:args.universalWitnessId||null,universalPhase:universalReceipt.phase}: {})};
     if(args.legacyRecovery)this.state.legacyRecovery=true;
+    if(args.rollbackMode)this.state.rollbackMode=args.rollbackMode;
   }
   universalBinding(preservationFingerprint){return {preservationFingerprint,originalId:this.args.originalId,originalImage:this.args.originalImage,
     candidateImage:this.args.candidateImage,revision:this.args.revision,transaction:this.args.transaction};}
@@ -195,9 +219,11 @@ export class Rollout {
     this.validateCandidate(c,{stopped:true});
     this.candidate=c;await this.note('prepared',{candidateId:c.Id});return this.state;
   }
-  async status(){return safeStatus(await this.maintenance('status',this));}
+  async status(){return this.checkedMaintenance(await this.maintenance('status',this));}
   async promote() {
     requireThat(this.state.phase==='prepared','candidate_not_prepared');
+    requireThat(this.state.rollbackMode===this.args.rollbackMode,'prepared_rollback_mode_mismatch');
+    if(this.latestData())requireThat(typeof this.fullEncryptedBackup==='function','full_encrypted_backup_required');
     let stopped=false,entered=false,leaveAttempted=false;
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
@@ -210,10 +236,32 @@ export class Rollout {
       await this.note('stopping_original');
       await this.checkUniversalCurrent();
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;this.originalStopConfirmed=true;
+      // A full coordinated backup must see the stopped writer fenced against
+      // daemon restart, before either maintenance admission or a new START.
+      if(this.latestData())await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
       await this.note('original_stopped');
-      await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
+      if(!this.latestData())await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256),'offline_admission_race');
-      try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
+      if(this.latestData()){
+        await this.guardStart(this.original.Id);
+        await this.note('backing_up');
+        let result;
+        try{result=await this.fullEncryptedBackup({containerId:this.original.Id,originalImage:this.original.Image,
+          transaction:this.args.transaction,storageProbeImage:this.args.storageProbeImage});}
+        catch(error){
+          const unresolved=['backup_helper_unresolved','full_encrypted_backup_unresolved','engine_response_ambiguous','ETIMEDOUT','ABORT_ERR'].includes(error?.code)
+            ||error?.name==='AbortError';
+          throw new SafeError(unresolved?'full_encrypted_backup_unresolved':'full_encrypted_backup_failed');
+        }
+        const backup=checkedFullEncryptedBackup(result,this.args.transaction);
+        await this.checkOriginalPreserved();
+        const source=await this.engine.inspect(this.original.Id);
+        requireThat(!source.State.Running&&hash(source.HostConfig.RestartPolicy)===hash({Name:'no',MaximumRetryCount:0}),'backup_source_changed');
+        await this.guardStart(this.original.Id);
+        await this.note('backed_up',{fullEncryptedBackup:backup});
+        s=await this.status();requireThat(s.count===0&&!s.maintenance,'offline_admission_race');
+      }
+      try{s=this.checkedMaintenance(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&s.maintenance,'maintenance_enter_failed');entered=true;
       await this.note('maintenance_entered');
       await this.reconcile(()=>this.engine.rename(this.original.Id,'soty-connector-previous-'+this.args.transaction),this.original.Id,c=>c.Name==='/soty-connector-previous-'+this.args.transaction);
@@ -235,12 +283,13 @@ export class Rollout {
       await this.note('candidate_ready');
       await this.checkUniversalCurrent();
       leaveAttempted=true;
-      try{s=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
+      try{s=this.checkedMaintenance(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
       if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed'});
       if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
+        ||(this.latestData()&&['backup_helper_unresolved','full_encrypted_backup_unresolved'].includes(error.code))
         ||(error.code==='operation_unresolved'&&(this.state.applicationStart?.state==='starting'||this.state.restartPolicyIntent))){await this.note('recovery_required',{failureCode:error.code});throw error;}
       if(leaveAttempted){await this.note('recovery_required',{failureCode:'leave_boundary_ambiguous'});throw new SafeError('leave_boundary_ambiguous');}
       try{
@@ -250,11 +299,20 @@ export class Rollout {
         if(!stopped&&old.State.Running){if(error.code==='operation_unresolved')throw new SafeError('stop_outcome_unresolved');await this.restoreOriginalCode();if(this.installedModuleRotation&&this.originalPolicySuspended){await this.checkOriginalPreserved();await this.restartPolicy(this.original.Id,this.original.HostConfig.RestartPolicy);}await this.note('aborted',{failureCode:error.code||'activation_failed'});throw error;}
         const candidate=await this.engine.inspect(this.candidate.Id);
         await this.restartPolicy(candidate.Id,{Name:'no',MaximumRetryCount:0});
-        if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
+        const fenced=this.latestData()?await this.engine.inspect(candidate.Id):candidate;
+        if(fenced.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
+        if(this.latestData())requireThat(!(await this.engine.inspect(candidate.Id)).State.Running,'candidate_stop_unconfirmed');
         // Refuse before the legacy connector rollback helper can mutate storage.
         await this.restoreOriginalCode();
+        if(this.latestData())await this.checkOriginalPreserved();
         await this.guardStart(this.original.Id);
-        if(entered){
+        if(this.latestData()){
+          let current=await this.status();
+          requireThat(current.count===0&&(!current.maintenance||current.owned),'rollback_not_quiescent');
+          if(!current.maintenance)current=this.checkedMaintenance(await this.maintenance('enter',this));
+          requireThat(current.count===0&&current.maintenance&&current.owned,'rollback_not_quiescent');
+          entered=true;
+        }else if(entered){
           const current=await this.engine.inspect(this.candidate.Id),state=current.State;
           // A confirmed never-started candidate cannot have changed the storage format.
           const neverStarted=current.Id===this.candidate.Id&&current.Image===this.args.candidateImage&&!this.state.applicationStart
@@ -271,8 +329,9 @@ export class Rollout {
         if(this.args.universalPolicy)await this.checkOriginalPreserved();
         await this.restartPolicy(this.original.Id,this.original.HostConfig.RestartPolicy);
         await this.startApplication(this.original.Id);
-        const restoredHealth=await this.ready('original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');
-        if(entered){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
+        const restoredHealth=await this.ready(this.latestData()?'candidate':'original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');
+        if(this.latestData())requireThat(restoredHealth.storageReady===true&&restoredHealth.schema==='soty.connector-storage-ready.v1'&&restoredHealth.maintenance===true,'original_storage_not_ready');
+        if(entered){let cleared;try{cleared=this.checkedMaintenance(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
         await this.note('restored',{failureCode:error.code||'activation_failed'});
       }catch(recovery){if(this.state.phase==='aborted')throw recovery;await this.note('recovery_required',{failureCode:recovery.code||'recovery_failed'});throw new SafeError('recovery_required');}
       throw new SafeError(error.code||'activation_failed');

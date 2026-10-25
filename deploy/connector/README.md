@@ -27,6 +27,74 @@ Prepare creates only the uniquely labelled stopped candidate. It does not enter 
 
 Temporary maintenance helpers run the candidate image command `node server/connector-maintenance.js status|enter|leave|rollback`; original Env/mount paths stay in memory. Helpers have no network/ports, readonly image root, no capabilities, 768MiB RAM, 0.5 CPU,64pids, bounded tmpfs. Status must be strictly read-only/no migration. Enter and rollback are offline. Rollback must return compatible history/auth JSON and refuse any accepted durable request IDs or active jobs. Final rollback receipt is validated for legacy-json/count0/bytes/SHA. Candidate readiness requires unchanged ready agentModelProxy/applicationModelProxy default model, transport and application path from the original /health, and /api/connectors/storage-ready `{ok:true,schema:"soty.connector-storage-ready.v1",storageReady:true,maintenance:true}` before leave.
 
+## Code-only release on latest DATA
+
+Use `--rollback-mode latest-data` on both prepare and promote for an already
+modern SQLite installation. The prepared journal and supervisor receipt must
+both contain exactly `rollbackMode:"latest-data"`; omission or a different mode
+refuses promotion before STOP. Omitting the option retains the historical
+legacy rollout. Latest-data requires a fresh 32-hex transaction and refuses
+queued-job preservation and legacy recovery. It does not enable a schema,
+Source, Native, issuer, grant, model, or new configuration input.
+
+This mode runs the pinned host-owned `deploy/connect/maintenance-probe.mjs`
+source through the existing bounded maintenance helpers. Only status, enter and
+leave are allowed; the marker belongs to that exact transaction. There is no
+legacy rollback helper, JSON import/export, SQLite deletion or data restore.
+Foreign maintenance, pending work, unknown operations and unsupported readers
+retain the existing barrier. Before-admission restoration stops and fences the
+candidate, guards the SAME original image against current DATA, checks zero
+work and an owned marker, starts it under maintenance, verifies storage and the
+original model-readiness hash, then clears only its own marker.
+
+Promotion **requires** the trusted operator port
+`runConnectorCli(argv, { fullEncryptedBackup })`. Direct standalone CLI promotion
+without that port refuses before STOP. Prepare needs no key or backup callback.
+The callback runs only after the exact original STOP and confirmed
+`RestartPolicy:{Name:"no",MaximumRetryCount:0}`, and before enter or candidate
+START. It receives only `containerId`, `originalImage`, `transaction` and
+`storageProbeImage`. Wire it directly to the maintained full
+[GPG backup](../connect/GPG-RELEASE-BACKUP.md), for example inside the reviewed
+existing operator driver:
+
+```js
+const result = await runConnectorCli(argv, {
+  fullEncryptedBackup: ({ containerId, transaction }) => backupStopped({
+    containerId,
+    image: independentlyQualifiedBackupImage,
+    operationId: transaction,
+    directory: freshPrivateBackupDirectory,
+    key: memoryOnlyKey,
+  }),
+});
+```
+
+Here `backupStopped` is the export of
+`deploy/connect/gpg-release-backup.mjs`, **not** the older `backup.mjs` helper.
+The GPG mechanism encrypts/authenticates the complete volume and all effective
+bind configuration separately with Docker logging disabled. Use its existing
+qualified Node24/GPG/GNU-tar and CurrentUser-DPAPI/SSH-stdin custody path; no key
+may enter argv, Env, an env-file, logs or an unencrypted artifact. The driver
+owns bounded invocation and key-buffer disposal. A valid closed full GPG
+receipt for this transaction, with both volume and configuration inventories,
+is recorded in the journal. A missing, partial, wrong-transaction or failed
+backup prevents candidate START and restores the compatible original. An
+unresolved helper or backup outcome (`backup_helper_unresolved` or
+`full_encrypted_backup_unresolved`) retains `recovery_required`; reconcile exact
+objects before another attempt. A callback that times out must report the
+unresolved outcome instead of treating it as a confirmed completed failure.
+The callback is an operator trust boundary, not a cryptographic attestation of
+arbitrary caller-supplied JSON. Exact-image Linux backup/restore and failure
+qualification remain mandatory.
+
+Leave remains the admission boundary. There is no blind rollback of an admitted
+or unresolved transaction. After an admitted release, perform a **new reviewed
+latest-data prepare/promote** using the current serving ID/image as original,
+the prequalified previous code image/revision as candidate, a fresh transaction,
+a fresh full backup and the same current DATA/configuration. Qualify that
+reverse handoff on a disposable current-data copy first. Never restore an older
+snapshot or use the historical f13/gateway release after account-AI writes.
+
 ## Durable Rooms, Apps, Notes and Capabilities format gate
 
 Every application START and enabling of automatic restart runs the shared [storage guard](./storage-guard.mjs). After the confirmed original stop, its restart policy is fenced to `no`. Recovery fences/stops the candidate and verifies the original reader against current data before any legacy connector rollback helper, restoration of automatic restart or original START. Failure leaves an explicit `recovery_required` journal and retained containers. Ambiguous application START or restart-policy updates do not race a second writer through recovery.
