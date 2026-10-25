@@ -10,6 +10,10 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
+import * as workspaceReturn from './workspace-return.mjs';
+import * as appInbox from './app-inbox.mjs';
+import * as appSavedState from './app-saved-state.mjs';
+import * as fieldContract from '../../modules/field/contract.mjs';
 import * as appBootRecovery from './app-boot-recovery.mjs';
 import * as appRuntimePhaseTrace from './app-runtime-phase-trace.mjs';
 import * as appRuntimeDisplay from './app-runtime-display.mjs';
@@ -52,6 +56,10 @@ const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), '
 const dialogsCompiled = ts.transpileModule(dialogsSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const productSource = await readFile(new URL('./product.ts', import.meta.url), 'utf8');
 const productCompiled = ts.transpileModule(productSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const accountCenterCompiled = ts.transpileModule(await readFile(new URL('./account-center.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const fieldDirectoryCompiled = ts.transpileModule(await readFile(new URL('./field-directory.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const failure = code => Object.assign(new Error(code), { code });
@@ -129,7 +137,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
-  const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, crypto, btoa,
+  const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, Event, crypto, btoa,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: coarse, addEventListener() {} }) });
@@ -141,12 +149,17 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
   const ports = {
     './dom': { el: makeElement, button:makeButton,iconButton:(label,icon,callback)=>makeButton(label,icon,'',callback), emptyState: label => makeElement('div', '', label),
+      avatar: label => makeElement('span', 'sw-avatar', label),
       textInput: (value = '', placeholder = '') => Object.assign(makeElement('input'), { value, placeholder }),
       labeledField: (label, control) => { const element = makeElement('label', '', label); element.append(control); return element; } },
     './dialogs': { errorText: error => error.code ?? 'failure' },
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
+    './workspace-return.mjs': workspaceReturn,
+    './app-inbox.mjs': appInbox,
+    './app-saved-state.mjs': appSavedState,
+    '../../modules/field/contract.mjs': fieldContract,
     './conversation-target.mjs': conversationTargets,
     './chat-state.mjs': chatState,
     './messenger.mjs': messenger,
@@ -174,12 +187,17 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
-    './app-settings': { mountAppSettings(options) { settingsMounts.push(options); return { dispose() {}, requestClose(opener, afterClose) { settingsCloseRequests.push({ opener, finish: () => options.onClose(afterClose) }); } }; } },
+    './app-settings': { mountAppSettings(options) { settingsMounts.push(options); options.host.append(...(options.aboutActions ?? []), ...(options.supportActions ?? [])); return { dispose() {}, requestClose(opener, afterClose) { settingsCloseRequests.push({ opener, finish: () => options.onClose(afterClose) }); } }; } },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => !!discussionCalls.unsaved, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };
   const dialogsModule = { exports: {} };
   vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
+  for (const [name, code] of [['./account-center', accountCenterCompiled], ['./field-directory', fieldDirectoryCompiled]]) {
+    const loaded = { exports: {} };
+    vm.runInNewContext(code, { module: loaded, exports: loaded.exports, require: name => ports[name] ?? {}, document, crypto: globalThis.crypto });
+    ports[name] = loaded.exports;
+  }
   const productModule = { exports: {} }, preferences = new Map();
   vm.runInNewContext(productCompiled, { module: productModule, exports: productModule.exports, require: name => ports[name] ?? {},
     localStorage: { getItem: key => preferences.get(key) ?? null, setItem: (key, value) => preferences.set(key, value) }, URLSearchParams });
@@ -189,7 +207,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; }; exports.bindConnection = function() { return ${connectionHandler}; };`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
-    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, Event, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
@@ -204,6 +222,9 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     profile: { profileId: initial, displayName: `private-${initial}` }, communities: [{ communityId: `group-${initial}` }],
     apps: [{ appId: `app-${initial}`, name: `private-${initial}` }], devices: [{ deviceId: `device-${initial}` }], homeNotes: [{ noteId: `note-${initial}` }],
     group: null, selected: null, selectedChat: `chat-${initial}`, groupReturn: 'world', groupTab: 'apps', directThreads: [], directThreadsLoaded: false, directLabels: new Map(), directOpenSequence: 0, directProjectionEpoch: 0,
+    applicationDiscussions: [], applicationInboxEntries: [], applicationInboxStatus: 'unknown', applicationInboxSequence: 0,
+    applicationInboxPending: false, applicationInboxScheduled: false, applicationReadState: 'synced', messagesView: { query: '', unreadOnly: false, scroll: 0 },
+    applicationReturn: null, pendingReturnPresentation: null,
     homeState: { slots: new Map([['private-slot', initial]]), scroll: 20, fieldX: 3, fieldY: 9, communityId: 'private-group', focusId: 'private-focus', focusControl: null, lens: 'all', pinned: new Set(['old-pin']) },
     homeStatus: { devices: 'ready', apps: 'ready', communities: 'ready', notes: 'ready' },
     desk: { favorites: [`favorite-${initial}`], recent: [] }, fieldState: {}, homeFieldState: {}, discoveryApps: new Map([['private-group', [{ appId: `private-${initial}` }]]]), homeQuery: 'private apps', homeFilter: 'together', discoveryScope: 'private-scope', discoveryPages: ['private-cursor'],
@@ -301,28 +322,29 @@ test('old backend explains disabled feedback entry and nonowners do not get an e
   assert.equal(hiddenEntry.hidden, true); hiddenEntry.emit('click'); assert.equal(other.settingsCloseRequests.length, 0);
 });
 
-test('persistent field modes use the real dirty-screen guard and reflect the selected space', async () => {
+test('four persistent workspace destinations use the real dirty-screen guard and reflect the selected view', async () => {
   const f = fixture(), gate = deferred(); let dirty = true;
   Object.assign(f.app, { sidebar: new ElementPort(), header: new ElementPort(), mobileNav: new ElementPort(), fieldNavigation: new ElementPort(), updateNavUnread() {} });
   f.app.notesHandle = { hasUnsavedChanges: () => dirty, flush: () => gate.promise };
   const selected = []; f.app.navigateReady = view => selected.push(view);
   f.Controller.prototype.renderNavigation.call(f.app);
-  const [mine, world] = f.app.fieldNavigation.children;
-  assert.equal(mine.textContent, 'Личное'); assert.equal(mine.getAttribute('aria-pressed'), 'true');
-  assert.equal(world.textContent, 'Мир'); assert.equal(world.getAttribute('aria-pressed'), 'false');
-  world.emit('click'); assert.deepEqual(selected, []); assert.equal(f.app.noteActionPending, true);
-  dirty = false; gate.resolve(); await turn(); assert.deepEqual(selected, ['world']);
-  f.app.view = 'world'; f.Controller.prototype.renderNavigation.call(f.app);
-  assert.equal(f.app.fieldNavigation.children[1].getAttribute('aria-pressed'), 'true');
+  const [mine, messages, search, profile] = f.app.fieldNavigation.children;
+  assert.deepEqual(f.app.fieldNavigation.children.map(node => node.dataset.navView), ['mine', 'messages', 'search', 'profile']);
+  assert.deepEqual([mine, messages, search, profile].map(node => node.textContent), ['Моё', 'Сообщения', 'Поиск', 'Профиль']);
+  assert.equal(mine.getAttribute('aria-current'), 'page'); assert.equal(messages.getAttribute('aria-current'), 'false');
+  messages.emit('click'); assert.deepEqual(selected, []); assert.equal(f.app.noteActionPending, true);
+  dirty = false; gate.resolve(); await turn(); assert.deepEqual(selected, ['messages']);
+  f.app.view = 'messages'; f.Controller.prototype.renderNavigation.call(f.app);
+  assert.equal(f.app.fieldNavigation.children[1].getAttribute('aria-current'), 'page');
   f.app.appStage = {}; f.Controller.prototype.renderNavigation.call(f.app);
   assert.equal(f.app.fieldNavigation.hidden, false, 'stage visibility belongs to its mounted surface, so a late close cannot leave field navigation hidden');
   f.app.appStage = null;
   f.app.group = { communityId: 'visible-group' }; f.Controller.prototype.renderNavigation.call(f.app);
-  assert.equal(f.app.fieldNavigation.hidden, true);
+  assert.equal(f.app.fieldNavigation.hidden, false, 'global destinations stay available inside a community');
   f.app.group = null; f.app.view = 'notes'; f.Controller.prototype.renderNavigation.call(f.app);
   assert.equal(f.app.fieldNavigation.hidden, false);
   assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'true');
-  assert.equal(f.app.fieldNavigation.children.length, 1);
+  assert.equal(f.app.fieldNavigation.children.length, 4);
 });
 
 test('connection entry calls the host hub once and ignores failures from a departed account', async () => {
@@ -760,7 +782,7 @@ test('explicit legacy deep links stay exact on refusal; a new ordinary click rec
     domainId: cached.entry.domainId, path: '/' }, undefined, { panel: 'discussion' }));
   await f.app.openApplication(cached, old);
   assert.equal(f.app.main.querySelector('iframe'), null);
-  assert.deepEqual(calls.map(({ op, args }) => [op, args.path]), [['apps.launch', '/'], ['apps.entry.get', '/']]);
+  assert.deepEqual(calls.map(({ op, args }) => [op, args.path]), [['apps.entry.get', '/']], 'a cold discussion resolves the exact entry without a runtime admission');
   assert.equal(f.app.appStage.entry().path, '/'); assert.equal(appLaunch.parseAppLaunchRoute(f.location.hash).target.path, '/');
   const failures = calls.length; await turn(); assert.equal(calls.length, failures, 'no automatic default retry of a refused deep link');
   calls.length = 0; await f.app.openApplication(cached);
@@ -813,6 +835,11 @@ async function staleSourceStage({ lookup, open, discussion = false } = {}) {
     onNavigate() {}, onBack() {}, async onAccount() {}, onSettings() {},
   });
   await f.app.appStage.ready;
+  if (discussion) {
+    assert.equal(launches, 0, 'cold discussion does not issue runtime admission');
+    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
+    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
+  }
   return { ...f, currentRequests: requests, opened, stale, launches: () => launches };
 }
 
@@ -1077,6 +1104,8 @@ test('actual stage starts no runtime in the owner archive and opens it only on o
   assert.equal(calls, 0); assert.equal(f.app.main.querySelector('iframe'), null);
   f.location.hash = '#' + appLaunch.formatAppLaunchRoute({ appId: stageAppId }, undefined, { panel: 'discussion' });
   await f.Controller.prototype.openRoute.call(f.app); await turn();
+  assert.equal(calls, 0); assert.equal(f.app.main.querySelector('iframe'), null, 'ordinary cold discussion also defers runtime');
+  f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
   assert.equal(calls, 1); assert.ok(f.app.main.querySelector('iframe')); f.app.cleanScreen();
 });
 
@@ -1239,6 +1268,11 @@ async function currentReviewMain({ discussion = false } = {}) {
   };
   f.app.api = { async request(op, args) { assert.equal(op, 'apps.entry.get'); lookups.push(structuredClone(args)); return { entry: args.current ? currentReviewEntry : oldReviewEntry }; } };
   await f.app.openApplication({ appId: stageAppId, name: 'Moved application' }, appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/embed' }, undefined, discussion ? { panel: 'discussion' } : undefined)));
+  if (discussion) {
+    assert.equal(calls.length, 0, 'cold discussion has no runtime admission');
+    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'application').emit('click'); await turn();
+    f.app.main.querySelectorAll('button').find(node => node.dataset.stageControl === 'discussion').emit('click'); await turn();
+  }
   return { ...f, calls, lookups };
 }
 
@@ -2298,9 +2332,10 @@ function fieldReturnFixture(view = 'notes') {
   f.app.renderNavigation();
   assert.equal(f.app.fieldNavigation.hidden, false);
   assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'true');
-  const [control] = f.app.fieldNavigation.children;
-  assert.equal(f.app.fieldNavigation.children.length, 1);
-  assert.equal(control.textContent, 'Моё поле'); assert.equal(control.getAttribute('aria-label'), 'На моё поле');
+  const control = f.app.fieldNavigation.children.find(node => node.dataset.navView === 'mine');
+  assert.equal(f.app.fieldNavigation.children.length, 4);
+  assert.equal(control.textContent, 'Моё'); assert.equal(control.getAttribute('aria-label'), 'Моё');
+  assert.equal(control.getAttribute('aria-current'), 'false');
   assert.equal(control.getAttribute('aria-pressed'), null, 'a destination is not a field-mode toggle');
   return { ...f, pending, draft, mounts, control,
     click() { control.emit('click'); }, setDurable() { dirty = false; },
@@ -2314,7 +2349,7 @@ for (const view of ['notes', 'messages', 'assistant', 'access', 'library']) {
     assert.equal(f.app.view, 'mine'); assert.deepEqual(f.mounts, ['mine']); assert.equal(f.disposals, 1);
     assert.equal(f.focuses, 1); assert.equal(f.flushes, 0);
     assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'false');
-    assert.deepEqual(f.app.fieldNavigation.children.map(control => control.textContent), ['Личное', 'Мир']);
+    assert.deepEqual(f.app.fieldNavigation.children.map(control => control.textContent), ['Моё', 'Сообщения', 'Поиск', 'Профиль']);
   });
 }
 test('one-click field return: a pending Notes flush holds the editor and repeated activation navigates once', async () => {

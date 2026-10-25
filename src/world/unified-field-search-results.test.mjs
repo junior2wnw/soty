@@ -67,7 +67,7 @@ function harness() {
     mineGeneration: 1, mineResolvedGeneration: 1, mineConfirmedGeneration: 1, mineKnownRefs: new Set(metadata.keys()), mineFilterAdmitted: true,
     metadata, metadataRevision: 1, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1,
     element: { dataset: { mineState: 'ready', query: 'empty' } }, empty: node(), searchInput, clear: { hidden: true },
-    search: node('label'), listButton: node('button'), signal: new AbortController().signal,
+    search: node('label'), listButton: node('button'), sides: Object.assign(node('div'), { classList: { add() {} } }), signal: new AbortController().signal,
     searchTimer: null, searchGeneration: 0, searchCursor: null, more: { hidden: true }, searchLimit: { hidden: true },
     summary: { document, arranging: false }, fieldEntityKey, current: () => live,
     directory: { getRecord: ref => records.get(fieldEntityKey(ref)) || null }, allMetadata: () => [...metadata.values()],

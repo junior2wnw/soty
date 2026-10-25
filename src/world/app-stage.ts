@@ -15,6 +15,7 @@ import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord, WorldAssistantContext } from './types';
+import type { AppDiscussionRead } from './app-inbox.mjs';
 import { isAppExternalRequest } from './app-actions.mjs';
 import { mountHiveDeviceBridge } from './hive-device-bridge.mjs';
 import { mountRootVoiceCarrier } from './native-voice-carrier.mjs';
@@ -50,6 +51,7 @@ export interface AppStageOptions {
   onWidget?(app: WorldAppRecord, intent: AppLaunchIntent): void;
   onCommunity?(communityId: string): void;
   onRemember?(intent: AppLaunchIntent, app: WorldAppRecord): void;
+  onDiscussionRead?(receipt: AppDiscussionRead): void;
 }
 export interface AppStageHandle {
   /** Local presentation port. It transfers one UI button, never the iframe. */
@@ -154,7 +156,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
-  const field = iconButton('Добавить на моё поле', 'plus', () => {
+  const field = iconButton('Разместить на поле', 'plus', () => {
     const returnToMore = field.parentElement === moreBody;
     closeMore(returnToMore);
     void fullscreen.leave().then(() => {
@@ -165,7 +167,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       .catch(() => showMessage('Не удалось открыть поле. Попробуйте ещё раз.'));
   });
   field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
-  const widget = button('Закрепить виджет', 'pin', 'sw-button-quiet', () => {
+  const widget = button('Живое окно', 'pin', 'sw-button-quiet', () => {
     if (!current() || !selectedEntry) return;
     closeMore(); options.onWidget?.(app, parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
       domainId: selectedEntry.domainId, path: selectedEntry.path }))!);
@@ -206,7 +208,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   }
   function syncShortToolbar(): void {
     if (options.presentation === 'widget' || !current()) return;
-    const controls = [field, report, discuss], target = compactToolbar() ? moreBody : header;
+    const controls = [field, report], target = compactToolbar() ? moreBody : header;
     if (controls.some(control => control.parentElement !== target)) {
       const restoreFocus = controls.some(control => control.contains(host.ownerDocument.activeElement));
       if (compactToolbar()) moreBody.prepend(...controls);
@@ -218,12 +220,18 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function focusDiscussionControl(): void {
     (discuss.parentElement === moreBody && moreBody.hidden ? more : discuss).focus();
   }
-  const back = iconButton(options.minimalChrome ? 'Вернуться на поле' : 'Назад', options.minimalChrome ? 'close' : 'back', () => { if (current()) options.onBack(); });
+  const back = iconButton(options.minimalChrome ? 'Закрыть приложение' : 'Назад', options.minimalChrome ? 'close' : 'back', () => { if (current()) options.onBack(); });
   if (options.minimalChrome) { screen.classList.add('of-app-surface'); back.classList.add('of-app-close'); }
-  const discuss = iconButton('Обсуждение приложения', 'chat', () => {
-    if (current()) { closeMore(); void navigatePresentation(intent.presentation ? undefined : { panel: 'discussion' }, true); }
+  const modes = el('div', 'sa-mode-switch'); modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Работа с приложением');
+  const application = button('Приложение', 'grid', '', () => {
+    if (current()) { closeMore(); void navigatePresentation(undefined, true); }
+  });
+  application.dataset.stageControl = 'application';
+  const discuss = button('Обсуждение', 'chat', '', () => {
+    if (current()) { closeMore(); void navigatePresentation({ panel: 'discussion' }, true); }
   });
   discuss.setAttribute('aria-controls', panel.id); discuss.dataset.stageControl = 'discussion';
+  modes.append(application, discuss);
   const more = iconButton('Действия с приложением', 'more', () => {
     if (!current()) return;
     const open = moreBody.hidden; moreBody.hidden = !open; more.setAttribute('aria-expanded', String(open));
@@ -289,7 +297,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
   });
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
-  bookmark.append(el('p', 'sa-bookmark-label', 'Закладка этого входа'), savedHost);
+  bookmark.append(el('p', 'sa-bookmark-label', 'Сохранённый вход в «Моё»'), savedHost);
   const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
   diagnostics.hidden = options.presentation === 'widget';
   moreBody.append(widget, publicReviews, external, refresh, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
@@ -387,7 +395,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
   const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
-  header.append(back, title, field, report, discuss, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
+  header.append(back, title, modes, field, report, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   syncShortToolbar();
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
@@ -433,8 +441,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     });},commit:(old,next)=>{if(!current()||!launcher.commitRenewal(old,next))return false;frameGeneration++;lastRuntimeLaunchAt=Date.now();return true;},
     onState:state=>{if(state==='unknown')showMessage('Продление не подтверждено. Повторите то же действие.','renewal');
       else if(state==='login_required')showMessage(isRootSsoWorkspacePin(readRenewBinding()?.source)
-        ?'Обновление доступа пока не подтверждено. Данные сохранены.'
-        :'Войдите в приложение заново кнопкой «Обновить приложение». Данные сохранены.','renewal');
+        ?'Обновление доступа пока не подтверждено. Состояние данных приложения не проверено.'
+        :'Войдите в приложение заново кнопкой «Обновить приложение». Состояние данных приложения не проверено.','renewal');
       else if(state==='ready'&&messageOwner==='renewal')showMessage(runtimeDisplay?.snapshot().message??'','runtime');},
   });
   const detachRenewalLoads=attachScopedRenewalLoads({runtime,view,signal:controller.signal,
@@ -550,9 +558,24 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   function showPanel(): void {
     const visible = !!intent.presentation;
     panel.hidden = !visible; screen.classList.toggle('has-discussion', visible);
+    screen.classList.toggle('has-runtime', !!runtime.querySelector('iframe'));
     discuss.setAttribute('aria-expanded', String(visible));
+    discuss.setAttribute('aria-pressed', String(visible)); application.setAttribute('aria-pressed', String(!visible));
     runtime.inert = visible && narrow.matches;
     discussion?.setVisible(visible && host.ownerDocument.visibilityState === 'visible');
+  }
+  async function openDiscussion(): Promise<void> {
+    if (!current()) return;
+    if (intent.presentation?.administrative) { ensureDiscussion(); showPanel(); return; }
+    try {
+      await launcher.resolve();
+      if (!current()) return;
+      captureEntry(); ensureDiscussion(); showPanel();
+    } catch (reason) {
+      if (!current()) return;
+      ensureDiscussion(); showPanel();
+      const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`);
+    }
   }
   function ensureDiscussion(): void {
     const presentation = intent.presentation;
@@ -569,6 +592,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         ...(selection.conversationId ? { conversationId: selection.conversationId } : {}),
         ...(selection.administrative ? { administrative: true } : {}) }); },
       onClose: () => { void navigatePresentation(undefined, true); },
+      onReadConfirmed: receipt => { if (current()) options.onDiscussionRead?.(receipt); },
     });
     showPanel();
   }
@@ -740,7 +764,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         if (applied === presentationVersion) {
           showPanel();
           if (intent.presentation) lastVisiblePresentation = intent.presentation;
-          if (!intent.presentation?.administrative && !runtimeStarted) void launchRuntime();
+           if (!intent.presentation && !runtimeStarted) void launchRuntime();
         }
       } while (applied !== presentationVersion);
     } finally { applyingPresentation = false; }
@@ -792,8 +816,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   updateApp(app);
   // A ready descriptor keeps admission synchronous; pending host voice metadata
   // waits in this stage while the field and optional app metadata stay usable.
-  const ready = initial.presentation?.administrative
-    ? (ensureDiscussion(), showPanel(), Promise.resolve()) : launchRuntime();
+  const ready = initial.presentation ? openDiscussion() : launchRuntime();
   return { ready, matches, updateRoute, updateApp, updateCommunity, entry: () => current() ? selectedEntry : null,
     mountRuntimeControls:(header,owner)=>widgetRuntimeControls?.attach(header,owner)??false,
     browserAssist: () => current() && assistOn ? assist : null,

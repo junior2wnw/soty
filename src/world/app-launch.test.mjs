@@ -23,6 +23,39 @@ function fixture(request) {
   return { state, calls, launcher };
 }
 
+test('discussion resolves an exact entry without admission, and a later runtime uses that pin', async () => {
+  const entry = { ...target, origin: 'https://demo.apps.example' }, calls = [];
+  const launcher = createAppLauncher({ target, accountId: 'account-a', shellUrl, isCurrent: () => true,
+    resolveEntry: async args => { calls.push(['resolve', args]); return { entry }; },
+    request: async args => { calls.push(['launch', args]); return { url: boot(), entry }; } });
+  assert.deepEqual(await launcher.resolve(), entry);
+  assert.equal(calls.length, 1); assert.equal(calls[0][0], 'resolve');
+  assert.deepEqual(calls[0][1], { ...target, expectedAccountId: 'account-a' });
+  await launcher.launch();
+  assert.equal(calls[1][0], 'launch'); assert.deepEqual(calls[1][1], { ...target, expectedAccountId: 'account-a' });
+});
+
+test('an app launch racing a discussion resolve waits for the strict pin; stale profile results are discarded', async () => {
+  const gate = deferred(), entry = { ...target, origin: 'https://demo.apps.example' };
+  let current = true, admissions = 0;
+  const launcher = createAppLauncher({ target, accountId: 'account-a', shellUrl, isCurrent: () => current,
+    resolveEntry: () => gate.promise,
+    request: async () => { admissions++; return { url: boot(), entry }; } });
+  const resolving = launcher.resolve(), launching = launcher.launch();
+  assert.equal(admissions, 0); current = false; gate.resolve({ entry });
+  assert.equal(await resolving, null); assert.equal(await launching, null); assert.equal(admissions, 0); assert.equal(launcher.entry(), null);
+});
+
+test('a discussion resolve never accepts another named entry or a different path', async () => {
+  for (const bad of [{ ...target, domainId: `dom_${'c'.repeat(32)}` }, { ...target, path: '/other' }]) {
+    const launcher = createAppLauncher({ target, accountId: 'account-a', shellUrl, isCurrent: () => true,
+      resolveEntry: async () => ({ entry: { ...bad, origin: 'https://demo.apps.example' } }),
+      request: async () => { assert.fail('Discussion must not admit a runtime'); } });
+    await assert.rejects(launcher.resolve(), error => error.code === 'invalid_app_entry');
+    assert.equal(launcher.entry(), null);
+  }
+});
+
 test('automatic scoped wake retains the approved Source and location without a relay binding',async()=>{
   const f=fixture(async()=>scopedReply());await f.launcher.launch();const old=f.launcher.scopedCapture();
   assert.equal(f.launcher.binding(),null);assert.equal(await f.launcher.launch({requireSameBinding:true}),boot());

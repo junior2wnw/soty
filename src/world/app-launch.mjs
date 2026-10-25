@@ -241,11 +241,32 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     catch (error) { failure = error; throw error; }
     finally { finish({ error: failure }); initializing = null; }
   }
+  async function resolve() {
+    if (!current()) return null;
+    if (initializing) {
+      const outcome = await initializing;
+      if (!current()) return null;
+      if (!selected) throw outcome.error;
+      return selected;
+    }
+    if (selected) return selected;
+    requireValue(typeof resolveEntry === 'function', 'invalid_app_entry');
+    let finish, failure;
+    initializing = new Promise(done => { finish = done; });
+    try {
+      const { instanceId: _instanceId, ...args } = parameters();
+      const result = await resolveEntry(args);
+      if (!current()) return null;
+      capture(result?.entry, requestedTarget);
+      return selected;
+    } catch (error) { failure = error; throw error; }
+    finally { finish({ error: failure }); initializing = null; }
+  }
   return {
     get parameters() { return parameters(); },
     entry: () => current() ? selected : null,
     binding: () => current() ? originalBinding : null,
-    launch,
+    launch, resolve,
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,
     scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot}):null,

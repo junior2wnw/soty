@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>Рабочее пространство — локальная проверка</title>
+<style>html,body{margin:0;height:100%;font:16px system-ui}#workspace-host{height:100dvh}.fixture-label{position:fixed;bottom:0;left:0;z-index:1000;font-size:10px;color:#465655;background:#f6f9f6;padding:1px 6px;pointer-events:none}</style></head>
+<body><div id="workspace-host"></div><aside class="fixture-label">Локальный стенд · вымышленные данные · не проверка реального входа/доставки</aside>
+<script type="module">
+if (!import.meta.env.DEV || !['127.0.0.1','localhost'].includes(location.hostname)) throw Error('Local development fixture only');
+const memory = new Map();
+Object.defineProperty(window, 'localStorage', { value: { getItem:key=>memory.get(key)??null, setItem:(key,value)=>memory.set(key,String(value)), removeItem:key=>memory.delete(key), key:i=>[...memory.keys()][i]??null, get length(){return memory.size} } });
+const original = document.createElement;
+document.createElement = function(name,options) {
+ const node=original.call(document,name,options);
+ if(name.toLowerCase()==='iframe')node.srcdoc='<!doctype html><html lang="ru"><meta charset="utf-8"><style>body{font:18px system-ui;padding:20px;background:#f6f8f6;color:#24342e}input{font:inherit;padding:10px;max-width:90%}</style><h1>Рабочая доска</h1><label>Состояние приложения <input id="runtime-value" value="initial"></label><p>Проверка сохранения настоящего iframe при переключении обсуждения.</p></html>';
+ return node;
+};
+const {mountWorldApp}=await import('/src/world/app.ts');
+const APP='app-'+ 'a'.repeat(32), DOMAIN='dom_'+'b'.repeat(32), CONVERSATION='conv_'+'c'.repeat(32), ACCOUNT='fixture-workspace-account';
+const entry={appId:APP,domainId:DOMAIN,origin:'https://runtime.workspace.invalid',path:'/board?q=a%2Bb'};
+const profile={profileId:ACCOUNT,displayName:'Анна · тестовый профиль',bio:'Локальный стенд навигации',interests:[],avatarColor:'#77a18a',revision:1,directMessagesVersion:1};
+const app={id:APP,name:'Доска с длинным понятным названием проекта',ownerAccountId:ACCOUNT,state:'ready',createdAt:1,updatedAt:1,access:'owner',canManage:true,entry};
+const savedEntries=[...Array.from({length:20},(_,i)=>({appId:'app-'+(i+1).toString(16).padStart(32,'0'),domainId:DOMAIN,origin:entry.origin,path:'/fixture/'+i,label:'Другой проект '+(i+1),savedRevision:21-i,updatedAt:1800000000000+i,current:{name:'Другой проект '+(i+1),status:'ready',canManage:true}})),{...entry,label:app.name,savedRevision:1,updatedAt:1800000000000,current:{name:app.name,status:'ready',canManage:true}}];
+let field={schema:'soty.field.v1',contexts:[{contextId:'workspace',title:'Работа',x:0,y:0}],shortcuts:[{shortcutId:'fixture-app',entity:{kind:'app',id:APP},contextId:'workspace',slot:[0,0]}]}, revision=1, launchCount=0, unread=1;
+const hash=async doc=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(doc))))].map(n=>n.toString(16).padStart(2,'0')).join('');
+const envelope=async()=>({document:structuredClone(field),revision,contentHash:await hash(field),updatedAt:1800000000000});
+const messages=[{id:'msg_'+'d'.repeat(32),conversationId:CONVERSATION,author:{accountId:'fixture-peer',label:'Участник'},body:'Здесь обсуждаем работу приложения.',replyTo:null,createdAt:1800000000000,removedAt:null,canRemove:false}];
+const context=()=>({appId:APP,entry:structuredClone(entry),conversationId:CONVERSATION,mode:'current',isCurrent:true,ownerAdministrative:false,audience:'shared',canPost:true,canModerate:true});
+const calls=[], errors=[];
+addEventListener('error',event=>errors.push(event.message));addEventListener('unhandledrejection',event=>errors.push(String(event.reason?.message??event.reason)));
+const fail=code=>{throw Object.assign(new Error(code),{code})};
+const api={async request(operation,args={}){
+ calls.push({operation,args:structuredClone(args)});
+ if(operation==='world.profile.get')return {profile:structuredClone(profile)};
+ if(operation==='world.community.list')return {communities:[]};
+ if(operation==='world.direct.list')return {threads:[],nextCursor:null};
+ if(operation==='contacts.list')return {contacts:[]};
+ if(operation==='apps.devices')return {devices:[]};
+ if(operation==='apps.list'||operation==='apps.catalog')return {apps:[structuredClone(app)]};
+ if(operation==='world.field.get')return envelope();
+ if(operation==='world.field.put'){if(args.expectedRevision!==revision)return fail('field_revision_conflict');field=structuredClone(args.document);revision++;const current=await envelope();return {replayed:false,receipt:{revision,contentHash:current.contentHash,committedAt:1800000000001},current};}
+ if(operation==='world.directory.search')return {people:[],communities:[],nextCursor:null};
+ if(operation==='apps.directory.search')return {apps:[structuredClone(app)].filter(value=>value.name.toLocaleLowerCase().includes(String(args.query??'').toLocaleLowerCase())),nextCursor:null};
+ if(operation==='world.directory.resolve')return {items:(args.entities??[]).map(ref=>({ref,available:ref.id===ACCOUNT,...(ref.id===ACCOUNT?{person:profile,access:'owner'}:{})}))};
+ if(operation==='apps.directory.resolve')return {items:(args.appIds??[]).map(id=>({ref:{kind:'app',id},available:id===APP,...(id===APP?{app:structuredClone(app)}:{})}))};
+ if(operation==='notes.list')return {notes:[]};
+ if(operation==='apps.entry.get')return {entry:structuredClone(entry)};
+ if(operation==='apps.saved.list')return {revision:21,entries:structuredClone(savedEntries.slice(args.cursor?20:0,args.cursor?40:20)),nextCursor:args.cursor?null:'fixture_saved_page2'};
+ if(operation==='apps.saved.get')return {revision:21,entry:structuredClone(savedEntries.find(value=>value.appId===args.appId)??null)};
+ if(operation==='apps.discussion.inbox')return {schema:'soty.app-discussion.inbox.v1',readState:'synced',checkedAt:1800000000001,discussions:[{appId:APP,name:app.name,entry,conversationId:CONVERSATION,unreadCount:unread,lastMessage:{id:messages.at(-1).id,author:messages.at(-1).author,preview:messages.at(-1).body,createdAt:messages.at(-1).createdAt}}]};
+ if(operation==='apps.discussion.read'){unread=0;return {schema:'soty.app-discussion.read.v1',appId:APP,conversationId:CONVERSATION,messageId:args.messageId,unreadCount:0,readAt:1800000000002};}
+ if(operation==='apps.discussion.context')return {context:context(),messages:structuredClone(messages),historyCursor:null,changeCursor:'fixture_changes'};
+ if(operation==='apps.discussion.changes')return {context:context(),changes:[],nextCursor:'fixture_changes',hasMore:false,resetRequired:false};
+ if(operation==='apps.discussion.archives')return {entries:[],nextCursor:null,resetRequired:false};
+ if(operation==='apps.discussion.send'){const message={id:'msg_'+(messages.length+1).toString(16).padStart(32,'0'),conversationId:CONVERSATION,author:{accountId:ACCOUNT,label:profile.displayName},body:args.body,replyTo:null,createdAt:1800000000000+messages.length,removedAt:null,canRemove:true};messages.push(message);return {requestId:args.requestId,replayed:false,receipt:{id:message.id,conversationId:CONVERSATION,createdAt:message.createdAt},ownCurrent:{removed:false},message};}
+ return fail('unknown_operation');
+}};
+const mount=mountWorldApp(document.querySelector('#workspace-host'),{api,localAccount:async()=>({accountId:ACCOUNT,label:profile.displayName}),
+ openApp:async(_app,args)=>{launchCount++;return {entry:{...entry,...(args.path?{path:args.path}:{})},url:entry.origin+'/_soty/boot?'+new URLSearchParams({path:args.path??entry.path})+'#'+'t'.repeat(43)}},
+ openAccount(){},openLegacy(){},connectDevice(){},agentCreate(){}});
+window.workspaceQa={read:()=>({launchCount,frames:document.querySelectorAll('iframe').length,errors:[...errors],calls:calls.map(value=>value.operation),unread}),refresh:()=>mount.refresh(),appId:APP,domainId:DOMAIN,conversationId:CONVERSATION};
+</script></body></html>

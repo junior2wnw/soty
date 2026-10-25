@@ -28,6 +28,8 @@ export function createAppLauncher(options: {
   entry(): AppResolvedEntry | null;
   binding(): AppLaunchBinding | null;
   launch(options?: { requireSameBinding?: boolean }): Promise<string | null>;
+  /** Resolve and pin the permitted entry without creating an app runtime/session. */
+  resolve(): Promise<AppResolvedEntry | null>;
   isCurrent(): boolean;
   runtimeProfile():string|null;
   scopedCapture():{handle:string;source:unknown;slot:object}|null;

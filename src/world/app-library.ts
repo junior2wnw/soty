@@ -11,7 +11,9 @@ import type { WorldApi } from './types';
 export interface AppLibraryOptions extends EngagementStorageOptions {
   api: WorldApi; accountId: string; isCurrent(): boolean;
   openEntry(entry: AppEntry): void; discussEntry?(entry: AppEntry): void; onChanged?(): void;
+  viewState?: AppLibraryViewState;
 }
+export interface AppLibraryViewState { pages: number; scroll: number; focusAppId?: string; }
 export interface AppLibraryHandle { dispose(): void; refresh(): Promise<void>; focus(): void; }
 interface Row { element: HTMLLIElement; value: SavedEntry; revision: number; title: HTMLElement; status: HTMLElement; url: HTMLElement; open: HTMLButtonElement; remove: HTMLButtonElement; discuss: HTMLButtonElement; }
 const setText = (node: HTMLElement, value: string): void => { if (node.textContent !== value) node.textContent = value; };
@@ -44,6 +46,14 @@ export function mountAppLibrary(host: HTMLElement, options: AppLibraryOptions): 
   let dialog: WorldDialog | null = null;
   const rows = new Map<string, Row>();
   const current = (): boolean => !disposed && options.isCurrent();
+  const scrollHost = host.closest<HTMLElement>('.sw-dialog-content') ?? host;
+  const initialView = options.viewState ? { ...options.viewState } : null;
+  let loadedPages = 0, restoringView = true;
+  const rememberView = (appId?: string): void => {
+    if (!options.viewState || restoringView && !appId) return;
+    options.viewState.pages = Math.max(1, loadedPages); options.viewState.scroll = scrollHost.scrollTop;
+    if (appId) options.viewState.focusAppId = appId;
+  };
   const closeDialog = (): void => { const previous = dialog; dialog = null; previous?.close(); };
   function showAbandon(expected: SavedPending): void {
     closeDialog(); const value = createDialog('Снять ожидание?', () => { if (dialog === value) dialog = null; }); dialog = value; value.element.classList.add('se-dialog');
@@ -62,8 +72,8 @@ export function mountAppLibrary(host: HTMLElement, options: AppLibraryOptions): 
     const row: Row = { element, value, revision, title, status: state, url, open,
       remove: button('Убрать', 'trash', 'se-library-remove'), discuss: button('Обсудить', 'chat', 'sw-button-quiet') };
     row.remove.dataset.engagementKey = 'library-remove'; row.discuss.dataset.engagementKey = 'library-discuss';
-    open.addEventListener('click', () => { if (current() && row.value.current) options.openEntry(entryOnly(row.value)); });
-    row.discuss.addEventListener('click', () => { if (current() && row.value.current) options.discussEntry?.(entryOnly(row.value)); });
+    open.addEventListener('click', () => { if (current() && row.value.current) { rememberView(row.value.appId); options.openEntry(entryOnly(row.value)); } });
+    row.discuss.addEventListener('click', () => { if (current() && row.value.current) { rememberView(row.value.appId); options.discussEntry?.(entryOnly(row.value)); } });
     row.remove.addEventListener('click', () => {
       if (!current() || busy || lastPending || library.read().loading) return;
       const captured = row.value; void mutate({ intent: { entry: entryOnly(captured), saved: false, expectedRevision: row.revision, currentEntry: captured } });
@@ -104,7 +114,10 @@ export function mountAppLibrary(host: HTMLElement, options: AppLibraryOptions): 
   async function load(older: boolean): Promise<void> {
     if (!current() || busy || library.read().loading) return;
     const token = ++request; error = ''; render();
-    try { await library.load({ api: options.api, isCurrent: () => current() && token === request, ...(older ? { older: true } : {}) }); }
+    try {
+      const result = await library.load({ api: options.api, isCurrent: () => current() && token === request, ...(older ? { older: true } : {}) });
+      if (result === 'accepted' && current() && token === request) { loadedPages = older ? loadedPages + 1 : 1; rememberView(); }
+    }
     catch (reason) { if (current() && token === request) error = engagementError(reason); }
     finally { if (current() && token === request) render(); }
   }
@@ -121,8 +134,23 @@ export function mountAppLibrary(host: HTMLElement, options: AppLibraryOptions): 
   }
   const unLibrary = library.subscribe(render), unMutations = mutations.subscribe(render), view = host.ownerDocument.defaultView;
   const onStorage = (): void => { if (!current()) return; try { mutations.refreshLocal(); render(); } catch (reason) { error = engagementError(reason); render(); } };
-  view?.addEventListener('storage', onStorage); render(); void load(false);
+  view?.addEventListener('storage', onStorage); render();
+  void (async () => {
+    await load(false);
+    const pages = Math.min(10, Math.max(1, initialView?.pages ?? 1));
+    while (current() && loadedPages < pages && library.read().nextCursor) {
+      const before = loadedPages; await load(true); if (loadedPages === before) break;
+    }
+    if (!current()) return;
+    restoringView = false;
+    if (initialView) {
+      scrollHost.scrollTop = initialView.scroll;
+      const target = initialView.focusAppId ? rows.get(initialView.focusAppId)?.open : null;
+      target?.focus({ preventScroll: true });
+    }
+    rememberView();
+  })();
   return { refresh: () => load(false), focus: () => { if (current()) refreshButton.focus(); }, dispose() {
-    if (disposed) return; disposed = true; request++; unLibrary(); unMutations(); library.dispose(); mutations.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove();
+    if (disposed) return; rememberView(); disposed = true; request++; unLibrary(); unMutations(); library.dispose(); mutations.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove();
   } };
 }

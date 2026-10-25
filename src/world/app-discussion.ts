@@ -8,12 +8,14 @@ import type { AppEntry } from './app-saved-state.mjs';
 import type { AppDiscussionDraftState, AppDiscussionFeed, DiscussionContext, DiscussionDraft, DiscussionMessage, DiscussionPending, DiscussionScope, RetainedDiscussionDraft } from './app-discussion-state.mjs';
 import type { WorldApi } from './types';
 import { chatDayKey, chatDayLabel, shouldSendOnEnter } from './messenger.mjs';
+import { markAppDiscussionRead, appDiscussionInboxUnsupported, type AppDiscussionRead } from './app-inbox.mjs';
 
 export interface DiscussionSelection { conversationId?: string; administrative?: boolean; }
 export interface AppDiscussionOptions extends EngagementStorageOptions {
   api: WorldApi; accountId: string; appId: string; entry: AppEntry | null; administrative?: boolean;
   initialConversationId?: string; retainedEntry?: { domainId: string; path: string; origin?: string };
   isCurrent(): boolean; onConversationChange?(selection: DiscussionSelection): void; onClose?(): void;
+  onReadConfirmed?(receipt: AppDiscussionRead): void;
 }
 export interface AppDiscussionHandle {
   dispose(): void; refresh(): Promise<void>; focus(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean;
@@ -120,7 +122,30 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not([aria-disabled=true])')]; const index = items.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); }
   });
   const outsideMenu = (event: Event): void => { const target = event.target as Node | null; if (target && !menu.contains(target) && !menuRow?.more.contains(target)) closeMenu(); };
-  document.addEventListener('pointerdown', outsideMenu); scroll.addEventListener('scroll', () => { if (Math.abs(scroll.scrollTop - menuScrollTop) > 1) closeMenu(); }, { passive: true });
+  document.addEventListener('pointerdown', outsideMenu); scroll.addEventListener('scroll', () => { if (Math.abs(scroll.scrollTop - menuScrollTop) > 1) closeMenu(); scheduleVisibleRead(); }, { passive: true });
+  let readFrame: number | null = null, readPending = false, readSupported = true, lastReadKey = '', readAttemptAt = 0;
+  function scheduleVisibleRead(): void {
+    if (!view || readFrame !== null || !foreground() || !readSupported) return;
+    readFrame = view.requestAnimationFrame(() => { readFrame = null; void markVisibleRead(); });
+  }
+  async function markVisibleRead(): Promise<void> {
+    if (!foreground() || !readSupported || readPending || !host.ownerDocument.hasFocus() || !scroll.clientHeight || !scroll.getClientRects().length) return;
+    const state = feed?.read(), context = state?.context;
+    if (!context?.entry || context.ownerAdministrative || context.mode !== 'current' || state?.stale || state?.resetRequired || state?.window !== 'latest') return;
+    const last = state.messages.filter(message => message.body !== null).at(-1), node = last && messages.get(last.id)?.element;
+    if (!last || !node) return;
+    const bounds = scroll.getBoundingClientRect(), row = node.getBoundingClientRect();
+    if (row.bottom > bounds.bottom + 1 || row.bottom <= bounds.top || row.top >= bounds.bottom) return;
+    const key = `${context.conversationId}:${last.id}`;
+    if (key === lastReadKey || Date.now() - readAttemptAt < 1000) return;
+    const token = selectionVersion; readPending = true; readAttemptAt = Date.now();
+    try {
+      const receipt = await markAppDiscussionRead({ api: options.api, accountId: options.accountId, entry: context.entry,
+        conversationId: context.conversationId, messageId: last.id, isCurrent: () => valid(token) && foreground() });
+      if (receipt && valid(token)) { lastReadKey = key; options.onReadConfirmed?.(receipt); }
+    } catch (reason) { if (appDiscussionInboxUnsupported(reason)) readSupported = false; }
+    finally { readPending = false; }
+  }
   root.append(header, scroll, bottom, menu); host.replaceChildren(root);
 
   let composerFrame: number | null = null, composerTyping = false, observedComposerWidth = 0;
@@ -414,6 +439,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       renderRetained(showComposer); renderArchives(); scheduleComposerFit();
       if (context && state?.messages.length && !previousConversation) scroll.scrollTop = scroll.scrollHeight;
       else restoreScroll(position);
+      scheduleVisibleRead();
     } finally { rendering = false; }
   }
   function renderArchives(): void {
@@ -510,6 +536,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   }
   const onPageHide = (): void => { for (const { model } of drafts.values()) void model.flush(); };
   document.addEventListener('visibilitychange', onVisibility); view?.addEventListener('storage', onStorage); view?.addEventListener('pagehide', onPageHide);
+  view?.addEventListener('focus', scheduleVisibleRead);
   createFeed(); refreshRetained(); render(); void refresh();
   return { refresh, updateSelection, flush, hasUnsavedChanges: () => [...drafts.values()].some(item => item.model.hasUnsavedChanges()),
     async updateEntry(value) {
@@ -529,6 +556,8 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     dispose() {
       if (disposed) return; disposed = true; selectionVersion++; stopPoll(); unsubscribeFeed?.(); feed?.dispose(); closeDialog();
       cancelComposerFit(); composerResize?.disconnect();
+      if (readFrame !== null) view?.cancelAnimationFrame(readFrame); readFrame = null;
+      view?.removeEventListener('focus', scheduleVisibleRead);
       view?.removeEventListener('resize', onComposerResize); view?.visualViewport?.removeEventListener('resize', onComposerResize);
       document.fonts?.removeEventListener('loadingdone', onComposerFontLoad);
       document.removeEventListener('visibilitychange', onVisibility); view?.removeEventListener('storage', onStorage); view?.removeEventListener('pagehide', onPageHide);
