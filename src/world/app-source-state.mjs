@@ -38,7 +38,7 @@ function tuple(value) { return { hostDeviceId: value.hostDeviceId, connectorId: 
 function pins(value) { return { revision: value.revision, digest: value.digest, profile: value.profile }; }
 function baseIdentity(value) {
   return { appId: value.app.id, state: value.app.state, epoch: value.publication.policyEpoch,
-    target: pins(value.source), floor: value.source.requiredBindingVersion ?? 1 };
+    target: pins(value.source), floor: value.source.requiredBindingVersion ?? 1, native: value.publication.nativeEntry ?? null };
 }
 function validateSnapshot(value, appId) {
   check(value?.app?.id === appId && ['enabled', 'revoked'].includes(value.app.state)
@@ -48,6 +48,16 @@ function validateSnapshot(value, appId) {
     && typeof value.publication.listed === 'boolean' && Array.isArray(value.publication.activeDomainIds)
     && [1, 2].includes(value.source.requiredBindingVersion ?? 1), 'app_source_invalid_scope');
   projectTarget(value.source);
+  const native = value.publication.nativeEntry;
+  if (native !== undefined) {
+    let origin; try { origin = new URL(native.origin); } catch { fail('app_source_invalid_scope'); }
+    check(native.schema === 'soty.native-entry.v1' && origin.protocol === 'https:' && origin.origin === native.origin
+      && /^dom_[a-f0-9]{32}$/u.test(native.domainId) && native.target?.profile === PROFILE
+      && positive(native.target.revision) && /^[a-f0-9]{64}$/u.test(native.target.digest)
+      && Number.isSafeInteger(native.target.port) && native.target.port >= 1024 && native.target.port <= 65535
+      && typeof native.target.entryPath === 'string', 'app_source_invalid_scope');
+    validateAppLaunchPath(native.target.entryPath);
+  }
   const integrations = value.source.integrations ?? [];
   check(Array.isArray(integrations) && integrations.length <= 2
     && integrations.every(item => exact(item, ['profile', 'entryPath']) && supportedAppSourceProfile(item.profile)
@@ -71,7 +81,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
   let snapshot = validateSnapshot(initial, appId), base = clone(snapshot), disposed = false, generation = 0;
   const fresh = value => ({ mode: 'new', hostDeviceId: value.source.hostDeviceId, connectorId: value.source.connectorId,
     port: String(value.source.port), entryPath: value.source.entryPath, profile: value.source.profile, launchPolicy: value.publication.launchPolicy,
-    exposureConfirmed: false, targetRevision: null });
+    exposureConfirmed: false, nativeEntryMode: 'keep', nativeConfirmed: false, targetRevision: null });
   let draft = fresh(snapshot), selected = null, prepared = null, inFlight = null, publicationDirty = false;
   let historyGeneration = 0, historyFlight = null, history = { loading: false, targets: [], nextCursor: null, stale: false };
   let historyCurrent = null, historyConflict = false;
@@ -82,10 +92,12 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     lastClock = result; return result;
   };
   const dirty = () => (draft.mode === 'history' ? draft.targetRevision !== base.source.revision : !equal(tuple(draft), tuple(base.source)))
-    || draft.launchPolicy !== base.publication.launchPolicy;
+    || draft.launchPolicy !== base.publication.launchPolicy || draft.nativeEntryMode === 'remove';
   const conflict = () => historyConflict || (dirty() && !equal(baseIdentity(base), baseIdentity(snapshot)));
-  const noChange = () => draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source));
+  const noChange = () => draft.nativeEntryMode !== 'remove' && (draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source)));
   const integrationAvailable = () => draft.profile === PROFILE || draft.mode === 'history'
+    || draft.profile === snapshot.source.profile && draft.entryPath === snapshot.source.entryPath
+      && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key])
     || (snapshot.source.integrations ?? []).some(item => item.profile === draft.profile && item.entryPath === draft.entryPath
       && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key]));
   const remaining = () => {
@@ -95,15 +107,22 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     return prepared.expired ? 0 : Math.max(0, prepared.deadline - at);
   };
   const eligible = () => !disposed && snapshot.app.state === 'enabled' && snapshot.actions.canEdit && snapshot.actions.canPublish
-    && !publicationDirty && !conflict() && !noChange() && integrationAvailable();
-  function invalidatePreparation() { generation++; prepared = null; draft.exposureConfirmed = false; }
+    && !publicationDirty && !conflict() && !noChange() && integrationAvailable()
+    && (!snapshot.publication.nativeEntry || draft.nativeEntryMode === 'remove' || draft.profile === 'soty.selected-human-embed.v2' && draft.launchPolicy === 'anyone');
+  function invalidatePreparation() { generation++; prepared = null; draft.exposureConfirmed = false; draft.nativeConfirmed = false; }
   const reviewAvailable = () => eligible() && !!prepared && prepared.generation === generation;
   function ready() { return eligible() && !!prepared && prepared.generation === generation && remaining() > 0; }
-  const consentReady = () => draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && snapshot.publication.activeDomainIds.length > 0);
+  const consentReady = () => (draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && snapshot.publication.activeDomainIds.length > 0))
+    && (!snapshot.publication.nativeEntry || draft.nativeConfirmed);
   const canRecheck = () => reviewAvailable() && remaining() === 0 && !clockBroken && !inFlight && consentReady();
   function prepareArgs() {
     check(eligible(), publicationDirty ? 'app_source_publication_dirty' : conflict() ? 'app_source_revision_conflict' : noChange() ? 'app_source_unchanged' : 'app_source_unavailable');
     const common = { appId, expectedAccountId: accountId, expectedPolicyEpoch: base.publication.policyEpoch, expectedTargetRevision: base.source.revision };
+    const native = snapshot.publication.nativeEntry;
+    if (native) Object.assign(common, draft.nativeEntryMode === 'keep'
+      ? { nativeEntry: { origin: native.origin, targetRevision: native.target.revision } }
+      : { nativeEntryAction: { action: 'remove', origin: native.origin, targetRevision: native.target.revision, targetDigest: native.target.digest } });
+    if (draft.nativeEntryMode === 'remove' && draft.mode === 'new' && equal(tuple(draft), tuple(snapshot.source))) return { ...common, targetRevision: snapshot.source.revision };
     if (draft.mode === 'history') {
       check(selected && selected.revision === draft.targetRevision, 'app_source_invalid_target');
       validateAppLaunchPath(selected.entryPath);
@@ -125,8 +144,18 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     check(target.port !== 49424, 'app_source_invalid_preparation');
     check(request.args.source ? equal(tuple(target), tuple(request.args.source)) && target.revision > request.args.expectedTargetRevision
       : equal(pins(target), pins(request.selected)) && equal(tuple(target), tuple(request.selected)), 'app_source_invalid_preparation');
+    let nativeEntry;
+    if (request.args.nativeEntry) {
+      const native = snapshot.publication.nativeEntry, preparedNative = value.nativeEntry;
+      check(preparedNative && preparedNative.origin === native.origin && preparedNative.domainId === native.domainId
+        && equal(pins(normalizeAppSourceTarget(preparedNative.target)), pins(native.target))
+        && preparedNative.target.profile === PROFILE, 'app_source_invalid_preparation');
+      nativeEntry = { origin: preparedNative.origin, domainId: preparedNative.domainId, target: normalizeAppSourceTarget(preparedNative.target) };
+    } else check(value.nativeEntry === undefined, 'app_source_invalid_preparation');
+    check(equal(value.nativeEntryAction ?? null, request.args.nativeEntryAction ?? null), 'app_source_invalid_preparation');
     return { schema: value.schema, appId, preparationId: value.preparationId, requiredBindingVersion: 2,
       expectedPolicyEpoch: value.expectedPolicyEpoch, expectedTargetRevision: value.expectedTargetRevision, target,
+      ...(nativeEntry ? { nativeEntry } : {}), ...(value.nativeEntryAction ? { nativeEntryAction: clone(value.nativeEntryAction) } : {}),
       checkedAt: value.checkedAt, expiresAt: value.expiresAt };
   }
   function matchesCompleted(pending) {
@@ -147,20 +176,24 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         canPromote: ready() && consentReady(), canRecheckPromote: canRecheck(), history });
     },
     patch(value) {
-      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'launchPolicy', 'exposureConfirmed']));
+      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'launchPolicy', 'exposureConfirmed', 'nativeEntryMode', 'nativeConfirmed']));
       if (Object.hasOwn(value, 'profile')) check(supportedAppSourceProfile(value.profile));
       for (const key of ['hostDeviceId', 'connectorId', 'port', 'entryPath']) if (Object.hasOwn(value, key)) {
         check(typeof value[key] === 'string' && value[key].length <= (key === 'entryPath' ? 8192 : key === 'port' ? 32 : 180));
       }
       if (Object.hasOwn(value, 'launchPolicy')) check(['restricted', 'anyone'].includes(value.launchPolicy));
       if (Object.hasOwn(value, 'exposureConfirmed')) check(typeof value.exposureConfirmed === 'boolean');
+      if (Object.hasOwn(value, 'nativeConfirmed')) check(typeof value.nativeConfirmed === 'boolean');
+      if (Object.hasOwn(value, 'nativeEntryMode')) check(['keep', 'remove'].includes(value.nativeEntryMode) && snapshot.publication.nativeEntry);
       const tupleChanged = ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile'].some(key => Object.hasOwn(value, key) && draft[key] !== value[key]);
       const changed = tupleChanged || (value.launchPolicy !== undefined && value.launchPolicy !== draft.launchPolicy)
-        || (!!inFlight && Object.hasOwn(value, 'exposureConfirmed'));
+        || (value.nativeEntryMode !== undefined && value.nativeEntryMode !== draft.nativeEntryMode)
+        || (!!inFlight && (Object.hasOwn(value, 'exposureConfirmed') || Object.hasOwn(value, 'nativeConfirmed')));
       if (changed) invalidatePreparation();
       draft = { ...draft, ...clone(value) };
       if (tupleChanged) { draft.mode = 'new'; draft.targetRevision = null; selected = null; }
       if (changed || !reviewAvailable() || draft.launchPolicy !== 'anyone') draft.exposureConfirmed = false;
+      if (changed || !reviewAvailable()) draft.nativeConfirmed = false;
     },
     selectHistory(value) {
       check(!disposed && exact(value, [...targetKeys, 'createdAt']), 'app_source_invalid_target');
@@ -193,7 +226,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       if (disposed || !isCurrent()) return { status: 'stale' };
       const args = prepareArgs(), startedAt = clock(); check(startedAt !== null, 'app_source_clock_invalid');
       invalidatePreparation();
-      const request = { generation, args, selected: clone(selected), startedAt }; inFlight = request;
+      const request = { generation, args, selected: clone(selected ?? (args.targetRevision === snapshot.source.revision ? projectTarget(snapshot.source) : null)), startedAt }; inFlight = request;
       const current = () => !disposed && isCurrent() && request.generation === generation;
       try {
         const response = await api.request('apps.source.prepare', clone(args));
@@ -209,15 +242,19 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     promoteIntent() {
       check(ready(), publicationDirty ? 'app_source_publication_dirty' : 'apps_source_preparation_expired');
       check(draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && snapshot.publication.activeDomainIds.length > 0), 'app_exposure_ack_required');
+      check(consentReady(), 'app_native_exposure_ack_required');
       const expectedSource = clone(prepared.value.target), preparationId = prepared.value.preparationId;
+      const native = prepared.value.nativeEntry, removal = prepared.value.nativeEntryAction;
       const args = { appId, expectedAccountId: accountId, preparationId, expectedPolicyEpoch: base.publication.policyEpoch,
         expectedTargetRevision: base.source.revision, launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false,
         ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: appSourceExposureScope(expectedSource.profile), targetRevision: expectedSource.revision,
-          targetDigest: expectedSource.digest, profile: expectedSource.profile } } : {}) };
+          targetDigest: expectedSource.digest, profile: expectedSource.profile } } : {}),
+        ...(native ? { nativeExposureAck: { scope: 'whole-port', targetRevision: native.target.revision, targetDigest: native.target.digest, profile: native.target.profile } } : {}),
+        ...(removal ? { nativeEntryAction: clone(removal) } : {}) };
       const capturedGeneration = generation, capturedPolicy = draft.launchPolicy;
-      return frozen({ op: 'apps.source.promote', args, expectedSource, beforeCreate() {
+      return frozen({ op: 'apps.source.promote', args, expectedSource, ...(native ? { expectedNativeEntry: { origin: native.origin, domainId: native.domainId } } : {}), beforeCreate() {
         check(ready() && capturedGeneration === generation && prepared.value.preparationId === preparationId
-          && draft.launchPolicy === capturedPolicy && (capturedPolicy !== 'anyone' || draft.exposureConfirmed), 'apps_source_preparation_expired'); return true;
+          && draft.launchPolicy === capturedPolicy && consentReady(), 'apps_source_preparation_expired'); return true;
       } });
     },
     /** An explicit alternate gesture after an untimed review. This only returns
@@ -227,7 +264,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       check(canRecheck(), 'app_source_review_required');
       const review = { target: clone(prepared.value.target), preparationId: prepared.value.preparationId,
         identity: baseIdentity(base), launchPolicy: draft.launchPolicy,
-        listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false, consent: draft.exposureConfirmed };
+        listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false, consent: draft.exposureConfirmed,
+        native: clone(prepared.value.nativeEntry ?? null), removal: clone(prepared.value.nativeEntryAction ?? null), nativeConsent: draft.nativeConfirmed };
       const checking = controller.prepare({ api, isCurrent }), startedGeneration = generation;
       const result = await checking;
       if (result.status === 'stale' || disposed || !isCurrent() || generation !== startedGeneration) return { status: 'stale' };
@@ -235,9 +273,11 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       if (value?.preparationId === review.preparationId) { invalidatePreparation(); return { status: 'review' }; }
       const unchanged = value && value.preparationId !== review.preparationId && equal(pins(value.target), pins(review.target))
         && equal(tuple(value.target), tuple(review.target)) && equal(baseIdentity(base), review.identity)
-        && draft.launchPolicy === review.launchPolicy && (draft.launchPolicy === 'anyone' ? base.publication.listed : false) === review.listed;
+        && draft.launchPolicy === review.launchPolicy && (draft.launchPolicy === 'anyone' ? base.publication.listed : false) === review.listed
+        && equal(value.nativeEntry ?? null, review.native) && equal(value.nativeEntryAction ?? null, review.removal);
       if (!unchanged) return { status: 'review' };
       draft.exposureConfirmed = review.consent;
+      draft.nativeConfirmed = review.nativeConsent;
       return { status: 'ready', intent: controller.promoteIntent() };
     },
     async loadHistory({ api, isCurrent, older = false }) {

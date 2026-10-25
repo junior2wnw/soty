@@ -4,7 +4,7 @@ export interface AppSettingsState {
   key: string;
   read(): { schema: 1; accountId: string; appId: string; revision: number; pending: SettingsPending | null };
   canDispatch(): boolean;
-  prepare(input: { op: SettingsPending['op']; args: Record<string, unknown>; expectedSource?: AppSourceTarget; beforeCreate?: () => boolean }): Promise<SettingsPending>;
+  prepare(input: { op: SettingsPending['op']; args: Record<string, unknown>; expectedSource?: AppSourceTarget; expectedNativeEntry?: { origin: string; domainId: string }; beforeCreate?: () => boolean }): Promise<SettingsPending>;
   pendingForDispatch(expectedPending: SettingsPending): Promise<SettingsPending>;
   acknowledge(expected: SettingsPending, response: SettingsResponse): Promise<boolean>;
   abandon(expected: SettingsPending): Promise<boolean>;
@@ -14,7 +14,7 @@ export function createAppSettingsState(options: {
   locks?: Pick<LockManager, 'request'>; randomId?: () => string;
 }): AppSettingsState;
 export function dispatchAppSettingsIntent(options: { state: AppSettingsState; api: WorldApi; isCurrent(): boolean } & (
-  { op: SettingsPending['op']; args: Record<string, unknown>; expectedSource?: AppSourceTarget; beforeCreate?: () => boolean; expectedPending?: never }
+  { op: SettingsPending['op']; args: Record<string, unknown>; expectedSource?: AppSourceTarget; expectedNativeEntry?: { origin: string; domainId: string }; beforeCreate?: () => boolean; expectedPending?: never }
   | { op?: undefined; expectedPending: SettingsPending; args?: never; expectedSource?: never; beforeCreate?: never }
 )): Promise<{ status: 'accepted' | 'stale' | 'superseded'; pending?: SettingsPending; response?: SettingsResponse }>;
 export function appSettingsUpdateArgs(snapshot: AppInspection, draft: Pick<SettingsDraft, 'name' | 'communityIds'>, kind: 'name' | 'grants', accountId: string): Record<string, unknown>;

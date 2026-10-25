@@ -3,6 +3,7 @@ import type { WorldApi } from './types';
 export function appSourceExposureScope(profile: string): 'whole-port' | 'authenticated-workspace';
 export interface AppSourceIntent {
   op: 'apps.source.promote'; args: Record<string, unknown>; expectedSource: AppSourceTarget;
+  expectedNativeEntry?: { origin: string; domainId: string };
   /** Synchronous and ephemeral; called inside the settings Web Lock only before a new durable command. */
   beforeCreate(): true;
 }
@@ -14,7 +15,7 @@ export interface AppSourceStateView {
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
-  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed'>>): void;
+  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeConfirmed'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
   reset(): void;

@@ -11,7 +11,7 @@
 <strong>Изолированный стенд настроек источника</strong>
 <p class="qa-label">Настоящий компонент и диалог; вымышленные ответы. Сеть, рабочие приложения и аккаунты не используются. Проверка событий DOM не заменяет ручную проверку клавиатуры и экрана.</p>
 <div class="qa-controls">
-  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="paired">Приложение и отдельный сайт</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
   <button id="qa-open">Открыть</button><button id="qa-reset">Сбросить только стенд</button><button id="qa-tests">Проверить сценарии DOM</button><button id="qa-theme">Сменить тему</button>
 </div>
 <p id="qa-results" role="status" data-test-status="idle">Готов к запуску.</p>
@@ -38,6 +38,8 @@ const deviceB = { hostDeviceId:'fixture-host-B',connectorId:'fixture-connector-B
 const targetA = { revision:1,digest:'1'.repeat(64),profile,hostDeviceId:deviceA.hostDeviceId,connectorId:deviceA.connectorId,deviceName:deviceA.name,port:4321,entryPath:'/original' };
 const initial = () => ({ app:{id:appId,name:'Пример приложения',state:'enabled',revision:1,grants:{accountIds:[],communityIds:['fixture-group']}},
   epoch:2,source:targetA,targets:[{...targetA,createdAt:Date.now()-60000}],receipts:{},launchPolicy:'anyone' });
+const nativeTarget = { ...targetA, revision:1, digest:'e'.repeat(64), port:4322, entryPath:'/' };
+const nativePair = { schema:'soty.native-entry.v1', origin:'https://native.apps.fixture.invalid', domainId:aliasId, target:nativeTarget, runtimeReady:false };
 let backend = JSON.parse(sessionStorage.getItem(backendKey) ?? 'null') ?? initial();
 let generation=0, mounted=null, dialog=null, calls=[], preparations=new Map(), lostOnce=false, deferredReply=null, failedInspections=0, automatic=false, theme='dark';
 function persist(){sessionStorage.setItem(backendKey,JSON.stringify(backend));}
@@ -47,7 +49,7 @@ function inspect(){const now=Date.now(),active=backend.app.state==='enabled';ret
   addresses:{revision:1,claimOrigin:'https://apps.fixture.invalid',canonical:{id:canonicalId,origin:'https://canonical.fixture.invalid',shareUrl:active?`https://shell.fixture.invalid/#launch/${appId}/${canonicalId}`:null},
     aliases:[{id:aliasId,slug:'demo',origin:'https://demo.apps.fixture.invalid',state:'bound',active:true,shareUrl:active?'https://demo.apps.fixture.invalid/':null,createdAt:now-1000,retiredAt:null}],
     limits:{perApp:5,perAccount:30,usedByApp:1,usedByAccount:1}},
-  publication:{policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision},
+  publication:{...(backend.nativeEntry?{nativeEntry:clone(backend.nativeEntry)}:{}),policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision},
   source:{...clone(backend.source),requiredBindingVersion:backend.source.revision===1?1:2,binding:{state:active?'bound':'unavailable'},
     ...(mode.value==='selected'&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
     observation:{state:active?'responding':'unknown',observedAt:active?now:null,freshUntil:active?now+45000:null,evidence:active?'connector-v2-observation':'not-observed'}},
@@ -66,6 +68,8 @@ const api={async request(op,args){
     const target={revision,digest:args.source?await sha(JSON.stringify([revision,chosen])):chosen.digest,profile:chosen.profile??profile,hostDeviceId:device.hostDeviceId,connectorId:device.connectorId,deviceName:device.name,port:chosen.port,entryPath:chosen.entryPath};
     const now=Date.now(),value={schema:'soty.app-source-preparation.v1',appId,preparationId:nonce(),expectedPolicyEpoch:backend.epoch,expectedTargetRevision:backend.source.revision,
       requiredBindingVersion:2,target,checkedAt:now,expiresAt:now+(mode.value==='short'?1600:30000)};
+    if(args.nativeEntry) {if(!backend.nativeEntry||args.nativeEntry.origin!==backend.nativeEntry.origin||args.nativeEntry.targetRevision!==backend.nativeEntry.target.revision)fail('native_pair_action_required');value.nativeEntry={origin:backend.nativeEntry.origin,domainId:backend.nativeEntry.domainId,target:clone(nativeTarget)};}
+    if(args.nativeEntryAction)value.nativeEntryAction=clone(args.nativeEntryAction);
     preparations.set(value.preparationId,value);
     if(mode.value==='slow')return new Promise(resolve=>{deferredReply=()=>resolve(clone(value));});
     return clone(value);
@@ -75,12 +79,17 @@ const api={async request(op,args){
     const prepared=preparations.get(args.preparationId);if(!prepared||Date.now()>=prepared.expiresAt)fail('apps_source_preparation_expired');
     if(args.expectedPolicyEpoch!==backend.epoch||args.expectedTargetRevision!==backend.source.revision)fail('app_publication_revision_conflict');
     if(args.launchPolicy==='anyone'&&(args.exposureAck?.targetDigest!==prepared.target.digest||args.exposureAck.targetRevision!==prepared.target.revision))fail('app_exposure_ack_required');
+    if(prepared.nativeEntry&&args.nativeExposureAck?.targetDigest!==prepared.nativeEntry.target.digest)fail('app_native_exposure_ack_required');
+    if(prepared.nativeEntryAction&&JSON.stringify(prepared.nativeEntryAction)!==JSON.stringify(args.nativeEntryAction))fail('native_pair_action_required');
+    if(prepared.nativeEntryAction)delete backend.nativeEntry;
     const previous=backend.source.revision;backend.source=clone(prepared.target);backend.epoch++;backend.launchPolicy=args.launchPolicy;
     if(!backend.targets.some(value=>value.revision===backend.source.revision))backend.targets.push({...clone(backend.source),createdAt:Date.now()});
-    const reply={requestId:args.requestId,replayed:false,receipt:{schema:'soty.app-source-receipt.v1',namespace:'apps.source.promote.v1',requestKeyHash:await sha(args.requestId),
+    const reply={requestId:args.requestId,replayed:false,receipt:{schema:`soty.app-source-receipt.v${args.nativeExposureAck||args.nativeEntryAction?2:1}`,namespace:`apps.source.promote.v${args.nativeExposureAck||args.nativeEntryAction?2:1}`,requestKeyHash:await sha(args.requestId),
       preparationKeyHash:await sha(args.preparationId),appId,previousTargetRevision:previous,targetRevision:backend.source.revision,targetDigest:backend.source.digest,profile:backend.source.profile,
-      requiredBindingVersion:2,policyEpoch:backend.epoch,launchPolicy:args.launchPolicy,listed:args.listed,exposureAck:args.exposureAck??null,committedAt:Date.now()},current:summary()};
-    backend.receipts[args.requestId]=clone(reply);persist();if(['lost','selected'].includes(mode.value)&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
+      requiredBindingVersion:2,policyEpoch:backend.epoch,launchPolicy:args.launchPolicy,listed:args.listed,exposureAck:args.exposureAck??null,committedAt:Date.now(),
+      ...(prepared.nativeEntry?{nativeEntry:{origin:prepared.nativeEntry.origin,domainId:prepared.nativeEntry.domainId,target:{revision:prepared.nativeEntry.target.revision,digest:prepared.nativeEntry.target.digest,profile:prepared.nativeEntry.target.profile},exposureAck:args.nativeExposureAck}}:{}),
+      ...(args.nativeEntryAction?{nativeEntryAction:args.nativeEntryAction}:{})},current:summary()};
+    backend.receipts[args.requestId]=clone(reply);persist();if(['lost','selected','paired'].includes(mode.value)&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
   }
   fail('fixture_operation_not_supported');
 }};
@@ -90,16 +99,30 @@ async function open(){close();const run=++generation;dialog=createDialog('Нас
     isCurrent:()=>generation===run&&dialog?.element.open,onChanged:()=>{},onPreview:()=>{result.textContent='Предпросмотр перехвачен стендом; внешняя навигация не выполнялась.';},onClose:close});
   const x=dialog.element.querySelector('.sw-dialog-header button');x.addEventListener('click',event=>{event.preventDefault();event.stopImmediatePropagation();mounted?.requestClose(x);},true);
   dialog.element.addEventListener('cancel',event=>{event.preventDefault();mounted?.requestClose(document.activeElement);});
-  await until(()=>key('source-editor'),'settings loaded');key('source-editor').open=true;await until(()=>calls.some(value=>value.op==='apps.devices'),'devices requested');await delay(20);
+  await until(()=>key('source-editor'),'settings loaded');dialog.element.querySelector('[role=tab][aria-controls$="-hosting"]').click();key('source-editor').open=true;await until(()=>calls.some(value=>value.op==='apps.devices'),'devices requested');await delay(20);
 }
 function key(value){return dialog?.element.querySelector(`[data-settings-key="${value}"]`);}
 function change(value,next){const control=key(value);if(!control)throw new Error(`missing control:${value}`);control.focus();if(control.type==='checkbox')control.checked=next;else control.value=next;control.dispatchEvent(new Event(control.tagName==='SELECT'||control.type==='checkbox'?'change':'input',{bubbles:true}));return control;}
 function click(value){const control=key(value);if(!control)throw new Error(`missing action:${value}`);control.click();}
 async function until(check,label){const deadline=performance.now()+4500;while(!check()){if(performance.now()>deadline)throw new Error(`fixture timeout:${label}`);await delay(10);}}
 function assert(value,label){if(!value)throw new Error(label);}
-function reset(){close();backend=initial();preparations=new Map();calls=[];lostOnce=false;deferredReply=null;failedInspections=0;localStorage.removeItem(pendingKey);persist();}
+function reset(){close();backend=initial();if(mode.value==='paired'){backend.source={...targetA,revision:2,profile:'soty.selected-human-embed.v2',entryPath:'/embed'};backend.targets=[{...backend.source,createdAt:Date.now()-1000}];backend.nativeEntry=clone(nativePair);}preparations=new Map();calls=[];lostOnce=false;deferredReply=null;failedInspections=0;localStorage.removeItem(pendingKey);persist();}
 async function run(){if(automatic)return;automatic=true;result.dataset.testStatus='running';result.textContent='Выполняются сценарии компонента…';const passed=[];
   try{
+    mode.value='paired';reset();await open();
+    assert(dialog.element.textContent.includes(nativePair.origin)&&key('source-native-action').value==='keep','paired entry is not displayed/defaulted to keep');
+    change('source-port','5321');click('source-check');await until(()=>!key('source-public-ack').disabled,'pair checked');
+    change('source-public-ack',true);assert(key('source-promote').getAttribute('aria-disabled')==='true','Native scope inherited Source confirmation');
+    change('source-native-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','pair lost reply');
+    await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'pair receipt recovered');
+    const pairedSends=calls.filter(v=>v.op==='apps.source.promote');assert(pairedSends.length===2&&JSON.stringify(pairedSends[0].args)===JSON.stringify(pairedSends[1].args)&&backend.nativeEntry,'pair retry changed its intent');
+    passed.push('Оба входа: отдельное подтверждение, потеря ответа и точное восстановление');
+    mode.value='paired';reset();await open();change('source-native-action','remove');click('source-check');await until(()=>!key('source-public-ack').disabled,'removal checked');
+    change('source-public-ack',true);assert(key('source-promote').getAttribute('aria-disabled')==='true','removal silently inherited consent');
+    change('source-native-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','removal lost reply');
+    await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'removal receipt recovered');
+    assert(!backend.nativeEntry&&calls.filter(v=>v.op==='apps.source.promote').every(v=>v.args.nativeEntryAction?.origin===nativePair.origin),'removal was not exact/explicit');
+    passed.push('Отдельный сайт отключается только по явному выбору и подтверждению точного адреса');
     mode.value='selected';reset();await open();assert(key('source-profile').value===profile,'installed option silently changed the source');
     change('source-port','18437');
     change('source-profile','soty.selected-human-embed.v2');
@@ -117,7 +140,7 @@ async function run(){if(automatic)return;automatic=true;result.dataset.testStatu
     mode.value='missing';reset();await open();const selection=key('source-device').value;change('source-path','/new');click('source-check');await delay(35);
     assert(key('source-device').value===selection&&calls.filter(value=>value.op==='apps.source.prepare').length===0,'missing target silently substituted');passed.push('Пропавшее устройство не подменяется');
     mode.value='short';reset();await open();change('source-path','/read-slowly');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'checked result');
-    await delay(1900);assert(dialog.element.querySelector('.sw-app-settings-source-target').textContent.includes('/read-slowly'),'expiry removed reviewed target');
+    await delay(1900);assert(dialog.element.querySelector('.sw-app-settings-source-result .sw-app-settings-source-target').textContent.includes('/read-slowly'),'expiry removed reviewed target');
     assert(calls.filter(value=>value.op==='apps.source.promote').length===0,'timer invoked promotion');passed.push('После истечения проверки карточка остаётся; таймер не переключает');
     mode.value='lost';reset();await open();change('source-path','/lost-reply');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'public consent');
     change('source-public-ack',true);click('source-promote');await until(()=>localStorage.getItem(pendingKey)&&key('pending-retry')?.getAttribute('aria-disabled')==='false','unknown reply');

@@ -46,12 +46,78 @@ function storeFixture(locks = { request: async (_key, callback) => callback() })
 }
 function receipt(pending) {
   const a = pending.args, t = pending.expectedSource;
-  return { requestId: a.requestId, replayed: false, receipt: { schema: 'soty.app-source-receipt.v1', namespace: 'apps.source.promote.v1',
+  return { requestId: a.requestId, replayed: false, receipt: { schema: `soty.app-source-receipt.v${a.nativeExposureAck || a.nativeEntryAction ? 2 : 1}`, namespace: `apps.source.promote.v${a.nativeExposureAck || a.nativeEntryAction ? 2 : 1}`,
     appId, requestKeyHash: sha(a.requestId), preparationKeyHash: sha(a.preparationId), previousTargetRevision: a.expectedTargetRevision,
     targetRevision: t.revision, targetDigest: t.digest, profile: t.profile, requiredBindingVersion: 2, policyEpoch: a.expectedPolicyEpoch + 1,
-    launchPolicy: a.launchPolicy, listed: a.listed, exposureAck: a.exposureAck ?? null, committedAt: 101_000 },
+    launchPolicy: a.launchPolicy, listed: a.listed, exposureAck: a.exposureAck ?? null, committedAt: 101_000,
+    ...(a.nativeEntryAction ? { nativeEntryAction: a.nativeEntryAction } : {}),
+    ...(a.nativeExposureAck ? { nativeEntry: { ...pending.expectedNativeEntry, target: { revision: a.nativeExposureAck.targetRevision,
+      digest: a.nativeExposureAck.targetDigest, profile: a.nativeExposureAck.profile }, exposureAck: a.nativeExposureAck } } : {}) },
     current: { appId, policyEpoch: a.expectedPolicyEpoch + 1, requiredBindingVersion: 2, activeTargetRevision: t.revision } };
 }
+
+function pairedFixture() {
+  const snapshot = inspection(), nativeTarget = target({ revision: 1, digest: 'a'.repeat(64), profile,
+    hostDeviceId: 'host-a', connectorId: 'connector-a', port: 5001, entryPath: '/' });
+  Object.assign(snapshot.source, { profile: 'soty.selected-human-embed.v2', entryPath: '/embed' });
+  Object.assign(snapshot.publication, { launchPolicy: 'anyone', listed: true, nativeEntry: {
+    schema: 'soty.native-entry.v1', origin: 'https://native.apps.test', domainId, target: {
+      revision: 1, digest: nativeTarget.digest, profile, port: 5001, entryPath: '/' }, runtimeReady: false } });
+  const f = fixture(snapshot), next = target({ profile: snapshot.source.profile, hostDeviceId: 'host-a', connectorId: 'connector-a', entryPath: '/embed' });
+  const pair = { origin: snapshot.publication.nativeEntry.origin, domainId, target: nativeTarget };
+  return { ...f, snapshot, next, pair };
+}
+
+test('paired replacement defaults to keep, independently reviews both entries, then recovers its exact durable v2 receipt', async () => {
+  const f = pairedFixture(), store = storeFixture(); f.source.patch({ port: '6000' });
+  assert.equal(f.source.read().draft.nativeEntryMode, 'keep');
+  await f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => {
+    assert.deepEqual(args.nativeEntry, { origin: f.pair.origin, targetRevision: 1 });
+    return prepared(args, f.next, { nativeEntry: f.pair });
+  } } });
+  f.source.patch({ exposureConfirmed: true }); assert.equal(f.source.read().canPromote, false);
+  assert.throws(() => f.source.promoteIntent(), { code: 'app_native_exposure_ack_required' });
+  f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
+  assert.equal(intent.args.exposureAck.scope, 'authenticated-workspace'); assert.equal(intent.args.nativeExposureAck.scope, 'whole-port');
+  await assert.rejects(dispatchAppSettingsIntent({ ...intent, state: store.state, isCurrent: () => true,
+    api: { request: async () => { throw Error('lost ACK'); } } }));
+  const reopened = createAppSettingsState(store.options), pending = reopened.read().pending;
+  assert.deepEqual(pending.expectedNativeEntry, { origin: f.pair.origin, domainId });
+  const valid = receipt(pending);
+  for (const mutate of [r => { r.receipt.nativeEntry.origin = 'https://other.apps.test'; },
+    r => { r.receipt.nativeEntry.target.digest = 'f'.repeat(64); }, r => { delete r.receipt.nativeEntry; },
+    r => { r.receipt.schema = 'soty.app-source-receipt.v1'; }]) {
+    const bad = copy(valid); mutate(bad);
+    await assert.rejects(reopened.acknowledge(pending, bad), { code: 'app_settings_invalid_receipt' });
+    assert.deepEqual(reopened.read().pending, pending);
+  }
+  assert.equal(await reopened.acknowledge(pending, valid), true); assert.equal(reopened.read().pending, null);
+});
+
+test('explicit removal binds exact current Native URL/pins, needs its own confirmation and never inherits the old ACK', async () => {
+  const f = pairedFixture(), store = storeFixture(); f.source.patch({ nativeEntryMode: 'remove' });
+  const removal = { action: 'remove', origin: f.pair.origin, targetRevision: 1, targetDigest: f.pair.target.digest };
+  await f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => {
+    assert.equal(args.nativeEntry, undefined); assert.equal(args.targetRevision, f.snapshot.source.revision);
+    assert.deepEqual(args.nativeEntryAction, removal);
+    return prepared(args, normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(k => [k, f.snapshot.source[k]]))), { nativeEntryAction: removal });
+  } } });
+  f.source.patch({ exposureConfirmed: true }); assert.equal(f.source.read().canPromote, false);
+  f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
+  assert.deepEqual(intent.args.nativeEntryAction, removal); assert.equal(intent.args.nativeExposureAck, undefined);
+  const pending = await store.state.prepare(intent), valid = receipt(pending), bad = copy(valid);
+  bad.receipt.nativeEntryAction.targetDigest = 'f'.repeat(64);
+  await assert.rejects(store.state.acknowledge(pending, bad), { code: 'app_settings_invalid_receipt' });
+  assert.equal(await store.state.acknowledge(pending, valid), true);
+});
+
+test('a changed Native entry invalidates an in-flight pair review and cannot inherit earlier consent', async () => {
+  const f = pairedFixture(), gate = deferred(); f.source.patch({ port: '6000' });
+  const wait = f.source.prepare({ isCurrent: () => true, api: { request: () => gate.promise } });
+  const changed = copy(f.snapshot); changed.publication.nativeEntry.target.digest = 'e'.repeat(64); f.source.observe(changed);
+  gate.resolve({}); assert.deepEqual(await wait, { status: 'stale' });
+  assert.equal(f.source.read().draft.nativeConfirmed, false); assert.equal(f.source.read().canPromote, false);
+});
 
 test('installed selected option changes only profile/path and retains its exact profile through durable retry and readback', async () => {
   for (const selectedProfile of ['soty.selected-human-embed.v1', 'soty.selected-human-embed.v2']) {
@@ -444,7 +510,7 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
   assert.equal(guards.length, 1, 'actual sourceCurrent declaration');
   let guard = `const ${guards[0].getText(file)};`;
   if (process.env.SOTY_QUICK_SOURCE_OUTER_GUARD === 'off') {
-    const term = ' && (!quickDetails || quickDetails.open)';
+    const term = " && selectedSection === 'hosting'";
     assert.equal(guard.split(term).length, 2, 'negative control removes only the actual outer disclosure term');
     guard = guard.replace(term, '');
   }
@@ -453,7 +519,7 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
     const document = { visibilityState: 'visible' }, advanced = { open: true }, sourceDetails = { open: true };
     const current = () => true, sourcePromote = {}, sourceHistory = { open: false }, model = null;
     const disabled = () => false, render = () => {}, settingsError = reason => String(reason?.code ?? reason);
-    let busy = false, refreshing = false, refreshGeneration = 0, inspectionGeneration = 0, copyGeneration = 0;
+    let selectedSection = 'hosting', busy = false, refreshing = false, refreshGeneration = 0, inspectionGeneration = 0, copyGeneration = 0;
     let error = '', copyFallback = null, sourcePrimaryAction = 'recheck', sourceGeneration = 0;
     let sourceError = '', sourceNotice = '', sourceRechecking = false, hadPreparation = true;
     let staleInspection = false, sourceReadbackNotice = null, notice = '', readbacks = 0;
@@ -461,7 +527,7 @@ async function compactSourceMethodsUnderPorts(sourceModel, api, store, quickDeta
     const loadSourceHistory = () => { throw new Error('unexpected history request'); };
     ${guard}
     ${functions.join('\n')}
-    return { invoke: promoteSource, parents: { advanced, sourceDetails },
+    return { invoke: promoteSource, leaveHosting() { selectedSection = 'about'; }, parents: { advanced, sourceDetails },
       read: () => ({ sourceError, error, readbacks, busy, sourceNotice }) };
   };`;
   const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -483,7 +549,7 @@ async function sourceDisclosureCase(quickDetails) {
   const methods = await compactSourceMethodsUnderPorts(f.source, api, saved.state, quickDetails);
   const invoking = methods.invoke();
   assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.source.prepare');
-  if (quickDetails) quickDetails.open = false;
+  if (quickDetails) { quickDetails.open = false; methods.leaveHosting(); }
   // Native toggle is a later task. Nested disclosures deliberately stay open
   // while the held promise resolves, so their toggle handlers cannot hide a bug.
   assert.equal(methods.parents.advanced.open, true); assert.equal(methods.parents.sourceDetails.open, true);
@@ -493,7 +559,7 @@ async function sourceDisclosureCase(quickDetails) {
   return { f, saved, methods, calls, afterRelease: calls.slice(beforeRelease) };
 }
 
-test('component methods: closing compact All settings before its native toggle fences a held Source recheck without a new prepare, promotion or journal', async () => {
+test('component methods: leaving the Hosting section fences a held Source recheck without a new prepare, promotion or journal', async () => {
   const result = await sourceDisclosureCase({ open: true });
   assert.deepEqual(result.afterRelease, [], 'closed outer disclosure must suppress the actual handler continuation');
   assert.equal(result.calls.filter(value => value.op === 'apps.source.prepare').length, 1, 'only the already-held preparation was sent');
@@ -503,7 +569,7 @@ test('component methods: closing compact All settings before its native toggle f
   assert.equal(result.methods.read().busy, false); assert.equal(result.f.source.read().preparation, null);
 });
 
-test('component methods: full settings without an outer disclosure still rechecks and uses its existing durable Source dispatcher', async () => {
+test('component methods: remaining in the Hosting section rechecks and uses its existing durable Source dispatcher', async () => {
   const result = await sourceDisclosureCase(null);
   assert.deepEqual(result.calls.map(value => value.op), ['apps.source.prepare', 'apps.source.promote']);
   assert.equal(result.methods.read().readbacks, 1); assert.equal(result.methods.read().sourceError, '');

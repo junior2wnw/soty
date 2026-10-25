@@ -10,7 +10,8 @@ export interface AppInspection {
     aliases: { id: string; slug: string; origin: string; state: 'bound' | 'tombstone'; active: boolean; shareUrl: string | null; createdAt: number; retiredAt: number | null }[];
     limits: { perApp: number; perAccount: number; usedByApp: number; usedByAccount: number };
   };
-  publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; audience?: AppAudience | null; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
+  publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; audience?: AppAudience | null; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number;
+    nativeEntry?: { schema: 'soty.native-entry.v1'; origin: string; domainId: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'>; runtimeReady: false } };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
     launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
@@ -27,10 +28,13 @@ export interface AppSourceTarget {
 export interface AppSourcePreparation {
   schema: 'soty.app-source-preparation.v1'; appId: string; preparationId: string; expectedPolicyEpoch: number;
   expectedTargetRevision: number; requiredBindingVersion: 2; target: AppSourceTarget; checkedAt: number; expiresAt: number;
+  nativeEntry?: { origin: string; domainId: string; target: AppSourceTarget };
+  nativeEntryAction?: { action: 'remove'; origin: string; targetRevision: number; targetDigest: string };
 }
 export interface AppSourceDraft {
   mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string; profile: AppSourceTarget['profile'];
   launchPolicy: 'restricted' | 'anyone'; exposureConfirmed: boolean; targetRevision: number | null;
+  nativeEntryMode: 'keep' | 'remove'; nativeConfirmed: boolean;
 }
 export type SettingsPending = {
   op: 'apps.publication.update' | 'apps.domains.claim' | 'apps.domains.retire';
@@ -39,6 +43,7 @@ export type SettingsPending = {
 } | {
   op: 'apps.source.promote'; args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string };
   expectedSource: AppSourceTarget;
+  expectedNativeEntry?: { origin: string; domainId: string };
 };
 export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; audience?: AppAudience | null; launchPolicy: string; activeDomainIds: string[]; appState: string } }
 export interface AppSettingsOptions {

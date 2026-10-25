@@ -43,6 +43,8 @@ function settingsError(reason: unknown): string {
     app_source_revision_conflict: 'Источник или доступ изменились. Обновите состояние и сравните его с вашим вводом.',
     app_source_invalid_preparation: 'Не удалось подтвердить ответ выбранного источника. Переключение не отправлено.',
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
+    native_pair_action_required: 'Приложение имеет отдельный сайт. Выберите, сохранить его или отключить, и проверьте источник заново.',
+    app_native_exposure_ack_required: 'Подтвердите показанное действие с отдельным сайтом.',
     app_source_invalid_history: 'Не удалось подтвердить историю источников. Повторите её чтение.',
     app_source_unchanged: 'Это уже текущий источник. Измените компьютер, порт или начальную страницу.',
     app_source_unavailable: 'Сейчас этот источник нельзя переключить. Обновите состояние приложения.',
@@ -140,7 +142,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (!op && !expectedPending) throw Object.assign(new Error('app_settings_pending_changed'), { code: 'app_settings_pending_changed' });
     const context = { state: store, api, isCurrent: current };
     const result = op ? await dispatchAppSettingsIntent({ ...context, op, args: args ?? {},
-      ...(sourceIntent ? { expectedSource: sourceIntent.expectedSource, beforeCreate: () => sourceCurrent() && sourceIntent.beforeCreate() } : {}) })
+      ...(sourceIntent ? { expectedSource: sourceIntent.expectedSource, expectedNativeEntry: sourceIntent.expectedNativeEntry, beforeCreate: () => sourceCurrent() && sourceIntent.beforeCreate() } : {}) })
       : await dispatchAppSettingsIntent({ ...context, expectedPending: expectedPending! });
     if (!current() || result.status === 'stale') return;
     staleInspection = true;
@@ -428,6 +430,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceDevice = el('dd'), sourcePort = el('dd'), sourcePath = el('dd', 'sw-app-settings-path'), sourceTime = el('p', 'sw-muted sw-app-settings-hint');
   sourceInfo.append(el('dt', '', 'Компьютер с приложением'), sourceDevice, el('dt', '', 'Порт'), sourcePort, el('dt', '', 'Страница'), sourcePath);
   const sourceBinding = el('p', 'sw-muted sw-app-settings-hint');
+  const entrySummary = el('div', 'sw-app-settings-source-target'), sourceEntrySummary = el('p'), nativeEntrySummary = el('p'), entryReadiness = el('p', 'sw-muted sw-app-settings-hint');
+  entrySummary.append(sourceEntrySummary, nativeEntrySummary, entryReadiness);
   const sourceDetails = keyed(el('details', 'sw-app-settings-details sw-app-settings-source-editor'), 'source-editor');
   const sourceSummary = el('summary', '', 'Изменить источник');
   const sourceForm = el('form', 'sw-app-settings-source-form');
@@ -470,6 +474,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   sourcePortInput.addEventListener('input', () => { sourceModel?.patch({ port: sourcePortInput.value }); changedSource(); });
   sourcePathInput.addEventListener('input', () => { sourceModel?.patch({ entryPath: sourcePathInput.value }); changedSource(); });
   sourceAudience.addEventListener('change', () => { sourceModel?.patch({ launchPolicy: sourceAudience.value === 'anyone' ? 'anyone' : 'restricted' }); changedSource(); });
+  const nativeEntryChoice = keyed(el('select', 'sw-select'), 'source-native-action');
+  for (const [value, label] of [['keep', 'Сохранить отдельный сайт'], ['remove', 'Отключить отдельный сайт']] as const) {
+    const option = el('option', '', label); option.value = value; nativeEntryChoice.append(option);
+  }
+  const nativeEntryField = labeledField('Отдельный сайт после переключения', nativeEntryChoice);
+  nativeEntryChoice.addEventListener('change', () => { sourceModel?.patch({ nativeEntryMode: nativeEntryChoice.value === 'remove' ? 'remove' : 'keep' }); changedSource(); });
   const sourceAccessBlock = el('div', 'sw-app-settings-source-block'), sourceAccessText = el('p', '', 'Сначала сохраните или отмените правки доступа выше.');
   const resetAccess = keyed(button('Отменить правки доступа', 'close', 'sw-button-quiet', () => confirm({ kind: 'publication-reset' }, resetAccess)), 'source-reset-access');
   sourceAccessBlock.append(sourceAccessText, resetAccess);
@@ -485,7 +495,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceCheckedTarget = el('p', 'sw-app-settings-source-target'), sourceResultHint = el('p', 'sw-muted sw-app-settings-hint', 'Ответ не подтверждает исправность всех страниц проекта.');
   const sourceAck = el('label', 'sw-app-settings-ack'), sourceAckInput = keyed(el('input'), 'source-public-ack'), sourceAckText = el('span'); sourceAckInput.type = 'checkbox';
   sourceAckInput.addEventListener('change', () => { sourceModel?.patch({ exposureConfirmed: sourceAckInput.checked }); render(); }); sourceAck.append(sourceAckInput, sourceAckText);
-  sourceResult.append(sourceResultHeader, sourceCheckedTarget, sourceResultHint, sourceAck, sourcePromote);
+  const nativeAck = el('label', 'sw-app-settings-ack'), nativeAckInput = keyed(el('input'), 'source-native-ack'), nativeAckText = el('span'); nativeAckInput.type = 'checkbox';
+  nativeAckInput.addEventListener('change', () => { sourceModel?.patch({ nativeConfirmed: nativeAckInput.checked }); render(); }); nativeAck.append(nativeAckInput, nativeAckText);
+  sourceResult.append(sourceResultHeader, sourceCheckedTarget, sourceResultHint, sourceAck, nativeAck, sourcePromote);
   const sourceActions = el('div', 'sw-app-settings-actions'); sourceActions.append(sourceCheck);
   const sourceFailure = el('p', 'sw-error'), sourceFeedback = el('p', 'sw-app-settings-notice'); sourceFailure.setAttribute('role', 'alert'); sourceFeedback.setAttribute('role', 'status');
   const sourcePending = el('div', 'sw-app-settings-source-block');
@@ -496,7 +508,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   }), 'source-pending-retry');
   sourcePending.append(el('p', '', 'Результат пока не подтверждён. Прежний запрос сохранён.'), sourcePendingRetry);
   sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, labeledField('Доступ после переключения', sourceAudience),
-    sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
+    nativeEntryField, sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
   sourceForm.addEventListener('submit', event => { event.preventDefault(); void checkSource(); });
   sourceDetails.append(sourceSummary, sourceForm);
   sourceDetails.addEventListener('toggle', () => {
@@ -532,7 +544,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     } catch { error = 'Не удалось подготовить данные размещения. Обновите состояние.'; render(); }
   });
   deployment.append(exportDeployment);
-  source.append(sourceState, sourceInfo, sourceBinding, sourceTime, sourceDetails, sourceHistory, deployment);
+  source.append(sourceState, entrySummary, sourceInfo, sourceBinding, sourceTime, sourceDetails, sourceHistory, deployment);
   const danger = keyed(el('details', 'sw-app-settings-details'), 'danger'); danger.append(el('summary', '', 'Закрыть приложение в Сотах'));
   const revoke = keyed(button('Закрыть все ссылки приложения', 'lock', 'sw-button-quiet sw-button-danger', () => confirm({ kind: 'revoke' }, revoke)), 'revoke');
   danger.append(el('p', 'sw-muted', 'Отдельное действие: закрывает весь доступ через Соты. Для смены аудитории используйте настройки выше.'), revoke);
@@ -597,6 +609,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     text(sourceBinding, binding === 'bound' ? 'Компьютер подтвердил текущий маршрут.' : binding === 'legacy' ? 'На этом компьютере смена источника требует обновления Соты Коннектора.' : '');
     sourceBinding.hidden = !sourceBinding.textContent || snapshot.app.state === 'revoked';
     text(sourceDevice, snapshot.source.deviceName); text(sourcePort, String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
+    const native = snapshot.publication.nativeEntry;
+    entrySummary.hidden = !native;
+    text(sourceEntrySummary, snapshot.source.launchEntry ? `В Сотах: ${snapshot.source.launchEntry.origin}${snapshot.source.entryPath}` : 'В Сотах: адрес пока не подтверждён.');
+    text(nativeEntrySummary, native ? `Отдельный сайт: ${native.origin}` : '');
+    text(entryReadiness, 'Оба входа относятся к одному приложению. Эти настройки не подтверждают доступность сайта; его вход и права проверяются отдельно.');
+    nativeEntryField.hidden = !native; nativeEntryChoice.value = draft.nativeEntryMode; nativeEntryChoice.disabled = !editable || blocked;
     disable(exportDeployment, busy || staleInspection || snapshot.app.state !== 'enabled');
     text(sourceTime, observed.observedAt === null ? 'Пока нет наблюдения от компьютера.' : `Последнее наблюдение: ${new Date(observed.observedAt).toLocaleString('ru-RU')}.`);
     const selectedKey = deviceKey(draft), names = new Map<string, number>();
@@ -643,6 +661,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     }
     sourceAck.hidden = draft.launchPolicy !== 'anyone'; sourceAckInput.checked = draft.exposureConfirmed;
     sourceAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
+    nativeAck.hidden = !native || !state.preparation;
+    nativeAckInput.checked = draft.nativeConfirmed;
+    nativeAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
+    text(nativeAckText, draft.nativeEntryMode === 'remove'
+      ? `Отключить отдельный сайт ${native?.origin ?? ''}. Его страницы и открытые соединения перестанут допускаться Сотами.`
+      : `Сохранить отдельный сайт ${native?.origin ?? ''}: весь проект и его API на порту ${native?.target.port ?? ''}. Собственный вход и права приложения сохраняются.`);
     sourcePromote.hidden = sourceResult.hidden;
     sourcePrimaryAction = hasPreparation ? 'promote' : 'recheck';
     text(sourcePromote.querySelector('span')!, sourceRechecking ? 'Перепроверяем…' : sourcePrimaryAction === 'recheck' ? 'Перепроверить и переключить' : draft.mode === 'history' ? 'Вернуть этот источник' : 'Переключить');
