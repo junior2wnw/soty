@@ -23,6 +23,7 @@ export function createAppLauncher(options: {
   request(parameters: AppLaunchRequest): Promise<{ url: string; entry: AppResolvedEntry;launchBinding?:AppLaunchBinding;runtimeProfile?:string;scopedCloseHandle?:string;scopedCleanup?:()=>Promise<void>;scopedSource?:{id:string;version:number;digest:string} }>;
   abandonScoped?(parameters:{appId:string;handle:string}):Promise<unknown>;
   resolveEntry?(parameters: AppLaunchRequest): Promise<{ entry: AppResolvedEntry }>;
+  resolveExternalEntry?(parameters: { appId: string; expectedAccountId: string }): Promise<{ entry: AppResolvedEntry | null }>;
 }): {
   readonly parameters: AppLaunchRequest;
   entry(): AppResolvedEntry | null;
@@ -35,6 +36,6 @@ export function createAppLauncher(options: {
   scopedCapture():{handle:string;source:unknown;slot:object}|null;
   prepareRenewal(result:{url:string;entry:AppResolvedEntry;runtimeProfile:string;scopedCloseHandle:string;scopedSlotExpiresAt:number;scopedRenewalRequestId:string;scopedSource:unknown;scopedRenewalBindingDigest?:string;scopedCleanup?:(()=>Promise<void>)|undefined}):import('./app-scoped-renewal.mjs').ScopedRenewReply;
   commitRenewal(previous:{slot:object},next:import('./app-scoped-renewal.mjs').ScopedRenewReply):boolean;
-  openExternal(openPopup: () => AppLaunchPopup | null): Promise<'opened' | 'blocked' | 'stale' | 'busy'>;
+  openExternal(openPopup: () => AppLaunchPopup | null): Promise<'opened' | 'blocked' | 'stale' | 'busy' | 'unavailable'>;
   dispose(): void;
 };

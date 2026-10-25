@@ -166,6 +166,51 @@ test('every fresh launch pins the original actor and target without sharing a ti
   launcher.dispose(); assert.equal(window.closed, false, 'a completed external tab belongs to the user');
 });
 
+function pairedLauncher(resolveExternalEntry, extra = {}) {
+  let current = true, launches = 0;
+  const entry = { appId, domainId, origin: 'https://demo.apps.example', path: '/embed' };
+  const launcher = createAppLauncher({ target: { appId, domainId, path: '/embed' }, accountId: 'account-a', shellUrl,
+    isCurrent: () => current, request: async () => { launches++; return { ...scopedReply(),
+      url: `https://demo.apps.example/_soty/boot?path=%2Fembed#${'A'.repeat(43)}`, entry }; },
+    resolveExternalEntry, ...extra });
+  return { launcher, entry, launches: () => launches, retire: () => { current = false; } };
+}
+
+test('paired Source opens the fresh Native entry without another frame ticket or changing its embedded pin', async () => {
+  const native = { appId, domainId: `dom_${'c'.repeat(32)}`, origin: 'https://native.apps.example', path: '/start?view=mine#today' }, order = [];
+  const f = pairedLauncher(async args => { order.push('native-read'); assert.deepEqual(args, { appId, expectedAccountId: 'account-a' }); return { entry: native }; });
+  await f.launcher.launch(); const original = f.launcher.entry(), window = makePopup();
+  assert.equal(await f.launcher.openExternal(() => { order.push('popup'); return window; }), 'opened');
+  assert.deepEqual(order, ['popup', 'native-read']); assert.equal(f.launches(), 1);
+  assert.deepEqual(window.visits, [native.origin + native.path]); assert.equal(window.opener, null);
+  assert.deepEqual(f.launcher.entry(), original); assert.equal(f.launcher.scopedCapture().handle, 'C'.repeat(43));
+});
+
+test('Source without a Native entry closes only its pending popup and never pretends a top-level frame is a site', async () => {
+  const f = pairedLauncher(async () => ({ entry: null })); await f.launcher.launch(); const window = makePopup();
+  assert.equal(await f.launcher.openExternal(() => window), 'unavailable'); assert.equal(window.closed, true);
+  assert.deepEqual(window.visits, []); assert.equal(f.launches(), 1);
+});
+
+test('late or malformed Native resolution cannot navigate after profile change or to a foreign app', async () => {
+  const gate = deferred(), f = pairedLauncher(() => gate.promise); await f.launcher.launch(); const window = makePopup();
+  const pending = f.launcher.openExternal(() => window); f.retire();
+  gate.resolve({ entry: { appId, domainId, origin: 'https://native.apps.example', path: '/' } });
+  assert.equal(await pending, 'stale'); assert.equal(window.closed, true); assert.deepEqual(window.visits, []);
+  const bad = pairedLauncher(async () => ({ entry: { appId: `app-${'f'.repeat(32)}`, domainId, origin: 'https://native.apps.example', path: '/' } }));
+  await bad.launcher.launch(); const other = makePopup(); await assert.rejects(bad.launcher.openExternal(() => other), { code: 'invalid_app_entry' });
+  assert.equal(other.closed, true); assert.deepEqual(other.visits, []);
+});
+
+test('a historical Native bookmark opens its exact path separately while its embedded Source address requires explicit recovery', async () => {
+  const old = { appId, domainId, origin: 'https://native.apps.example', path: '/deals?id=exact#saved' };
+  const f = pairedLauncher(async () => ({ entry: { ...old, path: '/' } }), { target: { appId, domainId, path: old.path },
+    request: async () => { throw Object.assign(new Error('moved'), { code: 'scoped_embed_source_changed' }); }, resolveEntry: async () => ({ entry: old }) });
+  await assert.rejects(f.launcher.launch(), { code: 'scoped_embed_source_changed' }); const window = makePopup();
+  assert.equal(await f.launcher.openExternal(() => window), 'opened'); assert.deepEqual(window.visits, [old.origin + old.path]);
+  assert.deepEqual(f.launcher.entry(), old);
+});
+
 test('popup is opened synchronously before asynchronous ticket issuance', async () => {
   const order = [], pending = deferred();
   const { launcher } = fixture(() => { order.push('request'); return pending.promise; });

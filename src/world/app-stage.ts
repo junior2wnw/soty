@@ -273,6 +273,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!current()) return;
       captureEntry();
       if (result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
+      if (result === 'unavailable') showMessage('Отдельный сайт пока не подключён. Это приложение доступно внутри Сот.');
     }).catch(reason => { const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`); })
       .finally(() => { if (current()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
   });
@@ -409,6 +410,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
     isCurrent: expected => expected === accountId && current(), request: parameters => withVoiceAdmission(() => options.request(parameters)),
     resolveEntry: parameters => options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', { ...parameters }),
+    resolveExternalEntry: parameters => options.api.request<{ entry: AppResolvedEntry | null }>('apps.entry.get', { ...parameters, current: true, surface: 'native' }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
   });
   const readCapturePeer=():ProjectCapturePeer|null=>{

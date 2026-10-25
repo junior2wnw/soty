@@ -167,13 +167,16 @@ export function validateAppLaunchUrl(value, shellUrl) {
 }
 
 /** One screen owns its pending popup. Completed external tabs belong to the user. */
-export function createAppLauncher({ target, accountId, instanceId, shellUrl, isCurrent, request, resolveEntry, abandonScoped }) {
+export function createAppLauncher({ target, accountId, instanceId, shellUrl, isCurrent, request, resolveEntry, resolveExternalEntry, abandonScoped }) {
   requireValue(typeof accountId === 'string' && accountId.length > 0, 'app_account_required');
   const requestedTarget = normalizeAppLaunchTarget(target);
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
   let scoped=null;
   function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
   let originalBinding = null, bindingPinned = false;
+  let sourceEntryChanged = false;
+  const rootWorkspace = source => source?.id === 'soty.standard-workspace' && source.version === 2
+    && source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
   const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId, ...(instanceId === undefined ? {} : { instanceId }) });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
@@ -215,6 +218,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       if(!external){const previous=scoped;scoped=binding;abandon(previous);}
       return url;
     } catch (error) {
+      if (['scoped_embed_source_changed', 'scoped_embed_authority_changed'].includes(error?.code)) sourceEntryChanged = true;
       abandon(binding);
       if (!current()) return null;
       // Only a failed admission may resolve an offline location. A successful
@@ -299,6 +303,17 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         destination = openPopup();
         if (!destination) return 'blocked';
         popup = destination; destination.opener = null;
+        if (typeof resolveExternalEntry === 'function' && (rootWorkspace(scoped?.source) || sourceEntryChanged)) {
+          const result = await resolveExternalEntry({ appId: requestedTarget.appId, expectedAccountId: accountId });
+          if (!current() || destination.closed) { close(destination); return 'stale'; }
+          if (!result?.entry) { close(destination); return 'unavailable'; }
+          const native = validateAppEntry(result.entry, { appId: requestedTarget.appId }, shellUrl);
+          // An explicit Native bookmark keeps its exact path. A Source entry
+          // opens the separately admitted Native start page, without a Source
+          // ticket, frame credential or silent change to the saved bookmark.
+          const path = selected?.domainId === native.domainId && selected.origin === native.origin ? selected.path : native.path;
+          destination.location.replace(native.origin + path); popup = null; return 'opened';
+        }
         const url = await launch({external:true});
         if (!url || !current() || destination.closed) { close(destination); return 'stale'; }
         destination.location.replace(url);
