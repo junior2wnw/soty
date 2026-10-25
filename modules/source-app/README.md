@@ -580,8 +580,15 @@ try {
 } catch (error) {
   // An invoke error can follow COMMIT. Keep the same request/body/context.
   showCheckResultAction(async () => {
-    const result = await source.receipt(intent); // read only, never invoke
-    if (result.outcome === 'committed') await reloadCurrentList();
+    await source.connect({ requestId: id() });
+    const result = await source.recoverReceipt(intent); // read only, never invoke
+    if (result.outcome === 'committed') {
+      const currentWorkspace = await source.currentContext({ requestId: id() });
+      const currentPage = await source.query({
+        requestId: id(), input: { operation: 'items.list' }
+      });
+      render(currentPage.items, currentWorkspace.title);
+    }
     else showNotApplied();
   });
 }
@@ -621,6 +628,28 @@ person to check it in the original context; do not silently resubmit it with a
 new context or a new ID. `not_applied` is a receipt result, not an assumption
 made from a timeout,401,403 or a lost response.
 
+Keep three separate facts in the UI: the **confirmed original receipt**,
+the **separately refreshed current context**, and the **current domain
+readback**. `recoverReceipt(originalIntentOrReference)` reads under the current
+captured `contextRef` while retaining the original request ID, input digest and
+old reference. Native must possess its durable sealed sidecar and recheck the
+same actor/device/resource under the fresh Root and Native fence. The browser
+validates the immutable original digest and old mutation binding, then the
+separate `recovery.contextAfter` against the current context. It returns both;
+it does not replace `result.contextAfter`, edit the original intent or resend
+an effect. Domain receipts are app-owned JSON, such as `{accepted:true,etag:...}`;
+the generic SDK does not require a CRUD `id` or integer domain revision.
+
+The existing `receipt` method remains limited to its exact original current
+reference. Use explicit `recoverReceipt` after a new frame/session or Source
+restart. An older host without a sealed binding, an inaccessible original,
+a changed actor/device/resource or a forged recovery remains unknown. In a
+different context, `not_applied` without a sealed original is insufficient to
+confirm the old action; the SDK rejects it and never falls back to `invoke`.
+Applications should retain the original reference for checking and display
+current business data from a new read, rather than treating the historical
+receipt revision as the present state.
+
 Reads use `createSourceFrameFetch`, including its exact-parent short-session
 wake-up and at most one safe read retry. Invokes, unknown network outcomes and
 private effects never enter that automatic retry path. All calls use fixed
@@ -649,3 +678,10 @@ applications: board `items.create` and library `books.add`. They include an
 unknown COMMIT ACK, read-only receipt recovery, exact context change refusal
 and normal current-row readback. These are local protocol qualification tests;
 production publication and a real browser/user rollout are separate gates.
+`test/workspace-browser-cold-installed.test.mjs` also starts a Root-only Source
+with zero RP client registrations and no pre-acquired Source/Native cookie,
+then checks resume, expiry/revocation, departure between handshake stages and
+sealed receipt recovery after Native restart/new Root frame. Its test-owned
+Native private envelope retains the original SQL bytes; another Root person
+cannot recover or read that person's records. Clock expiry is controlled, not
+a long wall-clock uptime claim.

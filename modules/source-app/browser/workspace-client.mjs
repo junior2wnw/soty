@@ -41,8 +41,9 @@ function copy(input) {
   if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 65536) fail('source_app_payload_limit', 413);
   return value;
 }
-function fields(value, required) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== [...required].sort().join(',')) fail();
+function fields(value, required, optional = []) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !required.every(key => Object.hasOwn(value, key))
+    || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) fail();
   return value;
 }
 const hash = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical(value))))]
@@ -110,8 +111,7 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
   }
   function proof(value, entry) {
     if (value.requestId !== entry.requestId || value.inputDigest !== entry.inputDigest || !['committed', 'not_applied'].includes(value.outcome)) fail('source_client_response_invalid', 502);
-    if (value.outcome === 'committed' && (typeof value.replayed !== 'boolean' || typeof value.receipt?.id !== 'string' || !value.receipt.id
-      || !integer(value.receipt.revision) || value.contextAfter?.schema !== 'soty.context-after.v1'
+    if (value.outcome === 'committed' && (value.replayed !== undefined && typeof value.replayed !== 'boolean' || value.contextAfter?.schema !== 'soty.context-after.v1'
       || value.contextAfter.mutationRef !== entry.mutationRef || value.contextAfter.generation !== entry.generation
       || !metadata(value.contextAfter) || value.workspaceReceipt?.schema !== 'soty.workspace-receipt.v1'
       || !Array.isArray(value.workspaceReceipt.effects) || !value.workspaceReceipt.effects.length || value.workspaceReceipt.effects.length > 32
@@ -128,9 +128,40 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     const entry = known ?? { ...reference, generation: selected.context.context.generation,
       mutationRef: await hash({ schema: 'soty.workspace-mutation.v1', requestId: reference.requestId, inputDigest: reference.inputDigest, contextRef: reference.contextRef }) };
     check(selected.epoch);
-    const value = proof(await request('receipt', { requestId: entry.requestId, contextRef: entry.contextRef,
-      input: { inputDigest: entry.inputDigest } }, selected.epoch, signal), entry);
+    const response = await request('receipt', { requestId: entry.requestId, contextRef: entry.contextRef,
+      input: { inputDigest: entry.inputDigest } }, selected.epoch, signal);
+    const value = response.recovery === undefined ? proof(response, entry) : await recoveredProof(response, reference, known, selected, signal);
     pending.delete(entry.requestId); return value;
+  }
+  async function recoveredProof(value, reference, known, selected, signal) {
+    // A missing/old backend or a foreign actor may report no row. That is not
+    // proof that this different context's original write was never applied.
+    if (value.outcome !== 'committed' || !value.recovery) fail('source_receipt_recovery_unavailable', 409);
+    const { recovery, ...original } = value;
+    if (Object.keys(recovery).sort().join(',') !== 'contextAfter,contextRef,receiptDigest,schema'
+      || recovery.schema !== 'soty.workspace-receipt-recovery.v1' || recovery.contextRef !== reference.contextRef
+      || !digest(recovery.receiptDigest) || recovery.receiptDigest !== await hash(original)) fail('source_client_response_invalid', 502);
+    const originalMutation = await hash({ schema: 'soty.workspace-mutation.v1', requestId: reference.requestId, inputDigest: reference.inputDigest, contextRef: reference.contextRef });
+    proof(original, { ...reference, mutationRef: originalMutation, generation: known?.generation ?? original.contextAfter?.generation });
+    const freshMutation = await hash({ schema: 'soty.workspace-mutation.v1', requestId: reference.requestId, inputDigest: reference.inputDigest, contextRef: selected.context.context.ref });
+    if (recovery.contextAfter?.schema !== 'soty.context-after.v1' || !metadata(recovery.contextAfter)
+      || recovery.contextAfter.mutationRef !== freshMutation || recovery.contextAfter.generation !== selected.context.context.generation) fail('source_client_response_invalid', 502);
+    check(selected.epoch); signal?.throwIfAborted(); pending.delete(reference.requestId);
+    return value;
+  }
+  async function recoverReceipt(reference, signal) {
+    const known = intents.get(reference);
+    if (!known) {
+      reference = copy(reference); fields(reference, ['requestId', 'contextRef', 'inputDigest'], ['input']);
+      if (reference.input !== undefined && await hash(reference.input) !== reference.inputDigest) fail('request_conflict', 409);
+    }
+    const selected = capture();
+    if (!reference || !requestId(reference.requestId) || !opaque(reference.contextRef) || !digest(reference.inputDigest)) fail();
+    if (reference.contextRef === selected.context.context.ref) return receipt(known ? reference : {
+      requestId: reference.requestId, contextRef: reference.contextRef, inputDigest: reference.inputDigest }, signal);
+    const value = await request('receipt', { requestId: reference.requestId, contextRef: selected.context.context.ref,
+      input: { inputDigest: reference.inputDigest } }, selected.epoch, signal);
+    return recoveredProof(value, reference, known, selected, signal);
   }
   function continueSession(args, signal) {
     const selected = fields(copy(args), ['requestId']); if (!requestId(selected.requestId)) fail();
@@ -180,7 +211,9 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
       signal?.throwIfAborted(); entry.sent = true;
       entry.flight = (async () => {
         try {
-          const value = proof(await request('invoke', { requestId: entry.requestId, input: entry.input, contextRef: entry.contextRef }, entry.epoch, signal), entry);
+          const response = await request('invoke', { requestId: entry.requestId, input: entry.input, contextRef: entry.contextRef }, entry.epoch, signal);
+          if (response.recovery !== undefined) fail('source_client_response_invalid', 502);
+          const value = proof(response, entry);
           if (value.outcome !== 'committed') fail('source_app_effect_unknown', 503);
           pending.delete(entry.requestId); return value;
         } catch (error) { throw new SourceWorkspaceClientError(error?.code ?? 'source_app_effect_unknown', error?.status ?? 503, true); }
@@ -188,6 +221,9 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
       return entry.flight;
     },
     receipt,
+    recoverReceipt(reference, signal) {
+      return recoverReceipt(reference, signal).catch(error => { throw new SourceWorkspaceClientError(error?.code ?? 'source_receipt_recovery_unavailable', error?.status ?? 503, true); });
+    },
     invalidate,
     dispose() { invalidate(); closed = true; },
   });

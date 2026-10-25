@@ -42,8 +42,9 @@ export interface SourceReceiptReference { readonly requestId: string; readonly c
 export interface SourceWriteIntent extends SourceReceiptReference { readonly input: Readonly<SourceWorkspaceRequest['input']>; }
 export interface SourceWriteResult {
   readonly requestId: string; readonly inputDigest: string; readonly outcome: 'committed' | 'not_applied';
-  readonly replayed?: boolean; readonly receipt?: Readonly<Record<string, SourceJson>>;
+  readonly replayed?: boolean; readonly receipt?: SourceJson; readonly data?: SourceJson; readonly result?: SourceJson;
   readonly contextAfter?: Readonly<Record<string, SourceJson>>; readonly workspaceReceipt?: Readonly<Record<string, SourceJson>>;
+  readonly recovery?: Readonly<{schema: 'soty.workspace-receipt-recovery.v1'; contextRef: string; receiptDigest: string; contextAfter: Readonly<Record<string, SourceJson>>}>;
 }
 export class SourceWorkspaceClientError extends Error { readonly code: string; readonly status: number; readonly effectUnknown: boolean; }
 export interface SourceWorkspaceClient {
@@ -61,6 +62,8 @@ export interface SourceWorkspaceClient {
   invoke(intent: SourceWriteIntent, signal?: AbortSignal): Promise<SourceWriteResult>;
   /** Reads an original receipt; never sends an invoke. A retained reference may be used after reload only in its same current context. */
   receipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;
+  /** Fresh current context may read the sealed original result; never rewrites its intent or sends an invoke. */
+  recoverReceipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;
   invalidate(): void; dispose(): void;
 }
 export function createSourceWorkspaceClient(options?: {fetch?: typeof fetch; href?: string; view?: Window; parentOrigin?: string; isCurrent?(): boolean}): SourceWorkspaceClient;

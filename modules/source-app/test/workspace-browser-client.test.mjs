@@ -185,6 +185,57 @@ test('a receipt from a different mutation or generation never confirms a possibl
   }
 });
 
+test('generic workspace proof accepts different opaque domain receipts without inventing a CRUD id or revision', async () => {
+  for (const receipt of [{ accepted: true, etag: 'opaque-revision' }, ['domain-result', { accepted: true }], 'native-opaque-token', undefined]) {
+    const f = fixture(); await ready(f);
+    const intent = await f.api.prepareInvoke({ requestId: id('domain-shape'), input: { operation: 'notes.create', title: 'A' } });
+    f.hold(async response => { const body = await response.json(); delete body.data.replayed;
+      if (receipt === undefined) delete body.data.receipt; else body.data.receipt = receipt;
+      return json(body); });
+    const result = await f.api.invoke(intent);
+    assert.deepEqual(result.receipt, receipt); assert.equal(result.outcome, 'committed');
+  }
+});
+
+test('explicit recovery reads under a fresh context, retains the original receipt and never invokes again', async () => {
+  const f = fixture(); await ready(f);
+  const intent = await f.api.prepareInvoke({ requestId: id('fresh-recovery'), input: { operation: 'notes.create', title: 'Original' } });
+  const original = await f.api.invoke(intent), originalBytes = JSON.stringify(original);
+  f.switch(); await ready(f);
+  f.hold(async response => { const old = (await response.json()).data;
+    return json({ ok: true, data: { ...old, recovery: { schema: 'soty.workspace-receipt-recovery.v1', contextRef: intent.contextRef,
+      receiptDigest: hash(old), contextAfter: { ...old.contextAfter, generation: 2, title: 'Other board', revision: 9,
+        mutationRef: hash({ schema: 'soty.workspace-mutation.v1', requestId: intent.requestId, inputDigest: intent.inputDigest, contextRef: f.context().context.ref }) } } } });
+  });
+  const result = await f.api.recoverReceipt(intent);
+  assert.equal(result.contextAfter.generation, 1); assert.equal(result.recovery.contextAfter.generation, 2);
+  assert.equal(f.calls.at(-1).args.contextRef, f.context().context.ref); assert.equal(f.calls.at(-1).args.requestId, intent.requestId);
+  assert.equal(f.calls.at(-1).args.input.inputDigest, intent.inputDigest); assert.equal(JSON.stringify(original), originalBytes);
+  assert.equal(intent.contextRef, 'A'.repeat(43)); assert.equal(f.calls.filter(call => call.path.endsWith('/invoke')).length, 1);
+  await assert.rejects(f.api.invoke(intent), /source_client_context_changed/);
+});
+
+test('foreign/missing legacy recovery, changed request or forged original/fresh envelopes remain unknown', async () => {
+  for (const mode of ['legacy', 'no-row', 'original-digest', 'old-ref', 'fresh-generation', 'fresh-mutation']) {
+    const f = fixture(); await ready(f); const intent = await f.api.prepareInvoke({ requestId: id('recover-negative'), input: { operation: 'notes.create', title: 'A' } });
+    await f.api.invoke(intent); f.switch(); await ready(f);
+    f.hold(async response => {
+      const original = (await response.json()).data;
+      if (mode === 'legacy') return json({ ok: true, data: original });
+      if (mode === 'no-row') return json({ ok: true, data: { requestId: intent.requestId, inputDigest: intent.inputDigest, outcome: 'not_applied' } });
+      const recovery = { schema: 'soty.workspace-receipt-recovery.v1', contextRef: intent.contextRef, receiptDigest: hash(original),
+        contextAfter: { ...original.contextAfter, generation: 2, mutationRef: hash({ schema: 'soty.workspace-mutation.v1', requestId: intent.requestId, inputDigest: intent.inputDigest, contextRef: f.context().context.ref }) } };
+      if (mode === 'original-digest') recovery.receiptDigest = '0'.repeat(64);
+      if (mode === 'old-ref') recovery.contextRef = 'Z'.repeat(43);
+      if (mode === 'fresh-generation') recovery.contextAfter.generation++;
+      if (mode === 'fresh-mutation') recovery.contextAfter.mutationRef = '0'.repeat(64);
+      return json({ ok: true, data: { ...original, recovery } });
+    });
+    await assert.rejects(f.api.recoverReceipt(intent), error => error.effectUnknown === true, mode);
+    assert.equal(f.calls.filter(call => call.path.endsWith('/invoke')).length, 1, mode);
+  }
+});
+
 test('an explicitly selected child acquires a new lease and never moves a retained old intent', async () => {
   const f = fixture(); await ready(f); const intent = await f.api.prepareInvoke({ requestId: id('old-child'), input: { operation: 'notes.create', title: 'A' } });
   f.switch(); const selected = await f.api.selectContext({ requestId: id('selection'), nativeId: 'other-child', generation: 2 });
