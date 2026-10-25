@@ -42,6 +42,8 @@ const paint = (): Promise<void> => new Promise(resolve => requestAnimationFrame(
 const AUTOSIZE_CASE = 'Многострочный черновик читается после восстановления и изменения размера без потери позиции';
 const ARCHIVE_FOCUS_CASE = 'Переходы в архив и обратно сохраняют фокус, поздний ответ не забирает его';
 const MESSAGE_ANCHOR_CASE = 'Точная ссылка открывает сообщение без iframe; последние сообщения сохраняют черновик';
+const WORKSPACE_ADD_CASE = 'Добавить в Моё сохраняет точный вход один раз и не размещает соту при неизвестном результате';
+const WORKSPACE_CHOICE_CASE = 'Другой сохранённый вход требует выбора и заново проверяется перед добавлением';
 const scopedBrowserKeys = new Set<string>(), errors: string[] = [];
 let mounted: { dispose(): void } | null = null, restoreFrames: (() => void) | null = null;
 let generation = 0, running = false, theme: 'light' | 'dark' = 'dark';
@@ -167,7 +169,7 @@ function route(presentation?: AppLaunchPresentation): AppLaunchIntent {
   assert(value, 'fixture route'); return value;
 }
 function applyRoute(value: AppLaunchIntent): void { history.replaceState(null, '', `#${value.route.replace(/^#/, '')}`); }
-function stage(f: Backend, presentation?: AppLaunchPresentation): AppStageHandle {
+function stage(f: Backend, presentation?: AppLaunchPresentation, onPlaceInField?: () => void): AppStageHandle {
   stop(); const token = generation, initial = route(presentation); applyRoute(initial);
   restoreFrames = runtimeFrames();
   scopedBrowserKeys.add(`soty.app-discussion.drafts.v1:${f.accountId}`);
@@ -175,7 +177,7 @@ function stage(f: Backend, presentation?: AppLaunchPresentation): AppStageHandle
   const handle = mountAppStage(host, { api: f.api, accountId: f.accountId,
     app: { appId: APP, name: 'Приложение стенда', status: 'offline', ownerAccountId: f.accountId }, intent: initial,
     isCurrent: () => generation === token, request: parameters => f.launch(parameters),
-    onNavigate: applyRoute, onBack: () => { applyRoute(route()); handle.updateRoute(route()); }, onAccount: async () => {}, onSettings: () => {} });
+    onNavigate: applyRoute, onBack: () => { applyRoute(route()); handle.updateRoute(route()); }, onAccount: async () => {}, onSettings: () => {}, ...(onPlaceInField ? { onPlaceInField } : {}) });
   mounted = handle; return handle;
 }
 function discussion(f: Backend, adapters = persistence(), initialConversationId?: string): AppDiscussionHandle {
@@ -199,6 +201,37 @@ async function archives(): Promise<void> {
 }
 
 const cases: Array<[string, () => Promise<void>]> = [
+  [WORKSPACE_CHOICE_CASE, async () => {
+    stop(); const f = backend(), token = generation;
+    f.saved = { revision: 3, entry: { ...f.entry, path: '/saved-old?view=personal#exact', label: 'Старая закладка', savedRevision: 3, updatedAt: Date.now(), current: { name: 'Приложение стенда', status: 'offline', canManage: true } } };
+    const saved = mountAppSaved(host, { api: f.api, accountId: f.accountId, entry: f.entry, ...persistence(), isCurrent: () => generation === token }); mounted = saved;
+    const decision = (label: string): HTMLButtonElement => { const node = [...document.querySelectorAll<HTMLButtonElement>('dialog[open] button')].find(button => button.textContent?.trim() === label); assert(node, `workspace decision missing: ${label}`); return node; };
+    const keep = saved.ensureSaved(); await until(() => document.querySelector('dialog[open]')?.textContent?.includes('Какой вход добавить'), 'explicit entry decision');
+    decision('С прежним входом').click(); assert(await keep, 'keeping the current saved entry must complete without rewriting');
+    assert(f.saved.revision === 3 && f.saved.entry?.path.startsWith('/saved-old'), 'keep replaced the exact saved reference');
+    const changed = saved.ensureSaved(); await until(() => !!document.querySelector('dialog[open]'), 'second entry decision'); f.saved.revision = 4;
+    decision('С прежним входом').click(); assert(!await changed, 'stale choice was accepted after another window changed the saved head');
+    const unknown = saved.ensureSaved(); await until(() => !!document.querySelector('dialog[open]'), 'replacement decision'); f.loseSave = true;
+    decision('Заменить на открытый вход').click(); assert(!await unknown, 'lost replacement response was treated as confirmed');
+    assert(f.saved.entry?.path === ENTRY.path && f.saved.revision === 5, 'replacement did not retain one durable server effect');
+    assert(key('save').getAttribute('data-state') === 'pending', 'unknown replacement intent was discarded');
+  }],
+  [WORKSPACE_ADD_CASE, async () => {
+    const f = backend(); let placements = 0;
+    const h = stage(f, undefined, () => { assert(f.saved.entry?.path === ENTRY.path && f.saved.entry.domainId === DOMAIN, 'field placement preceded exact saved receipt'); placements++; });
+    await h.ready; await until(() => host.querySelector('[data-stage-control="field"]:not(:disabled)'), 'add command ready');
+    const add = host.querySelector<HTMLButtonElement>('[data-stage-control="field"]')!;
+    add.click(); add.click(); await until(() => placements === 1 && !add.disabled, 'one add completed');
+    assert(f.saved.revision === 1, 'duplicate click created a second saved change');
+    add.click(); await until(() => placements === 2 && !add.disabled, 'existing exact entry reused');
+    assert(f.saved.revision === 1, 'existing exact entry was rewritten');
+    const other = backend(); other.loseSave = true; let unknownPlacements = 0;
+    const lost = stage(other, undefined, () => { unknownPlacements++; }); await lost.ready;
+    const lostAdd = host.querySelector<HTMLButtonElement>('[data-stage-control="field"]')!; lostAdd.click();
+    await until(() => !lostAdd.disabled && host.querySelector('[data-engagement-key="save"]')?.getAttribute('data-state') === 'pending', 'unknown saved result retained');
+    assert(other.saved.revision === 1 && unknownPlacements === 0, 'unknown result caused placement or duplicate effect');
+    output.dataset.workspaceAddMetrics = JSON.stringify({ duplicateClickSavedEffects: f.saved.revision, existingEntryReused: true, unknownSavedEffects: other.saved.revision, unknownPlacementEffects: unknownPlacements });
+  }],
   [MESSAGE_ANCHOR_CASE, async () => {
     const f = backend(); for (let n = 0; n < 45; n++) f.message(`Сообщение по ссылке ${n}`);
     const message = f.messages.get(CURRENT)![12]!, h = stage(f, { panel: 'discussion', conversationId: CURRENT, messageId: message.id });
@@ -538,17 +571,21 @@ const cases: Array<[string, () => Promise<void>]> = [
 async function run(): Promise<void> {
   if (running) return; running = true; output.dataset.testStatus = 'running'; errors.length = 0;
   const requestedCase = new URL(location.href).searchParams.get('case');
-  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : requestedCase === 'message-anchor' ? MESSAGE_ANCHOR_CASE : null;
+  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : requestedCase === 'message-anchor' ? MESSAGE_ANCHOR_CASE : requestedCase === 'workspace-add' ? WORKSPACE_ADD_CASE : requestedCase === 'workspace-choice' ? WORKSPACE_CHOICE_CASE : null;
   const selected = selectedName ? cases.filter(([name]) => name === selectedName) : cases;
   delete output.dataset.autosizeMetrics;
   delete output.dataset.archiveFocusMetrics;
   let passed = 0, failed = 0; completedLines = []; output.textContent = 'Проверяем настоящий DOM с вымышленными ответами…';
+  const failureContexts: Array<Record<string, unknown>> = []; output.dataset.failureContexts = '[]';
   try {
     for (const [name, check] of selected) {
       const startErrors = errors.length; output.dataset.currentTest = name; output.dataset.currentStep = 'начало';
       try { await check(); assert(errors.length === startErrors, `unhandled browser error: ${errors.slice(startErrors).join('; ')}`);
         passed++; completedLines.push(`PASS ${name}`);
-      } catch (reason) { failed++; completedLines.push(`FAIL ${name} — ${reason instanceof Error ? reason.message : String(reason)}`); }
+      } catch (reason) { failed++; completedLines.push(`FAIL ${name} — ${reason instanceof Error ? reason.message : String(reason)}`);
+        failureContexts.push({ name, visibility: document.visibilityState, ui: host.innerText.slice(0, 1200), status: host.querySelector('[data-engagement-key="discussion-status"]')?.textContent ?? null });
+        output.dataset.failureContexts = JSON.stringify(failureContexts);
+      }
       finally { stop(); output.textContent = completedLines.join('\n'); }
     }
     output.dataset.testStatus = failed ? 'fail' : 'pass'; output.textContent = `${failed ? 'FAIL' : 'PASS'} ${passed}/${selected.length} · ошибок ${failed} · фактический viewport ${innerWidth}×${innerHeight}\n${completedLines.join('\n')}`;

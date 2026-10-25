@@ -15,7 +15,7 @@ export interface AppSavedOptions extends EngagementStorageOptions {
   asBookmark?: boolean;
   dialogReturnTarget?: DialogReturnTarget;
 }
-export interface AppSavedHandle { dispose(): void; refresh(): Promise<void>; }
+export interface AppSavedHandle { dispose(): void; refresh(): Promise<void>; ensureSaved(): Promise<boolean>; }
 
 export function engagementError(reason: unknown): string {
   const code = typeof reason === 'string' ? reason : reason && typeof reason === 'object' && 'code' in reason ? String(reason.code) : '';
@@ -70,11 +70,12 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
   control.dataset.engagementKey = 'save'; root.append(control, live); host.replaceChildren(root);
   let snapshot: SavedSnapshot | null = null, loading = false, busy = false, disposed = false, generation = 0, refreshAfterMutation = false;
   let error = '', notice = '', lastPending: SavedPending | null = null, dialog: WorldDialog | null = null;
+  let ensuring: Promise<boolean> | null = null;
   const current = (): boolean => !disposed && options.isCurrent();
   const disabled = (): boolean => busy || loading;
   function closeDialog(): void { const previous = dialog; dialog = null; previous?.close(); }
-  function openDialog(title: string): WorldDialog {
-    closeDialog(); const value = createDialog(title, () => { if (dialog === value) dialog = null; }, options.dialogReturnTarget);
+  function openDialog(title: string, onClose?: () => void): WorldDialog {
+    closeDialog(); const value = createDialog(title, () => { if (dialog === value) dialog = null; onClose?.(); }, options.dialogReturnTarget);
     value.element.classList.add('se-dialog'); dialog = value; return value;
   }
   function render(): void {
@@ -120,6 +121,43 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
     } catch (reason) { if (current()) error = engagementError(reason); }
     finally { if (current()) { busy = false; render(); if (refreshAfterMutation) { refreshAfterMutation = false; void refresh(); } } }
   }
+  function entryPair(previous: AppEntry): HTMLElement {
+    const pair = el('dl', 'se-entry-pair');
+    for (const [label, value] of [['Сохранено', entryLabel(previous)], ['Сейчас открыто', entryLabel(entry)]]) {
+      const row = el('div'); row.append(el('dt', '', label), el('dd', '', value)); pair.append(row);
+    }
+    return pair;
+  }
+  async function saveForWorkspace(): Promise<boolean> {
+    if (!current() || busy) return false;
+    await refresh();
+    if (!current() || busy || error || !snapshot) return false;
+    if (lastPending) { showPending(lastPending); return false; }
+    const captured = snapshot;
+    if (captured.entry && sameAppEntry(captured.entry, entry)) return true;
+    if (!captured.entry) {
+      await mutate({ intent: { entry, saved: true, expectedRevision: captured.revision, currentEntry: null } });
+      return current() && !lastPending && !!snapshot?.entry && sameAppEntry(snapshot.entry, entry);
+    }
+    return new Promise<boolean>(resolve => {
+      let chosen = false;
+      const surface = openDialog('Какой вход добавить в Моё?', () => { if (!chosen) resolve(false); });
+      surface.body.append(el('p', '', 'Для этого приложения уже сохранена другая ссылка. Выберите вход; данные и доступ приложения сохранятся.'), entryPair(captured.entry!));
+      const actions = el('div', 'se-actions');
+      actions.append(button('Отмена', undefined, 'sw-button-quiet', closeDialog), button('С прежним входом', undefined, 'sw-button-quiet', () => {
+        if (!current()) return; chosen = true; closeDialog();
+        void refresh().then(() => resolve(current() && !error && snapshot?.revision === captured.revision && !!snapshot.entry && sameAppEntry(snapshot.entry, captured.entry!)));
+      }), button('Заменить на открытый вход', undefined, 'sw-button-primary', () => {
+        if (!current()) return; chosen = true; closeDialog();
+        void mutate({ intent: { entry, saved: true, expectedRevision: captured.revision, currentEntry: captured.entry, replace: true } })
+          .then(() => resolve(current() && !lastPending && !!snapshot?.entry && sameAppEntry(snapshot.entry, entry)));
+      }));
+      surface.body.append(actions);
+    });
+  }
+  function ensureSaved(): Promise<boolean> {
+    ensuring ??= saveForWorkspace().finally(() => { ensuring = null; }); return ensuring;
+  }
   function showPending(pending: SavedPending): void {
     const surface = openDialog('Результат не подтверждён');
     surface.body.append(el('p', '', pending.args.saved ? 'Проверим прежний запрос на сохранение.' : 'Проверим прежний запрос на удаление из сохранённых.'),
@@ -150,10 +188,7 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
     const captured = snapshot;
     if (captured.entry && !sameAppEntry(captured.entry, entry)) {
       const surface = openDialog('Сохранён другой вход');
-      const pair = el('dl', 'se-entry-pair');
-      for (const [label, value] of [['Сохранено', entryLabel(captured.entry)], ['Сейчас открыто', entryLabel(entry)]]) {
-        const row = el('div'); row.append(el('dt', '', label), el('dd', '', value)); pair.append(row);
-      }
+      const pair = entryPair(captured.entry);
       const no = button('Оставить прежний', undefined, 'sw-button-quiet', closeDialog);
       const replace = button('Заменить вход', undefined, 'sw-button-primary', () => {
         closeDialog(); void mutate({ intent: { entry, saved: true, expectedRevision: captured.revision, currentEntry: captured.entry, replace: true } });
@@ -168,5 +203,5 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
   const unsubscribe = state.subscribe(render), view = host.ownerDocument.defaultView;
   const onStorage = (): void => { if (!current()) return; try { state.refreshLocal(); render(); } catch (reason) { error = engagementError(reason); render(); } };
   view?.addEventListener('storage', onStorage); render(); void refresh();
-  return { refresh, dispose() { if (disposed) return; disposed = true; generation++; unsubscribe(); state.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove(); } };
+  return { refresh, ensureSaved, dispose() { if (disposed) return; disposed = true; generation++; unsubscribe(); state.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove(); } };
 }

@@ -156,15 +156,23 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
-  const field = iconButton('Разместить на поле', 'plus', () => {
+  const field = iconButton('Добавить в Моё', 'plus', () => {
+    if (!current() || field.disabled || !saved) return;
+    field.disabled = true;
     const returnToMore = field.parentElement === moreBody;
     closeMore(returnToMore);
-    void fullscreen.leave().then(() => {
+    void fullscreen.leave().then(async () => {
       if (!current()) return;
+      if (!await saved?.ensureSaved() || !current()) {
+        if (current()) showMessage('Добавление не завершено. Проверьте сохранённый вход и повторите.');
+        return;
+      }
       if (returnToMore) more.focus();
+      showMessage('Вход сохранён в аккаунте. Размещаем соту на вашем поле.');
       options.onPlaceInField?.(app);
     })
-      .catch(() => showMessage('Не удалось открыть поле. Попробуйте ещё раз.'));
+      .catch(() => { if (current()) showMessage('Не удалось подтвердить добавление. Проверьте сохранённые и повторите.'); })
+      .finally(() => { if (current()) field.disabled = false; });
   });
   field.dataset.stageControl = 'field'; field.hidden = !options.onPlaceInField; field.disabled = true;
   const widget = button('Живое окно', 'pin', 'sw-button-quiet', () => {
