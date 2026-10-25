@@ -78,6 +78,8 @@ Allowance: `kind:'included',unit:'microrubles',grantedMicrorubles,availableMicro
 
 Create input: `{name,limits?,allowedModels?,expiresAt?,autoFallback?}`. Update input: `{keyId,name?,limits?,allowedModels?,expiresAt?,autoFallback?,status?,expectedPolicyRevision?}`; partial fields/limits объединяются с текущей row. Optional CAS возвращает `409 policy_revision_conflict` при устаревшей revision. Rotate/revoke принимают только `{keyId}`. Internal default key недоступен через эти endpoints.
 
+Новый customer key Сот наследует конечный snapshot лимитов аккаунта, включая output для опубликованного клиента. Явные create limits могут только сузить snapshot; `null` наследует account cap. Anonymous defaults сохраняются. Derived defaults не входят в fingerprint исходного create body: повтор после изменения account policy возвращает прежний ключ без второго эффекта.
+
 Новые Soty key policies используют до 100 ASCII model IDs длиной до 240, в том же формате, что provider catalog. Legacy anonymous policy inputs не меняются. Keys list возвращает до 200 metadata records, действующие ключи перед последними отозванными; максимум 100 неотозванных ключей всегда остаются доступными управлению. Root принимает эту metadata response до 8 MiB.
 
 `requestId` mutation используется как бизнес idempotency key. Повтор с новым transport nonce и тем же body возвращает безопасный прежний результат; изменённый body — `409`. Create/rotate выдают `secret` один раз, а replay — `secret:null`. Ключи хранятся только как HMAC fingerprints. Rotation сохраняет key identity и расход, старые credential versions действуют до 24 часов. Revoke немедленно отзывает все версии. Replayed mutation проверяется до CAS/key-state, поэтому потерянный успех не создаёт второй эффект.

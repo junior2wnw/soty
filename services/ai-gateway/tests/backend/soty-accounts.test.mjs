@@ -10,7 +10,8 @@ import { createApp } from '../../apps/gateway/src/app.mjs';
 import { createConnector } from '../../packages/connector/index.mjs';
 import { createSotyBridge, validateSotyBridgeConfig } from '../../apps/gateway/src/soty-bridge.mjs';
 import { createBridgeSigner, createBridgeVerifier } from '../../packages/soty-bridge/index.mjs';
-import { DEFAULT_SOTY_ALLOWANCE } from '../../apps/gateway/src/soty-policy.mjs';
+import { DEFAULT_SOTY_ALLOWANCE, sotyAllowance } from '../../apps/gateway/src/soty-policy.mjs';
+import { bodyDigest } from '../../packages/domain/index.mjs';
 
 const database = process.env.TEST_DATABASE_URL;
 const MODEL = 'zai-org/GLM-5.3-Flash';
@@ -34,6 +35,7 @@ test('signed account AI uses permanent isolated identities, one ledger and final
   const rootNonces = new Set(); const authorities = new Map(); const callbacks = []; const received = [];
   let app; let gateRelease; let providerMode = 'normal'; let callbackMode = 'normal';
   const provider = createServer(async (request, response) => {
+    if (request.url === '/mini/v1/models') { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: [{ id: 'MiniMaxAI/MiniMax-M2.7' }] })); return; }
     if (request.url === '/v1/models') { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ data: [{ id: MODEL }] })); return; }
     let raw = ''; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw); received.push(body);
@@ -327,6 +329,41 @@ test('signed account AI uses permanent isolated identities, one ledger and final
       const allowance = (await status('active-abort')).json().allowance; assert.equal(allowance.heldMicrorubles, '0'); assert.ok(BigInt(allowance.pendingMicrorubles) > 0n);
       const global = (await pool.query('SELECT spent_urub,held_urub FROM service_daily_budget')).rows;
       assert.ok(global.every(row => BigInt(row.spent_urub) + BigInt(row.held_urub) <= store.dailyServiceBudget));
+    });
+
+    await t.test('new Soty customer key inherits trusted account limits and accepts the published MiniMax client without manual limits', async () => {
+      const mini = 'MiniMaxAI/MiniMax-M2.7';
+      const includedAllowance = sotyAllowance({ limits: { maxRequestMicrorubles: '5000000', maxOutputTokens: 32768 } });
+      const configured = new Store(pool, { pepper: store.pepper, includedAllowance });
+      const account = await configured.ensureSotyAccount({ iss: ISSUER, accountId: 'inherited-key-limits' });
+      const operationId = randomUUID(); const input = Object.freeze({ name: 'Published client' });
+      const created = await configured.createKeyOperation(account.tenant_id, input, operationId);
+      assert.deepEqual(created.key.limits, includedAllowance.limits); assert.deepEqual(input, { name: 'Published client' });
+      const operation = (await pool.query("SELECT body_digest FROM idempotency_operations WHERE tenant_id=$1 AND operation='key.create'", [account.tenant_id])).rows[0];
+      assert.equal(operation.body_digest, bodyDigest(input, store.pepper));
+      const miniConnector = createConnector({ providers: [{ id: 'mini', baseUrl: `http://127.0.0.1:${provider.address().port}/mini/v1`, apiKey: 'synthetic-mini-fixture' }],
+        allowLocalHttp: true, liveEnabled: true, retail: { input: '23000000', output: '23000000' }, store: configured.connectorHooks(), onAttempt: event => configured.recordAttempt(event) });
+      let miniApp;
+      try {
+        await miniConnector.refreshCatalog(); miniApp = await createApp({ store: configured, connector: miniConnector, baseUrl: 'https://synthetic-mini.invalid', installEnabled: false });
+        const origin = await miniApp.listen({ host: '127.0.0.1', port: 0 });
+        const request = secret => fetch(`${origin}/v1/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: mini, messages: [{ role: 'user', content: '' }], max_tokens: 32768, stream: false }) });
+        const first = await request(created.secret); assert.equal(first.status, 200); assert.equal((await first.json()).model, mini);
+        assert.equal(received.at(-1).max_tokens, 32768);
+        const narrowed = await configured.createKeyOperation(account.tenant_id, { name: 'Narrower', limits: { maxOutputTokens: 4096, dailyMicrorubles: '1000000' } }, randomUUID());
+        assert.equal(narrowed.key.limits.maxOutputTokens, 4096);
+        const before = received.length; const denied = await request(narrowed.secret); assert.equal(denied.status, 429); assert.equal((await denied.json()).error.code, 'output_token_limit'); assert.equal(received.length, before);
+        await assert.rejects(configured.createKeyOperation(account.tenant_id, { name: 'Too wide', limits: { maxOutputTokens: 65536 } }, randomUUID()), { code: 'key_limit_exceeds_account' });
+        const inherit = await configured.createKeyOperation(account.tenant_id, { name: 'Null inherits', limits: { maxOutputTokens: null } }, randomUUID()); assert.equal(inherit.key.limits.maxOutputTokens, 32768);
+        const anonymous = await configured.createSession(); const legacyDefault = await configured.createKeyOperation(anonymous.tenantId, { name: 'Anonymous unchanged' }, randomUUID()); assert.equal(legacyDefault.key.limits.maxOutputTokens, 2048);
+        await pool.query("UPDATE soty_accounts SET limits=jsonb_set(limits,'{maxOutputTokens}','8192') WHERE tenant_id=$1", [account.tenant_id]);
+        const replayed = await configured.createKeyOperation(account.tenant_id, input, operationId);
+        assert.equal(replayed.secret, null); assert.equal(replayed.key.id, created.key.id); assert.equal(replayed.key.limits.maxOutputTokens, 32768);
+        const fresh = await configured.createKeyOperation(account.tenant_id, { name: 'New revision' }, randomUUID()); assert.equal(fresh.key.limits.maxOutputTokens, 8192);
+        const blockedByAccount = await request(created.secret); assert.equal(blockedByAccount.status, 429); assert.equal((await blockedByAccount.json()).error.code, 'account_output_token_limit'); assert.equal(received.length, before);
+        assert.equal((await pool.query("SELECT count(*) FROM api_keys WHERE tenant_id=$1 AND name='Published client'", [account.tenant_id])).rows[0].count, '1');
+        assert.equal((await pool.query("SELECT count(*) FROM ledger_transactions WHERE tenant_id=$1 AND operation='sponsor_grant'", [account.tenant_id])).rows[0].count, '1');
+      } finally { await miniApp?.close(); await miniConnector.stop(); }
     });
   } finally {
     gateRelease?.();

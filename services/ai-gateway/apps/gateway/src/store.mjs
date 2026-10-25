@@ -189,7 +189,11 @@ export class Store {
     const account = await this.assertSotyActive(client, tenantId);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(field => !['name', 'limits', 'allowedModels', 'expiresAt', 'autoFallback'].includes(field))) throw new DomainError('invalid_key_create', 'Неизвестные поля ключа.');
     if (input.autoFallback !== undefined && typeof input.autoFallback !== 'boolean') throw new DomainError('invalid_policy', 'autoFallback должен быть true или false.');
-    const name = validateName(input.name); const limits = normalizeLimits(input.limits);
+    const name = validateName(input.name); const limits = normalizeLimits(input.limits, account?.limits ?? DEFAULT_LIMITS);
+    if (account) for (const [field, cap] of Object.entries(account.limits)) {
+      if (limits[field] === null) limits[field] = cap;
+      if (cap !== null && BigInt(limits[field]) > BigInt(cap)) throw new DomainError('key_limit_exceeds_account', 'Лимит ключа не может превышать лимит аккаунта.');
+    }
     const allowedModels = normalizeModels(input.allowedModels);
     if (account) validateSotyModels(allowedModels);
     const expiresAt = pendingActivation ? new Date(this.clock().valueOf() + 600_000).toISOString() : validateExpiry(input.expiresAt);
