@@ -21,7 +21,7 @@ function bindings(values, field) {
   for (const value of values) {
     exact(value, [field, 'accountId', 'models']);
     need(typeof value[field] === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value[field]) && !result.has(value[field]));
-    need(typeof value.accountId === 'string' && /^acct_[A-Za-z0-9_-]{32}$/u.test(value.accountId));
+    need(typeof value.accountId === 'string' && /^(?:acct|svc)_[A-Za-z0-9_-]{32}$/u.test(value.accountId));
     need(Array.isArray(value.models) && value.models.length > 0 && value.models.length <= 32
       && value.models.every(model => typeof model === 'string' && /^[A-Za-z0-9_./:-]{1,160}$/u.test(model))
       && new Set(value.models).size === value.models.length);
@@ -49,7 +49,9 @@ export function captureAccountAiConfiguration(value, { clock = Date.now, allowLo
     need(privateKey.asymmetricKeyType === 'ed25519' && publicKey.asymmetricKeyType === 'ed25519');
     const applicationFor = bindings(value.applications ?? [], 'appId'), legacyConnectorFor = bindings(value.legacyConnectors ?? [], 'connectorId');
     const issuer = value.issuer, gatewayOrigin = value.gatewayOrigin, kid = value.signing.kid, gatewayKid = value.gatewaySigner.kid;
+    const sponsorIds = Object.freeze([...new Set([...(value.applications ?? []), ...(value.legacyConnectors ?? [])].map(binding => binding.accountId).filter(id => id.startsWith('svc_')))]);
     const config = Object.freeze({ issuer, gatewayOrigin, applicationFor, legacyConnectorFor,
+      sponsorAccountIds: () => sponsorIds, isSponsorAccount: id => sponsorIds.includes(id),
       signer: () => createBridgeSigner({ issuer, audience: GATEWAY_AI_AUDIENCE, kid, privateKey, clock }),
       verifier: claimNonce => createBridgeVerifier({ audience: ROOT_AI_AUDIENCE, issuers: [{ issuer: GATEWAY_AI_ISSUER, kid: gatewayKid, publicKey }], claimNonce, clock }) });
     installed.add(config); return config;

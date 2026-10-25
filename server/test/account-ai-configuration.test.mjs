@@ -47,6 +47,17 @@ test('sponsor bindings are immutable, model bounded and never account payload au
   assert.throws(() => captureAccountAiConfiguration({ ...fixture(), signing: { kid: 'ec', privateKey: ec.privateKey.export({ format: 'pem', type: 'pkcs8' }) } }), invalid);
 });
 
+test('service accounts occupy a distinct namespace and exist only in explicit installed sponsor bindings', () => {
+  const value = fixture(), sponsorId = 'svc_' + 'S'.repeat(32);
+  value.applications = [{ appId: 'service-app', accountId: sponsorId, models: ['zai-org/GLM-5.3-Flash'] }];
+  const configuration = captureAccountAiConfiguration(value);
+  assert.deepEqual(configuration.sponsorAccountIds(), [sponsorId]); assert.equal(configuration.isSponsorAccount(sponsorId), true);
+  assert.equal(configuration.isSponsorAccount('svc_' + 'F'.repeat(32)), false);
+  value.applications[0].accountId = 'svc_' + 'F'.repeat(32);
+  assert.equal(configuration.applicationFor('service-app').accountId, sponsorId);
+  assert.throws(() => configuration.sponsorAccountIds().push('svc_' + 'F'.repeat(32)));
+});
+
 test('private file loader bounds bytes and shape without exposing invalid contents', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'soty-account-ai-config-')), filename = join(directory, 'private.json');
   t.after(async () => { const target = await realpath(directory); assert.equal(dirname(target), await realpath(tmpdir())); assert.match(target, /soty-account-ai-config-/u); await rm(target, { recursive: true, force: true }); });
