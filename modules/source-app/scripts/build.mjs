@@ -39,9 +39,15 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
     const target=join(outdir,'templates/reading-list',name);await mkdir(dirname(target),{recursive:true});await writeFile(target,await bytes(path));
     outputs.push({path:'templates/reading-list/'+name,sha256:sha(await readFile(target))});
   }
+  await mkdir(join(outdir, 'python'), { recursive: true });
+  for (const name of ['soty_native_entry.py', 'requirements.txt']) {
+    const path = join(packageRoot, 'python', name); inputs.add(path);
+    await writeFile(join(outdir, 'python', name), await bytes(path));
+  }
   const sourceFiles = [];
   for (const path of [...inputs].sort()) sourceFiles.push({ path: sourcePath(path), sha256: sha(await bytes(path)) });
-  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js','assets/feedback-inbox.js']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
+  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js','assets/feedback-inbox.js',
+    'python/soty_native_entry.py', 'python/requirements.txt']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
   const manifest = { schema: 'soty.source-app.build.v1', packageVersion: '0.1.0-preview.1', esbuild: esbuild.version,
     protocolDependency: { name: 'openid-client', version: '6.8.4' }, ...(sourceCommit?{sourceCommit}:{}),sourceFiles, outputs };
   await writeFile(join(outdir, 'provenance.json'), JSON.stringify(manifest, null, 2) + '\n'); return manifest;

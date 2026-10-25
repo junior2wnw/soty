@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createAppsService } from '../server/index.mjs';
@@ -478,4 +478,26 @@ test('a Root wall clock 8 seconds ahead cannot lengthen or prematurely expire a 
   await new Promise(done => setTimeout(done, Math.max(1, 1010 - (performance.now() - started))));
   assert.throws(() => guard.assertCurrent(lease), { code: 'native_entry_lease_closed' });
 });
+
+test('optional Python SDK speaks the same actual Root policy wire and closes its active stream after explicit removal',
+  { skip: !process.env.SOTY_NATIVE_TEST_PYTHON, timeout: 15000 }, async t => {
+    const f = fixture(t), live = await liveRoot(t, f), prepared = await live.prepare(); live.promote(f.intent(prepared)); await live.ready(); await turn();
+    const python = spawn(process.env.SOTY_NATIVE_TEST_PYTHON, [fileURLToPath(new URL('../../source-app/python/root_native_fixture.py', import.meta.url))],
+      { windowsHide: true, stdio: ['pipe','pipe','pipe'] });
+    const rows = []; let pending = '', stderr = '';
+    python.stdout.on('data', chunk => { pending += chunk; let index; while ((index = pending.indexOf('\n')) >= 0) {
+      rows.push(JSON.parse(pending.slice(0, index))); pending = pending.slice(index + 1); } });
+    python.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2048); });
+    const exited = new Promise(done => python.once('exit', code => done(code)));
+    f.cleanup(async () => { if (python.exitCode === null) python.kill(); await exited; });
+    python.stdin.end(JSON.stringify({ rootCheckUrl: 'http://127.0.0.1:' + live.server.address().port + '/_soty/ingress-check',
+      appId: f.appId, origin: f.profile.nativeOrigin, primaryTargetDigest: f.target.digest,
+      nativeTargetDigest: prepared.nativeEntry.target.digest }) + '\n');
+    await until(() => rows.find(value => value.type === 'ready') || rows.find(value => value.type === 'error'));
+    assert.equal(rows[0].type, 'ready', stderr); assert.equal(rows[0].policyEpoch, 2);
+    const next = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
+    live.promote({ ...f.intent({ ...next, nativeEntry: prepared.nativeEntry }, 'fixture_python_unpair'), nativeExposureAck: undefined });
+    assert.equal(await exited, 0, stderr); assert.equal(rows.at(-1).type, 'finished');
+    assert.equal(rows.at(-1).closed, true); assert.ok(rows.some(value => value.type === 'closed'));
+  });
 
