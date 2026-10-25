@@ -15,7 +15,7 @@
     "connect:update": "node modules/connect/update/cli.mjs",
     "connect:example": "node modules/connect/examples/server.mjs",
     "dev": "node scripts/dev.mjs",
-    "prebuild": "node scripts/build-agent-release.mjs",
+    "prebuild": "node scripts/sync-public-deploy-skill.mjs --check && node scripts/build-agent-release.mjs",
     "build": "vite build",
     "preview": "node server/index.js",
     "start": "node server/index.js",

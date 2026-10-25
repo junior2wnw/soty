@@ -5,15 +5,25 @@ import { isDeepStrictEqual } from 'node:util';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+export const PUBLIC_SKILL_FILES = Object.freeze([
+  'skills/index.json', 'skills/index.html',
+  'skills/soty-cover-art/SKILL.md', 'skills/soty-cover-art/references/runtime.md', 'skills/soty-cover-art/references/operator.md',
+  'skills/soty-app-deploy/SKILL.md',
+  'skills/soty-app-deploy/references/authentication.md', 'skills/soty-app-deploy/references/capacity.md',
+  'skills/soty-app-deploy/references/contract.md', 'skills/soty-app-deploy/references/existing-data.md',
+  'skills/soty-app-deploy/references/native-bindings.md', 'skills/soty-app-deploy/references/operations.md',
+  'skills/soty-app-deploy/references/recovery.md', 'skills/soty-app-deploy/references/standard-modules.md',
+  'skills/soty-app-deploy/references/troubleshooting.md',
+]);
 const fixed = new Set(['index.html', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'capability-docs-update.js',
   'app-art/manifest.json', 'app-art/field-profile.json', 'fonts/manrope.woff2', 'fonts/manrope-OFL.txt',
   'icons/soty.svg', 'icons/soty-180.png', 'icons/soty-192.png', 'icons/soty-512.png',
-  'skills/index.json', 'skills/index.html', 'skills/soty-cover-art/SKILL.md',
-  'skills/soty-cover-art/references/runtime.md', 'skills/soty-cover-art/references/operator.md']);
+  'help/interaction.html', ...PUBLIC_SKILL_FILES]);
 const hashed = name => /^assets\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|jpe?g|webp|svg|avif)$/u.test(name)
   || /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(name);
 const publicDirectory = name => ['assets', 'app-art', 'fonts', 'icons'].includes(name)
-  || ['skills', 'skills/soty-cover-art', 'skills/soty-cover-art/references'].includes(name)
+  || ['help', 'skills', 'skills/soty-cover-art', 'skills/soty-cover-art/references',
+    'skills/soty-app-deploy', 'skills/soty-app-deploy/references'].includes(name)
   || /^app-art\/[a-z0-9-]+(?:\/v\d{3,}-[a-f0-9]{12})?$/u.test(name);
 const securityHeaders = ['Content-Security-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
   'Origin-Agent-Cluster', 'Permissions-Policy', 'Referrer-Policy', 'Strict-Transport-Security', 'X-Content-Type-Options', 'X-Frame-Options'];
@@ -67,6 +77,9 @@ export function createUiRelease(dist, retained = []) {
   for (const icon of JSON.parse(files.get('manifest.webmanifest').bytes).icons ?? []) requireUrl(icon.src);
   if (files.has('skills/index.json')) for (const skill of JSON.parse(files.get('skills/index.json').bytes).skills ?? []) {
     requireUrl(skill.entrypoint); (skill.references ?? []).forEach(requireUrl);
+  }
+  for (const document of ['skills/index.html', 'help/interaction.html']) if (files.has(document)) {
+    for (const match of files.get(document).bytes.toString().matchAll(/(?:src|href)="(\/[^"#?]*)"/gu)) requireUrl(match[1]);
   }
   const manifest = [...files].map(([name, file]) => ({ name, sha256: file.sha256, bytes: file.bytes.length, immutable: file.immutable })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   return { id: hash(JSON.stringify(manifest)), manifest, files };

@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createUiRelease, writeUiRelease, createCaddyOverlay, verifyStructuralDelta } from './release.mjs';
+import { createUiRelease, writeUiRelease, createCaddyOverlay, verifyStructuralDelta, PUBLIC_SKILL_FILES } from './release.mjs';
 import { fixtureDist } from './test-support.mjs';
 
 function fixture(t) {
-  const root = mkdtempSync(path.join(tmpdir(), 'soty-ui-unit-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = path.resolve(tmpdir()), root = mkdtempSync(path.join(parent, 'soty-ui-unit-'));
+  t.after(() => { assert.equal(path.dirname(root), parent); assert.match(path.basename(root), /^soty-ui-unit-/u); rmSync(root, { recursive: true, force: true }); });
   return { root, dist: fixtureDist(path.join(root, 'dist')) };
 }
 test('inventory is deterministic and excludes secrets, source maps, agents and connected application entries', t => {
@@ -45,6 +45,48 @@ test('only the public cover skill package is delivered and its documents update 
   rmSync(path.join(f.dist, 'skills/soty-cover-art/references/runtime.md'));
   assert.throws(() => createUiRelease(f.dist), {code:'ui_reference_not_in_release'});
 });
+function skillDist(t) {
+  const f = fixture(t), names = [...PUBLIC_SKILL_FILES, 'help/interaction.html'];
+  fixtureDist(f.dist, Object.fromEntries(names.map(name => [name, readFileSync(new URL('../../public/' + name, import.meta.url), 'utf8')])));
+  return { ...f, names };
+}
+
+test('complete deploy and cover skill packages plus user help publish byte-exact with finite neighbouring files closed', t => {
+  const f = skillDist(t), forbidden = ['skills/soty-app-deploy/agents/openai.yaml', 'skills/soty-app-deploy/references/private.md',
+    'skills/soty-app-deploy/references/.env', 'skills/soty-app-deploy/references/nested/key.json',
+    'skills/soty-other/SKILL.md', 'help/private.json'];
+  fixtureDist(f.dist, Object.fromEntries(forbidden.map(name => [name, 'synthetic-private-value'])));
+  const release = createUiRelease(f.dist);
+  for (const name of f.names) {
+    assert.equal(release.files.get(name).immutable, false);
+    assert.deepEqual(release.files.get(name).bytes, readFileSync(path.join(f.dist, name)));
+  }
+  for (const name of forbidden) assert.equal(release.files.has(name), false);
+  const staged = path.join(f.root, 'staged'); writeUiRelease(release, staged);
+  for (const name of f.names) assert.deepEqual(readFileSync(path.join(staged, name)), readFileSync(path.join(f.dist, name)));
+  for (const name of forbidden) assert.equal(release.manifest.some(file => file.name === name), false);
+});
+
+test('missing deploy reference, forbidden catalogue reference or broken user-guide link cannot publish', t => {
+  const missing = skillDist(t); rmSync(path.join(missing.dist, 'skills/soty-app-deploy/references/authentication.md'));
+  assert.throws(() => createUiRelease(missing.dist), { code: 'ui_reference_not_in_release' });
+  const forbidden = skillDist(t), index = JSON.parse(readFileSync(path.join(forbidden.dist, 'skills/index.json')));
+  index.skills.find(skill => skill.name === 'soty-app-deploy').references.push('/skills/soty-app-deploy/references/private.md');
+  fixtureDist(forbidden.dist, { 'skills/soty-app-deploy/references/private.md': 'synthetic-private-value' });
+  writeFileSync(path.join(forbidden.dist, 'skills/index.json'), JSON.stringify(index));
+  assert.throws(() => createUiRelease(forbidden.dist), { code: 'ui_reference_not_in_release' });
+  const help = skillDist(t); writeFileSync(path.join(help.dist, 'help/interaction.html'), '<a href="/help/private.json">Unpublished</a>');
+  assert.throws(() => createUiRelease(help.dist), { code: 'ui_reference_not_in_release' });
+});
+
+test('retained immutable assets cannot restore an obsolete deploy instruction over the current document', t => {
+  const f = skillDist(t), name = 'skills/soty-app-deploy/SKILL.md';
+  const old = fixtureDist(path.join(f.root, 'old'), { [name]: 'old instruction', 'assets/retained-12345678.js': 'retained import' });
+  const release = createUiRelease(f.dist, [old]);
+  assert.deepEqual(release.files.get(name).bytes, readFileSync(path.join(f.dist, name)));
+  assert.equal(release.files.get('assets/retained-12345678.js').immutable, true);
+});
+
 test('a missing worker, HTML or manifest dependency cannot publish an incomplete shell', t => {
   for (const [name, text] of [['sw.js', 'const buildAssets = ["/agent/install.js"];\nconst classicAssets = [];\nconst shell = ["/"];'],
     ['index.html', '<script src="/assets/missing-12345678.js"></script>'], ['manifest.webmanifest', '{"icons":[{"src":"/icons/missing.png"}]}']]) {

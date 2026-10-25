@@ -19,7 +19,7 @@ verifyStructuralDelta(overlay.config, independentlyAdaptedCandidate);
 
 `createUiRelease` возвращает `id`, `manifest` и `files: Map` с байтами. `id` — SHA256 точного отсортированного inventory. `writeUiRelease` создаёт только новый каталог; существующий каталог, symlink и изменившиеся байты не принимаются. Частичный staging после ошибки не публикуется.
 
-Допущены только корневые файлы оболочки, известные иконки/шрифты, hashed assets, публичные manifest/изображения обложек и точный пакет `/skills/index.json`, `/skills/index.html`, `/skills/soty-cover-art/SKILL.md`, его `references/runtime.md` и `references/operator.md`. Соседние skills и лишние файлы пакета исключены. Документы skill обновляются с UI и не получают immutable cache. `.env`, source maps, `/agent`, HIVE/другие app entrypoints и прочие файлы не входят в release. Проверяются ссылки index, manifest и все три массива precache worker. Прежние releases добавляют только immutable URLs. Один immutable URL с разными байтами останавливает сборку; обычные `index.html`/worker/manifest меняются вместе с выпуском.
+Допущены только корневые файлы оболочки, известные иконки/шрифты, hashed assets, публичные manifest/изображения обложек, `/help/interaction.html` и конечный `PUBLIC_SKILL_FILES` из `deploy/ui/release.mjs`: каталог `/skills/index.json/html`, пакет `soty-cover-art` и пакет `soty-app-deploy` с перечисленными references. Соседние skills и лишние файлы пакета исключены. Документы skill обновляются с UI и не получают immutable cache. `.env`, source maps, `/agent`, HIVE/другие app entrypoints и прочие файлы не входят в release. Проверяются ссылки index, manifest и все три массива precache worker. Прежние releases добавляют только immutable URLs. Один immutable URL с разными байтами останавливает сборку; обычные `index.html`/worker/manifest меняются вместе с выпуском.
 
 Продуктивный каталог должен принадлежать установщику и быть недоступным для записи runtime/user, без symlink в любом компоненте пути. Генератор проверяет буквальный POSIX-путь, оканчивающийся точным release ID; реальную файловую систему и права перед применением проверяет установщик. Он копирует только этот inventory и повторно сверяет байты.
 
@@ -53,3 +53,10 @@ SOTY_UI_CADDY_BINARY=/qualified/caddy node --test deploy/ui/release-caddy.accept
 После установки: публичный root+все worker assets, прежние статусы/headers, старая вкладка с lazy import, установленная PWA, сохранение профиля и черновика, безопасное обновление и откат. Доступность API и локальные тесты не заменяют эти проверки.
 
 Основания: [Caddy response interception](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#intercepting-responses), [native path/method/query expressions](https://caddyserver.com/docs/caddyfile/matchers#expression), [file_server](https://caddyserver.com/docs/caddyfile/directives/file_server), [reload/signals](https://caddyserver.com/docs/command-line#signals).
+
+
+## Публичная инструкция размещения
+
+Канонический источник — `skills/soty-app-deploy/`. Редактировать public-копии вручную не нужно: `node scripts/sync-public-deploy-skill.mjs` копирует только десять перечисленных файлов в `public/skills/soty-app-deploy/`; `--check` сравнивает точные bytes и проверяет замыкание относительных ссылок. Обычный `prebuild` и packaging tests требуют проверки синхронизации. Приватные configs, operator state, `agents/` и новые соседние файлы автоматически не публикуются. Новый reference требует явного изменения конечного списка и проверки.
+
+Каталог `/skills/index.json` обнаруживает оба пакета; HTML-каталог содержит ссылки для человека. `/help/interaction.html` — пользовательская справка по рабочим назначениям, без runtime API или выдачи прав. Ссылка на документ не означает включённый Source adapter, issuer, MCP или grant. Перед новым UI-выпуском проверять права→вызов→persist→reload, актуальные Source/client capabilities и public byte readback; один packaging PASS не квалифицирует подключение.

@@ -65,9 +65,14 @@ Origin приложения; чужой и отсутствующий Origin о�
    Финальное active/disk сравнение делать с реальным serving path после записи;
    не игнорировать произвольные различия и не выдавать filename-only delta за
    доказательство неверного применённого routing.
-5. Для самой оболочки — полный pinned Docker build и deploy/connector/cli.mjs
-   prepare/promote, текущие mounts/config fingerprint, drain и один writer.
-   Старый serving image сохраняется stopped. Recovery не штатный обход.
+5. Только UI/публичные документы оболочки — существующий versioned publisher
+   `deploy/ui` с конечным inventory и полным byte readback. UI и backend pins
+   различаются; обложка или инструкция не требуют нового backend/data writer.
+   При доступном checkout см. `docs/deployment/ui-release.md`.
+   Изменение backend/identity/storage — полный pinned Docker build и
+   deploy/connector/cli.mjs prepare/promote, текущие mounts/config fingerprint,
+   drain и один writer. Старый serving image сохраняется stopped.
+   Recovery не штатный обход.
 6. Публичные DNS/TLS/HTTP проверки → реальные браузер/доступ/чтение/запись →
    data equality и отчёт. Если UI остался старым из-за PWA, применить предложенное
    обновление при сохранённых черновиках; не удалять профиль/browser storage.
