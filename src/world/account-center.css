@@ -19,5 +19,5 @@
   .sw-account-center { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .sw-account-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .sw-account-navigation .sw-account-section { padding: 10px; font-size: 13px; }
-  .sw-account-section:last-child { grid-column: 1 / -1; }
+  .sw-account-section:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
