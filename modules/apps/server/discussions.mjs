@@ -390,25 +390,30 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
       // This existing (author,request_key) index finds only this actor's actual
       // participation, including old discussions created before the inbox UI.
       for (const row of db.prepare('SELECT app_id,max(created_at) AS at FROM app_discussion_messages WHERE author_account_id=? GROUP BY app_id').all(actor.accountId)) add({ appId: row.app_id }, 3, row.at, true);
-      for (const value of candidates.values()) {
-        const latest = db.prepare('SELECT m.created_at FROM app_discussion_heads h JOIN app_discussion_messages m ON m.conversation_id=h.current_id WHERE h.app_id=? ORDER BY m.seq DESC LIMIT 1').get(value.appId);
-        value.at = Math.max(value.at, latest?.created_at ?? 0);
-        value.hints.sort((a, b) => a.priority - b.priority);
-        value.hints.push({ entry: { appId: value.appId }, priority: 4 });
-      }
     }
-    const remaining = [...candidates.values()].filter(value => value.at <= state.upper && (state.beforeAt === null
+    // Authority and the projected visible activity must precede pagination.
+    // A revoked Saved/recent entry must influence neither a page boundary nor
+    // the existence of a continuation, even when its private source is active.
+    const visible = [];
+    for (const value of candidates.values()) {
+      if (included.has(value.appId)) continue;
+      value.hints.sort((a, b) => a.priority - b.priority);
+      value.hints.push({ entry: { appId: value.appId }, priority: 4 });
+      let row = null;
+      for (const hint of value.hints) { row = project(hint.entry, 'known', value.visited); if (row) break; }
+      if (row) visible.push({ appId: value.appId, at: Math.max(value.at, row.lastMessage?.createdAt ?? 0), row });
+    }
+    const remaining = visible.filter(value => value.at <= state.upper && (state.beforeAt === null
       || value.at < state.beforeAt || value.at === state.beforeAt && value.appId > state.beforeId))
       .sort((a, b) => b.at - a.at || a.appId.localeCompare(b.appId));
     let before = { ...state }, index = 0;
     for (; index < remaining.length; index++) {
       const value = remaining[index];
       if (discussions.length >= input.limit) break;
-      let row = null;
-      if (!included.has(value.appId)) for (const hint of value.hints) { row = project(hint.entry, 'known', value.visited); if (row) break; }
-      if (row && bytes({ discussions: [...discussions, row] }) > RESPONSE_BYTES - 8192) break;
+      const row = value.row;
+      if (bytes({ discussions: [...discussions, row] }) > RESPONSE_BYTES - 8192) break;
       before = { upper: state.upper, beforeAt: value.at, beforeId: value.appId };
-      if (row) { discussions.push(row); included.add(row.appId); }
+      discussions.push(row); included.add(row.appId);
     }
     const nextCursor = index < remaining.length ? cursor(pageScope, 'inbox', null, before) : null;
     return { schema: 'soty.app-discussion.inbox.v1', discussions,

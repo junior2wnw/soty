@@ -18,6 +18,20 @@ const call = (model, op, args, actor = owner) => model.execute({ op: 'apps.discu
 const code = expected => error => error.code === expected;
 let requestSerial = 0;
 
+test('revoked known entries and their private activity cannot affect visible inbox boundaries or continuations', t => {
+  let known = { saved: [], apps: [] };
+  const f = fixture(t, { knownEntries: () => known }), visible = f.seed(1), hidden = f.seed(2);
+  known = { saved: [{ ...hidden, at: 1000 }], apps: [{ appId: visible.appId }] };
+  f.post(hidden, 'Previously shared'); f.post(visible, 'Visible stable message'); f.rotate(hidden, []);
+  const before = call(f.model, 'inbox', { limit: 1 }, reader);
+  assert.deepEqual(before.discussions.map(row => row.appId), [visible.appId]);
+  assert.equal(before.nextCursor, null, 'a denied tail is never a visible continuation');
+  f.post(hidden, 'PRIVATE activity after revoke');
+  const after = call(f.model, 'inbox', { limit: 1 }, reader);
+  assert.deepEqual(after.discussions, before.discussions);
+  assert.equal(after.nextCursor, null); assert.ok(!JSON.stringify(after).includes('PRIVATE'));
+});
+
 function temporary(t) {
   const parent = resolve(tmpdir()), directory = mkdtempSync(join(parent, 'soty-discussion-inbox-'));
   return { directory, cleanup() { assert(directory.startsWith(parent + sep)); assert(/^soty-discussion-inbox-/u.test(directory.slice(parent.length + 1))); rmSync(directory, { recursive: true, force: true }); } };
