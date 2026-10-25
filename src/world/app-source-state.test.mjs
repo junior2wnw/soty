@@ -68,6 +68,116 @@ function pairedFixture() {
   return { ...f, snapshot, next, pair };
 }
 
+function initialNativeFixture() {
+  const snapshot = inspection(), sourceDomainId = `dom_${'b'.repeat(32)}`;
+  Object.assign(snapshot.source, { revision: 1, digest: 'a'.repeat(64), port: 5000, entryPath: '/',
+    integrations: [{ profile: 'soty.selected-human-embed.v2', entryPath: '/embed' }] });
+  Object.assign(snapshot.publication, { activeTargetRevision: 1, launchPolicy: 'anyone', listed: true,
+    activeDomainIds: [domainId, sourceDomainId] });
+  snapshot.addresses.aliases = [
+    { id: domainId, origin: 'https://native.apps.test', state: 'bound', active: true },
+    { id: sourceDomainId, origin: 'https://source.apps.test', state: 'bound', active: true }];
+  const f = fixture(snapshot), next = target({ revision: 2, profile: 'soty.selected-human-embed.v2',
+    hostDeviceId: 'host-a', connectorId: 'connector-a', port: 6000, entryPath: '/embed' });
+  const nativeTarget = normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key => [key, snapshot.source[key]])));
+  f.source.patch({ profile: next.profile, port: '6000', entryPath: '/embed' });
+  return { ...f, snapshot, next, sourceDomainId, pair: { origin: snapshot.addresses.aliases[0].origin, domainId, target: nativeTarget } };
+}
+
+test('initial Native primary migration keeps one explicitly selected current alias and needs an independent Native ACK', async () => {
+  const f = initialNativeFixture();
+  assert.equal(f.source.read().draft.nativeEntryMode, 'keep');
+  assert.equal(f.source.read().nativeReviewRequired, true);
+  assert.equal(f.source.read().nativeChoices.length, 2);
+  assert.equal(f.source.read().canPrepare, false, 'ambiguous aliases are not guessed');
+  f.source.patch({ nativeDomainId: domainId });
+  await f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => {
+    assert.deepEqual(args.nativeEntry, { origin: f.pair.origin, targetRevision: 1 });
+    assert.equal(args.nativeEntryAction, undefined);
+    return prepared(args, f.next, { nativeEntry: f.pair });
+  } } });
+  f.source.patch({ exposureConfirmed: true }); assert.equal(f.source.read().canPromote, false);
+  assert.throws(() => f.source.promoteIntent(), { code: 'app_native_exposure_ack_required' });
+  f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
+  assert.equal(intent.args.nativeExposureAck.targetDigest, f.snapshot.source.digest);
+  assert.equal(intent.args.nativeExposureAck.scope, 'whole-port');
+  assert.deepEqual(intent.expectedNativeEntry, { origin: f.pair.origin, domainId });
+});
+
+test('initial Native primary explicit close has a separate review but sends no nonexistent pair-removal action', async () => {
+  const f = initialNativeFixture(); f.source.patch({ nativeDomainId: domainId, nativeEntryMode: 'remove' });
+  await f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => {
+    assert.equal(args.nativeEntry, undefined); assert.equal(args.nativeEntryAction, undefined);
+    return prepared(args, f.next);
+  } } });
+  f.source.patch({ exposureConfirmed: true }); assert.equal(f.source.read().canPromote, false);
+  f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
+  assert.equal(intent.args.nativeExposureAck, undefined); assert.equal(intent.args.nativeEntryAction, undefined);
+  assert.equal(intent.expectedNativeEntry, undefined);
+});
+
+test('first Native review uses the sole bound alias but never keeps a shared port, other host or restricted Source', () => {
+  const f = initialNativeFixture(), snapshot = copy(f.snapshot); snapshot.addresses.aliases.pop();
+  snapshot.publication.activeDomainIds = [domainId];
+  const sole = fixture(snapshot); sole.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed' });
+  assert.equal(sole.source.read().nativeEntry.domainId, domainId); assert.equal(sole.source.read().canPrepare, true);
+  for (const patch of [{ port: '5000' }, { launchPolicy: 'restricted' }, { hostDeviceId: 'host-b', connectorId: 'connector-b' }]) {
+    const checked = fixture(snapshot); checked.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed', ...patch });
+    assert.equal(checked.source.read().nativeKeepAllowed, false); assert.equal(checked.source.read().canPrepare, false);
+  }
+});
+
+test('public canonical-only Native needs explicit Source-only choice and closing consent; private/unpublished sources are not widened', async () => {
+  const f = initialNativeFixture(), canonical = copy(f.snapshot); canonical.addresses.aliases = [];
+  canonical.addresses.canonical = { id: domainId, origin: 'https://canonical.apps.test' };
+  canonical.publication.activeDomainIds = [domainId];
+  const next = fixture(canonical); next.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed' });
+  assert.equal(next.source.read().initialNativeReview, true); assert.equal(next.source.read().canPrepare, false);
+  assert.deepEqual(next.source.read().nativeReviewOrigins, ['https://canonical.apps.test']);
+  let calls = 0;
+  const api = { request: async (_op, args) => { calls++; assert.equal(args.nativeEntry, undefined); assert.equal(args.nativeEntryAction, undefined); return prepared(args, f.next); } };
+  await assert.rejects(next.source.prepare({ api, isCurrent: () => true }), { code: 'app_source_native_alias_required' }); assert.equal(calls, 0);
+  next.source.patch({ nativeEntryMode: 'remove' }); await next.source.prepare({ api, isCurrent: () => true });
+  next.source.patch({ exposureConfirmed: true }); assert.equal(next.source.read().canPromote, false);
+  assert.throws(() => next.source.promoteIntent(), { code: 'app_native_exposure_ack_required' });
+  next.source.patch({ nativeConfirmed: true }); const intent = next.source.promoteIntent();
+  assert.equal(intent.args.nativeExposureAck, undefined); assert.equal(intent.args.nativeEntryAction, undefined); assert.equal(calls, 1);
+  for (const snapshot of [{ ...canonical, publication: { ...canonical.publication, launchPolicy: 'restricted' } },
+    { ...canonical, publication: { ...canonical.publication, activeDomainIds: [], listed: false } }]) {
+    const ordinary = fixture(snapshot); ordinary.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed' });
+    assert.equal(ordinary.source.read().initialNativeReview, false); assert.equal(ordinary.source.read().draft.launchPolicy, snapshot.publication.launchPolicy);
+  }
+});
+
+test('initial Native primary candidate refuses inactive, retired, foreign and malformed aliases before a request', () => {
+  const f = initialNativeFixture();
+  for (const nativeDomainId of ['dom_' + 'f'.repeat(32), [domainId], 'https://native.apps.test', null]) {
+    if (nativeDomainId === null) { f.source.patch({ nativeDomainId }); assert.equal(f.source.read().canPrepare, false); }
+    else assert.throws(() => f.source.patch({ nativeDomainId }), { code: 'app_source_native_alias_required' });
+  }
+  const inactive = copy(f.snapshot); inactive.addresses.aliases[0].active = false;
+  const next = fixture(inactive); next.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed' });
+  assert.throws(() => next.source.patch({ nativeDomainId: domainId }), { code: 'app_source_native_alias_required' });
+  const retired = copy(f.snapshot); retired.addresses.aliases[0].state = 'tombstone';
+  const old = fixture(retired); old.source.patch({ profile: f.next.profile, port: '6000', entryPath: '/embed' });
+  assert.throws(() => old.source.patch({ nativeDomainId: domainId }), { code: 'app_source_native_alias_required' });
+});
+
+test('initial Native primary review rejects changed Native response pins and cannot reuse consent after an alias or source change', async () => {
+  for (const mutate of [pair => { pair.origin = 'https://source.apps.test'; }, pair => { pair.domainId = 'dom_' + 'f'.repeat(32); },
+    pair => { pair.target.revision++; }, pair => { pair.target.digest = 'f'.repeat(64); }, pair => { pair.target.port++; },
+    pair => { pair.target.entryPath = '/other'; }, pair => { pair.target.hostDeviceId = 'foreign'; }]) {
+    const f = initialNativeFixture(); f.source.patch({ nativeDomainId: domainId }); const bad = copy(f.pair); mutate(bad);
+    await assert.rejects(f.source.prepare({ isCurrent: () => true, api: { request: async (_op, args) => prepared(args, f.next, { nativeEntry: bad }) } }),
+      { code: 'app_source_invalid_preparation' });
+  }
+  const f = initialNativeFixture(), gate = deferred(); f.source.patch({ nativeDomainId: domainId });
+  const waiting = f.source.prepare({ isCurrent: () => true, api: { request: () => gate.promise } });
+  const changed = copy(f.snapshot); changed.addresses.aliases[0].origin = 'https://changed.apps.test'; f.source.observe(changed);
+  gate.resolve({}); assert.deepEqual(await waiting, { status: 'stale' });
+  assert.equal(f.source.read().draft.nativeConfirmed, false); assert.equal(f.source.read().canPromote, false);
+});
+
 test('paired replacement defaults to keep, independently reviews both entries, then recovers its exact durable v2 receipt', async () => {
   const f = pairedFixture(), store = storeFixture(); f.source.patch({ port: '6000' });
   assert.equal(f.source.read().draft.nativeEntryMode, 'keep');
@@ -90,11 +200,15 @@ test('paired replacement defaults to keep, independently reviews both entries, t
   const valid = receipt(pending);
   for (const mutate of [r => { r.receipt.nativeEntry.origin = 'https://other.apps.test'; },
     r => { r.receipt.nativeEntry.target.digest = 'f'.repeat(64); }, r => { delete r.receipt.nativeEntry; },
+    r => { r.receipt.nativeEntry.exposureAck.extra = true; }, r => { r.receipt.nativeEntry.exposureAck.targetRevision = [1]; },
+    r => { r.receipt.nativeEntry.exposureAck = [r.receipt.nativeEntry.exposureAck]; },
     r => { r.receipt.schema = 'soty.app-source-receipt.v1'; }]) {
     const bad = copy(valid); mutate(bad);
     await assert.rejects(reopened.acknowledge(pending, bad), { code: 'app_settings_invalid_receipt' });
     assert.deepEqual(reopened.read().pending, pending);
   }
+  // Signed Connect sorts JSON object keys; the server preserves this ACK order.
+  valid.receipt.nativeEntry.exposureAck = Object.fromEntries(Object.entries(valid.receipt.nativeEntry.exposureAck).sort(([a], [b]) => a.localeCompare(b)));
   assert.equal(await reopened.acknowledge(pending, valid), true); assert.equal(reopened.read().pending, null);
 });
 
@@ -482,10 +596,11 @@ test('a retry without the exact displayed command is rejected instead of silentl
 test('authenticated workspace consent persists the bounded entry scope through lost ACK and reload', async () => {
   const snapshot = inspection(), selectedProfile = 'soty.selected-human-embed.v2';
   snapshot.publication.launchPolicy = 'anyone'; snapshot.publication.listed = true;
+  snapshot.addresses.aliases[0].origin = 'https://native.apps.test';
   snapshot.source.integrations = [{ profile: selectedProfile, entryPath: '/embed' }];
-  const f = fixture(snapshot); f.source.patch({ profile: selectedProfile, entryPath: '/embed' });
+  const f = fixture(snapshot); f.source.patch({ profile: selectedProfile, entryPath: '/embed', nativeEntryMode: 'remove' });
   await f.prepare(normalizeAppSourceTarget(Object.fromEntries(Object.keys(target()).map(key => [key, ({ ...snapshot.source, revision: 5, digest: 'c'.repeat(64), profile: selectedProfile, entryPath: '/embed' })[key]]))));
-  f.source.patch({ exposureConfirmed: true });
+  f.source.patch({ exposureConfirmed: true, nativeConfirmed: true });
   const intent = f.source.promoteIntent(), store = storeFixture();
   assert.equal(intent.args.exposureAck.scope, 'authenticated-workspace'); assert.equal(intent.args.listed, true);
   await assert.rejects(dispatchAppSettingsIntent({ ...intent, state: store.state, isCurrent: () => true,

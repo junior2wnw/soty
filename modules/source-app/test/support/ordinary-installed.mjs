@@ -36,7 +36,8 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   server.on('upgrade',(req,socket,head)=>{if(!root?.locals.appsService.handleUpgrade(req,socket,head))socket.destroy();});
   t.after(async()=>{await stopChild();clients.forEach(client=>client.dispose());for(const realm of realms)await realm.instance?.close();await root?.locals.closeServices();sockets.forEach(socket=>socket.destroy());if(server.listening)await new Promise(done=>server.close(done));await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:40});});
   await new Promise(done=>server.listen(options.backendPort??0,'127.0.0.1',done));const backendPort=server.address().port,origin=options.frontOrigin??'http://127.0.0.1:'+(options.frontPort??backendPort);
-  const rootOptions={dataDir,connectOrigins:[origin],appOriginTemplate:'https://{appId}.localhost:'+appTlsPort,localConnectorPort:connectorPort};
+  const rootOptions={dataDir,connectOrigins:[origin],appOriginTemplate:options.appOriginTemplate??'https://{appId}.localhost:'+appTlsPort,localConnectorPort:connectorPort,
+    ...(options.namedAppZone?{namedAppZone:options.namedAppZone}:{})};
   root=createHttpApp(dist,rootOptions);
   const signed=async label=>{const client=createClientWithStorage({projectId:'soty',endpoint:origin+'/api/connect/rpc',scopedAppCleanup:true,
     fetch:(url,opts)=>fetch(url,{...opts,headers:{...opts.headers,origin}})},vault());clients.push(client);return{client,account:await client.bootstrap(label)};};
@@ -55,7 +56,8 @@ export async function createOrdinaryInstalledFixture(t, options = {}) {
   await owner.client.extension('apps.claim',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,claimCode:claim.claimCode});
   for(const [index,realmId]of(options.realmIds??['board','library']).entries()){
     const port=options.nativePorts?.[index]??await freePort(),created=await owner.client.extension('apps.register',{hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId,name:'Synthetic '+realmId,port:options.registrationPorts?.[index]??port,entryPath:'/embed',grants:{accountIds:[reader.account.accountId],communityIds:[]}});
-    const appId=created.app.id,embedded='https://'+appId+'.localhost:'+appTlsPort,native=options.sourceOnly?embedded:'http://localhost:'+port;
+    const appId=created.app.id,origins=options.realmOrigins?.({appId,realmId,index,port,appTlsPort}),
+      embedded=origins?.embed??'https://'+appId+'.localhost:'+appTlsPort,native=origins?.native??(options.sourceOnly?embedded:'http://localhost:'+port);
     const target={appId,revision:2,ownerAccountId:owner.account.accountId,connectorKey:['ordinary_installed_link_123456789012',claim.hostDeviceId,claim.connectorId].join('|'),port,entryPath:'/embed',profile:'soty.selected-human-embed.v2'};target.digest=runtimeTargetDigest(target);
     const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'ordinary_installed_link_123456789012',hostDeviceId:claim.hostDeviceId,connectorId:claim.connectorId},target:{revision:2,digest:target.digest},sourceProfile:options.sourceProfile??STANDARD_SELECTED_SOURCE_V2,
       resource:{registryId:'soty',environmentId:'production',tenantId:owner.account.accountId,appId,resourceId:'ordinary:'+realmId,selection:{kind:options.workspace?'soty.workspace.v1':'soty.resource.v1',nativeId:'selected',incarnationId:'one'}},

@@ -126,7 +126,10 @@ async function verifyReceipt(pending, response) {
       && positive(response.current.activeTargetRevision), 'app_settings_invalid_receipt');
     check(same(receipt.nativeEntryAction ?? null, args.nativeEntryAction ?? null)
       && (args.nativeExposureAck ? native && native.origin === expectedNative.origin && native.domainId === expectedNative.domainId
-        && same(native.exposureAck, args.nativeExposureAck) && native.target?.revision === args.nativeExposureAck.targetRevision
+        && native.exposureAck && typeof native.exposureAck === 'object' && !Array.isArray(native.exposureAck)
+        && Object.keys(native.exposureAck).sort().join(',') === 'profile,scope,targetDigest,targetRevision'
+        && ['scope', 'targetRevision', 'targetDigest', 'profile'].every(key => native.exposureAck[key] === args.nativeExposureAck[key])
+        && native.target?.revision === args.nativeExposureAck.targetRevision
         && native.target?.digest === args.nativeExposureAck.targetDigest && native.target?.profile === args.nativeExposureAck.profile
         : native === undefined), 'app_settings_invalid_receipt');
   } else {

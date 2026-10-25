@@ -6,12 +6,13 @@
   body{margin:0;padding:16px;background:var(--sw-bg);color:var(--sw-ink);font:14px/1.5 system-ui,sans-serif}
   .qa-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
   .qa-controls button,.qa-controls select{font:inherit;min-height:44px;padding:8px;border:1px solid var(--sw-control-border);border-radius:8px;background:var(--sw-surface);color:var(--sw-ink)}
+  .qa-controls label,.qa-controls select{max-width:100%;min-width:0}
   #qa-results{white-space:pre-wrap;overflow-wrap:anywhere} .qa-label{font-size:12px;color:var(--sw-muted)}
 </style>
 <strong>Изолированный стенд настроек источника</strong>
 <p class="qa-label">Настоящий компонент и диалог; вымышленные ответы. Сеть, рабочие приложения и аккаунты не используются. Проверка событий DOM не заменяет ручную проверку клавиатуры и экрана.</p>
 <div class="qa-controls">
-  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="paired">Приложение и отдельный сайт</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="initial">Первое подключение с сохранением сайта</option><option value="canonical">Первое подключение без именного адреса</option><option value="paired">Приложение и отдельный сайт</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
   <button id="qa-open">Открыть</button><button id="qa-reset">Сбросить только стенд</button><button id="qa-tests">Проверить сценарии DOM</button><button id="qa-theme">Сменить тему</button>
 </div>
 <p id="qa-results" role="status" data-test-status="idle">Готов к запуску.</p>
@@ -23,7 +24,7 @@ import { mountAppSettings } from './app-settings.ts';
 import { createAppSettingsState } from './app-settings-state.mjs';
 if (!import.meta.env.DEV) throw new Error('This fixture is available only on the development server');
 
-const appId = `app-${'c2'.repeat(16)}`, canonicalId = `dom_${'a1'.repeat(16)}`, aliasId = `dom_${'b2'.repeat(16)}`;
+const appId = `app-${'c2'.repeat(16)}`, canonicalId = `dom_${'a1'.repeat(16)}`, aliasId = `dom_${'b2'.repeat(16)}`, sourceAliasId = `dom_${'c3'.repeat(16)}`;
 const scopeKey = 'soty.source-independent-fixture.scope';
 let scope = sessionStorage.getItem(scopeKey);
 if (!scope) { scope = `fixture-${crypto.randomUUID()}`; sessionStorage.setItem(scopeKey, scope); }
@@ -41,20 +42,23 @@ const initial = () => ({ app:{id:appId,name:'Пример приложения',
 const nativeTarget = { ...targetA, revision:1, digest:'e'.repeat(64), port:4322, entryPath:'/' };
 const nativePair = { schema:'soty.native-entry.v1', origin:'https://native.apps.fixture.invalid', domainId:aliasId, target:nativeTarget, runtimeReady:false };
 let backend = JSON.parse(sessionStorage.getItem(backendKey) ?? 'null') ?? initial();
-let generation=0, mounted=null, dialog=null, calls=[], preparations=new Map(), lostOnce=false, deferredReply=null, failedInspections=0, automatic=false, theme='dark';
+let generation=0, mounted=null, dialog=null, calls=[], preparations=new Map(), lostOnce=false, deferredReply=null, failedInspections=0, automatic=false, theme=new URLSearchParams(location.search).get('theme')==='light'?'light':'dark';
 function persist(){sessionStorage.setItem(backendKey,JSON.stringify(backend));}
 function applyTheme(){for(const [key,value] of Object.entries(createPalette(theme,50)))document.documentElement.style.setProperty(key,value);document.documentElement.style.colorScheme=theme;}
 applyTheme();
+function aliases(now=Date.now()){return mode.value==='canonical'?[]:[{id:aliasId,slug:'demo',origin:'https://demo.apps.fixture.invalid',state:'bound',active:true,shareUrl:'https://demo.apps.fixture.invalid/',createdAt:now-1000,retiredAt:null},
+  ...(mode.value==='initial'?[{id:sourceAliasId,slug:'source',origin:'https://source.apps.fixture.invalid',state:'bound',active:true,shareUrl:'https://source.apps.fixture.invalid/',createdAt:now-1000,retiredAt:null}]:[])];}
+const activeIds=()=>mode.value==='canonical'?[canonicalId]:aliases().map(alias=>alias.id);
 function inspect(){const now=Date.now(),active=backend.app.state==='enabled';return {schema:'soty.app-inspection.v1',checkedAt:now,app:clone(backend.app),
   addresses:{revision:1,claimOrigin:'https://apps.fixture.invalid',canonical:{id:canonicalId,origin:'https://canonical.fixture.invalid',shareUrl:active?`https://shell.fixture.invalid/#launch/${appId}/${canonicalId}`:null},
-    aliases:[{id:aliasId,slug:'demo',origin:'https://demo.apps.fixture.invalid',state:'bound',active:true,shareUrl:active?'https://demo.apps.fixture.invalid/':null,createdAt:now-1000,retiredAt:null}],
+    aliases:aliases(now),
     limits:{perApp:5,perAccount:30,usedByApp:1,usedByAccount:1}},
-  publication:{...(backend.nativeEntry?{nativeEntry:clone(backend.nativeEntry)}:{}),policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision},
+  publication:{...(backend.nativeEntry?{nativeEntry:clone(backend.nativeEntry)}:{}),policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:activeIds(),activeTargetRevision:backend.source.revision},
   source:{...clone(backend.source),requiredBindingVersion:backend.source.revision===1?1:2,binding:{state:active?'bound':'unavailable'},
-    ...(mode.value==='selected'&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
+    ...(['selected','initial','canonical'].includes(mode.value)&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
     observation:{state:active?'responding':'unknown',observedAt:active?now:null,freshUntil:active?now+45000:null,evidence:active?'connector-v2-observation':'not-observed'}},
   actions:{canEdit:active,canPublish:active,canPreview:active,canReserveName:active}};}
-function summary(){return {appId,policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision,requiredBindingVersion:backend.source.revision===1?1:2,appState:backend.app.state};}
+function summary(){return {appId,policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:activeIds(),activeTargetRevision:backend.source.revision,requiredBindingVersion:backend.source.revision===1?1:2,appState:backend.app.state};}
 const api={async request(op,args){
   if(args.expectedAccountId!==accountId||args.appId&&args.appId!==appId)fail('ACTIVE_PROFILE_CHANGED');calls.push({op,args:clone(args)});
   if(op==='apps.inspect'){if(failedInspections>0){failedInspections--;throw new TypeError('synthetic inspection response unavailable');}return inspect();}
@@ -68,7 +72,11 @@ const api={async request(op,args){
     const target={revision,digest:args.source?await sha(JSON.stringify([revision,chosen])):chosen.digest,profile:chosen.profile??profile,hostDeviceId:device.hostDeviceId,connectorId:device.connectorId,deviceName:device.name,port:chosen.port,entryPath:chosen.entryPath};
     const now=Date.now(),value={schema:'soty.app-source-preparation.v1',appId,preparationId:nonce(),expectedPolicyEpoch:backend.epoch,expectedTargetRevision:backend.source.revision,
       requiredBindingVersion:2,target,checkedAt:now,expiresAt:now+(mode.value==='short'?1600:30000)};
-    if(args.nativeEntry) {if(!backend.nativeEntry||args.nativeEntry.origin!==backend.nativeEntry.origin||args.nativeEntry.targetRevision!==backend.nativeEntry.target.revision)fail('native_pair_action_required');value.nativeEntry={origin:backend.nativeEntry.origin,domainId:backend.nativeEntry.domainId,target:clone(nativeTarget)};}
+    if(args.nativeEntry) {
+      const candidate=backend.nativeEntry??{origin:'https://demo.apps.fixture.invalid',domainId:aliasId,target:backend.source};
+      if(args.nativeEntry.origin!==candidate.origin||args.nativeEntry.targetRevision!==candidate.target.revision)fail('app_native_entry_origin_invalid');
+      value.nativeEntry={origin:candidate.origin,domainId:candidate.domainId,target:clone(candidate.target)};
+    }
     if(args.nativeEntryAction)value.nativeEntryAction=clone(args.nativeEntryAction);
     preparations.set(value.preparationId,value);
     if(mode.value==='slow')return new Promise(resolve=>{deferredReply=()=>resolve(clone(value));});
@@ -82,6 +90,7 @@ const api={async request(op,args){
     if(prepared.nativeEntry&&args.nativeExposureAck?.targetDigest!==prepared.nativeEntry.target.digest)fail('app_native_exposure_ack_required');
     if(prepared.nativeEntryAction&&JSON.stringify(prepared.nativeEntryAction)!==JSON.stringify(args.nativeEntryAction))fail('native_pair_action_required');
     if(prepared.nativeEntryAction)delete backend.nativeEntry;
+    if(prepared.nativeEntry)backend.nativeEntry={schema:'soty.native-entry.v1',...clone(prepared.nativeEntry),runtimeReady:false};
     const previous=backend.source.revision;backend.source=clone(prepared.target);backend.epoch++;backend.launchPolicy=args.launchPolicy;
     if(!backend.targets.some(value=>value.revision===backend.source.revision))backend.targets.push({...clone(backend.source),createdAt:Date.now()});
     const reply={requestId:args.requestId,replayed:false,receipt:{schema:`soty.app-source-receipt.v${args.nativeExposureAck||args.nativeEntryAction?2:1}`,namespace:`apps.source.promote.v${args.nativeExposureAck||args.nativeEntryAction?2:1}`,requestKeyHash:await sha(args.requestId),
@@ -89,7 +98,7 @@ const api={async request(op,args){
       requiredBindingVersion:2,policyEpoch:backend.epoch,launchPolicy:args.launchPolicy,listed:args.listed,exposureAck:args.exposureAck??null,committedAt:Date.now(),
       ...(prepared.nativeEntry?{nativeEntry:{origin:prepared.nativeEntry.origin,domainId:prepared.nativeEntry.domainId,target:{revision:prepared.nativeEntry.target.revision,digest:prepared.nativeEntry.target.digest,profile:prepared.nativeEntry.target.profile},exposureAck:args.nativeExposureAck}}:{}),
       ...(args.nativeEntryAction?{nativeEntryAction:args.nativeEntryAction}:{})},current:summary()};
-    backend.receipts[args.requestId]=clone(reply);persist();if(['lost','selected','paired'].includes(mode.value)&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
+    backend.receipts[args.requestId]=clone(reply);persist();if(['lost','selected','paired','initial'].includes(mode.value)&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
   }
   fail('fixture_operation_not_supported');
 }};
@@ -109,6 +118,29 @@ function assert(value,label){if(!value)throw new Error(label);}
 function reset(){close();backend=initial();if(mode.value==='paired'){backend.source={...targetA,revision:2,profile:'soty.selected-human-embed.v2',entryPath:'/embed'};backend.targets=[{...backend.source,createdAt:Date.now()-1000}];backend.nativeEntry=clone(nativePair);}preparations=new Map();calls=[];lostOnce=false;deferredReply=null;failedInspections=0;localStorage.removeItem(pendingKey);persist();}
 async function run(){if(automatic)return;automatic=true;result.dataset.testStatus='running';result.textContent='Выполняются сценарии компонента…';const passed=[];
   try{
+    mode.value='initial';reset();await open();change('source-port','5321');change('source-profile','soty.selected-human-embed.v2');
+    assert(key('source-native-action').value==='keep'&&!key('source-native-domain').closest('label').hidden,'first pair must explicitly review a former alias');
+    assert(key('source-check').getAttribute('aria-disabled')==='true','ambiguous former alias was silently guessed');
+    change('source-native-domain',aliasId);click('source-check');await until(()=>!key('source-public-ack').disabled,'initial pair checked');
+    change('source-public-ack',true);assert(key('source-promote').getAttribute('aria-disabled')==='true','initial Native scope inherited Source ACK');
+    { const rect=dialog.element.getBoundingClientRect();window.__initialPairGeometry={width:innerWidth,documentWidth:document.documentElement.scrollWidth,
+      dialog:{x:rect.x,width:rect.width,scrollWidth:dialog.element.scrollWidth,clientWidth:dialog.element.clientWidth},
+      overflowingControls:[...dialog.element.querySelectorAll('input,select,button')].filter(control=>control.getClientRects().length&&(()=>{const r=control.getBoundingClientRect();return r.x<rect.x-1||r.right>rect.right+1;})()).map(control=>control.dataset.settingsKey??control.textContent)}; }
+    change('source-native-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','initial pair lost reply');
+    await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'initial pair recovered');
+    const initialSends=calls.filter(value=>value.op==='apps.source.promote');
+    assert(initialSends.length===2&&JSON.stringify(initialSends[0].args)===JSON.stringify(initialSends[1].args)&&backend.nativeEntry.target.revision===1&&backend.source.revision===2,'initial pair retry drifted or lost former target');
+    passed.push('Первое подключение: точный прежний адрес, две независимые проверки согласия, потерянный ответ и прежний запрос');
+    mode.value='canonical';reset();await open();change('source-port','5321');change('source-profile','soty.selected-human-embed.v2');
+    assert(key('source-native-action').value==='keep'&&key('source-check').getAttribute('aria-disabled')==='true'&&!key('source-native-addresses').hidden,'canonical-only Native silently lost its outside entry');
+    click('source-native-addresses');assert(key('add-address').open&&calls.filter(value=>value.op==='apps.source.prepare'||value.op==='apps.domains.claim').length===0,'address guidance created an implicit mutation');
+    passed.push('Без имени: сохранение заблокировано, переход к адресам ничего не закрепляет автоматически');
+    await open();change('source-port','5321');change('source-profile','soty.selected-human-embed.v2');change('source-native-action','remove');
+    click('source-check');await until(()=>!key('source-public-ack').disabled,'canonical Source-only check');
+    change('source-public-ack',true);assert(key('source-promote').getAttribute('aria-disabled')==='true'&&key('source-native-ack').closest('label').textContent.includes('https://canonical.fixture.invalid'),'canonical closing review absent');
+    change('source-native-ack',true);click('source-promote');await until(()=>localStorage.getItem(pendingKey)&&JSON.parse(localStorage.getItem(pendingKey)).pending===null,'canonical Source-only accepted');
+    assert(calls.filter(value=>value.op==='apps.source.promote').every(value=>!value.args.nativeEntryAction&&!value.args.nativeExposureAck),'canonical-only removal fabricated a committed Native pair');
+    passed.push('Без имени: только явный выбор и отдельное подтверждение разрешают продолжить со входом Сот');
     mode.value='paired';reset();await open();
     assert(dialog.element.textContent.includes(nativePair.origin)&&key('source-native-action').value==='keep','paired entry is not displayed/defaulted to keep');
     change('source-port','5321');click('source-check');await until(()=>!key('source-public-ack').disabled,'pair checked');
@@ -128,7 +160,7 @@ async function run(){if(automatic)return;automatic=true;result.dataset.testStatu
     change('source-profile','soty.selected-human-embed.v2');
     assert(key('source-path').value==='/embed'&&key('source-path').readOnly&&key('source-port').value==='18437'&&!key('source-port').readOnly&&key('source-device').disabled,'installed choice did not preserve its editable port and declared device/path');
     click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'selected public consent');
-    change('source-public-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','selected lost reply');
+    change('source-public-ack',true);change('source-native-ack',true);click('source-promote');await until(()=>key('pending-retry')?.getAttribute('aria-disabled')==='false','selected lost reply');
     await open();click('pending-retry');await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'selected receipt settled');
     const selectedSends=calls.filter(value=>value.op==='apps.source.promote');
     assert(selectedSends.length===2&&JSON.stringify(selectedSends[0].args)===JSON.stringify(selectedSends[1].args),'selected reload changed the durable command');

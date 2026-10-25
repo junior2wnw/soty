@@ -44,6 +44,9 @@ function settingsError(reason: unknown): string {
     app_source_invalid_preparation: 'Не удалось подтвердить ответ выбранного источника. Переключение не отправлено.',
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
     native_pair_action_required: 'Приложение имеет отдельный сайт. Выберите, сохранить его или отключить, и проверьте источник заново.',
+    app_source_native_alias_required: 'Выберите действующий адрес отдельного сайта и проверьте источник заново.',
+    app_native_entry_origin_invalid: 'Этот адрес не совпадает с проверенным отдельным входом проекта. Выберите его прежний адрес; он должен отличаться от адреса приложения в Сотах.',
+    app_native_entry_target_invalid: 'Для отдельного сайта нужен прежний источник на том же устройстве и другой порт. Проверьте выбранный источник.',
     app_native_exposure_ack_required: 'Подтвердите показанное действие с отдельным сайтом.',
     app_source_invalid_history: 'Не удалось подтвердить историю источников. Повторите её чтение.',
     app_source_unchanged: 'Это уже текущий источник. Измените компьютер, порт или начальную страницу.',
@@ -480,6 +483,16 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   }
   const nativeEntryField = labeledField('Отдельный сайт после переключения', nativeEntryChoice);
   nativeEntryChoice.addEventListener('change', () => { sourceModel?.patch({ nativeEntryMode: nativeEntryChoice.value === 'remove' ? 'remove' : 'keep' }); changedSource(); });
+  const nativeAliasChoice = keyed(el('select', 'sw-select'), 'source-native-domain');
+  const nativeAliasPlaceholder = el('option', '', 'Выберите прежний адрес сайта'); nativeAliasPlaceholder.value = ''; nativeAliasChoice.append(nativeAliasPlaceholder);
+  const nativeAliasOptions = new Map<string, HTMLOptionElement>();
+  const nativeAliasField = labeledField('Адрес отдельного сайта', nativeAliasChoice), nativeChoiceHint = el('p', 'sw-muted sw-app-settings-hint');
+  const nativeChooseAddress = keyed(button('Добавить или включить именной адрес', 'link', 'sw-button-quiet', () => {
+    if (!current() || !model) return;
+    selectSettingsSection('access'); claimDetails.open = true; addresses.tabIndex = -1;
+    addresses.scrollIntoView({ block: 'nearest' }); addresses.focus({ preventScroll: true });
+  }), 'source-native-addresses');
+  nativeAliasChoice.addEventListener('change', () => { sourceModel?.patch({ nativeDomainId: nativeAliasChoice.value || null }); changedSource(); });
   const sourceAccessBlock = el('div', 'sw-app-settings-source-block'), sourceAccessText = el('p', '', 'Сначала сохраните или отмените правки доступа выше.');
   const resetAccess = keyed(button('Отменить правки доступа', 'close', 'sw-button-quiet', () => confirm({ kind: 'publication-reset' }, resetAccess)), 'source-reset-access');
   sourceAccessBlock.append(sourceAccessText, resetAccess);
@@ -508,7 +521,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   }), 'source-pending-retry');
   sourcePending.append(el('p', '', 'Результат пока не подтверждён. Прежний запрос сохранён.'), sourcePendingRetry);
   sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, labeledField('Доступ после переключения', sourceAudience),
-    nativeEntryField, sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
+    nativeEntryField, nativeAliasField, nativeChoiceHint, nativeChooseAddress, sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
   sourceForm.addEventListener('submit', event => { event.preventDefault(); void checkSource(); });
   sourceDetails.append(sourceSummary, sourceForm);
   sourceDetails.addEventListener('toggle', () => {
@@ -609,12 +622,30 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     text(sourceBinding, binding === 'bound' ? 'Компьютер подтвердил текущий маршрут.' : binding === 'legacy' ? 'На этом компьютере смена источника требует обновления Соты Коннектора.' : '');
     sourceBinding.hidden = !sourceBinding.textContent || snapshot.app.state === 'revoked';
     text(sourceDevice, snapshot.source.deviceName); text(sourcePort, String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
-    const native = snapshot.publication.nativeEntry;
-    entrySummary.hidden = !native;
+    const native = state.nativeEntry;
+    entrySummary.hidden = !state.nativeReviewRequired;
     text(sourceEntrySummary, snapshot.source.launchEntry ? `В Сотах: ${snapshot.source.launchEntry.origin}${snapshot.source.entryPath}` : 'В Сотах: адрес пока не подтверждён.');
-    text(nativeEntrySummary, native ? `Отдельный сайт: ${native.origin}` : '');
+    text(nativeEntrySummary, native ? `${state.initialNativeReview ? 'Отдельный сайт после переключения' : 'Отдельный сайт'}: ${native.origin}`
+      : `Прежний внешний вход: ${state.nativeReviewOrigins.join(', ') || 'текущие опубликованные адреса'}`);
     text(entryReadiness, 'Оба входа относятся к одному приложению. Эти настройки не подтверждают доступность сайта; его вход и права проверяются отдельно.');
-    nativeEntryField.hidden = !native; nativeEntryChoice.value = draft.nativeEntryMode; nativeEntryChoice.disabled = !editable || blocked;
+    nativeEntryField.hidden = !state.nativeReviewRequired; nativeEntryChoice.value = draft.nativeEntryMode; nativeEntryChoice.disabled = !editable || blocked;
+    const nativeChoiceIds = new Set(state.nativeChoices.map(value => value.domainId));
+    for (const [id, option] of nativeAliasOptions) if (!nativeChoiceIds.has(id)) { option.remove(); nativeAliasOptions.delete(id); }
+    for (const alias of state.nativeChoices) {
+      let option = nativeAliasOptions.get(alias.domainId);
+      if (!option) { option = el('option'); option.value = alias.domainId; nativeAliasOptions.set(alias.domainId, option); nativeAliasChoice.append(option); }
+      text(option, alias.origin);
+    }
+    nativeAliasField.hidden = !state.initialNativeReview || state.nativeChoices.length <= 1 || draft.nativeEntryMode === 'remove';
+    nativeAliasChoice.value = native?.domainId ?? draft.nativeDomainId ?? ''; nativeAliasChoice.disabled = !editable || blocked;
+    nativeChoiceHint.hidden = !state.nativeReviewRequired;
+    nativeChooseAddress.hidden = !state.initialNativeReview || state.nativeChoices.length > 0 || draft.nativeEntryMode === 'remove';
+    disable(nativeChooseAddress, blocked || !editable);
+    text(nativeChoiceHint, state.initialNativeReview && draft.nativeEntryMode === 'remove' ? 'Останется вход через Соты. Прежний внешний вход изменится или закроется; после проверки это потребуется отдельно подтвердить.'
+      : state.initialNativeReview && state.nativeChoices.length === 0 ? 'Для отдельного открытия добавьте или включите именной адрес. Либо явно выберите отключение прежнего внешнего входа.'
+      : state.initialNativeReview && !native ? 'Выберите прежний адрес отдельного сайта. Адрес приложения в Сотах проверяется отдельно.'
+      : draft.nativeEntryMode === 'keep' && !state.nativeKeepAllowed ? 'Чтобы сохранить сайт, выберите вход Сот с общим доступом, на том же устройстве и другом порту.'
+      : state.initialNativeReview ? 'Сайт сохранит собственный вход и права. После проверки отдельно подтвердите, сохранить его или отключить.' : '');
     disable(exportDeployment, busy || staleInspection || snapshot.app.state !== 'enabled');
     text(sourceTime, observed.observedAt === null ? 'Пока нет наблюдения от компьютера.' : `Последнее наблюдение: ${new Date(observed.observedAt).toLocaleString('ru-RU')}.`);
     const selectedKey = deviceKey(draft), names = new Map<string, number>();
@@ -661,11 +692,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     }
     sourceAck.hidden = draft.launchPolicy !== 'anyone'; sourceAckInput.checked = draft.exposureConfirmed;
     sourceAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
-    nativeAck.hidden = !native || !state.preparation;
+    nativeAck.hidden = !state.nativeReviewRequired || !state.preparation;
     nativeAckInput.checked = draft.nativeConfirmed;
     nativeAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
     text(nativeAckText, draft.nativeEntryMode === 'remove'
-      ? `Отключить отдельный сайт ${native?.origin ?? ''}. Его страницы и открытые соединения перестанут допускаться Сотами.`
+      ? state.initialNativeReview ? `Оставить только вход через Соты. Прежний внешний вход по адресам ${state.nativeReviewOrigins.join(', ') || 'приложения'} изменится или закроется; отдельный сайт не сохраняется.`
+        : `Отключить отдельный сайт ${native?.origin ?? ''}. Его страницы и открытые соединения перестанут допускаться Сотами.`
       : `Сохранить отдельный сайт ${native?.origin ?? ''}: весь проект и его API на порту ${native?.target.port ?? ''}. Собственный вход и права приложения сохраняются.`);
     sourcePromote.hidden = sourceResult.hidden;
     sourcePrimaryAction = hasPreparation ? 'promote' : 'recheck';

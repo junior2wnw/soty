@@ -34,7 +34,7 @@ export interface AppSourcePreparation {
 export interface AppSourceDraft {
   mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string; profile: AppSourceTarget['profile'];
   launchPolicy: 'restricted' | 'anyone'; exposureConfirmed: boolean; targetRevision: number | null;
-  nativeEntryMode: 'keep' | 'remove'; nativeConfirmed: boolean;
+  nativeEntryMode: 'keep' | 'remove'; nativeDomainId: string | null; nativeConfirmed: boolean;
 }
 export type SettingsPending = {
   op: 'apps.publication.update' | 'apps.domains.claim' | 'apps.domains.retire';

@@ -11,11 +11,13 @@ export interface AppSourceStateView {
   snapshot: AppInspection; base: AppInspection; draft: AppSourceDraft; dirty: boolean; conflict: boolean;
   publicationDirty: boolean; preparing: boolean; preparation: AppSourcePreparation | null; remainingMs: number;
   canPrepare: boolean; canPromote: boolean; canRecheckPromote: boolean;
+  nativeEntry: { origin: string; domainId: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'> } | null;
+  nativeReviewRequired: boolean; initialNativeReview: boolean; nativeChoices: { domainId: string; origin: string }[]; nativeKeepAllowed: boolean; nativeReviewOrigins: string[];
   history: { loading: boolean; targets: (AppSourceTarget & { createdAt: number })[]; nextCursor: string | null; stale: boolean };
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
-  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeConfirmed'>>): void;
+  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
   reset(): void;
