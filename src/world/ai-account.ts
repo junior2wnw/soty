@@ -17,7 +17,7 @@ export interface AiAccount {
 export type AiMutation = 'create' | 'update' | 'rotate' | 'revoke';
 export interface AiPending { schema: 1; accountId: string; operationId: string; kind: AiMutation; args: Record<string, unknown>; createdAt: number; }
 export interface AiView {
-  account: AiAccount | null; keys: AiKey[] | null; loading: boolean; keysLoading: boolean; busy: boolean;
+  account: AiAccount | null; accountStale: boolean; keys: AiKey[] | null; loading: boolean; keysLoading: boolean; busy: boolean;
   pending: AiPending | null; secret: string | null; secretKey: AiKey | null; notice: string; error: string;
 }
 const moneyFields = ['dailyMicrorubles', 'monthlyMicrorubles', 'totalMicrorubles', 'maxRequestMicrorubles'];
@@ -143,7 +143,7 @@ export function createAiAccountController(options: {
   const { api, accountId, storage } = options, storageKey = `soty.ai.pending.v1:${encodeURIComponent(accountId)}`;
   const clock = options.clock ?? Date.now, randomId = options.randomId ?? (() => crypto.randomUUID());
   const abort = new AbortController();
-  const state: AiView = { account: null, keys: null, loading: false, keysLoading: false, busy: false, pending: null, secret: null, secretKey: null, notice: '', error: '' };
+  const state: AiView = { account: null, accountStale: false, keys: null, loading: false, keysLoading: false, busy: false, pending: null, secret: null, secretKey: null, notice: '', error: '' };
   let disposed = false, accountRead = 0, keysRead = 0, secretGeneration = 0;
   let errorSource: 'account' | 'keys' | 'mutation' | 'copy' | null = null;
   const current = (): boolean => !disposed && !abort.signal.aborted && options.isCurrent();
@@ -185,8 +185,8 @@ export function createAiAccountController(options: {
     try {
       const value = await call<unknown>('ai.account.get');
       if (!current() || sequence !== accountRead) return;
-      state.account = readAiAccount(value, accountId); if (errorSource === 'account') { state.error = ''; errorSource = null; }
-    } catch (reason) { if (current() && sequence === accountRead) { state.error = aiErrorLabel(reason); errorSource = 'account'; } }
+      state.account = readAiAccount(value, accountId); state.accountStale = false; if (errorSource === 'account') { state.error = ''; errorSource = null; }
+    } catch (reason) { if (current() && sequence === accountRead) { state.accountStale = true; state.error = aiErrorLabel(reason); errorSource = 'account'; } }
     finally { if (current() && sequence === accountRead) { state.loading = false; emit(); } }
   }
   async function loadKeys(): Promise<boolean> {

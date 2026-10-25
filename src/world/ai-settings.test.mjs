@@ -297,6 +297,14 @@ test('visible-only status polling has bounded backoff and stops on disposal', as
   f.handle.dispose(); assert.equal(f.timers.size, 0);
 });
 
+test('a failed refresh labels cached ready data as stale and keeps the confirmed allowance', async () => {
+  const f = uiFixture(); await settle(); assert.equal(f.css('sw-ai-state').textContent, 'ИИ готов');
+  f.service.unavailable(); f.action('Обновить состояние').emit('click'); await settle();
+  assert.equal(f.css('sw-ai-state').textContent, 'Не удалось обновить состояние ИИ');
+  assert.match(f.host.textContent, /последние подтверждённые данные/u); assert.match(f.host.textContent, /48,75 ₽/u);
+  assert.equal(f.css('sw-ai-state').dataset.state, 'unknown'); assert.equal(f.timers.size, 1); f.handle.dispose();
+});
+
 test('a stale policy save has no effect, retains the draft and reads the newer paused policy', async () => {
   const service = serviceFixture(); service.keys.set('key-1', key()); const f = uiFixture(service); await settle();
   f.css('sw-ai-advanced').open = true; f.css('sw-ai-advanced').emit('toggle'); await settle();

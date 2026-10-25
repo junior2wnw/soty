@@ -151,6 +151,7 @@ export function mountAiSettings(options: { host: HTMLElement; api: WorldApi; acc
       allowance.textContent = preparingAllowance ? 'Включённый лимит ИИ подготавливается автоматически.' : `Включено ${aiMoneyLabel(account.allowance.grantedMicrorubles)} на аккаунт один раз${typeof dailyLimit === 'string' ? `, до ${aiMoneyLabel(dailyLimit)} в сутки` : ''}. Это объём использования ИИ, включённый в сервис.`;
       usage.textContent = preparingAllowance ? '' : `${account.usage.requests.toLocaleString('ru-RU')} запросов · ${account.usage.tokens.toLocaleString('ru-RU')} токенов`;
       updated.textContent = `Обновлено в ${new Date(account.updatedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
+      if (view.accountStale) { heading.textContent = 'Не удалось обновить состояние ИИ'; explanation.textContent = 'Ниже — последние подтверждённые данные. Подключение проверится автоматически.'; heading.dataset.state = 'unknown'; }
     } else if (!view.loading) { heading.textContent = 'Не удалось проверить ИИ'; explanation.textContent = 'Соты продолжат работать. Подключение ИИ проверится автоматически.'; }
     notice.textContent = view.notice; notice.hidden = !view.notice; error.textContent = view.error; error.hidden = !view.error;
     pending.hidden = !view.pending; recheck.disabled = view.busy; refresh.disabled = view.loading;
@@ -162,7 +163,7 @@ export function mountAiSettings(options: { host: HTMLElement; api: WorldApi; acc
     name.disabled = view.busy; daily.disabled = view.busy; until.disabled = view.busy; active.disabled = view.busy; allModels.disabled = view.busy;
     for (const control of modelChoices.values()) control.disabled = view.busy || allModels.checked;
     confirmAction.disabled = blocked;
-    if (wasBusy && !view.busy && !view.pending && !view.error) { editing = false; editor.hidden = true; }
+    if (wasBusy && !view.busy && !view.pending && (view.notice || view.secret)) { editing = false; editor.hidden = true; }
     if (wasBusy && !view.busy && view.error) error.focus();
     wasBusy = view.busy;
     listStatus.textContent = view.keysLoading && !view.keys ? 'Загружаем ключи…' : view.keys?.length === 0 ? 'Внешних API-ключей пока нет.' : '';
@@ -187,7 +188,7 @@ export function mountAiSettings(options: { host: HTMLElement; api: WorldApi; acc
   function schedule(): void {
     if (timer) clearTimeout(timer); timer = null;
     if (!current() || document.visibilityState !== 'visible' || polls >= 5) return;
-    const state = controller.read(), needsPoll = !state.account || state.account.state !== 'ready' || state.account.allowance.heldMicrorubles !== '0' || state.account.allowance.pendingMicrorubles !== '0';
+    const state = controller.read(), needsPoll = !state.account || state.accountStale || state.account.state !== 'ready' || state.account.allowance.heldMicrorubles !== '0' || state.account.allowance.pendingMicrorubles !== '0';
     if (!needsPoll) return;
     const delay = [2000, 5000, 10_000, 20_000, 30_000][polls++]!;
     timer = setTimeout(() => { timer = null; if (current() && document.visibilityState === 'visible') void controller.loadAccount().then(schedule); }, delay);
