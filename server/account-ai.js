@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -41,7 +41,7 @@ function keyView(value, internal = false) {
   return result;
 }
 
-async function readJson(response, maximum = 131072) {
+async function readJson(response, maximum = 512 * 1024) {
   need(response.body, 'ai_unavailable', 503); const reader = response.body.getReader(), chunks = []; let size = 0;
   try {
     for (;;) { const { done, value } = await reader.read(); if (done) break;
@@ -58,7 +58,7 @@ function accountView(value, expectedAccountId) {
     && value.allowance.kind === 'included' && value.allowance.unit === 'microrubles'
     && ['grantedMicrorubles', 'availableMicrorubles', 'heldMicrorubles', 'spentMicrorubles', 'pendingMicrorubles']
       .every(key => typeof value.allowance[key] === 'string' && /^\d{1,30}$/u.test(value.allowance[key]))
-    && Array.isArray(value.models) && value.models.length <= 100 && value.usage && typeof value.usage === 'object', 'ai_unavailable', 503);
+    && Array.isArray(value.models) && value.models.length <= 300 && value.usage && typeof value.usage === 'object', 'ai_unavailable', 503);
   // Project a closed DTO: gateway diagnostics can never become a browser field.
   const usage = {};
   for (const key of ['requests', 'tokens', 'inputTokens', 'outputTokens', 'pendingTokens', 'pendingRequests']) if (Object.hasOwn(value.usage, key)) {
@@ -67,7 +67,7 @@ function accountView(value, expectedAccountId) {
   const models = value.models.map(model => {
     if (typeof model === 'string') return model;
     need(model && typeof model.id === 'string', 'ai_unavailable', 503);
-    return Object.fromEntries(['id', 'name', 'label', 'provider', 'contextWindow', 'maxOutputTokens', 'status', 'capabilities']
+    return Object.fromEntries(['id', 'name', 'label', 'provider', 'contextWindow', 'maxOutputTokens', 'status', 'capabilities', 'inputPriceMicrorublesPerMillion', 'outputPriceMicrorublesPerMillion']
       .filter(key => Object.hasOwn(model, key)).map(key => [key, model[key]]));
   });
   return { schema: value.schema, accountId: expectedAccountId, state: value.state, defaultKey: value.defaultKey === null ? null : keyView(value.defaultKey, true),
@@ -77,18 +77,23 @@ function accountView(value, expectedAccountId) {
 /** One host-owned bridge for every AI ingress. Account identity is captured from
  * original Connect/capability authority, never an incoming account selector. */
 export function createAccountAiService({ configuration, databasePath, getConnect, fetchImpl = fetch, clock = Date.now,
-  reconcileMs = 60000, requestTimeoutMs = 10000, dispatchLeaseMs = 600000, maxAuthorizations = 256 } = {}) {
+  admitNewWork = () => true, reconcileMs = 60000, reconcileBatchSize = 100, cacheTtlMs = 60000, requestTimeoutMs = 10000, dispatchLeaseMs = 600000, maxAuthorizations = 256 } = {}) {
   need(isAccountAiConfiguration(configuration) && typeof getConnect === 'function' && typeof fetchImpl === 'function', 'ai_configuration_invalid', 503);
   need(Number.isSafeInteger(reconcileMs) && reconcileMs >= 20 && reconcileMs <= 3600000
     && Number.isSafeInteger(requestTimeoutMs) && requestTimeoutMs > 0 && requestTimeoutMs <= 30000
     && Number.isSafeInteger(dispatchLeaseMs) && dispatchLeaseMs > 0 && dispatchLeaseMs <= 600000
     && Number.isSafeInteger(maxAuthorizations) && maxAuthorizations >= 1 && maxAuthorizations <= 4096, 'ai_configuration_invalid', 503);
+  need(Number.isSafeInteger(reconcileBatchSize) && reconcileBatchSize >= 1 && reconcileBatchSize <= 400
+    && Number.isSafeInteger(cacheTtlMs) && cacheTtlMs >= 1 && cacheTtlMs <= 300000, 'ai_configuration_invalid', 503);
+  need(typeof admitNewWork === 'function' && !types.isAsyncFunction(admitNewWork) && !types.isProxy(admitNewWork), 'ai_configuration_invalid', 503);
   need(typeof databasePath === 'string' && databasePath.length > 0, 'ai_configuration_invalid', 503);
   if (databasePath !== ':memory:') mkdirSync(path.dirname(path.resolve(databasePath)), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(databasePath);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS callback_nonces (issuer TEXT NOT NULL,kid TEXT NOT NULL,jti TEXT NOT NULL,expires_at INTEGER NOT NULL,PRIMARY KEY(issuer,kid,jti)); CREATE INDEX IF NOT EXISTS callback_nonce_expiry ON callback_nonces(expires_at)');
-  let closed = false, started = false, scanning = null, timer, unsubscribeAccounts, unsubscribeRevoke;
+  let closed = false, started = false, scanning = null, timer, unsubscribeAccounts, unsubscribeRevoke, activeMutations = 0;
   const stopping = new AbortController(), pending = new Map(), cached = new Map(), authorizations = new Map();
+  const newAccounts = new Set(configuration.sponsorAccountIds());
+  let reconcileCursor = '', retryAt = 0, failures = 0;
   const signer = configuration.signer();
   const verifier = configuration.verifier(proof => {
     if (closed) return false;
@@ -97,6 +102,14 @@ export function createAccountAiService({ configuration, databasePath, getConnect
         .run(proof.iss, proof.kid, proof.jti, proof.exp).changes === 1; } catch { return false; }
   });
   const alive = () => need(!closed, 'ai_unavailable', 503);
+  function accepting() {
+    if (closed) return false;
+    try { const value = admitNewWork();
+      if (value && typeof value.then === 'function') { void Promise.resolve(value).catch(() => {}); return false; }
+      return value === true;
+    } catch { return false; }
+  }
+  const admit = () => need(accepting(), 'ai_maintenance', 503);
   const currentActor = actor => {
     alive();
     try { return getConnect().withActorAuthorityFence(actor, () => true); }
@@ -120,7 +133,7 @@ export function createAccountAiService({ configuration, databasePath, getConnect
     guard(); let response;
     try {
       response = await wire({ ...request, signal: AbortSignal.any([AbortSignal.timeout(requestTimeoutMs), ...(request.signal ? [request.signal] : [])]) }); guard();
-      const value = await readJson(response); guard();
+      const value = await readJson(response, request.operation === 'keys.list' ? 8 * 1024 * 1024 : 512 * 1024); guard();
       if (!response.ok) { const code = value?.error?.code ?? value?.error?.type ?? value?.code;
         throw aiError(safeGatewayErrors.get(code) ?? (response.status === 409 ? 'ai_request_conflict' : response.status === 400 ? 'ai_invalid_request'
           : mutation && response.status >= 500 ? 'ai_operation_unknown' : 'ai_unavailable'), response.status); }
@@ -160,11 +173,11 @@ export function createAccountAiService({ configuration, databasePath, getConnect
         if (result && typeof result.then === 'function') { void Promise.resolve(result).catch(() => {}); throw aiError('ai_context_changed', 403); }
         need(result !== false, 'ai_context_changed', 403); }
       catch { invalidated = true; throw aiError('ai_context_changed', 403); } };
-    return Object.freeze({ accountId, deviceId, guard,
+    return Object.freeze({ accountId, deviceId, guard, allowedModels: models ?? null,
       async complete({ requestId, body, signal }) {
-        guard(); need(id(requestId) && body && typeof body === 'object' && signal instanceof AbortSignal);
+        guard(); admit(); need(id(requestId) && body && typeof body === 'object' && signal instanceof AbortSignal);
         need(!models || models.includes(body.model), 'ai_model_denied', 403);
-        await ensure(accountId); guard(); need(!signal.aborted, 'ai_context_changed', 403);
+        await ensure(accountId); guard(); admit(); need(!signal.aborted, 'ai_context_changed', 403);
         for (const [key, entry] of authorizations) if (entry.expiresAt <= clock()) entry.finish();
         need(authorizations.size < maxAuthorizations, 'ai_capacity', 429);
         const encoded = JSON.stringify(body), bodySha256 = digest(encoded), authorizationId = randomUUID();
@@ -219,21 +232,37 @@ export function createAccountAiService({ configuration, databasePath, getConnect
       accountId: actor.accountId, deviceId: actor.deviceId }, () => currentActor(actor)), actor.accountId);
     remember(account); return account;
   }
-  async function reconcile() {
+  async function reconcile({ background = false } = {}) {
     if (closed || scanning) return scanning;
+    if (background && clock() < retryAt) return;
     scanning = (async () => {
-      await Promise.allSettled(configuration.sponsorAccountIds().map(ensure));
-      let after = '';
-      do { const ids = getConnect().listAccountIds({ after, limit: 100 }); if (!ids.length) break;
-        for (let offset = 0; offset < ids.length && !closed; offset += 4) await Promise.allSettled(ids.slice(offset, offset + 4).map(ensure));
-        after = ids.at(-1);
-      } while (!closed);
-    })().catch(() => {}).finally(() => { scanning = null; }); return scanning;
+      const urgent = [...newAccounts].slice(0, reconcileBatchSize);
+      let ids = getConnect().listAccountIds({ after: reconcileCursor, limit: Math.max(1, reconcileBatchSize - urgent.length) });
+      if (!ids.length && reconcileCursor) { reconcileCursor = ''; ids = getConnect().listAccountIds({ limit: Math.max(1, reconcileBatchSize - urgent.length) }); }
+      ids = ids.slice(0, reconcileBatchSize - urgent.length);
+      const work = [...new Set([...urgent, ...ids])];
+      for (let offset = 0; offset < work.length && !closed; offset += 4) {
+        const batch = work.slice(offset, offset + 4), results = await Promise.allSettled(batch.map(accountId => {
+          const previous = cached.get(accountId);
+          return previous && clock() - previous.at < 300000 ? previous.account : ensure(accountId);
+        }));
+        results.forEach((result, index) => { if (result.status === 'fulfilled') newAccounts.delete(batch[index]);
+          else if (newAccounts.size < 256) newAccounts.add(batch[index]); });
+        if (results.every(result => result.status === 'rejected')) {
+          failures = Math.min(failures + 1, 10); retryAt = clock() + Math.min(300000, 1000 * 2 ** failures); return;
+        }
+      }
+      if (ids.length) reconcileCursor = ids.at(-1);
+      failures = 0; retryAt = 0;
+    })().catch(() => {}).finally(() => {
+      scanning = null;
+      if (!closed && newAccounts.size && clock() >= retryAt) queueMicrotask(() => { void reconcile({ background: true }); });
+    }); return scanning;
   }
-  const service = Object.freeze({ configured: true, operations: AI_OPERATIONS, capture,
+  const service = Object.freeze({ configured: true, operations: AI_OPERATIONS, maxResultBytes: 8 * 1024 * 1024, capture,
     eligible(actor) {
-      currentActor(actor); const status = cached.get(actor.accountId)?.account;
-      return !status || ['provisioning', 'ready', 'unavailable'].includes(status.state);
+      currentActor(actor); const entry = cached.get(actor.accountId), status = entry && clock() - entry.at < cacheTtlMs ? entry.account : null;
+      return accepting() && (!status || ['provisioning', 'ready', 'unavailable'].includes(status.state));
     },
     captureConnector(authorization) {
       need(isConnectorModelAuthorization(authorization), 'ai_billing_identity_required', 403);
@@ -241,7 +270,8 @@ export function createAccountAiService({ configuration, databasePath, getConnect
       if (owner) return bound({ accountId: owner.accountId, deviceId: owner.deviceId,
         guard: authorization.assertCurrent, subscribe: authorization.subscribe });
       const sponsor = configuration.legacyConnectorFor(authorization.connectorId);
-      need(sponsor, 'ai_billing_identity_required', 403); existingAccount(sponsor.accountId);
+      need(sponsor && typeof authorization.credentialId === 'string' && /^[0-9a-f]{64}$/u.test(authorization.credentialId)
+        && timingSafeEqual(Buffer.from(sponsor.tokenHash, 'hex'), Buffer.from(authorization.credentialId, 'hex')), 'ai_billing_identity_required', 403); existingAccount(sponsor.accountId);
       return bound({ accountId: sponsor.accountId, deviceId: 'service:connector:' + authorization.connectorId,
         guard: authorization.assertCurrent, subscribe: authorization.subscribe, models: sponsor.models });
     },
@@ -251,13 +281,16 @@ export function createAccountAiService({ configuration, databasePath, getConnect
       return bound({ accountId: sponsor.accountId, deviceId: 'service:application:' + appId, guard: assertCurrent, models: sponsor.models });
     },
     ensure, reconcile,
+    admissionStatus: () => Object.freeze({ accepting: accepting(), activeRequests: authorizations.size, activeMutations, pendingProvisioning: pending.size, reconciling: Boolean(scanning) }),
     start() {
       alive(); if (started) return; started = true;
-      unsubscribeAccounts = getConnect().subscribeAccountCreated(() => { void reconcile(); });
+      unsubscribeAccounts = getConnect().subscribeAccountCreated(event => {
+        if (newAccounts.size < 256) newAccounts.add(event.accountId); void reconcile({ background: true });
+      });
       unsubscribeRevoke = getConnect().subscribeRevocations(event => {
         for (const entry of [...authorizations.values()]) if (entry.deviceId === event.deviceId) entry.finish();
       });
-      timer = setInterval(() => { void reconcile(); }, reconcileMs); timer.unref?.(); void reconcile();
+      timer = setInterval(() => { void reconcile({ background: true }); }, reconcileMs); timer.unref?.(); void reconcile({ background: true });
     },
     async executeAsync({ op, actor, args = {} }) {
       currentActor(actor); need(AI_OPERATIONS.has(op));
@@ -273,14 +306,19 @@ export function createAccountAiService({ configuration, databasePath, getConnect
         try { return await status(actor); }
         catch (error) { guard(); throw error; }
       }
+      if (mutation) admit();
       await ensure(actor.accountId); guard();
+      if (mutation) admit();
       const action = op.slice('ai.'.length), payload = Object.fromEntries(Object.entries(args).filter(([key]) => !['expectedAccountId', 'operationId'].includes(key)));
       if (op.endsWith('.create')) need(typeof payload.name === 'string' && payload.name.trim().length > 0 && payload.name.length <= 100);
       if (op.endsWith('.rotate') || op.endsWith('.revoke') || op.endsWith('.update')) need(id(payload.keyId));
       if (payload.expectedPolicyRevision !== undefined) need(Number.isSafeInteger(payload.expectedPolicyRevision) && payload.expectedPolicyRevision >= 1);
-      const value = await jsonWire({ method: mutation ? 'POST' : 'GET', route: '/internal/soty/v1/keys' + (mutation ? '/' + action.split('.')[1] : ''),
-        operation: action, accountId: actor.accountId, deviceId: actor.deviceId, requestId: args.operationId ?? randomUUID(), body: mutation ? JSON.stringify(payload) : '' }, guard, mutation);
-      if (!mutation) { need(Array.isArray(value?.keys) && value.keys.length <= 100, 'ai_unavailable', 503); return { keys: value.keys.map(key => keyView(key)) }; }
+      let value;
+      if (mutation) activeMutations++;
+      try { value = await jsonWire({ method: mutation ? 'POST' : 'GET', route: '/internal/soty/v1/keys' + (mutation ? '/' + action.split('.')[1] : ''),
+        operation: action, accountId: actor.accountId, deviceId: actor.deviceId, requestId: args.operationId ?? randomUUID(), body: mutation ? JSON.stringify(payload) : '' }, guard, mutation); }
+      finally { if (mutation) activeMutations--; }
+      if (!mutation) { need(Array.isArray(value?.keys) && value.keys.length <= 200, 'ai_unavailable', 503); return { keys: value.keys.map(key => keyView(key)) }; }
       need(value?.key && typeof value.key === 'object', 'ai_operation_unknown', 503);
       return { key: keyView(value.key), ...(['ai.keys.create', 'ai.keys.rotate'].includes(op) ? { secret: typeof value.secret === 'string' ? value.secret : null } : {}),
         ...(value.replayed === undefined ? {} : { replayed: value.replayed === true }) };

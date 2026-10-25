@@ -355,6 +355,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // connector when it needs machine-scope terminal capabilities instead.
     return matches.find(item => !item.connectorId.endsWith(':machine')) || matches[0];
   }
+  /** Host-only negative ownership projection for explicitly pinned legacy
+   * service credentials. This grants neither an account nor app authority. */
+  function isUnownedConnector(identity) {
+    assertApps(!closed, 'apps_closed', 503);
+    return !db.prepare('SELECT 1 FROM app_devices WHERE connector_key=?').get(connectorKey(identity));
+  }
   function publicCatalog() {
     assertApps(!closed, 'apps_closed', 503);
     const rows = db.prepare(`SELECT a.* FROM local_apps a JOIN app_publications p
@@ -1698,7 +1704,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+  return { operations, execute, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,

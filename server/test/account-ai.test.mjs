@@ -20,10 +20,11 @@ const safeAccount = accountId => ({ schema: 'soty.ai-account.v1', accountId, sta
   usage: { requests: 0, tokens: 0, inputTokens: 0, outputTokens: 0, private: 'must-never-leak' },
   models: [{ id: GLM_MODEL, name: 'GLM', status: 'healthy' }], updatedAt: new Date().toISOString() });
 
-async function fixture(t, { databasePath = ':memory:', applications = [], legacyConnectors = [], dispatchLeaseMs = 600000, maxAuthorizations = 256 } = {}) {
+async function fixture(t, { databasePath = ':memory:', applications = [], legacyConnectors = [], dispatchLeaseMs = 600000, maxAuthorizations = 256,
+  reconcileBatchSize = 100, cacheTtlMs = 60000, clock = Date.now } = {}) {
   let ai; const actors = new Map();
   const f = signedFixture(t, [
-    { operations, executeAsync: request => ai.executeAsync(request) },
+    { operations, maxResultBytes: 8 * 1024 * 1024, executeAsync: request => ai.executeAsync(request) },
     { operations: new Set(['fixture.actor']), execute({ actor }) { actors.set(actor.deviceId, actor); return { captured: true }; } },
   ]);
   const rootKeys = generateKeyPairSync('ed25519'), gatewayKeys = generateKeyPairSync('ed25519');
@@ -34,7 +35,7 @@ async function fixture(t, { databasePath = ':memory:', applications = [], legacy
   const verifier = createBridgeVerifier({ audience: GATEWAY_AI_AUDIENCE, issuers: [{ issuer: ROOT_AI_ISSUER, kid: 'test-root', publicKey: rootKeys.publicKey }],
     claimNonce(proof) { if (nonces.has(proof.jti)) return false; nonces.add(proof.jti); return true; } });
   const gatewaySigner = createBridgeSigner({ issuer: GATEWAY_AI_ISSUER, audience: ROOT_AI_AUDIENCE, kid: 'test-gateway', privateKey: gatewayKeys.privateKey });
-  const state = { calls: [], dispatches: 0, outage: false, loseMutation: false, onChat: null, onEnsure: null, lastCallback: null, lastIngress: null };
+  const state = { calls: [], dispatches: 0, outage: false, maintenance: false, loseMutation: false, onChat: null, onEnsure: null, lastCallback: null, lastIngress: null };
   async function callback(proof, encoded, overrides = {}) {
     const value = { issuer: ROOT_AI_ISSUER, accountId: proof.accountId, deviceId: proof.deviceId, authorizationId: proof.authorizationId,
       requestId: proof.requestId, gatewayRequestId: randomUUID(), bodySha256: hash(encoded), providerId: 'fixture-provider', model: JSON.parse(encoded).model, ...overrides };
@@ -96,7 +97,7 @@ async function fixture(t, { databasePath = ':memory:', applications = [], legacy
     }
     return Response.json({ error: { code: 'not_found' } }, { status: 404 });
   }
-  const create = () => createAccountAiService({ configuration: config, databasePath, getConnect: () => f.service, fetchImpl, dispatchLeaseMs, maxAuthorizations, reconcileMs: 20 });
+  const create = () => createAccountAiService({ configuration: config, databasePath, getConnect: () => f.service, fetchImpl, admitNewWork: () => !state.maintenance, dispatchLeaseMs, maxAuthorizations, reconcileMs: 20, reconcileBatchSize, cacheTtlMs, clock });
   ai = create();
   t.after(() => ai.close());
   async function issued(person) { await f.call(person, 'fixture.actor'); return actors.get(person.deviceId); }
@@ -128,6 +129,31 @@ test('concurrent first-use ensure is single-flight and eligibility is synchronou
   const attempts = [f.ai().ensure(a.accountId), f.ai().ensure(a.accountId), f.ai().ensure(a.accountId)];
   await new Promise(resolve => setImmediate(resolve)); assert.equal(count, 1); gate.resolve();
   const results = await Promise.all(attempts); assert.equal(new Set(results.map(account => account.defaultKey.id)).size, 1);
+});
+
+test('background account scan advances a bounded cursor and skips freshly projected accounts', async t => {
+  const f = await fixture(t, { reconcileBatchSize: 2 }); for (let index = 0; index < 5; index++) await f.person('Account ' + index);
+  await f.ai().reconcile(); assert.equal(f.accounts.size, 2);
+  await f.ai().reconcile(); assert.equal(f.accounts.size, 4);
+  await f.ai().reconcile(); assert.equal(f.accounts.size, 5);
+  const count = f.state.calls.length; await f.ai().reconcile(); assert.equal(f.state.calls.length, count);
+});
+
+test('stale limited projections cannot permanently block automatic first-use after a budget reset', async t => {
+  let now = Date.now(); const f = await fixture(t, { cacheTtlMs: 50, clock: () => now }), a = await f.person('A'), actor = await f.issued(a);
+  await f.ai().ensure(a.accountId); f.accounts.get(a.accountId).state = 'limited'; await f.call(a, 'ai.account.get', { expectedAccountId: a.accountId });
+  assert.equal(f.ai().eligible(actor), false); const before = f.state.calls.length; now += 51;
+  assert.equal(f.ai().eligible(actor), true); assert.equal(f.state.calls.length, before);
+  f.accounts.get(a.accountId).state = 'ready'; const response = await f.ai().capture({ actor }).complete({ requestId: 'after-reset', body: { model: GLM_MODEL }, signal: new AbortController().signal });
+  assert.equal(response.status, 200); await response.json();
+});
+
+test('account status accepts the agreed 300-model slim catalog above the old byte/count limits', async t => {
+  const f = await fixture(t), a = await f.person('A'); await f.ai().ensure(a.accountId);
+  f.accounts.get(a.accountId).models = Array.from({ length: 300 }, (_, index) => ({ id: 'model-' + index + 'x'.repeat(220), name: 'М'.repeat(160), status: 'healthy',
+    inputPriceMicrorublesPerMillion: '23000000', outputPriceMicrorublesPerMillion: '23000000', diagnostic: 'must-never-leak' }));
+  const account = await f.call(a, 'ai.account.get', { expectedAccountId: a.accountId }); assert.equal(account.models.length, 300);
+  assert.equal(account.models[0].inputPriceMicrorublesPerMillion, '23000000'); assert.equal(JSON.stringify(account).includes('diagnostic'), false);
 });
 
 test('only issued current actors select billing; stale expected account and caller identity overrides fail before network', async t => {
@@ -169,6 +195,16 @@ test('owner key update/rotate/revoke use exact operation receipts and cannot mut
   assert.equal(f.accounts.size, 2); assert.equal(f.accounts.get(a.accountId).allowance.grantedMicrorubles, '50000000');
 });
 
+test('a valid bounded history above 100 keys remains manageable and projects active key metadata', async t => {
+  const f = await fixture(t), a = await f.person('A');
+  for (let index = 0; index < 101; index++) {
+    const key = { id: randomUUID(), owner: a.accountId, name: 'History ' + index, prefix: 'soty…test', status: index ? 'revoked' : 'active', limits: {} };
+    f.keys.set(key.id, key);
+  }
+  const result = await f.call(a, 'ai.keys.list', { expectedAccountId: a.accountId }); assert.equal(result.keys.length, 101); assert.equal(result.keys[0].status, 'active');
+  assert.equal(JSON.stringify(result).includes('owner'), false);
+});
+
 test('asynchronous or false guards cannot become model authority', async t => {
   const f = await fixture(t), a = await f.person('A'), actor = await f.issued(a);
   assert.throws(() => f.ai().capture({ actor, assertCurrent: async () => true }), error => error.code === 'ai_context_changed');
@@ -190,6 +226,37 @@ test('native branded mode keeps exact GLM/usage/receipt and account-scoped logic
   await assert.rejects(bound.complete(request), error => error.code === 'agent_reconcile_required');
   await assert.rejects(bound.complete({ ...request, requestId: 'round-2', body: { ...request.body, model: 'foreign-model' } }));
   const ingress = f.state.lastIngress; assert.equal(ingress.proof.accountId, a.accountId); assert.equal(JSON.parse(ingress.encoded).autoFallback, false);
+});
+
+test('an admitted native result and settled receipt survive a limited status caused by its own hold', async t => {
+  const f = await fixture(t), a = await f.person('A'), actor = await f.issued(a), entered = deferred(), release = deferred(), gatewayRequestId = randomUUID();
+  f.state.onChat = async (proof, encoded) => {
+    await f.callback(proof, encoded); entered.resolve(); await release.promise;
+    f.receipts.set(a.accountId + ':' + gatewayRequestId, { id: gatewayRequestId, logicalRequestId: proof.requestId, status: 'completed',
+      model_requested: GLM_MODEL, model_resolved: GLM_MODEL, input_tokens: '3', output_tokens: '2', charge_urub: '7' });
+    return Response.json({ model: GLM_MODEL, choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }, { headers: { 'x-soty-request-id': gatewayRequestId } });
+  };
+  const transport = createPersonalAgentTransport({ accountBridge: f.ai() }); t.after(() => transport.close());
+  const bound = transport.bind({ actor, scope: { accountId: a.accountId }, turnId: 'held-native', assertCurrent: () => f.service.withActorAuthorityFence(actor, () => true) });
+  const request = { requestId: 'round-1', requestDigest: 'held-digest', body: { model: GLM_MODEL, stream: false, messages: [{ role: 'user', content: 'Draft' }] }, signal: new AbortController().signal };
+  const work = bound.complete(request); await entered.promise;
+  f.accounts.get(a.accountId).state = 'limited'; await f.call(a, 'ai.account.get', { expectedAccountId: a.accountId }); assert.equal(f.ai().eligible(actor), false);
+  release.resolve(); const response = await work; assert.equal(response.status, 200); await response.json();
+  const receipt = await bound.account('round-1', { requestDigest: 'held-digest', usage: { status: 'reported', promptTokens: 3, completionTokens: 2 } }); assert.equal(receipt.chargeMicrorubles, '7');
+  assert.equal(f.ai().eligible(actor), false, 'new voice admission is denied by the fresh limited state; accepted accounting remains readable');
+});
+
+test('maintenance denies new work without invalidating an admitted response or owner receipt/readback', async t => {
+  const f = await fixture(t), a = await f.person('A'), actor = await f.issued(a), port = f.ai().capture({ actor });
+  const response = await port.complete({ requestId: 'before-maintenance', body: { model: GLM_MODEL }, signal: new AbortController().signal });
+  f.state.maintenance = true; assert.equal(f.ai().admissionStatus().accepting, false); assert.equal(f.ai().eligible(actor), false);
+  await assert.rejects(port.complete({ requestId: 'during-maintenance', body: { model: GLM_MODEL }, signal: new AbortController().signal }), error => error.code === 'ai_maintenance');
+  const mutation = await f.raw(a, 'ai.keys.create', { expectedAccountId: a.accountId, operationId: 'maintenance-key', name: 'Key' }); assert.equal(mutation.error.code, 'ai_maintenance');
+  assert.equal(f.keys.size, 0);
+  assert.equal((await f.call(a, 'ai.account.get', { expectedAccountId: a.accountId })).state, 'ready');
+  assert.deepEqual((await f.call(a, 'ai.keys.list', { expectedAccountId: a.accountId })).keys, []);
+  await response.json(); const receipt = await port.readReceipt({ requestId: response.headers.get('x-soty-request-id'), logicalRequestId: 'before-maintenance' }); assert.equal(receipt.request.status, 'completed');
+  assert.equal(f.state.dispatches, 1); assert.equal(f.ai().admissionStatus().activeRequests, 0);
 });
 
 test('queued inference rechecks original device on signed callback after revocation and dispatches zero times', async t => {

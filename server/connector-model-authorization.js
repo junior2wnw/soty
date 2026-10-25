@@ -70,13 +70,18 @@ export function captureLegacyConnectorModelAuthorization(store, tokenHash, { sam
   const current = () => {
     if (invalidated) return false;
     const entries = matching(), device = entries[0];
-    const valid = !store.closing && !store.failed && !store.persistence.failed && entries.length === 1
+    let unowned = false;
+    try { unowned = typeof store.legacyModelSponsorEligible === 'function' && store.legacyModelSponsorEligible(binding) === true; } catch {}
+    if (!unowned) void store.noteAccountModelOwnership?.(binding).catch(() => {});
+    const history = store.state.jobs.some(job => job.schema === 'soty.connector-job.v4' && job.linkId === binding.linkId
+      && job.deviceId === binding.deviceId && job.requestedConnectorId === binding.connectorId);
+    const valid = unowned && !history && !device?.accountOwned && !store.closing && !store.failed && !store.persistence.failed && entries.length === 1
       && device.linkId === binding.linkId && device.deviceId === binding.deviceId && device.connectorId === binding.connectorId
       && store.now() - device.lastSeenAt <= freshMs;
     if (!valid) invalidated = true; return valid;
   };
   if (!current()) return false;
-  const capability = Object.freeze({ identity: hashToken(JSON.stringify(binding)), connectorId: binding.connectorId, owner: null,
+  const capability = Object.freeze({ identity: hashToken(JSON.stringify(binding)), connectorId: binding.connectorId, credentialId: tokenHash, owner: null,
     assertCurrent: current,
     subscribe(listener) {
       if (typeof listener !== 'function') throw TypeError('model_authorization_observer_required');

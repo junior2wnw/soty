@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, createPublicKey } from 'node:crypto';
 import { mkdtemp, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -56,6 +56,21 @@ test('service accounts occupy a distinct namespace and exist only in explicit in
   value.applications[0].accountId = 'svc_' + 'F'.repeat(32);
   assert.equal(configuration.applicationFor('service-app').accountId, sponsorId);
   assert.throws(() => configuration.sponsorAccountIds().push('svc_' + 'F'.repeat(32)));
+});
+
+test('legacy connector sponsorship requires a private installation credential pin', () => {
+  const value = fixture(), binding = { connectorId: 'installed-connector', accountId: 'svc_' + 'S'.repeat(32), models: ['zai-org/GLM-5.3-Flash'] };
+  assert.throws(() => captureAccountAiConfiguration({ ...value, legacyConnectors: [binding] }), invalid);
+  assert.throws(() => captureAccountAiConfiguration({ ...value, legacyConnectors: [{ ...binding, tokenHash: 'not-a-credential-digest' }] }), invalid);
+  const config = captureAccountAiConfiguration({ ...value, legacyConnectors: [{ ...binding, tokenHash: 'a'.repeat(64) }] });
+  assert.equal(config.legacyConnectorFor('installed-connector').tokenHash, 'a'.repeat(64));
+});
+
+test('directional service keys cannot be reused and verifier registries cannot contain a private PEM', () => {
+  const value = fixture();
+  assert.throws(() => captureAccountAiConfiguration({ ...value, gatewaySigner: { ...value.gatewaySigner, publicKey: value.signing.privateKey } }), invalid);
+  const samePublic = createPublicKey(value.signing.privateKey).export({ format: 'pem', type: 'spki' });
+  assert.throws(() => captureAccountAiConfiguration({ ...value, gatewaySigner: { ...value.gatewaySigner, publicKey: samePublic } }), invalid);
 });
 
 test('private file loader bounds bytes and shape without exposing invalid contents', async t => {

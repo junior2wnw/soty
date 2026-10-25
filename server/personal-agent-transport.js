@@ -49,7 +49,7 @@ export function createPersonalAgentTransport({ accountBridge, gatewayOrigin, bil
     const rounds = new Map();
     const guard = () => {
       requireValue(!closed, 'agent_transport_unavailable'); assertCurrent();
-      if (bridgeMode) { boundAccount.guard(); requireValue(accountBridge.eligible(actor), 'agent_model_access_denied'); }
+      if (bridgeMode) boundAccount.guard();
       else requireValue(authorizeActor({ actor, billingTenant, keyRef, model: GLM_MODEL }) === true, 'agent_model_access_denied');
     };
     const keyFor = requestId => `soty-agent-${createHash('sha256').update(canonical({ scope, turnId, requestId })).digest('hex')}`;

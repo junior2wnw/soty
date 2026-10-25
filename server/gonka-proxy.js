@@ -181,11 +181,9 @@ export function createAccountModelProxy({ store, accountAi }) {
       if (typeof authorization !== 'string' || typeof authenticateToken.current !== 'function') throw Object.assign(new Error('model-authorization-denied'), { status: 403 });
       return accountAi.captureApplication(authorization, () => authenticateToken.current(token) === authorization);
     }
-    try { return accountAi.captureConnector(authorization); }
-    catch {
-      const legacy = await store.captureLegacyModelAuthorization(token);
-      return accountAi.captureConnector(legacy);
-    }
+    if (authorization && typeof authorization === 'object') return accountAi.captureConnector(authorization);
+    const legacy = await store.captureLegacyModelAuthorization(token);
+    return accountAi.captureConnector(legacy);
   }
   function denied(res, error) {
     if (res.headersSent || res.destroyed) { if (!res.destroyed) res.end(); return; }
@@ -196,13 +194,13 @@ export function createAccountModelProxy({ store, accountAi }) {
     models, routing: 'client-choice', transport: 'account-scoped-server-bridge', upstreamStatus: () => [],
     async handleModels(req, res, { authenticateToken } = {}) {
       try { const bound = await capture(req, authenticateToken); bound.guard();
-        respondJson(res, 200, { object: 'list', data: models.map(id => ({ id, object: 'model', created: 0, owned_by: 'soty' })) }); }
+        respondJson(res, 200, { object: 'list', data: models.filter(id => !bound.allowedModels || bound.allowedModels.includes(id)).map(id => ({ id, object: 'model', created: 0, owned_by: 'soty' })) }); }
       catch (error) { denied(res, error); }
     },
     async handleHealth(req, res, { authenticateToken } = {}) {
       try { const bound = await capture(req, authenticateToken); bound.guard();
         respondJson(res, 200, { ok: true, configured: true, routing: 'client-choice', providerStrategy: 'account-gateway', liveProbe: false,
-          models: models.map(id => ({ id, providers: [] })) }); }
+          models: models.filter(id => !bound.allowedModels || bound.allowedModels.includes(id)).map(id => ({ id, providers: [] })) }); }
       catch (error) { denied(res, error); }
     },
     async handleChatCompletions(req, res, { authenticateToken } = {}) {

@@ -33,6 +33,7 @@ class ConnectorStore {
     this.maintenancePath = path.join(path.dirname(filePath), "connector-maintenance.json");
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.ownedJobActive = typeof options.ownedJobActive === 'function' ? options.ownedJobActive : null;
+    this.legacyModelSponsorEligible = typeof options.legacyModelSponsorEligible === 'function' ? options.legacyModelSponsorEligible : null;
     this.preserveHistory = options.preserveHistory ?? process.env.SOTY_CONNECTOR_PRESERVE_HISTORY === "1";
     this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
     this.requestIndex = new Map();
@@ -129,7 +130,18 @@ class ConnectorStore {
   async captureLegacyModelAuthorization(token) {
     await this.writeQueue; await this.readable();
     const secret = safeToken(token); if (!secret) return false;
+    const tokenHash = hashToken(secret), matches = this.state.connectors.filter(item => item.protocol === 2 && sameHash(item.tokenHash, tokenHash));
+    if (matches.length !== 1 || !this.legacyModelSponsorEligible) return false;
+    const binding = { linkId: matches[0].linkId, deviceId: matches[0].deviceId, connectorId: matches[0].connectorId };
+    let unowned = false; try { unowned = this.legacyModelSponsorEligible(binding) === true; } catch {}
+    if (!unowned) { await this.noteAccountModelOwnership(binding); return false; }
     return captureLegacyConnectorModelAuthorization(this, hashToken(secret), { sameHash, hashToken, changeKey, freshMs: connectorFreshMs });
+  }
+  async noteAccountModelOwnership(binding) {
+    return this.mutate(() => {
+      for (const connector of this.state.connectors) if (connector.linkId === binding.linkId && connector.deviceId === binding.deviceId && connector.connectorId === binding.connectorId) connector.accountOwned = true;
+      this.signal(binding.linkId, binding.deviceId);
+    });
   }
   recheckModelAuthorizations() { recheckConnectorModelAuthorizations(this); }
 
@@ -203,6 +215,9 @@ class ConnectorStore {
       const clean = { ...requested, linkId: access.linkId, deviceId: access.deviceId };
       if (!this.state.connectors.some((item) => item.linkId === clean.linkId && (!clean.deviceId || item.deviceId === clean.deviceId))) {
         return { ok: false, error: "connector-access-denied" };
+      }
+      if (ownerAccountId) for (const connector of this.state.connectors) {
+        if (connector.linkId === clean.linkId && connector.deviceId === clean.deviceId && connector.connectorId === ownedConnectorId) connector.accountOwned = true;
       }
       const requestId = ownedRequestId || input?.requestId || "";
       const requestKey = requestId ? hashToken(JSON.stringify(ownerAccountId ? ['account', ownerAccountId, requestId] : [clean.linkId, clean.deviceId, access.grant?.id || "", requestId])) : "";
@@ -865,6 +880,10 @@ export function normalizeConnectorState(value) {
         };
       })
     : [];
+  // Keep this historical fact when old terminal jobs are later pruned. Client
+  // registration never accepts or clears this host-written additive marker.
+  for (const connector of state.connectors) if (state.jobs.some(job => job.schema === accountJobSchema
+    && job.linkId === connector.linkId && job.deviceId === connector.deviceId && job.requestedConnectorId === connector.connectorId)) connector.accountOwned = true;
   return state;
 }
 
@@ -1120,7 +1139,8 @@ function newestConnector(connectors) {
 }
 
 function validStoredConnector(value) {
-  return Boolean(cleanRegistration(value) && /^[a-f0-9]{64}$/u.test(value.tokenHash) && Number.isFinite(value.lastSeenAt));
+  return Boolean(cleanRegistration(value) && /^[a-f0-9]{64}$/u.test(value.tokenHash) && Number.isFinite(value.lastSeenAt)
+    && (value.accountOwned === undefined || typeof value.accountOwned === 'boolean'));
 }
 
 function connectorKey(value) {

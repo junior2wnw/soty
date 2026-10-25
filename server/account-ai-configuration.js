@@ -16,16 +16,17 @@ function exact(value, required, optional = []) {
   need(value && typeof value === 'object' && !Array.isArray(value));
   need(required.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => [...required, ...optional].includes(key)));
 }
-function bindings(values, field) {
+function bindings(values, field, credentialPin = false) {
   need(Array.isArray(values) && values.length <= 128); const result = new Map();
   for (const value of values) {
-    exact(value, [field, 'accountId', 'models']);
+    exact(value, [field, 'accountId', 'models', ...(credentialPin ? ['tokenHash'] : [])]);
+    if (credentialPin) need(typeof value.tokenHash === 'string' && /^[0-9a-f]{64}$/u.test(value.tokenHash));
     need(typeof value[field] === 'string' && /^[A-Za-z0-9_.:-]{1,180}$/u.test(value[field]) && !result.has(value[field]));
     need(typeof value.accountId === 'string' && /^(?:acct|svc)_[A-Za-z0-9_-]{32}$/u.test(value.accountId));
     need(Array.isArray(value.models) && value.models.length > 0 && value.models.length <= 32
       && value.models.every(model => typeof model === 'string' && /^[A-Za-z0-9_./:-]{1,160}$/u.test(model))
       && new Set(value.models).size === value.models.length);
-    result.set(value[field], Object.freeze({ accountId: value.accountId, models: Object.freeze([...value.models]) }));
+    result.set(value[field], Object.freeze({ accountId: value.accountId, models: Object.freeze([...value.models]), ...(credentialPin ? { tokenHash: value.tokenHash } : {}) }));
   }
   return id => result.get(id) ?? null;
 }
@@ -44,10 +45,12 @@ export function captureAccountAiConfiguration(value, { clock = Date.now, allowLo
     need(value.gatewaySigner.issuer === GATEWAY_AI_ISSUER);
     for (const kid of [value.signing.kid, value.gatewaySigner.kid]) need(typeof kid === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/u.test(kid));
     need(typeof value.signing.privateKey === 'string' && value.signing.privateKey.length <= 8192
-      && typeof value.gatewaySigner.publicKey === 'string' && value.gatewaySigner.publicKey.length <= 8192);
+      && typeof value.gatewaySigner.publicKey === 'string' && value.gatewaySigner.publicKey.length <= 8192
+      && !value.gatewaySigner.publicKey.includes('PRIVATE KEY'));
     const privateKey = createPrivateKey(value.signing.privateKey), publicKey = createPublicKey(value.gatewaySigner.publicKey);
     need(privateKey.asymmetricKeyType === 'ed25519' && publicKey.asymmetricKeyType === 'ed25519');
-    const applicationFor = bindings(value.applications ?? [], 'appId'), legacyConnectorFor = bindings(value.legacyConnectors ?? [], 'connectorId');
+    need(!createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).equals(publicKey.export({ format: 'der', type: 'spki' })));
+    const applicationFor = bindings(value.applications ?? [], 'appId'), legacyConnectorFor = bindings(value.legacyConnectors ?? [], 'connectorId', true);
     const issuer = value.issuer, gatewayOrigin = value.gatewayOrigin, kid = value.signing.kid, gatewayKid = value.gatewaySigner.kid;
     const sponsorIds = Object.freeze([...new Set([...(value.applications ?? []), ...(value.legacyConnectors ?? [])].map(binding => binding.accountId).filter(id => id.startsWith('svc_')))]);
     const config = Object.freeze({ issuer, gatewayOrigin, applicationFor, legacyConnectorFor,

@@ -698,7 +698,8 @@ export function createPersonalAgentComposition({ getConnect, getServices, config
     modelEligible(actor) {
       if (closed || !module.status().configured) return false;
       if (gateway.accountBridge) {
-        try { transport.bind({ actor, scope: null, turnId: 'voice-readonly-eligibility',
+        try { if (!gateway.accountBridge.eligible(actor)) return false;
+          transport.bind({ actor, scope: null, turnId: 'voice-readonly-eligibility',
           assertCurrent: () => current(actor, () => true) }).guard(); return true; } catch { return false; }
       }
       try { return current(actor, () => {

@@ -186,6 +186,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   try {
     if (accountAi) {
       accountAiService = createAccountAiService({ configuration: accountAi, getConnect: () => connect,
+        admitNewWork: () => Boolean(connectors && !connectors.store.maintenance()),
         databasePath: path.join(dataDir || path.resolve('data'), 'account-ai', 'bridge.sqlite') });
       app.post('/internal/soty-ai/v1/authorize-dispatch', express.raw({ type: 'application/json', limit: '16kb' }), (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
@@ -223,6 +224,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       } });
     connectors = attachConnectorApi(app, { dataDir, gonka, accountAi: accountAiService,
       ...(accountAiService || localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? { storeOptions: {
+        ...(accountAiService ? { legacyModelSponsorEligible: binding => apps?.isUnownedConnector({ linkId: binding.linkId, hostDeviceId: binding.deviceId, connectorId: binding.connectorId }) === true } : {}),
         ownedJobActive: job => {
           const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
           if (!connect?.isActorActive(actor)) return false;

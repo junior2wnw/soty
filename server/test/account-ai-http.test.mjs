@@ -5,12 +5,15 @@ import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from '
 import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createHttpApp } from '../http-app.js';
 import { digestArgs } from '../../modules/connect/server/index.mjs';
 import { captureAccountAiConfiguration, ROOT_AI_ISSUER, GATEWAY_AI_ISSUER, GATEWAY_AI_AUDIENCE, ROOT_AI_AUDIENCE } from '../account-ai-configuration.js';
 import { createBridgeSigner, createBridgeVerifier } from '../../services/ai-gateway/packages/soty-bridge/index.mjs';
 import { createLocalAppsRuntime } from '../../scripts/agent-modules/local-apps.mjs';
 import { createSignedConnectHttpClient } from './support/signed-connect-client.mjs';
+import { createConnectorStore } from '../connector-store.js';
+import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 
 const MODEL = 'zai-org/GLM-5.3-Flash';
 const good = value => { assert.equal(value.ok, true, value.error?.code || value.error); return value; };
@@ -24,7 +27,7 @@ async function fixture(t) {
   const rootKeys = generateKeyPairSync('ed25519'), gatewayKeys = generateKeyPairSync('ed25519'), nonce = new Set(), accounts = new Map();
   const verify = createBridgeVerifier({ audience: GATEWAY_AI_AUDIENCE, issuers: [{ issuer: ROOT_AI_ISSUER, kid: 'fixture-root', publicKey: rootKeys.publicKey }], claimNonce(proof) { if (nonce.has(proof.jti)) return false; nonce.add(proof.jti); return true; } });
   const signer = createBridgeSigner({ issuer: GATEWAY_AI_ISSUER, audience: ROOT_AI_AUDIENCE, kid: 'fixture-gateway', privateKey: gatewayKeys.privateKey });
-  const state = { dispatches: [], callbacks: [], bypass: 0, hold: null, origins: [], receipts: new Map() }, sockets = new Set(), runtimes = [];
+  const state = { dispatches: [], callbacks: [], bypass: 0, hold: null, origins: [], receipts: new Map(), keyRows: [] }, sockets = new Set(), runtimes = [];
   let origin, app;
   const gateway = createServer(async (req, res) => {
     try {
@@ -42,6 +45,7 @@ async function fixture(t) {
         const receipt = state.receipts.get(proof.accountId + ':' + req.url.split('/').at(-1));
         res.writeHead(receipt ? 200 : 404).end(JSON.stringify(receipt ? { request: receipt } : {})); return;
       }
+      if (req.url === '/internal/soty/v1/keys') { res.end(JSON.stringify({ keys: state.keyRows })); return; }
       if (req.url.endsWith('/chat/completions')) {
         const input = JSON.parse(encoded), requestId = randomUUID();
         if (state.hold) { const gate = state.hold; state.hold = null; gate.entered.resolve(); await gate.release.promise; }
@@ -75,12 +79,12 @@ async function fixture(t) {
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   server.on('upgrade', (req, socket, head) => { if (!app?.locals.appsService.handleUpgrade(req, socket, head)) socket.destroy(); });
   await new Promise(done => server.listen(0, '127.0.0.1', done)); origin = `http://127.0.0.1:${server.address().port}`;
-  const sponsor = 'svc_' + 'S'.repeat(32), applicationToken = 'synthetic_application_token_'.padEnd(48, 'a');
+  const sponsor = 'svc_' + 'S'.repeat(32), applicationToken = 'synthetic_application_token_'.padEnd(48, 'a'), legacyToken = randomBytes(32).toString('base64url');
   const configuration = captureAccountAiConfiguration({ schema: 'soty.account-ai-installed.v1', issuer: ROOT_AI_ISSUER, gatewayOrigin,
     signing: { kid: 'fixture-root', privateKey: rootKeys.privateKey.export({ format: 'pem', type: 'pkcs8' }) },
     gatewaySigner: { issuer: GATEWAY_AI_ISSUER, kid: 'fixture-gateway', publicKey: gatewayKeys.publicKey.export({ format: 'pem', type: 'spki' }) },
     applications: [{ appId: 'synthetic_app', accountId: sponsor, models: [MODEL] }],
-    legacyConnectors: [{ connectorId: 'sponsored-connector', accountId: sponsor, models: [MODEL] }] }, { allowLoopbackFixture: true });
+    legacyConnectors: [{ connectorId: 'sponsored-connector', accountId: sponsor, models: [MODEL], tokenHash: createHash('sha256').update(legacyToken).digest('hex') }] }, { allowLoopbackFixture: true });
   app = createHttpApp(dist, { env: {}, dataDir: join(directory, 'data'), connectOrigins: [origin], accountAi: configuration,
     universalAppsEnabled: false, personalAgent: { enabled: false }, localExecutorCurrent: false,
     appOriginTemplate: `http://{appId}.localhost:${server.address().port}`, appHosting: { domainProfile: 'separate-site', namedAppZone: '', discoveryOrigin: '' },
@@ -97,22 +101,25 @@ async function fixture(t) {
   const alice = identity(), a = good(await call(alice, 'bootstrap', { label: 'A', encryptionPublicJwk: alice.publicJwk }));
   const bob = identity(), b = good(await call(bob, 'bootstrap', { label: 'B', encryptionPublicJwk: bob.publicJwk }));
   const store = app.locals.connectorService.store;
-  async function device({ connectorId = randomUUID(), claim = false } = {}) {
-    const token = randomBytes(32).toString('base64url'), binding = { linkId: randomBytes(32).toString('base64url'), hostDeviceId: 'fixture-host-' + randomUUID(), connectorId };
+  async function claimDevice({ binding, token }) {
+    const runtime = createLocalAppsRuntime({ randomSecret: () => randomBytes(32).toString('base64url'), digest: value => createHash('sha256').update(value).digest('hex'), createWebSocket: url => new globalThis.WebSocket(url), httpRequest: request,
+      encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') }, { identity: binding, token, serverUrl: origin });
+    runtimes.push(runtime); runtime.start(); const deadline = Date.now() + 5000;
+    while (!runtime.status().connected) { assert.ok(Date.now() < deadline); await new Promise(done => setTimeout(done, 10)); }
+    const proof = await runtime.claim(); good(await call(alice, 'apps.claim', { hostDeviceId: proof.hostDeviceId, connectorId: proof.connectorId, claimCode: proof.claimCode }));
+  }
+  async function device({ connectorId = randomUUID(), claim = false, token = connectorId === 'sponsored-connector' ? legacyToken : randomBytes(32).toString('base64url') } = {}) {
+    const binding = { linkId: randomBytes(32).toString('base64url'), hostDeviceId: 'fixture-host-' + randomUUID(), connectorId };
     good(await fetch(origin + '/api/connectors/register', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
       body: JSON.stringify({ linkId: binding.linkId, deviceId: binding.hostDeviceId, connectorId, capabilities: ['agent', 'command', 'script'], agent: { id: 'opencode', provider: 'gonka', available: true } }) }).then(response => response.json()));
-    if (claim) {
-      const runtime = createLocalAppsRuntime({ randomSecret: () => randomBytes(32).toString('base64url'), digest: value => createHash('sha256').update(value).digest('hex'), createWebSocket: url => new globalThis.WebSocket(url), httpRequest: request,
-        encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') }, { identity: binding, token, serverUrl: origin });
-      runtimes.push(runtime); runtime.start(); const deadline = Date.now() + 5000;
-      while (!runtime.status().connected) { assert.ok(Date.now() < deadline); await new Promise(done => setTimeout(done, 10)); }
-      const proof = await runtime.claim(); good(await call(alice, 'apps.claim', { hostDeviceId: proof.hostDeviceId, connectorId: proof.connectorId, claimCode: proof.claimCode }));
-    }
+    if (claim) await claimDevice({ binding, token });
     return { token, binding, auth: { linkId: binding.linkId, deviceId: binding.hostDeviceId, connectorId, token }, target: { hostDeviceId: binding.hostDeviceId, connectorId } };
   }
   const model = (token, input = body, application = false) => fetch(origin + (application ? '/api/inference/v1' : '/api/connectors/gonka/v1') + '/chat/completions', {
     method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify(input) });
-  return { origin, app, state, accounts, sponsor, applicationToken, alice, bob, a, b, call, device, model, store,
+  return { origin, app, state, accounts, sponsor, applicationToken, alice, bob, a, b, call, device, claimDevice, model, store, dataDir: join(directory, 'data'),
+    removeClaim(source) { const db = new DatabaseSync(join(directory, 'data', 'apps', 'registry.sqlite'));
+      try { db.prepare('DELETE FROM app_devices WHERE connector_key=?').run([source.binding.linkId, source.binding.hostDeviceId, source.binding.connectorId].join('|')); } finally { db.close(); } },
     hold() { const gate = { entered: deferred(), release: deferred() }; state.hold = gate; return gate; } };
 }
 
@@ -136,6 +143,25 @@ test('real static application route preserves JSON/SSE and bills explicit servic
   assert.equal(f.state.dispatches.length, 2);
   for (const entry of f.state.dispatches) { assert.equal(entry.proof.accountId, f.sponsor); assert.equal(entry.proof.deviceId, 'service:application:synthetic_app'); }
   assert.equal(f.state.bypass, 0);
+  for (const suffix of ['models', 'health']) {
+    const response = await fetch(f.origin + '/api/inference/v1/' + suffix, { headers: { authorization: 'Bearer ' + f.applicationToken } }); assert.equal(response.status, 200);
+    const value = await response.json(); assert.deepEqual((value.data ?? value.models).map(model => model.id), [MODEL]);
+  }
+});
+
+test('signed owner key-list supports 200 bounded full policies above the default Connect response cap', async t => {
+  const f = await fixture(t), allowedModels = Array.from({ length: 100 }, (_, index) => 'fixture-model-' + index + '-'.repeat(220));
+  f.state.keyRows = Array.from({ length: 200 }, (_, index) => ({ id: randomUUID(), name: 'Key ' + index, prefix: 'soty…test', status: index ? 'revoked' : 'active',
+    limits: { dailyMicrorubles: '1000000' }, allowedModels, policyRevision: 1 }));
+  assert.ok(Buffer.byteLength(JSON.stringify(f.state.keyRows)) > 2 * 1024 * 1024);
+  let stored = null;
+  const storage = { async read() { return structuredClone(stored); }, async claim(value) { stored ??= structuredClone(value); return structuredClone(stored); },
+    async compareAndSwap(revision, value) { assert.equal(stored.localRevision, revision); stored = structuredClone(value); return structuredClone(stored); } };
+  const client = createClientWithStorage({ projectId: 'soty', endpoint: f.origin + '/api/connect/rpc',
+    fetch: (url, init) => fetch(url, { ...init, headers: { ...init.headers, origin: f.origin } }) }, storage); t.after(() => client.dispose());
+  const account = await client.bootstrap('Large key-list browser');
+  const result = await client.extension('ai.keys.list', { expectedAccountId: account.accountId }); assert.equal(result.keys.length, 200); assert.equal(result.keys[0].status, 'active');
+  assert.deepEqual(result.keys[199].allowedModels, allowedModels);
 });
 
 test('actual native agent.turn uses exact GLM bridge and settled owner receipt before user answer/history; second device shares account', async t => {
@@ -175,4 +201,49 @@ test('real queued connector cancellation invalidates final callback before any u
   good(await f.call(f.alice, 'apps.agent.cancel', { expectedAccountId: f.a.accountId, ...owned.target, jobId: lease.id })); gate.release.resolve();
   const response = await pending; assert.equal(response.status, 403); await response.text(); assert.equal(f.state.dispatches.length, 0);
   assert.equal(f.state.bypass, 0);
+});
+
+test('legacy sponsorship requires the exact pinned installation secret, not a self-registered connector id', async t => {
+  const f = await fixture(t), attacker = await f.device({ connectorId: 'sponsored-connector', token: randomBytes(32).toString('base64url') });
+  const result = await f.model(attacker.token); assert.equal(result.status, 403); await result.text();
+  assert.equal(f.state.dispatches.length, 0); assert.equal(f.state.bypass, 0);
+});
+
+test('actual Root deployment maintenance keeps account reads available and blocks new native, service and key work', async t => {
+  const f = await fixture(t); await writeFile(f.store.maintenancePath, '{}');
+  const status = good(await f.call(f.alice, 'ai.account.get', { expectedAccountId: f.a.accountId })); assert.equal(status.state, 'ready');
+  const mutation = await f.call(f.alice, 'ai.keys.create', { expectedAccountId: f.a.accountId, operationId: 'maintenance-create', name: 'Maintenance key' }); assert.equal(mutation.error.code, 'ai_maintenance');
+  const service = await f.model(f.applicationToken, body, true); assert.equal(service.status, 503); await service.text();
+  const native = await f.call(f.alice, 'agent.turn', { requestId: 'maintenance-native', prompt: 'Draft a phrase.' }); assert.equal(native.ok, false);
+  assert.equal(f.app.locals.accountAi.admissionStatus().accepting, false); assert.equal(f.state.dispatches.length, 0); assert.equal(f.state.bypass, 0);
+  await rm(f.store.maintenancePath);
+  const admitted = await f.model(f.applicationToken, body, true); assert.equal(admitted.status, 200); await admitted.text();
+});
+
+test('claim without any owner job retires legacy sponsor authority permanently across removal, registration and reload', async t => {
+  const f = await fixture(t), source = await f.device({ connectorId: 'sponsored-connector' });
+  const before = await f.model(source.token); assert.equal(before.status, 200); await before.text();
+  await f.claimDevice(source);
+  const denied = await f.model(source.token); assert.equal(denied.status, 403); await denied.text();
+  assert.equal(f.store.state.jobs.length, 0); assert.equal(f.store.state.connectors[0].accountOwned, true);
+  f.removeClaim(source);
+  good(await f.store.register({ linkId: source.binding.linkId, deviceId: source.binding.hostDeviceId, connectorId: source.binding.connectorId,
+    accountOwned: false, capabilities: ['agent'], agent: { id: 'opencode', provider: 'gonka', available: true } }, source.token));
+  const after = await f.model(source.token); assert.equal(after.status, 403); await after.text(); assert.equal(f.state.dispatches.length, 1);
+  await f.store.close();
+  const reloaded = createConnectorStore(f.dataDir, { legacyModelSponsorEligible: () => true });
+  try { await reloaded.ready; assert.equal(reloaded.state.connectors[0].accountOwned, true); assert.equal(await reloaded.captureLegacyModelAuthorization(source.token), false); }
+  finally { await reloaded.close(); }
+});
+
+test('a cancelled owned lease never switches the same pinned credential to legacy sponsor billing', async t => {
+  const f = await fixture(t), source = await f.device({ connectorId: 'sponsored-connector', claim: true });
+  good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...source.target, requestId: 'sponsor-owned-request', conversationId: 'sponsor-owned-conversation', text: 'Synthetic task', cwd: '' }));
+  const lease = good(await f.store.poll(source.auth, 0)).jobs[0], authority = await f.store.captureModelAuthorization(source.token);
+  const result = await f.model(source.token); assert.equal(result.status, 200); await result.text(); assert.equal(f.state.dispatches.at(-1).proof.accountId, f.a.accountId);
+  good(await f.call(f.alice, 'apps.agent.cancel', { expectedAccountId: f.a.accountId, ...source.target, jobId: lease.id }));
+  assert.equal(authority.assertCurrent(), false);
+  const denied = await f.model(source.token); assert.equal(denied.status, 403); await denied.text();
+  f.removeClaim(source);
+  const removed = await f.model(source.token); assert.equal(removed.status, 403); await removed.text(); assert.equal(f.state.dispatches.length, 1);
 });
