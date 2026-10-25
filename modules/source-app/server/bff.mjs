@@ -45,7 +45,8 @@ export function createSourceAppBff(options) {
   const store = fields(value.storage, ['consumeNonce', 'createInteraction', 'getInteraction', 'claimInteraction', 'claimCallback', 'completeInteraction',
     'readSession', 'readCompletion', 'consumeCompletion', 'readTokenProof', 'revokeSession'], ['createRootSession', 'rebindSession', 'findRenewableSession']);
   Object.values(store).forEach(method => check(typeof method === 'function'));
-  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock, workspaceCapacity: value.workspaceCapacity });
+  const native = createNativeAuthorityRuntime(value.native, { sourceProfile: profile.sourceProfile, clock, workspaceCapacity: value.workspaceCapacity,
+    ...(contract.kind === 'soty.workspace.v1' ? { receiptKey: value.transportKey } : {}) });
   const protocol = rootSigned ? null : createSourceRpProtocol(value.rp, { clock });
   if (rootSigned) check(value.rp === undefined && value.rpSessions === undefined && typeof store.createRootSession === 'function', 'source_app_profile_invalid', 503);
   else check(value.rp.issuer === profile.issuer && value.rp.clientId === profile.clientId
@@ -71,6 +72,11 @@ export function createSourceAppBff(options) {
     try { await freshRoot(context, authority); await native.assertCurrent(authority); await freshRoot(context, authority);
       if (rootSigned) await native.assertCurrent(authority); }
     catch { throw new SourceAppError('source_app_effect_unknown', 503); }
+  }
+  function finalWorkspaceContext(authority, contextRef, mutation) {
+    if (contextRef === undefined) return;
+    try { native.assertWorkspaceContext(authority, contextRef); }
+    catch (error) { if (mutation) throw new SourceAppError('source_app_effect_unknown', 503); throw error; }
   }
   async function freshRoot(context, authority) {
     check(!closed, 'source_app_closed', 503);
@@ -450,6 +456,8 @@ export function createSourceAppBff(options) {
       if (operation === 'execute') await postCommit(context, current.authority);
       else { await freshRoot(context, current.authority); await native.assertCurrent(current.authority); await freshRoot(context, current.authority);
         if (rootSigned) await native.assertCurrent(current.authority); }
+      if (contract.kind === 'soty.workspace.v1') finalWorkspaceContext(current.authority,
+        args.contextRef ?? (data?.schema === 'soty.current-context.v2' ? data.context.ref : undefined), operation === 'execute');
       send(res, 200, { ok: true, data }); return;
     }
     const feedbackOperation = new Map([
@@ -471,6 +479,7 @@ export function createSourceAppBff(options) {
       if (['submit', 'reply', 'status', 'accept'].includes(feedbackOperation)) await postCommit(context, current.authority);
       else { await freshRoot(context, current.authority); await native.assertCurrent(current.authority); await freshRoot(context, current.authority);
         if (rootSigned) await native.assertCurrent(current.authority); }
+      finalWorkspaceContext(current.authority, contextRef, ['submit', 'reply', 'status', 'accept'].includes(feedbackOperation));
       let output;
       try { output = feedbackOutput(feedbackOperation, data); }
       catch { throw new SourceAppError(['submit', 'reply', 'status', 'accept'].includes(feedbackOperation) ? 'source_app_effect_unknown' : 'source_app_response_invalid', 503); }

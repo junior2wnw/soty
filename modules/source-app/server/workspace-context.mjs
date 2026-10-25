@@ -33,6 +33,33 @@ export function workspaceReceipt(input) {
   // Core independently validates every declared effect/artifact and its correspondence.
   return { effects: value.effects, receipt };
 }
+export function workspaceReceiptBinding(input) {
+  const value = fields(input, ['schema', 'contextRef', 'scopeDigest', 'receiptDigest', 'mac']);
+  denied(value.schema === 'soty.workspace-receipt-binding.v1' && opaque(value.contextRef)
+    && [value.scopeDigest, value.receiptDigest, value.mac].every(part => /^[a-f0-9]{64}$/u.test(part)));
+  return value;
+}
+/** The old immutable receipt and the current read attestation are different
+ * claims. This validator is shared by Source and the maintained Root adapter;
+ * it does not create a Native capability or verify a persisted binding MAC. */
+export function workspaceReadProofContext(input, { requestId, inputDigest, contextRef }) {
+  const receiptDenied = condition => check(condition, 'source_workspace_receipt_denied', 403);
+  const value = fields(input, ['requestId', 'inputDigest', 'outcome', 'contextAfter', 'workspaceReceipt'],
+    ['replayed', 'receipt', 'result', 'data', 'recovery']);
+  receiptDenied(value.requestId === requestId && value.inputDigest === inputDigest && value.outcome === 'committed');
+  workspaceReceipt(value.workspaceReceipt);
+  const originalAfter = contextAfter(value.contextAfter);
+  if (value.recovery === undefined) {
+    receiptDenied(originalAfter.mutationRef === workspaceMutationRef(requestId, inputDigest, contextRef)); return originalAfter;
+  }
+  const recovery = fields(value.recovery, ['schema', 'contextRef', 'receiptDigest', 'contextAfter']);
+  const { recovery: _recovery, ...original } = value;
+  receiptDenied(recovery.schema === 'soty.workspace-receipt-recovery.v1' && opaque(recovery.contextRef)
+    && /^[a-f0-9]{64}$/u.test(recovery.receiptDigest) && recovery.receiptDigest === digest(original)
+    && originalAfter.mutationRef === workspaceMutationRef(requestId, inputDigest, recovery.contextRef));
+  const currentAfter = contextAfter(recovery.contextAfter);
+  receiptDenied(currentAfter.mutationRef === workspaceMutationRef(requestId, inputDigest, contextRef)); return currentAfter;
+}
 // domain_read attestation, deliberately NOT a content/artifact_hash receipt.
 export function workspaceWitness({ after, artifact, requestId, inputDigest, scope }) {
   contextAfter(after);
@@ -79,6 +106,15 @@ export function createWorkspaceContextAuthority(options = {}) {
     assert(binding, projection, ref) {
       denied(opaque(ref)); const { entry, metadata } = current(binding, projection, false);
       denied(entry.ref === ref); return { generation: entry.generation, ...metadata };
+    },
+    receiptScope(binding, projection, ref) {
+      const { entry } = current(binding, projection, false); denied(entry.ref === ref);
+      // Deliberately excludes ephemeral Root refs, Source sessions and selection
+      // generations. The same current actor may read a historical exact receipt
+      // after restart; a different Native child/incarnation or actor may not.
+      return digest({ schema: 'soty.workspace-receipt-scope.v1', identity: binding.identity,
+        rootPrincipal: binding.rootPrincipal, humanPrincipal: binding.humanPrincipal,
+        resource: binding.resource, semanticDigest: binding.semanticDigest, child: entry.child });
     },
     close() { slots.clear(); },
   });

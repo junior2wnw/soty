@@ -5,7 +5,7 @@ import { canonicalHash, freezeDeep, AccessError } from '../modules/capabilities/
 import { createCatalog } from '../modules/capabilities/server/catalog.mjs';
 import { selectedResource } from '../modules/apps/scoped-embed/resource-profile.mjs';
 import { STANDARD_SELECTED_SOURCE_V3, isWorkspaceSource } from '../modules/source-app/server/standard-profile.mjs';
-import { contextAfter, workspaceMutationRef, workspaceWitness, workspaceReceipt } from '../modules/source-app/server/workspace-context.mjs';
+import { workspaceReadProofContext, workspaceWitness, workspaceReceipt } from '../modules/source-app/server/workspace-context.mjs';
 import { HIVE_SELECTED_SOURCE, HIVE_SELECTED_KERNEL_SOURCE } from '../modules/apps/scoped-embed/resource-route-adapters.mjs';
 import { selectedHiveWorkflowOperations } from './hive-workflow-input.js';
 
@@ -137,7 +137,7 @@ export function createSelectedNativeSourceApplication(raw) {
         } else proof = await call(request, '/api/embed/receipt', { inputDigest: canonicalHash(data.input) }, signal);
       }
       catch { return { ...base, outcome: 'unknown' }; }
-      fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data', ...(workspace ? ['contextAfter', 'workspaceReceipt'] : [])]);
+      fields(proof, ['requestId', 'inputDigest', 'outcome'], ['replayed', 'receipt', 'result', 'data', ...(workspace ? ['contextAfter', 'workspaceReceipt', 'recovery'] : [])]);
       need(proof.requestId === request.requestId && proof.inputDigest === canonicalHash(data.input)
         && ['committed', 'not_applied', 'unknown'].includes(proof.outcome));
       if (proof.outcome !== 'committed') return { ...base, outcome: proof.outcome };
@@ -145,9 +145,8 @@ export function createSelectedNativeSourceApplication(raw) {
       if (types.isPromise(projection)) { void Promise.prototype.then.call(projection, () => {}, () => {}); need(false); }
       let output = captureQueryData(projection); fields(output, ['effects', 'receipt']);
       if (workspace) {
-        const after = contextAfter(proof.contextAfter);
-        need(after.mutationRef === workspaceMutationRef(request.requestId, proof.inputDigest, data.contextRef)
-          && output.receipt.verificationMethod === 'domain_read' && output.receipt.artifacts.length > 0);
+        const after = workspaceReadProofContext(proof, { requestId: request.requestId, inputDigest: proof.inputDigest, contextRef: data.contextRef });
+        need(output.receipt.verificationMethod === 'domain_read' && output.receipt.artifacts.length > 0);
         output = { ...output, receipt: { ...output.receipt, artifacts: output.receipt.artifacts.map(artifact => ({ ...artifact,
           sha256: workspaceWitness({ after, artifact, requestId: request.requestId, inputDigest: proof.inputDigest, scope }) })) } };
       }

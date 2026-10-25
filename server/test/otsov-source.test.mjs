@@ -177,6 +177,50 @@ test('lost native receipt and mismatched original digest never claim completion'
   }
 });
 
+function recoveredWorkspaceProof(req, input) {
+  const originalRef = 'o'.repeat(43), inputDigest = canonicalHash(input);
+  const original = { requestId: req.requestId, inputDigest, outcome: 'committed',
+    contextAfter: { schema: 'soty.context-after.v1', mutationRef: workspaceMutationRef(req.requestId, inputDigest, originalRef),
+      generation: 1, title: 'Original title', role: 'owner', revision: 2 },
+    workspaceReceipt: { schema: 'soty.workspace-receipt.v1',
+      effects: [{ kind: 'created', resourceType: 'otsov-project', resourceId: 'durable-created', revision: 1 }],
+      receipt: { verificationMethod: 'domain_read', artifacts: [{ type: 'otsov-project', id: 'durable-created', revision: 1 }] } } };
+  return { ...original, recovery: { schema: 'soty.workspace-receipt-recovery.v1', contextRef: originalRef,
+    receiptDigest: canonicalHash(original), contextAfter: { schema: 'soty.context-after.v1',
+      mutationRef: workspaceMutationRef(req.requestId, inputDigest, contextRef), generation: 1,
+      title: 'Current title', role: 'owner', revision: 5 } } };
+}
+
+test('the shared Root protocol reads an immutable historical receipt through a separate current-context recovery envelope', async () => {
+  const row = createSelectedOtsovSourceApplications(scope())[2], input = createInput(), req = request(input), calls = [];
+  const native = recoveredWorkspaceProof(req, input), immutable = JSON.stringify(native);
+  bind(row, async value => { calls.push(value); assert.equal(value.path, '/api/embed/receipt');
+    assert.equal(value.contextRef, contextRef); assert.deepEqual(value.input, { inputDigest: canonicalHash(input) });
+    return { status: 200, data: { ok: true, data: native } }; });
+  const proof = await row.adapter.readProof(req, signal());
+  assert.equal(proof.outcome, 'committed'); assert.equal(proof.inputDigest, req.inputDigest);
+  assert.equal(proof.receipt.artifacts[0].sha256, workspaceWitness({ after: native.recovery.contextAfter,
+    artifact: native.workspaceReceipt.receipt.artifacts[0], requestId: req.requestId, inputDigest: canonicalHash(input), scope: scope() }));
+  assert.equal(JSON.stringify(native), immutable); assert.equal(calls.length, 1, 'readProof never invokes the effect');
+});
+
+test('shared Root recovery retains old mutation binding and rejects changed original intent or unsupported envelopes', async () => {
+  for (const mode of ['old-mutation', 'current-mutation', 'digest', 'original', 'request', 'input', 'schema', 'extra', 'missing']) {
+    const row = createSelectedOtsovSourceApplications(scope())[2], input = createInput(), req = request(input), native = recoveredWorkspaceProof(req, input);
+    if (mode === 'old-mutation') { native.contextAfter.mutationRef = '0'.repeat(64); const { recovery, ...original } = native; recovery.receiptDigest = canonicalHash(original); }
+    if (mode === 'current-mutation') native.recovery.contextAfter.mutationRef = '0'.repeat(64);
+    if (mode === 'digest') native.recovery.receiptDigest = '0'.repeat(64);
+    if (mode === 'original') native.workspaceReceipt.receipt.artifacts[0].id = 'other-artifact';
+    if (mode === 'request') native.requestId = 'other-original-request';
+    if (mode === 'input') native.inputDigest = '0'.repeat(64);
+    if (mode === 'schema') native.recovery.schema = 'unqualified-recovery';
+    if (mode === 'extra') native.recovery.authority = { actor: 'untrusted' };
+    if (mode === 'missing') delete native.recovery;
+    let calls = 0; bind(row, async value => { calls++; assert.equal(value.path, '/api/embed/receipt'); return { status: 200, data: { ok: true, data: native } }; });
+    await assert.rejects(row.adapter.readProof(req, signal()), mode); assert.equal(calls, 1);
+  }
+});
+
 
 const contextInput = (extra = {}) => ({ operation: 'otsov.project.context', projectId: 'synthetic-existing', paths: ['index.html'], ...extra });
 const putInput = (extra = {}) => ({ operation: 'otsov.project.operations', projectId: 'synthetic-existing',

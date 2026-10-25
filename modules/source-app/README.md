@@ -330,9 +330,78 @@ Legacy custom projector остаётся прежним; workspace его не �
 artifactIdentity,requestId,inputDigest,sourceBinding}`. artifactIdentity —
 type/id/optional revision; sourceBinding — appId/target/sourceProfile/resource.
 Смысл старого `artifact_hash` не меняется. Модель не задаёт ref, generation,
-mutationRef, witness или committed outcome. После рестарта RAM ref недействителен;
-Native данные и original receipt остаются, unknown с устаревшим ref остаётся
-неразрешённым, а не отправляется повторно.
+mutationRef, witness или committed outcome. После рестарта RAM ref недействителен.
+Native данные и original receipt остаются. Старый ref не становится разрешением;
+повтор write не используется для восстановления результата.
+
+### Recover an immutable workspace receipt
+
+Workspace1/2 Native adapters may opt into the maintained recovery SPI. Keep the
+original `result_json` immutable. Inside its **original** `final.commit(action)`,
+after the effect and `final.contextAfter()`, obtain a separate durable binding:
+
+```js
+const original = { requestId, inputDigest, outcome: 'committed',
+  contextAfter: final.contextAfter(), workspaceReceipt, receipt };
+const binding = final.receiptBinding(original);
+// Save original AND binding atomically in this same Native transaction.
+saveReceipt(original, binding);
+return original;
+```
+
+`receiptBinding` only accepts that commit's branded `contextAfter`, the exact
+request/input digest and current post-effect metadata. It is unavailable after
+the commit callback. Do not regenerate a binding for an old row after the fact.
+The sidecar is MAC-sealed by the SDK, using a distinct purpose tag and the existing
+BFF `transportKey`; no new key/configuration is required. Store it privately beside
+the receipt. It binds the canonical original content, old ref, approved profile, Root
+actor/device, human identity, resource and Native child/incarnation. It excludes
+ephemeral Source session/Root reference IDs and selection generations. Those must
+be checked afresh, not revived. A changed key/profile/actor/Native incarnation
+fails closed; key rotation does not silently re-sign historical claims.
+Before sealing, the SDK reserves the largest permitted fresh metadata/envelope
+inside the unchanged 64KiB/node/depth budgets. An oversized original is refused
+inside the Native transaction; it must not leave a committed effect/receipt.
+The SDK still reports unknown if the mutation callback had already been entered.
+
+The fourth `readProof` argument is a host-only recovery capability:
+
+```js
+readProof(proof, binding, args, recovery) {
+  return nativeReadTransaction(() => {
+    assertCurrentNativeReceiptRead(proof, binding); // own SQL ACL and row locks
+    const row = readExactReceipt(args.requestId, args.input.inputDigest);
+    if (!row.binding) return row.original; // legacy, exact live-ref check only
+    if (!isSourceNativeReceiptRecoveryPort(recovery)) throw unsupported();
+    return recovery.recover(row.original, row.binding);
+  });
+}
+```
+
+The SDK checks the sealed sidecar, exact original intent and **old** mutationRef
+under the fresh Native/context fence. The response preserves every original field
+and adds `recovery:{schema:'soty.workspace-receipt-recovery.v1',contextRef,
+receiptDigest,contextAfter}`. Its `contextRef` is historical data, never authority;
+its separate `contextAfter` attests the current read's ref/generation/metadata.
+The capability is single-use, method-scoped, nonserializable and cannot be replaced
+with a JSON envelope or a cloned returned object. No execute/apply is invoked.
+The BFF repeats the private workspace lease fence after its last Root await and
+before sending data; a late post-COMMIT denial still reports `effect_unknown`.
+
+| Root protocol adapter | Source/Native adapter | Behavior |
+|---|---|---|
+| Old | Legacy receipt | Original strict same-ref behavior |
+| Updated | Legacy or missing-sidecar receipt | Same strict behavior; a new ref cannot reconstruct a sidecar |
+| Old | New recovery envelope | Unsupported extra field is refused; never downgrade it to a successful proof |
+| Updated | Updated, with original sealed sidecar | Exact historical receipt plus fresh authorised recovery; no second effect |
+
+Upgrade the maintained Root protocol adapter before enabling recovery in a
+consumer. No Source pin, existing grant or role is broadened. Missing/unsupported
+proof stays denied/unknown; do not invent a new requestId or retry the effect.
+The same current Native read rights and actual Root checks are required for both
+normal and recovered receipts. This SPI does not migrate a Root external
+invocation, reservation, old handle or its immutable outer input into a new
+session; that remains a separate Root authority gate.
 
 `examples/ordinary-app/workspace-native.mjs` — реальный SQLite пример этих hooks.
 `workspace-current-context-installed.test.mjs` проверяет два приложения/два

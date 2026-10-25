@@ -1,11 +1,13 @@
-import { check, fields, syncResult, deepFreeze, jsonCopy, SourceAppError } from './wire.mjs';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { check, fields, syncResult, deepFreeze, jsonCopy, canonical, SourceAppError } from './wire.mjs';
 import { standardSourceContract } from './standard-profile.mjs';
-import { createWorkspaceContextAuthority, workspaceMutationRef, contextAfter, workspaceReceipt } from './workspace-context.mjs';
+import { createWorkspaceContextAuthority, workspaceMutationRef, workspaceReceiptBinding, workspaceReadProofContext } from './workspace-context.mjs';
 import { digest } from './wire.mjs';
 import { isVerifiedRootContext, refreshVerifiedRootContext } from '../../apps/scoped-embed/source-authority-client.mjs';
 
 const approved = new WeakSet();
 const approvedCommits = new WeakSet();
+const approvedRecoveries = new WeakSet();
 /** Constructor code supplies Native account/resource/ACL hooks. No HTTP/body
  * projection, Root owner flag, descriptor or OIDC subject creates these rights. */
 export function createSourceNativeAuthorityPort(options) {
@@ -25,16 +27,25 @@ export function isSourceNativeAuthorityPort(value) { return value && approved.ha
  * its own transaction, after checking its operation-specific role/resource.
  * It is neither a JSON permission nor a transaction supplied by the SDK. */
 export function isSourceNativeCommitPort(value) { return !!value && approvedCommits.has(value); }
+export function isSourceNativeReceiptRecoveryPort(value) { return !!value && approvedRecoveries.has(value); }
 
 /** Private proof wrappers are instance-local, not serializable authority.
  * Exactly one synchronous final Native fence also runs inside Source commits. */
 export function createNativeAuthorityRuntime(port, options = {}) {
   check(isSourceNativeAuthorityPort(port), 'source_app_native_authority_required', 503);
-  const selected = fields(options, [], ['sourceProfile', 'clock', 'workspaceCapacity']);
+  const selected = fields(options, [], ['sourceProfile', 'clock', 'workspaceCapacity', 'receiptKey']);
   const contract = standardSourceContract(selected.sourceProfile);
   check(selected.workspaceCapacity === undefined || contract.kind === 'soty.workspace.v1', 'source_workspace_capacity_invalid', 503);
   const capacity = selected.workspaceCapacity === undefined ? {} : fields(selected.workspaceCapacity, [], ['maxSlots']);
   const workspace = contract.kind === 'soty.workspace.v1' ? createWorkspaceContextAuthority({ clock: selected.clock, ...capacity }) : null;
+  check(selected.receiptKey === undefined || workspace && Buffer.isBuffer(selected.receiptKey) && selected.receiptKey.length === 32,
+    'source_workspace_recovery_key_invalid', 503);
+  const receiptKey = selected.receiptKey === undefined ? null : Buffer.from(selected.receiptKey);
+  const maximumRecovery = deepFreeze({ schema: 'soty.workspace-receipt-recovery.v1', contextRef: 'r'.repeat(43), receiptDigest: 'd'.repeat(64),
+    contextAfter: { schema: 'soty.context-after.v1', mutationRef: 'f'.repeat(64), generation: Number.MAX_SAFE_INTEGER,
+      title: '\uffff'.repeat(240), role: 'editor', revision: Number.MAX_SAFE_INTEGER } });
+  const bindingMac = input => createHmac('sha256', receiptKey).update('soty.workspace-receipt-binding.v1\0')
+    .update(canonical({ profile: selected.sourceProfile, ...input })).digest('hex');
   check(!workspace || typeof port.currentContext === 'function', 'source_workspace_context_required', 503);
   const feedbackGetBytes = contract.rules.find(row => row.path === '/api/embed/feedback/ticket').responseBytes;
   const proofs = new WeakMap(); let closed = false, fencing = false;
@@ -70,11 +81,26 @@ export function createNativeAuthorityRuntime(port, options = {}) {
   }
   function operationCommit(proof, context) {
     let open = true, used = false, entered = false, poisoned = false, inAction = false;
+    const afters = new WeakSet();
     const capability = Object.freeze({ ...(context ? { contextAfter() {
       check(open && inAction && !closed, 'source_app_commit_invalid', 503);
       const projection = context.check();
-      return deepFreeze({ schema: 'soty.context-after.v1', mutationRef: context.mutationRef, ...projection });
-    } } : {}), commit(action) {
+      const after = deepFreeze({ schema: 'soty.context-after.v1', mutationRef: context.mutationRef, ...projection });
+      afters.add(after); return after;
+    }, ...(receiptKey && context.receiptScope ? { receiptBinding(original) {
+      check(open && inAction && !closed && afters.has(original?.contextAfter), 'source_app_commit_invalid', 503);
+      const value = jsonCopy(original);
+      check(value.recovery === undefined, 'source_workspace_receipt_denied', 403);
+      const after = workspaceReadProofContext(value, context.intent);
+      check(digest(after) === digest({ schema: 'soty.context-after.v1', mutationRef: context.mutationRef, ...context.check() }),
+        'source_workspace_receipt_denied', 403);
+      // Do not commit a receipt which fits today's ACK but cannot fit its
+      // recovery under the unchanged 64KiB/node/depth response budgets later.
+      jsonCopy({ ok: true, data: { ...value, recovery: maximumRecovery } });
+      const binding = { schema: 'soty.workspace-receipt-binding.v1', contextRef: context.intent.contextRef,
+        scopeDigest: context.receiptScope(), receiptDigest: digest(value) };
+      return deepFreeze({ ...binding, mac: bindingMac(binding) });
+    } } : {}) } : {}), commit(action) {
       if (!open || used || closed || typeof action !== 'function') {
         poisoned = true; throw new SourceAppError('source_app_commit_invalid', 503);
       }
@@ -87,13 +113,40 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       check(used && entered && !poisoned, 'source_app_commit_required', 503);
     }, mayHaveCommitted() { return entered; } };
   }
-  async function invoke(proof, method, input, { mutation = false, bytes = 65536, responseBytes = bytes, context = null } = {}) {
+  function operationRecovery(proof, context) {
+    let open = true, used = false, poisoned = false, returned;
+    const capability = Object.freeze({ recover(original, persisted) {
+      try {
+        check(open && !used && !closed && receiptKey, 'source_workspace_recovery_unavailable', 503); used = true;
+        return withCurrent(proof, () => {
+          const binding = workspaceReceiptBinding(jsonCopy(persisted)), { mac, ...signed } = binding;
+          check(timingSafeEqual(Buffer.from(mac, 'hex'), Buffer.from(bindingMac(signed), 'hex'))
+            && binding.scopeDigest === context.receiptScope(), 'source_workspace_receipt_denied', 403);
+          const receipt = deepFreeze(jsonCopy(original));
+          check(receipt.recovery === undefined && digest(receipt) === binding.receiptDigest, 'source_workspace_receipt_denied', 403);
+          workspaceReadProofContext(receipt, { ...context.intent, contextRef: binding.contextRef });
+          const after = { schema: 'soty.context-after.v1', mutationRef: context.mutationRef, ...context.check() };
+          returned = deepFreeze({ ...receipt, recovery: { schema: 'soty.workspace-receipt-recovery.v1',
+            contextRef: binding.contextRef, receiptDigest: binding.receiptDigest, contextAfter: after } });
+          return returned;
+        });
+      } catch (error) { poisoned = true; throw error; }
+    } });
+    approvedRecoveries.add(capability);
+    return { capability, seal() { open = false; }, assertResult(result) {
+      check(!poisoned && (!used || returned === result) && (result?.recovery === undefined || used && returned === result),
+        'source_workspace_recovery_invalid', 503);
+    } };
+  }
+  async function invoke(proof, method, input, { mutation = false, receiptRecovery = false, bytes = 65536, responseBytes = bytes, context = null } = {}) {
     const captured = proofs.get(proof); await assertCurrent(proof);
     if (context) withCurrent(proof, context.check);
     const payload = deepFreeze(jsonCopy(input, { bytes })), final = mutation ? operationCommit(proof, context) : null;
+    const recovery = receiptRecovery ? operationRecovery(proof, context) : null;
     try {
-      const result = await method(captured.native, captured.binding, payload, final?.capability);
+      const result = await method(captured.native, captured.binding, payload, final?.capability ?? recovery?.capability);
       final?.seal(); final?.assertUsed();
+      recovery?.seal(); recovery?.assertResult(result);
       await assertCurrent(proof);
       if (context) withCurrent(proof, context.check);
       return deepFreeze(jsonCopy(result, { bytes: responseBytes }));
@@ -103,7 +156,7 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       // this runtime never repeats an apply on its own.
       if (final?.mayHaveCommitted()) throw new SourceAppError('source_app_effect_unknown', 503);
       throw error;
-    } finally { final?.seal(); }
+    } finally { final?.seal(); recovery?.seal(); }
   }
   return Object.freeze({
     refreshRoot(proof, verifiedRootContext) {
@@ -139,6 +192,12 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     },
     withCurrent,
     assertCurrent,
+    assertWorkspaceContext(proof, contextRef) {
+      const captured = proofs.get(proof);
+      check(workspace && captured, 'source_workspace_context_denied', 403);
+      withCurrent(proof, () => workspace.assert(captured.binding,
+        syncResult(port.currentContext(captured.native, captured.binding)), contextRef));
+    },
     rememberLogin(proof, intent) {
       const captured = proofs.get(proof), input = fields(intent, ['interactionIdHash', 'expiresAt']);
       check(/^[a-f0-9]{64}$/u.test(input.interactionIdHash) && Number.isSafeInteger(input.expiresAt) && input.expiresAt > 0
@@ -186,12 +245,14 @@ export function createNativeAuthorityRuntime(port, options = {}) {
         return withCurrent(proof, () => workspace.read(captured.binding, nativeProjection()));
       }
       const { contextRef, ...args } = fields(input, ['requestId', 'input', 'contextRef'], ['reference']);
+      if (operation === 'readProof') fields(args.input, ['inputDigest']);
+      const inputDigest = operation === 'readProof' ? args.input.inputDigest : digest(args.input);
       const context = { check: () => workspace.assert(captured.binding, nativeProjection(), contextRef),
-        mutationRef: workspaceMutationRef(args.requestId, operation === 'readProof' ? args.input.inputDigest : digest(args.input), contextRef) };
-      const result = await invoke(proof, port[operation], args, { mutation: operation === 'execute', context });
+        receiptScope: () => workspace.receiptScope(captured.binding, nativeProjection(), contextRef),
+        intent: { requestId: args.requestId, inputDigest, contextRef }, mutationRef: workspaceMutationRef(args.requestId, inputDigest, contextRef) };
+      const result = await invoke(proof, port[operation], args, { mutation: operation === 'execute', receiptRecovery: operation === 'readProof', context });
       if (operation === 'readProof' && result.outcome === 'committed') {
-        workspaceReceipt(result.workspaceReceipt);
-        const after = contextAfter(result.contextAfter), current = withCurrent(proof, context.check);
+        const after = workspaceReadProofContext(result, context.intent), current = withCurrent(proof, context.check);
         check(after.mutationRef === context.mutationRef && after.generation === current.generation, 'source_workspace_receipt_denied', 403);
       }
       return result;
@@ -210,6 +271,6 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       return invoke(proof, port.feedback[operation], input, { mutation, context,
         bytes: 1500000, responseBytes: operation === 'get' ? feedbackGetBytes : 1500000 });
     },
-    close() { closed = true; workspace?.close(); },
+    close() { closed = true; workspace?.close(); receiptKey?.fill(0); },
   });
 }

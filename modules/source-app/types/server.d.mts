@@ -4,14 +4,21 @@ export {createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBind
 export interface SourceProfile {schema:'soty.selected-human-embed.v2';appId:string;connector:{linkId:string;hostDeviceId:string;connectorId:string};target:{revision:number;digest:string};
   sourceProfile:{id:string;version:number;digest:string};resource:{registryId:string;environmentId:string;tenantId:string;appId:string;resourceId:string;selection:{kind:'soty.resource.v1'|'soty.workspace.v1';nativeId:string;incarnationId:string}};
   issuer:string;clientId:string;embedOrigin:string;nativeOrigin:string;parentOrigin:string}
-declare const nativePortBrand:unique symbol, commitPortBrand:unique symbol;
+declare const nativePortBrand:unique symbol, commitPortBrand:unique symbol, recoveryPortBrand:unique symbol;
 export interface NativeContextMetadata {title:string;role:'owner'|'editor'|'viewer'|'reader';revision:number}
 export interface NativeContextAfter extends NativeContextMetadata {schema:'soty.context-after.v1';mutationRef:string;generation:number}
 export interface NativeWorkspaceReceipt {schema:'soty.workspace-receipt.v1';
   effects:{kind:'created'|'updated'|'deleted'|'published'|'sent'|'charged';resourceType:string;resourceId:string;revision?:number}[];
   receipt:{verificationMethod:'domain_read';artifacts:{type:string;id:string;revision?:number}[]}}
+/** Opaque SDK-MAC-sealed data. Persist beside the immutable original receipt,
+ * atomically in its Native transaction. It grants no current authority. */
+export interface NativeReceiptBinding {schema:'soty.workspace-receipt-binding.v1';contextRef:string;scopeDigest:string;receiptDigest:string;mac:string}
+export interface NativeReceiptRecoveryPort {readonly [recoveryPortBrand]:true;
+  /** Call once INSIDE the current Native receipt-read transaction/ACL fence. */recover<T>(original:T,persisted:NativeReceiptBinding):T&{
+    recovery:{schema:'soty.workspace-receipt-recovery.v1';contextRef:string;receiptDigest:string;contextAfter:NativeContextAfter}}}
 export interface NativeCommitPort {readonly [commitPortBrand]:true;/** Call once synchronously INSIDE the Native transaction. */commit<T>(action:()=>T):T;
-  /** Workspace only: inside commit(action), after the effect; persist with the original receipt. */contextAfter?():Readonly<NativeContextAfter>}
+  /** Workspace only: inside commit(action), after the effect; persist with the original receipt. */contextAfter?():Readonly<NativeContextAfter>;
+  /** Inside that same commit(action), using its ORIGINAL branded contextAfter. */receiptBinding?(original:unknown):Readonly<NativeReceiptBinding>}
 export interface NativeBinding {identity:{issuer:string;subject:string};rootPrincipal:{accountId:string;deviceId:string};humanPrincipal:unknown;resource:SourceProfile['resource'];semanticDigest:string;operation:string;sessionIdHash?:string;rootReferenceDigest?:string;rootExpiresAt?:number;/** Workspace UI locator, never authority. */instanceId?:'main'|`widget-${string}`}
 export interface SourceNativeAuthorityPort {readonly [nativePortBrand]:true}
 export interface NativeHooks<Proof=unknown> {
@@ -35,7 +42,7 @@ export interface NativeHooks<Proof=unknown> {
   createEmptyGuest?:(proof:Proof,binding:Readonly<NativeBinding>,identity:{issuer:string;subject:string})=>unknown;
   read?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown)=>Promise<unknown>;
   execute?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown,commit:NativeCommitPort)=>Promise<unknown>;
-  readProof?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown)=>Promise<unknown>;
+  readProof?:(proof:Proof,binding:Readonly<NativeBinding>,input:unknown,recovery?:NativeReceiptRecoveryPort)=>Promise<unknown>;
   /** Workspace2's existing HTTP contextRef is checked by the SDK before/after
    * reads and inside the final synchronous mutation fence. Native inputs stay
    * the ordinary closed feedback DTO; no browser project ID creates authority. */
@@ -44,6 +51,7 @@ export interface NativeHooks<Proof=unknown> {
 export function createSourceNativeAuthorityPort<P>(options:NativeHooks<P>):SourceNativeAuthorityPort;
 export function isSourceNativeAuthorityPort(value:unknown):value is SourceNativeAuthorityPort;
 export function isSourceNativeCommitPort(value:unknown):value is NativeCommitPort;
+export function isSourceNativeReceiptRecoveryPort(value:unknown):value is NativeReceiptRecoveryPort;
 /** Source implements durable encrypted storage. Identity/session writes call
  * the supplied final callback once synchronously INSIDE the Native transaction. */
 export interface SourceStoragePort {

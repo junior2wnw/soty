@@ -1,5 +1,5 @@
 export { createSourceAppBff } from './bff.mjs';
-export { createSourceNativeAuthorityPort, isSourceNativeAuthorityPort, isSourceNativeCommitPort } from './native-authority.mjs';
+export { createSourceNativeAuthorityPort, isSourceNativeAuthorityPort, isSourceNativeCommitPort, isSourceNativeReceiptRecoveryPort } from './native-authority.mjs';
 export { STANDARD_SELECTED_SOURCE, STANDARD_SOURCE_CONTRACT, STANDARD_SELECTED_SOURCE_V2, STANDARD_SOURCE_CONTRACT_2,
   STANDARD_SELECTED_SOURCE_V3, STANDARD_SOURCE_CONTRACT_3, STANDARD_WORKSPACE_SOURCE, STANDARD_WORKSPACE_CONTRACT,
   STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_ROOT_WORKSPACE_CONTRACT } from './standard-profile.mjs';
