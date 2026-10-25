@@ -1,5 +1,7 @@
 # soty.online
 
+Личный ИИ каждого аккаунта: [архитектура, автоматический доступ, ключи и проверка выпуска](docs/account-ai.md).
+
 Размещение веб-проектов как приложений: [повторяемый процесс](docs/deployment/app-release.md).
 Skill для агента: [soty-app-deploy](skills/soty-app-deploy/SKILL.md),
 установка — node scripts/install-soty-deploy-skill.mjs.
