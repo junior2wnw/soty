@@ -74,6 +74,19 @@ test('account AI requires its qualified image capability and rejects shadowed fi
   assert.throws(() => applyUniversalPolicy({ ...base(), HostConfig: { Mounts: [{ Type: 'bind', Source: f.root, Target: '/run/secrets', ReadOnly: true }] } }, handle), code('universal_policy_preexisting_configuration'));
 });
 
+test('release validation matches runtime for source-only personal configuration and still requires a valid account bridge', async t => {
+  const f = await fixture(t), personalSource = path.join(f.root, 'personal-source-only.json');
+  await writeFile(personalSource, JSON.stringify({ schema: 'soty.personal-agent-installed.v1', gateway: {}, accountIds: [], capacity: { maxAccountContexts: 8 } }), { mode: 0o600 });
+  const handle = await f.prepare({ ...f.plan, personalAgent: { source: personalSource } });
+  const result = applyUniversalPolicy(base(), handle);
+  assert.equal(result.Env.includes('SOTY_PERSONAL_AGENT_ENABLED=1'), true);
+  assert.equal(result.Env.includes('SOTY_ACCOUNT_AI_CONFIG_FILE=' + accountAiPrivateTarget), true);
+  assert.equal(JSON.stringify(publicUniversalPolicy(handle)).includes('PRIVATE KEY'), false);
+  await assert.rejects(f.prepare({ ...f.empty, personalAgent: { source: personalSource } }), code('universal_policy_personal_agent_invalid'));
+  await f.save({ ...f.value, gatewayOrigin: 'http://untrusted.invalid' });
+  await assert.rejects(f.prepare({ ...f.plan, personalAgent: { source: personalSource } }), code('universal_policy_account_ai_invalid'));
+});
+
 for (const changedModel of [false, true]) test(`guarded account AI handoff ${changedModel ? 'rejects an unrelated model change and restores the old reader' : 'admits only the approved transport transition'}`, async t => {
   const f = await fixture(t), engine = engineFixture();
   const measurement = captureUniversalPreparedness({ compiledLegacyMode: false, universalConfigured: true,

@@ -292,10 +292,11 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       check(!files.some(file => file.source === plan.personalAgent.source), 'universal_policy_file_invalid');
       const file = await readBounded(plan.personalAgent.source, 'private', context); file.target = personalAgentPrivateTarget; files.push(file);
       try {
-        // Reuse the installed runtime validator, including its closed account allowlist.
-        // Validation creates no credential and must never contact the gateway.
+        // Match startup: account mode retains source/tool rules without
+        // requiring the retired shared billing bundle. The accountAi file is
+        // independently validated before this policy can become a handle.
         loadPersonalAgentConfiguration({ [settings.personalAgent]: '1', [settings.personalAgentFile]: file.source },
-          { fetchImpl: async () => fail('universal_policy_personal_agent_invalid') });
+          { accountAiMode: Boolean(plan.accountAi), fetchImpl: async () => fail('universal_policy_personal_agent_invalid') });
       } catch { fail('universal_policy_personal_agent_invalid'); }
     }
     const accountAi = plan.accountAi !== undefined && plan.accountAi !== null;
