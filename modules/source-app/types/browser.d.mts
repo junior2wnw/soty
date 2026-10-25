@@ -47,6 +47,12 @@ export interface SourceWriteResult {
 }
 export class SourceWorkspaceClientError extends Error { readonly code: string; readonly status: number; readonly effectUnknown: boolean; }
 export interface SourceWorkspaceClient {
+  /** Cold/resume read handshake under one local account/frame epoch; no business effect replay. */
+  connect(args: {requestId: string}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
+  continueSession(args: {requestId: string}, signal?: AbortSignal): Promise<Readonly<{
+    schema: 'soty.source-session-continuation.v1'; ready: true; renewable: boolean;
+    sessionExpiresAt: number; accessExpiresAt: number; receiptDigest: string;
+  }>>;
   currentContext(args: {requestId: string}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
   selectContext(args: {requestId: string; nativeId: string; generation: number}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
   context(): SourceWorkspaceContext | null;

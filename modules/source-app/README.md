@@ -544,7 +544,7 @@ import { createSourceWorkspaceClient } from '/assets/soty-source-sdk.js';
 const id = () => crypto.randomUUID();
 let alive = true;
 const source = createSourceWorkspaceClient({ isCurrent: () => alive });
-const workspace = await source.currentContext({ requestId: id() });
+const workspace = await source.connect({ requestId: id() });
 const page = await source.query({
   requestId: id(), input: { operation: 'items.list' }
 });
@@ -583,6 +583,14 @@ children can explicitly call
 retained old intents and late replies. Clear the old UI before displaying data
 from a newly acquired context. A local reference or successful bootstrap is
 never a substitute for the server's fresh and final Native checks.
+The main `connect` call performs `continueSession` and `currentContext` under
+one local account/frame epoch. It acquires/checks the short HttpOnly Source
+session under the already selected fresh Root authority, then reads the actual
+current workspace. Both low-level methods remain available. The continuation
+ACK does not replace a context or business read. On a later expired session,
+clear the old private UI and explicitly call `connect` again; retain unknown
+writes under their original reference. No new UI confirmation is introduced
+when the Root frame already has the required authority.
 
 Each write requires an explicit unique request ID. Preparation captures an
 immutable JSON body, canonical SHA256 digest, context and generation. Duplicate

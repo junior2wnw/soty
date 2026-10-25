@@ -55,11 +55,11 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
   if (typeof isCurrent !== 'function') fail();
   const sourceFetch = createSourceFrameFetch({ fetch: fetcher, href, view, ...(parentOrigin === undefined ? {} : { parentOrigin }), shortSessionHandoff: true });
   const intents = new WeakMap(), pending = new Map();
-  let epoch = 0, contextSequence = 0, context = null, closed = false;
+  let epoch = 0, contextSequence = 0, connectSequence = 0, context = null, closed = false;
   const current = captured => !closed && isCurrent() && captured === epoch;
   const check = captured => { if (!current(captured)) fail('source_client_context_changed', 409); };
   const capture = () => { check(epoch); if (!context) fail('source_client_context_required', 409); return { epoch, context }; };
-  const invalidate = () => { epoch++; contextSequence++; context = null; pending.clear(); };
+  const invalidate = () => { epoch++; contextSequence++; connectSequence++; context = null; pending.clear(); };
 
   async function request(path, args, captured, signal) {
     check(captured); signal?.throwIfAborted();
@@ -81,6 +81,11 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     } catch { check(captured); fail('source_client_response_invalid', 502); }
     check(captured); signal?.throwIfAborted();
     if (!response.ok) throw new SourceWorkspaceClientError(/^[a-z0-9_]{1,128}$/u.test(value?.error?.code ?? '') ? value.error.code : 'source_app_unknown', response.status);
+    if (path === 'session-continue') {
+      if (value?.schema !== 'soty.source-session-continuation.v1' || value.ready !== true || typeof value.renewable !== 'boolean'
+        || !integer(value.sessionExpiresAt) || !integer(value.accessExpiresAt) || !digest(value.receiptDigest)) fail('source_client_response_invalid', 502);
+      return freeze(value);
+    }
     if (!value || value.ok !== true || Object.keys(value).sort().join(',') !== 'data,ok' || !value.data || typeof value.data !== 'object' || Array.isArray(value.data)) fail('source_client_response_invalid', 502);
     return freeze(value.data);
   }
@@ -119,7 +124,7 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     if (!known) { reference = copy(reference); fields(reference, ['requestId', 'contextRef', 'inputDigest']); }
     const selected = capture();
     if (!reference || !requestId(reference.requestId) || !opaque(reference.contextRef) || !digest(reference.inputDigest)
-      || reference.contextRef !== selected.context.context.ref || known && known.epoch !== epoch) fail('source_client_context_changed', 409);
+      || reference.contextRef !== selected.context.context.ref || known && known.generation !== selected.context.context.generation) fail('source_client_context_changed', 409);
     const entry = known ?? { ...reference, generation: selected.context.context.generation,
       mutationRef: await hash({ schema: 'soty.workspace-mutation.v1', requestId: reference.requestId, inputDigest: reference.inputDigest, contextRef: reference.contextRef }) };
     check(selected.epoch);
@@ -127,7 +132,19 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
       input: { inputDigest: entry.inputDigest } }, selected.epoch, signal), entry);
     pending.delete(entry.requestId); return value;
   }
+  function continueSession(args, signal) {
+    const selected = fields(copy(args), ['requestId']); if (!requestId(selected.requestId)) fail();
+    return request('session-continue', selected, epoch, signal);
+  }
   return Object.freeze({
+    async connect(args, signal) {
+      const selected = fields(copy(args), ['requestId']), captured = epoch, sequence = ++connectSequence;
+      try {
+        await continueSession(selected, signal); check(captured);
+        return await acquire(selected, false, signal);
+      } catch (error) { if (sequence === connectSequence && current(captured)) invalidate(); throw error; }
+    },
+    continueSession,
     currentContext(args, signal) { fields(copy(args), ['requestId']); return acquire(args, false, signal); },
     selectContext(args, signal) { fields(copy(args), ['requestId', 'nativeId', 'generation']); return acquire(args, true, signal); },
     context: () => current(epoch) ? context : null,

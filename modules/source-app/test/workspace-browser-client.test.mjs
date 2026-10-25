@@ -11,13 +11,16 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 const context = (ref = 'A'.repeat(43), generation = 1) => ({ schema: 'soty.current-context.v2',
   selection: { kind: 'soty.workspace.v1', nativeId: 'board', incarnationId: 'one' },
   context: { ref, generation, expiresAt: 1900000000000 }, title: 'Personal board', role: 'owner', revision: 1 });
-function fixture() {
-  let current = context(), loseAck = false, beforeResponse = null, isCurrent = true, effectCount = 0;
+function fixture({ cold = false } = {}) {
+  let current = context(), loseAck = false, beforeResponse = null, isCurrent = true, effectCount = 0, sessionReady = !cold;
   const calls = [], receipts = new Map();
   const fetcher = async (path, init) => {
     const args = JSON.parse(init.body); calls.push({ path, init, args });
     let response;
-    if (args.input.operation === 'soty.current_context' || args.input.operation === 'soty.context.select') response = json({ ok: true, data: structuredClone(current) });
+    if (path.endsWith('/session-continue')) { sessionReady = true; response = json({ schema: 'soty.source-session-continuation.v1', ready: true,
+      renewable: true, sessionExpiresAt: 1900000000000, accessExpiresAt: 1900000000000, receiptDigest: '0'.repeat(64) }); }
+    else if (!sessionReady) response = json({ ok: false, error: { code: 'authentication_required' } }, 401);
+    else if (args.input.operation === 'soty.current_context' || args.input.operation === 'soty.context.select') response = json({ ok: true, data: structuredClone(current) });
     else if (args.contextRef !== current.context.ref) response = json({ ok: false, error: { code: 'source_workspace_context_denied' } }, 403);
     else if (path.endsWith('/query')) response = json({ ok: true, data: { requestId: args.requestId, records: [{ title: current.title }] } });
     else if (path.endsWith('/receipt')) response = json({ ok: true, data: receipts.get(args.requestId) ?? { requestId: args.requestId, inputDigest: args.input.inputDigest, outcome: 'not_applied' } });
@@ -46,6 +49,36 @@ function fixture() {
 }
 const id = suffix => 'browser-intent-' + suffix;
 const ready = f => f.api.currentContext({ requestId: id('context') });
+
+test('cold session continuation uses the maintained same-frame ACK and no Native auth cookie fallback', async () => {
+  const f = fixture();
+  const value = await f.api.continueSession({ requestId: id('continue') });
+  assert.equal(value.ready, true); assert.equal(f.calls[0].path, '/api/embed/session-continue');
+  assert.deepEqual(f.calls[0].args, { requestId: id('continue') });
+  assert.equal(f.calls[0].init.headers.get('x-soty-frame'), 'F'.repeat(43));
+  f.hold(() => json({ schema: 'soty.source-session-continuation.v1', ready: false }));
+  await assert.rejects(f.api.continueSession({ requestId: id('wrong-ack') }), /source_client_response_invalid/);
+});
+
+test('one connect call performs the cold handshake and valid resume, with no write or additional UI gesture', async () => {
+  const f = fixture({ cold: true });
+  assert.equal((await f.api.connect({ requestId: id('cold-connect') })).title, 'Personal board');
+  assert.deepEqual(f.calls.map(call => call.path), ['/api/embed/session-continue', '/api/embed/query']);
+  assert.equal(f.calls[0].args.requestId, f.calls[1].args.requestId);
+  assert.equal((await f.api.connect({ requestId: id('resume-connect') })).context.ref, f.context().context.ref);
+  assert.equal(f.effects(), 0);
+});
+
+test('a profile switch between connect stages, denied continuation or closed view cannot continue bootstrap', async () => {
+  const f = fixture({ cold: true }); f.hold(response => { f.retire(); return response; });
+  await assert.rejects(f.api.connect({ requestId: id('profile-switch') }), /source_client_context_changed/);
+  assert.equal(f.calls.length, 1); assert.equal(f.api.context(), null);
+  for (const code of ['authentication_required', 'source_app_root_changed', 'source_app_native_access_denied']) {
+    const denied = fixture({ cold: true }); denied.hold(() => json({ ok: false, error: { code } }, 403));
+    await assert.rejects(denied.api.connect({ requestId: id('denied-' + code) }), error => error.code === code);
+    assert.equal(denied.calls.length, 1); assert.equal(denied.api.context(), null);
+  }
+});
 
 test('workspace bootstrap and reads reuse the maintained exact frame transport with no Native fallback', async () => {
   assert.throws(() => createSourceWorkspaceClient({ isCurrent: false }), /source_client_input_invalid/);
