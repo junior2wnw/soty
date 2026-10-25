@@ -9,6 +9,7 @@ applyThemePreferences(loadPreferences());
 getPwaController();
 
 const root = document.querySelector<HTMLElement>('#app')!;
+root.dataset.startupEntryAt = String(Date.now());
 const url = new URL(window.location.href);
 const consent = /^\/oauth\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
 const humanLogin = /^\/human-identity\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);

@@ -63,6 +63,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const persistence = createFieldPersistence({ api: options.api, accountId: options.accountId, isCurrent: current, localFirst: true });
   const element = el('section', 'uf-screen'); element.setAttribute('aria-label', 'Мои соты');
   element.dataset.ready = 'loading';
+  element.dataset.startupScreenAt = String(Date.now());
   const head = el('div', 'uf-screen-head'), title = el('h1', 'uf-screen-title', 'Мои соты');
   const sides = el('div', 'uf-screen-switch'); sides.setAttribute('role', 'group'); sides.setAttribute('aria-label', 'Сторона поля');
   const mineButton = button('Моё', undefined, '', () => changeMode('mine'));
@@ -525,6 +526,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       resolved.items.push(...batch.items); resolved.unavailable.push(...batch.unavailable); resolved.errors.push(...batch.errors);
       mineConfirmedGeneration = generation;
       engine!.update({ entities: allMetadata() }); updateMineFilter(); loading.hidden = true;
+      if (batch.items.some(item => item.entity.kind === 'app')) element.dataset.startupAppsAt ??= String(Date.now());
       if (selected && batch.unavailable.some(ref => fieldEntityKey(ref) === fieldEntityKey(selected!.item.entity))) closePreview(false);
     };
     try {
@@ -896,6 +898,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       onActivate: activate, onInspect: (entity, shortcutId) => { const item = metadata.get(fieldEntityKey(entity.entity)); if (item) inspect(item, shortcutId); }, onContextActivate: contextId => { engine?.focusContext(contextId); const entity = mode === 'search' ? searchPlacement.contextEntity(contextId) : null; const item = entity ? metadata.get(fieldEntityKey(entity.entity)) : null; if (item) openPreview(item); }, onStateChange: updateSummary,
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
+    element.dataset.startupLayoutAt ??= String(Date.now());
     revealReadyMine(field);
     // Cached references can start fresh signed metadata reads while the remote layout is loading.
     if (loaded.document.shortcuts.length && element.dataset.ready === 'loading') run(loadInitialMine());

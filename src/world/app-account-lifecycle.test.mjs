@@ -44,6 +44,8 @@ const appAst = ts.createSourceFile('app.js', compiled, ts.ScriptTarget.Latest, t
 const appConstructor = appAst.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'WorldApplication').members.find(ts.isConstructorDeclaration);
 const rootClickHandler = appConstructor.body.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && node.expression.expression.getText(appAst) === 'root.addEventListener' && node.expression.arguments[0]?.text === 'click').expression.arguments[1].getText(appAst);
+const connectionHandler=appConstructor.body.statements.find(node=>ts.isExpressionStatement(node)&&ts.isBinaryExpression(node.expression)
+  &&node.expression.left.getText(appAst)==='this.unsubscribePwa').expression.right.arguments[0].getText(appAst);
 const stageSource = await readFile(process.env.SOTY_NEUTRAL_RUNTIME_STAGE_SOURCE ?? new URL('./app-stage.ts', import.meta.url), 'utf8');
 const stageCompiled = ts.transpileModule(stageSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const dialogsSource = await readFile(new URL('./dialogs.ts', import.meta.url), 'utf8');
@@ -185,7 +187,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const stageModule = { exports: {} };
   vm.runInNewContext(stageCompiled, { module: stageModule, exports: stageModule.exports, require: name => ports[name] ?? {}, AbortController, URL, crypto: globalThis.crypto });
   ports['./app-stage'] = stageModule.exports;
-  vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; };`, {
+  vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; }; exports.bindConnection = function() { return ${connectionHandler}; };`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
     document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
@@ -232,7 +234,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, connectionChanged: module.exports.bindConnection.call(app), rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -521,6 +523,22 @@ test('a newly mounted field completes its initial load once; later shell refresh
   assert.equal(f.app.unifiedField,field);assert.equal(refreshes,0);assert.equal(settled,false);
   initial.resolve();await opening;assert.equal(refreshes,0,'initialization already resolves the field metadata');
   await f.app.refresh();assert.equal(refreshes,1,'an existing field still receives an explicit refresh');
+});
+
+test('a late successful health check does not supersede the initial held profile read and still recovers an idle unverified shell',async()=>{
+  const f=fixture(),pending=deferred(),original=f.app.api.request;let profileReads=0;
+  f.app.profile=null;f.app.connection='checking';f.app.renderPwaBanner=()=>{};f.app.syncFieldOutbox=()=>{};
+  f.app.renderCurrent=()=>{};f.app.api.request=(op,args)=>{
+    if(op==='world.profile.get'&&++profileReads===1)return pending.promise;
+    return original(op,args);
+  };
+  const opening=f.app.refresh();await turn();const sequence=f.app.requestSequence;
+  f.connectionChanged({connection:'online'});await turn();
+  assert.equal(profileReads,1);assert.equal(f.app.requestSequence,sequence);assert.equal(f.app.refreshInFlight,sequence);
+  pending.resolve({profile:{profileId:'account-A',displayName:'verified-A'}});await opening;
+  assert.equal(f.app.refreshInFlight,0);assert.equal(f.app.profile.displayName,'verified-A');
+  f.app.profile=null;f.app.connection='unreachable';f.connectionChanged({connection:'online'});await turn();
+  assert.equal(profileReads,2);assert.equal(f.app.refreshInFlight,0);assert.equal(f.app.profile.profileId,'account-A');
 });
 
 test('pending account switch clears private content and stale reply cannot restore it', async () => {

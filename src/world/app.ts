@@ -197,6 +197,7 @@ class WorldApplication {
   private readonly chatDrafts = createChatDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) });
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private requestSequence = 0;
+  private refreshInFlight = 0;
   private communityEpoch = 0;
   private communityReadSequence = 0;
   private communityAppliedReadSequence = 0;
@@ -213,6 +214,7 @@ class WorldApplication {
 
   constructor(root: HTMLElement, options: WorldAppOptions) {
     this.root = root; this.options = options; this.api = options.api;
+    root.dataset.startupShellAt = String(Date.now());
     this.assistantMode = options.openAssistant ? 'chat' : 'create';
     this.releaseViewport = observeVisibleViewport(root.ownerDocument);
     this.preferences = loadPreferences(); this.view = this.preferences.view;
@@ -290,7 +292,7 @@ class WorldApplication {
         this.notesHandle?.reconnect();
         this.unifiedField?.reconnect();
         this.syncFieldOutbox();
-        if (!this.profile && this.deskAccount) void this.refresh(true);
+        if (!this.profile && this.deskAccount && !this.refreshInFlight) void this.refresh(true);
       }
     });
     this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.widgets?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
@@ -588,6 +590,7 @@ class WorldApplication {
     if (this.coverDialog?.element.open && this.coverTargetCurrent && !this.coverTargetCurrent()) this.coverDialog.close({ restoreFocus: false });
     this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined);
     const sequence = ++this.requestSequence, accountAtStart = this.deskAccount, screenAtStart = this.screenSequence;
+    this.refreshInFlight = sequence;
     try {
       if (this.options.localAccount) {
         const local = await this.options.localAccount();
@@ -698,6 +701,8 @@ class WorldApplication {
       const box = emptyState('Соты ждут вас', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => { this.main.replaceChildren(this.loading('Подключаемся')); void this.refresh(); }));
       box.append(button('Мой аккаунт', 'person', 'sw-button-quiet', () => this.runHook(this.options.openAccount)), this.coreSupportLink());
       this.main.replaceChildren(box);
+    } finally {
+      if (this.refreshInFlight === sequence) this.refreshInFlight = 0;
     }
   }
 
