@@ -220,7 +220,7 @@ const cases: Array<[string, () => Promise<void>]> = [
     await openPanel(); type('Черновик в текущем обсуждении'); await h.flush(); await archives(); click('discussion-archive');
     await until(() => key('discussion-audience').textContent?.includes('Архив'), 'archive shown');
     assert(!visible(key('discussion-input')), 'archive composer must not be writable');
-    host.querySelector<HTMLButtonElement>('[data-stage-control="discussion"]')!.click();
+    host.querySelector<HTMLButtonElement>('[data-stage-control="application"]')!.click();
     await until(() => !visible(key('discussion')), 'panel closed');
     const back = route({ panel: 'discussion' }); applyRoute(back); h.updateRoute(back); await readyComposer();
     assert(host.querySelector('iframe') === frame && frame.contentWindow === win && field.value === 'runtime state must survive', 'presentation recreated browsing context');
@@ -234,8 +234,10 @@ const cases: Array<[string, () => Promise<void>]> = [
     const panel = key('discussion'); assert(f.launchCount === 0 && !host.querySelector('iframe'), 'administrative read minted ticket');
     assert(!visible(key('discussion-input')), 'administrative current view exposed a composer');
     assert(!panel.querySelector('.se-discussion-banner')?.textContent?.includes('Этот разговор завершён'), 'administrative read falsely declared the current conversation closed');
-    const ordinary = route({ panel: 'discussion' }); applyRoute(ordinary); h.updateRoute(ordinary); await readyComposer(); await frameOf();
-    assert(key('discussion') === panel && Number(f.launchCount) === 1 && h.entry()?.path === ENTRY.path, 'null entry hydration replaced panel or failed');
+    const ordinary = route({ panel: 'discussion' }); applyRoute(ordinary); h.updateRoute(ordinary); await readyComposer();
+    assert(key('discussion') === panel && Number(f.launchCount) === 0 && !host.querySelector('iframe') && h.entry()?.path === ENTRY.path, 'ordinary discussion hydration replaced panel or launched the application');
+    host.querySelector<HTMLButtonElement>('[data-stage-control="application"]')!.click(); await frameOf();
+    assert(Number(f.launchCount) === 1 && key('discussion') === panel, 'explicit application selection must start exactly one runtime and preserve the panel');
   }],
   [ARCHIVE_FOCUS_CASE, async () => {
     const f = backend(), h = discussion(f), draft = 'Черновик остаётся в текущем разговоре';
@@ -297,7 +299,8 @@ const cases: Array<[string, () => Promise<void>]> = [
     assert(key('discussion') === panel && h.entry()?.domainId === DOMAIN, 'later launch did not hydrate exact retained panel');
   }],
   ['Некорректный entry после success не заменяется поздней догадкой', async () => {
-    const f = backend(); f.malformedLaunch = true; const at = callLog.length, h = stage(f, { panel: 'discussion' }); await h.ready;
+    const f = backend(); f.malformedLaunch = true; const at = callLog.length, h = stage(f); await h.ready;
+    assert(f.launchCount === 1, 'scenario must actually request the invalid runtime admission');
     assert(h.entry() === null && !host.querySelector('iframe') && !host.querySelector('[data-engagement-key="save"]'), 'invalid successful launch admitted UI');
     assert(!callLog.slice(at).some(call => call.op === 'apps.entry.get'), 'success with bad DTO triggered fallback');
   }],

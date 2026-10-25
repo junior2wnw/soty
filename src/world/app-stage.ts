@@ -756,6 +756,11 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
         applied = presentationVersion;
         const selection = intent.presentation;
         try {
+          if (selection && !selection.administrative && !selectedEntry) {
+            await launcher.resolve();
+            if (!current()) return;
+            captureEntry();
+          }
           if (selection && discussion) await discussion.updateSelection({
             ...(selection.conversationId ? { conversationId: selection.conversationId } : {}), ...(selection.messageId ? { messageId: selection.messageId } : {}), administrative: !!selection.administrative });
         } catch {
