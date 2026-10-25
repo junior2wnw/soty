@@ -3,6 +3,7 @@ import { assertApps, appId, textId } from './protocol.mjs';
 import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE, supportedRuntimeProfile, targetExposureScope, validExposureAck } from './schema.mjs';
 import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
 import { hasAudienceSchema, readAppAudience, writeAppAudience, normalizeAppAudience, audienceMatchesPolicy } from './audience.mjs';
+import { readPairedNativeEntry, nativeEntryView } from './native-entry.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
 export const PUBLICATION_RECEIPTS_PER_APP = 64;
@@ -51,11 +52,13 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
   }
   function view(app) {
     const { policy, target, requiredBindingVersion } = state(app);
+    const nativeEntry = nativeEntryView(readPairedNativeEntry(db, app.id));
     return { schema: 'soty.app-publication.v1', appId: app.id, appState: app.state,
       launchPolicy: policy.launch_policy, listed: Boolean(policy.listed), policyEpoch: policy.policy_epoch,
       ...(hasAudienceSchema(db) ? { audience: readAppAudience(db, app.id) } : {}),
       activeTargetRevision: target.revision, requiredBindingVersion, activeDomainIds: activeIds(app.id),
       target: { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entry_path },
+      ...(nativeEntry ? { nativeEntry } : {}),
       updatedAt: policy.updated_at, runtimeReady: false, receiptRetention: { perApp: PUBLICATION_RECEIPTS_PER_APP } };
   }
   function read(actor, id) { return snapshot(() => view(own(actor, id))); }

@@ -188,6 +188,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
               usedByApp: limits.usedByApp, usedByAccount: limits.usedByAccount } },
           publication: { policyEpoch: policy.policyEpoch, launchPolicy: policy.launchPolicy, listed: policy.listed,
             ...(Object.hasOwn(policy, 'audience') ? { audience: policy.audience } : {}),
+            ...(policy.nativeEntry ? { nativeEntry: policy.nativeEntry } : {}),
             activeDomainIds: [...policy.activeDomainIds], activeTargetRevision: policy.activeTargetRevision },
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
             port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,

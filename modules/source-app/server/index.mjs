@@ -11,3 +11,4 @@ export { createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBin
 export {createFeedbackProcessorEngine,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './feedback-job-contract.mjs';
 export {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
 export { createSqliteSourceStorage } from './sqlite-source-storage.mjs';
+export { createNativeEntryGuard } from './native-entry-guard.mjs';

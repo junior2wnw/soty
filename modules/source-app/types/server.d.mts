@@ -115,3 +115,13 @@ export function isVerifiedRootContext(proof:unknown):proof is VerifiedRootContex
 export function readVerifiedRootContext(proof:unknown,profileDigest:string):VerifiedRootContext;
 export {SOURCE_FEEDBACK_LIMITS} from './browser.mjs';
 export {createFeedbackProcessorEngine,createFeedbackJobEnforcer,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './processing.mjs';
+/** Opaque, process-local app-policy lease. JSON copies carry no authority.
+ * Native Human/session/ACL/CSRF checks remain mandatory and independent. */
+export interface NativeEntryLease {readonly schema:'soty.native-entry-lease.v1';readonly appId:string;
+  readonly policyEpoch:number;readonly admissionKeyHash:string;readonly primaryTargetDigest:string;readonly nativeTargetDigest:string;}
+export interface NativeEntryStream {beforeEffect():Promise<NativeEntryLease>;assertCurrent():NativeEntryLease;close(reason?:string):void;}
+export function createNativeEntryGuard(options:{rootCheckUrl:string;appId:string;origin:string;primaryTargetDigest:string;nativeTargetDigest:string;
+  /** These bounds may only be shortened: timeout<=1000ms, heartbeat<=250ms, lease<=1000ms, streams<=128. */
+  timeoutMs?:number;heartbeatMs?:number;leaseMs?:number;maxStreams?:number;maxRequests?:number;}):{
+  acquire(options?:{signal?:AbortSignal}):Promise<NativeEntryLease>;assertCurrent(lease:NativeEntryLease):NativeEntryLease;
+  openStream(options:{onClose:(reason:string)=>void}):Promise<NativeEntryStream>;close():void;};

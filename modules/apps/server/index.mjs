@@ -17,6 +17,7 @@ import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
 import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
 import { createSourceRegistry } from './sources.mjs';
+import { requireNativeEntry, assertNativePortAvailable } from './native-entry.mjs';
 import { createRuntimeBindings } from './runtime-bindings.mjs';
 import { createLaunchPath, createScopedLaunchPath, checkedScopedEntryPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
@@ -666,6 +667,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(!entryPath.startsWith('/_soty/'), 'reserved_app_path'); assertGrants(actor, grants);
       const id = transaction(() => {
         assertActor(actor); assertApps(binding(device.connector_key)?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); assertGrants(actor, grants);
+        assertNativePortAvailable(db, '', device.connector_key, port);
         const existing = db.prepare(`SELECT a.*,t.entry_path AS current_entry_path FROM local_apps a
           JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
           JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
@@ -985,6 +987,28 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     assertApps(!app.missing, 'app_not_found', 404);
     const target=activeTarget(app.id),selected=selectedRuntimeProfile(target?.profile);
     const scopedProfile=selected?scopedAdmissions.require(targetTuple(target)):null;
+    const nativeIngress = new URL(req.url || '/', app.appHost.origin);
+    if (nativeIngress.pathname === '/_soty/ingress-check' && req.headers['x-soty-ingress-surface'] !== undefined) {
+      assertApps(req.method === 'GET' && !nativeIngress.search, 'invalid_app_ingress', 403);
+      for (const name of ['x-soty-ingress-surface','x-soty-ingress-app','x-soty-ingress-primary','x-soty-ingress-target'])
+        assertApps(headerCount(req, name) === 1, 'invalid_app_ingress', 403);
+      assertApps(req.headers['x-soty-ingress-surface'] === 'native' && req.headers['x-soty-ingress-app'] === app.id,
+        'invalid_app_ingress', 403);
+      assertOrigin(req, app.appHost.origin, false);
+      const entry = requireNativeEntry({ db, appId: app.id, origin: app.appHost.origin,
+        primaryDigest: req.headers['x-soty-ingress-primary'], nativeDigest: req.headers['x-soty-ingress-target'], scopedAdmission: scopedAdmissions });
+      // Native has no second desired binding. Its independent candidate proof
+      // was committed in the receipt; the CURRENT primary connector must still
+      // be authenticated, online and bound to the exact primary Source target.
+      const decision = publications.decideAccess({ domainId: entry.domainId, origin: entry.origin });
+      assertApps(decision.policyEpoch === entry.policyEpoch, 'app_native_entry_closed', 403);
+      assertRuntimeBinding(decision, { requireReady: true });
+      json(res, 200, { schema: 'soty.native-entry-policy.v1', appId: app.id, origin: entry.origin,
+        primaryTargetRevision: entry.primaryTargetRevision, primaryTargetDigest: entry.primaryTargetDigest,
+        nativeTargetRevision: entry.target.revision, nativeTargetDigest: entry.target.digest,
+        policyEpoch: entry.policyEpoch, admissionKeyHash: entry.requestKeyHash, leaseMs: 1000 });
+      return;
+    }
     const rootWorkspace=selected&&isRootSignedWorkspaceSource(scopedProfile.sourceProfile),frame=rootWorkspace?parseRequestFrame(req):undefined;
     setPolicy(res, app.appHost.origin, selected, rootWorkspace, rootWorkspace && scopedProfile.schema === 'soty.selected-human-embed.v2' ? scopedProfile.nativeOrigin : null);
     if(frame)frameRequests.set(req,frame);
