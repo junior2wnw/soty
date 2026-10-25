@@ -124,6 +124,7 @@ class WorldApplication {
   private readonly avatars: AvatarHydrator;
   private readonly dialogs = new Set<WorldDialog>();
   private appSettingsDialog: WorldDialog | null = null;
+  private aiSettingsDialog: WorldDialog | null = null;
   private appSettingsRouteClose: ((resume: () => void) => void) | null = null;
   private coverDialog: WorldDialog | null = null;
   private coverHandle: ReturnType<typeof mountCoverEditor> | null = null;
@@ -758,7 +759,7 @@ class WorldApplication {
     const node = el('div', 'sw-loading'); node.setAttribute('role', 'status'); node.setAttribute('aria-live', 'polite');
     node.append(el('span', '', label)); return node;
   }
-  private cleanScreen(): void { this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
+  private cleanScreen(): void { this.aiSettingsDialog?.close({ restoreFocus: false }); this.aiSettingsDialog = null; this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
   private screenHasUnsavedChanges(): boolean { return !!(this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
@@ -987,7 +988,7 @@ class WorldApplication {
     const current = this.accountTask(), returnTarget = this.dialogReturnTarget();
     const menu=this.dialog('Профиль и настройки');const options=el('div','sx-profile-menu');
     const entry=(label:string,symbol:string,action:()=>void)=>button(label,symbol,'sw-button-wide',()=>{menu.close();action();});
-    options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
+    options.append(entry('Профиль','person',()=>this.openProfileEditor()),entry('Контакты','people',()=>this.runHook(()=>this.options.openAccount('people'))),entry('Устройства','laptop',()=>this.openResources('devices')),entry('Сохранённые приложения','folder',()=>this.openSavedLibrary()),entry('Доступы и действия','shield',()=>this.navigate('access')),entry('ИИ и API','assistant',()=>{ void this.openAiSettings(); }),entry('Видимость','eye',()=>this.openVisibility()),entry('Аккаунт и восстановление','lock',()=>this.runHook(()=>this.options.openAccount('recovery'))),entry('Оформление','sun',()=>this.openAppearance()),entry('Все возможности','grid',()=>this.navigate('library')));
     if (this.options.notifications) options.append(entry('Уведомления', 'bell', () => this.openNotifications()));
     const continuity = createOriginContinuityLinks(); if (continuity) options.append(continuity);
     const help = button('Помощь', 'info', 'sw-button-quiet', () => {
@@ -1006,6 +1007,27 @@ class WorldApplication {
     link.append(icon('chat'), el('span', '', 'Поддержка Сот'), icon('external'));
     coreSupportLinks.add(link);
     return link;
+  }
+
+  private async openAiSettings(): Promise<void> {
+    const accountId = this.deskAccount, accountCurrent = this.accountTask();
+    if (!accountId || !accountCurrent()) return;
+    this.aiSettingsDialog?.close({ restoreFocus: false });
+    let handle: { dispose(): void } | null = null;
+    const dialog = this.dialog('ИИ и API', () => {
+      handle?.dispose(); handle = null;
+      if (this.aiSettingsDialog === dialog) this.aiSettingsDialog = null;
+    });
+    this.aiSettingsDialog = dialog; dialog.element.classList.add('sw-ai-dialog');
+    dialog.body.append(el('p', 'sw-muted', 'Проверяем ИИ…'));
+    const current = (): boolean => accountCurrent() && this.aiSettingsDialog === dialog && dialog.element.open;
+    try {
+      const { mountAiSettings } = await import('./ai-settings');
+      if (!current()) return;
+      dialog.body.replaceChildren(); handle = mountAiSettings({ host: dialog.body, api: this.api, accountId, isCurrent: current });
+    } catch {
+      if (current()) dialog.body.replaceChildren(el('p', 'sw-muted', 'Не удалось открыть настройки ИИ. Закройте окно и попробуйте ещё раз.'));
+    }
   }
 
   private openHelp(returnTarget = this.dialogReturnTarget()): void {
