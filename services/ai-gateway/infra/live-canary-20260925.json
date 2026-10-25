@@ -1,0 +1,63 @@
+{
+  "checkedDate": "2026-09-25",
+  "site": "https://inference.pochinit.online",
+  "releaseTested": "pilot-20260925-e",
+  "customerContentUsed": false,
+  "realWindowsInstallMatrixCompleted": false,
+  "canaries": [
+    {
+      "scenario": "plain_browser_chat",
+      "model": "zai-org/GLM-5.3-Flash",
+      "status": 200,
+      "nonemptyRussianAnswer": true
+    },
+    {
+      "scenario": "initial_long_json",
+      "requestBytes": 21307,
+      "status": 502,
+      "durationMs": 29388,
+      "code": "upstream_invalid_structured_output",
+      "customerCharged": false
+    },
+    {
+      "scenario": "sse",
+      "model": "MiniMaxAI/MiniMax-M2.7",
+      "status": 200,
+      "firstHeadersMs": 860,
+      "durationMs": 1519,
+      "eventCount": 101,
+      "realDoneMarker": true,
+      "realTerminal": true,
+      "nonemptyContent": true,
+      "tokens": 147
+    },
+    {
+      "scenario": "long_json_minimax",
+      "requestBytes": 21308,
+      "status": 200,
+      "durationMs": 42606,
+      "model": "MiniMaxAI/MiniMax-M2.7",
+      "validJson": true,
+      "finish": "stop",
+      "tokens": 5359
+    },
+    {
+      "scenario": "long_json_auto",
+      "requestBytes": 21307,
+      "requestedModel": "zai-org/GLM-5.3-Flash",
+      "actualModel": "MiniMaxAI/MiniMax-M2.7",
+      "autoAllowed": true,
+      "status": 200,
+      "durationMs": 6755,
+      "validJson": true,
+      "finish": "stop",
+      "tokens": 5359
+    }
+  ],
+  "installerDownload": {
+    "bytes": 14327,
+    "cmdTemplate": true,
+    "embeddedPermanentApiKey": false
+  },
+  "note": "Synthetic bounded observations, not an availability SLA; no response contents, credentials, cookies or activation claims in this receipt."
+}

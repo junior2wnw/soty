@@ -1,0 +1,18 @@
+{
+  "name": "inference-commerce",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Soty inference cabinet, gateway and device workspace pilot",
+  "workspaces": ["apps/web", "apps/gateway"],
+  "scripts": {
+    "check": "node tools/validate-docs.mjs",
+    "build": "npm run build --workspace apps/web",
+    "dev": "npm run dev --workspace apps/web",
+    "start": "node apps/gateway/src/server.mjs",
+    "test": "node --test tests/backend/*.test.mjs tests/connector/*.test.mjs tests/installation/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

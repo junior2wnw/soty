@@ -1,0 +1,17 @@
+{
+  "name": "@soty/gateway",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "migrate": "node src/migrate.mjs"
+  },
+  "dependencies": {
+    "fastify": "5.12.5",
+    "pg": "8.16.3"
+  }
+}
