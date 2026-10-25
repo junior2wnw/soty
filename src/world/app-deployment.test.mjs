@@ -45,10 +45,53 @@ test('invalid and ambiguous deployment data cannot generate operator instruction
     value => { value.shellOrigin = 'https://user:secret@shell.example'; },
     value => { value.source.entryPath = '/_soty/ingress-check'; },
     value => { value.source.digest = 'invalid'; },
+    value => { value.source.digest = [value.source.digest]; },
+    value => { value.addresses.aliases[0].id = [aliasId]; },
     value => { value.source.revision++; },
     value => { value.addresses.aliases[0].state = 'tombstone'; },
     value => { value.addresses.aliases.push({ ...value.addresses.aliases[0] }); },
   ]) {
     const value = exportAppDeployment(inspection(), 'https://shell.example'); mutate(value); assert.throws(() => validateAppDeployment(value));
   }
+});
+
+function pairedInspection() {
+  const value = inspection(), sourceDomain = 'dom_' + 'e'.repeat(32);
+  Object.assign(value.source, { profile: 'soty.selected-human-embed.v2', revision: 2, entryPath: '/embed',
+    launchEntry: { domainId: sourceDomain, origin: 'https://source.example', path: '/embed', ignored: 'never exported' } });
+  value.addresses.aliases.push({ id: sourceDomain, origin: 'https://source.example', state: 'bound', active: true });
+  value.publication.activeTargetRevision = 2;
+  value.publication.nativeEntry = { schema: 'soty.native-entry.v1', origin: 'https://project.example', domainId: aliasId,
+    target: { revision: 1, digest: 'f'.repeat(64), profile: 'soty.relay-restricted.v1', port: 8112, entryPath: '/?view=mine#today', private: 'never exported' },
+    committedPolicyEpoch: 2, admissionKeyHash: '1'.repeat(64), runtimeReady: false, private: 'never exported' };
+  return value;
+}
+
+test('v2 export preserves both exact entries and distinct pins while omitting identities, runtime assertions and extensions', () => {
+  const original = pairedInspection(), before = structuredClone(original), value = exportAppDeployment(original, 'https://shell.example');
+  assert.equal(value.schema, 'soty.app-deployment.v2'); assert.equal(value.source.launchEntry.origin, 'https://source.example');
+  assert.equal(value.nativeEntry.origin, 'https://project.example'); assert.equal(value.nativeEntry.target.entryPath, '/?view=mine#today');
+  assert.equal(value.nativeEntry.target.digest, 'f'.repeat(64)); assert.deepEqual(original, before);
+  for (const marker of ['private-person', 'private-host', 'private-connector', 'never exported', 'runtimeReady', 'soty.native-entry.v1']) assert.equal(JSON.stringify(value).includes(marker), false);
+});
+
+test('Source-only and paused pair snapshots remain inspectable, without certifying public Native admission', () => {
+  const sourceOnly = pairedInspection(); delete sourceOnly.publication.nativeEntry;
+  assert.equal(exportAppDeployment(sourceOnly, 'https://shell.example').nativeEntry, null);
+  sourceOnly.source.launchEntry = null; assert.equal(exportAppDeployment(sourceOnly, 'https://shell.example').source.launchEntry, null);
+  const paused = pairedInspection(); paused.publication.launchPolicy = 'restricted'; paused.publication.listed = false;
+  paused.addresses.aliases[0].active = false; paused.addresses.aliases[0].state = 'tombstone';
+  assert.equal(exportAppDeployment(paused, 'https://shell.example').nativeEntry.domainId, aliasId);
+});
+
+test('v2 operator metadata rejects forged origin/domain, same host, changed pin types and unknown fields', () => {
+  for (const mutate of [
+    value => { value.nativeEntry.token = 'private'; }, value => { value.nativeEntry.target.profile = 'soty.selected-human-embed.v2'; },
+    value => { value.nativeEntry.target.port = value.source.port; }, value => { value.nativeEntry.target.digest = [value.nativeEntry.target.digest]; },
+    value => { value.nativeEntry.admissionKeyHash = [value.nativeEntry.admissionKeyHash]; },
+    value => { value.nativeEntry.domainId = 'dom_' + '9'.repeat(32); }, value => { value.nativeEntry.origin = 'https://unrelated.example'; },
+    value => { value.nativeEntry.committedPolicyEpoch = value.publication.policyEpoch + 1; },
+    value => { value.source.launchEntry.path = '/unreviewed'; },
+    value => { value.source.launchEntry.origin = 'https://project.example'; value.source.launchEntry.domainId = aliasId; },
+  ]) { const value = exportAppDeployment(pairedInspection(), 'https://shell.example'); mutate(value); assert.throws(() => validateAppDeployment(value)); }
 });

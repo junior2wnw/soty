@@ -11,7 +11,7 @@ export interface AppInspection {
     limits: { perApp: number; perAccount: number; usedByApp: number; usedByAccount: number };
   };
   publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; audience?: AppAudience | null; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number;
-    nativeEntry?: { schema: 'soty.native-entry.v1'; origin: string; domainId: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'>; runtimeReady: false } };
+    nativeEntry?: { schema: 'soty.native-entry.v1'; origin: string; domainId: string; committedPolicyEpoch: number; admissionKeyHash: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'>; runtimeReady: false } };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
     launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
