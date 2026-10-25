@@ -57,6 +57,7 @@
   margin: 0;
   border-radius: 0;
 }
+.sw-app .sw-pwa-banner .sw-button { min-height: 44px; }
 
 .sw-app .sw-mobile-nav {
   display: none;

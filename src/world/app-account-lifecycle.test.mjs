@@ -262,6 +262,20 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
 
+test('recent work uses the existing durable navigation fence and rejects a removed route or retired account generation', () => {
+  for (const state of ['current', 'removed', 'foreign-route', 'retired']) {
+    const f = fixture(), route = 'notes/private-note', opened = []; let finish;
+    f.app.desk.recent = [{ route, title: 'Личная записка', symbol: 'note' }];
+    f.app.afterNoteSaved = action => { finish = action; };
+    f.app.writeRoute = value => opened.push(value); f.app.openRoute = async () => opened.push('opened');
+    f.app.openRecentWork(state === 'foreign-route' ? 'notes/another-note' : route);
+    assert.deepEqual(opened, [], 'navigation waits for existing durable work');
+    if (state === 'removed') f.app.desk.recent = [];
+    if (state === 'retired') f.app.accountGeneration += 2; // A -> B -> A cannot revive this callback.
+    finish(); assert.deepEqual(opened, state === 'current' ? [route, 'opened'] : [], state);
+  }
+});
+
 test('cold application inbox uses the single server discovery API and refresh retains loaded pages', async () => {
   const f = fixture(), calls = [], appId = 'app-' + 'a'.repeat(32);
   const makeRow = (id, source = 'known') => ({ appId: id, name: 'Shared app', source,

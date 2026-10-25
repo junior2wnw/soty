@@ -1388,6 +1388,8 @@ class WorldApplication {
       onCreateMenu: () => this.openAddMenu(),
       onOpenMore: () => this.openFieldMenu(),
       onSearchVisibilityChange: () => this.syncWorkspaceNavigation(),
+      getRecentWork: () => isCurrent() ? this.desk.recent : [],
+      onOpenRecent: route => { if (isCurrent()) this.openRecentWork(route); },
       onKnownAppEntries: entries => {
         if (!isCurrent() || JSON.stringify(entries) === JSON.stringify(this.applicationFieldEntries)) return;
         this.applicationFieldEntries = entries; this.queueApplicationInbox();
@@ -2562,10 +2564,18 @@ class WorldApplication {
 
   private openRecent(): void {
     const dialog = this.dialog('Недавнее'); const list = el('div', 'sx-profile-menu');
-    for (const item of this.desk.recent) list.append(button(item.title, item.symbol, 'sw-button-quiet', () => { dialog.close(); this.writeRoute(item.route); void this.openRoute(); }));
+    for (const item of this.desk.recent) list.append(button(item.title, item.symbol, 'sw-button-quiet', () => { dialog.close(); this.openRecentWork(item.route); }));
     if (!this.desk.recent.length) list.append(el('p', 'sw-muted', 'Здесь появятся открытые приложения и записки'));
     else list.append(button('Очистить недавнее', 'close', 'sw-button-quiet', () => { this.desk.recent = []; this.saveDesk(); dialog.close(); if (this.view === 'mine') this.renderPersonal(); }));
     dialog.body.append(list);
+  }
+
+  private openRecentWork(route: string): void {
+    const current = this.accountTask();
+    this.afterNoteSaved(() => {
+      if (!current() || !this.desk.recent.some(item => item.route === route)) return;
+      this.writeRoute(route); void this.openRoute();
+    });
   }
 
   private inspectApplication(app: WorldAppRecord): void {

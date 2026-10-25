@@ -42,9 +42,12 @@ export function placeFloatingControl(preferred: FloatingPoint, view: FloatingVie
 /** Read visible shell controls, including iframe bounds we cannot inspect. */
 export function floatingObstacles(doc: Document, ignore: (element: Element) => boolean, extraSelector = ''): FloatingRect[] {
   const result: FloatingRect[] = [];
-  const controls = 'button,a[href],input,textarea,select,summary,[role="button"],iframe';
+  const controls = 'button,a[href],input,textarea,select,summary,[role="button"],iframe,[data-floating-obstacle]';
   for (const element of doc.querySelectorAll?.(extraSelector ? `${controls},${extraSelector}` : controls) ?? []) {
     if (ignore(element) || element.closest('[hidden],[inert]') || !element.getClientRects().length) continue;
+    // A marked compound control reserves its containing surface. Counting its
+    // scrolled-out children would falsely occupy the space below a scrollport.
+    if (element.parentElement?.closest('[data-floating-obstacle]')) continue;
     let collapsed = false;
     for (let parent = element.parentElement; parent; parent = parent.parentElement) {
       if (parent.tagName === 'DETAILS' && !parent.hasAttribute('open') && !parent.querySelector(':scope > summary')?.contains(element)) { collapsed = true; break; }

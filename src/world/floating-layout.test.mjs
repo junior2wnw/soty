@@ -55,3 +55,20 @@ test('collector skips hidden/inert/zero geometry and the owned control, while re
   const doc = { querySelectorAll: () => [own, visible, frame, hidden, zero, invisible], defaultView: { getComputedStyle: element => ({ visibility: element.invisible ? 'hidden' : 'visible' }) } };
   assert.deepEqual(floatingObstacles(doc, element => element === own), [rectangle, rectangle]);
 });
+
+test('compound search controls reserve their whole visible surface instead of only the inner text input', () => {
+  const surface = { left: 12, top: 224, width: 296, height: 52 };
+  const group = { closest: () => null, getClientRects: () => [surface], getBoundingClientRect: () => surface };
+  const doc = { querySelectorAll(selector) { assert.ok(selector.includes('[data-floating-obstacle]')); return [group]; } };
+  const obstacles = floatingObstacles(doc, () => false);
+  assert.deepEqual(obstacles, [surface]);
+  assert.equal(touches(placeFloatingControl({ x: 6, y: 216 }, view(320), obstacles), surface), false);
+});
+
+test('scrolled-out children of a reserved result panel do not falsely occupy the rest of the viewport', () => {
+  const surface = { left: 12, top: 282, width: 296, height: 264 };
+  const group = { closest: () => null, getClientRects: () => [surface], getBoundingClientRect: () => surface };
+  const clipped = { ...group, parentElement: { closest: selector => selector === '[data-floating-obstacle]' ? group : null },
+    getBoundingClientRect: () => ({ left: 21, top: 760, width: 278, height: 88 }) };
+  assert.deepEqual(floatingObstacles({ querySelectorAll: () => [group, clipped] }, () => false), [surface]);
+});

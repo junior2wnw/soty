@@ -17,6 +17,8 @@ const APP='app-'+ 'a'.repeat(32), DOMAIN='dom_'+'b'.repeat(32), CONVERSATION='co
 const entry={appId:APP,domainId:DOMAIN,origin:'https://runtime.workspace.invalid',path:'/board?q=a%2Bb'};
 const profile={profileId:ACCOUNT,displayName:'Анна · тестовый профиль',bio:'Локальный стенд навигации',interests:[],avatarColor:'#77a18a',revision:1,directMessagesVersion:1};
 const app={id:APP,name:'Доска с длинным понятным названием проекта',ownerAccountId:ACCOUNT,state:'ready',createdAt:1,updatedAt:1,access:'owner',canManage:true,entry};
+if(new URL(location.href).searchParams.get('recent')==='1')memory.set('soty.desk.v1:'+encodeURIComponent(ACCOUNT),JSON.stringify({favorites:[],recent:[
+ {route:'app/'+APP,title:app.name,symbol:'grid'},...Array.from({length:5},(_,i)=>({route:'notes/fixture-note-'+i,title:'Длинное русское название личной записки '+(i+1),symbol:'note'}))]}));
 const savedEntries=[...Array.from({length:20},(_,i)=>({appId:'app-'+(i+1).toString(16).padStart(32,'0'),domainId:DOMAIN,origin:entry.origin,path:'/fixture/'+i,label:'Другой проект '+(i+1),savedRevision:21-i,updatedAt:1800000000000+i,current:{name:'Другой проект '+(i+1),status:'ready',canManage:true}})),{...entry,label:app.name,savedRevision:1,updatedAt:1800000000000,current:{name:app.name,status:'ready',canManage:true}}];
 let field={schema:'soty.field.v1',contexts:[{contextId:'workspace',title:'Работа',x:0,y:0}],shortcuts:[{shortcutId:'fixture-app',entity:{kind:'app',id:APP},contextId:'workspace',slot:[0,0]}]}, revision=1, launchCount=0, unread=1, inboxMode='normal';
 const hash=async doc=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(doc))))].map(n=>n.toString(16).padStart(2,'0')).join('');

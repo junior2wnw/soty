@@ -36,7 +36,7 @@ const code = ts.transpileModule([
 // The maintained production functions execute together. Only DOM, routing,
 // source records and the renderer are ports; no new search algorithm is copied.
 function harness() {
-  const calls = { open: [], preview: [], context: [], knownApps: [], list: 0, focus: 0, route: [], writes: 0, camera: 0, close: 0 };
+  const calls = { open: [], recent: [], preview: [], context: [], knownApps: [], list: 0, focus: 0, route: [], writes: 0, camera: 0, close: 0 };
   class NodePort {
     children = []; hidden = false; isConnected = true; attributes = new Map(); handlers = new Map(); parent = null;
     constructor(tag = 'div', className = '', textContent = '') { Object.assign(this, { tag, className, textContent }); }
@@ -47,6 +47,7 @@ function harness() {
     addEventListener(type, listener) { const entries = this.handlers.get(type) || []; entries.push(listener); this.handlers.set(type, entries); }
     focus() { calls.focus++; }
     click() { this.onClick?.(); }
+    querySelector(selector) { return selector === 'button:not([disabled])' ? this.children.find(node => node.tag === 'button' && !node.disabled) ?? null : null; }
   }
   const node = (tag, className, text) => new NodePort(tag, className, text);
   const notes = { entity: { kind: 'builtin', id: 'notes' }, title: 'Записки', source: 'builtin' };
@@ -93,7 +94,7 @@ function harness() {
   const text = n => n.textContent + n.children.map(text).join('');
   const buttons = () => api.list.children.filter(n => n.tag === 'button');
   const emit = (type, props = {}) => {
-    const event = { isComposing: false, key: '', stopped: 0, ...props, stopPropagation() { this.stopped++; } };
+    const event = { isComposing: false, key: '', stopped: 0, prevented: 0, ...props, stopPropagation() { this.stopped++; }, preventDefault() { this.prevented++; } };
     for (const listener of searchInput.handlers.get(type) || []) listener(event);
     return event;
   };
@@ -101,6 +102,50 @@ function harness() {
   return { api, environment, calls, notes, apps, document, metadata, records, before, buttons, text, emit, enter, searchInput,
     retire() { live = false; }, assertUnchanged() { assert.equal(JSON.stringify(document), before); assert.equal(calls.writes, 0); assert.equal(calls.camera, 0); } };
 }
+
+test('opening empty Mine search exposes at most six recent routes without a directory request or field write', () => {
+  const h = harness(), recent = Array.from({ length: 8 }, (_, n) => ({ route: 'notes/note-' + n, title: 'Недавнее ' + n, symbol: 'note' }));
+  h.environment.options.getRecentWork = () => recent;
+  h.environment.options.onOpenRecent = route => h.calls.recent.push(route);
+  h.api.render(); assert.equal(h.api.surface.hidden, true, 'opening the field alone does not open recent search');
+  h.environment.element.dataset.search = 'open'; h.api.render();
+  assert.equal(h.api.surface.hidden, false); assert.equal(h.buttons().length, 6);
+  assert.equal(h.api.status.textContent, 'Недавняя работа · в этом профиле');
+  const first = h.buttons()[0]; h.api.render(); assert.equal(h.buttons()[0], first, 'unchanged rows preserve keyboard focus');
+  first.click(); assert.deepEqual(h.calls.recent, ['notes/note-0']);
+  assert.equal(h.calls.open.length, 0); h.assertUnchanged();
+});
+
+test('a private recent row cannot survive public scope, profile departure, removal, IME, filter or search close', () => {
+  for (const change of ['public', 'profile', 'removed', 'composition', 'filter', 'closed', 'query']) {
+    const h = harness(); let recent = [{ route: 'notes/private-note', title: 'Личная записка', symbol: 'note' }];
+    h.environment.options.getRecentWork = () => recent;
+    h.environment.options.onOpenRecent = route => h.calls.recent.push(route);
+    h.environment.element.dataset.search = 'open'; h.api.render(); const row = h.buttons()[0]; assert.ok(row);
+    if (change === 'public') h.environment.mode = 'search';
+    if (change === 'profile') h.retire();
+    if (change === 'removed') recent = [];
+    if (change === 'composition') h.environment.composing = true;
+    if (change === 'filter') h.environment.filter = 'person';
+    if (change === 'closed') h.environment.element.dataset.search = 'closed';
+    if (change === 'query') h.environment.queries.mine = 'Проект';
+    row.click(); assert.deepEqual(h.calls.recent, [], change);
+    h.api.render();
+    if (change !== 'query') { assert.equal(h.api.surface.hidden, true, change); assert.equal(h.api.list.children.length, 0, change); }
+    h.assertUnchanged();
+  }
+});
+
+test('keyboard can focus or open the first visible personal recent result without accepting an IME composition', () => {
+  const h = harness();
+  h.environment.options.getRecentWork = () => [{ route: 'notes/private-note', title: 'Записка', symbol: 'note' }];
+  h.environment.options.onOpenRecent = route => h.calls.recent.push(route);
+  h.environment.element.dataset.search = 'open'; h.api.render();
+  assert.equal(h.emit('keydown', { key: 'ArrowDown' }).prevented, 1); assert.equal(h.calls.focus, 1);
+  assert.equal(h.emit('keydown', { key: 'Enter', isComposing: true }).prevented, 0); assert.deepEqual(h.calls.recent, []);
+  assert.equal(h.emit('keydown', { key: 'Enter' }).prevented, 1); assert.deepEqual(h.calls.recent, ['notes/private-note']);
+  h.environment.mode = 'search'; h.emit('keydown', { key: 'Enter' }); assert.equal(h.calls.recent.length, 1);
+});
 
 test('only freshly resolved apps actually placed on the personal field enter the shared inbox', () => {
   const h = harness(), own = h.apps[0].entity, unplaced = { kind: 'app', id: 'app-' + 'f'.repeat(32) };

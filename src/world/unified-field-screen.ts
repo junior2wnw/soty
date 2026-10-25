@@ -13,6 +13,7 @@ import { avatar, button, el, iconButton, labeledField, nounCount, textInput } fr
 import { createDialog, errorText, isDialogFocusTarget, type WorldDialog } from './dialogs';
 import { icon } from './icons';
 import type { WorldCommunity } from './types';
+import type { RecentAction } from './product';
 
 export type FieldFilter = 'all' | 'app' | 'person' | 'community' | 'device';
 export interface UnifiedFieldScreenOptions {
@@ -30,6 +31,8 @@ export interface UnifiedFieldScreenOptions {
   onCreateMenu?: () => void;
   onOpenMore?: () => void;
   onSearchVisibilityChange?(): void;
+  getRecentWork?: () => readonly RecentAction[];
+  onOpenRecent?: (route: string) => void;
   onKnownAppEntries?(entries: DirectoryApp['entry'][]): void;
   onInspectOwn?: (entity: DirectoryEntity, record: DirectoryRecord | null, openPlacement?: () => void) => boolean;
   onMessage(message: string, error?: boolean): void;
@@ -77,12 +80,14 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const arrange = button('Расставить', 'sliders', 'uf-screen-arrange', () => engine?.setArrange(!summary?.arranging));
   head.append(title, arrange);
   const search = el('label', 'uf-global-search'); const searchInput = textInput('', 'Найти в моих сотах', 100);
+  search.setAttribute('data-floating-obstacle', '');
   searchInput.type = 'search'; searchInput.setAttribute('aria-label', 'Найти в моих сотах'); searchInput.autocomplete = 'off';
   const clear = iconButton('Очистить поиск', 'close', () => { searchInput.value = ''; queries[mode] = ''; inputChanged(); searchInput.focus(); });
   clear.classList.add('uf-search-clear'); search.append(icon('search'), searchInput, clear);
   const closeSearch = iconButton('Закрыть поиск', 'close', () => {
     if (searchInput.value || queries[mode]) { searchInput.value = ''; inputChanged(true); }
     element.dataset.search = 'closed';
+    renderMineSearchResults();
     options.onSearchVisibilityChange?.();
     const opener = searchOpener; searchOpener = null;
     if (isDialogFocusTarget(opener)) opener.focus({ preventScroll: true }); else focusFieldControl();
@@ -93,9 +98,11 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const localSearch = el('div', 'uf-local-search');
   const mineSearchResults = el('div', 'uf-search-results'); mineSearchResults.hidden = true;
   mineSearchResults.setAttribute('role', 'group'); mineSearchResults.setAttribute('aria-label', 'Результаты на моём поле');
+  mineSearchResults.setAttribute('data-floating-obstacle', '');
   const mineSearchStatus = el('p', 'uf-search-result-status'); mineSearchStatus.setAttribute('role', 'status');
   const mineSearchList = el('div', 'uf-search-result-list');
   sides.classList.add('uf-search-scope'); sides.setAttribute('aria-label', 'Где искать');
+  sides.setAttribute('data-floating-obstacle', '');
   mineSearchResults.append(mineSearchStatus, mineSearchList); localSearch.append(sides, search, listButton, mineSearchResults);
   const workspaceTools = el('nav', 'uf-workspace-tools'); workspaceTools.setAttribute('aria-label', 'Моё: вид и сохранённое');
   const create = button('Создать', 'plus', 'uf-workspace-create', () => options.onCreateMenu?.()); create.hidden = !options.onCreateMenu;
@@ -321,6 +328,10 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   searchInput.addEventListener('compositionend', () => { composing = false; inputChanged(true); }, { signal });
   searchInput.addEventListener('keydown', event => {
     if (event.isComposing || composing) return;
+    if ((event.key === 'ArrowDown' || event.key === 'Enter') && mode === 'mine' && !mineSearchResults.hidden) {
+      const first = mineSearchList.querySelector<HTMLButtonElement>('button:not([disabled])');
+      if (first) { event.preventDefault(); if (event.key === 'Enter') first.click(); else first.focus(); }
+    }
     if (event.key === 'Escape') {
       event.stopPropagation();
       if (searchInput.value) { searchInput.value = ''; inputChanged(true); }
@@ -734,6 +745,26 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   }
   function renderMineSearchResults(): void {
     const query = queries.mine, needle = query.trim().toLocaleLowerCase('ru');
+    const recent = current() && engine && mode === 'mine' && !needle && !composing
+      && element.dataset.search === 'open' && filter === 'all' && options.onOpenRecent
+      ? options.getRecentWork?.().slice(0, 6) ?? [] : [];
+    if (recent.length) {
+      const signature = JSON.stringify(['recent', recent]);
+      if (signature === mineSearchSignature) return;
+      mineSearchSignature = signature; mineSearchResults.hidden = false;
+      mineSearchStatus.textContent = 'Недавняя работа · в этом профиле'; mineSearchList.replaceChildren();
+      for (const item of recent) {
+        const action = button('', item.symbol, 'uf-list-entry uf-search-result', () => {
+          if (!current() || mode !== 'mine' || queries.mine.trim() || composing || filter !== 'all'
+            || element.dataset.search !== 'open' || mineSearchResults.hidden || !action.isConnected
+            || !options.getRecentWork?.().some(value => value.route === item.route)) return;
+          options.onOpenRecent?.(item.route);
+        });
+        const copy = el('span', 'uf-list-copy'); copy.append(el('strong', '', item.title), el('small', '', 'Продолжить'));
+        action.replaceChildren(icon(item.symbol), copy); mineSearchList.append(action);
+      }
+      return;
+    }
     if (!current() || !engine || mode !== 'mine' || !needle || composing) {
       mineSearchResults.hidden = true; mineSearchSignature = '';
       mineSearchStatus.textContent = ''; mineSearchList.replaceChildren(); return;
@@ -977,6 +1008,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       const active = document.activeElement;
       if (active instanceof HTMLElement && !search.contains(active)) searchOpener = active;
       element.dataset.search = 'open'; searchInput.focus();
+      renderMineSearchResults();
       options.onSearchVisibilityChange?.();
     },
     closeSearch: () => closeSearch.click(),
