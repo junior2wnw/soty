@@ -27,7 +27,7 @@ const { jwtVerify, createLocalJWKSet, SignJWT } = await import(pathToFileURL(pro
 
 // Real Human SQLite/key/signature and real installed connector HTTP. The Root
 // Apps authority callbacks are controlled unit fixtures, not claimed live SSO.
-async function fixture(t, pin = STANDARD_ROOT_WORKSPACE_SOURCE) {
+async function fixture(t, pin = STANDARD_ROOT_WORKSPACE_SOURCE, { noRpClients = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'soty-root-witness-')), databasePath = join(directory, 'human.sqlite');
   const actor = Object.freeze({ accountId: 'reader', deviceId: 'reader-device' });
   let now = Date.now(), active = true, appActive = true, epoch = 1, human, factory, gateway, hold, transform = value => value;
@@ -42,7 +42,7 @@ async function fixture(t, pin = STANDARD_ROOT_WORKSPACE_SOURCE) {
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const port = server.address().port, origin = 'http://127.0.0.1:' + port, appId = 'app-' + 'a'.repeat(32);
   const config = { enabled: true, issuer: origin + '/human-identity', registryId: 'soty', environmentId: 'fixture',
-    clients: [{ id: 'existing-native-rp', label: 'Existing Native RP', redirectUri: 'http://localhost:19401/account/soty/callback', clientSecret: random() }],
+    clients: noRpClients ? [] : [{ id: 'existing-native-rp', label: 'Existing Native RP', redirectUri: 'http://localhost:19401/account/soty/callback', clientSecret: random() }],
     jwks: { keys: [jwk] }, cookieKeys: [random()], artifactKey: randomBytes(32), artifactKeyId: 'fixture' };
   const hostProfile = createHumanIdentityHostProfile(config, { shellOrigins: [origin] });
   function openHuman() { human = createHumanIdentityService({ databasePath, profile: createHumanIdentityHostProfile(config, { shellOrigins: [origin] }),
@@ -95,6 +95,15 @@ test('Root issuer witness binds original Source nonce/full current context and u
   await assert.rejects(jwtVerify(f.signed[0], createLocalJWKSet({ keys: [publicJwk] }), { audience: 'existing-native-rp' }));
   await assert.rejects(jwtVerify(f.signed[0], createLocalJWKSet({ keys: [publicJwk] }), { typ: 'JWT' }));
   f.advance(10000); assert.equal(isVerifiedRootContext(result), false);
+});
+
+test('Root Workspace2 signs current actor authority with zero approved RP clients and creates no RP artifacts', async t => {
+  const f = await fixture(t, STANDARD_ROOT_WORKSPACE_SOURCE, { noRpClients: true });
+  assert.deepEqual(f.hostProfile.publicClients, []); assert.equal(f.hostProfile.client(f.raw.clientId), undefined);
+  const before = f.artifactCounts(); assert.deepEqual(await f.read(), f.context);
+  assert.deepEqual(f.artifactCounts(), before);
+  assert.equal(isVerifiedRootContext(await f.read()), true);
+  f.revokeActor(); await assert.rejects(f.read(), { code: 'scoped_embed_authority_denied' });
 });
 
 test('a connector with its real MAC cannot substitute an actor, nonce, context or issuer witness', async t => {

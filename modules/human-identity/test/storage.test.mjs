@@ -27,7 +27,7 @@ function fixture(t) {
     rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const config = options(), open = (change = {}) => {
-    const profile = createHumanIdentityHostProfile(change.options || config, { shellOrigins: [origin] });
+    const profile = change.profile ?? createHumanIdentityHostProfile(change.options || config, { shellOrigins: [origin] });
     const service = createHumanIdentityService({ databasePath, profile, actorActive: () => true, withAuthorityFence: callback => callback(), ...change });
     services.push(service); return service;
   };
@@ -68,6 +68,34 @@ test('human issuer stays reserved and disabled without approved configuration, a
   }
   const missing = options(); delete missing.jwks;
   assert.throws(() => createHumanIdentityHostProfile(missing, { shellOrigins: [origin] })); assert.equal(existsSync(f.databasePath), false);
+});
+
+test('an explicitly empty approved RP list starts the issuer and JWKS while every unregistered RP stays denied', async t => {
+  const f = fixture(t); let app;
+  const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  t.after(async () => { server.closeAllConnections(); await new Promise(done => server.close(done)); });
+  const base = 'http://127.0.0.1:' + server.address().port, headers = {};
+  const config = { ...f.config, clients: [], issuer: base + '/human-identity' };
+  const profile = createHumanIdentityHostProfile(config, { shellOrigins: [base] });
+  const service = f.open({ options: config, profile });
+  app = express(); attachHumanIdentity(app, { profile, service });
+  assert.deepEqual(profile.providerClients(), []); assert.equal(profile.client('unknown'), undefined);
+  const jwks = await fetch(base + '/human-identity/jwks', { headers }); assert.equal(jwks.status, 200);
+  const keys = await jwks.json(); assert.equal(keys.keys.length, 1); assert.equal(keys.keys[0].d, undefined);
+  const metadata = await fetch(base + '/human-identity/.well-known/openid-configuration', { headers }); assert.equal(metadata.status, 200);
+  assert.equal((await metadata.json()).issuer, profile.issuer);
+  const authorize = new URLSearchParams({ response_type: 'code', client_id: 'unknown', redirect_uri: 'http://127.0.0.1:19999/callback',
+    scope: 'openid profile', state: random(), nonce: random(), code_challenge: random(), code_challenge_method: 'S256' });
+  const denied = await fetch(base + '/human-identity/authorize?' + authorize, { headers, redirect: 'manual' }); assert.ok(denied.status >= 400);
+  assert.equal(denied.headers.get('location'), null);
+  const token = await fetch(base + '/human-identity/token', { method: 'POST', headers: { ...headers, origin: base,
+    'content-type': 'application/x-www-form-urlencoded', authorization: 'Basic ' + Buffer.from('unknown:' + random()).toString('base64') },
+    body: new URLSearchParams({ grant_type: 'authorization_code', code: random(), redirect_uri: 'http://127.0.0.1:19999/callback', code_verifier: random() }) });
+  assert.ok(token.status >= 400); assert.equal((await token.json()).access_token, undefined);
+  const db = new DatabaseSync(f.databasePath, { readOnly: true });
+  try { assert.equal(db.prepare('SELECT count(*) AS n FROM human_identity_artifacts').get().n, 0);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM human_identity_client_heads').get().n, 0); } finally { db.close(); }
 });
 
 test('approved host profile rejects control/ill-formed labels, mutable accessors, unknown fields and weak/missing key inputs without echoing material', () => {

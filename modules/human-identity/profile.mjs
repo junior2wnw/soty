@@ -67,7 +67,8 @@ export function createHumanIdentityHostProfile(options, { shellOrigins = [] } = 
   requireHuman(shellOrigins.includes(origin), code, 503); id(options.registryId); id(options.environmentId);
   const enabled = options.enabled, issuer = options.issuer;
   if (!enabled) return Object.freeze({ enabled: false, issuer, origin, secure: origin.startsWith('https:'), registryId: options.registryId, environmentId: options.environmentId });
-  const clients = data(options.clients); requireHuman(Array.isArray(clients) && clients.length >= 1 && clients.length <= 64, code, 503);
+  // Root-signed Source authority uses the issuer key without an RP registration.
+  const clients = data(options.clients); requireHuman(Array.isArray(clients) && clients.length <= 64, code, 503);
   const ids = new Set(), redirects = new Set();
   for (const client of clients) {
     closed(client, ['id', 'label', 'redirectUri', 'clientSecret'], ['version'], code); id(client.id); redirectFor(client.redirectUri);

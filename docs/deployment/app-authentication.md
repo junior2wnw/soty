@@ -7,6 +7,15 @@
 
 ## Выбор режима
 
+Для уже проверенного Root профиля в приложении с явно установленным
+`soty.standard-workspace@2` используется поддерживаемый signed-current-context
+через private frame/broker, затем собственный Native ACL. Этот режим не требует
+RP registration или OIDC refresh family для самой соты. Активный issuer может
+иметь явный `clients: []`: ключи/issuer/origin остаются обязательными, JWKS и
+подпись Source authority работают, а незарегистрированные RP получают отказ.
+Обычный standalone OIDC вход по-прежнему требует approved confidential client.
+Пустой список ничего не регистрирует и не включает dynamic registration.
+
 | Задача | Контракт | Что он подтверждает |
 |---|---|---|
 | Вход разных людей в приложение | Human OIDC `/human-identity` + Source RP/BFF | Текущий human subject, отдельная app session, затем собственный ACL |
