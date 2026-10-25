@@ -52,6 +52,17 @@ SOTY_UI_CADDY_BINARY=/qualified/caddy node --test deploy/ui/release-caddy.accept
 
 После установки: публичный root+все worker assets, прежние статусы/headers, старая вкладка с lazy import, установленная PWA, сохранение профиля и черновика, безопасное обновление и откат. Доступность API и локальные тесты не заменяют эти проверки.
 
+## Закреплённые входы сборки и проверочного стенда
+
+- У Docker с containerd `buildx --iidfile` может содержать digest image config, а `docker image inspect` ожидает digest manifest. После успешного export разреши собственный уникальный tag через `docker image inspect TAG`, сохрани actual `.Id` и повторно проверь этот ID, revision и task labels. Различие двух digest не означает неуспешную сборку и не разрешает её повторять. Tag служит только навигацией; запуск закрепляется actual ID.
+- SHA Git blob, байты `git archive` и фактически развёрнутые файлы — разные проверяемые объекты. Git на Windows может материализовать CRLF, а `tar.umask` меняет mode относительно `ls-tree`. Закрепляй точные archive bytes/modes до и после сборки и отдельно Git provenance. Не нормализуй опубликованный пакет или SQL/конфигурацию ради совпадения; допустимая текстовая разница требует отдельного конечного перечня old/new hashes. SDK `.tgz` сверяется побайтно.
+- Отдельный UI producer хранит разные `backendRevision/backendImage` и `uiSourceRevision`. Он проверяет неизменность всех production server/module/dependency inputs; исключение тестового файла описывается по точному пути и old/new hashes. Результат — конечный `/dist`, без нового runnable backend. Новая инструкция или frontend-редактор не заменяет квалифицированный DATA writer.
+- Перед запуском копии реальных DATA отдельно проверь физические mounts проверочного helper без DATA: конечные mountpoints, читабельность, исполняемый Caddy и его SHA/version. Не вкладывай file bind в read-only directory bind без существующего mountpoint. Ошибка стенда не разрешает ослабить guards или повторить неизвестный START.
+- Для HTTP-проверки виртуального host используй `node:http.request` с явным `Host` и loopback connection address. В проверенном Node24 built-in `fetch` игнорирует переданный `Host`; ответ default host нельзя принять за результат нужного сайта. Сначала докажи полученный сервером literal Host на собственном echo fixture. Сохраняй настоящие method/query/body bounds, timeout, redirect и response assertions.
+- Сверка active/disk выполняется поддерживаемым `verifyActiveDisk` с физическим именем конфигурации и полным JSON. Фиксируй отдельно cwd адаптера, объявленный systemd cwd и реально прочитанные process fields. Отказ `/proc/.../cwd` или `/proc/.../exe` не доказывает их значение: не подменяй наблюдение предположением и не расширяй capabilities helper ради лишней диагностики.
+
+При неизвестном результате используй прежний журнал и read-only reconciliation. При известной ошибке только собственного проверочного стенда сохраняй RED, устраняй конкретную причину и квалифицируй исправленную физическую схему отдельно; новый разрешённый цикл имеет собственный журнал и не переписывает предыдущий.
+
 Основания: [Caddy response interception](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#intercepting-responses), [native path/method/query expressions](https://caddyserver.com/docs/caddyfile/matchers#expression), [file_server](https://caddyserver.com/docs/caddyfile/directives/file_server), [reload/signals](https://caddyserver.com/docs/command-line#signals).
 
 
