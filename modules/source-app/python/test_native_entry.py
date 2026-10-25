@@ -3,6 +3,7 @@ import copy
 import json
 import sqlite3
 import unittest
+from types import SimpleNamespace
 from soty_native_entry import NativeEntryGuard, NativeEntryError, NativeEntryMiddleware, assert_native_entry_current, refresh_native_entry
 
 
@@ -56,8 +57,10 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_wire_brand_monotonic_deadline_and_no_ambient_cookie(self):
         lease = await self.guard.acquire()
         self.guard.assert_current(lease)
+        with self.assertRaises(AttributeError):
+            lease.policy_epoch = 999
         with self.assertRaises(NativeEntryError):
-            self.guard.assert_current(copy.copy(lease))
+            self.guard.assert_current(SimpleNamespace(policy_epoch=lease.policy_epoch, admission_key_hash=lease.admission_key_hash))
         self.assertNotIn('cookie:', self.requests[0].lower())
         await self.guard.acquire()
         self.assertNotIn('cookie:', self.requests[1].lower())

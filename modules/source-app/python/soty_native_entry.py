@@ -45,10 +45,22 @@ def _unique_pairs(pairs):
 
 
 class _Lease:
-    __slots__ = ('policy_epoch', 'admission_key_hash', '__weakref__')
+    __slots__ = ('_policy_epoch', '_admission_key_hash', '__weakref__')
 
     def __init__(self, epoch, admission):
-        self.policy_epoch, self.admission_key_hash = epoch, admission
+        object.__setattr__(self, '_policy_epoch', epoch)
+        object.__setattr__(self, '_admission_key_hash', admission)
+
+    @property
+    def policy_epoch(self):
+        return self._policy_epoch
+
+    @property
+    def admission_key_hash(self):
+        return self._admission_key_hash
+
+    def __setattr__(self, _name, _value):
+        raise AttributeError('immutable Native policy lease')
 
 
 _current_boundary = contextvars.ContextVar('soty_native_entry_boundary', default=None)
@@ -338,11 +350,14 @@ class _FencedTransaction:
 
 
 class _FencedConnection:
-    def __init__(self, connection, owner):
+    def __init__(self, connection, owner, boundary):
         self.connection, self.owner, self.depth, self.released = connection, owner, 0, False
+        self.boundary = boundary
 
     def _current(self):
         _need(not self.released, 'native_entry_connection_released', 503)
+        if self.boundary is not None:
+            self.boundary.assert_current()
         assert_native_entry_current()
 
     def transaction(self, *args, **kwargs):
@@ -374,8 +389,14 @@ class _FencedAcquire:
 
     async def _acquire(self):
         _need(self.connection is None, 'native_entry_connection_reused', 503)
+        boundary = _current_boundary.get()
         assert_native_entry_current()
-        self.connection = _FencedConnection(await self.pool.pool.acquire(*self.arguments, **self.keywords), self.pool)
+        self.connection = _FencedConnection(await self.pool.pool.acquire(*self.arguments, **self.keywords), self.pool, boundary)
+        try:
+            self.connection._current()
+        except BaseException:
+            await self.pool.release(self.connection)
+            raise
         return self.connection
 
     def __await__(self):
@@ -398,10 +419,10 @@ class _FencedPool:
     async def release(self, connection, *args, **kwargs):
         _need(isinstance(connection, _FencedConnection) and connection.owner is self and not connection.released,
               'native_entry_connection_released', 503)
-        try:
-            await self.pool.release(connection.connection, *args, **kwargs)
-        finally:
-            connection.released = True
+        # Invalidate BEFORE waiting for the raw driver's cleanup. A retained
+        # wrapper cannot race release or become usable under a fresh context.
+        connection.released = True
+        await self.pool.release(connection.connection, *args, **kwargs)
 
     def __getattr__(self, name):
         if name in ('execute','executemany','fetch','fetchrow','fetchval'):
