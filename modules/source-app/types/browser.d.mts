@@ -28,3 +28,33 @@ export function createSourceFeedbackInbox(options?:{api?:FeedbackClient;isCurren
 export {createSourceFeedbackProcessingClient} from './processing.mjs';
 /** Public locator and guarded same-parent short-session wake-up for reads only. */
 export function createSourceFrameFetch(options?:{fetch?:typeof fetch;href?:string;shortSessionHandoff?:boolean;view?:Window;parentOrigin?:string}):typeof fetch;
+
+export type SourceJson = null | boolean | number | string | SourceJson[] | { [key: string]: SourceJson };
+export interface SourceWorkspaceContext {
+  readonly schema: 'soty.current-context.v2';
+  readonly selection: { readonly kind: 'soty.workspace.v1'; readonly nativeId: string; readonly incarnationId: string };
+  readonly context: { readonly ref: string; readonly generation: number; readonly expiresAt: number };
+  readonly title: string; readonly role: 'owner' | 'editor' | 'viewer' | 'reader'; readonly revision: number;
+}
+export interface SourceWorkspaceRequest { requestId: string; input: { operation: string; [key: string]: SourceJson }; }
+export interface SourceReceiptReference { readonly requestId: string; readonly contextRef: string; readonly inputDigest: string; }
+/** Prepared by this client, pinned to the original context; JSON cannot restore write authority. */
+export interface SourceWriteIntent extends SourceReceiptReference { readonly input: Readonly<SourceWorkspaceRequest['input']>; }
+export interface SourceWriteResult {
+  readonly requestId: string; readonly inputDigest: string; readonly outcome: 'committed' | 'not_applied';
+  readonly replayed?: boolean; readonly receipt?: Readonly<Record<string, SourceJson>>;
+  readonly contextAfter?: Readonly<Record<string, SourceJson>>; readonly workspaceReceipt?: Readonly<Record<string, SourceJson>>;
+}
+export class SourceWorkspaceClientError extends Error { readonly code: string; readonly status: number; readonly effectUnknown: boolean; }
+export interface SourceWorkspaceClient {
+  currentContext(args: {requestId: string}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
+  selectContext(args: {requestId: string; nativeId: string; generation: number}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
+  context(): SourceWorkspaceContext | null;
+  query<T extends {requestId: string} = {requestId: string; [key: string]: SourceJson}>(args: SourceWorkspaceRequest, signal?: AbortSignal): Promise<Readonly<T>>;
+  prepareInvoke(args: SourceWorkspaceRequest): Promise<SourceWriteIntent>;
+  invoke(intent: SourceWriteIntent, signal?: AbortSignal): Promise<SourceWriteResult>;
+  /** Reads an original receipt; never sends an invoke. A retained reference may be used after reload only in its same current context. */
+  receipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;
+  invalidate(): void; dispose(): void;
+}
+export function createSourceWorkspaceClient(options?: {fetch?: typeof fetch; href?: string; view?: Window; parentOrigin?: string; isCurrent?(): boolean}): SourceWorkspaceClient;

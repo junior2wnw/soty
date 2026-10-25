@@ -528,3 +528,99 @@ rechecks live Root authority. Closing all matching frames denies this path;
 a different account's surviving frame cannot supply authority. Private Source
 routes always require their explicit frame selector. Forwarded paths are not
 trusted as authority, and ingress returns no Source witness or business data.
+
+### Browser quickstart: an existing app with a personal workspace
+
+Use `createSourceWorkspaceClient` from `@soty/source-app/browser` after the host
+has installed and qualified the maintained workspace Source profile. Bundle
+the browser entry as an ordinary credential-free JavaScript asset, for example
+`/assets/soty-source-sdk.js`. This helper does not register an application,
+approve publication, replace the host's Native ACL, or grant a user's data.
+The same client works with different app-owned operation names and DTOs.
+
+```js
+import { createSourceWorkspaceClient } from '/assets/soty-source-sdk.js';
+
+const id = () => crypto.randomUUID();
+let alive = true;
+const source = createSourceWorkspaceClient({ isCurrent: () => alive });
+const workspace = await source.currentContext({ requestId: id() });
+const page = await source.query({
+  requestId: id(), input: { operation: 'items.list' }
+});
+render(page.items, workspace.title);
+
+// Prepare once for this explicit action, then retain the original intent.
+const intent = await source.prepareInvoke({
+  requestId: id(), input: { operation: 'items.create', title: 'My record' }
+});
+try {
+  const result = await source.invoke(intent);
+  // Read the actual app row/list before presenting its current state.
+  render((await source.query({
+    requestId: id(), input: { operation: 'items.list' }
+  })).items);
+} catch (error) {
+  // An invoke error can follow COMMIT. Keep the same request/body/context.
+  showCheckResultAction(async () => {
+    const result = await source.receipt(intent); // read only, never invoke
+    if (result.outcome === 'committed') await reloadCurrentList();
+    else showNotApplied();
+  });
+}
+
+// On navigation/account change: remove private UI, stop polling and dispose.
+alive = false;
+source.dispose();
+```
+
+`currentContext` uses the maintained
+`{requestId,input:{operation:'soty.current_context'}}` bootstrap. Business reads
+and writes carry its exact `contextRef`; callers do not provide a Root account,
+Native session cookie, owner ID or credential. An app with multiple admitted
+children can explicitly call
+`selectContext({requestId,nativeId,generation})`. A new context invalidates
+retained old intents and late replies. Clear the old UI before displaying data
+from a newly acquired context. A local reference or successful bootstrap is
+never a substitute for the server's fresh and final Native checks.
+
+Each write requires an explicit unique request ID. Preparation captures an
+immutable JSON body, canonical SHA256 digest, context and generation. Duplicate
+activation of the same intent shares its single in-flight request. Once sent,
+calling `invoke(intent)` again reads the original receipt instead of repeating
+the effect. Changed body under a pending request ID is a conflict. A cloned or
+JSON-restored intent cannot call `invoke`; a retained
+`{requestId,contextRef,inputDigest}` may call `receipt` in that same current
+context. If authority/context changed, keep the outcome unknown and ask the
+person to check it in the original context; do not silently resubmit it with a
+new context or a new ID. `not_applied` is a receipt result, not an assumption
+made from a timeout,401,403 or a lost response.
+
+Reads use `createSourceFrameFetch`, including its exact-parent short-session
+wake-up and at most one safe read retry. Invokes, unknown network outcomes and
+private effects never enter that automatic retry path. All calls use fixed
+same-origin `/api/embed/query`, `/invoke`, `/receipt` routes and the current
+frame locator header, with HttpOnly authority remaining on the server. There
+is no Native `/ws`, global cookie, Telegram or arbitrary URL fallback. JSON is
+bounded by the maintained64KiB route budget, with duplicate keys, malformed
+UTF8 and ambiguous request values rejected. The generic client validates the
+original request/digest and workspace receipt/context binding; the Native host
+still owns the business transaction and the correctness of its artifacts.
+
+For read-only live data, use the application's Source `query` operation and
+stop its timer while the page is hidden or disposed. Use one in-flight read,
+an interval after completion (for example2500ms), a bounded page size/cursor,
+and ignore results when the current local filter/context changed. Show the
+server's waiting/stale/live status instead of treating an empty result as a
+connection failure. A shared market cache may contain public facts while its
+selection/subscription and delivery remain authenticated. This client does
+not turn formerly restricted data anonymous, put leases/tokens in URLs or
+introduce a new Source WebSocket contract.
+
+The two minimal consumers in
+`test/workspace-browser-installed.test.mjs` exercise the same browser client
+against an actual local signed Root, installed connector and two Native SQLite
+applications: board `items.create` and library `books.add`. They include an
+unknown COMMIT ACK, read-only receipt recovery, exact context change refusal
+and normal current-row readback. These are local protocol qualification tests;
+production publication and a real browser/user rollout are separate gates.

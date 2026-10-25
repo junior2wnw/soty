@@ -4,3 +4,4 @@ export { createSourceFeedbackInbox } from './feedback-inbox.mjs';
 export { SOURCE_FEEDBACK_LIMITS } from '../shared/feedback-wire.mjs';
 export { createSourceFeedbackProcessingClient } from './processing-client.mjs';
 export { createSourceFrameFetch } from './frame-fetch.mjs';
+export { createSourceWorkspaceClient, SourceWorkspaceClientError } from './workspace-client.mjs';
