@@ -11,7 +11,7 @@ const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fro
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
 const requireThat=(ok,code)=>{if(!ok)throw new SafeError(code);};
 const label='io.soty.connector-rollout';
-export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy,universalPolicy) {
+export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy,universalPolicy,imageLabels) {
   const config=clone(original.Config),host=clone(original.HostConfig),endpoints={};
   // Inspect includes realised anonymous volume names. Reattach those explicitly;
   // replaying Config.Volumes alone would silently create fresh empty volumes.
@@ -23,7 +23,9 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   }
   requireThat(!host.AutoRemove,'original_auto_remove_unsupported');
   requireThat(!String(host.NetworkMode||'').startsWith('container:'),'shared_container_network_unsupported');
-  config.Image=image;config.Labels={...config.Labels,[label]:tx,[label+'.original']:original.Id,...(revision?{'org.opencontainers.image.revision':revision}:{})};
+  // Docker adds image label defaults at CREATE. Include their exact values in
+  // the prospective fingerprint; captured container labels still take priority.
+  config.Image=image;config.Labels={...imageLabels,...config.Labels,[label]:tx,[label+'.original']:original.Id,...(revision?{'org.opencontainers.image.revision':revision}:{})};
   // Reader metadata must come from the immutable image, never an inherited
   // container label from the previous application.
   delete config.Labels[storageReaderLabel];
@@ -80,7 +82,7 @@ export class Rollout {
     if(this.latestData())requireThat(!status.maintenance||status.owned,'maintenance_not_owned');
     return status;
   }
-  candidateConfiguration(original){const candidateBase=this.installedModuleRotation?installedModuleCandidateBase(this.installedModuleRotation,original,this.args.universalPolicy,this.args.candidateImage):original;return createConfig(candidateBase,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy);}
+  candidateConfiguration(original){const candidateBase=this.installedModuleRotation?installedModuleCandidateBase(this.installedModuleRotation,original,this.args.universalPolicy,this.args.candidateImage):original;return createConfig(candidateBase,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy,this.args.universalPolicy,this.candidateImageLabels);}
   async restoreOriginalCode(){if(this.installedModuleRotation)await restoreInstalledModuleOriginal(this.installedModuleRotation);}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
   storageContext(){return {engine:this.engine,probeImage:this.args.storageProbeImage,transactionId:this.args.transaction,getState:()=>this.state,record:fields=>this.note(this.state.phase,fields),probe:this.storageProbe,wait:this.sleep};}
@@ -145,7 +147,7 @@ export class Rollout {
       requireThat(args.universalWitnessId===undefined||/^[A-Za-z0-9_-]{32}$/u.test(args.universalWitnessId),'universal_witness_receipt_invalid');
     }else requireThat(args.universalWitnessId===undefined,'universal_witness_receipt_invalid');
     if(this.installedModuleRotation){const measured=old;old=installedModuleOriginalForRollout(this.installedModuleRotation,measured);this.originalPolicySuspended=hash(measured.HostConfig.RestartPolicy)!==hash(old.HostConfig.RestartPolicy);}
-    this.args=args;this.original=old;this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=this.candidateConfiguration(old);this.fingerprint=preservationHash(this.config);
+    this.args=args;this.original=old;this.candidateImageLabels=clone(image.Config.Labels);this.originalStopConfirmed=false;this.originalName=old.Name.slice(1);this.config=this.candidateConfiguration(old);this.fingerprint=preservationHash(this.config);
     if(args.universalPolicy)bindUniversalRollout(args.universalPolicy,this.universalBinding(this.fingerprint));
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
