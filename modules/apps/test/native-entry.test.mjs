@@ -184,10 +184,11 @@ test('both candidate proofs remain mandatory at commit; a paired Native port can
   assert.doesNotThrow(() => assertNativePortAvailable(f.db, 'different-app', f.target.connectorKey, 63345));
 });
 
-async function liveRoot(t, f, factory = createAppsService) {
+async function liveRoot(t, f, factory = createAppsService, { actors = [], profiles = [f.profile] } = {}) {
   const service = factory({ databasePath: f.databasePath, appOriginTemplate: 'https://{appId}.apps.test', shellOrigins: ['https://root.test'],
-    allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: [f.profile], now: f.clock,
-    withAuthorityFence: callback => callback(), actorActive: actor => actor?.accountId === f.owner.accountId,
+    allowScopedEmbedMigration: true, allowSelectedResourceMigration: true, scopedEmbedProfiles: profiles, now: f.clock,
+    withAuthorityFence: callback => callback(), actorActive: actor => actor?.accountId === f.owner.accountId
+      || actors.some(value => value.accountId === actor?.accountId && value.deviceId === actor?.deviceId),
     authenticateConnector: async input => input.token === 'fixture_token',
     signSourceAuthority: () => { throw Error('Native policy must never issue identity witness'); },
     withHumanSubjectAuthority: () => { throw Error('Native policy must never assert Human identity'); } });
@@ -231,6 +232,63 @@ async function liveRoot(t, f, factory = createAppsService) {
   });
   return { service, server, ws, probes, get, prepare, promote, check, ready: () => until(() => bound) };
 }
+
+test('new directory cards prefer the admitted current Source while exact saved Native links remain unchanged', async t => {
+  const f = fixture(t), visitor = Object.freeze({ accountId: 'fixture_visitor', deviceId: 'fixture_visitor_browser' });
+  const live = await liveRoot(t, f, createAppsService, { actors: [visitor] }), prepared = await live.prepare();
+  live.promote(f.intent(prepared)); await live.ready();
+  const call = (actor, op, args = {}) => live.service.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } });
+  const expected = { appId: f.appId, domainId: f.domains.source, origin: f.profile.embedOrigin, path: '/embed' };
+  assert.deepEqual(call(f.owner, 'apps.list').apps.find(value => value.id === f.appId).entry,
+    { domainId: f.domains.source, origin: f.profile.embedOrigin, path: '/embed' });
+  const legacy = { appId: f.appId, domainId: f.domains.native, origin: f.profile.nativeOrigin, path: '/?draft=kept&tab=old' };
+  call(f.owner, 'apps.saved.set', { appId: f.appId, domainId: legacy.domainId, path: legacy.path,
+    saved: true, expectedRevision: 0, requestId: 'fixture_save_exact_native' });
+  const savedBefore = f.db.prepare('SELECT * FROM app_saved_entries').all();
+  for (const actor of [f.owner, visitor]) {
+    for (const scope of ['all', 'public', ...(actor === f.owner ? ['mine'] : [])]) {
+      assert.deepEqual(call(actor, 'apps.directory.search', { scope }).apps.find(value => value.id === f.appId)?.entry, expected);
+    }
+    const resolved = call(actor, 'apps.directory.resolve', { appIds: [f.appId] }).items[0];
+    assert.equal(resolved.available, true); assert.deepEqual(resolved.app.entry, expected);
+  }
+  assert.deepEqual(call(f.owner, 'apps.entry.get', { appId: f.appId, domainId: legacy.domainId, path: legacy.path }).entry, legacy);
+  const saved = call(f.owner, 'apps.saved.get', { appId: f.appId }).entry;
+  assert.equal(saved.domainId, legacy.domainId); assert.equal(saved.origin, legacy.origin); assert.equal(saved.path, legacy.path);
+  assert.deepEqual(f.db.prepare('SELECT * FROM app_saved_entries').all(), savedBefore);
+});
+
+test('Source directory defaults never bypass public listing, current admission or the exact published Source alias', async t => {
+  const f = fixture(t), visitor = Object.freeze({ accountId: 'fixture_visitor', deviceId: 'fixture_visitor_browser' });
+  const live = await liveRoot(t, f, createAppsService, { actors: [visitor] }), prepared = await live.prepare();
+  live.promote(f.intent(prepared)); await live.ready();
+  const call = (actor, op, args = {}) => live.service.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } });
+  const update = (requestId, listed, activeDomainIds) => call(f.owner, 'apps.publication.update', { appId: f.appId, requestId,
+    expectedPolicyEpoch: live.get().policyEpoch, expectedTargetRevision: 2, launchPolicy: 'anyone', listed,
+    activeDomainIds, exposureAck: ack(prepared.target) });
+  update('fixture_unlist_directory', false, [f.domains.native, f.domains.source]);
+  assert.deepEqual(call(visitor, 'apps.directory.search', { scope: 'all' }).apps, []);
+  assert.deepEqual(call(f.owner, 'apps.directory.search', { scope: 'public' }).apps, []);
+  assert.equal(call(visitor, 'apps.directory.resolve', { appIds: [f.appId] }).items[0].available, false);
+  assert.equal(call(f.owner, 'apps.directory.search', { scope: 'mine' }).apps[0].entry.origin, f.profile.embedOrigin);
+  update('fixture_restore_directory_listing', true, [f.domains.native, f.domains.source]);
+  assert.equal(call(visitor, 'apps.directory.search', { scope: 'public' }).apps[0].entry.origin, f.profile.embedOrigin);
+  update('fixture_remove_source_alias', true, [f.domains.native]);
+  for (const actor of [f.owner, visitor]) {
+    assert.deepEqual(call(actor, 'apps.directory.search').apps, []);
+    assert.equal(call(actor, 'apps.directory.resolve', { appIds: [f.appId] }).items[0].available, false);
+  }
+  update('fixture_restore_source_alias', true, [f.domains.native, f.domains.source]);
+  const admittedBefore = f.db.prepare('SELECT * FROM app_scoped_embed_admissions').all();
+  live.service.close(); live.ws.terminate();
+  const unconfigured = await liveRoot(t, f, createAppsService, { actors: [visitor], profiles: [] });
+  for (const actor of [f.owner, visitor]) {
+    const execute = (op, args = {}) => unconfigured.service.execute({ op, actor, args: { ...args, expectedAccountId: actor.accountId } });
+    assert.deepEqual(execute('apps.directory.search').apps, []);
+    assert.equal(execute('apps.directory.resolve', { appIds: [f.appId] }).items[0].available, false);
+  }
+  assert.deepEqual(f.db.prepare('SELECT * FROM app_scoped_embed_admissions').all(), admittedBefore);
+});
 
 test('actual Root HTTP ingress uses current primary binding plus Native receipt, never cookies, frame DTOs or old ingress headers', async t => {
   const f = fixture(t), live = await liveRoot(t, f), prepared = await live.prepare();

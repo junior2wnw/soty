@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { appId, assertApps, AppsError, textId } from './protocol.mjs';
-import { createEngagementTransaction } from './engagement-transaction.mjs';
+import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 import { hasAudienceSchema } from './audience.mjs';
 
 export const directoryOperations = Object.freeze(['apps.directory.search', 'apps.directory.resolve']);
@@ -23,7 +23,7 @@ function afterCursor(value, scope) {
 }
 
 /** No connector identities, grants, ports, private group IDs, tickets or human presence. */
-export function createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds = () => [], canUse, resolveEntry }) {
+export function createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds = () => [], canUse, resolveEntry, resolveDefaultEntry }) {
   const run = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 128 * 1024,
     busyCode: 'apps_directory_busy', timeoutCode: 'apps_directory_timeout_invalid', responseCode: 'apps_directory_response_too_large' });
   db.function('apps_directory_match', { deterministic: true }, (name, rawQuery) => {
@@ -34,18 +34,22 @@ export function createAppDirectory({ db, assertActor, withAuthorityFence, active
   function projection(actor, app, visibility = 'all') {
     const own = app.owner_account_id === actor.accountId;
     const granted = canUse(actor, app);
+    const preferred = () => synchronous(resolveDefaultEntry?.({ actor, app }), 'apps_async_authority');
     let entry, access;
     if (visibility !== 'public' && granted) {
-      // A field card names the application, not a saved deep link. Prefer its
-      // enabled named address, as the owner's Apps list already does. Explicit
-      // bookmarks continue to resolve their original domain without fallback.
-      const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
-        JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
-        JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
-        WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
-        ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
-      if (address) entry = resolveEntry({ actor, appId: app.id, domainId: address.id });
-      entry ??= resolveEntry({ actor, appId: app.id });
+      // A new card uses the currently admitted Source, never an older Native
+      // alias. Null means its admission/address is unavailable: no fallback.
+      // Undefined retains the ordinary app's existing named-address behavior.
+      entry = preferred();
+      if (entry === undefined) {
+        const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
+          JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
+          JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+          WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
+          ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
+        if (address) entry = resolveEntry({ actor, appId: app.id, domainId: address.id });
+        entry ??= resolveEntry({ actor, appId: app.id });
+      }
       if (entry) access = own ? 'owner' : 'granted';
     }
     if (!entry && visibility !== 'mine') {
@@ -57,7 +61,11 @@ export function createAppDirectory({ db, assertActor, withAuthorityFence, active
         JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
         WHERE p.app_id=? AND p.launch_policy='anyone' AND p.listed=1 AND d.role='alias' AND d.state='bound'
         ORDER BY d.created_at,d.id LIMIT 1`).get(app.id);
-      if (address) { entry = resolveEntry({ actor, appId: app.id, domainId: address.id }); if (entry) access = 'public'; }
+      if (address) {
+        entry = preferred();
+        if (entry === undefined) entry = resolveEntry({ actor, appId: app.id, domainId: address.id });
+        if (entry) access = 'public';
+      }
     }
     if (!entry) return null;
     return { id: app.id, name: app.name, ownerAccountId: app.owner_account_id, state: entry.status, createdAt: app.created_at, updatedAt: app.updated_at,

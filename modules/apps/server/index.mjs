@@ -193,7 +193,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       });
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
-    directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry });
+    directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry,
+      resolveDefaultEntry({ actor, app }) {
+        const target = activeTarget(app.id);
+        if (!target || !selectedRuntimeProfile(target.profile)) return undefined;
+        const preferred = inspectLaunchEntry({ app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
+          target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,
+            connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path } }, actor);
+        return preferred ? resolveEntry({ actor, appId: app.id, ...preferred }) : null;
+      } });
     // Read markers are optional metadata. Their failure must not prevent Apps
     // or Root from starting; inbox reports unknown, never a false zero unread.
     try { discussionReads = createDiscussionReadStore({ filename: databasePath === ':memory:' ? ':memory:' : `${databasePath}.reads.sqlite`, now }); }

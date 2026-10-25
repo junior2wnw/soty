@@ -189,7 +189,7 @@ test('signed accepted private contact appears only in mine and saved resolve fal
   await f.member.client.acceptContact(request.requestId);
   const directory = createFieldDirectory({ accountId: f.owner.account.accountId, api: { request: (op, args) => f.call(f.owner, op, args) } }); t.after(() => directory.dispose());
   const mine = await directory.loadMine({ limit: 60 }), known = mine.items.find(value => value.entity.kind === 'person');
-  assert.equal(known.entity.id, f.member.account.accountId); assert.equal(known.title, 'Участник'); assert.equal(known.description, 'В контактах'); assert.equal(known.online, undefined);
+  assert.equal(known.entity.id, f.member.account.accountId); assert.equal(known.title, 'Участник'); assert.equal(known.description, 'Личный разговор · в контактах'); assert.equal(known.online, undefined);
   const raw = directory.getRecord(known.entity); assert.equal(raw.kind, 'contact'); assert.equal(raw.peerAccountId, f.member.account.accountId);
   assert.equal(raw.bio, undefined); assert.equal(raw.avatarUrl, undefined);
   assert.equal((await directory.search({ query: 'Участник', kinds: ['person'] })).items.length, 0);
