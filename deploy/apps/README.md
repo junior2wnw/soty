@@ -11,6 +11,10 @@
 Установщик защищает локальные правки skill от перезаписи. Исходники skill и
 пайплайна версионируются в этом репозитории. Native вход — отдельный явно
 проверенный режим; обычный gateway и его изоляция сохраняются.
+Для подтверждённой пары Source/Native тот же `plan --mode native` использует
+Native alias/target из экспорта v2 и сохраняет Source ссылку в Соты. Отдельный
+GET policy route работает и у пары, и у primary Native; правила и ограничения
+HTTP receipt описаны в [общем release-пути](../../docs/deployment/app-release.md#source-в-сотах-и-отдельный-native-вход).
 
 Рабочий host controller принимает `appOriginTemplate: "https://{appId}.soty.pochinit.online"`. У каждого приложения отдельный origin: ключи профиля и другие приложения ему недоступны. DNS для `*.soty.pochinit.online` должен вести на обслуживающий TLS edge.
 

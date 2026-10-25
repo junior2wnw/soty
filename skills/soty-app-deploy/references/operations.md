@@ -19,9 +19,15 @@ Wildcard DNS ведёт на TLS edge; Caddy требует on_demand_tls permis
 
 ## Native
 
-Генерировать только из свежего экспорта и конкретного domain ID.
+Генерировать только из свежего экспорта и конкретного утверждённого domain ID.
 Фиксированный upstream/порт не берётся из заголовков пользователя.
 Digest закрепляет текущий source, проверка доступа выполняется на каждый запрос.
+
+У пары Source/Native экспорт v2 может описывать закрытую конфигурацию, но native
+план требует anyone, оба active bound alias и текущий Source launchEntry.
+Native alias и port/path берутся из nativeEntry.target; манифест соответствует
+этому target. Ссылка Сот остаётся Source entry. Иной явный domain ID не заменяет
+ни одну поверхность; старые saved/deep paths не переписываются.
 
 Критический Caddy rewrite — uri /_soty/ingress-check? с завершающим вопросительным
 знаком. Проверить настоящий Caddy на запросах с query, а не regex шаблона.
@@ -30,18 +36,39 @@ WebSocket аутентифицируется обычным HTTP subrequest: в 
 Upgrade, Connection и Sec-WebSocket-Key/Version/Protocol/Extensions; в самом
 app proxy сохранить upgrade. Проверить настоящий 101 и обмен сообщениями,
 не только HTTP entry. Для POST/PUT/PATCH/DELETE и WebSocket проверять exact
-Origin приложения; чужой и отсутствующий Origin отвергаются. Служебный /_soty/*
-идёт первым отдельным route и сохраняет собственные guards gateway.
+Origin приложения; чужой и отсутствующий Origin отвергаются.
+Exact GET /_soty/ingress-check идёт первым прямо в Root loopback, без Native
+upstream и без forward_auth: fixed surface=native, app, primary и Native digests;
+query/upgrade удаляются. Это публичная policy, не Human session или доступ к данным.
+У ordinary Native primary==Native; DATA forward_auth сохраняет прежний app/target
+контракт и удаляет caller surface/primary. У пары DATA проверяет оба текущих pin,
+а остальные /_soty/* на Native alias закрыты. Все четыре служебных заголовка и
+Root cookie удаляются перед Native upstream. Не пускать caller headers выбирать
+public policy вместо DATA authentication.
 Дополнительный frame-ancestors CSP не должен затереть default-src и остальные
 политики приложения. Не снимать X-Frame-Options запрет неразобранного backend.
 
+Native SDK получает nativeGuard из плана: HTTPS rootCheckUrl на Native alias,
+app/origin и два digest. Guard должен проверять собственную Human session/ACL
+и текущую короткую Root lease для HTTP/WS/длительных streams; Caddy проверяет
+только новый handshake. При откате к primary Native v1 новый snippet сохраняет
+exact policy GET (digests равны). Старый Root без typed policy означает отказ,
+а не fallback на ответ HTML или отключение SDK guard.
+
+CLI verify пары проверяет exact policy JSON, pin/revision/epoch/admission и lease
+до 1 s с лимитом 4096 байт. Вместе с entry/query 200 это только HTTP gate:
+nativePolicyChecked не подтверждает загрузку Native SDK, вход человека или
+сохранность данных. В v1 такого подтверждения тоже нет.
+
 Для воспроизводимой проверки генератора:
 
-    SOTY_CADDY_BIN=/usr/bin/caddy node --test deploy/apps/native-ingress.acceptance.test.mjs deploy/apps/named-zone.acceptance.test.mjs
+    SOTY_CADDY_BIN=/usr/bin/caddy node --test deploy/apps/native-ingress.acceptance.test.mjs deploy/apps/paired-native-ingress.acceptance.test.mjs deploy/apps/named-zone.acceptance.test.mjs
 
 Тест поднимает отдельный loopback Caddy и synthetic upstream/gateway;
 проверяет query, cookie, CSP, реальный WS echo, missing/foreign Origin,
-неверную сессию/source pin. Это не публикация и не проверка production.
+неверную сессию/source pin, primary и paired policy GET без рекурсии и отказ
+Native private данных без собственной Human session. Это не публикация и не
+проверка production.
 Пропущенный из-за отсутствия SOTY_CADDY_BIN тест не считается пройденным gate.
 На Windows переменную задавать нативным способом; не переиспользовать HOME.
 

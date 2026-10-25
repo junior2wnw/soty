@@ -54,7 +54,7 @@ test('real Caddy preserves app query/cookie/CSP and closes the ingress when acce
   const local = { ...manifest(), port: value.source.port };
   const plan = createReleasePlan({ manifest: local, deployment: value, mode: 'native', gatewayPort: gateway.address().port });
   const file = join(root, 'Caddyfile'); await writeFile(file, nativeIngress(plan));
-  const adapted = spawnSync(binary, ['adapt', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8' });
+  const adapted = spawnSync(binary, ['adapt', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8', windowsHide: true });
   assert.equal(adapted.status, 0, 'generated Caddyfile must adapt');
   const adaptedConfig = JSON.parse(adapted.stdout);
   const config = { admin: { disabled: true }, apps: { http: { servers: { probe: {
@@ -62,7 +62,7 @@ test('real Caddy preserves app query/cookie/CSP and closes the ingress when acce
     routes: Object.values(adaptedConfig.apps.http.servers).flatMap(server => server.routes),
   } } } } };
   const configFile = join(root, 'probe.json'); await writeFile(configFile, JSON.stringify(config));
-  child = spawn(binary, ['run', '--config', configFile], { stdio: 'ignore', env: { ...process.env, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root } });
+  child = spawn(binary, ['run', '--config', configFile], { windowsHide: true, stdio: 'ignore', env: { ...process.env, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root } });
   child.on('error', () => {});
   const get = (path, headers = {}, method = 'GET') => new Promise((done, fail) => {
     const req = request({ host: '127.0.0.1', port, path, method, headers: { Host: 'project.example', ...headers } }, res => {

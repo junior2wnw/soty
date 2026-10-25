@@ -87,7 +87,8 @@ description: "Размещает и обновляет веб-проекты к�
 
        node scripts/soty-app-release.mjs plan --project PROJECT --deployment SNAPSHOT --output NEW_RUN
 
-   Укажи конкретный domain ID при нескольких адресах. Для native добавь
+   Укажи domain ID при нескольких обычных адресах; v2 выбирает exact entry по
+   [контракту](references/contract.md), без лишнего выбора. Для native добавь
    --mode native и только точные разрешённые --frame-origin. Сохраняй безопасные
    планы отдельно от секретов. applied=false означает, что ничего ещё не применено.
 8. Проверь wildcard DNS/TLS текущей зоны. Уже работающую инфраструктуру не
@@ -103,7 +104,7 @@ description: "Размещает и обновляет веб-проекты к�
 
 ## Проверить готовность
 
-- CLI verify: точный HTTPS origin, entry с query, boot, реальные assets/API;
+- CLI verify: точный HTTPS origin, entry с query, boot (у пары — Native policy), реальные assets/API;
   он не следует redirect и не передаёт credentials. Для restricted используй
   авторизованный браузер, сохраняя выбранную аудиторию.
 - Настоящий браузер: карточка Сот → правильный именной iframe → вход →

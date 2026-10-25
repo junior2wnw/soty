@@ -24,7 +24,7 @@ test('real Caddy uses leaf on-demand TLS and preserves the registered-zone routi
   const text = '{\n on_demand_tls {\n  ask http://127.0.0.1:' + gateway.address().port + '/tls-allow\n }\n}\n'
     + namedZoneIngress({ origin: 'https://primary.example', additionalOrigins: ['https://retained.example'], gatewayPort: gateway.address().port });
   const file = join(root, 'Caddyfile'); await writeFile(file, text);
-  const adapted = spawnSync(process.env.SOTY_CADDY_BIN, ['adapt', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8' });
+  const adapted = spawnSync(process.env.SOTY_CADDY_BIN, ['adapt', '--config', file, '--adapter', 'caddyfile'], { encoding: 'utf8', windowsHide: true });
   assert.equal(adapted.status, 0, 'named-zone snippet must adapt');
   const config = JSON.parse(adapted.stdout);
   const policies = config.apps.tls.automation.policies;
@@ -33,7 +33,7 @@ test('real Caddy uses leaf on-demand TLS and preserves the registered-zone routi
   const routes = Object.values(config.apps.http.servers).flatMap(server => server.routes);
   const probeFile = join(root, 'probe.json'); await writeFile(probeFile, JSON.stringify({ admin: { disabled: true },
     apps: { http: { servers: { probe: { listen: ['127.0.0.1:' + port], automatic_https: { disable: true }, routes } } } } }));
-  child = spawn(process.env.SOTY_CADDY_BIN, ['run', '--config', probeFile], { stdio: 'ignore', env: { ...process.env, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root } });
+  child = spawn(process.env.SOTY_CADDY_BIN, ['run', '--config', probeFile], { windowsHide: true, stdio: 'ignore', env: { ...process.env, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root } });
   child.on('error', () => {});
   const get = host => new Promise((done, fail) => {
     const req = request({ host: '127.0.0.1', port, path: '/?preserve=query', headers: { Host: host } }, res => {

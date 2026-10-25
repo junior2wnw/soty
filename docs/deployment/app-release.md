@@ -39,7 +39,9 @@
 
        node scripts/soty-app-release.mjs plan --project /path/project --deployment /private/soty-deployment.json --output /private/run-unique
 
-   При нескольких включённых адресах добавить --domain-id конкретного адреса.
+   При нескольких включённых адресах обычного проекта добавить --domain-id.
+   У Source v2 план выбирает подтверждённый Source entry; у пары с --mode native —
+   её точный Native alias. Переданный другой domain ID отвергается.
    План фиксирует именной вход и путь. applied=false означает только подготовку.
 7. Проверить реальный опубликованный адрес:
 
@@ -63,7 +65,8 @@
 
 Для ограниченной публикации CLI требует проверку авторизованным браузером.
 Не публиковать приложение для всех ради обхода этого ограничения. Основная
-страница, страница с query и boot ожидают 200. Приложение с другим контрактом
+страница, страница с query и boot ожидают 200; у пары Source/Native вместо boot
+проверяется точный JSON текущей Native policy. Приложение с другим контрактом
 ответа требует отдельного браузерного сценария; дополнительные probes дополняют
 основные проверки, а не отменяют их.
 
@@ -90,6 +93,47 @@ Origin/CSRF и callback URL: прокси не исправляет несовм
 WebSocket к приложению сохраняется. Для небезопасных методов и WS проверяется
 exact app Origin (включая отсутствие Origin и любой регистр Upgrade token).
 Проверка — настоящий 101 + обмен сообщениями и отрицательные ACL/pin/Origin cases.
+
+Для каждого Native snippet содержит отдельный exact GET
+`https://NATIVE_ALIAS/_soty/ingress-check`: он направляется прямо в Root gateway,
+минуя Native upstream и `forward_auth`. Заголовки surface/app/primary/target
+задаются генератором, query и WebSocket upgrade удаляются из этой копии.
+Для обычного Native primary и Native digest равны. Его проверка DATA сохраняет
+прежние app/target и ingress session; пользовательские surface/primary
+сбрасываются, чтобы нельзя было выбрать публичную policy вместо проверки DATA.
+
+## Source в Сотах и отдельный Native вход
+
+Подтверждённая пара сохраняет один app ID и два разных origin/порта: Source
+entry внутри Сот и Native entry для отдельного браузерного входа. Source v2
+экспортируется как `soty.app-deployment.v2`: `source.launchEntry` и
+`nativeEntry` содержат только точные адреса и закреплённые target/policy поля.
+Экспорт может описывать закрытую пару или `null` entry для диагностики;
+он не подтверждает доступность и не выдаёт доступ.
+
+Для Native плана нужны публикация anyone, оба bound/active alias и текущий
+Source launch entry. Манифест `.soty/app.json` должен соответствовать
+утверждённым Native port/entryPath, а не Source порту. Обычная команда
+`plan --mode native` формирует `soty.app-release.v2`: публичный origin и probes
+ведут в Native, `shellLaunchUrl` сохраняет Source entry. Старые сохранённые
+адреса и глубокие пути не переписываются этим планом. Source-only v2 без пары
+не может выпустить Native ingress.
+
+Поле `nativeGuard` плана даёт настройки поддерживаемого Native SDK:
+`rootCheckUrl`, app/origin и primary/Native digests. Root check использует
+HTTPS Native alias с exact GET выше, без cookies или токенов в URL.
+Оно подтверждает только текущую публичную политику. Native по-прежнему обязан
+проверять свою Human session, роли и CSRF на HTTP/WS, а также продлевать
+ограниченную lease для длительных соединений. Caddy проверяет WS handshake;
+сам по себе он не закрывает уже открытый stream при отзыве публикации.
+
+`verify` пары требует JSON не больше 4096 байт с точными app/origin,
+primary/Native revisions/digests, policy epoch, admission hash и lease до 1 s.
+HTML с кодом 200 или другой pin не проходит. Этот HTTP receipt не доказывает,
+что Native SDK загружен или что Human login/данные проверены. Старый v1 HTTP
+receipt также не объявляет Native guard готовым. При откате на ordinary Native
+свежий v1 план сохраняет тот же exact policy GET маршрут; проверка DATA остаётся
+обычной. Неподдерживаемая старым Root typed policy закрывает SDK доступ.
 
 При изменении источника прежний native pin закрывает маршрут. Перед переключением
 подготовить новую привязку по свежему снимку и проверенную обратную конфигурацию.

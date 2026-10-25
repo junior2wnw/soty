@@ -40,26 +40,42 @@ export function createReleasePlan({ manifest, deployment, domainId, mode = 'isol
   const app = validateAppDeployment(deployment), local = normalizeLocalAppManifest(manifest);
   check(app.app.state === 'enabled', 'app_revoked');
   check(now - app.checkedAt <= 600000 && app.checkedAt <= now + 30000, 'deployment_snapshot_stale');
-  check(local.port === app.source.port && local.entryPath === app.source.entryPath, 'manifest_source_mismatch');
   check(['isolated', 'native'].includes(mode), 'invalid_ingress_mode');
-  check(Number.isInteger(gatewayPort) && gatewayPort >= 1024 && gatewayPort <= 65535 && gatewayPort !== app.source.port, 'invalid_gateway_port');
+  const paired = mode === 'native' && app.schema === 'soty.app-deployment.v2' ? app.nativeEntry : null;
+  if (mode === 'native' && app.source.profile !== 'soty.relay-restricted.v1') check(paired, 'paired_native_entry_required');
+  const target = paired?.target ?? app.source;
+  check(local.port === target.port && local.entryPath === target.entryPath, 'manifest_source_mismatch');
+  check(Number.isInteger(gatewayPort) && gatewayPort >= 1024 && gatewayPort <= 65535
+    && gatewayPort !== app.source.port && gatewayPort !== target.port, 'invalid_gateway_port');
   const aliases = app.addresses.aliases.filter(item => item.active && item.state === 'bound');
-  const selected = domainId ? aliases.find(item => item.id === domainId) : aliases.length === 1 ? aliases[0] : null;
+  if (paired) check(app.publication.launchPolicy === 'anyone' && app.source.launchEntry
+    && aliases.some(item => item.id === app.source.launchEntry.domainId && item.origin === app.source.launchEntry.origin)
+    && aliases.some(item => item.id === paired.domainId && item.origin === paired.origin), 'paired_native_entry_unavailable');
+  const preferredDomain = paired?.domainId ?? app.source.launchEntry?.domainId;
+  if (preferredDomain && domainId) check(domainId === preferredDomain, paired ? 'native_entry_address_required' : 'source_entry_address_required');
+  const selected = domainId || preferredDomain ? aliases.find(item => item.id === (domainId ?? preferredDomain)) : aliases.length === 1 ? aliases[0] : null;
   check(Boolean(selected), domainId ? 'active_named_address_required' : 'select_named_address');
   const origins = [...new Set([app.shellOrigin, ...frameOrigins.map(deploymentOrigin)])];
-  check(origins.length <= 8 && !origins.includes(selected.origin), 'invalid_frame_origins');
+  check(origins.length <= 8 && !origins.includes(selected.origin)
+    && (!paired || !origins.includes(app.source.launchEntry.origin)), 'invalid_frame_origins');
   const origin = new URL(selected.origin);
   check(origin.port === '' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname), 'invalid_public_app_origin');
-  const plan = { schema: 'soty.app-release.v1', createdAt: now, mode,
+  const shellEntry = paired ? app.source.launchEntry : { domainId: selected.id, path: app.source.entryPath };
+  const plan = { schema: paired ? 'soty.app-release.v2' : 'soty.app-release.v1', createdAt: now, mode,
     appId: app.app.id, domainId: selected.id, origin: selected.origin, shellOrigin: app.shellOrigin,
-    shellLaunchUrl: app.shellOrigin + '/#' + formatAppLaunchRoute({ appId: app.app.id, domainId: selected.id, path: app.source.entryPath }),
+    shellLaunchUrl: app.shellOrigin + '/#' + formatAppLaunchRoute({ appId: app.app.id, domainId: shellEntry.domainId, path: shellEntry.path }),
     source: app.source, publication: app.publication, gatewayPort, frameOrigins: origins,
     deploymentSha256: releaseHash(JSON.stringify(app)),
     probes: [
-      { path: app.source.entryPath, status: 200 },
-      { path: queriedPath(app.source.entryPath), status: 200 },
-      { path: '/_soty/boot?path=' + encodeURIComponent(app.source.entryPath), status: 200 },
+      { path: target.entryPath, status: 200 },
+      { path: queriedPath(target.entryPath), status: 200 },
+      { path: paired ? '/_soty/ingress-check' : '/_soty/boot?path=' + encodeURIComponent(target.entryPath), status: 200 },
     ] };
+  if (paired) plan.nativeEntry = paired;
+  if (mode === 'native') {
+    plan.nativeGuard = { rootCheckUrl: selected.origin + '/_soty/ingress-check', appId: app.app.id, origin: selected.origin,
+      primaryTargetDigest: app.source.digest, nativeTargetDigest: target.digest };
+  }
   return plan;
 }
 function queriedPath(path) {
@@ -68,13 +84,43 @@ function queriedPath(path) {
 }
 export function nativeIngress(plan) {
   check(plan.mode === 'native', 'native_ingress_required');
-  check(/^app-[a-f0-9]{32}$/u.test(plan.appId) && /^[a-f0-9]{64}$/u.test(plan.source.digest), 'invalid_native_pin');
-  const host = new URL(deploymentOrigin(plan.origin)).hostname;
-  check(!/[{}"\s]/u.test(host) && Number.isInteger(plan.source.port) && plan.source.port >= 1024 && plan.source.port <= 65535
+  const paired = plan.schema === 'soty.app-release.v2' ? plan.nativeEntry : null;
+  const target = paired?.target ?? plan.source;
+  check(typeof plan.appId === 'string' && /^app-[a-f0-9]{32}$/u.test(plan.appId)
+    && typeof plan.source.digest === 'string' && /^[a-f0-9]{64}$/u.test(plan.source.digest)
+    && Number.isSafeInteger(plan.source.revision) && plan.source.revision >= 1, 'invalid_native_pin');
+  check(paired || plan.source.profile === 'soty.relay-restricted.v1', 'paired_native_entry_required');
+  if (paired) {
+    check(plan.source.profile === 'soty.selected-human-embed.v2' && plan.publication.launchPolicy === 'anyone'
+      && paired.origin === plan.origin && paired.domainId === plan.domainId && target.profile === 'soty.relay-restricted.v1'
+      && typeof target.digest === 'string' && /^[a-f0-9]{64}$/u.test(target.digest) && target.digest !== plan.source.digest
+      && Number.isSafeInteger(target.revision) && target.revision >= 1 && target.revision !== plan.source.revision
+      && typeof paired.admissionKeyHash === 'string' && /^[a-f0-9]{64}$/u.test(paired.admissionKeyHash)
+      && Number.isSafeInteger(paired.committedPolicyEpoch) && paired.committedPolicyEpoch >= 1
+      && Number.isSafeInteger(plan.publication.policyEpoch) && paired.committedPolicyEpoch <= plan.publication.policyEpoch && plan.source.launchEntry
+      && plan.source.launchEntry.path === validateAppLaunchPath(plan.source.entryPath)
+      && new URL(deploymentOrigin(plan.source.launchEntry.origin)).hostname !== new URL(deploymentOrigin(plan.origin)).hostname,
+    'invalid_native_pin');
+    const guard = plan.nativeGuard;
+    check(guard && Object.keys(guard).sort().join(',') === 'appId,nativeTargetDigest,origin,primaryTargetDigest,rootCheckUrl'
+      && guard.rootCheckUrl === plan.origin + '/_soty/ingress-check' && guard.appId === plan.appId && guard.origin === plan.origin
+      && guard.primaryTargetDigest === plan.source.digest && guard.nativeTargetDigest === target.digest, 'invalid_native_pin');
+  }
+  const publicOrigin = new URL(deploymentOrigin(plan.origin)), host = publicOrigin.hostname;
+  check(!publicOrigin.port && !/[{}"\s]/u.test(host) && Number.isInteger(target.port) && target.port >= 1024 && target.port <= 65535
+    && Number.isInteger(plan.source.port) && plan.source.port >= 1024 && plan.source.port <= 65535
     && Number.isInteger(plan.gatewayPort) && plan.gatewayPort >= 1024 && plan.gatewayPort <= 65535
-    && plan.source.port !== plan.gatewayPort, 'invalid_native_upstream');
+    && target.port !== plan.gatewayPort && plan.source.port !== plan.gatewayPort
+    && (!paired || target.port !== plan.source.port), 'invalid_native_upstream');
   const parents = plan.frameOrigins.map(deploymentOrigin).join(' ');
-  check(plan.frameOrigins.length > 0 && plan.frameOrigins.length <= 8 && !plan.frameOrigins.includes(plan.origin), 'invalid_frame_origins');
+  check(plan.frameOrigins.length > 0 && plan.frameOrigins.length <= 8 && !plan.frameOrigins.includes(plan.origin)
+    && (!paired || !plan.frameOrigins.includes(plan.source.launchEntry.origin)), 'invalid_frame_origins');
+  const policyPins = [
+    'header_up X-Soty-Ingress-Surface native', 'header_up X-Soty-Ingress-App ' + plan.appId,
+    'header_up X-Soty-Ingress-Primary ' + plan.source.digest, 'header_up X-Soty-Ingress-Target ' + target.digest,
+  ];
+  const pins = paired ? policyPins : ['header_up X-Soty-Ingress-App ' + plan.appId, 'header_up X-Soty-Ingress-Target ' + plan.source.digest];
+  const plainHttp = ['-Upgrade', '-Connection', '-Sec-WebSocket-Key', '-Sec-WebSocket-Version', '-Sec-WebSocket-Protocol', '-Sec-WebSocket-Extensions'];
   return [
     '# Soty native app ' + plan.appId + '; reviewed fixed upstream, current source pin.',
     host + ' {',
@@ -87,6 +133,7 @@ export function nativeIngress(plan) {
     '        defer',
     '    }',
     '    @soty_boot path /_soty/*',
+    '    @soty_native_policy {', '        method GET', '        path /_soty/ingress-check', '    }',
     '    @soty_foreign_write {',
     '        method POST PUT PATCH DELETE',
     '        not header Origin ' + plan.origin,
@@ -96,8 +143,14 @@ export function nativeIngress(plan) {
     '        not header Origin ' + plan.origin,
     '    }',
     '    route {',
+    '        handle @soty_native_policy {',
+    '            rewrite * /_soty/ingress-check?',
+    '            reverse_proxy 127.0.0.1:' + plan.gatewayPort + ' {',
+    ...plainHttp.map(value => '                header_up ' + value),
+    ...policyPins.map(value => '                ' + value),
+    '            }', '        }',
     '        handle @soty_boot {',
-    '            reverse_proxy 127.0.0.1:' + plan.gatewayPort,
+    paired ? '            respond 404' : '            reverse_proxy 127.0.0.1:' + plan.gatewayPort,
     '        }',
     '        handle @soty_foreign_write {',
     '            respond 403',
@@ -108,20 +161,17 @@ export function nativeIngress(plan) {
     '        handle {',
     '            forward_auth 127.0.0.1:' + plan.gatewayPort + ' {',
     // Authenticate each handshake over HTTP, then upgrade only the app request.
-    '                header_up -Upgrade',
-    '                header_up -Connection',
-    '                header_up -Sec-WebSocket-Key',
-    '                header_up -Sec-WebSocket-Version',
-    '                header_up -Sec-WebSocket-Protocol',
-    '                header_up -Sec-WebSocket-Extensions',
+    ...plainHttp.map(value => '                header_up ' + value),
     '                uri /_soty/ingress-check?',
-    '                header_up X-Soty-Ingress-App ' + plan.appId,
-    '                header_up X-Soty-Ingress-Target ' + plan.source.digest,
+    // A caller cannot select the new public policy reader for legacy DATA.
+    ...(!paired ? ['                header_up -X-Soty-Ingress-Surface', '                header_up -X-Soty-Ingress-Primary'] : []),
+    ...pins.map(value => '                ' + value),
     '            }',
-    '            reverse_proxy 127.0.0.1:' + plan.source.port + ' {',
+    '            reverse_proxy 127.0.0.1:' + target.port + ' {',
     '                header_up Cookie "(^|; *)__Host-soty_app_session=[^;]*" ""',
     '                header_up -X-Soty-Ingress-App',
     '                header_up -X-Soty-Ingress-Target',
+    '                header_up -X-Soty-Ingress-Surface', '                header_up -X-Soty-Ingress-Primary',
     '            }',
     '        }',
     '    }',
@@ -161,11 +211,38 @@ export async function writeReleasePlan(output, plan) {
   await writeFile(join(directory, 'release-plan.json'), JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   return { file: join(directory, 'release-plan.json'), plan: value };
 }
+async function probeText(response, maximum) {
+  const reader = response.body?.getReader(); if (!reader) return '';
+  let length = 0; const chunks = [];
+  try {
+    for (;;) { const { done, value } = await reader.read(); if (done) break; length += value.byteLength;
+      check(length <= maximum, 'probe_response_too_large'); chunks.push(Buffer.from(value)); }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally { await reader.cancel(); }
+}
+function nativePolicyMatches(text, plan) {
+  let value; try { value = JSON.parse(text); } catch { return false; }
+  const fields = ['schema','appId','origin','primaryTargetRevision','primaryTargetDigest',
+    'nativeTargetRevision','nativeTargetDigest','policyEpoch','admissionKeyHash','leaseMs'];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === fields.sort().join(',')
+    && value.schema === 'soty.native-entry-policy.v1' && value.appId === plan.appId && value.origin === plan.origin
+    && value.primaryTargetRevision === plan.source.revision && value.primaryTargetDigest === plan.source.digest
+    && value.nativeTargetRevision === plan.nativeEntry.target.revision && value.nativeTargetDigest === plan.nativeEntry.target.digest
+    && value.policyEpoch === plan.publication.policyEpoch && value.admissionKeyHash === plan.nativeEntry.admissionKeyHash
+    && Number.isSafeInteger(value.leaseMs) && value.leaseMs >= 1 && value.leaseMs <= 1000;
+}
 /** HTTP/TLS is one gate; browser login, read/write and data retention are separate. */
 export async function verifyRelease(plan, { probes = [], fetcher = fetch } = {}) {
-  check(plan.schema === 'soty.app-release.v1' && /^app-[a-f0-9]{32}$/u.test(plan.appId), 'invalid_release_plan');
+  const paired = plan.schema === 'soty.app-release.v2';
+  check((paired || plan.schema === 'soty.app-release.v1') && /^app-[a-f0-9]{32}$/u.test(plan.appId), 'invalid_release_plan');
   deploymentOrigin(plan.origin); deploymentOrigin(plan.shellOrigin);
   check(plan.publication.launchPolicy === 'anyone', 'authenticated_browser_verification_required');
+  if (paired) {
+    nativeIngress(plan);
+    check(JSON.stringify(plan.probes) === JSON.stringify([{ path: plan.nativeEntry.target.entryPath, status: 200 },
+      { path: queriedPath(plan.nativeEntry.target.entryPath), status: 200 }, { path: '/_soty/ingress-check', status: 200 }]), 'invalid_release_plan');
+  }
   const checks = [...plan.probes, ...probes];
   check(checks.length >= 3 && checks.length <= 32, 'invalid_release_probes');
   const results = [];
@@ -179,17 +256,18 @@ export async function verifyRelease(plan, { probes = [], fetcher = fetch } = {})
     check(url.origin === plan.origin, 'probe_origin_escape');
     const response = await fetcher(url, { redirect: 'manual', credentials: 'omit', signal: AbortSignal.timeout(10000) });
     let contains = true;
-    if (item.contains !== undefined) {
-      const reader = response.body.getReader(); let length = 0; const chunks = [];
-      try {
-        for (;;) { const { done, value } = await reader.read(); if (done) break; length += value.byteLength; check(length <= 2097152, 'probe_response_too_large'); chunks.push(Buffer.from(value)); }
-        contains = Buffer.concat(chunks).toString('utf8').includes(item.contains);
-      } finally { await reader.cancel(); }
+    const policy = paired && item.path === '/_soty/ingress-check';
+    if (policy && (response.status !== 200 || !/^application\/json(?:;|$)/iu.test(response.headers.get('content-type') ?? ''))) {
+      contains = false; await response.body?.cancel();
+    } else if (item.contains !== undefined || policy) {
+      const text = await probeText(response, policy ? 4096 : 2097152);
+      contains = (item.contains === undefined || text.includes(item.contains)) && (!policy || nativePolicyMatches(text, plan));
     } else await response.body?.cancel();
     results.push({ path: item.path, expectedStatus: item.status, status: response.status, contentMatches: contains,
       ok: response.status === item.status && contains });
   }
-  return { schema: 'soty.app-release-check.v1', checkedAt: Date.now(), appId: plan.appId, domainId: plan.domainId,
+  return { schema: paired ? 'soty.app-release-check.v2' : 'soty.app-release-check.v1', checkedAt: Date.now(), appId: plan.appId, domainId: plan.domainId,
     origin: plan.origin, planSha256: releaseHash(JSON.stringify(plan)),
-    ok: results.every(item => item.ok), httpOnly: true, browserAndDataChecksRequired: true, results };
+    ok: results.every(item => item.ok), httpOnly: true, browserAndDataChecksRequired: true,
+    ...(paired ? { nativePolicyChecked: true } : {}), results };
 }

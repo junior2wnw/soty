@@ -15,6 +15,7 @@
 | Коннектор | Current owner/device, та же граница workspace/доверия, живой источник; не копия коннектора на каждую карточку |
 | Именной адрес | Exact app/domain/source/publication pins, fresh snapshot; unknown/nested host denied, TLS валиден |
 | Native | Fixed loopback, per-request access/pin; query и app cookies/CSP сохранены, Soty cookie не уходит в app |
+| Source/Native пара | Разные approved origins/targets; карточка ведёт в Source, отдельный вход — Native; exact Root policy GET не заменяет Native Human/ACL/короткую lease |
 | WebSocket/изменения | Настоящие 101 + message exchange; wrong/missing Origin, invalid session и changed pin отвергнуты |
 | Вход человека | Human OIDC/BFF, issuer/sub/current userinfo/native ACL; private owner mode явно ограничен одним владельцем |
 | Разные люди | Два разных пользователя; чужие записи/роли и неверные identity claims отвергнуты |
