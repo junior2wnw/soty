@@ -102,6 +102,7 @@ export function aiErrorLabel(reason: unknown): string {
   const code = record(reason) && typeof reason.code === 'string' ? reason.code : '';
   return ({ ai_context_changed: 'Аккаунт изменился. Откройте настройки заново.', ACTIVE_PROFILE_CHANGED: 'Аккаунт изменился. Откройте настройки заново.',
     ai_unavailable: 'Сервис ИИ временно недоступен. Соты продолжат работать.',
+    ai_maintenance: 'Обновляем доступ к API. Прежний запрос сохранён и будет проверен после обновления.',
     ai_invalid_response: 'Не удалось подтвердить данные ИИ. Обновите состояние.',
     ai_invalid_request: 'Проверьте название, лимит и срок действия ключа.', ai_invalid_amount: 'Укажите сумму в рублях: не больше 6 знаков после запятой.',
     ai_key_unavailable: 'Ключ изменился или больше недоступен. Обновите список.',

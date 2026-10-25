@@ -138,6 +138,19 @@ test('a historical mutation receipt cannot undo the currently revoked key projec
   f.controller.dispose();
 });
 
+test('maintenance during replay cannot clear a previously committed unknown key operation', async () => {
+  const f = mounted(); f.service.loseNext(); await f.controller.mutate('create', { name: 'Сохранённый запрос' });
+  const operation = f.controller.read().pending.operationId, saved = [...f.disk.values.values()][0], request = f.service.api.request;
+  let maintenance = true;
+  f.service.api.request = (op, args) => maintenance && op === 'ai.keys.create' ? Promise.reject(failure('ai_maintenance')) : request(op, args);
+  await f.controller.reconcile();
+  assert.equal(f.controller.read().pending.operationId, operation); assert.equal([...f.disk.values.values()][0], saved);
+  assert.match(f.controller.read().error, /Обновляем доступ к API/u); assert.equal(f.service.effects(), 1);
+  maintenance = false; await f.controller.reconcile(); await settle();
+  assert.equal(f.controller.read().pending, null); assert.equal(f.controller.read().secret, null); assert.equal(f.service.effects(), 1);
+  f.controller.dispose();
+});
+
 test('A → B → A cannot resurrect an older account reply or clipboard completion', async () => {
   const response = deferred(); let generation = 1;
   const f = mounted({ service: { api: { request: () => response.promise } }, isCurrent: () => generation === 1 });
