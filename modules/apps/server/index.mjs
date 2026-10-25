@@ -22,6 +22,7 @@ import { createLaunchPath, createScopedLaunchPath, checkedScopedEntryPath } from
 import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
+import { createDiscussionReadStore } from './discussion-reads.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
 import { createAppDirectory, directoryOperations } from './directory.mjs';
 import { createAppAuthorityPort } from './authority-port.mjs';
@@ -135,7 +136,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const voiceSourceActors=new WeakMap();
   const backendSourceContexts=new Map();
   const backendSourceAcquisitions=new Set();
-  let inspection, saved, discussions, directory, entryRead, appAuthority, scopedGateway, covers;
+  let inspection, saved, discussions, discussionReads, directory, entryRead, appAuthority, scopedGateway, covers;
   const scopedRenewals=new Map();
   const bootCandidates=new Map();
   try {
@@ -192,7 +193,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
     directory = createAppDirectory({ db, assertActor, withAuthorityFence, activeCommunityIds, currentContactIds, canUse, resolveEntry });
+    discussionReads = createDiscussionReadStore({ filename: databasePath === ':memory:' ? ':memory:' : `${databasePath}.reads.sqlite`, now });
     discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse, isCurrentFriend,
+      readStore: discussionReads,
       readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
         assertApps(typeof readCommunityAuthority === 'function', 'apps_authority_fence_required', 503);
         return readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds);
@@ -200,7 +203,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       authorLabel: discussionAuthorLabel, limits: discussionLimits });
     if (coverDecoder !== undefined && COVER_APP_FORMATS[inspectAppsSchema(db)]) covers = createAppCoverAdapter({ db, assertActor, withAuthorityFence, resolveEntry,
       requireScopedTarget: target => scopedAdmissions.require(target), decoder: coverDecoder, clock: now, limits: coverLimits });
-  } catch (error) { db.close(); throw error; }
+  } catch (error) { discussions?.close(); discussionReads?.close(); db.close(); throw error; }
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
   let closed = false;
   const coverExtension = covers ? Object.freeze({ operations: new Set(appCoverOperations), async executeAsync({ op, args = {}, actor }) {

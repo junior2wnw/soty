@@ -5,7 +5,7 @@ import { readDiscussionAudience } from './schema.mjs';
 import { hasAudienceSchema, readConversationAudience, writeHeadAudience, materializeConversationAudience } from './audience.mjs';
 import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 
-export const discussionOperations = new Set(['context', 'history', 'changes', 'archives', 'send', 'remove'].map(name => `apps.discussion.${name}`));
+export const discussionOperations = new Set(['context', 'history', 'changes', 'archives', 'send', 'remove', 'inbox', 'read'].map(name => `apps.discussion.${name}`));
 export const DISCUSSION_LIMITS = Object.freeze({ heads: 8192, conversations: 8192, conversationsPerApp: 1000,
   messages: 1_000_000, messagesPerApp: 10_000, bodyBytes: 1024 ** 3, bodyBytesPerApp: 32 * 1024 ** 2, changesRetained: 2048 });
 const RESPONSE_BYTES = 256 * 1024, CURSOR_TTL = 60 * 60 * 1000;
@@ -44,7 +44,7 @@ export function syncDiscussionAudienceInTransaction(db, id, at) {
   return true;
 }
 
-export function createDiscussionRegistry({ db, now = Date.now, assertActor, withAuthorityFence, resolveEntry,
+export function createDiscussionRegistry({ db, now = Date.now, assertActor, withAuthorityFence, resolveEntry, readStore,
   canUse, isCurrentFriend = () => false, readCommunityAuthority, authorLabel, limits: configured = {} }) {
   assertApps(db && [now, assertActor, resolveEntry, canUse, authorLabel].every(value => typeof value === 'function'),
     'apps_discussion_dependencies_required', 500);
@@ -321,8 +321,55 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     }
     return { id: row.id, conversationId: row.conversation_id, removed: true };
   }
+  function unread(actor, app, row) {
+    const through = readStore.get(actor.accountId, app.id, row.id);
+    assertApps(through <= row.message_seq, 'apps_discussion_read_state_conflict', 503);
+    return db.prepare(`SELECT count(*) AS n FROM app_discussion_messages WHERE conversation_id=? AND seq>?
+      AND removed_at IS NULL AND author_account_id<>?`).get(row.id, through, actor.accountId).n;
+  }
+  function inbox(actor, entries) {
+    assertApps(readStore, 'apps_discussion_read_unavailable', 503);
+    const discussions = [], included = new Set();
+    for (const entry of entries) {
+      if (included.has(entry.appId)) continue;
+      let base;
+      try { base = access(actor, entry); }
+      catch (error) { if (error instanceof AppsError && error.code === 'app_unavailable') continue; throw error; }
+      const row = currentConversation(base);
+      if (row && !authority(base, [row])(row)) continue;
+      const last = row && db.prepare('SELECT * FROM app_discussion_messages WHERE conversation_id=? AND removed_at IS NULL ORDER BY seq DESC LIMIT 1').get(row.id);
+      included.add(entry.appId);
+      discussions.push({ appId: base.app.id, name: base.app.name, entry: base.entry, conversationId: row?.id ?? null,
+        lastMessage: last ? { id: last.id, author: { accountId: last.author_account_id, label: last.author_label }, preview: Array.from(last.body).slice(0, 160).join(''), createdAt: last.created_at } : null,
+        unreadCount: row ? unread(actor, base.app, row) : 0 });
+    }
+    return { schema: 'soty.app-discussion.inbox.v1', discussions, checkedAt: timestamp(now()) };
+  }
+  function markRead(actor, input) {
+    assertApps(readStore, 'apps_discussion_read_unavailable', 503);
+    const base = access(actor, input), row = selected(base, input.conversationId);
+    assertApps(row.id === base.head.current_id, 'apps_discussion_stale', 409);
+    const message = db.prepare('SELECT seq FROM app_discussion_messages WHERE conversation_id=? AND id=?').get(row.id, input.messageId);
+    assertApps(message, 'app_unavailable', 404);
+    const receipt = readStore.mark(actor.accountId, base.app.id, row.id, message.seq);
+    return { schema: 'soty.app-discussion.read.v1', appId: base.app.id, conversationId: row.id,
+      messageId: input.messageId, unreadCount: unread(actor, base.app, row), readAt: receipt.readAt };
+  }
   function normalize(op, args) {
     const action = op.slice('apps.discussion.'.length);
+    if (action === 'inbox') {
+      exact(args, ['entries']);
+      assertApps(Array.isArray(args.entries) && args.entries.length <= 50, 'invalid_discussion_entries');
+      return args.entries.map(entry => {
+        exact(entry, ['appId', 'domainId', 'path']);
+        return { appId: appId(entry.appId), domainId: identifier(entry.domainId, 'dom'), path: createLaunchPath(entry.path).entryPath };
+      });
+    }
+    if (action === 'read') {
+      exact(args, ['appId', 'domainId', 'path', 'conversationId', 'messageId']);
+      return { appId: appId(args.appId), domainId: identifier(args.domainId, 'dom'), path: createLaunchPath(args.path).entryPath,
+        conversationId: identifier(args.conversationId, 'conv'), messageId: identifier(args.messageId, 'msg') };
+    }
     const common = ['appId', 'domainId', 'path', 'administrative'];
     exact(args, action === 'remove' ? ['appId', 'conversationId', 'messageId']
       : action === 'send' ? ['appId', 'conversationId', 'domainId', 'path', 'requestId', 'body', 'replyTo']
@@ -352,6 +399,8 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
     const input = normalize(op, args);
     return run(actor, captured => {
       assertApps(!closed, 'apps_discussion_closed', 503);
+      if (op === 'apps.discussion.inbox') return inbox(captured, input);
+      if (op === 'apps.discussion.read') return markRead(captured, input);
       if (op === 'apps.discussion.context') return initial(captured, input);
       if (op === 'apps.discussion.archives') return archives(captured, input);
       if (op === 'apps.discussion.send') return send(captured, input);
@@ -359,5 +408,5 @@ export function createDiscussionRegistry({ db, now = Date.now, assertActor, with
       const base = access(captured, input), row = selected(base, input.conversationId);
       return op === 'apps.discussion.history' ? history(base, row, input) : changes(base, row, input);
     });
-  }, close() { closed = true; cursorKey.fill(0); } });
+  }, close() { closed = true; cursorKey.fill(0); readStore?.close(); } });
 }

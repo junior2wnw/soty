@@ -10,8 +10,8 @@ const { validateState } = await import(new URL('./storage.mjs', pathToFileURL(so
 const { createConnectService } = await import(pathToFileURL(join(repo, 'modules/connect/server/index.mjs')));
 const projectId = 'progressive-connect-test', origin = 'https://progressive.fixture.invalid', endpoint = origin + '/rpc', scope = { projectId, endpoint };
 const reads = ['world.profile.get', 'world.community.list', 'world.directory.search', 'world.directory.resolve', 'world.field.get', 'apps.directory.search', 'apps.directory.resolve', 'apps.devices', 'contacts.list'];
-const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read'];
-const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra'];
+const backgroundReads = ['call.inbox', 'notifications.status', 'apps.cover.read', 'apps.discussion.inbox'];
+const effects = ['world.profile.update', 'world.field.put', 'apps.launch', 'contacts.requestAccount', 'apps.directory.search.extra', 'apps.discussion.read'];
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise(done => setTimeout(done, 5));
 const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
