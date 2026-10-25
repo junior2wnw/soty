@@ -56,6 +56,7 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/modules ./modules
+COPY --from=build /app/services/ai-gateway/packages/soty-bridge ./services/ai-gateway/packages/soty-bridge
 COPY --from=build /app/src/transport/human-call-ice.mjs ./src/transport/human-call-ice.mjs
 COPY --from=build /app/src/world/feedback-media.mjs ./src/world/feedback-media.mjs
 ARG LEGACY_UNIVERSAL_MODE=0
