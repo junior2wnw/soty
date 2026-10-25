@@ -15,7 +15,7 @@ const source = readFileSync(new URL('./unified-field-screen.ts', import.meta.url
 const parsed = ts.createSourceFile('unified-field-screen.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const production = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedFieldScreen');
 const printer = ts.createPrinter();
-const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'applyPersistence'].map(name => {
+const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadInitialMine', 'loadMine', 'loadMinePass', 'applyPersistence'].map(name => {
   const found = production.body.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(found, `Actual production ${name} exists`); return printer.printNode(ts.EmitHint.Unspecified, found, parsed);
 });
@@ -36,6 +36,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
   const state = { updates: [], empties: [], pages: 0, runs: [], mounts: 0, listCloses: [] };
   const environment = { exports: {}, mode: 'mine', queries: { mine: query }, filter: 'all',
     mineBusy: false, queuedMine: null, mineGeneration: 0, mineResolvedGeneration: -1, mineConfirmedGeneration: -1, mineKnownRefs: new Set(), mineFilterAdmitted: false,
+    initialMineTask: null, initialMineRefs: '',
     emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, metadataRevision: 0,
     metadata: new Map([[fieldEntityKey(ref), { entity: ref, title: 'Загрузка…', source: 'owner' }]]),
     current: () => !disposed && liveGeneration === 1,
