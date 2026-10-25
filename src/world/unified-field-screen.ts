@@ -143,6 +143,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let mineFilterAdmitted = false;
   let activeSearches = 0, queuedSearch: ((admitted: boolean) => void) | null = null;
   let mineBusy = false, queuedMine: ((admitted: boolean) => void) | null = null;
+  let initialMineTask: Promise<void> | null = null, initialMineRefs = '';
   let preview: HTMLElement | null = null, selected: { item: DirectoryEntity; shortcutId?: string } | null = null;
   let previewOpener: HTMLElement | null = null;
   let searchOpener: HTMLElement | null = null;
@@ -389,7 +390,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       engine.update({ document: next.document, revision: next.projectedRevision, persistence: 'saved' }); updateMineFilter();
       // A layout received from another window/device contains references, not
       // names or access. Resolve new identities through the existing directory.
-      if (newRefs) run(loadMine());
+      if (newRefs) run(element.dataset.ready === 'loading' ? loadInitialMine() : loadMine());
     }
   }
   function exportLayout(): void {
@@ -480,6 +481,13 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       element.dataset.searchState = 'offline'; empty.hidden = false;
       empty.replaceChildren(el('h2', '', 'Не удалось обновить поиск'), el('p', '', 'Попробуйте ещё раз. Ваша расстановка сохранена отдельно.'), button('Повторить', 'refresh', 'sw-button-quiet', () => run(searchDirectory()))); throw error;
     } finally { releaseSearchSlot(); if (live()) { more.disabled = false; element.dataset.searchPending = 'false'; } }
+  }
+  function loadInitialMine(): Promise<void> {
+    const refs = JSON.stringify([...new Set(engine?.snapshot().shortcuts.map(shortcut => fieldEntityKey(shortcut.entity)) ?? [])].sort());
+    if (!initialMineTask || refs !== initialMineRefs) {
+      initialMineRefs = refs; initialMineTask = loadMine();
+    }
+    return initialMineTask;
   }
   async function loadMine(): Promise<void> {
     if (!engine || !current()) return; closeList(false); const generation = ++mineGeneration;
@@ -889,6 +897,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       resolveArt: item => options.resolveArt ? options.resolveArt(item) : resolveFieldAppArt({ ...(item.entity.kind === 'app' ? { appId: item.entity.id } : {}), ...(item.coverKey ? { coverKey: item.coverKey } : {}) }, { screenWidth: window.innerWidth }),
     }); engine = field; host.prepend(field.element); if (mode === 'search') field.update({ searchDocument: searchScene() }); updateChrome(); updateStatus();
     revealReadyMine(field);
+    // Cached references can start fresh signed metadata reads while the remote layout is loading.
+    if (loaded.document.shortcuts.length && element.dataset.ready === 'loading') run(loadInitialMine());
   }
   persistence.subscribe(applyPersistence);
   const ready = (async (): Promise<void> => {
@@ -906,7 +916,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       engine!.update({ document: receipt.document, revision: receipt.revision, entities: allMetadata() });
     }
     if (mode === 'mine') revealReadyMine(engine!);
-    const mineTask = loadMine();
+    const mineTask = loadInitialMine();
     if (mode === 'search') await Promise.all([mineTask, searchDirectory()]); else await mineTask;
     if (!current()) return;
     if (current()) { element.dataset.ready = 'ready'; loading.hidden = true; }

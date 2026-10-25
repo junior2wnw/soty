@@ -230,9 +230,17 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(fetch(request));
     return;
   }
-  const network = fetch(request);
+  let cacheHit = false;
+  const network = (async () => {
+    // This exact build's immutable modules need no network revalidation on reload.
+    if (buildAssets.includes(url.pathname) || classicAssets.includes(url.pathname)) {
+      const cached = await caches.open(cacheName).then(cache => cache.match(request)).catch(() => undefined);
+      if (cached) { cacheHit = true; return cached; }
+    }
+    return fetch(request);
+  })();
   event.waitUntil(network.then(async response => {
-    if (response.ok) {
+    if (response.ok && !cacheHit) {
       const copy = response.clone();
       await (await caches.open(cacheName)).put(request, copy);
     }

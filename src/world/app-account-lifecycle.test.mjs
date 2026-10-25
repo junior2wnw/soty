@@ -513,6 +513,16 @@ test('first local identity keeps a visible status while the real profile request
   assert.equal(f.app.profile.profileId, 'account-A'); assert.equal(f.app.main.contains(status), false);
 });
 
+test('a newly mounted field completes its initial load once; later shell refreshes still refresh that field', async () => {
+  const f=fixture(),initial=deferred();let refreshes=0,settled=false;
+  const field={ready:initial.promise,async refresh(){refreshes++;},dispose(){}};
+  f.app.renderCurrent=()=>{f.app.unifiedField=field;};
+  const opening=f.app.refresh().then(()=>{settled=true;});await turn();
+  assert.equal(f.app.unifiedField,field);assert.equal(refreshes,0);assert.equal(settled,false);
+  initial.resolve();await opening;assert.equal(refreshes,0,'initialization already resolves the field metadata');
+  await f.app.refresh();assert.equal(refreshes,1,'an existing field still receives an explicit refresh');
+});
+
 test('pending account switch clears private content and stale reply cannot restore it', async () => {
   const f = fixture(), pending = deferred(), original = f.app.api.request;
   f.setLocal('account-B');

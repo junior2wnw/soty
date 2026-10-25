@@ -16,12 +16,12 @@ const parsed=ts.createSourceFile('unified-field-screen.ts',source,ts.ScriptTarge
 const screen=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createUnifiedFieldScreen');
 const printer=ts.createPrinter(),print=node=>printer.printNode(ts.EmitHint.Unspecified,node,parsed);
 const variable=(nodes,name)=>nodes.find(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(item=>item.name.getText(parsed)===name));
-const functions=['mountEngine','revealReadyMine','applyPersistence','changeMode'].map(name=>screen.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name)).filter(Boolean);
+const functions=['mountEngine','revealReadyMine','applyPersistence','changeMode','loadInitialMine'].map(name=>screen.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name)).filter(Boolean);
 const subscribe=screen.body.statements.find(node=>ts.isExpressionStatement(node)&&node.getText(parsed)==='persistence.subscribe(applyPersistence);');
 const returned=screen.body.statements.find(ts.isReturnStatement).expression;
 const dispose=returned.properties.find(node=>ts.isMethodDeclaration(node)&&node.name.getText(parsed)==='dispose');
 const ready=variable(screen.body.statements,'ready');assert.ok(ready&&subscribe&&dispose,'genuine full lifecycle must exist');
-const compiled=ts.transpileModule([print(variable(parsed.statements,'BUILTINS')),...functions.map(print),print(subscribe),print(ready),
+const compiled=ts.transpileModule([print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(ready),
   'exports.api = { ready, changeMode, mountEngine, '+print(dispose)+' };'].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const turn=()=>new Promise(done=>setImmediate(done));
@@ -62,19 +62,31 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000}={}){
   for(const id of ['notes','chess','assistant'])metadata.set(fieldEntityKey({kind:'builtin',id}),{entity:{kind:'builtin',id},title:id,source:'builtin'});
   t.after(async()=>{environment.exports.api.dispose();remote.resolve();directory.resolve();paint.resolve();await environment.exports.api.ready;});
   return{environment,api:environment.exports.api,fields,calls,messages,metadata,loading,remote,directory,paint,doc,
+    remoteDocument(document){base.document=validateFieldDocument(document);base.revision++;base.contentHash=createHash('sha256').update(JSON.stringify(base.document)).digest('hex');},
     accountAba(){accountGeneration=2;accountGeneration=3;}};
 }
 
-test('cached builtins become visible after measured engine ready while the genuine field read and every directory request remain held',async t=>{
+test('cached refs start a fresh directory read before the held field response, without granting cached metadata or duplicating the initial read',async t=>{
   const f=fixture(t);await until(()=>f.fields.length===1&&f.calls.includes('world.field.get'));
-  assert.equal(f.loading.hidden,false);assert.equal(f.calls.includes('mine-directory'),false);
+  assert.equal(f.loading.hidden,false);assert.equal(f.calls.includes('mine-directory'),true);
   const cached=JSON.stringify(f.fields[0].snapshot());f.paint.resolve();await turn();
   assert.equal(f.loading.hidden,true,'an opaque loading overlay must not cover a genuine usable cached tile');
-  assert.equal(f.environment.element.dataset.ready,'loading');assert.equal(f.calls.includes('mine-directory'),false,'the remote field read is still held');
+  assert.equal(f.environment.element.dataset.ready,'loading');assert.equal(f.calls.filter(op=>op==='mine-directory').length,1,'the remote layout and fresh directory read run together');
   assert.equal(f.metadata.get(fieldEntityKey(f.doc.shortcuts.at(-1).entity)).title,'Загрузка…');
   assert.equal(JSON.stringify(f.fields[0].snapshot()),cached);
-  f.remote.resolve();await until(()=>f.calls.includes('mine-directory'));
+  f.remote.resolve();await turn();
   assert.equal(f.loading.hidden,true);assert.equal(f.environment.element.dataset.mineState,'loading');assert.equal(f.environment.element.dataset.ready,'loading');
+  assert.equal(f.calls.filter(op=>op==='mine-directory').length,1,'the same remote references reuse the initial read');
+  f.directory.resolve();await f.api.ready;assert.equal(f.environment.element.dataset.ready,'ready');
+});
+
+test('new remote identities trigger their own fresh read while the original cached lookup is held',async t=>{
+  const f=fixture(t);await until(()=>f.fields.length===1&&f.calls.includes('mine-directory'));
+  const next=structuredClone(f.doc),ref={kind:'app',id:'app-'+'b'.repeat(32)};
+  next.shortcuts.push({shortcutId:'new_remote_app',entity:ref,contextId:'personal',slot:[6,0]});f.remoteDocument(next);
+  f.paint.resolve();f.remote.resolve();await until(()=>f.calls.filter(op=>op==='mine-directory').length===2);
+  assert.equal(f.metadata.has(fieldEntityKey(ref)),false,'a new reference carries no cached display authority');
+  f.directory.resolve();await f.api.ready;assert.equal(f.calls.filter(op=>op==='mine-directory').length,2);
 });
 
 test('empty or unresolved cached contexts and a zero-size viewport do not masquerade as a usable field',async t=>{
@@ -89,7 +101,7 @@ test('Search keeps its initial loading overlay while all public results are held
 
 test('returning from pending Search reveals the already measured useful Mine without waiting for any response',async t=>{
   const f=fixture(t,{mode:'search'});await until(()=>f.fields.length===1);f.paint.resolve();await turn();
-  f.api.changeMode('mine');await turn();assert.equal(f.loading.hidden,true);assert.equal(f.calls.includes('mine-directory'),false);
+  f.api.changeMode('mine');await turn();assert.equal(f.loading.hidden,true);assert.equal(f.calls.filter(op=>op==='mine-directory').length,1);
 });
 
 test('an old engine resolving after a replacement cannot reveal a new engine before its own paint',async t=>{

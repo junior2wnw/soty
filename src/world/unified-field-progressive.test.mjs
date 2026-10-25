@@ -236,6 +236,7 @@ const phases = compile('async function readyPhase() {\n' + readyPhase + '\n}\nex
 function phaseHarness(mode) {
   const mine = deferred(), search = deferred(), calls = [];
   const context = { exports: {}, mode, ready: Promise.resolve(), current: () => true,
+    loadInitialMine: () => { calls.push(['mine']); return mine.promise; },
     loadMine: () => { calls.push(['mine']); return mine.promise; },
     searchDirectory: (...args) => { calls.push(['search', ...args]); return search.promise; } };
   vm.createContext(context); new vm.Script(phases).runInContext(context);
@@ -318,7 +319,7 @@ test('disposal with a pending Mine queue starts no new private pass after the ac
 test('genuine ready plus personal refs allows the public fast app at a measured field peak of at most six RPCs', async () => {
   const worldGate = deferred(), deviceGate = deferred(), appsGate = deferred(), communitySearchGate = deferred(), peopleSearchGate = deferred(), searchAppGate = deferred();
   const h = harness({ mode: 'search', searchApps: true, worldGate, deviceGate, appGate: () => appsGate.promise, communitySearchGate, peopleSearchGate, searchAppGate });
-  const phase = { exports: {}, mode: 'search', current: h.environment.current, loadMine: h.api.loadMine, searchDirectory: h.api.searchDirectory };
+  const phase = { exports: {}, mode: 'search', current: h.environment.current, loadInitialMine: h.api.loadMine, loadMine: h.api.loadMine, searchDirectory: h.api.searchDirectory };
   vm.createContext(phase); new vm.Script(phases).runInContext(phase);
   const pending = phase.exports.api.readyPhase(); let early;
   try { await settle(); const peak = h.state.maxInFlight; searchAppGate.resolve(); await settle(); early = { peak, visible: hasFreshApp(h), known: h.environment.mineKnownRefs.size }; }

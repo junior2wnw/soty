@@ -652,8 +652,9 @@ class WorldApplication {
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; await settleCommunities(); return; }
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) { await settleCommunities(); return; } }
       if (this.group) { const opening = this.openGroup(this.group.communityId, this.groupTab); await Promise.all([opening, settleCommunities()]); return; }
+      const previousField = this.unifiedField;
       this.renderCurrent();
-      const content = this.unifiedField ? this.unifiedField.refresh() : this.view === 'world' ? this.search() : this.view === 'mine' ? this.loadPersonal() : Promise.resolve();
+      const content = this.unifiedField ? this.unifiedField === previousField ? this.unifiedField.refresh() : this.unifiedField.ready : this.view === 'world' ? this.search() : this.view === 'mine' ? this.loadPersonal() : Promise.resolve();
       await Promise.all([content, settleCommunities()]);
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
