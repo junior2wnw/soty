@@ -31,8 +31,21 @@ nonce, криптографию или механизм COMMIT/recovery. Preview
 После проверенного выпуска открой [SDK index и SHA256](/sdk/source-app/index.json)
 на доверенном Root. Проверь sourceCommit/version, размер и SHA256
 архива `/sdk/source-app/<SHA256>.tgz` до исполнения кода. Установка в собственный
-проект: `npm install --ignore-scripts --save-exact ./source-app-<SHA256>.tgz`,
-затем `npm exec --offline -- soty-source --help`. Runtime shrinkwrap закрепляет
+проект:
+
+`.soty-sdk` должна быть новой папкой без symlinks. При существующей папке
+остановись и выбери другую (желательно с SHA256 в имени), заменив путь во всех
+командах; не распаковывай поверх прежней версии. Публичный архив имеет finite
+inventory без symlinks, проверенный producer и UI release.
+
+```text
+mkdir .soty-sdk
+tar -xzf ./source-app-<SHA256>.tgz -C .soty-sdk --strip-components=1
+npm ci --prefix .soty-sdk --ignore-scripts --omit=dev
+node .soty-sdk/dist/install.mjs --help
+```
+
+Runtime package-lock и побайтно равный shrinkwrap закрепляют
 openid-client6.8.4 и два точных leaf dependency; dev/install scripts и приватных
 config/ключей нет. Пакет содержит server/browser/CLI/types/docs/template и optional
 Python binding. Root checkout/SSH автору не нужен. Отсутствующий/неверный index
@@ -44,21 +57,23 @@ candidate проходит prepare/promote без restart. Это не self-serv
 произвольных приложений и не wildcard Source.
 
 После установки полная инструкция находится в
-`./node_modules/@soty/source-app/install/README.md`, приватный workspace config
-создают по `./node_modules/@soty/source-app/install/operator.workspace.template.json`.
+`./.soty-sdk/install/README.md`, приватный workspace config
+создают по `./.soty-sdk/install/operator.workspace.template.json`.
 Рабочий пример data callbacks —
-`./node_modules/@soty/source-app/dist/templates/reading-list/domain.mjs`;
+`./.soty-sdk/dist/templates/reading-list/domain.mjs`;
 `author --template reading-list` копирует его и готовые UI assets в ваш проект.
 Сборка SDK и `dist` из checkout автору не нужны: используются файлы из проверенного
-архива. Команды ниже выполняются из своей папки с установленным пакетом.
+архива. Установка tgz как dependency чужого проекта не считается frozen путём:
+вложенный shrinkwrap не удержал версии в проверенном npm11.8. Команды ниже
+выполняются из своей папки с распакованным и установленным `.soty-sdk`.
 
 Короткий путь для **нового** SQLite приложения:
 
 ```text
-npm exec --offline -- soty-source author --title "Мой проект" --template reading-list
-npm exec --offline -- soty-source check --config PRIVATE_FILE
-npm exec --offline -- soty-source init --config PRIVATE_FILE
-npm exec --offline -- soty-source serve --config PRIVATE_FILE
+node .soty-sdk/dist/install.mjs author --title "Мой проект" --template reading-list
+node .soty-sdk/dist/install.mjs check --config PRIVATE_FILE
+node .soty-sdk/dist/install.mjs init --config PRIVATE_FILE
+node .soty-sdk/dist/install.mjs serve --config PRIVATE_FILE
 ```
 
 Оператор один раз задаёт утверждённые appId/profile/target/issuer/connector pins,

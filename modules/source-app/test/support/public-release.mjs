@@ -14,7 +14,7 @@ export async function sdkFormatFixture(directory){
   const sourceCommit='a'.repeat(40),built=await buildSourceAppPackage({outdir:join(directory,'build')});
   const original=JSON.parse(await readFile(join(root,'modules/source-app/package.json'),'utf8'));
   const pkg=Object.fromEntries(['name','version','type','bin','engines','exports','dependencies'].map(key=>[key,original[key]]));pkg.files=SOURCE_SDK_FILES;
-  const lock=sourceSdkRuntimeLock(pkg,await readFile(join(root,'pnpm-lock.yaml'))),files=new Map([['package.json',json(pkg)],['npm-shrinkwrap.json',json(lock)]]);
+  const lock=sourceSdkRuntimeLock(pkg,await readFile(join(root,'pnpm-lock.yaml'))),lockBytes=json(lock),files=new Map([['package.json',json(pkg)],['package-lock.json',lockBytes],['npm-shrinkwrap.json',lockBytes]]);
   const sources=new Map();
   for(const item of built.sourceFiles){const bytes=canonical(await readFile(join(root,item.path)));sources.set(item.path,bytes);item.sha256=sourceSdkHash(bytes);}
   built.sourceCommit=sourceCommit;

@@ -14,18 +14,31 @@ SDK; приложение сохраняет свою базу и проверя
 SHA256 и размер. Архив имеет адрес `/sdk/source-app/<SHA256>.tgz`. Скачайте его,
 проверьте размер и SHA256 **до выполнения кода**, затем в своей папке проекта:
 
+Распаковывайте только в **новую** `.soty-sdk` без symlinks. Если такая папка уже
+существует, остановитесь: выберите другую новую папку, желательно с SHA256 в имени,
+и замените путь во всех командах. Не выполняйте tar поверх установленной версии.
+
 ```text
-npm install --ignore-scripts --save-exact ./source-app-<SHA256>.tgz
-npm exec --offline -- soty-source --help
+mkdir .soty-sdk
+tar -xzf ./source-app-<SHA256>.tgz -C .soty-sdk --strip-components=1
+npm ci --prefix .soty-sdk --ignore-scripts --omit=dev
+node .soty-sdk/dist/install.mjs --help
 ```
 
 Пакет содержит runtime/server/browser/CLI, типы, документацию, шаблон и optional
-Python binding. Внутри `npm-shrinkwrap.json`: ровно production graph
+Python binding. Внутри `package-lock.json` и побайтно равного `npm-shrinkwrap.json`:
+ровно production graph
 openid-client6.8.4 → jose6.2.12/oauth4webapi3.8.8 с registry integrity. Нет
 dev esbuild, install scripts, тестов, реальных ключей/config или истории Git.
-`npm install` загрузит только закреплённые зависимости из registry; это не npm
-публикация `@soty/source-app` и не установка глобального пакета. Далее запускайте
-показанные ниже команды через `npm exec --offline -- soty-source ...`.
+`npm ci` загрузит только закреплённые зависимости из registry в `.soty-sdk`;
+это не npm публикация `@soty/source-app` и не установка глобального пакета.
+Не заменяйте этот шаг установкой tgz как зависимости чужого проекта: вложенный
+shrinkwrap не удержал exact tree в проверенном npm11.8. После установки SDK можно
+использовать без сети; обычные CLI команды вызывают через `node`, без PATH setup.
+`install/README.md`, `install/operator.workspace.template.json` и рабочие
+`dist/templates/reading-list/{domain.mjs,assets/...}` находятся внутри `.soty-sdk`.
+Серверные exports доступны из `./.soty-sdk/dist/server.mjs`, browser exports из
+`./.soty-sdk/dist/browser.mjs`; public HTTP asset SDK остаётся `/assets/source-sdk.js`.
 При отсутствующем/неверном индексе не угадывайте package/URL: публичный выпуск
 остаётся неподтверждённым; оператор может передать тот же verified packet.
 Optional Python требует отдельной установки pinned requirements и проверки
@@ -39,10 +52,10 @@ restart Root. Пакет не делает self-service admission и не доб
 Начните в пустой папке проекта:
 
 ```text
-npm exec --offline -- soty-source author --title "Мой список" --template reading-list
-npm exec --offline -- soty-source check --config /private/operator.json
-npm exec --offline -- soty-source init --config /private/operator.json
-npm exec --offline -- soty-source serve --config /private/operator.json
+node .soty-sdk/dist/install.mjs author --title "Мой список" --template reading-list
+node .soty-sdk/dist/install.mjs check --config /private/operator.json
+node .soty-sdk/dist/install.mjs init --config /private/operator.json
+node .soty-sdk/dist/install.mjs serve --config /private/operator.json
 ```
 
 `author` создаёт `.soty/author.json` и `source/{domain.mjs,assets/...}` без запуска
@@ -148,7 +161,7 @@ physical cold/restore и реальный DNS/TLS требуют своей кв
 `node scripts/build-source-sdk-release.mjs` в clean Git checkout. Он вызывает
 существующий portable builder по exact commit и пишет versioned `.tgz` и safe
 index в `public/sdk/source-app`; npm publish и lifecycle scripts не выполняются.
-Имена, 27 публичных файлов, источники и production graph проверяются до записи.
+Имена, 28 публичных файлов, источники и production graph проверяются до записи.
 Имеющийся URL с другим содержимым не перезаписывается. Публичный namespace
 отвергает соседние/private файлы и symlinks; максимум8 retained archives по4MiB,
 uncompressed tar16MiB. Ничего старого автоматически не удаляется.

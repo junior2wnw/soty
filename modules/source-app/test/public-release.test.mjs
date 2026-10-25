@@ -43,6 +43,7 @@ test('re-sealed metadata cannot add lifecycle code, unpinned production dependen
   const pkg=JSON.parse(original.get('package.json'));f.files.set('package.json',f.json({...pkg,scripts:{postinstall:'synthetic-must-not-run'}}));assert.throws(()=>readSourceSdkArchive(f.archive()));restore();
   const lock=JSON.parse(original.get('npm-shrinkwrap.json'));lock.packages['node_modules/openid-client'].dependencies.jose='latest';
   f.files.set('npm-shrinkwrap.json',f.json(lock));assert.throws(()=>readSourceSdkArchive(f.archive()));restore();
+  f.files.set('package-lock.json',Buffer.from('{}\n'));assert.throws(()=>readSourceSdkArchive(f.archive()),{code:'source_sdk_dependency_lock_changed'});restore();
   f.sources.set('modules/source-app/install/operator.json',Buffer.from('synthetic-private'));assert.throws(()=>readSourceSdkArchive(f.archive()));f.sources.delete('modules/source-app/install/operator.json');
   const proof=JSON.parse(original.get('dist/provenance.json'));proof.outputs[0].sha256='f'.repeat(64);f.files.set('dist/provenance.json',f.json(proof));assert.throws(()=>readSourceSdkArchive(f.archive()));
 });

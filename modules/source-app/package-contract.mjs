@@ -11,7 +11,7 @@ export const SOURCE_SDK_TEXT_FILES=Object.freeze([
   'types/server.d.mts','types/browser.d.mts','types/example.d.mts','types/processing.d.mts','types/source-rp.d.mts',
 ].sort());
 export const SOURCE_SDK_FILES=Object.freeze([
-  'package.json','npm-shrinkwrap.json','SDK-CAPSULE.json','dist/provenance.json',
+  'package.json','package-lock.json','npm-shrinkwrap.json','SDK-CAPSULE.json','dist/provenance.json',
   ...SOURCE_APP_OUTPUTS.map(name=>'dist/'+name),...SOURCE_SDK_TEXT_FILES,
 ].sort());
 export const SOURCE_SDK_INDEX='sdk/source-app/index.json';

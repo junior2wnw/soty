@@ -117,6 +117,7 @@ export function readSourceSdkArchive(archive){
   for(const required of ['pnpm-lock.yaml','scripts/build-source-sdk-release.mjs','modules/source-app/package.json','modules/source-app/package-contract.mjs',
     'modules/source-app/public-release.mjs','modules/source-app/scripts/build.mjs',...SOURCE_SDK_TEXT_FILES.map(name=>'modules/source-app/'+name)])need(seen.has(required));
   const pkg=parse(files.get('package.json')),lock=parse(files.get('npm-shrinkwrap.json')),provenance=parse(files.get('dist/provenance.json'));
+  need(files.get('package-lock.json').equals(files.get('npm-shrinkwrap.json')),'source_sdk_dependency_lock_changed');
   need(exact(pkg,['name','version','type','bin','engines','exports','files','dependencies'])&&pkg.name==='@soty/source-app'&&pkg.version===capsule.packageVersion&&pkg.type==='module'
     &&exact(pkg.engines,['node'])&&pkg.engines.node==='>=24.15.0'&&exact(pkg.bin,['soty-source'])&&pkg.bin['soty-source']==='./dist/install.mjs'
     &&exact(pkg.exports,['./server','./browser','./example'])&&['server','browser','example'].every(name=>exact(pkg.exports['./'+name],['types','import'])

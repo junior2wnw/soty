@@ -25,7 +25,7 @@ export async function buildSourceSdkRelease(){
   await mkdir(join(root,'output'),{recursive:true});const stage=await mkdtemp(join(root,'output/source-sdk-release-'));
   const {buildSourceAppPackage}=await import('../modules/source-app/scripts/build.mjs');
   const built=await buildSourceAppPackage({outdir:join(stage,'dist'),sourceCommit});
-  const files=new Map([['package.json',json(pkg)],['npm-shrinkwrap.json',json(lock)]]);
+  const lockBytes=json(lock),files=new Map([['package.json',json(pkg)],['package-lock.json',lockBytes],['npm-shrinkwrap.json',lockBytes]]);
   for(const item of built.outputs)files.set('dist/'+item.path,await readFile(join(stage,'dist',item.path)));
   files.set('dist/provenance.json',await readFile(join(stage,'dist/provenance.json')));
   for(const name of SOURCE_SDK_TEXT_FILES)files.set(name,frozen('modules/source-app/'+name));
