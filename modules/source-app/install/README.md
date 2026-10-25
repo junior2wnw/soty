@@ -9,6 +9,13 @@ SDK; приложение сохраняет свою базу и проверя
 ## Новый личный сервис: Root workspace
 
 Нужен Node24.15+ и утверждённый установленный коннектор с поддержкой workspace2.
+Текущий SDK — preview: доступен из проверенного checkout/portable packet, а
+публичный versioned download/install endpoint ещё не опубликован. Не считайте
+имя npm-пакета доказательством его наличия в registry. Root и connector читают
+до64 exact approved profiles при инициализации. Новый app/profile требует
+trusted operator установки и reinit соответствующего runtime, **не пересборки
+Root**. Уже загруженный exact candidate переключается prepare/promote без
+restart Root. Пакет не делает self-service admission и не добавляет wildcard.
 Начните в пустой папке проекта:
 
 ```text

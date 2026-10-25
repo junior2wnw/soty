@@ -28,6 +28,12 @@ SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Ес
 CLI `soty-source`. Не копируй в каждое приложение свои подписи, Source cookies,
 nonce, криптографию или механизм COMMIT/recovery. Preview-пакет и локальная
 квалификация не означают, что этот режим уже включён на production Root.
+Публичный versioned SDK download ещё не опубликован: используй проверенный
+checkout/portable packet; не выдумывай npm-registry публикацию или URL.
+Root/connector держат до64 exact approved profiles при startup. Новый app/profile
+требует trusted operator install/reinit, а не Root rebuild; уже preloaded
+candidate проходит prepare/promote без restart. Это не self-service admission
+произвольных приложений и не wildcard Source.
 
 Короткий путь для **нового** SQLite приложения:
 
