@@ -18,7 +18,7 @@ function mutateHeader(archive,mutation){const plain=gunzipSync(archive);for(let 
 
 test('finite SDK format is deterministic and contains runtime, types, docs, templates and optional Python without private neighbours',async t=>{
   const f=await fixture(t),archive=f.archive(),value=readSourceSdkArchive(archive);assert.deepEqual([...value.files.keys()].sort(),SOURCE_SDK_FILES);
-  assert.deepEqual(archive,f.archive());assert.equal(value.package.version,'0.1.0-preview.2');
+  assert.deepEqual(archive,f.archive());assert.equal(value.package.version,f.pkg.version);
   assert.equal(value.files.has('dist/python/soty_native_entry.py'),true);assert.equal(value.files.has('dist/templates/reading-list/domain.mjs'),true);
   assert.equal(value.package.scripts,undefined);assert.equal(value.package.devDependencies,undefined);
   const index=sourceSdkReleaseIndex(archive);assert.equal(index.productionReady,false);assert.equal(index.admission.maxProfiles,64);verifySourceSdkIndex(index,archive);

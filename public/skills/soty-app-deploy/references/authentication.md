@@ -96,6 +96,14 @@ continuation и current-context read без нового пользовател�
 не выдаются. Legacy assets сохраняют только по фактическому finite allowlist
 своего приложения. Не добавляй произвольный proxy path ради пустого iframe.
 
+Перед новым write SDK автоматически обновляет короткую session/context и
+проверяет непрерывность actor/device/Native workspace, selection/generation/role.
+Business read допускает один повтор после такого перехода; низкий frame-fetch
+отдельно допускает один повтор safe RPC после bounded wake-up точного родителя.
+Это разные уровни, поэтому HTTP-попыток может быть больше двух. Смена или потеря
+continuity закрывает контекст до явного подключения. Sent/unknown intent не
+перепривязывается; write не повторяется автоматически.
+
 При unknown сохранении сохраняй точные requestId/inputDigest/contextRef в
 browser namespace текущего уже авторизованного личного ресурса. После reload
 или нового frame вызывай только `recoverReceipt(reference)` под новым current

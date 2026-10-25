@@ -320,6 +320,12 @@ ref; его смена требует явного подключения, бе�
 исходной квитанции через `recoverReceipt`. Это правило действует для любого
 домена приложения, независимо от его полей и операций.
 
+Это один повтор **business read на уровне workspace SDK**. Ниже работает
+`createSourceFrameFetch`: отдельный безопасный RPC может ещё один раз пройти
+после bounded wake-up у точного родителя. Поэтому HTTP-попыток может быть
+больше двух; это раздельные ограниченные уровни, не цикл. `invoke`, feedback
+записи и неизвестный сетевой результат никогда не повторяются автоматически.
+
 Это раздельные release limits, не доказательство массовой нагрузки:
 
 | Контур | Охват | Текущий предел |
@@ -638,10 +644,12 @@ The main `connect` call performs `continueSession` and `currentContext` under
 one local account/frame epoch. It acquires/checks the short HttpOnly Source
 session under the already selected fresh Root authority, then reads the actual
 current workspace. Both low-level methods remain available. The continuation
-ACK does not replace a context or business read. On a later expired session,
-clear the old private UI and explicitly call `connect` again; retain unknown
-writes under their original reference. No new UI confirmation is introduced
-when the Root frame already has the required authority.
+ACK does not replace a context or business read. Before a new write, and after
+one recoverable read denial, the SDK refreshes the session/context only under
+the same verified continuity. A changed or unavailable continuity requires
+clearing the old private UI and explicitly calling `connect`; unknown writes
+keep their original reference. No new UI confirmation is introduced when the
+Root frame already has the required authority.
 
 Each write requires an explicit unique request ID. Preparation captures an
 immutable JSON body, canonical SHA256 digest, context and generation. Duplicate
