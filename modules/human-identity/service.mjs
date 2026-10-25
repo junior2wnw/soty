@@ -7,6 +7,7 @@ import { HumanIdentityError, HUMAN_IDENTITY_PROFILE, requireHuman as require, cl
 import { initializeHumanIdentitySchema } from './schema.mjs';
 import { HUMAN_RENEWAL_LIMITS as RENEWAL_LIMITS } from './profile.mjs';
 import { createUserinfoBudgetAuthority } from '../../server/userinfo-budget-authority.js';
+import { createHumanSigninManagement, HUMAN_SIGNIN_OPERATIONS } from './signins.mjs';
 
 export const HUMAN_IDENTITY_OPERATIONS = Object.freeze(['identity.human.approve', 'identity.human.continue']);
 const MODELS = new Set(['Session', 'Interaction', 'Grant', 'AuthorizationCode', 'RefreshToken', 'AccessToken']);
@@ -359,8 +360,12 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     }
   }
   const userinfoBudget = createUserinfoBudgetAuthority(userinfoBudgetProof);
+  const signins = createHumanSigninManagement({ db, key, keyId, issuer: profile.issuer, schemaVersion, epoch,
+    clientAuthority, actorActive, rowLimits: { grantBindings: LIMITS.grantBindings, consents: CONSENT_LIMITS.rows } });
+  const operations = new Set([...HUMAN_IDENTITY_OPERATIONS, ...(signins.capabilities.available ? HUMAN_SIGNIN_OPERATIONS : [])]);
   return Object.freeze({
     userinfoBudget,
+    signinCapabilities: signins.capabilities,
     /** Host-only expected-subject mapping for an already captured signed Root
      * actor. This is neither an OIDC token nor permission in an application. */
     withSubjectAuthority(request, callback) {
@@ -388,7 +393,7 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
         synchronous(result); require(entered, 'human_identity_authority_fence_invalid', 500); return outcome;
       } finally { active = false; }
     },
-    operations: new Set(HUMAN_IDENTITY_OPERATIONS), schemaVersion, renewalEnabled: schemaVersion >= 2,
+    operations, schemaVersion, renewalEnabled: schemaVersion >= 2,
     prepareInteraction({ interactionId, browserNonce, parameters }) {
       uid(interactionId); nonce(browserNonce); const captured = paramsFor(parameters), intent = digest(captured);
       return transaction(() => {
@@ -412,8 +417,14 @@ export function createHumanIdentityService({ databasePath, profile, actorActive,
     },
     compactExpiredRuntime() { return transaction(compactExpired); },
     execute({ op, actor: actorInput, args: input }) {
-      require(HUMAN_IDENTITY_OPERATIONS.includes(op), 'unsupported_operation');
+      require(HUMAN_IDENTITY_OPERATIONS.includes(op) || signins.capabilities.available && HUMAN_SIGNIN_OPERATIONS.includes(op), 'unsupported_operation');
       const args = data(input);
+      if (HUMAN_SIGNIN_OPERATIONS.includes(op)) {
+        // The signed Connect dispatcher already owns its original actor and
+        // proof transaction, just as for approve/continue below.
+        const actor = actorOf(actorInput);
+        return transaction(() => { authenticate(actor); const result = signins.execute(op, actor, args); authenticate(actor); return result; });
+      }
       const continuing = op === 'identity.human.continue';
       closed(args, ['expectedAccountId', 'interactionId', 'browserNonce', 'csrf', 'requestId', ...(continuing ? [] : ['decision'])],
         continuing ? [] : ['stayInAppSeconds', 'rememberForDevice', 'forgetForDevice']);
