@@ -31,7 +31,7 @@ export function createAudienceControl(options: {
   });
   const update = (value: AudienceMode | null, disabled = false): void => {
     for (const input of inputs) { input.checked = input.value === value; input.disabled = disabled; }
-    description.textContent = value === null ? 'Особый доступ: выбранные люди и сообщества.' : options.descriptions[value];
+    description.textContent = value === null ? 'Доступ настроен вручную. Действующие условия указаны ниже.' : options.descriptions[value];
     element.dataset.audience = value ?? 'custom';
   };
   element.append(legend, track, description); update(options.value);
