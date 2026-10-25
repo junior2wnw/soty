@@ -61,6 +61,9 @@ deploy/connect/**
 !deploy/connect/*.mjs
 !deploy/connect/private-attach/
 !deploy/connect/private-attach/**
+!deploy/ui/
+deploy/ui/**
+!deploy/ui/*.mjs
 install-op-cases
 usb-recovery-backup-*
 windows-media-tool
