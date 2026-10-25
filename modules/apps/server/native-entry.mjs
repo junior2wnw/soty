@@ -1,5 +1,6 @@
 import { assertApps, appPort, runtimePath } from './protocol.mjs';
-import { RUNTIME_PROFILE, runtimeTargetDigest } from './schema.mjs';
+import { createHash } from 'node:crypto';
+import { RUNTIME_PROFILE, runtimeTargetDigest, validExposureAck } from './schema.mjs';
 import { isRootSignedWorkspaceSource } from '../../source-app/server/standard-profile.mjs';
 
 const positive = value => Number.isSafeInteger(value) && value >= 1;
@@ -79,12 +80,34 @@ export function assertNativePortAvailable(db, exceptAppId, connectorKey, port) {
 
 /** Current PUBLIC app policy only, never a Human identity assertion. */
 function loadNativeEntry({ db, appId, origin, primaryDigest, nativeDigest, scopedAdmission }) {
-  const entry = readPairedNativeEntry(db, appId);
-  assertApps(entry && entry.origin === origin && entry.primaryTargetDigest === primaryDigest
-    && entry.target.digest === nativeDigest, 'app_native_entry_closed', 403);
   const app = db.prepare('SELECT * FROM local_apps WHERE id=?').get(appId);
   const publication = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(appId);
   assertApps(app?.state === 'enabled' && publication?.launch_policy === 'anyone', 'app_native_entry_closed', 403);
+  const active = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(appId, publication.active_target_revision);
+  if (active?.profile === RUNTIME_PROFILE) {
+    // Ordinary Native-only apps and an explicit approved rollback use the SAME
+    // wire. Only their CURRENT primary target/ACK is authority; no historical
+    // Source receipt or earlier whole-port acknowledgment can restore access.
+    const target = nativeTargetTuple(active);
+    assertApps(active.owner_account_id === app.owner_account_id && target.digest === runtimeTargetDigest(target)
+      && primaryDigest === target.digest && nativeDigest === target.digest, 'app_native_entry_closed', 403);
+    let ack; try { ack = JSON.parse(publication.exposure_ack_json); } catch { /* denied below */ }
+    assertApps(ack && typeof ack === 'object' && !Array.isArray(ack)
+      && Object.keys(ack).every(key => ['scope','targetRevision','targetDigest','profile'].includes(key))
+      && publication.exposure_ack_revision === target.revision && validExposureAck(ack, active, 'whole-port'),
+    'app_native_entry_closed', 403);
+    const domain = boundAlias(db, app, origin);
+    const device = db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(target.connectorKey);
+    assertApps(device?.owner_account_id === app.owner_account_id, 'app_native_entry_closed', 403);
+    const requestKeyHash = createHash('sha256').update(JSON.stringify(['soty.native-primary-policy.v1', appId,
+      origin, target.revision, target.digest, ack])).digest('hex');
+    return Object.freeze({ origin, domainId: domain.id, target, primary: target,
+      primaryTargetRevision: target.revision, primaryTargetDigest: target.digest,
+      policyEpoch: publication.policy_epoch, committedPolicyEpoch: publication.policy_epoch, requestKeyHash });
+  }
+  const entry = readPairedNativeEntry(db, appId);
+  assertApps(entry && entry.origin === origin && entry.primaryTargetDigest === primaryDigest
+    && entry.target.digest === nativeDigest, 'app_native_entry_closed', 403);
   boundAlias(db, app, origin, entry.domainId);
   const primaryRow = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(appId, entry.primaryTargetRevision);
   const primary = nativeTargetTuple(primaryRow), profile = scopedAdmission.require(primary);

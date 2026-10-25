@@ -199,14 +199,14 @@ async function liveRoot(t, f, factory = createAppsService, { actors = [], profil
   const ws = new WebSocket('ws://127.0.0.1:' + server.address().port + '/api/apps/channel'); ws.on('error', () => {});
   f.cleanup(async () => { try { ws.terminate(); service.close(); } finally {
     for (const socket of sockets) socket.destroy(); server.closeAllConnections(); await new Promise(done => server.close(done)); } });
-  let welcome = false, bound = false; const probes = [];
+  let welcome = false; const bound = new Set(), probes = [];
   ws.on('message', bytes => {
     const frame = JSON.parse(bytes);
     if (frame.type === 'ready') welcome = true;
     if (frame.type === 'binding-set') {
       ws.send(JSON.stringify({ type: 'binding-ack', channelId: frame.channelId, syncId: frame.syncId, appId: frame.target.appId,
         revision: frame.target.revision, digest: frame.target.digest, profile: frame.target.profile }));
-      if (frame.target.revision === 2) bound = true;
+      bound.add(frame.target.revision);
     }
     if (frame.type === 'target-prepare') { probes.push(frame); ws.send(JSON.stringify({ type: 'target-prepared', channelId: frame.channelId,
       nonce: frame.nonce, appId: frame.target.appId, revision: frame.target.revision, digest: frame.target.digest,
@@ -230,7 +230,7 @@ async function liveRoot(t, f, factory = createAppsService, { actors = [], profil
       ...headers }).filter(([, value]) => value !== undefined)) }, res => { const chunks = []; res.on('data', part => chunks.push(part)); res.once('end', () => done({
       status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') })); }); req.on('error', reject); req.end();
   });
-  return { service, server, ws, probes, get, prepare, promote, check, ready: () => until(() => bound) };
+  return { service, server, ws, probes, get, prepare, promote, check, ready: (revision = 2) => until(() => bound.has(revision)) };
 }
 
 test('new directory cards prefer the admitted current Source while exact saved Native links remain unchanged', async t => {
@@ -500,4 +500,54 @@ test('optional Python SDK speaks the same actual Root policy wire and closes its
     assert.equal(await exited, 0, stderr); assert.equal(rows.at(-1).type, 'finished');
     assert.equal(rows.at(-1).closed, true); assert.ok(rows.some(value => value.type === 'closed'));
   });
+
+test('Native-only public policy requires the CURRENT exact whole-port ACK, active alias and primary binding, and survives reader restart', async t => {
+  const f = fixture(t), live = await liveRoot(t, f), target = f.get().target;
+  await live.ready(1); await turn();
+  const check = extra => live.check({ 'x-soty-ingress-primary': target.digest, ...extra });
+  assert.equal((await check()).status, 403, 'restricted Native-only entry has no actor-capable public lease');
+  f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId, requestId: 'fixture_native_primary_public',
+    expectedPolicyEpoch: 1, expectedTargetRevision: 1, launchPolicy: 'anyone', listed: true,
+    activeDomainIds: [f.domains.native], exposureAck: ack(target) } });
+  const response = await check(); assert.equal(response.status, 200, response.body);
+  assert.equal(JSON.parse(response.body).primaryTargetRevision, 1); assert.equal(JSON.parse(response.body).nativeTargetRevision, 1);
+  assert.equal((await check({ 'x-soty-ingress-primary': f.target.digest })).status, 403, 'a former Source pin cannot silently become primary Native');
+  f.db.prepare('UPDATE app_publications SET exposure_ack_json=? WHERE app_id=?').run(JSON.stringify({ ...ack(target), scope: 'authenticated-workspace' }), f.appId);
+  assert.equal((await check()).status, 403);
+  f.db.prepare('UPDATE app_publications SET exposure_ack_json=? WHERE app_id=?').run(JSON.stringify(ack(target)), f.appId);
+  const restarted = await liveRoot(t, f); await restarted.ready(1); await turn();
+  assert.equal((await restarted.check({ 'x-soty-ingress-primary': target.digest })).status, 200);
+  const guard = nativeGuard(f, restarted, { primaryTargetDigest: target.digest }); f.cleanup(() => guard.close());
+  let close; const ended = new Promise(done => { close = done; });
+  const stream = await guard.openStream({ onClose: close });
+  f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId, requestId: 'fixture_native_primary_restrict',
+    expectedPolicyEpoch: 2, expectedTargetRevision: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [f.domains.native] } });
+  await ended; assert.throws(stream.assertCurrent, { code: 'native_entry_lease_closed' });
+  assert.equal((await check()).status, 403, 'the retained publication receipt is not current ACK authority');
+});
+
+test('explicit Native-primary rollback closes the paired stream; only a new exact Native-primary guard configuration can reopen', async t => {
+  const f = fixture(t), live = await liveRoot(t, f), prepared = await live.prepare(); live.promote(f.intent(prepared)); await live.ready(); await turn();
+  const paired = nativeGuard(f, live); f.cleanup(() => paired.close());
+  let ended; const closed = new Promise(done => { ended = done; });
+  const oldStream = await paired.openStream({ onClose: ended });
+  const native = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise(done => native.once('listening', done));
+  native.on('connection', socket => { void paired.openStream({ onClose: () => socket.close(1008, 'app policy changed') })
+    .then(stream => { socket.once('close', () => stream.close()); socket.send('ready under the original pair'); }, () => socket.close(1008)); });
+  const browser = new WebSocket('ws://127.0.0.1:' + native.address().port); browser.on('error', () => {});
+  await new Promise((done, reject) => { browser.once('message', done); browser.once('error', reject); });
+  const browserClosed = new Promise(done => browser.once('close', done));
+  f.cleanup(async () => { browser.terminate(); for (const socket of native.clients) socket.terminate(); await new Promise(done => native.close(done)); });
+  const rollback = await live.prepare({ source: undefined, targetRevision: 1, nativeEntry: undefined, nativeEntryAction: removal(f) });
+  live.promote({ ...f.intent({ ...rollback, nativeEntry: prepared.nativeEntry }, 'fixture_guard_native_primary_rollback'), nativeExposureAck: undefined });
+  await Promise.all([closed, browserClosed]); assert.throws(oldStream.assertCurrent, { code: 'native_entry_lease_closed' });
+  await assert.rejects(paired.acquire(), { code: 'native_entry_policy_denied' });
+  await live.ready(1); await turn();
+  const ordinary = nativeGuard(f, live, { primaryTargetDigest: rollback.target.digest }); f.cleanup(() => ordinary.close());
+  const current = await ordinary.acquire(); ordinary.assertCurrent(current);
+  assert.equal(current.primaryTargetDigest, current.nativeTargetDigest);
+  f.db.prepare("UPDATE local_apps SET state='revoked' WHERE id=?").run(f.appId);
+  await assert.rejects(ordinary.acquire(), { code: 'native_entry_policy_denied' });
+});
 

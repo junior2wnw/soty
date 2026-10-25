@@ -134,6 +134,21 @@ promote the original Native target under the current reader, or keep the new
 reader while rolling the Source application back to a separately reviewed pin.
 Neither rollback edits immutable historical receipts.
 
+The compatible reader also serves the SAME policy wire for an ordinary Native
+PRIMARY target. It requires current `soty.relay-restricted.v1`, enabled/anyone,
+a currently published bound alias, current exact whole-port ACK and current
+primary runtime binding. Both configured digests must equal that Native primary
+digest. It never borrows an ACK from history, a Source-only scope or a removed
+pair. Restricted Native remains closed. This supports Native-only consumers
+and an explicit operator rollback without removing the active lifetime guard.
+
+Changing Source2→Native1 does NOT silently update Native configuration. The
+old Source2 guard and its existing WS close; a reviewed new Native policy config
+with primary1/native1 and matching fixed ingress pins is required to reopen.
+Keep the current compatible Root/ledger reader and the verified Native SDK;
+do not restore an older global Root image. Native standalone authentication is
+still its own account surface, not a selected-Root-profile Source iframe.
+
 Local qualification uses actual Apps8 SQLite, Root HTTP, an authenticated
 connector WS and Native HTTP/WS. It covers independent ACK/probes, no-pair
 promotion and historical replay, current policy/domain/revocation, port
