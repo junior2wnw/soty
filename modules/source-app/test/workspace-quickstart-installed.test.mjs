@@ -6,18 +6,22 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
-import {createSourceWorkspaceClient} from '../browser/index.mjs';
 import {STANDARD_ROOT_WORKSPACE_SOURCE} from '../server/index.mjs';
 import {buildSourceAppPackage} from '../scripts/build.mjs';
 import {createOrdinaryInstalledFixture} from './support/ordinary-installed.mjs';
+
+// An opt-in qualification can reuse the freshly extracted, npm-ci installed
+// public packet. The ordinary offline suite still builds in its own temp tree.
+const qualifiedSdk=process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY;
+const {createSourceWorkspaceClient}=await import(qualifiedSdk?pathToFileURL(join(qualifiedSdk,'dist/browser.mjs')).href:'../browser/index.mjs');
 
 // The consumer contributes only its data module and these fixed public files.
 // Root Apps/Human, installed connector, Source broker, Native SQLite and shared
 // browser client are all actual maintained implementations, not authority DTOs.
 async function nativeFactory({realm,initialize,directory}) {
   const folder=join(directory,'author-'+realm.realmId),configPath=join(folder,'operator.json');
-  const sdkDirectory=join(directory,'portable-sdk');
-  if(initialize){await buildSourceAppPackage({outdir:sdkDirectory});await mkdir(join(directory,'node_modules'),{recursive:true});
+  const sdkDirectory=qualifiedSdk?join(qualifiedSdk,'dist'):join(directory,'portable-sdk');
+  if(initialize&&!qualifiedSdk){await buildSourceAppPackage({outdir:sdkDirectory});await mkdir(join(directory,'node_modules'),{recursive:true});
     const require=createRequire(import.meta.url);
     await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules','openid-client'),process.platform==='win32'?'junction':'dir');}
   const {loadSourceOperatorConfiguration,disposeSourceOperatorConfiguration,startInstalledSource,diagnoseInstalledSource}

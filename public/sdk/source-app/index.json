@@ -1,0 +1,22 @@
+{
+  "schema": "soty.source-sdk.release.v1",
+  "status": "preview",
+  "package": {
+    "name": "@soty/source-app",
+    "version": "0.1.0-preview.2",
+    "nodeEngine": ">=24.15.0",
+    "testedNode": "24.19.0"
+  },
+  "sourceCommit": "b530b7fdbfd94a890aec362b3e4940a7bd190cdc",
+  "artifact": {
+    "url": "/sdk/source-app/cd9433155488f5d9cd72873749ba71a07e087d2550f6e7900a0542576da5fd3a.tgz",
+    "sha256": "cd9433155488f5d9cd72873749ba71a07e087d2550f6e7900a0542576da5fd3a",
+    "bytes": 254896
+  },
+  "admission": {
+    "required": true,
+    "profileRegistry": "startup-static",
+    "maxProfiles": 64
+  },
+  "productionReady": false
+}

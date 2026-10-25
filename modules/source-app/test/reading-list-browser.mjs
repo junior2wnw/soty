@@ -5,13 +5,20 @@ import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {buildSourceAppPackage} from '../scripts/build.mjs';
+import {verifyPublicSourceSdk,readSourceSdkArchive} from '../public-release.mjs';
+import {fileURLToPath} from 'node:url';
 const directory=await mkdtemp(join(tmpdir(),'sdk-template-browser-'));
-await buildSourceAppPackage({outdir:directory});
-const source=new URL('../examples/reading-list/assets/',import.meta.url),assets=new Map([
-  ['/embed',{bytes:await readFile(new URL('embed.html',source)),type:'text/html'}],
-  ['/assets/ui.js',{bytes:await readFile(new URL('ui.js',source)),type:'text/javascript'}],
-  ['/assets/ui.css',{bytes:await readFile(new URL('ui.css',source)),type:'text/css'}],
-  ['/assets/source-sdk.js',{bytes:await readFile(join(directory,'browser.mjs')),type:'text/javascript'}],
+const publicPacket=process.argv.includes('--public-sdk');let load;
+if(publicPacket){const root=fileURLToPath(new URL('../../../',import.meta.url));verifyPublicSourceSdk(root);
+  const index=JSON.parse(await readFile(join(root,'public/sdk/source-app/index.json'))),sdk=readSourceSdkArchive(await readFile(join(root,'public',index.artifact.url.slice(1))));
+  load=name=>Promise.resolve(sdk.files.get(name==='browser.mjs'?'dist/browser.mjs':'dist/templates/reading-list/assets/'+name));
+}else{await buildSourceAppPackage({outdir:directory});const source=new URL('../examples/reading-list/assets/',import.meta.url);
+  load=name=>name==='browser.mjs'?readFile(join(directory,name)):readFile(new URL(name,source));}
+const assets=new Map([
+  ['/embed',{bytes:await load('embed.html'),type:'text/html'}],
+  ['/assets/ui.js',{bytes:await load('ui.js'),type:'text/javascript'}],
+  ['/assets/ui.css',{bytes:await load('ui.css'),type:'text/css'}],
+  ['/assets/source-sdk.js',{bytes:await load('browser.mjs'),type:'text/javascript'}],
 ]);
 let invokes=0,closed=false;
 const server=createServer(async(req,res)=>{try{
@@ -35,4 +42,4 @@ async function close(){if(closed)return;closed=true;server.closeAllConnections()
   if(dirname(resolve(directory))!==resolve(tmpdir()))throw Error('fixture_cleanup_path');await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:30});}
 process.on('SIGINT',()=>void close());process.on('SIGTERM',()=>void close());
 await new Promise(done=>server.listen(0,'127.0.0.1',done));
-console.log(JSON.stringify({fixture:'controlled-sdk-api-not-Root-auth',port:server.address().port,entry:'/embed?sotyFrame='+'F'.repeat(43)}));
+console.log(JSON.stringify({fixture:'controlled-sdk-api-not-Root-auth',publicPacket,port:server.address().port,entry:'/embed?sotyFrame='+'F'.repeat(43)}));
