@@ -12,6 +12,7 @@ import { selectedClientRedirect } from '../../modules/apps/scoped-embed/resource
 import { isRootSignedWorkspaceSource } from '../../modules/source-app/server/standard-profile.mjs';
 import { createReviewsService } from '../../modules/reviews/server/index.mjs';
 import { loadPersonalAgentConfiguration } from '../../server/personal-agent-configuration.js';
+import { captureAccountAiConfiguration } from '../../server/account-ai-configuration.js';
 import { loadInstalledApplicationsEntry } from '../../server/installed-applications-entry.js';
 import { validateHumanIdentityRenewalLimits } from '../../server/universal-configuration.js';
 import { captureHumanPreparedness, captureUniversalPreparedness as captureRuntimePreparedness,
@@ -22,6 +23,7 @@ export { UNIVERSAL_RUNTIME_SCHEMA };
 export const universalModeLabel = 'io.soty.universal.legacy';
 export const humanPrivateTarget = '/run/secrets/soty-human-identity.json';
 export const personalAgentPrivateTarget = '/run/secrets/soty-personal-agent.json';
+export const accountAiPrivateTarget = '/run/secrets/soty-account-ai.json';
 export const reviewsTarget = '/run/config/soty-reviews-bindings.json';
 export const selectedTarget = '/run/config/soty-selected-embed.json';
 export const installedApplicationsTarget = '/run/config/soty-installed-applications.mjs';
@@ -30,6 +32,7 @@ const settings = Object.freeze({ universal: 'SOTY_UNIVERSAL_APPS_ENABLED', human
   issuer: 'SOTY_HUMAN_IDENTITY_ISSUER', keys: 'SOTY_HUMAN_IDENTITY_KEYS_FILE', reviews: 'SOTY_REVIEWS_BINDINGS_FILE',
   operator: 'SOTY_UNIVERSAL_OPERATOR_ENABLED', selected: 'SOTY_SELECTED_EMBED_REGISTRY_FILE',
   personalAgent: 'SOTY_PERSONAL_AGENT_ENABLED', personalAgentFile: 'SOTY_PERSONAL_AGENT_CONFIG_FILE',
+  accountAiFile: 'SOTY_ACCOUNT_AI_CONFIG_FILE',
   selectedMigration: 'SOTY_SELECTED_EMBED_MIGRATION', selectedResourceMigration: 'SOTY_SELECTED_RESOURCE_MIGRATION',
   humanDeviceConsentMigration: 'SOTY_HUMAN_DEVICE_CONSENT_MIGRATION' });
 const handles = new WeakMap(), HEX = /^[a-f0-9]{64}$/u, MAX_FILE = 65536;
@@ -235,12 +238,12 @@ function approvedNativeTransport(value) {
 export async function prepareUniversalPolicy(input, options = { shellOrigins: [] }) {
   const files = []; let context;
   try {
-    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'expectedCurrentPreparednessSha256', 'installedApplications']);
+    const plan = safe(input); closed(plan, ['schema', 'phase', 'human', 'reviews'], ['selected', 'personalAgent', 'accountAi', 'expectedCurrentPreparednessSha256', 'installedApplications']);
     check(plan.schema === UNIVERSAL_POLICY_SCHEMA && ['legacy-baseline', 'features'].includes(plan.phase));
     check(plan.expectedCurrentPreparednessSha256 === undefined || plan.phase === 'features'
       && typeof plan.expectedCurrentPreparednessSha256 === 'string' && HEX.test(plan.expectedCurrentPreparednessSha256));
     check(plan.installedApplications === undefined || plan.phase === 'features');
-    check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected && !plan.personalAgent);
+    check(plan.phase === 'features' || plan.human === null && plan.reviews === null && !plan.selected && !plan.personalAgent && !plan.accountAi);
     context = await filesystemContext(options);
     let human = { configured: false }, reviews = validateReviews({ providers: [], bindings: [] });
     if (plan.human !== null) {
@@ -295,6 +298,14 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
           { fetchImpl: async () => fail('universal_policy_personal_agent_invalid') });
       } catch { fail('universal_policy_personal_agent_invalid'); }
     }
+    const accountAi = plan.accountAi !== undefined && plan.accountAi !== null;
+    if (accountAi) {
+      closed(plan.accountAi, ['source']); exactPath(plan.accountAi.source);
+      check(!files.some(file => file.source === plan.accountAi.source), 'universal_policy_file_invalid');
+      const file = await readBounded(plan.accountAi.source, 'private', context); file.target = accountAiPrivateTarget; files.push(file);
+      try { captureAccountAiConfiguration(parse(file.bytes)); }
+      catch { fail('universal_policy_account_ai_invalid'); }
+    }
     const installedApplications = plan.installedApplications !== undefined;
     if (installedApplications) {
       closed(plan.installedApplications, ['source', 'sha256']); exactPath(plan.installedApplications.source);
@@ -315,6 +326,7 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
       { name: settings.universal, value: 'true' }, { name: settings.human, value: human.configured ? '1' : '0' },
       { name: settings.personalAgent, value: personalAgent ? '1' : '0' },
       ...(personalAgent ? [{ name: settings.personalAgentFile, value: personalAgentPrivateTarget }] : []),
+      ...(accountAi ? [{ name: settings.accountAiFile, value: accountAiPrivateTarget }] : []),
       ...(installedApplications ? [{ name: installedModuleSetting, value: installedApplicationsTarget },
         { name: installedHashSetting, value: plan.installedApplications.sha256 }] : []),
       ...(human.configured ? [{ name: settings.issuer, value: human.issuer }, { name: settings.keys, value: humanPrivateTarget }] : []),
@@ -334,7 +346,7 @@ export async function prepareUniversalPolicy(input, options = { shellOrigins: []
     handles.set(handle, { active: true, context, files, receipt });
     // The runtime loader reads the approved pathname independently. Recheck the
     // captured bytes and file identity before granting a handle for that read.
-    if (personalAgent || installedApplications) await assertUniversalPolicyCurrent(handle);
+    if (personalAgent || installedApplications || accountAi) await assertUniversalPolicyCurrent(handle);
     return handle;
   } catch (error) { files.forEach(file => file.bytes.fill(0)); if (error instanceof SafeError) throw error; fail(); }
 }
@@ -475,6 +487,8 @@ export function assertUniversalImagePrerequisites(handle, { candidateImage, orig
     check([5, 6, 7].includes(JSON.parse(candidateImage.Config.Labels[storageReaderLabel]).version) && candidate.appRegistration.includes(1)
       && candidate.feedback.includes(1) && candidate.humanIdentity.includes(1), 'universal_policy_reader_baseline_required');
     check(candidateImage.Config.Labels[universalModeLabel] === (receipt.phase === 'legacy-baseline' ? '1' : '0'), 'universal_policy_image_mode_mismatch');
+    if (receipt.environment.some(value => value.name === settings.accountAiFile))
+      check(candidateImage.Config.Labels['io.soty.account-ai'] === '1', 'universal_policy_account_ai_image_required');
     if (receipt.human.renewal) check(candidate.humanIdentity.includes(2), 'universal_policy_reader_baseline_required');
     const needsDeviceConsentReader = Boolean(receipt.human.deviceConsent || receipt.environment.some(value =>
       value.name === settings.humanDeviceConsentMigration && value.value === '1'));
