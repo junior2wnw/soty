@@ -23,7 +23,7 @@ const parse = path => ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.S
 const printer = ts.createPrinter();
 const named = (nodes, name) => { const n = nodes.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name); assert.ok(n, name); return n; };
 const screenParsed = parse(sourcePath), screen = named(screenParsed.statements, 'createUnifiedFieldScreen');
-const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
+const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
   + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, searchDirectory, openPreview, allMetadata });');
 const directoryPath = process.argv[4] ? resolve(process.argv[4]) : join(repo, 'src/world/field-directory.ts');
 const directoryCode = compile(readFileSync(directoryPath, 'utf8'));

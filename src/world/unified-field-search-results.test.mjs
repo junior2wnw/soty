@@ -28,7 +28,7 @@ assert.ok(wiringEnd > statements.indexOf(input));
 const code = ts.transpileModule([
   ...['BUILTINS', 'kindLabel', 'matches'].map(name => print(declaration(parsed.statements, name))),
   ...construction.map(print), print(declaration(statements, 'mineSearchSignature')), print(declaration(statements, 'knownAppSignature')),
-  ...['listEntries', 'activate', 'renderMineSearchResults', 'updateMineFilter', 'updateMineEmpty', 'publishKnownApps'].map(name => print(named(statements, name))),
+  ...['currentEntity', 'listEntries', 'activate', 'renderMineSearchResults', 'updateMineFilter', 'updateMineEmpty', 'publishKnownApps'].map(name => print(named(statements, name))),
   ...statements.slice(statements.indexOf(input), wiringEnd).map(print),
   'Object.assign(exports, { inputChanged, render: renderMineSearchResults, entries: listEntries, publishKnownApps, surface: mineSearchResults, status: mineSearchStatus, list: mineSearchList });',
 ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;

@@ -29,10 +29,19 @@ function visit(node) {
 }
 visit(render); assert.ok(binding && ts.isObjectLiteralExpression(binding));
 const property = name => { const entry = binding.properties.find(node => ts.isPropertyAssignment(node) && node.name.getText(app) === name); assert.ok(entry, name); return print(entry.initializer, app); };
+let fieldBinding;
+function visitField(node) {
+  if (ts.isCallExpression(node) && node.expression.getText(screen) === 'createUnifiedField') fieldBinding = node.arguments[0];
+  ts.forEachChild(node, visitField);
+}
+visitField(field.body.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'mountEngine'));
+const fieldInspect = fieldBinding.properties.find(node => ts.isPropertyAssignment(node) && node.name.getText(screen) === 'onInspect');
+assert.ok(fieldInspect);
 const code = ts.transpileModule([
   'const options = { accountId: deskAccount, directMessagesEnabled: ' + property('directMessagesEnabled') + ', onOpen: ' + property('onOpen') + ' };',
+  ...field.body.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'currentEntity').map(node => print(node, screen)),
   ...['closePreview', 'openPreview', 'inspect', 'activate'].map(actual),
-  'Object.assign(exports, { activate, inspect, preview: () => preview });',
+  'Object.assign(exports, { activate, inspect, options, inspectFromField: ' + print(fieldInspect.initializer, screen) + ', preview: () => preview });',
 ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 
 // Only DOM, field snapshot and existing consumer ports are controlled. Routing,
@@ -179,4 +188,41 @@ test('inspect still exposes placement actions and honest Write label, and Escape
   assert.equal(h.calls.direct.length, 0);
   let stopped = false; panel.handlers.get('keydown')({ key: 'Escape', stopPropagation() { stopped = true; } });
   assert.equal(stopped, true); assert.equal(h.preview(), null); assert.equal(h.document.activeElement, h.fieldControl);
+});
+
+test('secondary inspection of a public search result never borrows a late Mine contact projection', async () => {
+  const h = harness(), ref = h.item.entity;
+  const directory = createFieldDirectory({ accountId: 'account_001', api: { async request(op, args) {
+    if (op === 'contacts.list') return { contacts: [{ peerAccountId: ref.id, relationshipId: 'relationship_1', label: 'Private nickname', createdAt: 1 }] };
+    if (op === 'world.directory.search') return { people: args.kind === 'people' ? [{ profileId: ref.id, displayName: 'Public name', avatarColor: '#abcdef', revision: 1 }] : [], communities: [], nextCursor: null };
+    if (op === 'apps.directory.search') return { apps: [], nextCursor: null };
+    if (op === 'apps.devices') return { devices: [] };
+    throw Error('Unexpected operation ' + op);
+  } } });
+  try {
+    const publicPage = await directory.search('Public', 'person');
+    h.environment.mode = 'search'; h.environment.searchItems = publicPage.items; h.environment.directory = directory;
+    // A private read started before the public search finishes afterwards.
+    const mine = await directory.loadMine();
+    const privateItem = mine.items.find(item => item.entity.id === ref.id);
+    h.environment.metadata.set(h.key, privateItem);
+    const inspected = [];
+    h.environment.exports.options.onInspectOwn = (item, record) => { inspected.push({ item, record }); return false; };
+    h.environment.exports.inspectFromField(publicPage.items.find(item => item.entity.id === ref.id), 'public-shortcut');
+    assert.equal(inspected[0].item.title, 'Public name');
+    assert.equal(inspected[0].item.personAction, 'profile');
+    assert.equal(inspected[0].record.kind, undefined);
+    assert.equal(h.preview().attributes.get('aria-label'), 'Об объекте: Public name');
+    assert.equal(h.buttons().some(node => node.textContent === 'Написать'), false);
+    assert.equal(h.calls.direct.length, 0);
+    h.environment.searchItems = [];
+    h.environment.closePreview(false);
+    h.environment.exports.inspectFromField(privateItem, 'stale-shortcut');
+    assert.equal(h.preview(), null, 'an absent public result cannot fall back to the Mine cache');
+    assert.equal(inspected.length, 1);
+    h.environment.mode = 'mine';
+    h.environment.exports.inspectFromField(privateItem, 'mine-shortcut');
+    assert.equal(h.preview().attributes.get('aria-label'), 'Об объекте: Private nickname');
+    assert.equal(h.buttons().some(node => node.textContent === 'Написать'), true);
+  } finally { directory.dispose(); }
 });

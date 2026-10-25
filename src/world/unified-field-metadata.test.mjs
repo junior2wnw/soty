@@ -15,7 +15,7 @@ const source = readFileSync(new URL('./unified-field-screen.ts', import.meta.url
 const parsed = ts.createSourceFile('unified-field-screen.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const production = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createUnifiedFieldScreen');
 const printer = ts.createPrinter();
-const functions = ['merge', 'updateMineFilter', 'updateMineEmpty', 'loadInitialMine', 'loadMine', 'loadMinePass', 'applyPersistence'].map(name => {
+const functions = ['merge', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadInitialMine', 'loadMine', 'loadMinePass', 'applyPersistence'].map(name => {
   const found = production.body.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(found, `Actual production ${name} exists`); return printer.printNode(ts.EmitHint.Unspecified, found, parsed);
 });
