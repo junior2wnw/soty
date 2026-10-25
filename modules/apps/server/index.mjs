@@ -17,7 +17,7 @@ import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
 import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
 import { createSourceRegistry } from './sources.mjs';
-import { requireNativeEntry, assertNativePortAvailable } from './native-entry.mjs';
+import { readPairedNativeEntry, requireNativeEntry, assertNativePortAvailable } from './native-entry.mjs';
 import { createRuntimeBindings } from './runtime-bindings.mjs';
 import { createLaunchPath, createScopedLaunchPath, checkedScopedEntryPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
@@ -164,9 +164,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const readEntryTransaction = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 32 * 1024,
       busyCode: 'apps_entry_busy', timeoutCode: 'apps_entry_timeout_invalid', responseCode: 'apps_entry_response_too_large' });
     entryRead = (actor, args) => {
-      exact(args, ['appId', 'domainId', 'path', 'current']);
+      exact(args, ['appId', 'domainId', 'path', 'current', 'surface']);
       assertApps(args.current === undefined || args.current === true && args.domainId === undefined && args.path === undefined,
         'invalid_app_current_entry');
+      assertApps(args.surface === undefined || args.surface === 'native' && args.current === true, 'invalid_app_current_entry');
       const requested = { appId: appId(args.appId), ...(args.domainId === undefined ? {} : { domainId: textId(args.domainId) }),
         ...(args.path === undefined ? {} : { path: guideLaunchPath(args.path).entryPath }) };
       return readEntryTransaction(actor, captured => {
@@ -175,6 +176,29 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (args.current === true) {
           const app = row(requested.appId), target = activeTarget(requested.appId);
           assertApps(app?.state === 'enabled' && target, 'app_unavailable', 404);
+          if (args.surface === 'native') {
+            const paired = readPairedNativeEntry(db, app.id);
+            if (!paired) {
+              // Absence is useful only to an actor who can already reach the
+              // app. Do not turn private app IDs into a Native-pair oracle.
+              if (!canUse(captured, app)) {
+                const address = db.prepare(`SELECT d.id FROM app_domains d JOIN app_publication_domains p
+                  ON p.app_id=d.app_id AND p.domain_id=d.id AND p.owner_account_id=d.owner_account_id
+                  WHERE d.app_id=? AND d.role='alias' AND d.state='bound' ORDER BY d.created_at,d.id LIMIT 1`).get(app.id);
+                assertApps(address && resolveEntry({ actor: captured, appId: app.id, domainId: address.id }), 'app_unavailable', 404);
+              }
+              return { entry: null };
+            }
+            const entry = requireNativeEntry({ db, appId: app.id, origin: paired.origin,
+              primaryDigest: target.digest, nativeDigest: paired.target.digest, scopedAdmission: scopedAdmissions });
+            const decision = publications.decideAccess({ domainId: entry.domainId, origin: entry.origin, actor: captured });
+            assertApps(decision.policyEpoch === entry.policyEpoch && decision.targetRevision === target.revision
+              && decision.targetDigest === target.digest, 'app_native_entry_closed', 403);
+            assertRuntimeBinding(decision, { requireReady: true });
+            // Public locator only: Native still authenticates its own person.
+            // No Root ticket, cookie, identity witness or session is created.
+            return { entry: { appId: app.id, domainId: entry.domainId, origin: entry.origin, path: runtimePath(entry.target.entryPath) } };
+          }
           const preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
             app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
             target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,

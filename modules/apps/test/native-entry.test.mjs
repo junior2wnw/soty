@@ -290,6 +290,56 @@ test('Source directory defaults never bypass public listing, current admission o
   assert.deepEqual(f.db.prepare('SELECT * FROM app_scoped_embed_admissions').all(), admittedBefore);
 });
 
+test('current Native entry is a closed locator-only read for the latest admitted pair and leaves Source and saved routes exact', async t => {
+  const f = fixture(t), visitor = Object.freeze({ accountId: 'fixture_visitor', deviceId: 'fixture_visitor_browser' });
+  const live = await liveRoot(t, f, createAppsService, { actors: [visitor] });
+  const call = (actor, args) => live.service.execute({ op: 'apps.entry.get', actor, args: { ...args, expectedAccountId: actor.accountId } });
+  const args = { appId: f.appId, current: true, surface: 'native' };
+  const before = f.rows(); assert.deepEqual(call(f.owner, args), { entry: null }); assert.deepEqual(f.rows(), before);
+  assert.throws(() => call(visitor, args), { code: 'app_unavailable', status: 404 });
+  for (const invalid of [{ ...args, current: undefined }, { ...args, current: false }, { ...args, surface: 'source' },
+    { ...args, domainId: f.domains.native }, { ...args, path: '/' }]) {
+    assert.throws(() => call(f.owner, invalid), { code: 'invalid_app_current_entry', status: 400 });
+  }
+  const prepared = await live.prepare(); live.promote(f.intent(prepared)); await live.ready();
+  const after = f.rows(), expected = { appId: f.appId, domainId: f.domains.native, origin: f.profile.nativeOrigin, path: '/' };
+  for (const actor of [f.owner, visitor]) assert.deepEqual(call(actor, args), { entry: expected });
+  assert.deepEqual(call(f.owner, { appId: f.appId, current: true }).entry,
+    { appId: f.appId, domainId: f.domains.source, origin: f.profile.embedOrigin, path: '/embed' });
+  const deep = call(f.owner, { appId: f.appId, domainId: f.domains.native, path: '/?draft=keep-native' }).entry;
+  assert.deepEqual(deep, { ...expected, path: '/?draft=keep-native' });
+  assert.deepEqual(f.rows(), after, 'locator read creates no ticket, source promotion or receipt');
+  assert.throws(() => live.service.execute({ op: 'apps.entry.get', actor: visitor,
+    args: { ...args, expectedAccountId: f.owner.accountId } }), { code: 'authentication_required', status: 401 });
+  const unpaired = await live.prepare({ source: undefined, targetRevision: 2, nativeEntry: undefined, nativeEntryAction: removal(f) });
+  live.promote({ ...f.intent({ ...unpaired, nativeEntry: prepared.nativeEntry }, 'fixture_native_locator_unpair'), nativeExposureAck: undefined });
+  assert.deepEqual(call(f.owner, args), { entry: null }); assert.deepEqual(call(visitor, args), { entry: null });
+});
+
+test('a committed but unavailable Native locator fails closed for current publication, alias, admission and runtime binding', async t => {
+  const f = fixture(t), live = await liveRoot(t, f), prepared = await live.prepare(); live.promote(f.intent(prepared)); await live.ready();
+  const args = { appId: f.appId, current: true, surface: 'native', expectedAccountId: f.owner.accountId };
+  const read = (service = live.service) => service.execute({ op: 'apps.entry.get', actor: f.owner, args });
+  const update = (requestId, launchPolicy, domains) => live.service.execute({ op: 'apps.publication.update', actor: f.owner,
+    args: { appId: f.appId, requestId, expectedPolicyEpoch: live.get().policyEpoch, expectedTargetRevision: 2,
+      launchPolicy, listed: false, activeDomainIds: domains, ...(launchPolicy === 'anyone' ? { exposureAck: ack(prepared.target) } : {}) } });
+  update('fixture_native_locator_private', 'restricted', [f.domains.native, f.domains.source]);
+  assert.throws(() => read(), { code: 'app_native_entry_closed', status: 403 });
+  update('fixture_native_locator_link', 'anyone', [f.domains.native, f.domains.source]);
+  assert.equal(read().entry.origin, f.profile.nativeOrigin, 'a known public link does not require public catalog listing');
+  update('fixture_native_locator_no_native_alias', 'anyone', [f.domains.source]);
+  assert.throws(() => read(), { code: 'app_native_entry_domain_required', status: 403 });
+  update('fixture_native_locator_restore_native_alias', 'anyone', [f.domains.native, f.domains.source]);
+  f.db.prepare("UPDATE local_apps SET state='revoked' WHERE id=?").run(f.appId);
+  assert.throws(() => read(), { code: 'app_unavailable', status: 404 });
+  f.db.prepare("UPDATE local_apps SET state='enabled' WHERE id=?").run(f.appId);
+  const ended = new Promise(done => live.ws.once('close', done)); live.ws.terminate(); await ended; await turn();
+  assert.throws(() => read(), { code: 'app_offline', status: 503 });
+  live.service.close();
+  const noProfile = await liveRoot(t, f, createAppsService, { profiles: [] });
+  assert.throws(() => read(noProfile.service), { code: 'app_scoped_admission_required', status: 503 });
+});
+
 test('actual Root HTTP ingress uses current primary binding plus Native receipt, never cookies, frame DTOs or old ingress headers', async t => {
   const f = fixture(t), live = await liveRoot(t, f), prepared = await live.prepare();
   assert.equal(live.probes.length, 2); assert.equal((await live.check()).status, 403);
