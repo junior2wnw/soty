@@ -9,9 +9,29 @@ SDK; приложение сохраняет свою базу и проверя
 ## Новый личный сервис: Root workspace
 
 Нужен Node24.15+ и утверждённый установленный коннектор с поддержкой workspace2.
-Текущий SDK — preview: доступен из проверенного checkout/portable packet, а
-публичный versioned download/install endpoint ещё не опубликован. Не считайте
-имя npm-пакета доказательством его наличия в registry. Root и connector читают
+Текущий SDK — preview. После выпуска возьмите индекс с **доверенного Root**
+`/sdk/source-app/index.json`: точные package version, sourceCommit, URL архива,
+SHA256 и размер. Архив имеет адрес `/sdk/source-app/<SHA256>.tgz`. Скачайте его,
+проверьте размер и SHA256 **до выполнения кода**, затем в своей папке проекта:
+
+```text
+npm install --ignore-scripts --save-exact ./source-app-<SHA256>.tgz
+npm exec --offline -- soty-source --help
+```
+
+Пакет содержит runtime/server/browser/CLI, типы, документацию, шаблон и optional
+Python binding. Внутри `npm-shrinkwrap.json`: ровно production graph
+openid-client6.8.4 → jose6.2.12/oauth4webapi3.8.8 с registry integrity. Нет
+dev esbuild, install scripts, тестов, реальных ключей/config или истории Git.
+`npm install` загрузит только закреплённые зависимости из registry; это не npm
+публикация `@soty/source-app` и не установка глобального пакета. Далее запускайте
+показанные ниже команды через `npm exec --offline -- soty-source ...`.
+При отсутствующем/неверном индексе не угадывайте package/URL: публичный выпуск
+остаётся неподтверждённым; оператор может передать тот же verified packet.
+Optional Python требует отдельной установки pinned requirements и проверки
+своего Native/ASGI/SQL адаптера; Node install не включает Python автоматически.
+
+Root и connector читают
 до64 exact approved profiles при инициализации. Новый app/profile требует
 trusted operator установки и reinit соответствующего runtime, **не пересборки
 Root**. Уже загруженный exact candidate переключается prepare/promote без
@@ -117,6 +137,26 @@ host — готовый optional adapter, не обязательный storage 
 нагрузки. Ordinary Reader3/image labels не становятся Reader этого нового
 `soty.sqlite-root-workspace.v1`: Node CLI проверен отдельно, workspace container,
 physical cold/restore и реальный DNS/TLS требуют своей квалификации до релиза.
+
+## Выпуск SDK для maintainer
+
+Выпуск SDK выполняет maintainer существующего Root, а не
+автор подключаемого приложения. Единственный producer —
+`node scripts/build-source-sdk-release.mjs` в clean Git checkout. Он вызывает
+существующий portable builder по exact commit и пишет versioned `.tgz` и safe
+index в `public/sdk/source-app`; npm publish и lifecycle scripts не выполняются.
+Имена, 27 публичных файлов, источники и production graph проверяются до записи.
+Имеющийся URL с другим содержимым не перезаписывается. Публичный namespace
+отвергает соседние/private файлы и symlinks; максимум8 retained archives по4MiB,
+uncompressed tar16MiB. Ничего старого автоматически не удаляется.
+
+Root prebuild вызывает тот же script с `--check`: проверяет уже frozen capsule,
+actual canonical source/lock hashes и finite inventory. Git не требуется и
+новый commit hash не придумывается: Docker/git-archive получает готовый public
+пакет. При изменении SDK источника maintainer явно выпускает новый capsule до
+сборки. Existing UI release доставляет только index и hash-named archive через
+свой finite allowlist. Наличие файлов в репозитории ещё не доказывает, что их
+свежий выпуск реально доступен человеку по HTTPS.
 
 ## Ordinary Native/OIDC
 

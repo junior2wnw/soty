@@ -28,8 +28,16 @@ SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Ес
 CLI `soty-source`. Не копируй в каждое приложение свои подписи, Source cookies,
 nonce, криптографию или механизм COMMIT/recovery. Preview-пакет и локальная
 квалификация не означают, что этот режим уже включён на production Root.
-Публичный versioned SDK download ещё не опубликован: используй проверенный
-checkout/portable packet; не выдумывай npm-registry публикацию или URL.
+После проверенного выпуска получи SDK index с доверенного Root:
+`/sdk/source-app/index.json`. Проверь sourceCommit/version, размер и SHA256
+архива `/sdk/source-app/<SHA256>.tgz` до исполнения кода. Установка в собственный
+проект: `npm install --ignore-scripts --save-exact ./source-app-<SHA256>.tgz`,
+затем `npm exec --offline -- soty-source --help`. Runtime shrinkwrap закрепляет
+openid-client6.8.4 и два точных leaf dependency; dev/install scripts и приватных
+config/ключей нет. Пакет содержит server/browser/CLI/types/docs/template и optional
+Python binding. Root checkout/SSH автору не нужен. Отсутствующий/неверный index
+оставляет публичную дистрибуцию неподтверждённой: не выдумывай npm registry
+публикацию. SDK preview и скачивание не означают production Ready или admission.
 Root/connector держат до64 exact approved profiles при startup. Новый app/profile
 требует trusted operator install/reinit, а не Root rebuild; уже preloaded
 candidate проходит prepare/promote без restart. Это не self-service admission

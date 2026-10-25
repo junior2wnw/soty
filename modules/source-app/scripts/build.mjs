@@ -4,6 +4,7 @@ import { resolve, dirname, relative, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import {execFileSync} from 'node:child_process';
+import {SOURCE_APP_OUTPUTS,SOURCE_APP_COPY_FILES,sourceSdkVersion} from '../package-contract.mjs';
 
 const require = createRequire(import.meta.url), packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let esbuild; try { esbuild = require('esbuild'); } catch { esbuild = createRequire(require.resolve('vite'))('esbuild'); }
@@ -20,7 +21,9 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
     {cwd:repository,maxBuffer:4194304,windowsHide:true})):readFile(path);
   const plugins=sourceCommit?[{name:'canonical-frozen-git',setup(build){build.onLoad({filter:/\.(mjs|js|json)$/},async args=>
     ({contents:new TextDecoder('utf-8',{fatal:true}).decode(await bytes(resolve(args.path))),loader:args.path.endsWith('.json')?'json':'js'}));}}]:[];
-  const inputs = new Set();
+  const inputs = new Set([join(packageRoot,'package.json'),join(packageRoot,'package-contract.mjs')]);
+  const packageVersion=JSON.parse(await bytes(join(packageRoot,'package.json'))).version;
+  if(!sourceSdkVersion(packageVersion))throw Error('source_app_package_version_invalid');
   for (const [name, platform] of [['server', 'node'], ['browser', 'browser'], ['example', 'node'], ['install','node']]) {
     const entry = name === 'example' ? join(packageRoot, 'examples/ordinary-app/index.mjs') : name==='install'?join(packageRoot,'install/cli.mjs'):join(packageRoot, name, 'index.mjs');
     const result = await esbuild.build({ entryPoints: [entry], outfile: join(outdir, name + '.mjs'),
@@ -31,24 +34,14 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
   }
   const sha = data => createHash('sha256').update(data).digest('hex');
   const outputs = [];
-  await mkdir(join(outdir, 'assets'), { recursive: true });
-  for (const name of ['app.js', 'app.css','processing.js','feedback-inbox.js']){const path=join(packageRoot,'examples/ordinary-app/assets',name);inputs.add(path);
-    await writeFile(join(outdir,'assets',name),await bytes(path));}
-  for (const name of ['domain.mjs','assets/embed.html','assets/ui.js','assets/ui.css']){
-    const path=join(packageRoot,'examples/reading-list',name);inputs.add(path);
-    const target=join(outdir,'templates/reading-list',name);await mkdir(dirname(target),{recursive:true});await writeFile(target,await bytes(path));
-    outputs.push({path:'templates/reading-list/'+name,sha256:sha(await readFile(target))});
-  }
-  await mkdir(join(outdir, 'python'), { recursive: true });
-  for (const name of ['soty_native_entry.py', 'requirements.txt']) {
-    const path = join(packageRoot, 'python', name); inputs.add(path);
-    await writeFile(join(outdir, 'python', name), await bytes(path));
+  for(const [name,source]of Object.entries(SOURCE_APP_COPY_FILES)){
+    const path=join(packageRoot,source);inputs.add(path);const target=join(outdir,name);
+    await mkdir(dirname(target),{recursive:true});await writeFile(target,await bytes(path));
   }
   const sourceFiles = [];
   for (const path of [...inputs].sort()) sourceFiles.push({ path: sourcePath(path), sha256: sha(await bytes(path)) });
-  for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js','assets/feedback-inbox.js',
-    'python/soty_native_entry.py', 'python/requirements.txt']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
-  const manifest = { schema: 'soty.source-app.build.v1', packageVersion: '0.1.0-preview.1', esbuild: esbuild.version,
+  for (const name of SOURCE_APP_OUTPUTS) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });
+  const manifest = { schema: 'soty.source-app.build.v1', packageVersion, esbuild: esbuild.version,
     protocolDependency: { name: 'openid-client', version: '6.8.4' }, ...(sourceCommit?{sourceCommit}:{}),sourceFiles, outputs };
   await writeFile(join(outdir, 'provenance.json'), JSON.stringify(manifest, null, 2) + '\n'); return manifest;
 }

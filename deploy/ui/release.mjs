@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import {SOURCE_SDK_INDEX,SOURCE_SDK_LIMITS,sourceSdkArchiveName} from '../../modules/source-app/package-contract.mjs';
+import {readSourceSdkArchive,verifySourceSdkIndex} from '../../modules/source-app/public-release.mjs';
+import {parseSourceJson} from '../../modules/source-app/shared/strict-json.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -18,11 +21,12 @@ export const PUBLIC_SKILL_FILES = Object.freeze([
 const fixed = new Set(['index.html', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'capability-docs-update.js',
   'app-art/manifest.json', 'app-art/field-profile.json', 'fonts/manrope.woff2', 'fonts/manrope-OFL.txt',
   'icons/soty.svg', 'icons/soty-180.png', 'icons/soty-192.png', 'icons/soty-512.png',
-  'help/interaction.html', ...PUBLIC_SKILL_FILES]);
+  'help/interaction.html', SOURCE_SDK_INDEX, ...PUBLIC_SKILL_FILES]);
 const hashed = name => /^assets\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|jpe?g|webp|svg|avif)$/u.test(name)
-  || /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(name);
+  || /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(name)
+  || sourceSdkArchiveName(name);
 const publicDirectory = name => ['assets', 'app-art', 'fonts', 'icons'].includes(name)
-  || ['help', 'skills', 'skills/soty-cover-art', 'skills/soty-cover-art/references',
+  || ['help', 'sdk', 'sdk/source-app', 'skills', 'skills/soty-cover-art', 'skills/soty-cover-art/references',
     'skills/soty-app-deploy', 'skills/soty-app-deploy/references'].includes(name)
   || /^app-art\/[a-z0-9-]+(?:\/v\d{3,}-[a-f0-9]{12})?$/u.test(name);
 const securityHeaders = ['Content-Security-Policy', 'Cross-Origin-Opener-Policy', 'Cross-Origin-Resource-Policy',
@@ -37,18 +41,26 @@ function validateRelease(release) {
 }
 
 function readDist(directory) {
-  const root = path.resolve(directory), files = new Map();
+  const root = path.resolve(directory), files = new Map();let sdkArchives=0;
   if (realpathSync(root) !== root) fail('ui_dist_symlink');
   function visit(relative = '') {
     for (const entry of readdirSync(path.join(root, relative), { withFileTypes: true })) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (relative==='sdk' && entry.name!=='source-app' || relative==='sdk/source-app' && name!==SOURCE_SDK_INDEX && !sourceSdkArchiveName(name)) fail('ui_sdk_entry_denied');
       if (entry.isSymbolicLink() && (fixed.has(name) || hashed(name) || publicDirectory(name))) fail('ui_dist_not_regular');
       if (entry.isDirectory()) { if (publicDirectory(name)) visit(name); continue; }
       if (!fixed.has(name) && !hashed(name)) continue;
       const file = path.join(root, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink()) fail('ui_dist_not_regular');
       if (stat.size > 16 * 1024 * 1024 || files.size >= 4096) fail('ui_dist_limit');
-      const bytes = readFileSync(file); files.set(name, { bytes, sha256: hash(bytes), immutable: hashed(name) });
+      if (sourceSdkArchiveName(name) && stat.size > SOURCE_SDK_LIMITS.archiveBytes || name === SOURCE_SDK_INDEX && stat.size > 4096) fail('ui_dist_limit');
+      const bytes = readFileSync(file), sha256 = hash(bytes);
+      if (sourceSdkArchiveName(name)) {
+        if (++sdkArchives>SOURCE_SDK_LIMITS.archives) fail('ui_dist_limit');
+        if (name !== `sdk/source-app/${sha256}.tgz`) fail('ui_sdk_hash_name_mismatch');
+        readSourceSdkArchive(bytes);
+      }
+      files.set(name, { bytes, sha256, immutable: hashed(name) });
     }
   }
   visit(); return files;
@@ -58,6 +70,13 @@ function readDist(directory) {
 export function createUiRelease(dist, retained = []) {
   const files = readDist(dist);
   for (const required of ['index.html', 'sw.js', 'manifest.webmanifest']) if (!files.has(required)) fail('ui_required_file_missing');
+  if ([...files.keys()].some(sourceSdkArchiveName) || files.has(SOURCE_SDK_INDEX)) {
+    if (!files.has(SOURCE_SDK_INDEX)) fail('ui_sdk_index_missing');
+    const index = parseSourceJson(new TextDecoder('utf-8',{fatal:true}).decode(files.get(SOURCE_SDK_INDEX).bytes),{bytes:4096});
+    const archive = typeof index?.artifact?.url === 'string' ? files.get(index.artifact.url.slice(1)) : null;
+    if (!archive || !sourceSdkArchiveName(index.artifact.url.slice(1))) fail('ui_sdk_archive_missing');
+    verifySourceSdkIndex(index, archive.bytes);
+  }
   for (const directory of retained) for (const [name, file] of readDist(directory)) {
     if (!file.immutable) continue;
     if (files.has(name) && files.get(name).sha256 !== file.sha256) fail('ui_immutable_url_conflict');

@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createUiRelease, writeUiRelease, createCaddyOverlay, verifyStructuralDelta, PUBLIC_SKILL_FILES } from './release.mjs';
 import { fixtureDist } from './test-support.mjs';
+import {sdkFormatFixture} from '../../modules/source-app/test/support/public-release.mjs';
+import {sourceSdkReleaseIndex} from '../../modules/source-app/public-release.mjs';
+import {mkdir,writeFile} from 'node:fs/promises';
 
 function fixture(t) {
   const parent = path.resolve(tmpdir()), root = mkdtempSync(path.join(parent, 'soty-ui-unit-'));
@@ -27,6 +30,28 @@ test('old hashed assets survive; reusing an immutable URL with different bytes r
   const release = createUiRelease(f.dist, [old]); assert.equal(release.files.get('assets/old-12345678.js').bytes.toString(), 'old lazy import');
   writeFileSync(path.join(old, 'assets/index-abcdefgh.js'), 'different bytes');
   assert.throws(() => createUiRelease(f.dist, [old]), { code: 'ui_immutable_url_conflict' });
+});
+
+test('finite SDK index and hash-named capsule publish through the existing UI release without private neighbours',async t=>{
+  const f=fixture(t),sdk=await sdkFormatFixture(f.root),archive=sdk.archive(),index=sourceSdkReleaseIndex(archive),name=index.artifact.url.slice(1);
+  await mkdir(path.join(f.dist,'sdk/source-app'),{recursive:true});await writeFile(path.join(f.dist,name),archive);
+  await writeFile(path.join(f.dist,'sdk/source-app/index.json'),sdk.json(index));
+  const release=createUiRelease(f.dist);assert.equal(release.files.get(name).immutable,true);assert.equal(release.files.get('sdk/source-app/index.json').immutable,false);
+  const output=path.join(f.root,'staged-sdk');writeUiRelease(release,output);assert.deepEqual(readFileSync(path.join(output,name)),archive);
+  const privatePath=path.join(f.dist,'sdk/source-app/operator.json');writeFileSync(privatePath,'synthetic-private');
+  assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_entry_denied'});assert.equal(readFileSync(privatePath,'utf8'),'synthetic-private');rmSync(privatePath);
+  writeFileSync(path.join(f.dist,name),'changed immutable bytes');assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_hash_name_mismatch'});
+});
+
+test('SDK metadata cannot point outside the finite archive URL, omit its capsule or publish a symlink',async t=>{
+  const f=fixture(t),sdk=await sdkFormatFixture(f.root),archive=sdk.archive(),index=sourceSdkReleaseIndex(archive),name=index.artifact.url.slice(1);
+  await mkdir(path.join(f.dist,'sdk/source-app'),{recursive:true});await writeFile(path.join(f.dist,name),archive);
+  const file=path.join(f.dist,'sdk/source-app/index.json');writeFileSync(file,JSON.stringify({...index,artifact:{...index.artifact,url:'/agent/private.tgz'}}));
+  assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_archive_missing'});
+  rmSync(file);assert.throws(()=>createUiRelease(f.dist),{code:'ui_sdk_index_missing'});
+  writeFileSync(file,JSON.stringify(index));rmSync(path.join(f.dist,name));
+  symlinkSync(process.platform==='win32'?f.root:file,path.join(f.dist,name),process.platform==='win32'?'junction':'file');
+  assert.throws(()=>createUiRelease(f.dist),{code:'ui_dist_not_regular'});
 });
 
 test('only the public cover skill package is delivered and its documents update without becoming immutable', t => {
