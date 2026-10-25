@@ -29,6 +29,21 @@ qualified image, removes the inherited build, preserves the private env file,
 and adds the existing external account network and read-only configuration.
 Never rebuild or replace PostgreSQL as part of a Gateway update.
 
+The installed guarded entry point is:
+
+```sh
+/home/ai2/inference-commerce/gateway-compose --check
+```
+
+No argument also selects `--check`. The wrapper pins the base and overlay bytes,
+private JSON, image/revision, private network policy, complete expanded Gateway
+and PostgreSQL configuration, and serving Env/mounts/readiness. It reads secrets
+only in memory and prints a safe receipt. Arbitrary image/config/network flags
+are rejected. The explicit `--up` action rechecks these guards and quiescence,
+then addresses only Gateway with `--no-deps --no-build --pull never`. This action
+was not executed in the 2026-10-25 handoff. Existing Docker commands are unchanged;
+the old explicit Compose command can bypass this entry point.
+
 Read-only configuration qualification (the private file is read locally by
 Compose; do not print or save its expanded output):
 
@@ -59,3 +74,10 @@ candidates had become ready; no Soty accounts were created, original financial
 rows remained unchanged, and migration 006 applied exactly once. The final
 guard used read-only persisted catalog snapshots plus the serving readiness
 count and passed before the successful replacement.
+
+Runtime source qualification remains pinned to the eeb revision and module tree
+`90f7ce096954f354ce74d14fff9a9cedd0671d07`. Later files in `deploy/` are operator
+tools and documentation, installed outside the runtime image. Keep their source
+lineage and checks separate from the accepted runtime manifest; adding these
+files does not require rebuilding the qualified runtime or reclassifying the
+old image as containing the new operator tools.
