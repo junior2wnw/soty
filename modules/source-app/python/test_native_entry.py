@@ -136,6 +136,27 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]['status'], 200)
         self.assertEqual(len(self.requests), 2)
 
+    async def test_ws_revocation_cancels_work_before_a_backpressured_close_can_finish(self):
+        entered, stopped = asyncio.Event(), asyncio.Event()
+        async def app(_scope, _receive, send):
+            await send({'type': 'websocket.accept'})
+            entered.set()
+            try:
+                await asyncio.sleep(10)
+                self.fail('revoked Native work continued')
+            finally:
+                stopped.set()
+        async def send(message):
+            if message['type'] == 'websocket.close':
+                await asyncio.sleep(10)
+        task = asyncio.create_task(NativeEntryMiddleware(app, self.guard)({'type': 'websocket', 'path': '/ws'}, None, send))
+        await asyncio.wait_for(entered.wait(), 2)
+        self.mode = 'error'
+        await asyncio.wait_for(stopped.wait(), .3)
+        await asyncio.wait_for(task, .3)
+        self.assertEqual(len(self.guard._streams), 0)
+        await asyncio.sleep(.21)  # The independently bounded close callback finishes too.
+
 
 if __name__ == '__main__':
     unittest.main()

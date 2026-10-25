@@ -267,13 +267,16 @@ class NativeEntryMiddleware:
             if completed or policy_closed:
                 return
             policy_closed = True
-            try:
-                if is_ws:
-                    await raw_send({'type': 'websocket.close', 'code': 1013, 'reason': 'app_entry_closed'})
-            except Exception:
-                pass
+            # Stop application work BEFORE a possibly backpressured WebSocket
+            # close/handshake. Closing the client cannot become an effect lease.
             if endpoint_task is not asyncio.current_task() and not endpoint_task.done():
                 endpoint_task.cancel('native-entry-policy')
+            try:
+                if is_ws:
+                    await asyncio.wait_for(raw_send({'type': 'websocket.close', 'code': 1013, 'reason': 'app_entry_closed'}),
+                                           min(self.guard.duration, .25))
+            except Exception:
+                pass
         try:
             # Long OIDC/read operations renew the SAME policy scope. A revoked
             # policy cancels pending endpoint work; it never substitutes identity.
