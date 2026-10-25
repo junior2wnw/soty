@@ -32,6 +32,13 @@ test('real Caddy old overlay -> new overlay -> old on one process; finite assets
     const unseal = current => { fs.chmodSync(current, 0o700); for (const entry of fs.readdirSync(current, { withFileTypes: true })) if (entry.isDirectory()) unseal(path.join(current, entry.name)); };
     unseal(directory); fs.rmSync(directory, { recursive: true, force: true });
   });
+  // The production verifier pins comm=caddy. CI names its qualified input
+  // soty-test-caddy; keep the executable on its qualified mount when TMPDIR is
+  // noexec, while using the production basename for this fixture's process.
+  const runtimeBinary = path.join(directory, 'caddy');
+  fs.symlinkSync(fs.realpathSync(binary), runtimeBinary);
+  assert.equal(fs.realpathSync(runtimeBinary), fs.realpathSync(binary), 'fixture Caddy resolves to the qualified executable');
+  assert.equal(sha256(fs.readFileSync(runtimeBinary)), binarySha256, 'staged Caddy bytes match the qualified binary');
   backend = createServer((req, res) => {
     res.setHeader('Content-Security-Policy', "default-src 'self'");
     if (req.url.startsWith('/api/')) { res.writeHead(403); res.end('original API denied'); return; }
@@ -53,15 +60,23 @@ test('real Caddy old overlay -> new overlay -> old on one process; finite assets
     if (!fs.existsSync(planFile)) fs.writeFileSync(planFile, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
     const result = spawnSync(process.execPath, [operator, command, planFile], { input: command === 'execute' && value.action !== 'install' ? JSON.stringify({ key: key.toString('base64') }) : '',
       encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000, maxBuffer: 1024 * 1024 });
-    assert.equal(result.status, expectedExit, 'bounded publisher CLI status');
-    const output = JSON.parse(result.stdout); assert.equal(output.activeReloadVerified, false); return output;
+    let output; try { output = JSON.parse(result.stdout); } catch { /* Never echo private child stdout/stderr. */ }
+    const safeCodes = new Set(['host_plan_invalid', 'host_linux_required', 'host_profile_changed', 'host_directory_invalid', 'host_journal_invalid',
+      'public_inventory_changed', 'public_install_changed', 'installed_release_changed', 'caddy_process_changed', 'encrypted_file_invalid',
+      'encrypted_file_changed', 'encrypted_config_invalid', 'decrypted_config_mismatch', 'config_environment_requires_explicit_binding',
+      'config_file_invalid', 'current_config_changed', 'candidate_bytes_changed', 'installed_config_changed', 'swap_arguments_invalid',
+      'host_operation_already_exists', 'bounded_host_action_failed']);
+    const responseCode = output?.ok === true ? 'ok' : safeCodes.has(output?.code) ? output.code : 'publisher_response_invalid';
+    assert.equal(result.status, expectedExit, `bounded publisher CLI status (${responseCode})`);
+    assert.ok(output && typeof output === 'object' && !Array.isArray(output), 'bounded publisher CLI response');
+    assert.equal(output.activeReloadVerified, false); return output;
   };
   const installed = invoke({ schema: 'soty.ui.host.v1', action: 'install', transaction: 'a'.repeat(32),
     releaseId: next.id, receiptDirectory: receipts, input: staged, manifestFile, base: directory });
   const previous = await createCaddyOverlay({ caddyfile: canonical.toString(), release: old, root: oldRoot, adapt, host: '127.0.0.1' });
   const configPath = path.join(directory, 'Caddyfile'); fs.writeFileSync(configPath, previous.caddyfile, { mode: 0o644 });
   const xdg = path.join(directory, 'xdg'); fs.mkdirSync(xdg);
-  caddy = spawn(binary, ['run', '--config', configPath, '--adapter', 'caddyfile'], { stdio: ['ignore', 'ignore', 'pipe'],
+  caddy = spawn(runtimeBinary, ['run', '--config', configPath, '--adapter', 'caddyfile'], { stdio: ['ignore', 'ignore', 'pipe'],
     env: { PATH: '/usr/bin:/bin', HOME: directory, XDG_CONFIG_HOME: xdg, XDG_DATA_HOME: path.join(directory, 'data') } });
   caddy.stderr.resume(); const base = 'http://127.0.0.1:' + port, activeFile = path.join(xdg, 'caddy', 'autosave.json');
   const waitBody = async expected => {
@@ -80,6 +95,7 @@ test('real Caddy old overlay -> new overlay -> old on one process; finite assets
   };
   await waitBody('OLD ACCEPTED UI'); const activeQualification = await waitActive(sha256(Buffer.from(previous.caddyfile)));
   const proc = '/proc/' + caddy.pid, fields = fs.readFileSync(proc + '/stat', 'utf8').split(') ').at(-1).split(' ');
+  assert.equal(fs.readFileSync(proc + '/comm', 'utf8').trim(), 'caddy');
   const processPin = { pid: caddy.pid, uid: fs.statSync(proc).uid, startTicks: fields[19], argvSha256: sha256(fs.readFileSync(proc + '/cmdline')) };
   const prepared = await prepareOverlayReplacement({ canonical, currentDisk: fs.readFileSync(configPath), activeQualification,
     currentRelease: old, currentRoot: oldRoot, release: next, root: installed.root, adapt, host: '127.0.0.1' });
