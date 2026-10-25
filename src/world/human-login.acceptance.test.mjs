@@ -32,13 +32,13 @@ class Element {
   fire(type) { if (!this.disabled) for (const listener of this.listeners.get(type) ?? []) listener({ currentTarget: this, target: this }); }
   click() { this.fire('click'); }
 }
-function fixture(t, { accountId = 'account_A', decision = 'pending', deviceConsent = true, continuation = async () => false, presentation = 'login' } = {}) {
+function fixture(t, { accountId = 'account_A', decision = 'pending', deviceConsent = true, consentAvailable = true, continuation = async () => false, presentation = 'login' } = {}) {
   const document = { activeElement: null }, make = (tag, className = '', text = '') => new Element(document, tag, className, text), host = make('main');
   let account = { accountId, label: 'Synthetic profile', revoked: false }, observe = null, serial = 0, monotonic = 100;
   const context = { schema: 'soty.human-login-context.v1', interactionId: 'synthetic_interaction_123', browserNonce: 'b'.repeat(43), csrf: 'c'.repeat(43),
     client: { id: 'app-alpha', label: 'Native application' }, scopes: ['openid', 'profile'], expiresAt: 1000000, remainingMs: 60000, decision,
     renewal: { maximumSessionSeconds: 86400, ...(decision === 'approved' ? { approvedSessionSeconds: 86400 } : {}) },
-    ...(deviceConsent ? { deviceConsent: { available: decision === 'pending', ...(decision === 'approved' ? { approvedRememberForDevice: true } : {}) } } : {}) };
+    ...(deviceConsent ? { deviceConsent: { available: decision === 'pending' && consentAvailable, ...(decision === 'approved' ? { approvedRememberForDevice: true } : {}) } } : {}) };
   const calls = { continuation: [], decisions: [], complete: 0, create: 0, context: 0 };
   let decidePort = async () => {}, continuePort = continuation, accountPort = async () => ({ ...account }), completePort = async () => {};
   const module = { exports: {} }, timers = new Map(); let timer = 0;
@@ -103,13 +103,32 @@ for (const boundary of ['observed-profile', 'unobserved-profile', 'dispose']) te
   if (boundary !== 'dispose') { assert.equal(f.control('approve').disabled, true); assert.equal(f.handle.canReload(), true); }
 });
 
-test('known revoked preference invalidates the request, while approved reload preserves the old signed choice', async t => {
+test('known revoked preference invalidates the request, while approved reload resumes the same choice without a click', async t => {
   const f = fixture(t, { continuation: async () => { throw Object.assign(new Error('revoked'), { code: 'human_identity_device_consent_revoked' }); } }); await turn();
   assert.equal(f.control('approve').disabled, true); assert.equal(f.handle.canReload(), true); assert.equal(f.calls.complete, 0);
   const reload = fixture(t, { decision: 'approved' }); await turn();
   assert.equal(reload.calls.continuation.length, 0); assert.equal(reload.control('remember').checked, true); assert.equal(reload.control('stay'), null);
-  reload.control('approve').click(); await turn();
+  assert.equal(reload.calls.complete, 1); assert.equal(reload.calls.decisions.length, 1);
   assert.equal(reload.calls.decisions[0].rememberForDevice, true); assert.equal(reload.calls.decisions[0].stayInAppSeconds, 86400);
+});
+
+test('an unavailable remembered-device capability is not presented as a disabled promise', async t => {
+  const f = fixture(t, { consentAvailable: false }); await turn();
+  assert.equal(f.calls.continuation.length, 0); assert.equal(f.control('remember'), null);
+  assert.ok(f.control('stay')); assert.ok(f.control('approve'));
+});
+
+test('automatic continuation shows progress rather than a second consent form', async t => {
+  const hold = deferred(), f = fixture(t, { continuation: () => hold.promise }); await turn();
+  assert.match(f.host.textContent, /Открываем/u); assert.equal(f.control('approve'), null); assert.equal(f.control('remember'), null);
+  hold.resolve(false); await turn(); assert.ok(f.control('approve')); assert.ok(f.control('remember'));
+});
+
+test('approved reload still checks the selected profile and never completes after a profile switch', async t => {
+  const hold = deferred(), f = fixture(t, { decision: 'approved' }); f.setDecision(() => hold.promise); await turn();
+  assert.equal(f.calls.decisions.length, 1); assert.equal(f.control('approve'), null);
+  f.setAccount('account_B'); hold.resolve(); await turn();
+  assert.equal(f.calls.complete, 0); assert.match(f.host.textContent, /Профиль изменился/u);
 });
 
 test('empty profile never auto-creates one and expiry prevents a held preference from signing', async t => {

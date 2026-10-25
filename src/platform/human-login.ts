@@ -46,7 +46,7 @@ export async function startHumanLogin(root: HTMLElement, interactionId: string):
       ]);
       const local = await accountClient.getLocalState();
       const panel = openConnectPanel({ client: accountClient, label: local.label || 'Мой профиль', productName: 'Соты',
-        bootstrapOnOpen: false, initialTab: local.accountId ? 'profile' : 'devices',
+        bootstrapOnOpen: false, initialTab: 'profiles',
         qr: url => QRCode.toDataURL(url, { width: 256, margin: 2 }) });
       const dialog = document.querySelector<HTMLDialogElement>('dialog.connect-panel');
       if (dialog) await new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true })); else panel.close();

@@ -150,6 +150,35 @@ node --test --test-concurrency=1 modules/source-rp/test/protocol-http.test.mjs m
 Эти тесты не включают production issuer и не заменяют браузерную приёмку
 конкретного приложения после реального истечения времени.
 
+### Возврат без лишнего подтверждения
+
+Уже подтверждённый browser-bound interaction после reload завершается через
+свежую подпись того же решения выбранным Connect-профилем. Это не новое
+согласие: другой аккаунт, срок или набор прав сервер отвергает. При включённом
+и ранее выбранном device consent используется отдельный signed continuation;
+пока он проверяется, показывается открытие приложения, а не повторная форма.
+Если capability недоступна, обещание «запомнить устройство» не показывается.
+Первое разрешение, новый client/version/scope и отзыв продолжают требовать
+реального решения человека.
+
+Успешный BFF callback должен восстановить исходный внутренний маршрут,
+проверенный и сохранённый вместе с одноразовым intent. Для popup необходим
+exact-origin/source handshake с исходным окном, а для same-window — прямой
+переход. Страница «вход подтверждён» со второй обязательной кнопкой не является
+завершённым сценарием. При blocked popup/нет opener/blocked third-party cookie
+нужен рабочий top-level fallback, без ослабления sandbox или выдачи токена JS.
+
+Переключение Root-профиля требует отдельной проверки соответствия app session
+свежему Root actor. Cookie приложения переживает удаление iframe. При наличии
+trusted selected Source контекста сравниваются проверенные issuer/sub; публичный
+selector, accountId из query или обычный ingress `{ok:true}` этого не заменяют.
+
+Дополнительный capacity gate:
+`node --test modules/human-identity/test/renewal-capacity.test.mjs` проверяет
+16 активных families у двух людей, отказ17-й без вытеснения существующих,
+а затем reviewed24/12 после restart. Это локальная протокольная граница,
+не нагрузочная сертификация и не изменение production defaults16/8.
+
 ## Помощь человеку и агенту
 
 `node scripts/soty-app-release.mjs auth-guide --mode human-oidc --output NEW_FILE`
