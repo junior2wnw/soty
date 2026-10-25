@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createAppsService } from '../server/index.mjs';
@@ -24,6 +24,28 @@ const ack = target => ({ scope: target.profile === 'soty.relay-restricted.v1' ? 
   targetRevision: target.revision, targetDigest: target.digest, profile: target.profile });
 const removal = f => ({ action: 'remove', origin: f.profile.nativeOrigin, targetRevision: 1,
   targetDigest: f.db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(f.appId).digest });
+
+function precedingRootEntry() {
+  const root = new URL('../../../test-fixtures/native-entry-preceding-root/', import.meta.url);
+  const manifest = readFileSync(new URL('SOURCE-PINS.json', root));
+  assert.equal(createHash('sha256').update(manifest).digest('hex'), '5b219719120a97af60d67a0a111af0496f266b992cfd4899c20e63a40ac37c3a');
+  const pins = JSON.parse(manifest);
+  assert.equal(pins.schema, 'soty.native-entry-preceding-root-ci.v1');
+  assert.equal(pins.sourceRevision, '1487cb960b0e2b12bf4ee5c5d61d7fae150b08dc');
+  assert.equal(pins.entry, 'modules/apps/server/index.mjs');
+  assert.equal(pins.productionInstalled, false);
+  assert.deepEqual(pins.externalPackages, ['ws']);
+  assert.equal(Object.keys(pins.files).length, 42);
+  for (const [path, pin] of Object.entries(pins.files)) {
+    assert.match(path, /^modules\/[a-z0-9/-]+\.mjs$/u);
+    const bytes = readFileSync(new URL(path, root));
+    assert.ok(bytes.length <= 1048576);
+    assert.equal(bytes.length, pin.bytes, path);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256, path);
+    assert.equal(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'), pin.gitBlob, path);
+  }
+  return new URL(pins.entry, root).href;
+}
 
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'soty-dual-entry-')), databasePath = join(directory, 'apps.sqlite');
@@ -451,16 +473,9 @@ test('current reader restarts from the durable pair; actual preceding Root ingre
   assert.equal((await restarted.check()).status, 200);
   assert.equal(restarted.service.execute({ op: 'apps.publication.get', actor: f.owner, args: { appId: f.appId } }).nativeEntry.runtimeReady, false);
 
-  // Load the exact preceding ingress/source code beside its unchanged module
-  // dependencies. No production checkout, config or historical row is edited.
-  const repository = fileURLToPath(new URL('../../../', import.meta.url));
-  const directory = fileURLToPath(new URL('../server/', import.meta.url)), tag = 'legacy-dual-fixture-' + Date.now();
-  const indexPath = join(directory, tag + '-index.mjs'), sourcesPath = join(directory, tag + '-sources.mjs');
-  const historical = path => execFileSync('git', ['show', '1487cb96:' + path], { cwd: repository, maxBuffer: 1048576, windowsHide: true }).toString('utf8');
-  writeFileSync(sourcesPath, historical('modules/apps/server/sources.mjs'));
-  writeFileSync(indexPath, historical('modules/apps/server/index.mjs').replace("'./sources.mjs'", "'./" + tag + "-sources.mjs'"));
-  f.cleanup(() => { rmSync(indexPath, { force: true }); rmSync(sourcesPath, { force: true }); });
-  const previous = await import(pathToFileURL(indexPath).href), old = await liveRoot(t, f, previous.createAppsService);
+  // Exact preceding ingress/source and relative dependency bytes, materialized
+  // before packaging. The same DATA test needs neither Git nor a code rewrite.
+  const previous = await import(precedingRootEntry()), old = await liveRoot(t, f, previous.createAppsService);
   await old.ready(); await turn();
   assert.equal((await old.check()).status, 403, 'old Root cannot admit retained Native1');
   assert.ok([401,403].includes((await old.check({ 'x-soty-ingress-target': f.target.digest })).status), 'substituting primary pin cannot obtain a Native policy body');
