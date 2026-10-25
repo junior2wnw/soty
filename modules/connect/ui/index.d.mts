@@ -1,4 +1,5 @@
 export interface ConnectIntent { kind: 'contact' | 'device'; id: string; }
+export type ConnectTab = 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles';
 export function parseConnectLink(value: string, origin?: string): ConnectIntent | null;
 export function openConnectPanel(options: {
   client: unknown; label?: string; productName?: string;
@@ -8,7 +9,8 @@ export function openConnectPanel(options: {
   invitation?: () => { url: string; label: string } | Promise<{ url: string; label: string }>;
   onRename?: (label: string) => void | Promise<void>;
   onEditProfile?: () => void;
+  onOpenDataTools?: () => void | Promise<void>;
   onContactCall?: (contact: { peerAccountId: string; label: string }) => void | Promise<void>;
-  snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: 'profile' | 'people' | 'devices' | 'recovery';
+  snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: ConnectTab;
   bootstrapOnOpen?: boolean;
 }): { close(): void; refresh(): Promise<void> };

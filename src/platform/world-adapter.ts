@@ -10,7 +10,7 @@ import { parseConnectionIntent, type ConnectionIntent } from './connection-inten
 import { takeConnectionNavigation } from './connection-navigation.mjs';
 import { createNativeVoiceDescriptor } from './native-voice-descriptor.mjs';
 import { createNotificationsController, type NotificationsController } from './notifications-client.mjs';
-import type { ConnectIntent } from '../../modules/connect/ui/index.mjs';
+import type { ConnectIntent, ConnectTab } from '../../modules/connect/ui/index.mjs';
 // The existing browser-neutral JS owner is tested directly; its runtime is unchanged.
 // @ts-expect-error The reviewed JS component has no TypeScript declaration.
 import { createCallLifecycle } from '../../modules/personal-agent/call/lifecycle.mjs';
@@ -145,7 +145,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     if (tool) url.searchParams.set('tool', tool);
     window.location.assign(url.href);
   };
-  const openAccount = async (initialTab: 'profile' | 'people' | 'devices' | 'recovery' = 'profile', initialIntent?: ConnectIntent) => {
+  const openAccount = async (initialTab: ConnectTab = 'profile', initialIntent?: ConnectIntent) => {
     const callView = currentCallView;
     const mountedWorld = world, accountAtOpen = activeAccount, generationAtOpen = mountGeneration, routeAtOpen = window.location.href;
     let editProfileRequested = false;
@@ -159,6 +159,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       ...(initialIntent ? { initialIntent } : {}), initialTab, bootstrapOnOpen: false,
       onEditProfile: () => { editProfileRequested = true; },
+      onOpenDataTools: () => openLegacy(),
       ...(callView ? { onContactCall: async ({ peerAccountId, label }: { peerAccountId: string; label: string }) => {
         const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one', displayLabel: label });
         if (!result.ok) throw Object.assign(new Error('Call did not start.'), { code: result.code });

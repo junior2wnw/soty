@@ -8,7 +8,9 @@
 .connect-panel p { margin:10px 0; }
 .connect-panel small, .connect-panel .connect-muted { color:#a7bbac; }
 .connect-panel nav { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid #344739; padding-bottom:12px; }
-.connect-panel button { font:inherit; color:inherit; background:#22352a; border:1px solid #48634e; border-radius:10px; padding:9px 13px; margin:3px 4px 3px 0; cursor:pointer; min-height:42px; white-space:normal; }
+.connect-panel button { font:inherit; color:inherit; background:#22352a; border:1px solid #48634e; border-radius:10px; padding:9px 13px; margin:3px 4px 3px 0; cursor:pointer; min-height:44px; white-space:normal; }
+.connect-panel [data-profile-list] { display:flex; flex-direction:column; gap:8px; }
+.connect-panel [data-profile-list] button { text-align:left; overflow-wrap:anywhere; }
 .connect-panel button:hover, .connect-panel button[aria-current="page"] { background:#b7ed9a; border-color:#b7ed9a; color:#10200e; }
 .connect-panel button:disabled { opacity:.55; cursor:wait; }
 .connect-panel input { display:block; width:100%; color:inherit; background:#09110d; border:1px solid #4f6a55; padding:10px; border-radius:9px; font:inherit; min-width:0; }

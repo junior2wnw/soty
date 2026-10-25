@@ -43,6 +43,8 @@ export type SettingsPending = {
 export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; audience?: AppAudience | null; launchPolicy: string; activeDomainIds: string[]; appState: string } }
 export interface AppSettingsOptions {
   compactAccess?: boolean;
+  aboutActions?: HTMLElement[];
+  supportActions?: HTMLElement[];
   host: HTMLElement; accountId: string; appId: string; api: WorldApi; communities: WorldCommunity[];
   isCurrent(): boolean; onChanged(snapshot: AppInspection): void;
   onPreview(target: { domainId: string; path: string }): void;

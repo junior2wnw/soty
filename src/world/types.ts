@@ -155,7 +155,7 @@ export interface WorldAppOptions {
   /** Sync the contact-card name for this controller's mounted account. */
   syncContactName?: (displayName: string) => Promise<void>;
   openLegacy: (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => void | Promise<void>;
-  openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
+  openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery' | 'data' | 'profiles') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
   openConnections?: () => void | Promise<void>;
   agentCreate: (communityId?: string, hostOrRestore?: HTMLElement | { hostDeviceId: string; connectorId: string; jobId: string }) => void | Promise<void>;

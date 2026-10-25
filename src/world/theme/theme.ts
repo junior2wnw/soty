@@ -50,11 +50,14 @@ export function createThemeController({ initial = loadPreferences(), onChange = 
 
 export function createThemeControls(controller: ThemeController): { element: HTMLElement; destroy(): void } {
   const element = document.createElement('section'); element.className = 'sw-theme-controls';
+  const original = normalizeTheme(controller.get());
+  const scope = document.createElement('p'); scope.className = 'sw-muted sw-theme-scope'; scope.textContent = 'Тема этого браузера. Выбор применяется сразу.';
   const modes = document.createElement('div'); modes.className = 'sw-theme-modes'; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Тема');
   const choices = [['dark', 'Тёмная', 'moon'], ['system', 'Как в системе', 'system'], ['light', 'Светлая', 'sun']] as const;
   const buttons = choices.map(([mode, label, symbol]) => {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'sw-theme-mode';
-    button.setAttribute('aria-label', label); button.title = label; button.append(themeIcon(symbol));
+    const caption = document.createElement('span'); caption.textContent = label;
+    button.setAttribute('aria-label', label); button.title = label; button.append(themeIcon(symbol), caption);
     button.addEventListener('click', () => controller.set({ themeMode: mode })); modes.append(button); return button;
   });
   const label = document.createElement('label'); label.className = 'sw-theme-brightness';
@@ -64,10 +67,16 @@ export function createThemeControls(controller: ThemeController): { element: HTM
   const range = document.createElement('input'); range.type = 'range'; range.min = '0'; range.max = '100'; range.step = '1'; range.setAttribute('aria-label', 'Яркость темы');
   range.addEventListener('input', () => controller.set({ themeBrightness: Number(range.value) }, { persist: false }));
   range.addEventListener('change', () => controller.set({ themeBrightness: Number(range.value) }));
-  label.append(row, range); element.append(modes, label);
+  const advanced = document.createElement('details'); advanced.className = 'sw-theme-advanced';
+  const summary = document.createElement('summary'); summary.textContent = 'Яркость темы';
+  label.append(row, range); advanced.append(summary, label);
+  const undo = document.createElement('button'); undo.type = 'button'; undo.className = 'sw-button sw-button-quiet sw-theme-undo'; undo.textContent = 'Вернуть тему до открытия';
+  undo.addEventListener('click', () => controller.set(original));
+  element.append(scope, modes, advanced, undo);
   const unsubscribe = controller.subscribe(state => {
     buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(choices[index]![0] === state.themeMode)));
     range.value = String(state.themeBrightness); range.setAttribute('aria-valuetext', `${state.themeBrightness} из 100`); output.value = `${state.themeBrightness}%`;
+    undo.hidden = state.themeMode === original.themeMode && state.themeBrightness === original.themeBrightness;
   });
   return { element, destroy() { controller.set({}); unsubscribe(); element.remove(); } };
 }

@@ -2,6 +2,11 @@
 .sw-app-settings { display: flex; flex-direction: column; gap: 12px; }
 .sw-app-settings [hidden] { display: none !important; }
 .sw-app-settings-content,.sw-app-settings-aliases,.sw-app-settings-public { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sw-app-settings-navigation { display: flex; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--sw-line); }
+.sw-app-settings-navigation > .sw-button { flex: 1 1 0; min-width: 0; min-height: 46px; white-space: normal; font-size: 13px; }
+.sw-app-settings-navigation > .sw-button[aria-selected=true] { background: var(--sw-selected); color: var(--sw-text); }
+.sw-app-settings [role=tabpanel] { border-top: 0; padding-top: 0; }
+.sw-app-settings-access > .sw-app-settings-section { margin-top: 8px; }
 .sw-app-settings .sw-button[aria-disabled=true] { opacity: .55; cursor: not-allowed; }
 .sw-app-settings .sw-input[readonly] { color: var(--sw-muted); }
 .sw-app-settings-summary { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -67,6 +72,8 @@
   .sw-dialog.sw-app-settings-dialog { width: 100%; }
 }
 @media (max-width: 480px) {
+  .sw-app-settings-navigation { flex-direction: column; }
+  .sw-app-settings-navigation > .sw-button { justify-content: flex-start; text-align: left; flex-basis: auto; }
   .sw-app-settings-actions>.sw-button { flex: 1 1 120px; }
   .sw-app-settings-inline>.sw-button { width: 100%; }
   .sw-app-settings-address-main { flex-basis: 100%; }

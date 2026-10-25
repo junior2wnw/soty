@@ -70,3 +70,37 @@ test('fallback profile editor renders the 80-unit boundary and saves all 80 unit
     assert.equal(dialog.querySelector('.connect-message').textContent, 'Имя сохранено.');
   } finally { panel.close(); }
 });
+
+function panelFixture(client, options = {}) {
+  const document = { activeElement: null, body: new ElementPort('body'), createElement: tag => new ElementPort(tag) }, module = { exports: {} };
+  vm.runInNewContext(`${source}\nmodule.exports.openConnectPanel = openConnectPanel;`, {
+    module, document, setTimeout, clearTimeout, confirm: () => true, mountPlatformInvitations: () => ({ destroy() {} }),
+  });
+  const panel = module.exports.openConnectPanel({ client, bootstrapOnOpen: false, ...options });
+  const dialog = document.body.children[0], content = dialog.querySelector('.connect-content');
+  return { panel, dialog, content };
+}
+
+test('known-profile selector needs no status/recovery request and closes after the selected profile is opened', async () => {
+  const calls = [], local = { accountId: 'A', profiles: [{ accountId: 'A', label: 'Current', active: true }, { accountId: 'B', label: 'Other', active: false }, { accountId: 'C', label: 'Revoked', revoked: true }] };
+  const f = panelFixture({ async getLocalState() { return local; }, async status() { throw Error('selector must not wait for status'); },
+    async switchProfile(id) { calls.push(id); local.accountId = id; } }, { initialTab: 'profiles' });
+  await until(() => f.content.querySelector('[data-profile-list]') && f.content.getAttribute('aria-busy') === 'false');
+  const profiles = f.content.querySelector('[data-profile-list]').children;
+  assert.equal(profiles.length, 2); assert.equal(profiles[0].disabled, true);
+  await profiles[1].handlers.get('click')({ preventDefault() {} });
+  assert.deepEqual(calls, ['B']); assert.equal(f.dialog.open, false);
+});
+
+test('recovery and data copies have separate views and preserve the selected-account vault contract', async () => {
+  const calls = [], client = { async getLocalState() { return { accountId: 'A', profiles: [] }; }, async status() { return { accountId: 'A', label: 'A', recovery: { verified: true } }; },
+    async saveVault(payload, revision, expectedAccountId) { calls.push({ payload, expectedAccountId }); return { revision: 2 }; } };
+  const recovery = panelFixture(client, { initialTab: 'recovery', snapshot: () => ({ value: 'copy' }) });
+  await until(() => recovery.content.querySelector('[data-save-recovery]'));
+  assert.equal(recovery.content.querySelector('[data-save]'), null); recovery.panel.close();
+  const data = panelFixture(client, { initialTab: 'data', snapshot: () => ({ value: 'copy' }) });
+  await until(() => data.content.querySelector('[data-save]') && data.content.getAttribute('aria-busy') === 'false');
+  assert.equal(data.content.querySelector('[data-save-recovery]'), null);
+  await data.content.querySelector('[data-save]').handlers.get('click')({ preventDefault() {} });
+  assert.deepEqual(calls, [{ payload: { value: 'copy' }, expectedAccountId: 'A' }]); data.panel.close();
+});

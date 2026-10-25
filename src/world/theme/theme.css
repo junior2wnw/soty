@@ -19,12 +19,17 @@
   }
 }
 
-.sw-theme-controls { display: grid; gap: 22px; }
+.sw-theme-controls { display: grid; gap: 16px; }
+.sw-theme-controls [hidden] { display: none !important; }
+.sw-theme-scope { font-size: 12px; line-height: 1.5; margin: 0; }
 .sw-theme-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .sw-theme-mode {
-  min-height: 52px; border: 1px solid var(--sw-control-border); border-radius: 12px;
-  display: grid; place-items: center; background: var(--sw-surface); color: var(--sw-ink);
+  min-height: 64px; border: 1px solid var(--sw-control-border); border-radius: 12px;
+  display: grid; place-items: center; gap: 5px; padding: 8px; background: var(--sw-surface); color: var(--sw-ink);
 }
+.sw-theme-mode > span { font-size: 12px; line-height: 1.3; text-align: center; overflow-wrap: anywhere; }
+.sw-theme-advanced > summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-size: 13px; }
+.sw-theme-undo { justify-self: start; min-height: 44px; white-space: normal; }
 .sw-theme-mode:hover { background: var(--sw-surface-hover); }
 .sw-theme-mode[aria-pressed=true] { background: var(--sw-honey-light); border: 2px solid var(--sw-focus); }
 .sw-theme-mode svg { width: 24px; height: 24px; }

@@ -44,7 +44,7 @@ function settingsError(reason: unknown): string {
     app_source_invalid_preparation: 'Не удалось подтвердить ответ выбранного источника. Переключение не отправлено.',
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
     app_source_invalid_history: 'Не удалось подтвердить историю источников. Повторите её чтение.',
-    app_source_unchanged: 'Это уже текущий источник. Измените устройство, порт или начальную страницу.',
+    app_source_unchanged: 'Это уже текущий источник. Измените компьютер, порт или начальную страницу.',
     app_source_unavailable: 'Сейчас этот источник нельзя переключить. Обновите состояние приложения.',
     app_source_review_required: 'Проверьте источник ещё раз и подтвердите показанные настройки.',
     apps_source_preparation_expired: 'Проверка больше не действует. Ввод сохранён; источник можно проверить ещё раз.',
@@ -89,9 +89,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let confirmation: Confirmation | null = null, confirmTrigger: HTMLElement | null = null;
   let copyFallback: string | null = null, observationDeadline = 0, inspectionGeneration = 0, refreshGeneration = 0, copyGeneration = 0;
   let observationTimer: ReturnType<typeof setTimeout> | null = null;
-  let quickDetails: HTMLDetailsElement | null = null;
+  let selectedSection = options.compactAccess ? 'access' : 'about';
   const current = (): boolean => !disposed && options.isCurrent();
-  const sourceCurrent = (): boolean => current() && document.visibilityState === 'visible' && (!quickDetails || quickDetails.open) && advanced.open && sourceDetails.open;
+  const sourceCurrent = (): boolean => current() && document.visibilityState === 'visible' && selectedSection === 'hosting' && sourceDetails.open;
   const hasUnsavedDraft = (): boolean => { const state = model?.read(); return Boolean(sourceModel?.read().dirty || (state && (state.nameDirty || state.grantsDirty || state.publicationDirty || state.draft.slug.trim()))); };
   const call = <T>(op: string, args: Record<string, unknown>): Promise<T> => api.request<T>(op, { ...args, expectedAccountId: accountId });
   const getPending = (): { pending: SettingsPending | null; storageError: string } => {
@@ -327,7 +327,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   messages.append(note, failure, storageFailure, copyField, pendingBox, conflictBox, confirmBox);
 
   const content = el('div', 'sw-app-settings-content');
-  const identity = section('Название'), nameForm = el('form', 'sw-app-settings-inline');
+  const identity = section('О приложении', 'Название и обложка принадлежат этому приложению. Личные закладки и вид поля настраиваются в «Моё».'), nameForm = el('form', 'sw-app-settings-inline');
   const name = keyed(textInput('', 'Название приложения', 64), 'name'); name.required = true; name.setAttribute('aria-label', 'Название приложения');
   const saveName = keyed(button('Сохранить название', 'check', 'sw-button-quiet'), 'save-name'); saveName.type = 'submit'; nameForm.append(name, saveName); identity.append(nameForm);
   name.addEventListener('input', () => { model?.patch({ name: name.value }); render(); });
@@ -376,7 +376,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let claimInitialised = false;
   claimDetails.append(claimSummary, claimForm, claimCount); addresses.append(aliasList, noAliases, claimDetails);
 
-  const access = section('Доступ'); access.classList.add('sw-app-settings-access');
+  const access = section('Доступ и публикация', 'Аудитория определяет, кто может открыть приложение. Публикация в каталоге и права на данные внутри приложения — отдельные условия.'); access.classList.add('sw-app-settings-access');
   const audience = createAudienceControl({ value: null, descriptions: {
     private: 'Приложение открываете только вы.',
     friends: 'Приложение доступно вашим текущим взаимным контактам.',
@@ -393,15 +393,15 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const noPublicAliases = el('p', 'sw-muted', 'Сначала отметьте хотя бы один именной адрес.');
   const chooseAddress = button('Выбрать ссылку', 'link', 'sw-button-quiet', () => {
     if (!current() || !model) return;
-    if (quickDetails) quickDetails.open = true;
-    advanced.open = true;
+    selectSettingsSection('access');
     if (!model.read().snapshot.addresses.aliases.length) claimDetails.open = true;
     addresses.tabIndex = -1; addresses.scrollIntoView({ block: 'nearest' }); addresses.focus({ preventScroll: true });
   });
   const listing = el('label', 'sw-app-settings-ack'), listingInput = keyed(el('input'), 'public-listing'); listingInput.type = 'checkbox';
   listingInput.addEventListener('change', () => { model?.patch({ ...(model && Object.hasOwn(model.read().snapshot.publication, 'audience') ? { audience: null } : {}), listed: listingInput.checked }); render(); });
   listing.append(listingInput, el('span', '', 'Показывать всем в разделе приложений Сот'));
-  publicDetails.append(el('p', 'sw-muted', 'Открыть сможет любой, кто узнает или угадает адрес.'), listing, ack, noPublicAliases, chooseAddress);
+  const publicHint = el('p', 'sw-muted');
+  publicDetails.append(publicHint, listing, ack, noPublicAliases, chooseAddress);
   const legacyListed = el('p', 'sw-muted sw-app-settings-hint');
   const publish = keyed(button('Сохранить доступ', 'check', 'sw-button-primary', () => {
     if (!model) return; void perform(async () => { const args = appPublicationArgs(model!.base('publication'), model!.read().draft, accountId); await mutation('apps.publication.update', args); });
@@ -420,9 +420,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   groups.append(groupsSummary, customAudience, policy, contactsHint, publicGroupsHint, choices, noGroups, saveGrants);
   access.append(audience.element, audienceUnavailable, publicDetails, legacyListed, publish, groups);
 
-  const source = section('Источник'), sourceState = el('p', 'sw-app-settings-observation'), sourceInfo = el('dl', 'sw-app-settings-source');
+  const source = section('Размещение', 'Техническое управление источником для владельца. Это не список устройств входа в профиль. Переключение источника не переносит и не откатывает данные приложения.'), sourceState = el('p', 'sw-app-settings-observation'), sourceInfo = el('dl', 'sw-app-settings-source');
   const sourceDevice = el('dd'), sourcePort = el('dd'), sourcePath = el('dd', 'sw-app-settings-path'), sourceTime = el('p', 'sw-muted sw-app-settings-hint');
-  sourceInfo.append(el('dt', '', 'Устройство'), sourceDevice, el('dt', '', 'Порт'), sourcePort, el('dt', '', 'Страница'), sourcePath);
+  sourceInfo.append(el('dt', '', 'Компьютер с приложением'), sourceDevice, el('dt', '', 'Порт'), sourcePort, el('dt', '', 'Страница'), sourcePath);
   const sourceBinding = el('p', 'sw-muted sw-app-settings-hint');
   const sourceDetails = keyed(el('details', 'sw-app-settings-details sw-app-settings-source-editor'), 'source-editor');
   const sourceSummary = el('summary', '', 'Изменить источник');
@@ -445,8 +445,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   });
   const sourceSelect = keyed(el('select', 'sw-select'), 'source-device'); sourceSelect.required = true;
   const deviceOptions = new Map<string, HTMLOptionElement>();
-  const reloadDevices = keyed(iconButton('Обновить список устройств', 'refresh', () => { void loadSourceDevices(); }), 'source-devices-refresh');
-  const deviceRow = el('div', 'sw-app-settings-device-row'); deviceRow.append(labeledField('Устройство', sourceSelect), reloadDevices);
+  const reloadDevices = keyed(iconButton('Обновить компьютеры с приложениями', 'refresh', () => { void loadSourceDevices(); }), 'source-devices-refresh');
+  const deviceRow = el('div', 'sw-app-settings-device-row'); deviceRow.append(labeledField('Компьютер с приложением', sourceSelect), reloadDevices);
   const deviceHint = el('p', 'sw-muted sw-app-settings-hint'), deviceFailure = el('p', 'sw-error'); deviceFailure.setAttribute('role', 'alert');
   const sourcePortInput = keyed(el('input', 'sw-input'), 'source-port');
   sourcePortInput.type = 'number'; sourcePortInput.min = '1024'; sourcePortInput.max = '65535'; sourcePortInput.step = '1'; sourcePortInput.inputMode = 'numeric'; sourcePortInput.required = true;
@@ -532,15 +532,42 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const danger = keyed(el('details', 'sw-app-settings-details'), 'danger'); danger.append(el('summary', '', 'Закрыть приложение в Сотах'));
   const revoke = keyed(button('Закрыть все ссылки приложения', 'lock', 'sw-button-quiet sw-button-danger', () => confirm({ kind: 'revoke' }, revoke)), 'revoke');
   danger.append(el('p', 'sw-muted', 'Отдельное действие: закрывает весь доступ через Соты. Для смены аудитории используйте настройки выше.'), revoke);
-  const advanced = el('details', 'sw-app-settings-details sw-app-settings-advanced');
-  advanced.append(el('summary', '', 'Адреса и источник'), addresses, source, danger);
-  advanced.addEventListener('toggle', () => { if (!advanced.open) sourceDetails.open = false; });
-  if (options.compactAccess) {
-    const more = el('details', 'sw-app-settings-details'); more.append(el('summary', '', 'Все настройки'), identity, groups, topActions, advanced);
-    quickDetails = more;
-    more.addEventListener('toggle', () => { if (!more.open) { advanced.open = false; sourceDetails.open = false; } });
-    content.append(access, more); host.append(loading, summary, messages, content);
-  } else { content.append(access, identity, advanced); host.append(loading, summary, topActions, messages, content); }
+  access.append(addresses);
+  const settingsNavigation = el('nav', 'sw-app-settings-navigation'); settingsNavigation.setAttribute('aria-label', 'Управление приложением'); settingsNavigation.setAttribute('role', 'tablist');
+  const panelId = `app-settings-${crypto.randomUUID()}`, settingsTabs = new Map<string, HTMLButtonElement>();
+  const panels = new Map([['about', identity], ['access', access], ['hosting', source]]);
+  const selectSettingsSection = (next: string, focus = false): void => {
+    if (!current() || !panels.has(next)) return;
+    if (selectedSection === 'hosting' && next !== selectedSection) {
+      sourceGeneration++; sourceModel?.invalidatePreparation(); hadPreparation = false; sourceNotice = '';
+      if (sourceTimer) clearTimeout(sourceTimer); sourceDetails.open = false;
+    }
+    selectedSection = next;
+    for (const [id, panel] of panels) {
+      panel.hidden = id !== next;
+      const tab = settingsTabs.get(id)!; tab.setAttribute('aria-selected', String(id === next)); tab.tabIndex = id === next ? 0 : -1;
+    }
+    if (focus) settingsTabs.get(next)?.focus();
+  };
+  for (const [id, label, iconName] of [['about', 'О приложении', 'app'], ['access', 'Доступ и публикация', 'eye'], ['hosting', 'Размещение', 'laptop']] as const) {
+    const tab = button(label, iconName, 'sw-button-quiet', () => selectSettingsSection(id)); tab.type = 'button'; tab.setAttribute('role', 'tab');
+    tab.id = `${panelId}-${id}-tab`; tab.setAttribute('aria-controls', `${panelId}-${id}`);
+    const panel = panels.get(id)!; panel.id = `${panelId}-${id}`; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', tab.id);
+    tab.addEventListener('keydown', event => {
+      const ids = [...panels.keys()], index = ids.indexOf(id);
+      const target = event.key === 'Home' ? ids[0] : event.key === 'End' ? ids.at(-1) : event.key === 'ArrowRight' ? ids[(index + 1) % ids.length] : event.key === 'ArrowLeft' ? ids[(index + ids.length - 1) % ids.length] : null;
+      if (target) { event.preventDefault(); selectSettingsSection(target, true); }
+    });
+    settingsTabs.set(id, tab); settingsNavigation.append(tab);
+  }
+  identity.append(topActions, ...(options.aboutActions ?? []));
+  if (options.supportActions?.length) {
+    const support = section('Поддержка приложения', 'Доступ к обращениям выдаётся отдельно от входа человека и публичности приложения.');
+    support.append(...options.supportActions); identity.append(support);
+  }
+  source.append(danger);
+  content.append(settingsNavigation, identity, access, source); host.append(loading, summary, messages, content);
+  selectSettingsSection(selectedSection);
 
   function renderSource(blocked: boolean, pending: SettingsPending | null, storageError: string): void {
     if (!model || !sourceModel) return;
@@ -560,14 +587,14 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (!state.preparation && !state.preparing && (state.conflict || ordinary.publicationDirty || !editable)) hadPreparation = false;
     const observed = snapshot.source.observation, binding = snapshot.source.binding?.state;
     const observationState = ['responding', 'unreachable'].includes(observed.state) && performance.now() >= observationDeadline ? 'unknown' : observed.state;
-    const routeState = binding && { offline: 'Устройство не в сети', legacy: '', 'update-required': 'Нужно обновить Соты Коннектор',
-      pending: 'Подключаем источник', bound: '', rejected: 'Устройство не приняло источник', unavailable: 'Подключение источника не подтверждено' }[binding];
-    text(sourceState, snapshot.app.state === 'revoked' ? 'Приложение закрыто в Сотах' : routeState || { offline: 'Устройство не в сети', unknown: 'Нет свежей проверки', responding: 'Источник отвечает', unreachable: 'Источник сейчас недоступен' }[observationState]);
-    text(sourceBinding, binding === 'bound' ? 'Устройство подтвердило текущий маршрут.' : binding === 'legacy' ? 'На этом устройстве смена источника требует обновления Соты Коннектора.' : '');
+    const routeState = binding && { offline: 'Компьютер не в сети', legacy: '', 'update-required': 'Нужно обновить Соты Коннектор',
+      pending: 'Подключаем источник', bound: '', rejected: 'Компьютер не принял источник', unavailable: 'Подключение источника не подтверждено' }[binding];
+    text(sourceState, snapshot.app.state === 'revoked' ? 'Приложение закрыто в Сотах' : routeState || { offline: 'Компьютер не в сети', unknown: 'Нет свежей проверки', responding: 'Источник отвечает', unreachable: 'Источник сейчас недоступен' }[observationState]);
+    text(sourceBinding, binding === 'bound' ? 'Компьютер подтвердил текущий маршрут.' : binding === 'legacy' ? 'На этом компьютере смена источника требует обновления Соты Коннектора.' : '');
     sourceBinding.hidden = !sourceBinding.textContent || snapshot.app.state === 'revoked';
     text(sourceDevice, snapshot.source.deviceName); text(sourcePort, String(snapshot.source.port)); text(sourcePath, snapshot.source.entryPath);
     disable(exportDeployment, busy || staleInspection || snapshot.app.state !== 'enabled');
-    text(sourceTime, observed.observedAt === null ? 'Пока нет наблюдения от устройства.' : `Последнее наблюдение: ${new Date(observed.observedAt).toLocaleString('ru-RU')}.`);
+    text(sourceTime, observed.observedAt === null ? 'Пока нет наблюдения от компьютера.' : `Последнее наблюдение: ${new Date(observed.observedAt).toLocaleString('ru-RU')}.`);
     const selectedKey = deviceKey(draft), names = new Map<string, number>();
     for (const value of devices) names.set(value.name, (names.get(value.name) ?? 0) + 1);
     const allowedKeys = new Set(devices.map(deviceKey)); allowedKeys.add(selectedKey);
@@ -581,13 +608,13 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (!selectedDevice) {
       let node = deviceOptions.get(selectedKey);
       if (!node) { node = el('option'); node.value = selectedKey; deviceOptions.set(selectedKey, node); sourceSelect.append(node); }
-      text(node, !devicesLoaded && selectedKey === deviceKey(snapshot.source) ? snapshot.source.deviceName : 'Выбранное устройство недоступно');
+      text(node, !devicesLoaded && selectedKey === deviceKey(snapshot.source) ? snapshot.source.deviceName : 'Выбранный компьютер недоступен');
     }
     if (sourceSelect.value !== selectedKey) sourceSelect.value = selectedKey;
     sourceSelect.disabled = !editable || selectedProfile; disable(reloadDevices, devicesLoading || !editable); reloadDevices.setAttribute('aria-busy', String(devicesLoading));
-    text(deviceHint, devicesLoading ? 'Обновляем список…' : selectedDevice?.bindingVersion === 1 ? 'Для переключения обновите Соты Коннектор на этом устройстве.'
-      : selectedDevice && !selectedDevice.online ? 'Устройство не в сети. Проверка уточнит подключение.' : !devicesLoaded ? 'Загрузите список устройств для проверки.'
-        : !selectedDevice ? 'Обновите список или выберите другое устройство.' : '');
+    text(deviceHint, devicesLoading ? 'Обновляем список…' : selectedDevice?.bindingVersion === 1 ? 'Для переключения обновите Соты Коннектор на этом компьютере.'
+      : selectedDevice && !selectedDevice.online ? 'Компьютер не в сети. Проверка уточнит подключение.' : !devicesLoaded ? 'Загрузите список компьютеров для проверки.'
+        : !selectedDevice ? 'Обновите список или выберите другой компьютер.' : '');
     deviceHint.hidden = !deviceHint.textContent; text(deviceFailure, deviceError); deviceFailure.hidden = !deviceError;
     inputValue(sourcePortInput, draft.port); inputValue(sourcePathInput, draft.entryPath);
     sourcePortInput.readOnly = !editable;
@@ -730,12 +757,14 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     policy.hidden = !custom;
     publicDetails.hidden = draft.launchPolicy !== 'anyone'; ackInput.checked = draft.exposureConfirmed; ackInput.disabled = !snapshot.actions.canPublish;
     const base = model.base('publication');
+    text(publicHint, appSourceExposureScope(base.source.profile) === 'authenticated-workspace'
+      ? 'Ссылка открывает защищённый вход в приложение. Доступ к личным данным каждого человека проверяет само приложение.'
+      : 'Открыть сможет любой, кто узнает или угадает адрес. Публикация в каталоге делает приложение доступным для поиска.');
     text(ackText, appSourceExposureScope(base.source.profile) === 'authenticated-workspace'
       ? 'Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.'
       : `Открыть всем весь проект на устройстве «${base.source.deviceName}», порт ${base.source.port}, включая его страницы и API.`);
     noPublicAliases.hidden = draft.activeDomainIds.length > 0;
     chooseAddress.hidden = draft.activeDomainIds.length > 0; disable(chooseAddress, blocked);
-    if (draft.launchPolicy === 'anyone' && !draft.activeDomainIds.length) advanced.open = true;
     listing.hidden = !custom;
     listingInput.checked = draft.listed; listingInput.disabled = blocked || !snapshot.actions.canPublish || !custom;
     legacyListed.hidden = !snapshot.publication.listed; text(legacyListed, draft.launchPolicy === 'restricted' ? 'Приложение исчезнет из общего списка после сохранения ограниченного доступа.' : 'Приложение опубликовано в общем списке.');
