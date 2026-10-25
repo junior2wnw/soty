@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,writeFile,readFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {mkdir,writeFile,symlink} from 'node:fs/promises';
+import {join,dirname} from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 import {createSourceWorkspaceClient} from '../browser/index.mjs';
 import {STANDARD_ROOT_WORKSPACE_SOURCE} from '../server/index.mjs';
-import {loadSourceOperatorConfiguration,disposeSourceOperatorConfiguration} from '../install/config.mjs';
-import {startInstalledSource,diagnoseInstalledSource} from '../install/runtime.mjs';
+import {buildSourceAppPackage} from '../scripts/build.mjs';
 import {createOrdinaryInstalledFixture} from './support/ordinary-installed.mjs';
 
 // The consumer contributes only its data module and these fixed public files.
@@ -16,7 +16,13 @@ import {createOrdinaryInstalledFixture} from './support/ordinary-installed.mjs';
 // browser client are all actual maintained implementations, not authority DTOs.
 async function nativeFactory({realm,initialize,directory}) {
   const folder=join(directory,'author-'+realm.realmId),configPath=join(folder,'operator.json');
-  const cli=(...args)=>JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('../install/cli.mjs',import.meta.url)),...args],{cwd:folder,windowsHide:true,encoding:'utf8'}));
+  const sdkDirectory=join(directory,'portable-sdk');
+  if(initialize){await buildSourceAppPackage({outdir:sdkDirectory});await mkdir(join(directory,'node_modules'),{recursive:true});
+    const require=createRequire(import.meta.url);
+    await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules','openid-client'),process.platform==='win32'?'junction':'dir');}
+  const {loadSourceOperatorConfiguration,disposeSourceOperatorConfiguration,startInstalledSource,diagnoseInstalledSource}
+    =await import(pathToFileURL(join(sdkDirectory,'install.mjs')).href);
+  const cli=(...args)=>JSON.parse(execFileSync(process.execPath,[join(sdkDirectory,'install.mjs'),...args],{cwd:folder,windowsHide:true,encoding:'utf8'}));
   if(initialize){
     await mkdir(folder,{mode:0o700});await mkdir(join(folder,'secrets'),{mode:0o700});await mkdir(join(folder,'data'),{mode:0o700});
     const author=cli('author','--title','Мой список','--template','reading-list');assert.equal(author.connected,false);assert.equal(author.template,'reading-list');
