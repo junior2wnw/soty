@@ -79,6 +79,10 @@ test('paired replacement defaults to keep, independently reviews both entries, t
   assert.throws(() => f.source.promoteIntent(), { code: 'app_native_exposure_ack_required' });
   f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
   assert.equal(intent.args.exposureAck.scope, 'authenticated-workspace'); assert.equal(intent.args.nativeExposureAck.scope, 'whole-port');
+  for (const patch of [
+    { ...intent, args: { ...intent.args, nativeExposureAck: { ...intent.args.nativeExposureAck, targetDigest: [intent.args.nativeExposureAck.targetDigest] } } },
+    { ...intent, expectedNativeEntry: { ...intent.expectedNativeEntry, domainId: [domainId] } },
+  ]) { await assert.rejects(store.state.prepare(patch)); assert.equal(store.state.read().pending, null); }
   await assert.rejects(dispatchAppSettingsIntent({ ...intent, state: store.state, isCurrent: () => true,
     api: { request: async () => { throw Error('lost ACK'); } } }));
   const reopened = createAppSettingsState(store.options), pending = reopened.read().pending;
@@ -105,6 +109,8 @@ test('explicit removal binds exact current Native URL/pins, needs its own confir
   f.source.patch({ exposureConfirmed: true }); assert.equal(f.source.read().canPromote, false);
   f.source.patch({ nativeConfirmed: true }); const intent = f.source.promoteIntent();
   assert.deepEqual(intent.args.nativeEntryAction, removal); assert.equal(intent.args.nativeExposureAck, undefined);
+  await assert.rejects(store.state.prepare({ ...intent, args: { ...intent.args, nativeEntryAction: { ...removal, targetDigest: [removal.targetDigest] } } }));
+  assert.equal(store.state.read().pending, null);
   const pending = await store.state.prepare(intent), valid = receipt(pending), bad = copy(valid);
   bad.receipt.nativeEntryAction.targetDigest = 'f'.repeat(64);
   await assert.rejects(store.state.acknowledge(pending, bad), { code: 'app_settings_invalid_receipt' });

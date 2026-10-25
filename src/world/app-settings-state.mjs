@@ -53,13 +53,13 @@ function normalize(op, args, includeRequest = false) {
       const ack = args.nativeExposureAck;
       check(ack && typeof ack === 'object' && Object.keys(ack).sort().join(',') === 'profile,scope,targetDigest,targetRevision'
         && args.launchPolicy === 'anyone' && ack.scope === 'whole-port' && ack.profile === 'soty.relay-restricted.v1'
-        && positive(ack.targetRevision) && /^[a-f0-9]{64}$/u.test(ack.targetDigest), 'app_native_exposure_ack_required');
+        && positive(ack.targetRevision) && typeof ack.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(ack.targetDigest), 'app_native_exposure_ack_required');
       base.nativeExposureAck = { scope: ack.scope, targetRevision: ack.targetRevision, targetDigest: ack.targetDigest, profile: ack.profile };
     }
     if (source && args.nativeEntryAction !== undefined) {
       const action = args.nativeEntryAction;
       check(action && typeof action === 'object' && Object.keys(action).sort().join(',') === 'action,origin,targetDigest,targetRevision'
-        && action.action === 'remove' && positive(action.targetRevision) && /^[a-f0-9]{64}$/u.test(action.targetDigest)
+        && action.action === 'remove' && positive(action.targetRevision) && typeof action.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(action.targetDigest)
         && validOrigin(action.origin) && !base.nativeExposureAck, 'invalid_native_pair_action');
       base.nativeEntryAction = { action: 'remove', origin: action.origin, targetRevision: action.targetRevision, targetDigest: action.targetDigest };
     }
@@ -81,7 +81,7 @@ function normalizedPending(op, args, expectedSource, includeRequest = false, exp
     && value.exposureAck.profile === target.profile, 'app_exposure_ack_required');
   if (value.nativeExposureAck) check(expectedNativeEntry && typeof expectedNativeEntry === 'object'
     && Object.keys(expectedNativeEntry).sort().join(',') === 'domainId,origin' && validOrigin(expectedNativeEntry.origin)
-    && domainIdPattern.test(expectedNativeEntry.domainId), 'app_settings_invalid_intent');
+    && typeof expectedNativeEntry.domainId === 'string' && domainIdPattern.test(expectedNativeEntry.domainId), 'app_settings_invalid_intent');
   else check(expectedNativeEntry === undefined);
   return { op, args: value, expectedSource: target, ...(expectedNativeEntry ? { expectedNativeEntry: clone(expectedNativeEntry) } : {}) };
 }

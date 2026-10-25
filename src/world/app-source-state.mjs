@@ -52,8 +52,8 @@ function validateSnapshot(value, appId) {
   if (native !== undefined) {
     let origin; try { origin = new URL(native.origin); } catch { fail('app_source_invalid_scope'); }
     check(native.schema === 'soty.native-entry.v1' && origin.protocol === 'https:' && origin.origin === native.origin
-      && /^dom_[a-f0-9]{32}$/u.test(native.domainId) && native.target?.profile === PROFILE
-      && positive(native.target.revision) && /^[a-f0-9]{64}$/u.test(native.target.digest)
+      && typeof native.domainId === 'string' && /^dom_[a-f0-9]{32}$/u.test(native.domainId) && native.target?.profile === PROFILE
+      && positive(native.target.revision) && typeof native.target.digest === 'string' && /^[a-f0-9]{64}$/u.test(native.target.digest)
       && Number.isSafeInteger(native.target.port) && native.target.port >= 1024 && native.target.port <= 65535
       && typeof native.target.entryPath === 'string', 'app_source_invalid_scope');
     validateAppLaunchPath(native.target.entryPath);
