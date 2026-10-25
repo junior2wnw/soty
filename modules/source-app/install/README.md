@@ -1,4 +1,117 @@
-# Подключить обычное приложение
+# Подключить приложение
+
+Для нового приложения с личными данными используйте **Root workspace** ниже.
+Для существующих аккаунтов и своей модели прав используйте Native/storage ports
+SDK; приложение сохраняет свою базу и проверяет свой ACL. Старый Ordinary/OIDC
+режим описан после быстрого старта. Публикацию во всех режимах выполняет
+существующий `soty-app-release` / Root Source prepare/promote.
+
+## Новый личный сервис: Root workspace
+
+Нужен Node24.15+ и утверждённый установленный коннектор с поддержкой workspace2.
+Начните в пустой папке проекта:
+
+```text
+soty-source author --title "Мой список" --template reading-list
+soty-source check --config /private/operator.json
+soty-source init --config /private/operator.json
+soty-source serve --config /private/operator.json
+```
+
+`author` создаёт `.soty/author.json` и `source/{domain.mjs,assets/...}` без запуска
+package scripts. Доменный модуль содержит только SQL приложения. Вход, короткая
+Source сессия, шифрование, nonce, текущий личный ресурс, финальная проверка перед
+COMMIT и неизменяемая квитанция реализованы общим SDK. Существующие `.soty/app.json`
+и папка `source` не перезаписываются; после ошибки частично созданные новые файлы
+остаются для проверки. Повторный `init` отказывает вместо перезаписи базы.
+
+Между `author` и `check` оператор заполняет
+[`operator.workspace.template.json`](operator.workspace.template.json) из
+**утверждённого Root profile**, а не из пожеланий автора: тот же неизменяемый
+appId, точный target revision/digest, коннектор, issuer/client/resource и два
+различных hostname. Placeholder-шаблон намеренно не принимается loader.
+Проверенный source profile — `soty.standard-workspace@2`, а не Ordinary/OIDC.
+Root RP client secret этому режиму не нужен. Два отдельных ключа
+`secrets/{transport,cipher}.key` содержат canonical base64url32 случайных байта;
+config/keys600, private data/secrets dirs700 на Linux. Windows ACL этим POSIX
+режимом не доказывается. Секреты не попадают в manifest, аргументы команд или UI.
+
+`policy.personalWorkspaces` по умолчанию в шаблоне `false`. Для **нового** личного
+сервиса оператор явно выбирает `true`: SDK создаёт каждому проверенному
+`issuer/sub` свой пустой Native principal/resource. Владелец Root карточки не
+получает чужие данные или Native administrator/support. Guest и объединение
+старых аккаунтов отсутствуют. Для существующей базы с собственной identity/ACL
+нужен явный Native/storage adapter; SDK не импортирует её в теневую SQLite базу.
+
+После установки используйте существующий release путь: `soty-app-release init`
+с портом и `/embed`, затем plan/verify и утверждённые Root Source prepare/promote.
+Сохранение `.soty/app.json` — описание пути, не доступ, admission или публикация.
+Для активного Native/Source pair изменение выполняется по текущему pair contract;
+этот CLI не снимает пару и не публикует приложение автоматически. Native веб-вход
+с собственной сессией, ACL и app-policy guard — отдельная возможность приложения.
+`native-portal` Ordinary не создаёт такой вход для Root workspace и здесь отказывает.
+
+В интерфейсе шаблона один `client.connect({requestId})` продолжает короткую
+сессию и получает текущий контекст, затем `query` загружает собственные записи.
+Запись идёт через `prepareInvoke` → `invoke`. При потере ACK браузер сохраняет
+только requestId/inputDigest/старый contextRef в namespace своего **уже
+авторизованного** личного ресурса. Текст записи/сессии/токены туда не копируются.
+После reload/new frame `recoverReceipt(reference)` делает только чтение с новым
+contextRef и сохраняет исходную квитанцию. Отсутствие строки у другого профиля
+оставляет результат неизвестным; оно не подтверждает, что старая запись не
+случилась. Пока результат неизвестен, форма не отправляет второй запрос.
+
+Внешние assets имеют ровно три адреса: `/assets/ui.js`, `/assets/ui.css`,
+`/assets/source-sdk.js`; документ — `/embed`. Имена разрешены existing finite
+Source transport. Сервер не выдаёт соседние файлы, config, domain.mjs или SQLite.
+Frame locator берёт общий browser SDK из href; locator не даёт разрешений.
+
+## Проверка результата и doctor
+
+```text
+soty-source reader --config /private/operator.json
+soty-source doctor --config /private/operator.json
+```
+
+`check` проверяет форму приватной конфигурации. `reader` проверяет **локальную**
+схему и один retained encrypted Source session; пустая база честно показывает
+`keyCorrectness:unproved_empty`. Они не подтверждают Root доступ или данные.
+Первый `connect` не равен готовности данных: отдельно нужны успешный domain query,
+реальная запись, квитанция, reload и revoke.
+
+Работающий workspace сервер записывает только последнюю успешную проверенную
+операцию после финальных Root/Native checks в приватный purpose-sealed
+`source-readiness.json`. Запись содержит timestamp, статические app/profile/target
+pins, operation/status. Нет subject, аргументов, cookies, результата или хеша
+частных данных. Ошибка записи, неизвестная схема или заполненный диск не меняют
+уже committed business результат и не требуют повторной записи.
+
+`doctor` проверяет seal и точное совпадение pins и показывает историческое
+наблюдение: `ready` — continuation; `context_verified` — контекст;
+`read_verified` — чтение; `commit_verified` — сервер подтвердил commit;
+`receipt_verified` — подтверждена квитанция. Это не подтверждение доставки ACK в
+браузер и не текущая авторизация: `currentAuthority:not_checked`,
+`clientAcknowledgement:not_observed`, `releaseReady:false` сохраняются даже при
+целом файле. Missing/invalid/old pins не превращаются в Ready. Не используйте
+файл как grant или обход живого Root/Native check. Existing release doctor с
+reported observations остаётся отдельной диагностикой публикации, а не live proof.
+
+Проверенный минимальный consumer — `examples/reading-list`: actual Root/Human,
+установленный connector, общий browser client, CLI и SQLite host проходят
+чтение/запись, потерянный ACK, cold Source restart/new frame, изоляцию другого
+профиля и revoke. Source/PG приложения используют те же BFF/Native/storage и
+receipt recovery ports; PostgreSQL business SQL остаётся в приложении. SQLite
+host — готовый optional adapter, не обязательный storage framework для всех.
+
+Ограничения фиксированы отдельно: BFF default128 context slots, этот SQLite host
+4096 active/retained коротких Source sessions до GC по expiry, 4096 nonce rows и
+20000 неизменяемых квитанций на личный principal. Переполнение — retryable503,
+без вытеснения валидных lease и без повторного входа. Это не проверка мировой
+нагрузки. Ordinary Reader3/image labels не становятся Reader этого нового
+`soty.sqlite-root-workspace.v1`: Node CLI проверен отдельно, workspace container,
+physical cold/restore и реальный DNS/TLS требуют своей квалификации до релиза.
+
+## Ordinary Native/OIDC
 
 Из папки проекта создайте заявку:
 

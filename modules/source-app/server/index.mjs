@@ -12,3 +12,8 @@ export {createFeedbackProcessorEngine,feedbackProcessingPolicy,FEEDBACK_JOB_LIMI
 export {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
 export { createSqliteSourceStorage } from './sqlite-source-storage.mjs';
 export { createNativeEntryGuard } from './native-entry-guard.mjs';
+// Optional ready-to-use host for NEW personal SQLite apps. Existing Native
+// identity/SQL models keep their own Native/storage ports and business ACL.
+export { createSqliteRootWorkspaceHost, SQLITE_ROOT_WORKSPACE_LIMITS } from './sqlite-root-workspace-host.mjs';
+export { createRootWorkspaceServer } from './workspace-server.mjs';
+export { createSourceReadinessObserver } from './operation-observer.mjs';

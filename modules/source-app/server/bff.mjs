@@ -9,6 +9,7 @@ import { feedbackOutput } from '../shared/feedback-wire.mjs';
 import { parseSourceJson } from '../shared/strict-json.mjs';
 import { sourceEmbedRoute, sourceBodyHeaders } from './router.mjs';
 import { createFeedbackJobAuthorityProof } from './feedback-job-authority.mjs';
+import { sourceVerifiedOperation } from './operation-observer.mjs';
 import { fields, check, digest, nonce, opaque, requestId, jsonCopy, deepFreeze, syncResult, SourceAppError } from './wire.mjs';
 
 const COOKIE = 'soty_rp_session', LINK = 'soty_rp_link';
@@ -27,7 +28,7 @@ function html(text) { return String(text).replaceAll('&', '&amp;').replaceAll('<
  * or turns an OIDC identity into a Native permission on its own. */
 export function createSourceAppBff(options) {
   const value = fields(options, ['profile', 'transportKey', 'connectorPort', 'storage', 'native'],
-    ['rp', 'clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled', 'workspaceCapacity']);
+    ['rp', 'clock', 'allowCreateEmptyGuest', 'ui', 'rpSessions', 'processingProofEnabled', 'workspaceCapacity', 'onVerifiedOperation']);
   const profile = selectedResourceProfile(value.profile), clock = value.clock ?? Date.now;
   // Ports are not cookie boundaries. Only Native correlation cookies are
   // namespaced; the fixed embed cookies stay private to each Root broker slot.
@@ -38,6 +39,15 @@ export function createSourceAppBff(options) {
   check(profile.resource.selection.kind === contract.kind, 'source_app_profile_invalid', 503);
   check(typeof clock === 'function' && (value.allowCreateEmptyGuest === undefined || typeof value.allowCreateEmptyGuest === 'boolean'));
   check(value.processingProofEnabled===undefined||typeof value.processingProofEnabled==='boolean');
+  check(value.onVerifiedOperation===undefined||typeof value.onVerifiedOperation==='function','source_app_configuration_invalid',503);
+  function observed(operation,status){
+    // Diagnostics only. No args, subject, data or result fingerprint; a failed
+    // recorder must never reinterpret an already committed business result.
+    try{const result=value.onVerifiedOperation?.(sourceVerifiedOperation(deepFreeze({schema:'soty.source-readiness.v1',appId:profile.appId,
+      profileDigest:profile.digest,target:profile.target,sourceProfile:profile.sourceProfile,observedAt:clock(),operation,status})));
+      if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});
+    }catch{/* Losing an observation is not permission to reapply an effect. */}
+  }
   const labels = value.ui === undefined ? { appLabel: 'Приложение', resourceLabel: 'Выбранный ресурс' }
     : fields(value.ui, ['appLabel', 'resourceLabel']);
   check(Object.values(labels).every(label => typeof label === 'string' && label.isWellFormed() && label.trim().length > 0 && label.length <= 160
@@ -446,6 +456,7 @@ export function createSourceAppBff(options) {
         check(deadline > clock() && current.proof.expiresAt > clock(), 'authentication_required', 401);
         reply({ 'set-cookie': cookieHeader(COOKIE, current.resumedCookie, Math.max(1, Math.floor((deadline - clock()) / 1000))) });
       } else reply();
+      observed('continue','ready');
       return;
     }
     const operation = url.pathname === '/api/embed/query' ? 'read' : url.pathname === '/api/embed/invoke' ? 'execute' : url.pathname === '/api/embed/receipt' ? 'readProof' : null;
@@ -458,7 +469,10 @@ export function createSourceAppBff(options) {
         if (rootSigned) await native.assertCurrent(current.authority); }
       if (contract.kind === 'soty.workspace.v1') finalWorkspaceContext(current.authority,
         args.contextRef ?? (data?.schema === 'soty.current-context.v2' ? data.context.ref : undefined), operation === 'execute');
-      send(res, 200, { ok: true, data }); return;
+      send(res, 200, { ok: true, data });
+      observed(operation,operation==='execute'&&data?.outcome==='committed'?'commit_verified':
+        operation==='readProof'&&data?.outcome==='committed'?'receipt_verified':
+          operation==='read'&&data?.schema==='soty.current-context.v2'?'context_verified':'read_verified');return;
     }
     const feedbackOperation = new Map([
       ['GET /api/embed/feedback/context', 'context'], ['GET /api/embed/feedback/ticket', 'get'],

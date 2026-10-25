@@ -34,6 +34,11 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
   await mkdir(join(outdir, 'assets'), { recursive: true });
   for (const name of ['app.js', 'app.css','processing.js','feedback-inbox.js']){const path=join(packageRoot,'examples/ordinary-app/assets',name);inputs.add(path);
     await writeFile(join(outdir,'assets',name),await bytes(path));}
+  for (const name of ['domain.mjs','assets/embed.html','assets/ui.js','assets/ui.css']){
+    const path=join(packageRoot,'examples/reading-list',name);inputs.add(path);
+    const target=join(outdir,'templates/reading-list',name);await mkdir(dirname(target),{recursive:true});await writeFile(target,await bytes(path));
+    outputs.push({path:'templates/reading-list/'+name,sha256:sha(await readFile(target))});
+  }
   const sourceFiles = [];
   for (const path of [...inputs].sort()) sourceFiles.push({ path: sourcePath(path), sha256: sha(await bytes(path)) });
   for (const name of ['server.mjs', 'browser.mjs', 'example.mjs','install.mjs', 'assets/app.js', 'assets/app.css','assets/processing.js','assets/feedback-inbox.js']) outputs.push({ path: name, sha256: sha(await readFile(join(outdir, name))) });

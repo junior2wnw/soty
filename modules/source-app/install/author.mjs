@@ -6,7 +6,8 @@ import {check} from '../server/wire.mjs';
 
 /** Framework detection is convenience metadata. It never installs an auth
  * hook, executes package scripts, or converts a manifest into a Native grant. */
-export async function createSourceAuthorDraft({directory,title}){
+export async function createSourceAuthorDraft({directory,title,template}){
+  check(template===undefined||template==='reading-list','source_author_template_invalid');
   check(typeof directory==='string'&&resolve(directory)===directory,'source_author_directory_invalid');
   const stat=await lstat(directory);check(stat.isDirectory()&&!stat.isSymbolicLink(),'source_author_directory_invalid');
   const draft=createAuthorDraft({title});let framework='plain-web';
@@ -18,7 +19,15 @@ export async function createSourceAuthorDraft({directory,title}){
   }catch(error){if(error.code!=='ENOENT')throw Object.assign(new Error('source_author_framework_inspection_failed'),{code:'source_author_framework_inspection_failed'});}
   const destination=join(directory,'.soty');await mkdir(destination,{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
   const destStat=await lstat(destination);check(destStat.isDirectory()&&!destStat.isSymbolicLink(),'source_author_directory_invalid');
+  if(template){try{await lstat(join(directory,'source'));check(false,'source_author_template_exists',409);}catch(error){if(error.code!=='ENOENT')throw error;}}
   await writeFile(join(destination,'author.json'),JSON.stringify(draft,null,2)+'\n',{flag:'wx',mode:0o600});
-  return{schema:'soty.source-author-result.v1',created:true,framework,manifest:'.soty/author.json',metadataOnly:true,connected:false,
-    next:'approved-source-and-feature-consent'};
+  if(template){
+    const output=join(directory,'source');await mkdir(output);await mkdir(join(output,'assets'));
+    const bundled=typeof __SOTY_SOURCE_APP_BUNDLE__!=='undefined'&&__SOTY_SOURCE_APP_BUNDLE__===true;
+    const input=new URL(bundled?'./templates/reading-list/':'../examples/reading-list/',import.meta.url);
+    for(const name of ['domain.mjs','assets/embed.html','assets/ui.js','assets/ui.css'])
+      await writeFile(join(output,name),await readFile(new URL(name,input)),{flag:'wx',mode:0o644});
+  }
+  return{schema:'soty.source-author-result.v1',created:true,framework,manifest:'.soty/author.json',metadataOnly:!template,connected:false,
+    ...(template?{template,sourceDirectory:'source',authentication:'operator-selected-root-workspace'}:{}),next:'approved-source-and-feature-consent'};
 }

@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Мой список</title><link rel="stylesheet" href="/assets/ui.css">
+<main><header><p class="eyebrow">Личное пространство</p><h1>Мой список</h1><p id="state" role="status">Подключаем ваш профиль…</p></header>
+<button id="retry" type="button" hidden>Повторить подключение</button>
+<section id="content" hidden><form id="add"><label for="title">Что сохранить</label><div class="input-row"><input id="title" maxlength="240" required autocomplete="off" placeholder="Книга, идея или ссылка"><button>Добавить</button></div></form>
+<p id="save-state" role="status"></p><ul id="items"></ul><p id="empty" hidden>Здесь появятся ваши записи.</p></section></main>
+<script type="module" src="/assets/ui.js"></script></html>

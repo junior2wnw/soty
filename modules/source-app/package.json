@@ -9,7 +9,7 @@
     "./browser": { "types": "./types/browser.d.mts", "import": "./dist/browser.mjs" },
     "./example": { "types": "./types/example.d.mts", "import": "./dist/example.mjs" }
   },
-  "files": ["dist", "types", "README.md"],
+  "files": ["dist", "types", "README.md", "install/README.md", "install/operator.template.json", "install/operator.workspace.template.json"],
   "scripts": { "build": "node scripts/build.mjs", "prepack": "node scripts/build.mjs" },
   "dependencies": { "openid-client": "6.8.4" },
   "devDependencies": { "esbuild": "0.27.7" }

@@ -3,7 +3,8 @@ import {withSourceOperatorConfiguration} from './config.mjs';
 
 /** A fixed Source-owned public TLS entry, separate from Root embed/broker.
  * It forwards no identity claim or caller-selected path/destination. */
-export function renderSourceNativePortal(handle){return withSourceOperatorConfiguration(handle,options=>{
+export function renderSourceNativePortal(handle){return withSourceOperatorConfiguration(handle,(options,cfg)=>{
+  check(cfg.schema==='soty.ordinary-source.operator.v1','source_install_native_portal_not_applicable',409);
   const native=new URL(options.profile.nativeOrigin);check(native.protocol==='https:','source_install_public_https_required',503);
   const hostname=native.host;check(/^[A-Za-z0-9.-]+(?::[0-9]+)?$/u.test(hostname),'source_install_public_https_required',503);
   return `${hostname} {

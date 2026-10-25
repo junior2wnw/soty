@@ -1,0 +1,19 @@
+{
+  "schema": "soty.root-workspace.operator.v1",
+  "profile": {
+    "schema": "soty.selected-human-embed.v2",
+    "appId": "REPLACE_WITH_EXISTING_ROOT_APP_ID",
+    "connector": {"linkId":"FROM_APPROVED_CONNECTOR","hostDeviceId":"FROM_APPROVED_CONNECTOR","connectorId":"FROM_APPROVED_CONNECTOR"},
+    "target": {"revision":2,"digest":"FROM_EXACT_APPROVED_SOURCE_TARGET"},
+    "sourceProfile": {"id":"soty.standard-workspace","version":2,"digest":"23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9"},
+    "resource": {"registryId":"soty","environmentId":"production","tenantId":"FROM_APPROVED_PROFILE","appId":"SAME_EXISTING_ROOT_APP_ID","resourceId":"personal-workspaces","selection":{"kind":"soty.workspace.v1","nativeId":"personal-workspaces","incarnationId":"FROM_APPROVED_PROFILE"}},
+    "issuer":"https://ROOT_ORIGIN/human-identity","clientId":"FROM_APPROVED_PROFILE",
+    "embedOrigin":"https://APP_EMBED_HOST","nativeOrigin":"https://APP_NATIVE_HOST","parentOrigin":"https://ROOT_ORIGIN"
+  },
+  "connectorPort":61413,
+  "listener":{"host":"127.0.0.1","port":63347},
+  "storage":{"directory":"/ABSOLUTE/PRIVATE/data","keyId":"source-key-1","cipherKeyFile":"cipher.key"},
+  "transportKeyFile":"transport.key",
+  "native":{"resourceTitle":"Мой список","domainModule":"/ABSOLUTE/PROJECT/source/domain.mjs","uiDirectory":"/ABSOLUTE/PROJECT/source/assets"},
+  "policy":{"personalWorkspaces":false}
+}

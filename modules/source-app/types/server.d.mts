@@ -90,6 +90,9 @@ export interface SourceAppLegacyRpPort {
   currentProof(marker:SourceRpMarker,hostOptions?:{minimumAccessRemainingMs?:number}):Promise<SourceRpCurrentProof>;
 }
 export function createSourceAppBff(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;storage:SourceStoragePort;native:SourceNativeAuthorityPort;rp?:SourceRpProfile;
+  /** Optional historical diagnostics. Throw/rejection never changes an applied
+   * business result. Contains only static pins/time/operation/status, no data. */
+  onVerifiedOperation?:(observation:SourceVerifiedOperation)=>void;
   /** Host-only, workspace profile only: default128, integer1..65536. No permission or lease extension. */
   workspaceCapacity?:{maxSlots?:number};
   clock?:()=>number;allowCreateEmptyGuest?:boolean;processingProofEnabled?:boolean;ui?:{appLabel:string;resourceLabel:string};rpSessions?:SourceAppRenewalPort|SourceAppLegacyRpPort}):{
@@ -125,3 +128,40 @@ export function createNativeEntryGuard(options:{rootCheckUrl:string;appId:string
   timeoutMs?:number;heartbeatMs?:number;leaseMs?:number;maxStreams?:number;maxRequests?:number;}):{
   acquire(options?:{signal?:AbortSignal}):Promise<NativeEntryLease>;assertCurrent(lease:NativeEntryLease):NativeEntryLease;
   openStream(options:{onClose:(reason:string)=>void}):Promise<NativeEntryStream>;close():void;};
+
+declare const verifiedOperationBrand:unique symbol;
+export interface SourceOperationObservation {readonly schema:'soty.source-readiness.v1';readonly appId:string;readonly profileDigest:string;
+  readonly target:SourceProfile['target'];readonly sourceProfile:SourceProfile['sourceProfile'];readonly observedAt:number;
+  readonly operation:'continue'|'read'|'execute'|'readProof';readonly status:'ready'|'context_verified'|'read_verified'|'commit_verified'|'receipt_verified'}
+export interface SourceVerifiedOperation extends SourceOperationObservation {readonly [verifiedOperationBrand]:true}
+export interface SqliteWorkspaceDomainContext {readonly database:import('node:sqlite').DatabaseSync;readonly principalId:string;readonly resourceId:string}
+/** All callbacks are synchronous, on the same actual Native transaction. The
+ * principal/resource come from the host, never from the request's JSON. */
+export interface SqliteWorkspaceDomain {
+  initialize?:(database:import('node:sqlite').DatabaseSync)=>void;
+  inspect?:(database:import('node:sqlite').DatabaseSync)=>void;
+  read:(current:SqliteWorkspaceDomainContext,args:{requestId:string;input:unknown})=>Record<string,unknown>;
+  execute?:(current:SqliteWorkspaceDomainContext,args:{requestId:string;input:unknown})=>{workspaceReceipt:NativeWorkspaceReceipt;result?:unknown;data?:unknown};
+}
+export interface SqliteRootWorkspaceHost {readonly native:SourceNativeAuthorityPort;readonly storage:SourceStoragePort;
+  readonly profile:SourceProfile&{digest:string};inspect():{schema:'soty.sqlite-root-workspace.v1';appId:string;initialized:true;
+    personalWorkspaces:boolean;keyCorrectness:'sample_verified'|'unproved_empty';connected:false};
+  /** Trusted Node/operator control only; no public HTTP endpoint. Generation
+   * changes on both revoke and re-enable, so old proofs cannot survive ABA. */
+  setIdentityAccess(identity:{issuer:string;subject:string},active:boolean):void;close():void;
+}
+export const SQLITE_ROOT_WORKSPACE_LIMITS:Readonly<{sessions:4096;nonces:4096;receiptsPerPerson:20000}>;
+export function createSqliteRootWorkspaceHost(options:{profile:SourceProfile;databasePath:string;cipherKey:Buffer;keyId:string;domain:SqliteWorkspaceDomain;
+  initialize?:boolean;/** Explicit opt-in; default false. No guest or Root app-owner grant. */personalWorkspaces?:boolean;clock?:()=>number;title?:string}):SqliteRootWorkspaceHost;
+export function createRootWorkspaceServer(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;host:SqliteRootWorkspaceHost;
+  ui:{document:string|Uint8Array;script:string|Uint8Array;style:string|Uint8Array;sdk:string|Uint8Array};listen?:{host:'127.0.0.1';port:number};
+  clock?:()=>number;onVerifiedOperation?:(observation:SourceVerifiedOperation)=>void}):{
+    server:import('node:http').Server;bff:ReturnType<typeof createSourceAppBff>;host:SqliteRootWorkspaceHost;listen():Promise<number>;close():Promise<void>};
+/** Optional filesystem diagnostics, also usable by a non-SQLite Native host.
+ * Historical observations do not authorize a current operation. */
+export function createSourceReadinessObserver(options:{directory:string;profile:SourceProfile;key:Buffer}):{
+  observe(observation:SourceVerifiedOperation):void;
+  inspect():{schema:'soty.source-doctor.v1';basis:'last_verified_server_observation';integrity:'missing'|'invalid'|'verified';
+    lastObservation:SourceOperationObservation|null;writeStatus:'not_attempted'|'recorded'|'observation_unavailable';
+    currentAuthority:'not_checked';clientAcknowledgement:'not_observed';connected:false;releaseReady:false};close():void;
+};

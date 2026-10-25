@@ -14,6 +14,17 @@ adapter. Второй Source realm не требует нового кода и�
 Manifest, регистрация, одобренный профиль и установленный пакет сами по себе не
 означают работающее подключение.
 
+Для **нового** личного сервиса есть короткий путь в существующем CLI:
+`soty-source author --title "Мой список" --template reading-list`, затем
+`check/init/serve --config PRIVATE_FILE` с явно выбранным Root workspace2
+профилем. Optional `createSqliteRootWorkspaceHost` уже содержит Source session,
+шифрование, nonce, personal issuer/sub isolation и атомарные receipt/recovery
+fences. Приложение пишет только синхронные data callbacks и обычный UI.
+Иные базы и существующие Native аккаунты используют те же storage-neutral
+Native/storage ports; автоматического переноса или Root-owner-all-data нет.
+Пошаговый путь, ограничения и честные статусы `doctor` — в
+[`install/README.md`](install/README.md#новый-личный-сервис-root-workspace).
+
 ## Существующий сайт и личный микровиджет
 
 1. Оставьте сайт на его сервере. Подключите на этом сервере коннектор Сот и
