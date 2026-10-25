@@ -184,7 +184,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const moreHost = el('div', 'sa-more'), moreBody = el('div', 'sa-more-body'); moreBody.hidden = true;
   moreBody.id = `actions-${app.appId}`; moreBody.setAttribute('role', 'group'); moreBody.setAttribute('aria-label', 'Действия с приложением');
   const narrow = view.matchMedia('(max-width: 900px)');
-  const shortToolbar = view.matchMedia('(max-height: 480px)');
+  const shortToolbar = view.matchMedia('(max-width: 720px),(max-height: 480px)');
   const compactToolbar = (): boolean => options.minimalChrome === true || shortToolbar.matches;
   function showMessage(text: string, owner: 'manual' | 'runtime' | 'renewal' = 'manual'): void { if (current()) { message.textContent = text; message.hidden = !text; messageOwner = owner; } }
   function closeMore(focus = false): void {
