@@ -230,7 +230,11 @@ async function liveRoot(t, f, factory = createAppsService, { actors = [], profil
       ...headers }).filter(([, value]) => value !== undefined)) }, res => { const chunks = []; res.on('data', part => chunks.push(part)); res.once('end', () => done({
       status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') })); }); req.on('error', reject); req.end();
   });
-  return { service, server, ws, probes, get, prepare, promote, check, ready: (revision = 2) => until(() => bound === revision) };
+  return { service, server, ws, probes, get, prepare, promote, check, ready: (revision = 2) => until(() => {
+    if (bound !== revision) return false;
+    const current = service.execute({ op: 'apps.inspect', actor: f.owner, args: { appId: f.appId } });
+    return current.source.revision === revision && current.source.binding.state === 'bound';
+  }) };
 }
 
 test('new directory cards prefer the admitted current Source while exact saved Native links remain unchanged', async t => {
@@ -524,6 +528,18 @@ test('Native-only public policy requires the CURRENT exact whole-port ACK, activ
     expectedPolicyEpoch: 2, expectedTargetRevision: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [f.domains.native] } });
   await ended; assert.throws(stream.assertCurrent, { code: 'native_entry_lease_closed' });
   assert.equal((await check()).status, 403, 'the retained publication receipt is not current ACK authority');
+});
+
+test('explicit current-entry recovery for a public Native primary chooses its active named address for a non-owner', async t => {
+  const f = fixture(t), reader = { accountId: 'fixture_reader', deviceId: 'reader_device' };
+  const live = await liveRoot(t, f, createAppsService, { actors: [reader] }); await live.ready(1); await turn();
+  f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId, requestId: 'fixture_native_recovery_entry',
+    expectedPolicyEpoch: 1, expectedTargetRevision: 1, launchPolicy: 'anyone', listed: true,
+    activeDomainIds: [f.domains.native], exposureAck: ack(f.get().target) } });
+  const entry = live.service.execute({ op: 'apps.entry.get', actor: reader, args: { appId: f.appId, current: true } }).entry;
+  assert.deepEqual(entry, { appId: f.appId, domainId: f.domains.native, origin: f.profile.nativeOrigin, path: '/' });
+  assert.throws(() => live.service.execute({ op: 'apps.entry.get', actor: reader, args: { appId: f.appId,
+    domainId: 'dom_' + createHash('sha256').update('missing').digest('hex').slice(0,32), path: '/exact' } }), { code: 'app_unavailable' });
 });
 
 test('explicit Native-primary rollback closes the paired stream; only a new exact Native-primary guard configuration can reopen', async t => {

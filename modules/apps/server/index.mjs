@@ -199,12 +199,23 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             // No Root ticket, cookie, identity witness or session is created.
             return { entry: { appId: app.id, domainId: entry.domainId, origin: entry.origin, path: runtimePath(entry.target.entryPath) } };
           }
-          const preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
+          let preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
             app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
             target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,
               connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path },
           }, captured) : undefined;
           assertApps(!selectedRuntimeProfile(target.profile) || preferred, 'app_unavailable', 404);
+          if (!selectedRuntimeProfile(target.profile)) {
+            // Explicit recovery selects the ordinary application's current
+            // named entry too. A public participant cannot use its private
+            // canonical address, including after a Source-to-Native rollback.
+            const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
+              JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
+              JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+              WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
+              ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
+            if (address) preferred = { domainId: address.id };
+          }
           const entry = resolveEntry({ actor: captured, appId: app.id, ...preferred });
           assertApps(entry, 'app_unavailable', 404);
           return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: entry.path } };
