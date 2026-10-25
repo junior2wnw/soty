@@ -18,6 +18,7 @@
     "bind-59d09e7df40dafa35f6f0e821a51fbfc5b6ee63cc749e99acacc12489ddd17bc": "art-b0a30bc3b98f440a840db7179da11639",
     "bind-5ade6f2b9c40af22323c8d3ae14448226ada3f73213fba1fffe6a3da9df8fb1e": "art-d3f0d0387a244634bf20c1224c6913ce",
     "bind-65381e20aa409e9b0121a75aa116e6d7ca018766d6266e77a0f6ebbbb71b784f": "art-4df22fdc8967422caa7452e262a3630d",
+    "bind-7346dad7f4be371f5ac17f7808f2ba0fc9e6bc8316ecc68c09e3e869294b2bbd": "art-0154257545184e728f8ada0c6da77738",
     "bind-8f07a651abb8cdd6bfd6fa1c772ff979b1fd5054b7f956d244074f9414aabc1b": "art-2973e3ca883c493ead93df1d4e896641",
     "bind-92a5bbf89112dc8b1f31e7edbd9e9abdd326459a08ffa612998b6a57aa8d575f": "art-f415369e7d8443158c6ae4aecab0c839",
     "bind-b6dcec2aa3fc9735d1a7c42f8a20e72a28dd5f3a92bed0faf746312c7c699263": "art-66e9c4a30ed04baf9b1ae14181a3c16d",
@@ -31,6 +32,46 @@
     "notes": "field-notes"
   },
   "assets": {
+    "art-0154257545184e728f8ada0c6da77738": {
+      "key": "art-0154257545184e728f8ada0c6da77738",
+      "version": 1,
+      "alt": "",
+      "palette": {
+        "base": "#352E2B",
+        "accent": "#D5AC8C",
+        "ink": "#F8F1E9"
+      },
+      "focalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "compactFocalPoint": {
+        "x": 0.5,
+        "y": 0.42
+      },
+      "renditions": [
+        {
+          "url": "/app-art/art-0154257545184e728f8ada0c6da77738/v001-feb79cdd36b1/cover-160.f03127bb4ca6.webp",
+          "width": 160,
+          "height": 160
+        },
+        {
+          "url": "/app-art/art-0154257545184e728f8ada0c6da77738/v001-feb79cdd36b1/cover-320.032071a95fe9.webp",
+          "width": 320,
+          "height": 320
+        },
+        {
+          "url": "/app-art/art-0154257545184e728f8ada0c6da77738/v001-feb79cdd36b1/cover-640.da479b2b601d.webp",
+          "width": 640,
+          "height": 640
+        },
+        {
+          "url": "/app-art/art-0154257545184e728f8ada0c6da77738/v001-feb79cdd36b1/cover-960.5d041fb0d7c3.webp",
+          "width": 960,
+          "height": 960
+        }
+      ]
+    },
     "art-09cee690e50c48f18d126f108bf31965": {
       "key": "art-09cee690e50c48f18d126f108bf31965",
       "version": 1,
