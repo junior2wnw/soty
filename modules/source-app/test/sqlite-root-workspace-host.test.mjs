@@ -166,6 +166,18 @@ test('a staged domain error rolls back both data and receipt before Native commi
   const db=new DatabaseSync(join(f.directory,'native.sqlite'));try{assert.equal(db.prepare('SELECT count(*) n FROM soty_workspace_receipts').get().n,0);}finally{db.close();}
 });
 
+test('an authority deadline reached after a staged domain write rolls back data, revision and receipt',async t=>{
+  let fixtureState;
+  const f=await fixture(t,{domain:listDomain({afterWrite(){fixtureState.advance(300001);}})});fixtureState=f;
+  const browser=f.browser();assert.equal((await browser.request()).status,200);const selected=await current(browser);
+  const reply=await add(browser,selected.ref);assert.ok(reply.status>=400);assert.equal(reply.body.data,undefined);
+  const db=new DatabaseSync(join(f.directory,'native.sqlite'));
+  try{assert.equal(db.prepare('SELECT count(*) n FROM reading_items').get().n,0);
+    assert.equal(db.prepare('SELECT count(*) n FROM soty_workspace_receipts').get().n,0);
+    assert.equal(db.prepare('SELECT revision FROM soty_workspace_people').get().revision,1);
+  }finally{db.close();}
+});
+
 test('turning off explicit personal issuance preserves existing people and blocks a new identity',async t=>{
   const f=await fixture(t),alice=f.browser();assert.equal((await alice.request()).status,200);
   const before=await current(alice);assert.equal((await add(alice,before.ref)).status,200);
