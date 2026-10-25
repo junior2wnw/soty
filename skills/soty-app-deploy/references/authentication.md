@@ -21,6 +21,84 @@ SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Ес
 используй доступный квалифицированный вход либо сохрани точный статус зависимости.
 Новый Native profile из спайка не объявляй действующим контрактом.
 
+## Общий Source SDK для нового личного приложения
+
+При наличии действующего approved workspace2 profile и совместимого коннектора
+используй существующий `modules/source-app`, portable `@soty/source-app` и его
+CLI `soty-source`. Не копируй в каждое приложение свои подписи, Source cookies,
+nonce, криптографию или механизм COMMIT/recovery. Preview-пакет и локальная
+квалификация не означают, что этот режим уже включён на production Root.
+
+Короткий путь для **нового** SQLite приложения:
+
+```text
+soty-source author --title "Мой проект" --template reading-list
+soty-source check --config PRIVATE_FILE
+soty-source init --config PRIVATE_FILE
+soty-source serve --config PRIVATE_FILE
+```
+
+Оператор один раз задаёт утверждённые appId/profile/target/issuer/connector pins,
+private config и два server-only ключа. Режим задаётся явно:
+`soty.root-workspace.operator.v1`; старый Ordinary/OIDC не становится SourceSSO.
+Optional `createSqliteRootWorkspaceHost` принимает только data callbacks,
+проверяет Native SQL и создаёт новый личный ресурс по verified issuer/sub лишь
+при явной `personalWorkspaces:true` policy. Root app owner не получает чужие
+Native данные. Existing Native accounts/SQL требуют собственного адаптера к
+тем же Native/storage ports; не заводи теневую базу поверх действующей.
+
+Общий browser `createSourceWorkspaceClient().connect({requestId})` делает
+continuation и current-context read без нового пользовательского жеста при
+действующем разрешении. Затем нужен успешный domain query. UI assets —
+`/assets/ui.js`, `/assets/ui.css`, `/assets/source-sdk.js`; private domain/config
+не выдаются. Legacy assets сохраняют только по фактическому finite allowlist
+своего приложения. Не добавляй произвольный proxy path ради пустого iframe.
+
+При unknown сохранении сохраняй точные requestId/inputDigest/contextRef в
+browser namespace текущего уже авторизованного личного ресурса. После reload
+или нового frame вызывай только `recoverReceipt(reference)` под новым current
+contextRef. Original receipt остаётся неизменяемым, fresh authority envelope
+проверяется отдельно. Нельзя повторять invoke, менять старый requestId или
+считать отсутствие строки у другого профиля доказательством «не записалось».
+
+`soty-source reader` проверяет локальную схему/ключ, а `doctor --config ...`
+может проверить purpose-sealed **историческое** наблюдение действительного SDK
+вызова: context/domain read/commit/receipt различимы. Файл не хранит subject,
+аргументы, результат, cookies или хеш частных данных. Его запись не меняет
+business outcome. Даже verified observation оставляет
+`currentAuthority:not_checked`, `clientAcknowledgement:not_observed` и
+`releaseReady:false`. Нужны фактические write → read → reload → revoke.
+
+Обычная самостоятельная Native страница и Root Source frame — разные
+поверхности. Root-context proof не является сессией Native вне Сот.
+Самостоятельный вход использует поддерживаемый Human OIDC/BFF либо собственную
+Native сессию/ACL. Парный публичный Native entry дополнительно требует current
+pair/точных origins/пинов, отдельного whole-port ACK и текущего app-policy guard
+на HTTP и в течение WS. Эти проверки не дают Human identity. При изменении
+активной пары используй свежий exact keep/remove contract; старый Source-only
+вызов не должен молча снимать Native entry. Проверяй наличие этой capability.
+В существующем owner editor действие «Сохранить отдельный сайт» получает новую
+проверку обоих targets и отдельный Native ACK. «Отключить отдельный сайт» требует
+точных текущих origin/revision/digest и собственного подтверждения. Unknown
+запрос остаётся прежним durable intent; после reload не подменяй его новой парой.
+
+При неожиданном expiry сначала измерь UTC clock difference Root/Source и RTT.
+Root JWT срок, public Native app-policy lease и session — разные часы/границы;
+локальная lease считается по monotonic clock и включает весь round trip.
+Не лечи clock skew увеличением expiry tolerance или отключением проверки
+подписи/issuer/audience. Проверь актуальные sandbox/COOP и точный trusted parent
+origin: postMessage только в этот origin, не `*`. Script popup и same-window
+callback сохраняют исходное намерение; отсутствие opener/ancestorOrigins не
+разрешает подменить frame, cookie или добавить анонимный вход. Browser diagnostics
+показывают безопасный код и статус без полного callback URL/headers/tokens.
+
+Ограничения учитываются раздельно: BFF default128 context slots, Root256
+continuations, qualified PG host4096 Source sessions; optional SQLite host4096
+sessions/4096 nonce rows/20000 receipts на личный principal. Это не users limit
+и не доказательство мировой нагрузки. Overflow503 означает временную ёмкость,
+а не повод повторять вход. Reader3/образ Ordinary не доказывает schema нового
+workspace SQLite; physical cold/restore и реальный DNS/TLS — отдельные gates.
+
 ## Human OIDC / BFF
 
 1. Проверенный issuer, approved confidential client, точный HTTPS callback.
