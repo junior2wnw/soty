@@ -12,9 +12,18 @@
 | ACK записи потерян | Receipt/history/readback того же намерения | Confirmed либо pending/unknown; новый requestId не создаётся вслепую |
 | Роль/доступ не подходят | Текущий grant, владелец, source pin и frame binding | Нормальный отказ; аудитория автоматически не расширяется |
 | Долго ждёт поле | Navigation/resources → entry/shell → данные поля → приложение | Сопоставимый trace по фазам/версии, а не выдуманное ускорение |
+| Operator падает до работы с DATA | Абсолютный qualified Node24 до import, полный source closure | Ошибка инструмента, не повреждение данных |
+| Storage probe exit0 без JSON | Независимый probe с `SOTY_STORAGE_PROBE=1`, явный World и v7 gate | START запрещён до настоящего результата |
+| Mount CAS отличается | Детерминированный порядок полных Mount records, затем все поля | Перестановка отличается от изменения mount; поля не выбрасываются |
+| UI publisher потерял ответ | Тот же plan/receipt, readonly inspect, exact process/disk/active | Unknown до сверки; execute/transaction не создаются заново |
 
 «Сохранено на устройстве», pending и server-confirmed требуют подтверждения
 соответствующего хранилища. Не обещай «всё сохранено» общей фразой об ошибке.
+При unknown сохрани исходное намерение и используй readonly recovery своего
+контракта: Source `recoverReceipt`, Human `checkRevoke`, UI publisher `inspect`.
+Они имеют разные результаты и не заменяют друг друга. Отказ local storage
+не является «черновик сохранён»; отсутствие записи в другом профиле не доказывает
+нулевой эффект. См. [аутентификацию](authentication.md) и [операции](operations.md).
 Доступность интерфейса и открытый WS не доказывают свежесть данных приложения.
 Проверяй источник/подписку, фильтры и результат под текущим человеком.
 

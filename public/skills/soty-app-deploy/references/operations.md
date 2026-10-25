@@ -88,14 +88,16 @@ Native private данных без собственной Human session. Это 
 4. CAS по исходному SHA → атомарный config write → reload только известного
    serving процесса → active/disk equality. Если SHA изменился — перечитать,
    не затирать параллельную работу.
-   У Caddy adapt поле file_server.hide может зависеть от имени файла кандидата.
-   Финальное active/disk сравнение делать с реальным serving path после записи;
-   не игнорировать произвольные различия и не выдавать filename-only delta за
-   доказательство неверного применённого routing.
+   Caddy adapt выполнять с одинаковыми физическими filename и cwd. Stdin
+   `--config -` меняет auto-hide имя в `file_server.hide` и не доказывает равенство
+   с реальным файлом. Сравнивать полный JSON; это поле не исключать. Финальное
+   active/disk сравнение делать с реальным serving path после записи.
 5. Только UI/публичные документы оболочки — существующий versioned publisher
    `deploy/ui` с конечным inventory и полным byte readback. UI и backend pins
    различаются; обложка или инструкция не требуют нового backend/data writer.
-   При доступном checkout см. `docs/deployment/ui-release.md`.
+   При доступном checkout см. `deploy/ui/README.md` и
+   `docs/deployment/ui-release.md`. Используй полный reviewed source closure
+   publisher или его проверенный bundle; копии одного helper недостаточно.
    Изменение backend/identity/storage — полный pinned Docker build и
    deploy/connector/cli.mjs prepare/promote, текущие mounts/config fingerprint,
    drain и один writer. Старый serving image сохраняется stopped.
@@ -107,6 +109,31 @@ Native private данных без собственной Human session. Это 
 Откат возвращает совместимый image/route, сохраняя текущие данные и IDs.
 Проверить поддержку всех актуальных storage formats и retainedNamedAppZones:
 релиз до введения зоны может быть непригоден для возврата.
+
+## Если меняются сами Соты
+
+Выбери qualified Node24 по абсолютному пути и проверь его версию/hash **до
+импорта** operator factory: default Node18 может упасть ещё при загрузке модулей.
+Backend собирается целиком из одной immutable Git revision с frozen dependencies;
+historical backend overlay не является способом доставить новые API/identity.
+Перед prepare/promote квалифицируй exact image и обратный переход на текущей
+копии DATA; [копия и backup](recovery.md) не взаимозаменяемы.
+
+UI publisher получает finite release из candidate dist с retained immutable URLs.
+Оба overlay строятся из одного одобренного **unwrapped canonical ingress**;
+восстановленный current overlay должен побайтно совпасть с disk. Не оборачивай
+уже установленный overlay повторно. Изменившийся ingress требует новой сверки
+canonical. До применения нужны свежие active=disk, config SHA и точный
+PID/UID/startTicks/argv SHA процесса Caddy. При adminOFF штатный publisher посылает
+один SIGUSR1 тому же процессу; backend/DATA writer он не заменяет.
+
+Используй существующие publisher `execute`/`inspect` с exact plan и encrypted
+baseline/candidate. Потерянный результат не разрешает новый transaction,
+повторный execute, другой receipt directory или слепой rollback. Только readonly
+inspect и независимая сверка process/disk/active разрешают неизвестность; apply
+сам возвращает `activeReloadVerified:false`. После него проверь публичные новые
+и retained bytes, headers, PWA и восстановление WS: прежний Node PID этого не
+доказывает. Подробный bounded driver и команды находятся в `deploy/ui/README.md`.
 
 ## Минимальные receipts
 

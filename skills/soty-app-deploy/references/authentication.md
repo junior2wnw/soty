@@ -197,6 +197,42 @@ human proof, до первого входа. Уже многопользоват
 server session. Фильтры/избранное → очистка кеша → открытие из Native DB под
 прежним ID. Callback/private API не кешируются, auth code не пишется в access log.
 
+## Посмотреть и отозвать входы человека
+
+Единый редактор: **Профиль → Безопасность → Входы в приложения**. Это Human
+OIDC-семьи и запомненные согласия, не agent grants из «Действия ИИ и приложений».
+Короткие Root Source-сессии здесь не перечислены: пустой список не доказывает
+отсутствие доступа к приложениям внутри Сот. Отзыв issuer разрешения блокирует
+следующую refresh/userinfo-проверку, но не обещает мгновенный logout или удаление
+собственной Native cookie. `expiresAt:null` также не означает бессрочный вход.
+
+Сначала проверь `GET /api/apps/capabilities → humanSignins`, затем capabilities
+подписанного `identity.human.signins.list`. Public discovery не выдаёт прав;
+schema1/unconfigured означает недоступность, а не пустой успешный список.
+Каждый вызов требует свежих Connect actor/device и `expectedAccountId`:
+
+```text
+identity.human.signins.list({expectedAccountId, scope:'current-device', limit:20})
+identity.human.signins.revoke({expectedAccountId, scope, entryId,
+  expectedRevision:entry.revision, requestId:entry.revokeRequestId})
+identity.human.signins.checkRevoke(originalExactIntent)
+```
+
+Scope `account` («Все мои устройства») выбирается явно и только при поддержке
+сервера. `exact-session` закрывает одну семью; `app-device-version` забывает
+согласие и семьи только того же приложения/устройства/версии. `clientId` — OIDC
+client, не app ID и не адрес запуска. Перед revoke сохрани и перечитай bounded
+pending reference отдельно по origin/account/caller-device; недоступное storage
+означает ноль отправок. Используй выданные сервером entry/revision/requestId.
+Смена профиля/устройства исключает старые callbacks и чужие pending references.
+
+После потерянного ACK или reload выполняется **только readonly checkRevoke** с
+прежними точными аргументами. `revoked` — текущий tombstone, не immutable receipt;
+`active` — запись не отозвана, не готовность Native сессии; `unavailable` после
+GC/CAS/ABA не доказывает отсутствие эффекта. Для нового отзыва человек выбирает
+актуальную запись и подтверждает её scope. При checkout точные типы/контракт —
+`modules/human-identity/types.d.mts`, `docs/implementation/human-signins-settings.md`.
+
 ## Завершить вход без лишней страницы
 
 Сохрани исходное намерение и допустимый локальный return target в проверяемом

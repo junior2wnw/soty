@@ -16,6 +16,41 @@ Config/данные с секретами архивируй зашифрова�
 Согласованная SQLite backup учитывает WAL; VACUUM после backup проверяется по
 integrity и прежним строкам/IDs, а не размеру. Secure erase не следует из rm.
 
+Для полного Root release используй maintained `deploy/connect/gpg-release-backup.mjs`,
+а не прежний `deploy/connect/backup.mjs`. Штатный latest-data promote требует
+operator `fullEncryptedBackup` callback после подтверждённого STOP exact writer
+и restart policy `no`, до candidate START. Нужны **оба** артефакта: полный DATA
+volume и effective configuration (inspect/Env и все binds), с authenticated
+decrypt/readback и отдельным isolated restore. Частичный архив не заменяет их.
+Проверь clean exit/PID0/неизменный lifecycle и отсутствие других writers до и
+после. Дополнительные внешние зависимости учитываются отдельно.
+
+Используй существующие CurrentUser-DPAPI `windows-backup-key.py init/check/send`
+и SSH stdin → GPG fd3; Node24/hash/helper проверяются до unwrap. Ключ не попадает
+в argv, Env, plaintext file или Docker logging. DPAPI blob привязан к Windows
+профилю и сам по себе не переносимый recovery key. При доступном checkout полный
+путь: `deploy/connect/GPG-RELEASE-BACKUP.md`, wiring — `deploy/connector/README.md`.
+Unknown backup/helper outcome сохраняет `recovery_required`, а не новый retry.
+
+## Canary на текущей копии
+
+Копия реальных DATA требует той же конфиденциальности, private configuration и
+изолированного owned volume без внешнего обслуживания/Gateway вызовов. Bounded
+online file copy с проверенным стабильным окном — preflight, не глобально
+согласованный snapshot и не backup. Квалификация synthetic data не заменяет
+current-data canary, а запуск baseline не квалифицирует будущий candidate.
+
+Сравнивай full Config/HostConfig/Networks и **полные** Mount records, отсортированные
+детерминированно с сохранением всех полей; raw-array hash зависит от порядка
+Docker inspect. Не удаляй RW/Source/Name/другие поля ради совпадения.
+До каждого application START вызывай существующий `guardStorageStart` с
+независимо закреплённым probe image/source. Probe запускается с
+`SOTY_STORAGE_PROBE=1`: exit0 без JSON не является успехом. Нужны явный текущий
+World result и `soty.storage-start.v7`, не унаследованный image/container label.
+После clean STOP сравни схемы/строки/IDs/ACL и служебные stores, а не только counts;
+проверь serving CAS и отсутствие copy writer. Убирай plaintext copy только по
+точным owned IDs после завершённого custody/restore proof, без global prune.
+
 ## Ресурсы и сборка
 
 Проверь disk/inodes, свободные порты и Docker address pools до build/up.
