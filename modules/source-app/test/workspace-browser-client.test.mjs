@@ -10,7 +10,7 @@ const json = (value, status = 200) => Response.json(value, { status });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const context = (ref = 'A'.repeat(43), generation = 1) => ({ schema: 'soty.current-context.v2',
   selection: { kind: 'soty.workspace.v1', nativeId: 'board', incarnationId: 'one' },
-  context: { ref, generation, expiresAt: 1900000000000 }, title: 'Personal board', role: 'owner', revision: 1 });
+  context: { ref, generation, expiresAt: 1900000000000 }, continuityDigest: 'c'.repeat(64), title: 'Personal board', role: 'owner', revision: 1 });
 function fixture({ cold = false } = {}) {
   let current = context(), loseAck = false, beforeResponse = null, isCurrent = true, effectCount = 0, sessionReady = !cold;
   const calls = [], receipts = new Map();
@@ -44,11 +44,55 @@ function fixture({ cold = false } = {}) {
   };
   const api = createSourceWorkspaceClient({ fetch: fetcher, href: 'https://app.example/embed?sotyFrame=' + 'F'.repeat(43), isCurrent: () => isCurrent });
   return { api, calls, receipts, fetcher, context: () => current, effects: () => effectCount,
+    renew(change = {}) { current = { ...structuredClone(current), ...change, context: { ...current.context, ref: 'R'.repeat(43) } }; },
     switch() { current = context('B'.repeat(43), 2); current.title = 'Other board'; },
     lostAck() { loseAck = true; }, hold(hook) { beforeResponse = hook; }, retire() { isCurrent = false; } };
 }
 const id = suffix => 'browser-intent-' + suffix;
 const ready = f => f.api.currentContext({ requestId: id('context') });
+
+test('a new intent refreshes the short session and context before its only invoke', async () => {
+  const f = fixture(); await ready(f); f.renew();
+  const [a, b] = await Promise.all([
+    f.api.prepareInvoke({ requestId: id('renew-write'), input: { operation: 'notes.create', title: 'After renewal' } }),
+    f.api.prepareInvoke({ requestId: id('renew-write'), input: { operation: 'notes.create', title: 'After renewal' } }),
+  ]);
+  assert.equal(a, b); assert.equal(a.contextRef, 'R'.repeat(43));
+  assert.deepEqual(f.calls.slice(1).map(call => call.path), ['/api/embed/session-continue', '/api/embed/query']);
+  await f.api.invoke(a); assert.equal(f.effects(), 1); assert.equal(f.calls.at(-1).path, '/api/embed/invoke');
+});
+
+test('a stale read refreshes once while foreign actors, children, generations and legacy rotation fail before a write', async () => {
+  const f = fixture(); await ready(f); f.renew();
+  assert.equal((await f.api.query({ requestId: id('renew-read'), input: { operation: 'notes.list' } })).records.length, 1);
+  assert.deepEqual(f.calls.slice(1).map(call => call.path), ['/api/embed/query', '/api/embed/session-continue', '/api/embed/query', '/api/embed/query']);
+  for (const change of [ { continuityDigest: 'd'.repeat(64) }, { continuityDigest: undefined },
+    { selection: { kind: 'soty.workspace.v1', nativeId: 'other', incarnationId: 'one' } },
+    { selection: { kind: 'soty.workspace.v1', nativeId: 'board', incarnationId: 'new' } }, { role: 'viewer' } ]) {
+    const denied = fixture(); await ready(denied); denied.renew(change);
+    await assert.rejects(denied.api.prepareInvoke({ requestId: id('foreign-renew'), input: { operation: 'notes.create', title: 'Never move' } }),
+      { code: 'source_client_context_changed', effectUnknown: false });
+    assert.equal(denied.api.context(), null); assert.equal(denied.effects(), 0);
+    assert.equal(denied.calls.some(call => call.path.endsWith('/invoke')), false);
+  }
+  const generation = fixture(); await ready(generation); generation.switch();
+  await assert.rejects(generation.api.prepareInvoke({ requestId: id('new-generation'), input: { operation: 'notes.create' } }), /source_client_context_changed/);
+});
+
+test('renewal cannot reprepare a sent unknown request, and a revoked continuation does not retry or invoke', async () => {
+  const f = fixture(); await ready(f); const args = { requestId: id('unknown-renew'), input: { operation: 'notes.create', title: 'One' } };
+  const old = await f.api.prepareInvoke(args); f.lostAck(); await assert.rejects(f.api.invoke(old)); f.renew();
+  const next = await f.api.prepareInvoke({ requestId: id('separate-new'), input: { operation: 'notes.create', title: 'Two' } });
+  assert.equal(next.contextRef, 'R'.repeat(43));
+  await assert.rejects(f.api.prepareInvoke(args), /request_conflict/);
+  await assert.rejects(f.api.invoke(old), error => error.code === 'source_client_context_changed' && error.effectUnknown);
+  assert.equal(f.effects(), 1); assert.equal(f.calls.filter(call => call.path.endsWith('/invoke')).length, 1);
+  const revoked = fixture(); await ready(revoked);
+  revoked.hold(() => json({ ok: false, error: { code: 'source_app_native_access_denied' } }, 403));
+  await assert.rejects(revoked.api.prepareInvoke({ requestId: id('revoked-write'), input: { operation: 'notes.create' } }),
+    { code: 'source_app_native_access_denied', effectUnknown: false });
+  assert.equal(revoked.calls.length, 2); assert.equal(revoked.effects(), 0);
+});
 
 test('cold session continuation uses the maintained same-frame ACK and no Native auth cookie fallback', async () => {
   const f = fixture();

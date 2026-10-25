@@ -55,12 +55,12 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
   view = globalThis.window, parentOrigin, isCurrent = () => true } = {}) {
   if (typeof isCurrent !== 'function') fail();
   const sourceFetch = createSourceFrameFetch({ fetch: fetcher, href, view, ...(parentOrigin === undefined ? {} : { parentOrigin }), shortSessionHandoff: true });
-  const intents = new WeakMap(), pending = new Map();
-  let epoch = 0, contextSequence = 0, connectSequence = 0, context = null, closed = false;
+  const intents = new WeakMap(), pending = new Map(), preparing = new Map();
+  let epoch = 0, contextSequence = 0, connectSequence = 0, context = null, closed = false, refreshFlight = null;
   const current = captured => !closed && isCurrent() && captured === epoch;
   const check = captured => { if (!current(captured)) fail('source_client_context_changed', 409); };
   const capture = () => { check(epoch); if (!context) fail('source_client_context_required', 409); return { epoch, context }; };
-  const invalidate = () => { epoch++; contextSequence++; connectSequence++; context = null; pending.clear(); };
+  const invalidate = () => { epoch++; contextSequence++; connectSequence++; context = null; pending.clear(); preparing.clear(); refreshFlight = null; };
 
   async function request(path, args, captured, signal) {
     check(captured); signal?.throwIfAborted();
@@ -98,8 +98,15 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     if (sequence !== contextSequence) fail('source_client_context_changed', 409);
     if (value.schema !== 'soty.current-context.v2' || !opaque(value.context?.ref) || !integer(value.context.generation)
       || !integer(value.context.expiresAt) || !metadata(value)
-      || value.selection?.kind !== 'soty.workspace.v1') fail('source_client_response_invalid', 502);
-    if (context && (context.context.ref !== value.context.ref || context.context.generation !== value.context.generation)) { epoch++; pending.clear(); }
+      || value.selection?.kind !== 'soty.workspace.v1' || typeof value.selection.nativeId !== 'string'
+      || typeof value.selection.incarnationId !== 'string'
+      || value.continuityDigest !== undefined && !digest(value.continuityDigest)) fail('source_client_response_invalid', 502);
+    if (context && (context.context.ref !== value.context.ref || context.context.generation !== value.context.generation)) {
+      epoch++;
+      // Keep sent request IDs pinned until their original receipt is resolved.
+      // A renewed lease must not turn an unknown write into a new preparation.
+      for (const [id, entry] of pending) if (!entry.sent) pending.delete(id);
+    }
     context = value; return value;
   }
   function input(args) {
@@ -167,6 +174,27 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     const selected = fields(copy(args), ['requestId']); if (!requestId(selected.requestId)) fail();
     return request('session-continue', selected, epoch, signal);
   }
+  async function refreshForOperation(requestId, signal) {
+    const before = capture();
+    if (!refreshFlight) {
+      const flight = (async () => {
+        // Parent-frame renewal does not renew the Source cookie or its private
+        // Native context reference. Both reads must finish before a NEW write.
+        await continueSession({ requestId }, signal); check(before.epoch);
+        const value = await acquire({ requestId }, false, signal), after = capture();
+        if (context !== value || value.context.generation !== before.context.context.generation
+          || value.role !== before.context.role || canonical(value.selection) !== canonical(before.context.selection)
+          || (value.context.ref !== before.context.context.ref
+            && (!digest(before.context.continuityDigest) || value.continuityDigest !== before.context.continuityDigest))) {
+          invalidate(); fail('source_client_context_changed', 409);
+        }
+        return after;
+      })();
+      refreshFlight = flight;
+      void flight.finally(() => { if (refreshFlight === flight) refreshFlight = null; }).catch(() => {});
+    }
+    const selected = await refreshFlight; check(selected.epoch); signal?.throwIfAborted(); return selected;
+  }
   return Object.freeze({
     async connect(args, signal) {
       const selected = fields(copy(args), ['requestId']), captured = epoch, sequence = ++connectSequence;
@@ -180,25 +208,35 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     selectContext(args, signal) { fields(copy(args), ['requestId', 'nativeId', 'generation']); return acquire(args, true, signal); },
     context: () => current(epoch) ? context : null,
     async query(args, signal) {
-      const selected = input(args), captured = capture();
-      const value = await request('query', { ...selected, contextRef: captured.context.context.ref }, captured.epoch, signal);
+      const selected = input(args); let captured = capture(), value;
+      try { value = await request('query', { ...selected, contextRef: captured.context.context.ref }, captured.epoch, signal); }
+      catch (error) {
+        // Only a read is retried, at most once. Native/Root revocation must
+        // still pass fresh continuation and exact continuity before any data.
+        if (!['authentication_required', 'source_workspace_context_denied'].includes(error?.code)) throw error;
+        check(captured.epoch); captured = await refreshForOperation(selected.requestId, signal);
+        value = await request('query', { ...selected, contextRef: captured.context.context.ref }, captured.epoch, signal);
+      }
       if (value.requestId !== selected.requestId) fail('source_client_response_invalid', 502); return value;
     },
-    async prepareInvoke(args) {
+    async prepareInvoke(args, signal) {
       const selected = input(args), captured = capture(), serialized = canonical(selected.input);
-      const prior = pending.get(selected.requestId);
-      if (prior) { if (prior.serialized !== serialized || prior.contextRef !== captured.context.context.ref) fail('request_conflict', 409); return prior.preparing; }
-      if (pending.size >= 128) fail('source_client_pending_limit', 409);
-      const entry = { ...selected, serialized, epoch: captured.epoch, contextRef: captured.context.context.ref,
-        generation: captured.context.context.generation, sent: false, flight: null };
-      pending.set(entry.requestId, entry);
+      const prior = pending.get(selected.requestId) ?? preparing.get(selected.requestId);
+      if (prior) { if (prior.serialized !== serialized || prior.contextRef !== undefined && prior.contextRef !== captured.context.context.ref) fail('request_conflict', 409); return prior.preparing; }
+      if (pending.size + preparing.size >= 128) fail('source_client_pending_limit', 409);
+      const entry = { ...selected, serialized, sent: false, flight: null };
+      preparing.set(entry.requestId, entry);
       entry.preparing = (async () => {
+        const fresh = await refreshForOperation(entry.requestId, signal);
+        if (preparing.get(entry.requestId) !== entry) fail('source_client_context_changed', 409);
+        entry.epoch = fresh.epoch; entry.contextRef = fresh.context.context.ref; entry.generation = fresh.context.context.generation;
         entry.inputDigest = await hash(selected.input);
         entry.mutationRef = await hash({ schema: 'soty.workspace-mutation.v1', requestId: entry.requestId, inputDigest: entry.inputDigest, contextRef: entry.contextRef });
-        check(entry.epoch);
+        check(entry.epoch); signal?.throwIfAborted();
         const intent = freeze({ requestId: entry.requestId, input: selected.input, contextRef: entry.contextRef, inputDigest: entry.inputDigest });
+        preparing.delete(entry.requestId); pending.set(entry.requestId, entry);
         intents.set(intent, entry); return intent;
-      })().catch(error => { if (pending.get(entry.requestId) === entry) pending.delete(entry.requestId); throw error; });
+      })().catch(error => { if (preparing.get(entry.requestId) === entry) preparing.delete(entry.requestId); throw error; });
       return entry.preparing;
     },
     async invoke(intent, signal) {

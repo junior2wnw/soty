@@ -40,7 +40,11 @@ export function createCurrentContextSourceApplication(raw) {
       need(current() === true && !signal.aborted && response.status === 200);
       const value = captureQueryData(response.data);
       if (standard) {
-        need(value.ok === true && value.data && Object.keys(value.data).sort().join(',') === (workspace ? 'context,revision,role,schema,selection,title' : 'revision,role,schema,selection,title'));
+        const continuity = workspace && Object.hasOwn(value.data ?? {}, 'continuityDigest');
+        need(value.ok === true && value.data && Object.keys(value.data).sort().join(',') === (workspace
+          ? (continuity ? 'context,continuityDigest,revision,role,schema,selection,title' : 'context,revision,role,schema,selection,title')
+          : 'revision,role,schema,selection,title'));
+        if (continuity) need(typeof value.data.continuityDigest === 'string' && /^[a-f0-9]{64}$/u.test(value.data.continuityDigest));
         const data = value.data;
         need(data.schema === (workspace ? 'soty.current-context.v2' : 'soty.current-context.v1') && same(data.selection, scope.resource.selection)
           && ['owner', 'editor', 'viewer', 'reader'].includes(data.role)

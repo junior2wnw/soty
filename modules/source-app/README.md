@@ -288,6 +288,10 @@ Catalog resource и recipient — `workspace:<appId>:<resourceId>`; новый g
    Root agent adapter запрещает эту operation даже в широком author schema.
 3. `soty.current_context` возвращает версию `soty.current-context.v2` с тем же
    anchor и `{context:{ref,generation,expiresAt},title,role,revision}`.
+   Maintained Native SDK также возвращает `continuityDigest`: открытый digest
+   человека, устройства, namespace и Native child, не разрешение и не token.
+   Он сохраняется при смене коротких Root/Source leases, но меняется при смене
+   человека, устройства или child. Generation проверяется отдельно.
    Root хранит ref вне model; существующие query/invoke/receipt передают его
    отдельным `contextRef`. Native проверяет его до/после вызова и в COMMIT.
 
@@ -303,6 +307,18 @@ TTL, account/device/slot isolation и Native ACL этим параметром �
 Исчерпание slots возвращает `503 source_workspace_capacity`, а не отказ identity.
 Действующие leases не вытесняются; повторный вход не освобождает чужие slots.
 Клиент показывает временную занятость и допускает повтор чтения позднее.
+
+Перед **новым** `prepareInvoke` браузерный SDK выполняет два чтения:
+`session-continue` и `soty.current_context`. Новый ref допускается только при
+совпадении `continuityDigest`, selection, generation и role. Это не требует
+нового пользовательского нажатия. Несовпадение закрывает локальный контекст до
+явного подключения. Старый Native без digest продолжает работать с прежним
+ref; его смена требует явного подключения, без догадок по названию проекта.
+Обычное чтение после `authentication_required`/`source_workspace_context_denied`
+проходит тот же переход и повторяется максимум один раз. Отправленный intent,
+включая unknown, никогда не перепривязывается к новому ref: только чтение
+исходной квитанции через `recoverReceipt`. Это правило действует для любого
+домена приложения, независимо от его полей и операций.
 
 Это раздельные release limits, не доказательство массовой нагрузки:
 

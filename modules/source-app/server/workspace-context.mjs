@@ -2,6 +2,12 @@ import { fields, check, digest, nonce, opaque, deepFreeze } from './wire.mjs';
 
 const roles = ['owner', 'editor', 'viewer', 'reader'];
 const denied = value => check(value, 'source_workspace_context_denied', 403);
+// A public continuity witness, never an authority. It deliberately excludes
+// short Root/Source leases while distinguishing actors, devices and Native
+// children. The same scope seals receipt recovery below.
+const continuity = (binding, child) => digest({ schema: 'soty.workspace-receipt-scope.v1', identity: binding.identity,
+  rootPrincipal: binding.rootPrincipal, humanPrincipal: binding.humanPrincipal,
+  resource: binding.resource, semanticDigest: binding.semanticDigest, child });
 export function contextMetadata(input) {
   const value = fields(input, ['title', 'role', 'revision']);
   denied(typeof value.title === 'string' && value.title.isWellFormed() && value.title.trim() && value.title.length <= 240
@@ -101,7 +107,8 @@ export function createWorkspaceContextAuthority(options = {}) {
     read(binding, projection) {
       const { entry, metadata } = current(binding, projection, true);
       return deepFreeze({ schema: 'soty.current-context.v2', selection: { ...binding.resource.selection },
-        context: { ref: entry.ref, generation: entry.generation, expiresAt: entry.expiresAt }, ...metadata });
+        context: { ref: entry.ref, generation: entry.generation, expiresAt: entry.expiresAt },
+        continuityDigest: continuity(binding, entry.child), ...metadata });
     },
     assert(binding, projection, ref) {
       denied(opaque(ref)); const { entry, metadata } = current(binding, projection, false);
@@ -112,9 +119,7 @@ export function createWorkspaceContextAuthority(options = {}) {
       // Deliberately excludes ephemeral Root refs, Source sessions and selection
       // generations. The same current actor may read a historical exact receipt
       // after restart; a different Native child/incarnation or actor may not.
-      return digest({ schema: 'soty.workspace-receipt-scope.v1', identity: binding.identity,
-        rootPrincipal: binding.rootPrincipal, humanPrincipal: binding.humanPrincipal,
-        resource: binding.resource, semanticDigest: binding.semanticDigest, child: entry.child });
+      return continuity(binding, entry.child);
     },
     close() { slots.clear(); },
   });

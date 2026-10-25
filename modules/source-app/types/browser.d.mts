@@ -34,6 +34,8 @@ export interface SourceWorkspaceContext {
   readonly schema: 'soty.current-context.v2';
   readonly selection: { readonly kind: 'soty.workspace.v1'; readonly nativeId: string; readonly incarnationId: string };
   readonly context: { readonly ref: string; readonly generation: number; readonly expiresAt: number };
+  /** Non-authorizing actor/device/Native-child continuity witness across short leases. */
+  readonly continuityDigest?: string;
   readonly title: string; readonly role: 'owner' | 'editor' | 'viewer' | 'reader'; readonly revision: number;
 }
 export interface SourceWorkspaceRequest { requestId: string; input: { operation: string; [key: string]: SourceJson }; }
@@ -58,7 +60,8 @@ export interface SourceWorkspaceClient {
   selectContext(args: {requestId: string; nativeId: string; generation: number}, signal?: AbortSignal): Promise<SourceWorkspaceContext>;
   context(): SourceWorkspaceContext | null;
   query<T extends {requestId: string} = {requestId: string; [key: string]: SourceJson}>(args: SourceWorkspaceRequest, signal?: AbortSignal): Promise<Readonly<T>>;
-  prepareInvoke(args: SourceWorkspaceRequest): Promise<SourceWriteIntent>;
+  /** Refreshes read-only authority before preparing a new intent; sent intents never move. */
+  prepareInvoke(args: SourceWorkspaceRequest, signal?: AbortSignal): Promise<SourceWriteIntent>;
   invoke(intent: SourceWriteIntent, signal?: AbortSignal): Promise<SourceWriteResult>;
   /** Reads an original receipt; never sends an invoke. A retained reference may be used after reload only in its same current context. */
   receipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;

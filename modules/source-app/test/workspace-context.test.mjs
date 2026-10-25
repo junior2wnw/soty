@@ -74,6 +74,27 @@ test('workspace references bind slot/actor/session/anchor; ABA, expiry, invalida
   assert.throws(() => leases.assert(b, p, aba.context.ref));
 });
 
+test('public continuity survives short leases but distinguishes actor/device/Native child without granting a context', () => {
+  let now = 1000; const leases = createWorkspaceContextAuthority({ clock: () => now }), b = binding(), p = projection();
+  const first = leases.read(b, p);
+  assert.match(first.continuityDigest, /^[a-f0-9]{64}$/u);
+  const renewed = { ...b, rootReferenceDigest: 'c'.repeat(64), sessionIdHash: 'd'.repeat(64), rootExpiresAt: 6000 };
+  const second = leases.read(renewed, p);
+  assert.notEqual(second.context.ref, first.context.ref); assert.equal(second.continuityDigest, first.continuityDigest);
+  assert.throws(() => leases.assert(renewed, p, first.context.ref));
+  for (const foreign of [{ ...b, identity: { ...b.identity, subject: 'other' } },
+    { ...b, rootPrincipal: { ...b.rootPrincipal, accountId: 'other' } },
+    { ...b, rootPrincipal: { ...b.rootPrincipal, deviceId: 'other' } },
+    { ...b, humanPrincipal: { subject: 'other' } }, { ...b, semanticDigest: 'other' },
+    { ...b, resource: { selection: { ...b.resource.selection, incarnationId: 'other' } } }])
+    assert.notEqual(leases.read(foreign, p).continuityDigest, first.continuityDigest);
+  assert.notEqual(leases.read(b, { ...p, key: 'other' }).continuityDigest, first.continuityDigest);
+  now = 4001; const afterExpiry = leases.read(b, { ...p, expiresAt: 5000 });
+  assert.equal(afterExpiry.continuityDigest, first.continuityDigest);
+  assert.throws(() => leases.assert(b, { ...p, expiresAt: 5000 }, first.continuityDigest));
+  leases.close();
+});
+
 test('Native contextAfter can only be produced inside original commit and exact readProof intent', async () => {
   const b = binding(), state = projection(); let saved, finalPort, active = true;
   const port = createSourceNativeAuthorityPort({ capture: () => ({}), withCurrent(_proof, _binding, action) { assert.ok(active); return action(); },
