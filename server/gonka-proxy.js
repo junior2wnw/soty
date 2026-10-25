@@ -206,7 +206,7 @@ export function createAccountModelProxy({ store, accountAi }) {
     async handleChatCompletions(req, res, { authenticateToken } = {}) {
       let bound;
       try { bound = await capture(req, authenticateToken); bound.guard(); } catch (error) { denied(res, error); return; }
-      const body = cleanChatRequest(req.body);
+      const body = cleanChatRequest(req.body, { accountMode: true });
       if (!body) { respondJson(res, 400, { error: { message: 'invalid-model-request', type: 'invalid_request_error' } }); return; }
       if (Buffer.byteLength(JSON.stringify(body)) > maxRequestBytes) { respondJson(res, 413, { error: { message: 'model-request-too-large', type: 'invalid_request_error' } }); return; }
       const suppliedId = req.headers['idempotency-key'];
@@ -306,14 +306,15 @@ function uniqueApplicationTokenEntries(entries) {
   return { ok: true, entries };
 }
 
-function cleanChatRequest(value) {
+function cleanChatRequest(value, { accountMode = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const selectedModel = resolveClientModel(value.model);
   if (!selectedModel || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 2_048) return null;
   if (value.stream != null && typeof value.stream !== "boolean") return null;
   if (value.n != null && value.n !== 1) return null;
+  const maximumOutput = accountMode && selectedModel === miniMaxProxyModel ? 32_768 : 8_192;
   for (const name of ["max_tokens", "max_completion_tokens"]) {
-    if (value[name] != null && (!Number.isSafeInteger(value[name]) || value[name] < 1 || value[name] > 8_192)) return null;
+    if (value[name] != null && (!Number.isSafeInteger(value[name]) || value[name] < 1 || value[name] > maximumOutput)) return null;
   }
   const body = { ...value, model: selectedModel };
   if (selectedModel === miniMaxProxyModel && Array.isArray(value.tools)) {

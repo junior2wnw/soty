@@ -14,6 +14,7 @@ import { createLocalAppsRuntime } from '../../scripts/agent-modules/local-apps.m
 import { createSignedConnectHttpClient } from './support/signed-connect-client.mjs';
 import { createConnectorStore } from '../connector-store.js';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
+import { gonkaModelLimitsFor } from '../../scripts/agent-modules/opencode-release.mjs';
 
 const MODEL = 'zai-org/GLM-5.3-Flash';
 const good = value => { assert.equal(value.ok, true, value.error?.code || value.error); return value; };
@@ -21,7 +22,7 @@ const identity = () => { const pair = generateKeyPairSync('ec', { namedCurve: 'p
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; };
 const body = { model: MODEL, messages: [{ role: 'user', content: 'Synthetic route test' }], stream: false };
 
-async function fixture(t) {
+async function fixture(t, { applicationModels = [MODEL], accountEnabled = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-account-ai-http-')), dist = join(directory, 'dist');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html><title>Account AI transport fixture</title>');
   const rootKeys = generateKeyPairSync('ed25519'), gatewayKeys = generateKeyPairSync('ed25519'), nonce = new Set(), accounts = new Map();
@@ -67,7 +68,7 @@ async function fixture(t) {
             usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } })); return;
         }
         if (input.stream) { res.setHeader('content-type', 'text/event-stream'); res.write('data: {"choices":[{"delta":{"content":"сота"}}]}\n\n'); res.end('data: [DONE]\n\n'); }
-        else res.end(JSON.stringify({ model: MODEL, choices: [{ message: { role: 'assistant', content: 'Synthetic account response' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+        else res.end(JSON.stringify({ model: input.model, choices: [{ message: { role: 'assistant', content: 'Synthetic account response' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
         return;
       }
       res.writeHead(404).end('{}');
@@ -83,9 +84,9 @@ async function fixture(t) {
   const configuration = captureAccountAiConfiguration({ schema: 'soty.account-ai-installed.v1', issuer: ROOT_AI_ISSUER, gatewayOrigin,
     signing: { kid: 'fixture-root', privateKey: rootKeys.privateKey.export({ format: 'pem', type: 'pkcs8' }) },
     gatewaySigner: { issuer: GATEWAY_AI_ISSUER, kid: 'fixture-gateway', publicKey: gatewayKeys.publicKey.export({ format: 'pem', type: 'spki' }) },
-    applications: [{ appId: 'synthetic_app', accountId: sponsor, models: [MODEL] }],
+    applications: [{ appId: 'synthetic_app', accountId: sponsor, models: applicationModels }],
     legacyConnectors: [{ connectorId: 'sponsored-connector', accountId: sponsor, models: [MODEL], tokenHash: createHash('sha256').update(legacyToken).digest('hex') }] }, { allowLoopbackFixture: true });
-  app = createHttpApp(dist, { env: {}, dataDir: join(directory, 'data'), connectOrigins: [origin], accountAi: configuration,
+  app = createHttpApp(dist, { env: {}, dataDir: join(directory, 'data'), connectOrigins: [origin], ...(accountEnabled ? { accountAi: configuration } : {}),
     universalAppsEnabled: false, personalAgent: { enabled: false }, localExecutorCurrent: false,
     appOriginTemplate: `http://{appId}.localhost:${server.address().port}`, appHosting: { domainProfile: 'separate-site', namedAppZone: '', discoveryOrigin: '' },
     gonka: { baseUrl: 'https://must-not-call.invalid/v1', apiKey: 'synthetic-legacy-provider-key', applicationTokens: JSON.stringify({ synthetic_app: applicationToken }),
@@ -147,6 +148,32 @@ test('real static application route preserves JSON/SSE and bills explicit servic
     const response = await fetch(f.origin + '/api/inference/v1/' + suffix, { headers: { authorization: 'Bearer ' + f.applicationToken } }); assert.equal(response.status, 200);
     const value = await response.json(); assert.deepEqual((value.data ?? value.models).map(model => model.id), [MODEL]);
   }
+});
+
+test('account MiniMax accepts the actual installed OpenCode output limit for static and owned clients, with strict neighboring bounds', async t => {
+  const model = 'MiniMaxAI/MiniMax-M2.7', maximum = gonkaModelLimitsFor(model).output;
+  assert.equal(maximum, 32768, 'a client output-limit change must deliberately update Root admission and finite gateway policy together');
+  const f = await fixture(t, { applicationModels: [MODEL, model] }), source = await f.device({ claim: true });
+  good(await f.call(f.alice, 'apps.assistant.send', { expectedAccountId: f.a.accountId, ...source.target, requestId: 'minimax-client-request', conversationId: 'minimax-client-conversation', text: 'Synthetic task', cwd: '' }));
+  assert.equal(good(await f.store.poll(source.auth, 0)).jobs.length, 1);
+  for (const [token, application] of [[f.applicationToken, true], [source.token, false]]) for (const field of ['max_tokens', 'max_completion_tokens']) {
+    const accepted = await f.model(token, { ...body, model, [field]: maximum }, application); assert.equal(accepted.status, 200); assert.equal((await accepted.json()).model, model);
+    assert.equal(f.state.dispatches.at(-1).body[field], maximum); assert.equal(f.state.dispatches.at(-1).proof.accountId, application ? f.sponsor : f.a.accountId);
+    const count = f.state.dispatches.length;
+    const excessive = await f.model(token, { ...body, model, [field]: maximum + 1 }, application); assert.equal(excessive.status, 400); await excessive.text();
+    const glm = await f.model(token, { ...body, model: MODEL, [field]: gonkaModelLimitsFor(MODEL).output + 1 }, application); assert.equal(glm.status, 400); await glm.text();
+    assert.equal(f.state.dispatches.length, count, 'rejected limits never reach the account gateway');
+  }
+  assert.equal(f.state.bypass, 0);
+});
+
+test('legacy direct-provider mode retains the 8192 MiniMax ceiling', async t => {
+  const f = await fixture(t, { accountEnabled: false });
+  for (const field of ['max_tokens', 'max_completion_tokens']) {
+    const result = await f.model(f.applicationToken, { ...body, model: 'MiniMaxAI/MiniMax-M2.7', [field]: gonkaModelLimitsFor('MiniMaxAI/MiniMax-M2.7').output }, true);
+    assert.equal(result.status, 400); await result.text();
+  }
+  assert.equal(f.state.bypass, 0); assert.equal(f.state.dispatches.length, 0);
 });
 
 test('signed owner key-list supports 200 bounded full policies above the default Connect response cap', async t => {
