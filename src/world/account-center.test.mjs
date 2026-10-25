@@ -41,10 +41,12 @@ test('one centre exposes scoped categories; appearance, notifications and accept
 
 test('security separates identity devices, recovery and grants; data has distinct storage/device/help destinations', () => {
   const f = fixture(); f.section('security').click();
-  for (const id of ['auth-devices', 'recovery', 'agent-access']) f.action(id).click();
+  for (const id of ['auth-devices', 'recovery', 'human-signins', 'agent-access']) f.action(id).click();
+  assert.equal(f.action('human-signins').textContent, 'Входы в приложения');
+  assert.equal(f.action('agent-access').textContent, 'Действия ИИ и приложений');
   assert.equal(f.action('data-export'), undefined); assert.equal(f.action('app-hosts'), undefined);
   f.section('data').click(); f.action('data-export').click(); f.action('device-status').click();
-  assert.deepEqual(f.calls, ['auth-devices', 'recovery', 'agent-access', 'data-export', 'device-status']);
+  assert.deepEqual(f.calls, ['auth-devices', 'recovery', 'human-signins', 'agent-access', 'data-export', 'device-status']);
 });
 
 test('unavailable controls never dispatch; stale account or disposed centre cannot execute an old action', () => {

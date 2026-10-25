@@ -3,7 +3,7 @@ import { avatar, button, el } from './dom';
 
 export type AccountSection = 'profile' | 'notifications' | 'appearance' | 'ai' | 'security' | 'data';
 export type AccountAction = 'edit-profile' | 'profile-visibility' | 'switch-profile' | 'appearance' | 'notifications'
-  | 'auth-devices' | 'recovery' | 'data-export' | 'ai-api' | 'agent-access' | 'device-status' | 'help' | 'developers';
+  | 'auth-devices' | 'recovery' | 'data-export' | 'ai-api' | 'human-signins' | 'agent-access' | 'device-status' | 'help' | 'developers';
 export interface AccountCenterOptions {
   host: HTMLElement;
   identity: { displayName: string; bio?: string; avatarUrl?: string | null; profileId?: string; avatarRevision?: number | null; color?: string };
@@ -59,7 +59,8 @@ export function mountAccountCenter(options: AccountCenterOptions): { dispose(): 
     } else if (section === 'security') {
       action('auth-devices', 'Устройства входа', 'phone', 'Устройства с доступом к этому профилю');
       action('recovery', 'Восстановление профиля', 'lock', 'Запасной способ входа · это не копия данных');
-      action('agent-access', 'Разрешения приложений', 'shield', 'Разрешения, сроки и история действий');
+      action('human-signins', 'Входы в приложения', 'lock', 'Входы через Соты и запомненные согласия');
+      action('agent-access', 'Действия ИИ и приложений', 'shield', 'Права на действия, сроки и история выполнения');
       body.append(el('p', 'sw-muted', 'Компьютеры, где работают приложения, находятся в управлении размещением. Отзыв входа и выключение компьютера — разные действия.'));
     } else {
       action('device-status', 'Соты на этом устройстве', 'phone', 'Установка, обновление и доступность без сети');

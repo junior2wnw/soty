@@ -220,7 +220,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       const mount = await voiceDescriptor.read(options);
       return mount ? { client: accountClient, mount } : null;
     },
-    localAccount: async () => { const state = await accountClient.getLocalState(); return { accountId: state.accountId ?? null, label: state.label || 'Я' }; },
+    localAccount: async () => { const state = await accountClient.getLocalState(); return { accountId: state.accountId ?? null, deviceId: state.deviceId ?? null, label: state.label || 'Я' }; },
     openLegacy, openAccount, openConnections, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
     appSlotCleanup:reply=>accountClient.appSlotCleanup(reply),
     openAppBuilder: (host: HTMLElement) => actions.mountAppBuilder(host),

@@ -1024,6 +1024,23 @@ class WorldApplication {
     for(const nav of this.root.querySelectorAll<HTMLElement>('[data-nav-view="messages"]')){let badge=nav.querySelector<HTMLElement>('.sx-nav-unread');if(!unread){badge?.remove();continue;}if(!badge){badge=el('span','sx-nav-unread');badge.setAttribute('aria-hidden','true');nav.append(badge);}badge.textContent=unread>99?'99+':String(unread)+(incomplete?'+':'');}
   }
 
+  private openHumanSignins(): void {
+    const accountId = this.deskAccount, current = this.accountTask();
+    if (!accountId || !current()) return;
+    let panel: { dispose(): void } | undefined;
+    const dialog = this.dialog('Входы в приложения', () => panel?.dispose());
+    dialog.element.classList.add('sw-human-signins-dialog');
+    dialog.body.append(el('p', 'sw-muted', 'Проверяем текущий профиль…'));
+    void Promise.all([import('./human-signins'), this.options.localAccount?.() ?? Promise.resolve(null)]).then(([module, identity]) => {
+      if (!current() || !dialog.element.open) return;
+      if (!identity || identity.accountId !== accountId) { dialog.body.replaceChildren(el('p', 'sw-error', 'Не удалось подтвердить текущий профиль. Откройте его настройки заново.')); return; }
+      dialog.body.replaceChildren();
+      panel = module.mountHumanSignins({ host: dialog.body, api: this.api, accountId,
+        deviceId: typeof identity.deviceId === 'string' && identity.deviceId ? identity.deviceId : null,
+        accountLabel: this.profile?.displayName || identity.label, isCurrent: () => current() && dialog.element.open });
+    }).catch(() => { if (current() && dialog.element.open) dialog.body.replaceChildren(el('p', 'sw-error', 'Не удалось открыть входы. Проверьте соединение и откройте настройки ещё раз.')); });
+  }
+
   private openProfileMenu(): void {
     const current = this.accountTask(), returnTarget = this.dialogReturnTarget();
     let center: ReturnType<typeof mountAccountCenter> | undefined;
@@ -1035,6 +1052,7 @@ class WorldApplication {
       'auth-devices': () => this.runHook(() => this.options.openAccount('devices')),
       recovery: () => this.runHook(() => this.options.openAccount('recovery')),
       'data-export': () => this.runHook(() => this.options.openAccount('data')),
+      'human-signins': () => this.openHumanSignins(),
       'agent-access': () => this.navigate('access'), 'device-status': () => this.openDeviceStatus(),
       'ai-api': () => { void this.openAiSettings(); },
       help: () => this.openHelp(returnTarget), developers: () => { window.open('/agents', '_blank', 'noopener'); },

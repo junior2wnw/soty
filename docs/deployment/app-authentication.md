@@ -28,6 +28,17 @@ RP registration или OIDC refresh family для самой соты. Акти�
 Приватный адаптер Spreadex из восстановления 20.10.2026 относится ко второй
 строке. Он не является универсальной многопользовательской авторизацией.
 
+## Управление собственными входами
+
+В текущем интерфейсе: **Профиль → Безопасность → Входы в приложения**. Чтение
+capability — `GET /api/apps/capabilities → humanSignins`; подписанные методы —
+`identity.human.signins.list`, `.revoke`, `.checkRevoke`. Server-issued intent
+передаётся точно, с expected account и revision. После lost ACK используется
+readonly check, без нового revoke ID или автоматической отправки отзыва.
+Family-only и forget app/device/version имеют разные scopes; Root Source
+короткие сессии и agent grants в этот список не входят. Подробности и ограничения:
+[редактор входов S29/S30](../implementation/human-signins-settings.md).
+
 ## 1. Подготовить issuer и approved client
 
 Сначала прочитайте [Human identity](../../modules/human-identity/README.md).

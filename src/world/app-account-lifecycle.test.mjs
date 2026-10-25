@@ -58,6 +58,8 @@ const productSource = await readFile(new URL('./product.ts', import.meta.url), '
 const productCompiled = ts.transpileModule(productSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const accountCenterCompiled = ts.transpileModule(await readFile(new URL('./account-center.ts', import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+const originContinuityCompiled = ts.transpileModule(await readFile(new URL('../platform/origin-continuity.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const fieldDirectoryCompiled = ts.transpileModule(await readFile(new URL('./field-directory.ts', import.meta.url), 'utf8'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -194,9 +196,9 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const dialogsModule = { exports: {} };
   vm.runInNewContext(dialogsCompiled, { module: dialogsModule, exports: dialogsModule.exports, require: name => ports[name] ?? {}, crypto: globalThis.crypto });
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
-  for (const [name, code] of [['./account-center', accountCenterCompiled], ['./field-directory', fieldDirectoryCompiled]]) {
+  for (const [name, code] of [['./account-center', accountCenterCompiled], ['./field-directory', fieldDirectoryCompiled], ['../platform/origin-continuity', originContinuityCompiled]]) {
     const loaded = { exports: {} };
-    vm.runInNewContext(code, { module: loaded, exports: loaded.exports, require: name => ports[name] ?? {}, document, crypto: globalThis.crypto });
+    vm.runInNewContext(code, { module: loaded, exports: loaded.exports, require: name => ports[name] ?? {}, document, location, crypto: globalThis.crypto });
     ports[name] = loaded.exports;
   }
   const productModule = { exports: {} }, preferences = new Map();
@@ -415,6 +417,28 @@ test('four persistent workspace destinations use the real dirty-screen guard and
   assert.equal(f.app.fieldNavigation.hidden, false);
   assert.equal(f.app.fieldNavigation.dataset.fieldReturn, 'true');
   assert.equal(f.app.fieldNavigation.children.length, 4);
+});
+
+test('Security Human signins action mounts the canonical editor with its exact account/device and closes the former menu', async () => {
+  const f=fixture(),mounts=[];let disposed=0;
+  f.ports['./human-signins']={mountHumanSignins(options){mounts.push(options);return{dispose(){disposed++;}};}};
+  f.app.options.localAccount=async()=>({accountId:'account-A',deviceId:'device-A',label:'Local A'});
+  f.app.dialog=function(_title,onClose){const element=new ElementPort(),body=new ElementPort();const dialog={element,body,close(){element.open=false;onClose?.({interrupted:false});}};f.dialogs.push(dialog);this.dialogs.add(dialog);return dialog;};
+  f.app.openProfileMenu();const menu=f.dialogs.at(-1);
+  menu.body.querySelectorAll('button').find(node=>node.dataset.accountSection==='security').emit('click');
+  menu.body.querySelectorAll('button').find(node=>node.dataset.accountAction==='human-signins').emit('click');await turn();
+  assert.equal(menu.element.open,false);assert.equal(mounts.length,1);
+  assert.equal(mounts[0].accountId,'account-A');assert.equal(mounts[0].deviceId,'device-A');assert.equal(mounts[0].api,f.app.api);assert.equal(mounts[0].isCurrent(),true);
+  f.app.accountGeneration++;assert.equal(mounts[0].isCurrent(),false);
+  f.dialogs.at(-1).close();assert.equal(disposed,1);
+});
+
+test('a delayed local identity cannot mount Human signins for a new or returned account/device', async () => {
+  const f=fixture(),gate=deferred(),mounts=[];
+  f.ports['./human-signins']={mountHumanSignins(options){mounts.push(options);return{dispose(){}};}};
+  f.app.options.localAccount=()=>gate.promise;f.app.openHumanSignins();
+  f.app.deskAccount='account-B';f.app.accountGeneration++;f.app.deskAccount='account-A';f.app.accountGeneration++;
+  gate.resolve({accountId:'account-A',deviceId:'device-A',label:'A'});await turn();assert.equal(mounts.length,0);
 });
 
 test('connection entry calls the host hub once and ignores failures from a departed account', async () => {
