@@ -27,6 +27,8 @@ RUN --mount=type=tmpfs,target=/tmp/soty-ci-platform,size=536870912 \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run platform:test \
   && TMPDIR=/tmp/soty-ci-platform TEMP=/tmp/soty-ci-platform TMP=/tmp/soty-ci-platform SOTY_PLANNER_GATEWAY_SOURCE_ROOT=/app/test-fixtures/planner-source-ci SOTY_PLANNER_PROOF_SOURCE_ROOT=/app/test-fixtures/planner-source-ci pnpm run world:test \
   && pnpm run dev:test && pnpm run identity:selftest && pnpm run inference:selftest \
+  && node --test deploy/ui/*.test.mjs \
+  && SOTY_UI_CADDY_BINARY=/usr/local/bin/soty-test-caddy node --test --test-concurrency=1 deploy/ui/*.acceptance.mjs \
   && node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs \
   && node --test --test-concurrency=2 deploy/connect/private-attach/test/*.test.mjs deploy/connect/private-attach/vendor/*/*.test.mjs \
   && node scripts/connector-durable-protocol-selftest.mjs && node scripts/connector-persistence-selftest.mjs
