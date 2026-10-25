@@ -28,6 +28,7 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   // container label from the previous application.
   delete config.Labels[storageReaderLabel];
   delete config.Labels[universalModeLabel];
+  delete config.Labels['io.soty.account-ai'];
   const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
   addApprovedPolicy(result,applicationPolicy);return universalPolicy?applyUniversalPolicy(result,universalPolicy):result;
 }

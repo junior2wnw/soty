@@ -82,6 +82,9 @@ for (const changedModel of [false, true]) test(`guarded account AI handoff ${cha
   const imageRead = engine.engine.image;
   engine.engine.image = async id => { const value = await imageRead(id); value.Config.Labels[universalModeLabel] = '0';
     if (id === rolloutArgs.candidateImage) value.Config.Labels['io.soty.account-ai'] = '1'; return value; };
+  const create = engine.engine.create;
+  engine.engine.create = async (...args) => { const result = await create(...args);
+    engine.map.get(result.Id).Config.Labels['io.soty.account-ai'] = '1'; return result; };
   const ready = engine.run.ready;
   engine.run.ready = async kind => { const value = structuredClone(await ready(kind));
     if (kind === 'candidate') {
