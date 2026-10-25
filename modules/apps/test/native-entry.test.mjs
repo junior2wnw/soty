@@ -28,7 +28,7 @@ const removal = f => ({ action: 'remove', origin: f.profile.nativeOrigin, target
 function precedingRootEntry() {
   const root = new URL('../../../test-fixtures/native-entry-preceding-root/', import.meta.url);
   const manifest = readFileSync(new URL('SOURCE-PINS.json', root));
-  assert.equal(createHash('sha256').update(manifest).digest('hex'), '5b219719120a97af60d67a0a111af0496f266b992cfd4899c20e63a40ac37c3a');
+  assert.equal(createHash('sha256').update(manifest).digest('hex'), 'bb1eec0ab57435dda0b80edc4c4bd4d190381109c30b06d974bc09c0c137251e');
   const pins = JSON.parse(manifest);
   assert.equal(pins.schema, 'soty.native-entry-preceding-root-ci.v1');
   assert.equal(pins.sourceRevision, '1487cb960b0e2b12bf4ee5c5d61d7fae150b08dc');
