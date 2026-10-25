@@ -85,7 +85,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   let sourceReadbackNotice: string | null = null;
   let lastDisplayedPending: SettingsPending | null = null;
   let sourceTimer: ReturnType<typeof setTimeout> | null = null;
-  let disposed = false, busy = false, refreshing = false, staleInspection = false, notice = '', error = '';
+  let disposed = false, busy = false, refreshing = false, staleInspection = false, inspectionDenied = false, notice = '', error = '';
   let confirmation: Confirmation | null = null, confirmTrigger: HTMLElement | null = null;
   let copyFallback: string | null = null, observationDeadline = 0, inspectionGeneration = 0, refreshGeneration = 0, copyGeneration = 0;
   let observationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -113,10 +113,14 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       if (model) model.observe(snapshot, completed); else model = createAppSettingsDraftState(snapshot);
       if (sourceModel) sourceModel.observe(snapshot, { publicationDirty: model.read().publicationDirty, ...(completedSource ? { completed: completedSource } : {}) });
       else sourceModel = createAppSourceState({ accountId, appId, snapshot });
-      staleInspection = false; scheduleObservation(snapshot, Math.max(0, performance.now() - started)); options.onChanged(snapshot);
+      staleInspection = false; inspectionDenied = false; scheduleObservation(snapshot, Math.max(0, performance.now() - started)); options.onChanged(snapshot);
       if (sourceReadbackNotice && current()) { sourceNotice = sourceReadbackNotice; notice = sourceNotice; sourceReadbackNotice = null; }
       return true;
-    } catch (reason) { if (!current() || generation !== inspectionGeneration) return false; staleInspection = true; throw reason; }
+    } catch (reason) {
+      if (!current() || generation !== inspectionGeneration) return false;
+      inspectionDenied = Boolean(reason && typeof reason === 'object' && 'code' in reason && reason.code === 'apps_owner_required');
+      staleInspection = true; throw reason;
+    }
   }
   async function perform(action: () => Promise<void>): Promise<void> {
     if (!current() || busy) return;
@@ -555,7 +559,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     const panel = panels.get(id)!; panel.id = `${panelId}-${id}`; panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', tab.id);
     tab.addEventListener('keydown', event => {
       const ids = [...panels.keys()], index = ids.indexOf(id);
-      const target = event.key === 'Home' ? ids[0] : event.key === 'End' ? ids.at(-1) : event.key === 'ArrowRight' ? ids[(index + 1) % ids.length] : event.key === 'ArrowLeft' ? ids[(index + ids.length - 1) % ids.length] : null;
+      const target = event.key === 'Home' ? ids[0] : event.key === 'End' ? ids.at(-1) : ['ArrowRight', 'ArrowDown'].includes(event.key) ? ids[(index + 1) % ids.length] : ['ArrowLeft', 'ArrowUp'].includes(event.key) ? ids[(index + ids.length - 1) % ids.length] : null;
       if (target) { event.preventDefault(); selectSettingsSection(target, true); }
     });
     settingsTabs.set(id, tab); settingsNavigation.append(tab);
@@ -690,9 +694,9 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     lastDisplayedPending = pending;
     text(note, notice); note.hidden = !notice; text(failure, error); failure.hidden = !error; text(storageFailure, storageError); storageFailure.hidden = !storageError;
     copyField.hidden = !copyFallback; if (copyFallback) inputValue(copiedInput, copyFallback);
-    loading.hidden = Boolean(model); text(loading, busy || refreshing ? 'Загружаем настройки…' : 'Настройки пока недоступны. Обновите состояние кнопкой справа.');
-    summaryCopy.hidden = !model; topActions.hidden = !model; content.hidden = !model;
-    disable(fresh, busy || refreshing); fresh.setAttribute('aria-busy', String(refreshing));
+    loading.hidden = Boolean(model) || inspectionDenied; text(loading, busy || refreshing ? 'Загружаем настройки…' : 'Настройки пока недоступны. Обновите состояние кнопкой справа.');
+    summaryCopy.hidden = !model || inspectionDenied; topActions.hidden = !model || inspectionDenied; content.hidden = !model || inspectionDenied;
+    fresh.hidden = inspectionDenied; disable(fresh, busy || refreshing); fresh.setAttribute('aria-busy', String(refreshing));
     pendingBox.hidden = !pending;
     if (pending) { text(pendingTitle, `${pendingLabel(pending)}: результат требует проверки`); text(pendingDetail, pending.op === 'apps.source.promote' && pending.expectedSource
       ? `${pending.expectedSource.deviceName} · порт ${pending.expectedSource.port} · ${pending.expectedSource.entryPath} · ${pending.args.launchPolicy === 'anyone' ? 'всем по включённым ссылкам' : 'владельцу и выбранным людям'}`

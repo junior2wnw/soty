@@ -9,8 +9,10 @@ import type { WorldApi } from './types';
 
 if (!import.meta.env.DEV) throw Error('Settings fixture is development-only');
 const params = new URLSearchParams(location.search), app = document.querySelector<HTMLElement>('#app')!;
+const requestedMode = params.get('mode') ?? 'account', mode = requestedMode.replace(/-(?:light|dark)$/u, '');
+const participant = params.has('participant') || mode === 'participant';
 app.className = 'sw-app'; app.dataset.experience = 'one-field';
-const controller = createThemeController({ initial: { themeMode: params.get('theme') === 'dark' ? 'dark' : 'light', themeBrightness: 50 }, onChange() {} });
+const controller = createThemeController({ initial: { themeMode: params.get('theme') === 'dark' || requestedMode.endsWith('-dark') ? 'dark' : 'light', themeBrightness: 50 }, onChange() {} });
 const appId = `app-${'1'.repeat(32)}`, aliasId = `dom_${'2'.repeat(32)}`;
 const snapshot: AppInspection = {
   schema: 'soty.app-inspection.v1', checkedAt: Date.now(),
@@ -24,7 +26,7 @@ const snapshot: AppInspection = {
 };
 const status = el('p', 'sw-muted'); status.id = 'fixture-result';
 const api = { async request(op: string, args: Record<string, unknown>) {
-  if (params.has('participant')) throw Object.assign(Error('Only owner'), { code: 'apps_owner_required' });
+  if (participant) throw Object.assign(Error('Only owner'), { code: 'apps_owner_required' });
   if (op === 'apps.inspect') return structuredClone(snapshot);
   if (op === 'apps.update') {
     if (args.expectedAccountId !== 'fixture-owner' || args.expectedRevision !== snapshot.app.revision) throw Error('fixture_owner_or_revision_changed');
@@ -45,10 +47,11 @@ const open = (mode: string): void => {
     const controls = createThemeControls(controller); dialog.body.append(controls.element);
     dialog.element.addEventListener('close', () => controls.destroy(), { once: true });
   } else {
+    dialog.element.classList.add('sw-account-dialog');
     const panel = mountAccountCenter({ host: dialog.body, identity: { displayName: 'Александра · личный рабочий профиль', bio: 'Работа, приложения и разговоры' },
       isCurrent: () => dialog.element.open, onAction(action) { status.textContent = action; if (action === 'appearance') { dialog.close(); open('theme'); } } });
     dialog.element.addEventListener('close', () => panel.dispose(), { once: true });
   }
 };
 app.append(button('Профиль и настройки', 'person', '', () => open('account')), button('Управление приложением', 'app', '', () => open('owner')), status);
-open(params.get('mode') ?? 'account');
+open(mode === 'participant' ? 'owner' : mode);

@@ -1,3 +1,4 @@
+.sw-dialog.sw-account-dialog { width: min(760px, calc(100vw - 24px)); }
 .sw-account-center { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 1.8fr); gap: 20px; min-width: 0; }
 .sw-account-identity { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; min-width: 0; padding-bottom: 16px; border-bottom: 1px solid var(--sw-line); }
 .sw-account-identity > div { min-width: 0; }
