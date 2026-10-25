@@ -27,7 +27,7 @@ test('one Native runtime admits 256 host-configured slots; default128 rejects129
     }
     assert.equal(new Set(rows.map(row => row.context.ref)).size, total);
     const overflow = await runtime.capture({ ...binding(), rootReferenceDigest: digest('overflow') });
-    await assert.rejects(read(runtime, overflow), { code: 'source_workspace_context_denied' });
+    await assert.rejects(read(runtime, overflow), { code: 'source_workspace_capacity', status: 503 });
     assert.equal((await read(runtime, rows[0].proof)).context.ref, rows[0].context.ref);
     const args = { requestId: 'workspace_capacity_query', input: { operation: 'items.list' }, contextRef: rows[0].context.ref };
     await assert.rejects(runtime.call(rows[1].proof, 'read', args), { code: 'source_workspace_context_denied' });

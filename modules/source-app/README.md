@@ -289,6 +289,23 @@ ABA, revoke, close или expiry не позволяют использоват�
 authority и не принимается из HTTP, RPC, профиля или descriptor. Истёкшие leases
 удаляются; переполнение отказывает новому lease, не вытесняя действующий.
 TTL, account/device/slot isolation и Native ACL этим параметром не меняются.
+Исчерпание slots возвращает `503 source_workspace_capacity`, а не отказ identity.
+Действующие leases не вытесняются; повторный вход не освобождает чужие slots.
+Клиент показывает временную занятость и допускает повтор чтения позднее.
+
+Это раздельные release limits, не доказательство массовой нагрузки:
+
+| Контур | Охват | Текущий предел |
+|---|---|---|
+| Workspace context leases | Один BFF/approved Source profile; все его текущие кадры/аккаунты вместе | Default128; только host может выбрать проверенный `maxSlots` |
+| Root scoped Source continuations | Отдельный Root gateway/registry | 256 записей; не запас Source sessions |
+| PG Source sessions | Отдельный квалифицируемый PG host adapter/его Source storage | 4096 коротких записей; это не число пользователей и не universal SDK default |
+
+Пределы не суммируются. Root/device/app/profile, Native ACL, память, TTL и storage
+проверяют отдельно; повышение host limit само не квалифицирует capacity. Doctor
+может сообщать заданный предел и безопасный статус, без текущих счётчиков других
+людей. Source RP renewal имеет собственный concurrency budget и не заменяет эти
+leases/короткие Source sessions.
 
 До первого выпуска SDK и установки workspace сделана явная финализация
 пина `soty.standard-workspace@1`: `context.maxSlots:128` заменено на

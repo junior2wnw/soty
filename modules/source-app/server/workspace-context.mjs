@@ -90,7 +90,7 @@ export function createWorkspaceContextAuthority(options = {}) {
     let entry = slots.get(key);
     if (entry && (entry.child !== projection.key || entry.generation !== projection.generation)) { slots.delete(key); entry = undefined; }
     if (!entry && create) {
-      denied(slots.size < maxSlots);
+      check(slots.size < maxSlots, 'source_workspace_capacity', 503);
       entry = { child: projection.key, ref: nonce(), generation: projection.generation,
         expiresAt: Math.min(now + 300000, binding.rootExpiresAt, projection.expiresAt) }; slots.set(key, entry);
     }
