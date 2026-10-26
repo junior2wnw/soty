@@ -127,10 +127,42 @@ pair/точных origins/пинов, отдельного whole-port ACK и т�
 на HTTP и в течение WS. Эти проверки не дают Human identity. При изменении
 активной пары используй свежий exact keep/remove contract; старый Source-only
 вызов не должен молча снимать Native entry. Проверяй наличие этой capability.
-В существующем owner editor действие «Сохранить отдельный сайт» получает новую
-проверку обоих targets и отдельный Native ACK. «Отключить отдельный сайт» требует
-точных текущих origin/revision/digest и собственного подтверждения. Unknown
-запрос остаётся прежним durable intent; после reload не подменяй его новой парой.
+В owner editor «Сохранить отдельный сайт» проверяет оба targets и требует
+независимые Source и Native ACK. Для первого Source входа новый адрес сначала
+закрепляют на том же app ID, но оставляют выключенным. Не включай его обычным
+сохранением доступа, пока primary ещё указывает на прежний обычный порт.
+
+Атомарное включение доступно при `apps.inspect.source.sourceEntryActivation:true`.
+Владелец выбирает OWN bound/inactive alias в «Адрес входа Сот». Единственный
+кандидат может быть предложен заранее; это ещё не проверка подходящего origin.
+Prepare и promote получают один и тот же closed action:
+`sourceEntryAction:{action:'activate',domainId:'dom_<32hex>'}` — без URL в action.
+Сервер сверяет имя с approved `profile.embedOrigin`; подготовленный ответ содержит
+точные `sourceEntryAction` и `sourceEntry:{origin,domainId}`. До подтверждения
+переключения адрес остаётся закрытым. Private MAC readiness CHECK проверяет
+подключение; полноценного owner Source frame preview до promotion этот контракт
+не предоставляет.
+
+Перед окончательным переключением показать проверенный Source origin и
+сохраняемый Native origin/target. Source ACK имеет scope
+`authenticated-workspace` и включает выбранное действие с именем; отдельный
+Native ACK остаётся `whole-port` для прежнего exact Native target. Третьего
+дублирующего ACK не требуется. В существующей транзакции promote одновременно
+сохраняются Source target/admission/policy/receipt и включается только этот
+Source alias; прежние активные имена сохраняются. Это действие поддерживает
+`anyone` и Root-workspace Source v2; при restricted оно не предлагается. Отсутствие
+capability блокирует выбранную активацию с требованием обновления, без fallback
+на публикацию прежнего проекта. Уже активный Source alias без нового action
+сохраняет старый wire/hash/receipt контракт.
+
+Сохрани exact action и проверенный Source origin/domain вместе с pending intent.
+При lost ACK/reload проверяется прежний requestId; не создавай новую активацию и
+не восстанавливай членство адреса по старой квитанции. При отзыве/смене имени,
+actor/device/profile или позднем callback не переносить согласия на новый action.
+Откат использует свежую текущую пару и сохраняет последние данные; неизвестный
+результат не разрешает blind replay, backup rewind или возврат к старому Root
+registry без Source admission. «Отключить отдельный сайт» по-прежнему требует
+точных текущих origin/revision/digest и своего отдельного подтверждения.
 
 При неожиданном expiry сначала измерь UTC clock difference Root/Source и RTT.
 Root JWT срок, public Native app-policy lease и session — разные часы/границы;

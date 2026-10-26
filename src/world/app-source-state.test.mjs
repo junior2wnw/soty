@@ -46,11 +46,12 @@ function storeFixture(locks = { request: async (_key, callback) => callback() })
 }
 function receipt(pending) {
   const a = pending.args, t = pending.expectedSource;
-  return { requestId: a.requestId, replayed: false, receipt: { schema: `soty.app-source-receipt.v${a.nativeExposureAck || a.nativeEntryAction ? 2 : 1}`, namespace: `apps.source.promote.v${a.nativeExposureAck || a.nativeEntryAction ? 2 : 1}`,
+  return { requestId: a.requestId, replayed: false, receipt: { schema: `soty.app-source-receipt.v${a.nativeExposureAck || a.nativeEntryAction || a.sourceEntryAction ? 2 : 1}`, namespace: `apps.source.promote.v${a.nativeExposureAck || a.nativeEntryAction || a.sourceEntryAction ? 2 : 1}`,
     appId, requestKeyHash: sha(a.requestId), preparationKeyHash: sha(a.preparationId), previousTargetRevision: a.expectedTargetRevision,
     targetRevision: t.revision, targetDigest: t.digest, profile: t.profile, requiredBindingVersion: 2, policyEpoch: a.expectedPolicyEpoch + 1,
     launchPolicy: a.launchPolicy, listed: a.listed, exposureAck: a.exposureAck ?? null, committedAt: 101_000,
     ...(a.nativeEntryAction ? { nativeEntryAction: a.nativeEntryAction } : {}),
+    ...(a.sourceEntryAction ? { sourceEntryAction: a.sourceEntryAction, sourceEntry: pending.expectedSourceEntry } : {}),
     ...(a.nativeExposureAck ? { nativeEntry: { ...pending.expectedNativeEntry, target: { revision: a.nativeExposureAck.targetRevision,
       digest: a.nativeExposureAck.targetDigest, profile: a.nativeExposureAck.profile }, exposureAck: a.nativeExposureAck } } : {}) },
     current: { appId, policyEpoch: a.expectedPolicyEpoch + 1, requiredBindingVersion: 2, activeTargetRevision: t.revision } };

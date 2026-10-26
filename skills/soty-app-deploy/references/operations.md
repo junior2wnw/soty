@@ -23,8 +23,15 @@ Wildcard DNS ведёт на TLS edge; Caddy требует on_demand_tls permis
 Фиксированный upstream/порт не берётся из заголовков пользователя.
 Digest закрепляет текущий source, проверка доступа выполняется на каждый запрос.
 
-У пары Source/Native экспорт v2 может описывать закрытую конфигурацию, но native
-план требует anyone, оба active bound alias и текущий Source launchEntry.
+Новый Source alias сначала закрепляется bound/inactive на том же app ID. При
+`sourceEntryActivation:true` private prepare принимает exact
+`sourceEntryAction:{action:'activate',domainId}` и возвращает проверенный origin;
+адрес включается только в той же транзакции, что Source promotion. До неё не
+сохранять Source имя в обычной публикации прежнего порта. Отсутствующая capability
+не разрешает такой обход; подробнее — `authentication.md`.
+
+После promotion у пары Source/Native экспорт v2 может описывать закрытую
+конфигурацию, но native план требует anyone, оба active bound alias и текущий Source launchEntry.
 Native alias и port/path берутся из nativeEntry.target; манифест соответствует
 этому target. Ссылка Сот остаётся Source entry. Иной явный domain ID не заменяет
 ни одну поверхность; старые saved/deep paths не переписываются.

@@ -44,6 +44,12 @@ function initialNativeChoices(value) {
     try { const url = new URL(alias.origin); return url.protocol === 'https:' && url.origin === alias.origin; } catch { return false; }
   }).map(alias => ({ domainId: alias.id, origin: alias.origin })).sort((a, b) => a.domainId.localeCompare(b.domainId));
 }
+function sourceEntryChoices(value) {
+  return (value.addresses?.aliases ?? []).filter(alias => alias.state === 'bound' && alias.active === false
+    && !value.publication.activeDomainIds.includes(alias.id) && /^dom_[a-f0-9]{32}$/u.test(alias.id)
+    && typeof alias.origin === 'string' && (() => { try { const url = new URL(alias.origin); return url.protocol === 'https:' && url.origin === alias.origin; } catch { return false; } })())
+    .map(alias => ({ origin: alias.origin, domainId: alias.id })).sort((a, b) => a.domainId.localeCompare(b.domainId));
+}
 function baseIdentity(value) {
   return { appId: value.app.id, state: value.app.state, epoch: value.publication.policyEpoch,
     target: pins(value.source), floor: value.source.requiredBindingVersion ?? 1, native: value.publication.nativeEntry ?? null,
@@ -68,6 +74,7 @@ function validateSnapshot(value, appId) {
     validateAppLaunchPath(native.target.entryPath);
   }
   const integrations = value.source.integrations ?? [];
+  check(value.source.sourceEntryActivation === undefined || typeof value.source.sourceEntryActivation === 'boolean', 'app_source_invalid_scope');
   check(Array.isArray(integrations) && integrations.length <= 2
     && integrations.every(item => exact(item, ['profile', 'entryPath']) && supportedAppSourceProfile(item.profile)
       && item.profile !== PROFILE && item.entryPath === '/embed')
@@ -90,7 +97,7 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
   let snapshot = validateSnapshot(initial, appId), base = clone(snapshot), disposed = false, generation = 0;
   const fresh = value => ({ mode: 'new', hostDeviceId: value.source.hostDeviceId, connectorId: value.source.connectorId,
     port: String(value.source.port), entryPath: value.source.entryPath, profile: value.source.profile, launchPolicy: value.publication.launchPolicy,
-    exposureConfirmed: false, nativeEntryMode: 'keep', nativeDomainId: null, nativeConfirmed: false, targetRevision: null });
+    exposureConfirmed: false, nativeEntryMode: 'keep', nativeDomainId: null, nativeConfirmed: false, sourceDomainId: null, targetRevision: null });
   let draft = fresh(snapshot), selected = null, prepared = null, inFlight = null, publicationDirty = false;
   let historyGeneration = 0, historyFlight = null, history = { loading: false, targets: [], nextCursor: null, stale: false };
   let historyCurrent = null, historyConflict = false;
@@ -101,9 +108,15 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     lastClock = result; return result;
   };
   const dirty = () => (draft.mode === 'history' ? draft.targetRevision !== base.source.revision : !equal(tuple(draft), tuple(base.source)))
-    || draft.launchPolicy !== base.publication.launchPolicy || draft.nativeEntryMode === 'remove';
+    || draft.launchPolicy !== base.publication.launchPolicy || draft.nativeEntryMode === 'remove' || draft.sourceDomainId !== null;
   const conflict = () => historyConflict || (dirty() && !equal(baseIdentity(base), baseIdentity(snapshot)));
-  const noChange = () => draft.nativeEntryMode !== 'remove' && (draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source)));
+  const noChange = () => draft.nativeEntryMode !== 'remove' && draft.sourceDomainId === null
+    && (draft.mode === 'history' ? draft.targetRevision === snapshot.source.revision : equal(tuple(draft), tuple(snapshot.source)));
+  const sourceEntry = () => sourceEntryChoices(snapshot).find(alias => alias.domainId === draft.sourceDomainId) ?? null;
+  const sourceEntryAction = () => draft.sourceDomainId === null ? null : { action: 'activate', domainId: draft.sourceDomainId };
+  const activationUnsupported = () => snapshot.source.sourceEntryActivation !== true && draft.sourceDomainId !== null;
+  const activationAllowed = () => !activationUnsupported() && (draft.sourceDomainId === null
+    || snapshot.source.sourceEntryActivation === true && draft.profile === 'soty.selected-human-embed.v2' && draft.launchPolicy === 'anyone' && Boolean(sourceEntry()));
   const integrationAvailable = () => draft.profile === PROFILE || draft.mode === 'history'
     || draft.profile === snapshot.source.profile && draft.entryPath === snapshot.source.entryPath
       && ['hostDeviceId', 'connectorId'].every(key => draft[key] === snapshot.source[key])
@@ -133,18 +146,22 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     return prepared.expired ? 0 : Math.max(0, prepared.deadline - at);
   };
   const eligible = () => !disposed && snapshot.app.state === 'enabled' && snapshot.actions.canEdit && snapshot.actions.canPublish
-    && !publicationDirty && !conflict() && !noChange() && integrationAvailable()
+    && !publicationDirty && !conflict() && !noChange() && integrationAvailable() && activationAllowed()
     && (!nativeReviewRequired() || draft.nativeEntryMode === 'remove' || nativeKeepAllowed());
   function invalidatePreparation() { generation++; prepared = null; draft.exposureConfirmed = false; draft.nativeConfirmed = false; }
   const reviewAvailable = () => eligible() && !!prepared && prepared.generation === generation;
   function ready() { return eligible() && !!prepared && prepared.generation === generation && remaining() > 0; }
-  const consentReady = () => (draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && snapshot.publication.activeDomainIds.length > 0))
+  const hasPublicEntry = () => snapshot.publication.activeDomainIds.length > 0 || Boolean(prepared?.value.sourceEntryAction && prepared.value.sourceEntry);
+  const consentReady = () => (draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && hasPublicEntry()))
     && (!nativeReviewRequired() || draft.nativeConfirmed);
   const canRecheck = () => reviewAvailable() && remaining() === 0 && !clockBroken && !inFlight && consentReady();
   function prepareArgs() {
+    check(!activationUnsupported(), 'app_source_entry_activation_unsupported');
+    check(activationAllowed(), 'app_source_entry_domain_required');
     check(!initialNativeReview() || draft.nativeEntryMode === 'remove' || nativeEntry(), 'app_source_native_alias_required');
     check(eligible(), publicationDirty ? 'app_source_publication_dirty' : conflict() ? 'app_source_revision_conflict' : noChange() ? 'app_source_unchanged' : 'app_source_unavailable');
     const common = { appId, expectedAccountId: accountId, expectedPolicyEpoch: base.publication.policyEpoch, expectedTargetRevision: base.source.revision };
+    if (sourceEntryAction()) common.sourceEntryAction = sourceEntryAction();
     const native = nativeEntry();
     if (native && draft.nativeEntryMode === 'keep') common.nativeEntry = { origin: native.origin, targetRevision: native.target.revision };
     // Initial opt-out has no committed pair to remove. Its separate UI review
@@ -183,9 +200,20 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       nativeEntry = { origin: preparedNative.origin, domainId: preparedNative.domainId, target: normalizeAppSourceTarget(preparedNative.target) };
     } else check(value.nativeEntry === undefined, 'app_source_invalid_preparation');
     check(equal(value.nativeEntryAction ?? null, request.args.nativeEntryAction ?? null), 'app_source_invalid_preparation');
+    let sourceEntry;
+    if (request.args.sourceEntryAction) {
+      const action = value.sourceEntryAction, entry = value.sourceEntry;
+      check(exact(action, ['action', 'domainId']) && Object.keys(action).length === 2
+        && action.action === 'activate' && action.domainId === request.args.sourceEntryAction.domainId
+        && exact(entry, ['origin', 'domainId']) && Object.keys(entry).length === 2
+        && entry.domainId === action.domainId && entry.origin === request.sourceEntry?.origin
+        && entry.domainId === request.sourceEntry?.domainId && target.profile === 'soty.selected-human-embed.v2', 'app_source_invalid_preparation');
+      sourceEntry = { origin: entry.origin, domainId: entry.domainId };
+    } else check(value.sourceEntryAction === undefined && value.sourceEntry === undefined, 'app_source_invalid_preparation');
     return { schema: value.schema, appId, preparationId: value.preparationId, requiredBindingVersion: 2,
       expectedPolicyEpoch: value.expectedPolicyEpoch, expectedTargetRevision: value.expectedTargetRevision, target,
       ...(nativeEntry ? { nativeEntry } : {}), ...(value.nativeEntryAction ? { nativeEntryAction: clone(value.nativeEntryAction) } : {}),
+      ...(sourceEntry ? { sourceEntry, sourceEntryAction: clone(request.args.sourceEntryAction) } : {}),
       checkedAt: value.checkedAt, expiresAt: value.expiresAt };
   }
   function matchesCompleted(pending) {
@@ -193,6 +221,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     const args = pending.args;
     return args.appId === appId && args.expectedAccountId === accountId && args.expectedPolicyEpoch === base.publication.policyEpoch
       && args.expectedTargetRevision === base.source.revision && args.launchPolicy === draft.launchPolicy
+      && equal(args.sourceEntryAction ?? null, sourceEntryAction())
+      && equal(pending.expectedSourceEntry ?? null, args.sourceEntryAction ? sourceEntry() : null)
       && (draft.mode === 'history' ? draft.targetRevision === pending.expectedSource.revision
         && equal(pins(selected), pins(pending.expectedSource)) : equal(tuple(draft), tuple(pending.expectedSource)));
   }
@@ -205,10 +235,12 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         preparation: prepared?.value ?? null, remainingMs, canPrepare: eligible() && !inFlight,
         canPromote: ready() && consentReady(), canRecheckPromote: canRecheck(), history,
         nativeEntry: nativeEntry(), nativeReviewRequired: nativeReviewRequired(), initialNativeReview: initialNativeReview(),
-        nativeChoices: initialNativeReview() ? initialNativeChoices(snapshot) : [], nativeKeepAllowed: nativeKeepAllowed(), nativeReviewOrigins: nativeReviewOrigins() });
+        nativeChoices: initialNativeReview() ? initialNativeChoices(snapshot) : [], nativeKeepAllowed: nativeKeepAllowed(), nativeReviewOrigins: nativeReviewOrigins(),
+        sourceEntry: sourceEntry(), sourceEntryAction: sourceEntryAction(), sourceEntryChoices: sourceEntryChoices(snapshot),
+        sourceEntryActivationSupported: snapshot.source.sourceEntryActivation === true, sourceEntryActivationUnsupported: activationUnsupported() });
     },
     patch(value) {
-      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'launchPolicy', 'exposureConfirmed', 'nativeEntryMode', 'nativeDomainId', 'nativeConfirmed']));
+      check(!disposed && exact(value, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile', 'launchPolicy', 'exposureConfirmed', 'nativeEntryMode', 'nativeDomainId', 'nativeConfirmed', 'sourceDomainId']));
       if (Object.hasOwn(value, 'profile')) check(supportedAppSourceProfile(value.profile));
       for (const key of ['hostDeviceId', 'connectorId', 'port', 'entryPath']) if (Object.hasOwn(value, key)) {
         check(typeof value[key] === 'string' && value[key].length <= (key === 'entryPath' ? 8192 : key === 'port' ? 32 : 180));
@@ -220,13 +252,22 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
         && (snapshot.publication.nativeEntry || initialNativeReview({ ...draft, ...value })));
       if (Object.hasOwn(value, 'nativeDomainId')) check(initialNativeReview({ ...draft, ...value }) && (value.nativeDomainId === null
         || typeof value.nativeDomainId === 'string' && initialNativeChoices(snapshot).some(alias => alias.domainId === value.nativeDomainId)), 'app_source_native_alias_required');
+      if (Object.hasOwn(value, 'sourceDomainId')) check(value.sourceDomainId === null || typeof value.sourceDomainId === 'string'
+        && (value.profile ?? draft.profile) === 'soty.selected-human-embed.v2'
+        && sourceEntryChoices(snapshot).some(alias => alias.domainId === value.sourceDomainId), 'app_source_entry_domain_required');
       const tupleChanged = ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile'].some(key => Object.hasOwn(value, key) && draft[key] !== value[key]);
       const changed = tupleChanged || (value.launchPolicy !== undefined && value.launchPolicy !== draft.launchPolicy)
         || (value.nativeEntryMode !== undefined && value.nativeEntryMode !== draft.nativeEntryMode)
         || (Object.hasOwn(value, 'nativeDomainId') && value.nativeDomainId !== draft.nativeDomainId)
+        || (Object.hasOwn(value, 'sourceDomainId') && value.sourceDomainId !== draft.sourceDomainId)
         || (!!inFlight && (Object.hasOwn(value, 'exposureConfirmed') || Object.hasOwn(value, 'nativeConfirmed')));
       if (changed) invalidatePreparation();
+      const changedProfile = Object.hasOwn(value, 'profile') && value.profile !== draft.profile;
       draft = { ...draft, ...clone(value) };
+      if (changedProfile && draft.profile === 'soty.selected-human-embed.v2' && draft.launchPolicy === 'anyone' && !Object.hasOwn(value, 'sourceDomainId')) {
+        const candidates = sourceEntryChoices(snapshot); draft.sourceDomainId = candidates.length === 1 ? candidates[0].domainId : null;
+      }
+      if (draft.profile !== 'soty.selected-human-embed.v2' || draft.launchPolicy !== 'anyone') draft.sourceDomainId = null;
       if (!snapshot.publication.nativeEntry && !initialNativeReview()) { draft.nativeEntryMode = 'keep'; draft.nativeDomainId = null; }
       if (tupleChanged) { draft.mode = 'new'; draft.targetRevision = null; selected = null; }
       if (changed || !reviewAvailable() || draft.launchPolicy !== 'anyone') draft.exposureConfirmed = false;
@@ -236,13 +277,15 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       check(!disposed && exact(value, [...targetKeys, 'createdAt']), 'app_source_invalid_target');
       const target = projectTarget(value); invalidatePreparation(); selected = target;
       draft = { ...draft, mode: 'history', hostDeviceId: target.hostDeviceId, connectorId: target.connectorId,
-        port: String(target.port), entryPath: target.entryPath, profile: target.profile, targetRevision: target.revision };
+        port: String(target.port), entryPath: target.entryPath, profile: target.profile, targetRevision: target.revision, sourceDomainId: null };
     },
     observe(next, options = {}) {
       if (disposed) return;
       const value = validateSnapshot(next, appId), changed = !equal(baseIdentity(snapshot), baseIdentity(value))
-        || !equal(snapshot.source.integrations ?? [], value.source.integrations ?? []);
-      const completed = matchesCompleted(options.completed), wasDirty = dirty();
+        || !equal(snapshot.source.integrations ?? [], value.source.integrations ?? [])
+        || snapshot.source.sourceEntryActivation !== value.source.sourceEntryActivation
+        || !equal(sourceEntryChoices(snapshot), sourceEntryChoices(value));
+      const completed = matchesCompleted(options.completed), wasDirty = dirty(), previousChoices = sourceEntryChoices(snapshot);
       if (changed || (options.publicationDirty === true && !publicationDirty)) invalidatePreparation();
       if (Object.hasOwn(options, 'publicationDirty')) { check(typeof options.publicationDirty === 'boolean'); publicationDirty = options.publicationDirty; }
       snapshot = value;
@@ -255,6 +298,9 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       // A render may observe the same clean inspection while history is in
       // flight. Refresh the form without cancelling that independent read.
       if (!wasDirty || completed) resetDraft();
+      else if (previousChoices.length === 0 && draft.sourceDomainId === null && draft.profile === 'soty.selected-human-embed.v2' && draft.launchPolicy === 'anyone') {
+        const choices = sourceEntryChoices(snapshot); if (choices.length === 1) draft.sourceDomainId = choices[0].domainId;
+      }
     },
     reset,
     invalidatePreparation,
@@ -263,7 +309,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       if (disposed || !isCurrent()) return { status: 'stale' };
       const args = prepareArgs(), startedAt = clock(); check(startedAt !== null, 'app_source_clock_invalid');
       invalidatePreparation();
-      const request = { generation, args, native: clone(nativeEntry()), selected: clone(selected ?? (args.targetRevision === snapshot.source.revision ? projectTarget(snapshot.source) : null)), startedAt }; inFlight = request;
+      const request = { generation, args, native: clone(nativeEntry()), sourceEntry: clone(sourceEntry()),
+        selected: clone(selected ?? (args.targetRevision === snapshot.source.revision ? projectTarget(snapshot.source) : null)), startedAt }; inFlight = request;
       const current = () => !disposed && isCurrent() && request.generation === generation;
       try {
         const response = await api.request('apps.source.prepare', clone(args));
@@ -278,18 +325,19 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
     },
     promoteIntent() {
       check(ready(), publicationDirty ? 'app_source_publication_dirty' : 'apps_source_preparation_expired');
-      check(draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && snapshot.publication.activeDomainIds.length > 0), 'app_exposure_ack_required');
+      check(draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && hasPublicEntry()), 'app_exposure_ack_required');
       check(consentReady(), 'app_native_exposure_ack_required');
       const expectedSource = clone(prepared.value.target), preparationId = prepared.value.preparationId;
-      const native = prepared.value.nativeEntry, removal = prepared.value.nativeEntryAction;
+      const native = prepared.value.nativeEntry, removal = prepared.value.nativeEntryAction, activation = prepared.value.sourceEntryAction;
       const args = { appId, expectedAccountId: accountId, preparationId, expectedPolicyEpoch: base.publication.policyEpoch,
         expectedTargetRevision: base.source.revision, launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false,
         ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: appSourceExposureScope(expectedSource.profile), targetRevision: expectedSource.revision,
           targetDigest: expectedSource.digest, profile: expectedSource.profile } } : {}),
         ...(native ? { nativeExposureAck: { scope: 'whole-port', targetRevision: native.target.revision, targetDigest: native.target.digest, profile: native.target.profile } } : {}),
-        ...(removal ? { nativeEntryAction: clone(removal) } : {}) };
+        ...(removal ? { nativeEntryAction: clone(removal) } : {}), ...(activation ? { sourceEntryAction: clone(activation) } : {}) };
       const capturedGeneration = generation, capturedPolicy = draft.launchPolicy;
-      return frozen({ op: 'apps.source.promote', args, expectedSource, ...(native ? { expectedNativeEntry: { origin: native.origin, domainId: native.domainId } } : {}), beforeCreate() {
+      return frozen({ op: 'apps.source.promote', args, expectedSource, ...(native ? { expectedNativeEntry: { origin: native.origin, domainId: native.domainId } } : {}),
+        ...(activation ? { expectedSourceEntry: clone(prepared.value.sourceEntry) } : {}), beforeCreate() {
         check(ready() && capturedGeneration === generation && prepared.value.preparationId === preparationId
           && draft.launchPolicy === capturedPolicy && consentReady(), 'apps_source_preparation_expired'); return true;
       } });
@@ -302,7 +350,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       const review = { target: clone(prepared.value.target), preparationId: prepared.value.preparationId,
         identity: baseIdentity(base), launchPolicy: draft.launchPolicy,
         listed: draft.launchPolicy === 'anyone' ? base.publication.listed : false, consent: draft.exposureConfirmed,
-        native: clone(prepared.value.nativeEntry ?? null), removal: clone(prepared.value.nativeEntryAction ?? null), nativeConsent: draft.nativeConfirmed };
+        native: clone(prepared.value.nativeEntry ?? null), removal: clone(prepared.value.nativeEntryAction ?? null), nativeConsent: draft.nativeConfirmed,
+        activation: clone(prepared.value.sourceEntryAction ?? null), sourceEntry: clone(prepared.value.sourceEntry ?? null) };
       const checking = controller.prepare({ api, isCurrent }), startedGeneration = generation;
       const result = await checking;
       if (result.status === 'stale' || disposed || !isCurrent() || generation !== startedGeneration) return { status: 'stale' };
@@ -311,7 +360,8 @@ export function createAppSourceState({ accountId, appId, snapshot: initial, now 
       const unchanged = value && value.preparationId !== review.preparationId && equal(pins(value.target), pins(review.target))
         && equal(tuple(value.target), tuple(review.target)) && equal(baseIdentity(base), review.identity)
         && draft.launchPolicy === review.launchPolicy && (draft.launchPolicy === 'anyone' ? base.publication.listed : false) === review.listed
-        && equal(value.nativeEntry ?? null, review.native) && equal(value.nativeEntryAction ?? null, review.removal);
+        && equal(value.nativeEntry ?? null, review.native) && equal(value.nativeEntryAction ?? null, review.removal)
+        && equal(value.sourceEntryAction ?? null, review.activation) && equal(value.sourceEntry ?? null, review.sourceEntry);
       if (!unchanged) return { status: 'review' };
       draft.exposureConfirmed = review.consent;
       draft.nativeConfirmed = review.nativeConsent;

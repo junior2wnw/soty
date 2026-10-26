@@ -4,6 +4,7 @@ export function appSourceExposureScope(profile: string): 'whole-port' | 'authent
 export interface AppSourceIntent {
   op: 'apps.source.promote'; args: Record<string, unknown>; expectedSource: AppSourceTarget;
   expectedNativeEntry?: { origin: string; domainId: string };
+  expectedSourceEntry?: { origin: string; domainId: string };
   /** Synchronous and ephemeral; called inside the settings Web Lock only before a new durable command. */
   beforeCreate(): true;
 }
@@ -13,11 +14,13 @@ export interface AppSourceStateView {
   canPrepare: boolean; canPromote: boolean; canRecheckPromote: boolean;
   nativeEntry: { origin: string; domainId: string; target: Pick<AppSourceTarget, 'revision' | 'digest' | 'profile' | 'port' | 'entryPath'> } | null;
   nativeReviewRequired: boolean; initialNativeReview: boolean; nativeChoices: { domainId: string; origin: string }[]; nativeKeepAllowed: boolean; nativeReviewOrigins: string[];
+  sourceEntry: { origin: string; domainId: string } | null; sourceEntryAction: { action: 'activate'; domainId: string } | null;
+  sourceEntryChoices: { origin: string; domainId: string }[]; sourceEntryActivationSupported: boolean; sourceEntryActivationUnsupported: boolean;
   history: { loading: boolean; targets: (AppSourceTarget & { createdAt: number })[]; nextCursor: string | null; stale: boolean };
 }
 export interface AppSourceState {
   read(): AppSourceStateView;
-  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed'>>): void;
+  patch(value: Partial<Pick<AppSourceDraft, 'hostDeviceId' | 'connectorId' | 'port' | 'entryPath' | 'profile' | 'launchPolicy' | 'exposureConfirmed' | 'nativeEntryMode' | 'nativeDomainId' | 'nativeConfirmed' | 'sourceDomainId'>>): void;
   selectHistory(target: AppSourceTarget | (AppSourceTarget & { createdAt: number })): void;
   observe(next: AppInspection, options?: { publicationDirty?: boolean; completed?: SettingsPending }): void;
   reset(): void;

@@ -16,6 +16,9 @@
 | Storage probe exit0 без JSON | Независимый probe с `SOTY_STORAGE_PROBE=1`, явный World и v7 gate | START запрещён до настоящего результата |
 | Mount CAS отличается | Детерминированный порядок полных Mount records, затем все поля | Перестановка отличается от изменения mount; поля не выбрасываются |
 | UI publisher потерял ответ | Тот же plan/receipt, readonly inspect, exact process/disk/active | Unknown до сверки; execute/transaction не создаются заново |
+| `app_native_entry_domain_required` / `app_source_entry_domain_required` | Точный approved Source origin, OWN bound alias и capability `sourceEntryActivation`; выбрать выключенный alias в Source editor | Закрепить имя, оставить выключенным до атомарного переключения; не публиковать прежний порт ради CHECK |
+| `invalid_source_entry_action` / `app_source_entry_action_mismatch` | Closed activate/domainId, текущий профиль, подготовленный origin и исходный intent | Новая явная проверка при изменении черновика; unknown отправленный запрос не заменяется |
+| Capability активации отсутствует | Обновление Root, затем свежий inspect | Выбранная новая активация блокируется; уже включённый адрес без action сохраняет старый контракт |
 
 «Сохранено на устройстве», pending и server-confirmed требуют подтверждения
 соответствующего хранилища. Не обещай «всё сохранено» общей фразой об ошибке.

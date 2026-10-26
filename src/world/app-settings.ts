@@ -45,7 +45,12 @@ function settingsError(reason: unknown): string {
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
     native_pair_action_required: 'Приложение имеет отдельный сайт. Выберите, сохранить его или отключить, и проверьте источник заново.',
     app_source_native_alias_required: 'Выберите действующий адрес отдельного сайта и проверьте источник заново.',
-    app_native_entry_domain_required: 'Добавьте именной адрес для входа Сот в разделе «Доступ и публикация», включите его, затем проверьте источник.',
+    app_native_entry_domain_required: 'Закрепите именной адрес входа Сот в разделе «Доступ и публикация» и оставьте выключенным. Выберите его здесь; он включится вместе с переключением источника.',
+    app_source_entry_domain_required: 'Закрепите именной адрес входа Сот в разделе «Доступ и публикация» и оставьте выключенным. Выберите его здесь; он включится вместе с переключением источника.',
+    app_source_entry_activation_unsupported: 'Обновите Соты, чтобы включать адрес вместе с защищённым источником. Текущий адрес и источник не изменены.',
+    invalid_source_entry_action: 'Выберите закреплённый адрес входа Сот. Он включится только вместе с защищённым источником.',
+    app_source_entry_action_mismatch: 'Действие с адресом изменилось. Проверьте выбранный адрес и источник заново.',
+    invalid_publication_domains: 'Не удалось включить выбранный адрес. Проверьте список и лимит включённых адресов приложения.',
     app_native_entry_origin_invalid: 'Этот адрес не совпадает с проверенным отдельным входом проекта. Выберите его прежний адрес; он должен отличаться от адреса приложения в Сотах.',
     app_native_entry_target_invalid: 'Для отдельного сайта нужен прежний источник на том же устройстве и другой порт. Проверьте выбранный источник.',
     app_native_exposure_ack_required: 'Подтвердите показанное действие с отдельным сайтом.',
@@ -146,7 +151,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     if (!op && !expectedPending) throw Object.assign(new Error('app_settings_pending_changed'), { code: 'app_settings_pending_changed' });
     const context = { state: store, api, isCurrent: current };
     const result = op ? await dispatchAppSettingsIntent({ ...context, op, args: args ?? {},
-      ...(sourceIntent ? { expectedSource: sourceIntent.expectedSource, expectedNativeEntry: sourceIntent.expectedNativeEntry, beforeCreate: () => sourceCurrent() && sourceIntent.beforeCreate() } : {}) })
+      ...(sourceIntent ? { expectedSource: sourceIntent.expectedSource, expectedNativeEntry: sourceIntent.expectedNativeEntry,
+        expectedSourceEntry: sourceIntent.expectedSourceEntry, beforeCreate: () => sourceCurrent() && sourceIntent.beforeCreate() } : {}) })
       : await dispatchAppSettingsIntent({ ...context, expectedPending: expectedPending! });
     if (!current() || result.status === 'stale') return;
     staleInspection = true;
@@ -456,6 +462,16 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const profileOptions = new Map<string, HTMLOptionElement>();
   const sourceProfileField = sourceField('Подключение', sourceProfile);
   const sourceProfileHint = el('p', 'sw-muted sw-app-settings-hint', 'Подготовленное подключение выбранного пространства. Переключение изменит источник всего приложения. Доступ помощнику разрешается отдельно.');
+  const sourceAliasChoice = keyed(el('select', 'sw-select'), 'source-entry-domain');
+  const sourceAliasPlaceholder = el('option', '', 'Использовать уже включённый адрес'); sourceAliasPlaceholder.value = ''; sourceAliasChoice.append(sourceAliasPlaceholder);
+  const sourceAliasOptions = new Map<string, HTMLOptionElement>();
+  const sourceAliasField = sourceField('Адрес входа Сот', sourceAliasChoice), sourceAliasHint = el('p', 'sw-muted sw-app-settings-hint');
+  const sourceChooseAddress = keyed(button('Закрепить адрес входа Сот', 'link', 'sw-button-quiet', () => {
+    if (!current() || !model) return;
+    selectSettingsSection('access'); claimDetails.open = true; addresses.tabIndex = -1;
+    addresses.scrollIntoView({ block: 'nearest' }); addresses.focus({ preventScroll: true });
+  }), 'source-entry-addresses');
+  sourceAliasChoice.addEventListener('change', () => { sourceModel?.patch({ sourceDomainId: sourceAliasChoice.value || null }); changedSource(); });
   sourceProfile.addEventListener('change', () => {
     if (!sourceModel) return;
     const { snapshot } = sourceModel.read();
@@ -519,14 +535,14 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceResult = el('div', 'sw-app-settings-source-result'), sourceResultHeader = el('div', 'sw-app-settings-source-result-header');
   const sourceResultState = el('strong'), sourceCountdown = el('span', 'sw-muted'); sourceResultState.setAttribute('role', 'status'); sourceCountdown.setAttribute('aria-live', 'off');
   sourceResultHeader.append(sourceResultState, sourceCountdown);
-  const sourceCheckedTarget = el('p', 'sw-app-settings-source-target'), sourceResultHint = el('p', 'sw-muted sw-app-settings-hint', 'Ответ не подтверждает исправность всех страниц проекта.');
+  const sourceCheckedTarget = el('p', 'sw-app-settings-source-target'), sourceActivationReview = el('p', 'sw-app-settings-source-target'), sourceResultHint = el('p', 'sw-muted sw-app-settings-hint', 'Ответ не подтверждает исправность всех страниц проекта.');
   const sourceAck = el('label', 'sw-app-settings-ack'), sourceAckInput = keyed(el('input'), 'source-public-ack'), sourceAckText = el('span'); sourceAckInput.type = 'checkbox';
   sourceAckInput.addEventListener('change', () => { sourceModel?.patch({ exposureConfirmed: sourceAckInput.checked }); render(); }); sourceAck.append(sourceAckInput, sourceAckText);
   sourceLabel(sourceAck, sourceAckInput, sourceAckText);
   const nativeAck = el('label', 'sw-app-settings-ack'), nativeAckInput = keyed(el('input'), 'source-native-ack'), nativeAckText = el('span'); nativeAckInput.type = 'checkbox';
   nativeAckInput.addEventListener('change', () => { sourceModel?.patch({ nativeConfirmed: nativeAckInput.checked }); render(); }); nativeAck.append(nativeAckInput, nativeAckText);
   sourceLabel(nativeAck, nativeAckInput, nativeAckText);
-  sourceResult.append(sourceResultHeader, sourceCheckedTarget, sourceResultHint, sourceAck, nativeAck, sourcePromote);
+  sourceResult.append(sourceResultHeader, sourceCheckedTarget, sourceActivationReview, sourceResultHint, sourceAck, nativeAck, sourcePromote);
   const sourceActions = el('div', 'sw-app-settings-actions'); sourceActions.append(sourceCheck);
   const sourceFailure = el('p', 'sw-error'), sourceFeedback = el('p', 'sw-app-settings-notice'); sourceFailure.setAttribute('role', 'alert'); sourceFeedback.setAttribute('role', 'status');
   const sourcePending = el('div', 'sw-app-settings-source-block');
@@ -536,7 +552,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     void perform(async () => { try { await mutation(undefined, undefined, undefined, pending); } catch (reason) { if (current()) sourceError = settingsError(reason); } });
   }), 'source-pending-retry');
   sourcePending.append(el('p', '', 'Результат пока не подтверждён. Прежний запрос сохранён.'), sourcePendingRetry);
-  sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, sourceField('Доступ после переключения', sourceAudience),
+  sourceForm.append(sourceProfileField, sourceProfileHint, sourceAliasField, sourceAliasHint, sourceChooseAddress, deviceRow, deviceHint, deviceFailure, sourceFields, sourceField('Доступ после переключения', sourceAudience),
     nativeEntryField, nativeAliasField, nativeChoiceHint, nativeChooseAddress, sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
   sourceForm.addEventListener('submit', event => { event.preventDefault(); void checkSource(); });
   sourceDetails.append(sourceSummary, sourceForm);
@@ -629,6 +645,28 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     }
     if (sourceProfile.value !== draft.profile) sourceProfile.value = draft.profile;
     sourceProfile.disabled = !editable; sourceProfileField.hidden = profiles.size === 1; sourceProfileHint.hidden = !selectedProfile;
+    const sourceAliasIds = new Set(state.sourceEntryChoices.map(value => value.domainId));
+    for (const [id, option] of sourceAliasOptions) if (!sourceAliasIds.has(id)) { option.remove(); sourceAliasOptions.delete(id); }
+    for (const alias of state.sourceEntryChoices) {
+      let option = sourceAliasOptions.get(alias.domainId);
+      if (!option) { option = el('option'); option.value = alias.domainId; sourceAliasOptions.set(alias.domainId, option); sourceAliasChoice.append(option); }
+      text(option, alias.origin);
+    }
+    sourceAliasChoice.value = draft.sourceDomainId ?? ''; sourceAliasChoice.disabled = !editable || blocked || !state.sourceEntryActivationSupported;
+    sourceAliasField.hidden = draft.profile !== 'soty.selected-human-embed.v2' || draft.launchPolicy !== 'anyone'
+      || state.sourceEntryChoices.length === 0 && draft.sourceDomainId === null;
+    sourceAliasHint.hidden = draft.profile !== 'soty.selected-human-embed.v2';
+    sourceChooseAddress.hidden = draft.profile !== 'soty.selected-human-embed.v2' || draft.launchPolicy !== 'anyone' || state.sourceEntryChoices.length > 0;
+    disable(sourceChooseAddress, blocked || !editable || !snapshot.actions.canReserveName);
+    text(sourceAliasHint, draft.launchPolicy !== 'anyone'
+      ? 'Включение нового адреса здесь доступно для «Все по включённым ссылкам». При ограниченном доступе существующие адреса не меняются.'
+      : state.sourceEntryActivationUnsupported
+      ? 'Обновите Соты, чтобы включать адрес вместе с защищённым источником. Текущий адрес и источник не изменены.'
+      : draft.sourceDomainId !== null && !state.sourceEntry ? 'Выбранный адрес больше недоступен. Выберите другой закреплённый адрес или используйте уже включённый.'
+      : state.sourceEntry ? state.preparation?.sourceEntry
+        ? 'Адрес подходит выбранному источнику. Он остаётся выключенным до подтверждённого переключения.'
+        : 'Адрес пока не проверен. Проверка подтвердит, подходит ли он источнику; сам адрес останется выключенным.'
+        : 'Уже включённый адрес используется без изменения. Новый адрес сначала закрепите в «Доступ и публикация» и оставьте выключенным, затем выберите здесь.');
     if (!state.preparation && !state.preparing && (state.conflict || ordinary.publicationDirty || !editable)) hadPreparation = false;
     const observed = snapshot.source.observation, binding = snapshot.source.binding?.state;
     const observationState = ['responding', 'unreachable'].includes(observed.state) && performance.now() >= observationDeadline ? 'unknown' : observed.state;
@@ -703,9 +741,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       const target = state.preparation.target;
       text(sourceCheckedTarget, `${target.deviceName} · порт ${target.port} · ${target.entryPath}`);
       text(sourceAckText, appSourceExposureScope(target.profile) === 'authenticated-workspace'
-        ? 'Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.'
+        ? `Разрешить пользователям Сот открывать приложение через защищённый вход. Каждый видит только доступные ему поля; доступ к данным определяет приложение.${state.preparation.sourceEntry ? ` При переключении включится адрес ${state.preparation.sourceEntry.origin}.` : ''}`
         : `Открыть всем весь проект на устройстве «${target.deviceName}», порт ${target.port}, включая его страницы и API.`);
     }
+    sourceActivationReview.hidden = !state.preparation?.sourceEntry;
+    text(sourceActivationReview, state.preparation?.sourceEntry
+      ? `При переключении ${state.preparation.sourceEntry.origin} включится для защищённого входа Сот.${state.preparation.nativeEntry ? ` Сайт ${state.preparation.nativeEntry.origin} сохранится.` : ''}` : '');
     sourceAck.hidden = draft.launchPolicy !== 'anyone'; sourceAckInput.checked = draft.exposureConfirmed;
     sourceAckInput.disabled = blocked || staleInspection || !state.preparation || !state.canPrepare || !editable;
     nativeAck.hidden = !state.nativeReviewRequired || !state.preparation;
@@ -771,7 +812,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     fresh.hidden = inspectionDenied; disable(fresh, busy || refreshing); fresh.setAttribute('aria-busy', String(refreshing));
     pendingBox.hidden = !pending;
     if (pending) { text(pendingTitle, `${pendingLabel(pending)}: результат требует проверки`); text(pendingDetail, pending.op === 'apps.source.promote' && pending.expectedSource
-      ? `${pending.expectedSource.deviceName} · порт ${pending.expectedSource.port} · ${pending.expectedSource.entryPath} · ${pending.args.launchPolicy === 'anyone' ? 'всем по включённым ссылкам' : 'владельцу и выбранным людям'}`
+      ? `${pending.expectedSource.deviceName} · порт ${pending.expectedSource.port} · ${pending.expectedSource.entryPath} · ${pending.args.launchPolicy === 'anyone' ? 'всем по включённым ссылкам' : 'владельцу и выбранным людям'}${pending.expectedSourceEntry ? ` · включение адреса ${pending.expectedSourceEntry.origin}` : ''}`
       : pending.op === 'apps.publication.update' ? `${pending.args.launchPolicy === 'anyone' ? 'Всем по ссылке' : 'Ограниченный доступ'} · адресов: ${(pending.args.activeDomainIds as string[]).length}` : pending.op === 'apps.domains.claim' ? `Имя: ${String(pending.args.slug)}` : 'Сохранён запрос на закрытие конкретного адреса.'); }
     disable(retry, busy || Boolean(storageError) || Boolean(confirmation)); disable(finish, busy || Boolean(storageError) || Boolean(confirmation));
     confirmBox.hidden = !confirmation;

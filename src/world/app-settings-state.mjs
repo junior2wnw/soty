@@ -22,7 +22,7 @@ function normalize(op, args, includeRequest = false) {
   check(operations.includes(op) && args && typeof args === 'object' && !Array.isArray(args));
   const fields = ['appId', 'expectedAccountId', ...(includeRequest ? ['requestId'] : []),
     ...(op === 'apps.publication.update' || op === 'apps.source.promote' ? ['expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'exposureAck',
-      ...(op === 'apps.source.promote' ? ['preparationId', 'nativeExposureAck', 'nativeEntryAction'] : ['activeDomainIds', 'audience'])]
+      ...(op === 'apps.source.promote' ? ['preparationId', 'nativeExposureAck', 'nativeEntryAction', 'sourceEntryAction'] : ['activeDomainIds', 'audience'])]
       : ['expectedDomainsRevision', op === 'apps.domains.claim' ? 'slug' : 'domainId'])];
   check(Object.keys(args).every(key => fields.includes(key)) && typeof args.appId === 'string' && appIdPattern.test(args.appId) && id(args.expectedAccountId));
   if (includeRequest) check(id(args.requestId));
@@ -63,6 +63,14 @@ function normalize(op, args, includeRequest = false) {
         && validOrigin(action.origin) && !base.nativeExposureAck, 'invalid_native_pair_action');
       base.nativeEntryAction = { action: 'remove', origin: action.origin, targetRevision: action.targetRevision, targetDigest: action.targetDigest };
     }
+    if (source && args.sourceEntryAction !== undefined) {
+      const action = args.sourceEntryAction;
+      check(action && typeof action === 'object' && !Array.isArray(action) && Object.keys(action).sort().join(',') === 'action,domainId'
+        && action.action === 'activate' && typeof action.domainId === 'string' && domainIdPattern.test(action.domainId)
+        && args.launchPolicy === 'anyone' && base.exposureAck?.scope === 'authenticated-workspace'
+        && base.exposureAck.profile === 'soty.selected-human-embed.v2', 'invalid_source_entry_action');
+      base.sourceEntryAction = { action: 'activate', domainId: action.domainId };
+    }
   } else {
     check(revision(args.expectedDomainsRevision)); base.expectedDomainsRevision = args.expectedDomainsRevision;
     if (op === 'apps.domains.claim') { check(typeof args.slug === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{1,46}[A-Za-z0-9]$/u.test(args.slug), 'invalid_app_slug'); base.slug = args.slug.toLowerCase(); }
@@ -73,9 +81,9 @@ function normalize(op, args, includeRequest = false) {
 }
 function validOrigin(value) { try { const url = new URL(value); return typeof value === 'string' && value.length <= 2048
   && url.protocol === 'https:' && url.origin === value && !url.username && !url.password; } catch { return false; } }
-function normalizedPending(op, args, expectedSource, includeRequest = false, expectedNativeEntry) {
+function normalizedPending(op, args, expectedSource, includeRequest = false, expectedNativeEntry, expectedSourceEntry) {
   const value = normalize(op, args, includeRequest);
-  if (op !== 'apps.source.promote') { check(expectedSource === undefined && expectedNativeEntry === undefined); return { op, args: value }; }
+  if (op !== 'apps.source.promote') { check(expectedSource === undefined && expectedNativeEntry === undefined && expectedSourceEntry === undefined); return { op, args: value }; }
   const target = normalizeAppSourceTarget(expectedSource);
   if (value.exposureAck) check(value.exposureAck.targetRevision === target.revision && value.exposureAck.targetDigest === target.digest
     && value.exposureAck.profile === target.profile, 'app_exposure_ack_required');
@@ -83,14 +91,20 @@ function normalizedPending(op, args, expectedSource, includeRequest = false, exp
     && Object.keys(expectedNativeEntry).sort().join(',') === 'domainId,origin' && validOrigin(expectedNativeEntry.origin)
     && typeof expectedNativeEntry.domainId === 'string' && domainIdPattern.test(expectedNativeEntry.domainId), 'app_settings_invalid_intent');
   else check(expectedNativeEntry === undefined);
-  return { op, args: value, expectedSource: target, ...(expectedNativeEntry ? { expectedNativeEntry: clone(expectedNativeEntry) } : {}) };
+  if (value.sourceEntryAction) check(expectedSourceEntry && typeof expectedSourceEntry === 'object' && !Array.isArray(expectedSourceEntry)
+    && Object.keys(expectedSourceEntry).sort().join(',') === 'domainId,origin' && validOrigin(expectedSourceEntry.origin)
+    && expectedSourceEntry.domainId === value.sourceEntryAction.domainId && target.profile === 'soty.selected-human-embed.v2'
+    && (!expectedNativeEntry || expectedSourceEntry.domainId !== expectedNativeEntry.domainId && expectedSourceEntry.origin !== expectedNativeEntry.origin), 'app_settings_invalid_intent');
+  else check(expectedSourceEntry === undefined);
+  return { op, args: value, expectedSource: target, ...(expectedNativeEntry ? { expectedNativeEntry: clone(expectedNativeEntry) } : {}),
+    ...(expectedSourceEntry ? { expectedSourceEntry: { origin: expectedSourceEntry.origin, domainId: expectedSourceEntry.domainId } } : {}) };
 }
 async function requestHash(requestId) {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(requestId)));
   return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 async function verifyReceipt(pending, response) {
-  pending = normalizedPending(pending.op, pending.args, pending.expectedSource, true, pending.expectedNativeEntry);
+  pending = normalizedPending(pending.op, pending.args, pending.expectedSource, true, pending.expectedNativeEntry, pending.expectedSourceEntry);
   const args = pending.args, receipt = response?.receipt;
   check(response && typeof response === 'object' && !Array.isArray(response)
     && response.requestId === args.requestId && typeof response.replayed === 'boolean'
@@ -112,7 +126,7 @@ async function verifyReceipt(pending, response) {
       && (!audienceSpecified || response.current.policyEpoch > receipt.policyEpoch || response.current.audience === args.audience), 'app_settings_invalid_receipt');
   } else if (pending.op === 'apps.source.promote') {
     const target = pending.expectedSource;
-    const paired = Boolean(args.nativeExposureAck || args.nativeEntryAction);
+    const paired = Boolean(args.nativeExposureAck || args.nativeEntryAction || args.sourceEntryAction);
     const native = receipt.nativeEntry, expectedNative = pending.expectedNativeEntry;
     check(receipt.schema === (paired ? 'soty.app-source-receipt.v2' : 'soty.app-source-receipt.v1')
       && receipt.namespace === (paired ? 'apps.source.promote.v2' : 'apps.source.promote.v1')
@@ -132,6 +146,14 @@ async function verifyReceipt(pending, response) {
         && native.target?.revision === args.nativeExposureAck.targetRevision
         && native.target?.digest === args.nativeExposureAck.targetDigest && native.target?.profile === args.nativeExposureAck.profile
         : native === undefined), 'app_settings_invalid_receipt');
+    const activation = receipt.sourceEntryAction;
+    check((args.sourceEntryAction ? activation && typeof activation === 'object' && !Array.isArray(activation)
+        && Object.keys(activation).sort().join(',') === 'action,domainId' && activation.action === args.sourceEntryAction.action
+        && activation.domainId === args.sourceEntryAction.domainId : activation === undefined || activation === null)
+      && (args.sourceEntryAction ? receipt.sourceEntry && typeof receipt.sourceEntry === 'object' && !Array.isArray(receipt.sourceEntry)
+        && Object.keys(receipt.sourceEntry).sort().join(',') === 'domainId,origin'
+        && receipt.sourceEntry.domainId === pending.expectedSourceEntry.domainId && receipt.sourceEntry.origin === pending.expectedSourceEntry.origin
+        : receipt.sourceEntry === undefined), 'app_settings_invalid_receipt');
   } else {
     const action = pending.op === 'apps.domains.claim' ? 'claim' : 'retire';
     check(receipt.schema === 'soty.app-domain-receipt.v1' && receipt.action === action
@@ -155,7 +177,7 @@ export function createAppSettingsState({ accountId, appId, storage, locks, rando
         && (value.pending === null || (typeof value.pending === 'object' && !Array.isArray(value.pending))));
       let pending = null;
       if (value.pending) {
-        pending = normalizedPending(value.pending.op, value.pending.args, value.pending.expectedSource, true, value.pending.expectedNativeEntry);
+        pending = normalizedPending(value.pending.op, value.pending.args, value.pending.expectedSource, true, value.pending.expectedNativeEntry, value.pending.expectedSourceEntry);
         check(pending.args.expectedAccountId === accountId && pending.args.appId === appId);
       }
       return { ...fresh(), revision: value.revision, pending };
@@ -167,20 +189,21 @@ export function createAppSettingsState({ accountId, appId, storage, locks, rando
   }
   const locked = action => locks?.request ? locks.request(key, action) : Promise.reject(Object.assign(new Error('app_settings_lock_unavailable'), { code: 'app_settings_lock_unavailable' }));
   const matches = (expected, pending) => pending && expected && expected.op === pending.op
-    && same(normalizedPending(expected.op, expected.args, expected.expectedSource, true, expected.expectedNativeEntry), pending);
+    && same(normalizedPending(expected.op, expected.args, expected.expectedSource, true, expected.expectedNativeEntry, expected.expectedSourceEntry), pending);
   return {
     key,
     read: () => clone(load()),
     canDispatch: () => Boolean(locks?.request),
-    async prepare({ op, args, expectedSource, expectedNativeEntry, beforeCreate }) {
-      const normalized = normalizedPending(op, args, expectedSource, false, expectedNativeEntry), value = normalized.args;
+    async prepare({ op, args, expectedSource, expectedNativeEntry, expectedSourceEntry, beforeCreate }) {
+      const normalized = normalizedPending(op, args, expectedSource, false, expectedNativeEntry, expectedSourceEntry), value = normalized.args;
       check(value.expectedAccountId === accountId && value.appId === appId, 'app_settings_invalid_scope');
       return locked(() => {
         const state = load();
         if (state.pending) {
           const { requestId: _requestId, ...prior } = state.pending.args;
           check(state.pending.op === op && same(value, prior) && same(normalized.expectedSource, state.pending.expectedSource)
-            && same(normalized.expectedNativeEntry, state.pending.expectedNativeEntry), 'app_settings_pending_unconfirmed');
+            && same(normalized.expectedNativeEntry, state.pending.expectedNativeEntry)
+            && same(normalized.expectedSourceEntry, state.pending.expectedSourceEntry), 'app_settings_pending_unconfirmed');
           return clone(state.pending);
         }
         if (op === 'apps.source.promote') check(typeof beforeCreate === 'function', 'apps_source_preparation_expired');
@@ -198,7 +221,7 @@ export function createAppSettingsState({ accountId, appId, storage, locks, rando
       // Capture before waiting for the lock: the caller's displayed record is
       // not a reference to whichever command another tab may write next.
       check(expectedPending, 'app_settings_pending_changed');
-      const expected = normalizedPending(expectedPending.op, expectedPending.args, expectedPending.expectedSource, true, expectedPending.expectedNativeEntry);
+      const expected = normalizedPending(expectedPending.op, expectedPending.args, expectedPending.expectedSource, true, expectedPending.expectedNativeEntry, expectedPending.expectedSourceEntry);
       return locked(() => {
         const state = load();
         check(matches(expected, state.pending), 'app_settings_pending_changed');
@@ -227,10 +250,10 @@ export function appSettingsObservationRemaining(snapshot, requestElapsedMs) {
 }
 
 /** Caller renders only while current. An exact late ACK may settle its own scoped record. */
-export async function dispatchAppSettingsIntent({ state, op, args, expectedSource, expectedNativeEntry, beforeCreate, expectedPending, api, isCurrent }) {
+export async function dispatchAppSettingsIntent({ state, op, args, expectedSource, expectedNativeEntry, expectedSourceEntry, beforeCreate, expectedPending, api, isCurrent }) {
   if (!isCurrent()) return { status: 'stale' };
   if (op) check(expectedPending === undefined);
-  const pending = op ? await state.prepare({ op, args, expectedSource, expectedNativeEntry, beforeCreate }) : await state.pendingForDispatch(expectedPending);
+  const pending = op ? await state.prepare({ op, args, expectedSource, expectedNativeEntry, expectedSourceEntry, beforeCreate }) : await state.pendingForDispatch(expectedPending);
   if (!isCurrent()) return { status: 'stale', pending };
   const response = await api.request(pending.op, clone(pending.args));
   const accepted = await state.acknowledge(pending, response);
