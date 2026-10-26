@@ -540,7 +540,10 @@ test('a committed but unavailable Native locator fails closed for current public
   f.db.prepare("UPDATE local_apps SET state='revoked' WHERE id=?").run(f.appId);
   assert.throws(() => read(), { code: 'app_unavailable', status: 404 });
   f.db.prepare("UPDATE local_apps SET state='enabled' WHERE id=?").run(f.appId);
-  const ended = new Promise(done => live.ws.once('close', done)); live.ws.terminate(); await ended; await turn();
+  const ended = new Promise(done => live.ws.once('close', done)); live.ws.terminate(); await ended;
+  // Client close does not acknowledge that Root processed its peer's disconnect.
+  await until(() => live.service.execute({ op: 'apps.devices', actor: f.owner, args: {} }).devices
+    .find(device => device.hostDeviceId === f.identity.hostDeviceId && device.connectorId === f.identity.connectorId)?.online === false);
   assert.throws(() => read(), { code: 'app_offline', status: 503 });
   live.service.close();
   const noProfile = await liveRoot(t, f, createAppsService, { profiles: [] });
