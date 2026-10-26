@@ -189,7 +189,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './otsov-editor-handoff.mjs': { createOtsovEditorHost },
     './icons': { icon: () => makeElement('svg') },
     './application-card': { appTone: () => 'neutral' },
-    './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
+    './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {}, setEntryVerified() {} }) },
     './app-settings': { mountAppSettings(options) { settingsMounts.push(options); options.host.append(...(options.aboutActions ?? []), ...(options.supportActions ?? [])); return { dispose() {}, requestClose(opener, afterClose) { settingsCloseRequests.push({ opener, finish: () => options.onClose(afterClose) }); } }; } },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() { discussionCalls.refresh++; }, async flush() {}, hasUnsavedChanges: () => !!discussionCalls.unsaved, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
   };

@@ -146,6 +146,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite'); message.setAttribute('aria-atomic', 'true');
   let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
+  const savedReplacementHost = el('div', 'sa-saved-entry-shortcut'); savedReplacementHost.hidden = true;
   const feedbackHost = el('div');
   const reviewsHost = el('div');
   const report = button('Сообщить проблему', 'flag', 'sw-button-quiet', () => {
@@ -421,7 +422,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   assistToggle.setAttribute('aria-pressed', 'false'); assistToggle.hidden = options.presentation === 'widget'; moreBody.append(assistToggle);
   const assistWatch = view.setInterval(() => { if (assistOn && !assist.binding() || closeAssistDialog && !current()) stopAssist(); }, 250);
-  header.append(back, title, modes, field, report, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, workspace, feedbackHost, reviewsHost);
+  header.append(back, title, modes, field, report, expand, moreHost); workspace.append(runtime, panel); screen.append(header, message, savedReplacementHost, workspace, feedbackHost, reviewsHost);
   host.replaceChildren(screen);
   syncShortToolbar();
   const launcher = createAppLauncher({ target: initial.target, accountId, instanceId: options.instanceId ?? 'main', shellUrl: view.location.href,
@@ -639,8 +640,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     widget.disabled = false;
     const pinned = routeWith(intent.presentation); options.onNavigate(pinned, { replace: true }); intent = pinned;
     bookmark.hidden = false; savedHost.hidden = false;
-    saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current, asBookmark: true,
-      dialogReturnTarget: { isCurrent: current, resolve: () => moreBody.hidden ? more : savedHost.querySelector<HTMLButtonElement>('button') ?? more } });
+    saved = mountAppSaved(savedHost, { api: options.api, accountId, entry, isCurrent: current, asBookmark: true, replacementHost: savedReplacementHost,
+      dialogReturnTarget: { isCurrent: current, resolve: () => !savedReplacementHost.hidden ? savedReplacementHost.querySelector<HTMLButtonElement>('button') ?? more : moreBody.hidden ? more : savedHost.querySelector<HTMLButtonElement>('button') ?? more } });
     if (discussion) void discussion.updateEntry(entry).catch(() => showMessage('Не удалось обновить обсуждение. Откройте его ещё раз.'));
     // A local-only panel is mounted only once resolution has settled. It is
     // never upgraded using a later guess from optional catalogue metadata.
@@ -708,6 +709,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
+    saved?.setEntryVerified(false);
     resetRuntimeDisplay();
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
@@ -732,6 +734,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const url = await launcher.launch({ requireSameBinding: automatic });
       if (!url || !alive()) return;
       captureEntry();
+      saved?.setEntryVerified(true);
       externalAvailability = 'unknown'; external.hidden = true;
       checkExternalAvailability();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
@@ -826,7 +829,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     // The discussion already resolves and polls its own exact-entry authority.
     // Late initial metadata and title/device changes must not clear a loaded
     // conversation. Observed grant/policy changes still refresh immediately.
-    if (accessChanged) { recovery.cancel(); entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; }
+    if (accessChanged) { saved?.setEntryVerified(false); recovery.cancel(); entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; }
     if (discussion && accessChanged) void discussion.refresh();
   }
   function updateCommunity(value: { communityId: string; name: string } | null): void {

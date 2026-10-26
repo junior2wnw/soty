@@ -44,6 +44,7 @@ const ARCHIVE_FOCUS_CASE = 'Переходы в архив и обратно с�
 const MESSAGE_ANCHOR_CASE = 'Точная ссылка открывает сообщение без iframe; последние сообщения сохраняют черновик';
 const WORKSPACE_ADD_CASE = 'Добавить в Моё сохраняет точный вход один раз и не размещает соту при неизвестном результате';
 const WORKSPACE_CHOICE_CASE = 'Другой сохранённый вход требует выбора и заново проверяется перед добавлением';
+const SAVED_ENTRY_SHORTCUT_CASE = 'Актуальный сохранённый вход меняется через видимое сравнение с CAS и восстановлением прежнего запроса';
 const scopedBrowserKeys = new Set<string>(), errors: string[] = [];
 let mounted: { dispose(): void } | null = null, restoreFrames: (() => void) | null = null;
 let generation = 0, running = false, theme: 'light' | 'dark' = 'dark';
@@ -201,6 +202,45 @@ async function archives(): Promise<void> {
 }
 
 const cases: Array<[string, () => Promise<void>]> = [
+  [SAVED_ENTRY_SHORTCUT_CASE, async () => {
+    const stored = (f: Backend, path = '/old?exact=keep#saved'): SavedSnapshot => ({ revision: 3, entry: { ...f.entry, path,
+      label: 'Прежний вход', savedRevision: 3, updatedAt: Date.now(), current: null } });
+    const shortcut = (): HTMLButtonElement => key<HTMLButtonElement>('save-current-entry');
+    const writes = (f: Backend) => callLog.filter(call => call.op === 'apps.saved.set' && call.args.expectedAccountId === f.accountId);
+    const empty = backend(); await stage(empty).ready; await until(() => key('save').dataset.state === 'unsaved', 'no existing bookmark');
+    assert(!visible(shortcut()), 'an absent bookmark must not offer replacement');
+    const same = backend(); same.saved = stored(same, same.entry.path); await stage(same).ready;
+    await until(() => key('save').dataset.state === 'saved', 'same bookmark read'); assert(!visible(shortcut()), 'the same exact entry must not offer replacement');
+    const failed = backend(); failed.saved = stored(failed); failed.failLaunch = true; await stage(failed).ready;
+    await until(() => key('save').dataset.state === 'different-entry', 'unverified entry read'); assert(!visible(shortcut()), 'an offline resolution is not a verified current entry');
+    const f = backend(); f.saved = stored(f); const h = stage(f); await h.ready;
+    await until(() => visible(shortcut()) && !shortcut().disabled, 'direct current-entry shortcut');
+    const frame = await frameOf(), rect = shortcut().getBoundingClientRect();
+    assert(rect.height >= 44 && rect.width >= 44 && rect.left >= 0 && rect.right <= innerWidth + 1, 'shortcut touch target or narrow layout');
+    shortcut().focus(); shortcut().click();
+    await until(() => document.querySelector('dialog[open]')?.textContent?.includes('Сохранён другой вход'), 'existing comparison without More');
+    assert(writes(f).length === 0 && f.saved.entry?.path === '/old?exact=keep#saved', 'opening the preview retargeted the old entry');
+    assert(document.querySelector('dialog[open]')?.textContent?.includes(f.entry.path), 'comparison omitted the exact current target');
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('dialog[open] button')].find(node => node.textContent?.includes('Оставить прежний'))!;
+    cancel.click(); await paint(); assert(document.activeElement === shortcut(), 'cancel did not restore the visible shortcut');
+    shortcut().click(); const replace = key<HTMLButtonElement>('save-replace', document); f.loseSave = true;
+    replace.click(); replace.click(); await until(() => key('save').dataset.state === 'pending', 'lost ACK retained');
+    assert(f.saved.revision === 4 && writes(f).length === 1 && visible(shortcut()), 'lost ACK caused duplicate effect or hid recovery');
+    const original = clone(writes(f)[0]!.args); shortcut().click(); click('save-retry', document);
+    await until(() => !visible(shortcut()) && key('save').dataset.state === 'saved', 'original intent recovered');
+    assert(f.saved.revision === 4 && writes(f).length === 2 && JSON.stringify(writes(f)[1]!.args) === JSON.stringify(original), 'recovery changed request or produced another saved revision');
+    assert(host.querySelector('iframe') === frame && f.launchCount === 1, 'saved-entry changes recreated the live app');
+    const conflict = backend(); conflict.saved = stored(conflict); await stage(conflict).ready;
+    await until(() => visible(shortcut()), 'CAS comparison shortcut'); shortcut().click();
+    conflict.saved = { ...stored(conflict, '/changed-in-another-window'), revision: 4 };
+    click('save-replace', document); await until(() => key('save').dataset.state === 'pending', 'CAS conflict retained');
+    assert(conflict.saved.entry?.path === '/changed-in-another-window' && conflict.saved.revision === 4, 'stale comparison overwrote a newer saved entry');
+    const profile = backend(); profile.saved = stored(profile); await stage(profile).ready;
+    await until(() => visible(shortcut()), 'profile-bound comparison'); shortcut().click(); generation++;
+    click('save-replace', document); await delay(); assert(writes(profile).length === 0 && profile.saved.revision === 3, 'obsolete profile dispatched replacement');
+    output.dataset.savedEntryShortcutMetrics = JSON.stringify({ width: innerWidth, touchHeight: rect.height, previewActions: 1, confirmActions: 1,
+      savedEffects: f.saved.revision - 3, lostAckSameRequest: true, casConflictPreserved: true, staleProfileWrites: writes(profile).length, iframePreserved: true });
+  }],
   [WORKSPACE_CHOICE_CASE, async () => {
     stop(); const f = backend(), token = generation;
     f.saved = { revision: 3, entry: { ...f.entry, path: '/saved-old?view=personal#exact', label: 'Старая закладка', savedRevision: 3, updatedAt: Date.now(), current: { name: 'Приложение стенда', status: 'offline', canManage: true } } };
@@ -571,7 +611,7 @@ const cases: Array<[string, () => Promise<void>]> = [
 async function run(): Promise<void> {
   if (running) return; running = true; output.dataset.testStatus = 'running'; errors.length = 0;
   const requestedCase = new URL(location.href).searchParams.get('case');
-  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : requestedCase === 'message-anchor' ? MESSAGE_ANCHOR_CASE : requestedCase === 'workspace-add' ? WORKSPACE_ADD_CASE : requestedCase === 'workspace-choice' ? WORKSPACE_CHOICE_CASE : null;
+  const selectedName = requestedCase === 'saved-entry-shortcut' ? SAVED_ENTRY_SHORTCUT_CASE : requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : requestedCase === 'message-anchor' ? MESSAGE_ANCHOR_CASE : requestedCase === 'workspace-add' ? WORKSPACE_ADD_CASE : requestedCase === 'workspace-choice' ? WORKSPACE_CHOICE_CASE : null;
   const selected = selectedName ? cases.filter(([name]) => name === selectedName) : cases;
   delete output.dataset.autosizeMetrics;
   delete output.dataset.archiveFocusMetrics;
@@ -602,4 +642,8 @@ document.querySelector('#qa-library')!.addEventListener('click', () => {
 });
 document.querySelector('#qa-theme')!.addEventListener('click', () => { theme = theme === 'dark' ? 'light' : 'dark'; palette(); });
 window.addEventListener('pagehide', stop);
+if (new URL(location.href).searchParams.get('preview') === 'saved-entry-shortcut') {
+  const f = backend(); f.saved = { revision: 1, entry: { ...f.entry, path: '/saved-old?exact=keep#screen', label: 'Прежний вход', savedRevision: 1, updatedAt: Date.now(), current: null } };
+  stage(f);
+}
 if (new URL(location.href).searchParams.get('run') === '1') void run();
