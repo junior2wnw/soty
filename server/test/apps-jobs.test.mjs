@@ -27,7 +27,7 @@ async function setup(t) {
   const host = { linkId: 'owned-device-link-12345678901234567890', hostDeviceId: 'device-test-host', connectorId: 'connector-test-user' };
   const ownedHosts = [host];
   const extension = createAppJobsExtension({ store, actorActive: actor => service.isActorActive(actor),
-    inferenceReady: () => inferenceReady,
+    inferenceReady: () => inferenceReady, autoRegistrationAvailable: () => true,
     resolveOwnedDevice: (actor, ids) => permitted && actor.accountId === accountId
       ? ownedHosts.find(item => ids.hostDeviceId === item.hostDeviceId && ids.connectorId === item.connectorId) || null : null });
   service = createConnectService({ databasePath: ':memory:', projectId: 'soty', allowedOrigins: [origin], extensions: [extension] });
@@ -113,6 +113,20 @@ test('signed app jobs are owned, replay-safe, durable and inaccessible through a
   const reopened = createConnectorStore(dirname(f.store.filePath));
   try { assert.equal((await reopened.getJob(f.host.linkId, jobId, { ownerAccountId: accountId })).job.id, jobId); }
   finally { await reopened.close(); }
+});
+
+test('automatic registration is an explicit immutable job intent and old jobs remain manual', async t => {
+  const f = await setup(t);
+  const old = await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs);
+  assert.equal(old.ok, true); assert.equal(f.store.state.jobs.find(job => job.id === old.job.id).input.autoRegister, undefined);
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, autoRegister: true })).error.code, 'job_request_conflict');
+  const args = { ...f.createArgs, requestId: 'explicit-auto-app', autoRegister: true };
+  const created = await invoke(f.service, f.owner, 'apps.agent.create', args);
+  assert.equal(created.ok, true); assert.equal(f.store.state.jobs.find(job => job.id === created.job.id).input.autoRegister, true);
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', args)).job.id, created.job.id);
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...args, autoRegister: false })).error.code, 'job_request_conflict');
+  const restored = normalizeConnectorState(structuredClone(f.store.state));
+  assert.equal(restored.jobs.find(job => job.id === created.job.id).input.autoRegister, true);
 });
 
 test('async Connect extensions release the proof transaction and recheck owner access inside the job queue', async t => {

@@ -329,7 +329,21 @@ class ConnectorStore {
     const job = this.findOwnedJob(auth, jobId, options);
     if (!job || job.kind !== 'agent') return null;
     return { text: job.input.text, cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
+      ...(job.input.autoRegister === true ? { autoRegister: true } : {}),
       canContinue: terminalStatuses.has(job.status) && job.executionUncertain !== true && job.input.output !== 'local-app' && Boolean(job.result?.sessionId) };
+  }
+
+  /** Host-only recovery source. Read the durable job, never the connector's retry body. */
+  async automaticAppJobs(jobId = '') {
+    await this.writeQueue; await this.readable();
+    const now = this.now();
+    return this.state.jobs.filter(job => (!jobId || job.id === jobId) && job.schema === accountJobSchema
+      && job.kind === 'agent' && job.input?.output === 'local-app' && job.input.autoRegister === true
+      && job.status === 'succeeded' && !job.cancelRequested && !job.executionUncertain && job.result?.ok === true
+      && job.result.appProposal?.sourceJobId === job.id && job.sourceActorDeviceId
+      && job.connectorId === job.requestedConnectorId && job.finishedAt > 0 && now - job.finishedAt < finishedRetentionMs)
+      .map(job => ({ id: job.id, schema: job.schema, status: job.status, autoRegister: true, ownerAccountId: job.ownerAccountId, sourceActorDeviceId: job.sourceActorDeviceId,
+        linkId: job.linkId, deviceId: job.deviceId, connectorId: job.requestedConnectorId, proposal: { ...job.result.appProposal } }));
   }
 
   async getOwnedRequest(auth, options) {
@@ -971,7 +985,7 @@ function cleanNewJob(value, options = {}) {
       shell: safeText(value?.input?.shell, 80),
       script,
       runAs: value?.input?.runAs === "system" ? "system" : "user",
-      ...(kind === 'agent' && value?.input?.output === 'local-app' ? { output: 'local-app' } : {}),
+      ...(kind === 'agent' && value?.input?.output === 'local-app' ? { output: 'local-app', ...(value.input.autoRegister === true ? { autoRegister: true } : {}) } : {}),
       timeoutMs: safeInteger(value?.input?.timeoutMs, 1_000, 24 * 60 * 60_000, 30 * 60_000)
     },
     permissions: cleanPermissions(value?.permissions)

@@ -13,6 +13,7 @@ import { createCoverDecoder } from '../modules/cover-art/server/codec.mjs';
 import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
+import { createAutomaticAppRegistration } from "./automatic-app-registration.js";
 import { createCapabilitiesService, BUILTIN_CAPABILITIES, AccessError } from "../modules/capabilities/server/index.mjs";
 import { hasSingleHostHeader, legacyAppFrameSource, validateNamedAppZone } from './app-domain-policy.mjs';
 import { attachCapabilitiesDiscovery, validateDiscoveryOrigin } from './capabilities-discovery.js';
@@ -87,7 +88,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   const externalEntries = universalEnabled ? captureExternalApplications(externalApplications) : [];
   const shellOrigins = connectAllowedOrigins(connectOrigins, env);
   let world, notes, connectors, capabilities, connect, apps, universal, reviews, managedReviews, human, humanCalls, personal, voice, orbVoice, push,
-    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService;
+    nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations, sourceAccess, accountAiService, automaticApps;
   const appFeedback = universalEnabled ? createAppFeedbackCapabilities({ capabilities: () => capabilities,
     connect: () => connect, apps: () => apps, feedback: () => universal.feedback }) : null;
   const coverDecoder = createCoverDecoder(), registeredCoverOperations = new Set();
@@ -174,7 +175,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       try { pending.push(Promise.resolve(action()).catch(() => {})); }
       catch { /* Preserve the startup failure. */ }
     };
-    close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
+    close(() => automaticApps?.close()); close(() => nativeRecovery?.close()); close(() => oauthCleanup?.close()); close(() => unsubscribeRevocations?.());
     close(() => mcp?.close());
     for (const service of [push, orbVoice, voice, personal, accountAiService, sourceAccess, humanCalls, human, universal, managedReviews, reviews, apps, capabilities, notes, world, connect]) {
       close(() => service?.close());
@@ -266,6 +267,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
     allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
     validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,
+    onHeartbeat: () => automaticApps?.retryPending(),
     withCurrentContacts: (actor, callback) => connect.withCurrentContacts(actor, callback),
     canAccessCommunity: (accountId, communityId) => world.canAccessCommunity(accountId, communityId),
     activeCommunityIds: accountId => world.activeCommunityIds(accountId),
@@ -282,7 +284,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   }
   const appJobs = createAppJobsExtension({ store: connectors.store, actorActive: actor => connect?.isActorActive(actor) === true,
     inferenceReady: () => connectors.modelProxy.ready === true,
-    resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId) });
+    resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId),
+    autoRegistrationAvailable: () => Boolean(automaticApps && universal && apps.configured),
+    autoRegistrationStatus: (actor, job) => automaticApps?.status(actor, job) ?? { state: 'waiting' } });
   try {
     if (universalEnabled) universal = createUniversalApps({ dataDir, apps, reviews, actorActive: actor => connect?.isActorActive(actor) === true });
     if (humanProfile?.enabled) human = createHumanIdentityService({ databasePath: path.join(dataDir || path.resolve('data'), 'human-identity', 'identity.sqlite'),
@@ -327,6 +331,9 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       ...coverExtensions, ...(universal ? [universal.universalExtension, universal.feedback, universal.reviews] : []), ...(managedReviews ? [managedReviews] : []), ...(human ? [human] : []), ...(accountAiService ? [accountAiService] : []), sourceAccess, personal, orbVoice, ...(voice.operations.size ? [voice] : [])];
     app.locals.connectService = connect = attachConnectModule(app, { env, dataDir, origins: shellOrigins, extensions,
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
+    automaticApps = createAutomaticAppRegistration({ store: connectors.store, apps, universal, connect });
+    connectors.setAutomaticAppRegistration(automaticApps);
+    void automaticApps.recover().catch(() => {});
     // Connect validates every operation and duplicate before returning. Advertise
     // profile writes only after that exact async registry has been installed.
     for (const extension of coverExtensions) for (const operation of extension.operations) registeredCoverOperations.add(operation);
@@ -371,6 +378,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
       let failed = false;
       const attempt = async action => { try { await action(); } catch { failed = true; } };
       if (nativeSources.enabled) await attempt(() => nativeSources.close());
+      await attempt(() => automaticApps?.close());
       await attempt(() => push.close());
       await attempt(() => orbVoice.close());
       await attempt(() => personal.close());
@@ -399,6 +407,7 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, sourceEntryActivation: apps.configured === true, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2], universalConfigured: Boolean(universal), humanIdentityConfigured: Boolean(human),
+      automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: Boolean(automaticApps && universal && apps.configured) },
       humanSignins: human?.signinCapabilities ?? { schema: 'soty.human-signins-capability.v1', available: false, sessions: false,
         rememberedConsents: false, checkRevoke: false, scopes: [], sourceRootSessions: false, maximumPageSize: 0 },
       personalAgent: personal.status(), nativeVoice: voice.publicMount(), voiceOrb: orbVoice.status(), notifications: { configured: push.status().configured } });
