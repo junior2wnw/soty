@@ -1,5 +1,7 @@
 export interface FeedbackAttachment {kind:'image'|'audio';name:string;mimeType:string;dataBase64:string}
 export function createRelayIdentityFetch(options?:{fetch?:typeof globalThis.fetch;origin?:string}):(path:string,options?:RequestInit)=>Promise<Response>;
+/** `parentOrigin` is trusted application configuration, never a caller-provided URL. */
+export function createSotyAppWork(options:{parentOrigin:string;isDirty():boolean;save():void|Promise<void>;view?:Window}):{changed():void;dispose():void};
 export interface FeedbackDraft {body:string;attachments:FeedbackAttachment[]}
 export interface FeedbackContext {schema:'soty.source-feedback.context.v1';bindingDigest:string;ready:boolean;canSubmit:boolean;canManage?:boolean;recipientLabel:string;
   limits:{bodyChars:number;totalAttachmentBytes:number;maxAttachments:number;maxAudioSeconds:number};capabilities:{text:boolean;voice:boolean;screenshot:boolean;asr:false}}

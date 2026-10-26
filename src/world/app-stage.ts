@@ -11,6 +11,7 @@ import { createAppBootRecovery } from './app-boot-recovery.mjs';
 import { createAppRuntimeDisplay, type RuntimeDisplayHandle } from './app-runtime-display.mjs';
 import { createWidgetRuntimeControls } from './app-widget-runtime-controls.mjs';
 import { createAppRuntimePhaseTrace, type RuntimePhase } from './app-runtime-phase-trace.mjs';
+import { createAppWorkGuard } from './app-work-guard.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
@@ -58,7 +59,7 @@ export interface AppStageHandle {
   mountRuntimeControls?(host:HTMLElement,owner:DialogReturnTarget):boolean;
   ready: Promise<void>; matches(intent: AppLaunchIntent): boolean; updateRoute(intent: AppLaunchIntent): void;
   updateApp(app: WorldAppRecord): void; updateCommunity(group: { communityId: string; name: string } | null): void;
-  entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; dispose(): void;
+  entry(): AppResolvedEntry | null; flush(): Promise<void>; hasUnsavedChanges(): boolean; requiresCloseCheck(): boolean; hasUnconfirmedWork(): boolean; dispose(): void;
   assistantContext(): WorldAssistantContext | null;
   browserAssist(): import('./types').WorldBrowserAssist | null;
   openProjectEditor:WorldProjectEditorPort;
@@ -144,6 +145,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   };
   panel.id = `discussion-${app.appId}`; panel.setAttribute('aria-label', 'Обсуждение приложения'); panel.hidden = true;
   const message = el('p', 'sa-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite'); message.setAttribute('aria-atomic', 'true');
+  const workStatus = el('p', 'sa-work-status', 'Сохранение черновиков внутри приложения не подтверждено.');
+  const appWork = createAppWorkGuard({ view, getFrame: () => runtime.querySelector('iframe'),
+    isCurrent: () => !disposed && options.isCurrent(), onStatus: state => { workStatus.hidden = state.supported; } });
   let messageOwner: 'manual' | 'runtime' | 'renewal' = 'manual';
   const savedHost = el('div', 'sa-saved'); savedHost.hidden = true;
   const savedReplacementHost = el('div', 'sa-saved-entry-shortcut'); savedReplacementHost.hidden = true;
@@ -327,7 +331,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   bookmark.append(el('p', 'sa-bookmark-label', 'Сохранённый вход в «Моё»'), savedHost);
   const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
   diagnostics.hidden = options.presentation === 'widget';
-  moreBody.append(widget, publicReviews, external, refresh, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  moreBody.append(widget, publicReviews, external, refresh, workStatus, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
   function openRuntimeDiagnostics(): void {
     if (!current() || options.presentation === 'widget' || diagnosticOpen) return;
     closeMore(); runtimeTrace.sample(); diagnosticOpen = true;
@@ -543,9 +547,9 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     const epoch = entryRecoveryEpoch, live = () => current() && epoch === entryRecoveryEpoch;
     entryRecoveryPending = true; currentEntryRetry.disabled = true;
     try {
-      await discussion?.flush(); await feedback?.flush();
+      await discussion?.flush(); await feedback?.flush(); await appWork.flush();
       if (!live()) return;
-      if (discussion?.hasUnsavedChanges() || feedback?.hasUnsavedChanges() || reviews?.hasUnsavedChanges()) {
+      if (discussion?.hasUnsavedChanges() || feedback?.hasUnsavedChanges() || reviews?.hasUnsavedChanges() || appWork.hasUnsavedChanges()) {
         showMessage('Сохраните незавершённое действие перед переходом к актуальному входу.'); return;
       }
       const result = await options.api.request<{ entry: AppResolvedEntry }>('apps.entry.get', {
@@ -710,6 +714,14 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   async function launchRuntime(automatic = false, recoveryCurrent: () => boolean = () => true, diagnosticManual = false): Promise<void> {
     const alive = () => current() && (!automatic || recoveryCurrent());
     if (!alive() || runtimePending) return;
+    const existingFrame = runtime.querySelector('iframe');
+    if (existingFrame && appWork.requiresCheck()) {
+      runtimePending = true;
+      try { await appWork.flush(); }
+      catch { if (current()) showMessage('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.'); return; }
+      finally { runtimePending = false; }
+      if (!alive()) return;
+    }
     saved?.setEntryVerified(false);
     resetRuntimeDisplay();
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
@@ -718,7 +730,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     externalAvailability = voiceResolved ? 'unknown' : 'available'; external.hidden = voiceResolved;
     recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
     stopAssist();
-    const existingFrame = runtime.querySelector('iframe');
     if (existingFrame) showMessage('Соединяем с приложением…', 'runtime');
     if (!existingFrame) { const loading = el('p', 'sa-loading', 'Соединяем с приложением'); loading.setAttribute('role', 'status'); runtime.replaceChildren(loading); }
     try {
@@ -750,6 +761,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
       watchRuntimeDisplay(frame);
       runtime.replaceChildren(frame);
+      appWork.attach(frame, launcher.entry()!.origin);
       runtimeTrace.inserted();
     } catch (reason) {
       if (!alive()) return;
@@ -874,7 +886,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       return { appId: app.appId, name: app.name, path: selectedEntry.path.split(/[?#]/u)[0]!, status: app.status,
         ...(binding ? { selection: { appId: app.appId, handle: binding.handle } } : {}) };
     },
-    flush: async () => { await discussion?.flush(); await feedback?.flush(); }, hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges(),
-    dispose() { if (disposed) return; editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    flush: async () => { await discussion?.flush(); await feedback?.flush(); await appWork.flush(); },
+    hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges() || appWork.hasUnsavedChanges(),
+    requiresCloseCheck: () => appWork.requiresCheck(),
+    hasUnconfirmedWork: () => appWork.hasUnconfirmedWork(),
+    dispose() { if (disposed) return; appWork.dispose(); editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

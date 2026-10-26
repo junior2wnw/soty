@@ -18,6 +18,7 @@ export interface MicroWidgetsHandle {
   assistantContext(): WorldAssistantContext | null;
   flush(): Promise<void>;
   hasUnsavedChanges(): boolean;
+  hasUnconfirmedWork(): boolean;
   dispose(): void;
 }
 
@@ -371,6 +372,7 @@ export function mountMicroWidgets(root: HTMLElement, options: {
     assistantContext: () => mounted.get(active)?.stage?.assistantContext() ?? null,
     async flush() { await Promise.all([...mounted.values()].map(row => row.stage?.flush())); },
     hasUnsavedChanges: () => [...mounted.values()].some(row => row.stage?.hasUnsavedChanges()),
+    hasUnconfirmedWork: () => [...mounted.values()].some(row => row.stage?.hasUnconfirmedWork?.()),
     dispose() { if (disposed) return; disposed = true; generation++; chromeResize?.disconnect(); observedChrome.clear(); changes?.disconnect(); if (resizeFrame !== null) view.cancelAnimationFrame(resizeFrame); manager?.close({ restoreFocus: false }); placement?.close({ restoreFocus: false }); for (const id of mounted.keys()) stop(id); abort.abort(); layer.remove(); delete root.dataset.microWidgets; },
   };
 }

@@ -3,18 +3,20 @@
 <style>html,body{margin:0;height:100%;font:16px system-ui}#workspace-host{height:100dvh}.fixture-label{position:fixed;bottom:0;left:0;z-index:1000;font-size:10px;color:#465655;background:#f6f9f6;padding:1px 6px;pointer-events:none}</style></head>
 <body><div id="workspace-host"></div><aside class="fixture-label">Локальный стенд · вымышленные данные · не проверка реального входа/доставки</aside>
 <script type="module">
-if (!import.meta.env.DEV || !['127.0.0.1','localhost'].includes(location.hostname)) throw Error('Local development fixture only');
+if (!['127.0.0.1','localhost'].includes(location.hostname)) throw Error('Local fixture only');
+const realAppOrigin = new URL(location.href).searchParams.get('appOrigin');
+if (realAppOrigin && !/^http:\/\/127\.0\.0\.1:\d{2,5}$/.test(realAppOrigin)) throw Error('Synthetic local origin required');
 const memory = new Map();
 Object.defineProperty(window, 'localStorage', { value: { getItem:key=>memory.get(key)??null, setItem:(key,value)=>memory.set(key,String(value)), removeItem:key=>memory.delete(key), key:i=>[...memory.keys()][i]??null, get length(){return memory.size} } });
 const original = document.createElement;
 document.createElement = function(name,options) {
  const node=original.call(document,name,options);
- if(name.toLowerCase()==='iframe')node.srcdoc='<!doctype html><html lang="ru"><meta charset="utf-8"><style>body{font:18px system-ui;padding:20px;background:#f6f8f6;color:#24342e}input{font:inherit;padding:10px;max-width:90%}</style><h1>Рабочая доска</h1><label>Состояние приложения <input id="runtime-value" value="initial"></label><p>Проверка сохранения настоящего iframe при переключении обсуждения.</p></html>';
+ if(name.toLowerCase()==='iframe' && !realAppOrigin)node.srcdoc='<!doctype html><html lang="ru"><meta charset="utf-8"><style>body{font:18px system-ui;padding:20px;background:#f6f8f6;color:#24342e}input{font:inherit;padding:10px;max-width:90%}</style><h1>Рабочая доска</h1><label>Состояние приложения <input id="runtime-value" value="initial"></label><p>Проверка сохранения настоящего iframe при переключении обсуждения.</p></html>';
  return node;
 };
 const {mountWorldApp}=await import('/src/world/app.ts');
 const APP='app-'+ 'a'.repeat(32), DOMAIN='dom_'+'b'.repeat(32), CONVERSATION='conv_'+'c'.repeat(32), ACCOUNT='fixture-workspace-account';
-const entry={appId:APP,domainId:DOMAIN,origin:'https://runtime.workspace.invalid',path:'/board?q=a%2Bb'};
+const entry={appId:APP,domainId:DOMAIN,origin:realAppOrigin??'https://runtime.workspace.invalid',path:'/board?q=a%2Bb'};
 const profile={profileId:ACCOUNT,displayName:'Анна · тестовый профиль',bio:'Локальный стенд навигации',interests:[],avatarColor:'#77a18a',revision:1,directMessagesVersion:1};
 const app={id:APP,name:'Доска с длинным понятным названием проекта',ownerAccountId:ACCOUNT,state:'ready',createdAt:1,updatedAt:1,access:'owner',canManage:true,entry};
 if(new URL(location.href).searchParams.get('recent')==='1')memory.set('soty.desk.v1:'+encodeURIComponent(ACCOUNT),JSON.stringify({favorites:[],recent:[

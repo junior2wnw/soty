@@ -18,6 +18,10 @@ function isReservedProtocolDocument(pathname, humanOnly = false) {
 }
 function isSotyDocument(value) {
   const url = new URL(value);
+  // A window client can be an inherited-origin about:srcdoc iframe. It is not
+  // a Soty document and cannot answer the shell's update protocol. Keep actual
+  // nested Soty documents on this origin in the cross-tab safety check.
+  if (url.origin !== self.location.origin) return false;
   if (isReservedProtocolDocument(url.pathname, true)) return true;
   if (sharedPrimaryHost) {
     // The retained HIVE and /ecolab documents share this origin, but cannot
@@ -192,7 +196,7 @@ function prepareUpdate() {
       const timer = setTimeout(() => { channel.port1.close(); resolve({ ready: false, reason: 'unresponsive', clientId: client.id }); }, 10_000);
       channel.port1.onmessage = event => {
         clearTimeout(timer); channel.port1.close();
-        const reason = ['work', 'form', 'dialog', 'busy', 'signin', 'save'].includes(event.data?.reason) ? event.data.reason : 'unknown';
+        const reason = ['work', 'app', 'form', 'dialog', 'busy', 'signin', 'save'].includes(event.data?.reason) ? event.data.reason : 'unknown';
         resolve(event.data?.ready === true ? { ready: true } : { ready: false, reason, clientId: client.id });
       };
       client.postMessage({ type: 'SOTY_PREPARE_UPDATE' }, [channel.port2]);

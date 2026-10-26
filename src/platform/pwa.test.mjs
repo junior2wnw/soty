@@ -54,6 +54,13 @@ test('a blocking tab reports only its safe category and relation to the requeste
   assert.equal('clientId' in result, false); assert.equal(runtime.records.activated, 0); assert.deepEqual(committed, []);
 });
 
+test('another tab may report an unconfirmed app without its identity or contents', async () => {
+  const committed = [], a = client('a', true, committed), b = client('b', false, committed, 'app');
+  const result = await worker({ clients: [a, b] }).emit('message', { type: 'SOTY_ACTIVATE_UPDATE' }, a);
+  assert.equal(result.ready, false); assert.equal(result.reason, 'app'); assert.equal(result.location, 'other');
+  assert.equal('clientId' in result, false); assert.deepEqual(committed, []);
+});
+
 test('old tabs and unexpected reason strings remain blocked without inventing a cause', async () => {
   for (const reason of [undefined, 'private text must not cross tabs']) {
     const committed = [], a = client('a', true, committed), b = client('b', false, committed, reason);
@@ -68,6 +75,19 @@ test('update activates and arms reload only after every tab has saved', async ()
   const committed = [], runtime = worker({ clients: [client('a', true, committed), client('b', true, committed)] });
   assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, true);
   assert.equal(runtime.records.activated, 1); assert.deepEqual(committed, ['a', 'b']);
+});
+
+test('an unrelated or srcdoc iframe cannot stall the update; a nested Soty document still guards its work', async () => {
+  const committed = [], main = client('main', true, committed);
+  const foreign = { id: 'foreign', url: 'https://app.example/', frameType: 'nested', postMessage() { throw Error('not_a_soty_document'); } };
+  const srcdoc = { id: 'srcdoc', url: 'about:srcdoc', frameType: 'nested', postMessage() { throw Error('not_a_soty_document'); } };
+  const nestedShell = client('nested-shell', false, committed); nestedShell.frameType = 'nested'; nestedShell.url = 'https://soty.test/#notes/new';
+  const blocked = worker({ clients: [main, foreign, srcdoc, nestedShell] });
+  assert.equal((await blocked.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, false);
+  assert.equal(blocked.records.activated, 0); assert.deepEqual(committed, []);
+  const safe = worker({ clients: [main, foreign, srcdoc] });
+  assert.equal((await safe.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, true);
+  assert.equal(safe.records.activated, 1); assert.deepEqual(committed, ['main']);
 });
 
 test('a tab opened during preparation must participate before activation', async () => {
