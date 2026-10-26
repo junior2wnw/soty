@@ -45,6 +45,8 @@ test('guidance refuses URLs, token values, extra fields, objects and getters wit
 });
 test('the default Soty login and explicit alternatives reference maintained integrations without activating authority', async () => {
   assert.deepEqual(appAuthenticationGuide({}), appAuthenticationGuide({ mode: 'soty' }));
+  assert.match(appAuthenticationGuide({}).steps.join(' '), /403.*receipt.*Do not blindly repeat/u);
+  assert.match(appAuthenticationGuide({}).boundaries.join(' '), /Idempotency-Key/u);
   for (const mode of ['soty', 'human-oidc', 'private-owner', 'agent']) {
     const value = appAuthenticationGuide({ mode });
     assert.equal(value.applied, false); assert.equal(value.productionEnabled, 'not_checked');
