@@ -172,9 +172,28 @@ EROFS. Это не право canary/production и не повод менять 
 DAC_READ_SEARCH или общие capabilities; отдельное существующее исключение
 config-extract не расширяется на другие роли.
 
-Собственные Docker-объекты перечисляй по exact label с all=true. Peers тома
-ищи отдельным volume filter с all=true без своего label: остановленный и чужой
-контейнер тоже удерживает том. Сохраняй GET limit 4 MiB и inspect каждого результата.
+Уточнение 26.10.2026, источник — платформенный LOAD/readback и negative-контроли
+bind aliases; область — оператор Root. Обычный app/Source SDK/CLI recipe не требует Root build.
+Raw CAS сравнивается при одной версии Docker API и одной полной projection:
+versioned и unversioned inspect могут возвращать разные поля при прежних CID/PID.
+Сначала проверь endpoint/version, затем реальное изменение; поля не выбрасывай.
+Собственные объекты и обычные peers тома ищи exact label/volume filters с all=true;
+при очистке учитывай stopped peers. Но volume-only не доказывает Root sole-writer:
+bind родительского каталога или подкаталога с другим destination может не попасть
+в такой ответ. Для этого ограниченно и постранично прочитай **все ACTIVE** контейнеры,
+inspect каждого и сохрани исходный RW/Running/path-overlap predicate; paused и
+переходные active states тоже учитываются. Сохрани 4 MiB на ответ, предел страниц,
+курсор и отказ при дубликате/переполнении. Контроли путей используют POSIX-семантику
+сервера. LOAD не требует истории stopped-контейнеров и не разрешает их очистку.
+
+Закрепляй хеш по объекту и точным байтам producer, не по похожему имени:
+
+| Объект | Разные идентичности |
+|---|---|
+| Образ | Фактический Engine imageId/manifest descriptor и Buildx config IID хранятся отдельно |
+| SDK | SHA архива `.tgz`, SHA `SDK-CAPSULE.json` и его sourceCommit — отдельные pins |
+| Файл SDK | LF-файл поставки и CRLF-checkout могут иметь разные SHA; runtime pin берётся из точного поставляемого файла |
+
 CREATE проверяется по точному prospective body и полной существующей projection.
 Если network:none не использует MAC, не отправляй только пустой верхнеуровневый
 `/MacAddress` в QA body. Остальные поля сохраняются; глобальная normalization

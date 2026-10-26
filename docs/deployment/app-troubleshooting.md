@@ -78,8 +78,13 @@ Root «Диагностика запуска» даёт ограниченный
 
 Проверь настоящий Linux CLI/module graph, а не только factory import. Для EACCES
 раздели public code modes и DAC own-copy DATA; scoped observer exception требует
-exact role/RO mounts и negative write→EROFS. Большой Docker GET заменяется exact
-label/volume filters с all=true, включая stopped peers; bound 4 MiB сохраняется.
+exact role/RO mounts и negative write→EROFS. Exact label/volume filters с all=true
+полезны для своих объектов и stopped peers при очистке, но не доказывают Root
+sole-writer: bind parent/subdir может иметь другой destination. Для LOAD проверяй
+все ACTIVE через ограниченные страницы и inspect с прежним RW/Running/path-overlap,
+включая paused/переходные active states; сохрани 4 MiB, cursor/page guards и отказ
+при переполнении. Stopped history для LOAD не нужна. Raw CAS закрепляется на одной
+версии Docker API без удаления полей.
 Prospective CREATE сверяется полноценно: у QA network:none исключается только
 доказанный пустой верхнеуровневый /MacAddress; остальные поля не нормализуются. Собственный holder/PID1 получает
 SIGTERM handler. После transport timeout STOP сначала читаются intent, actual

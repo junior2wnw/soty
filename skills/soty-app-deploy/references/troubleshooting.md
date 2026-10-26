@@ -19,7 +19,9 @@ Root auth; точный профиль, persistence и другие прилож
 | Долго ждёт поле | Navigation/resources → entry/shell → данные поля → приложение | Сопоставимый trace по фазам/версии, а не выдуманное ускорение |
 | Operator падает до работы с DATA | Qualified Node24 и настоящий Linux CLI/module graph, включая TLA cycle; safe exit/stdout/stderr | Ошибка инструмента; потерянный stderr оставляет причину выводом |
 | Изолированный reader получает EACCES | Сначала public code mode/UID, затем отдельно DAC own-copy DATA; только finite observer role/RO exception | Не расширять права production и не менять DATA ownership |
-| Docker list превышает bound | Exact label и volume filters, all=true, inspect всех peers | Не снимать bound глобального inventory; stopped peer тоже удерживает том |
+| Docker list превышает bound | Для своих объектов/очистки — exact label/volume и stopped peers; для Root sole-writer — ограниченные страницы всех ACTIVE и inspect с прежним RW/Running/path-overlap | Сохранить 4 MiB и cursor/page guards; volume-only пропускает bind parent/subdir. LOAD не требует stopped history |
+| Raw CAS отличается при прежних CID/PID | Одна версия Docker API и полная projection; затем сравнение реальных полей | Versioned/unversioned ответы не равнозначны; поля не удаляются ради совпадения |
+| SHA похожих артефактов не совпали | Разделить image/manifest, config IID, SDK archive/capsule и точные LF/CRLF bytes; см. [операторскую ветку](operations.md) | Runtime pin относится к поставляемому файлу, не подменяется SHA checkout или другого объекта |
 | CREATE preservation mismatch | Exact prospective/full diff; у QA network:none пустой верхнеуровневый /MacAddress может быть omitted | Исправить только доказанный input; не нормализовать все конфигурации |
 | Holder STOP истёк по времени | Тот же intent, actual stopped state и terminal helper; SIGTERM handler собственного PID1 | Не повторять STOP/операцию по одному transport timeout |
 | Storage probe exit0 без JSON | Независимый probe с `SOTY_STORAGE_PROBE=1`, явный World и v7 gate | START запрещён до настоящего результата |
