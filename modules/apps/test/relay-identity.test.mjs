@@ -5,12 +5,18 @@ import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { createAppsService } from '../server/index.mjs';
 import { createRelayIdentitySigner } from '../../human-identity/source-authority.mjs';
-import { createRelayIdentityVerifier } from '../../source-app/server/relay-identity.mjs';
-import { createRelayIdentityFetch } from '../../source-app/browser/relay-identity-fetch.mjs';
 import { createLocalAppsRuntime } from '../../../scripts/agent-modules/local-apps.mjs';
+
+const installed = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY;
+const serverModule = installed ? pathToFileURL(join(installed, 'dist', 'server.mjs')).href : null;
+const { createRelayIdentityVerifier } = await import(serverModule ?? '../../source-app/server/relay-identity.mjs');
+const { createSqliteRelayNonceStore } = await import(serverModule ?? '../../source-app/server/sqlite-relay-nonces.mjs');
+const { createRelayIdentityFetch } = await import(installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs');
 
 const secret = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -56,9 +62,10 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   runtime = createLocalAppsRuntime({ randomSecret: secret, digest: hash, createWebSocket: url => new WebSocket(url), httpRequest: request,
     encodeBase64: value => Buffer.from(value).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') },
   { serverUrl: rootOrigin, identity, token: 'fixture' });
-  const servers = [];
+  const servers = [], stores = [], businessStores = [];
   t.after(async () => { gate?.release(); runtime.stop(); service.close(); root.closeAllConnections();
     await new Promise(done => root.close(done)); for (const server of servers) { server.closeAllConnections(); await new Promise(done => server.close(done)); }
+    for (const store of stores) store.close(); for (const close of businessStores) close();
     await rm(directory, { recursive: true, force: true }); });
   runtime.start(); await until(() => runtime.status().connected);
   const claim = await runtime.claim();
@@ -66,23 +73,32 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   call('apps.claim', { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, claimCode: claim.claimCode });
   const apps = [];
   for (let index = 0; index < 2; index++) {
-    let verifier; const seen = [], records = new Map();
+    let verifier; const seen = [], businessPath = join(directory, `business-${index}.sqlite`);
+    let business = new DatabaseSync(businessPath);
+    business.exec('CREATE TABLE records (issuer TEXT NOT NULL, subject TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issuer,subject))');
+    businessStores.push(() => business.close());
     const upstream = createServer((req, res) => {
       if (req.method === 'HEAD') { res.writeHead(200).end(); return; }
       seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'] });
       void (async () => {
-        try { const person = await verifier(req); if (req.method === 'POST') records.set(person.subject, (records.get(person.subject) ?? 0) + 1);
-          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count: records.get(person.subject) ?? 0 })); }
-        catch { res.writeHead(401).end('identity required'); }
+        try { const person = await verifier(req);
+          if (req.method === 'POST') business.prepare('INSERT INTO records VALUES(?,?,1) ON CONFLICT(issuer,subject) DO UPDATE SET count=count+1').run(person.issuer, person.subject);
+          const count = business.prepare('SELECT count FROM records WHERE issuer=? AND subject=?').get(person.issuer, person.subject)?.count ?? 0;
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count })); }
+        catch (error) { res.writeHead(error.status === 503 ? 503 : 401).end('identity unavailable'); }
       })();
     });
     await new Promise(done => upstream.listen(0, '127.0.0.1', done)); servers.push(upstream);
     const app = call('apps.register', { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId,
       name: 'fixture ' + index, port: upstream.address().port, entryPath: '/', grants: { accountIds: [bob.accountId] } }).app;
-    verifier = createRelayIdentityVerifier({ issuer, appId: app.id, fetch: async url => {
+    const noncePath = join(directory, `nonce-${index}.sqlite`);
+    let store = createSqliteRelayNonceStore({ databasePath: noncePath }); stores.push(store);
+    const makeVerifier = () => createRelayIdentityVerifier({ issuer, appId: app.id, consume: store.consume, fetch: async url => {
       assert.equal(new URL(url).href, issuer + '/jwks'); return new Response(JSON.stringify({ keys: [publicJwk] }), { headers: { 'content-type': 'application/json' } });
     } });
-    apps.push({ app, seen, records, verifier });
+    verifier = makeVerifier();
+    apps.push({ app, seen, get verifier() { return verifier; }, restartStore() { business.close(); business = new DatabaseSync(businessPath); },
+      restartVerifier() { store.close(); store = createSqliteRelayNonceStore({ databasePath: noncePath }); stores[index] = store; verifier = makeVerifier(); } });
   }
   await until(() => runtime.status().apps === 2);
   async function session(app, actor) {
@@ -102,6 +118,8 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   const alice = await fetchApp(aliceSession, 'POST', { 'x-soty-identity': 'browser-forgery' });
   assert.equal(alice.status, 200, JSON.stringify({ text: alice.text, upstreamSawProof: !!apps[0].seen.at(-1)?.token })); assert.deepEqual(JSON.parse(alice.text), { subject: 'alice', count: 1 });
   assert.equal(alice.text.includes(apps[0].seen.at(-1).token), false);
+  apps[0].restartStore();
+  assert.deepEqual(JSON.parse((await fetchApp(aliceSession)).text), { subject: 'alice', count: 1 }, 'personal data survives closing and reopening the app store');
   assert.deepEqual(JSON.parse((await fetchApp(bobSession)).text), { subject: 'bob', count: 0 });
   assert.deepEqual(JSON.parse((await fetchApp(otherSession)).text), { subject: 'alice', count: 0 });
   const normalized = await http(port, '/folder/../items?x=1', { ...aliceSession, headers: { 'x-soty-identity-request': '1' } });
@@ -109,6 +127,8 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   const old = apps[0].seen.find(value => value.method === 'POST').token;
   const replay = { headers: { 'x-soty-identity': old }, rawHeaders: ['x-soty-identity', old], method: 'POST', url: '/items?x=1' };
   await assert.rejects(apps[0].verifier(replay), { code: 'soty_identity_invalid' });
+  apps[0].restartVerifier();
+  await assert.rejects(apps[0].verifier(replay), { code: 'soty_identity_invalid' }, 'restarting the verifier cannot revive a consumed proof');
   await assert.rejects(apps[1].verifier(replay), { code: 'soty_identity_invalid' });
   const fresh = await actualSigner({ appId: apps[0].app.id, accountId: 'alice', method: 'GET', path: '/items?x=1', expiresAt: Date.now() + 30000 });
   const changed = { ...replay, method: 'POST', headers: { 'x-soty-identity': fresh }, rawHeaders: ['x-soty-identity', fresh] };
@@ -153,18 +173,24 @@ test('browser helper cannot send the request flag to another origin or follow a 
   assert.throws(() => sotyFetch('/items', { redirect: 'follow' }), /invalid_soty_request/u); assert.equal(calls, 1);
 });
 
-test('verifier rejects expired, foreign-issuer and duplicate assertions', async () => {
+test('verifier rejects expired, foreign-issuer and duplicate assertions', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'soty-relay-verifier-'));
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 }), issuer = 'https://soty.example/human-identity';
   const jwk = { ...pair.privateKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
   const publicJwk = { ...pair.publicKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
   let now = Date.now();
   const signer = createRelayIdentitySigner({ profile: { enabled: true, issuer, providerKeys: () => ({ jwks: { keys: [jwk] } }) }, clock: () => now });
   const appId = 'app-' + '1'.repeat(32), fetcher = async () => new Response(JSON.stringify({ keys: [publicJwk] }));
-  const verifier = createRelayIdentityVerifier({ issuer, appId, fetch: fetcher, clock: () => now });
-  const foreign = createRelayIdentityVerifier({ issuer: 'https://other.example/human-identity', appId, fetch: fetcher, clock: () => now });
+  const store = createSqliteRelayNonceStore({ databasePath: join(directory, 'nonces.sqlite'), clock: () => now });
+  t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+  const verifier = createRelayIdentityVerifier({ issuer, appId, fetch: fetcher, clock: () => now, consume: store.consume });
+  const foreign = createRelayIdentityVerifier({ issuer: 'https://other.example/human-identity', appId, fetch: fetcher, clock: () => now, consume: store.consume });
+  assert.throws(() => createRelayIdentityVerifier({ issuer, appId, fetch: fetcher }), { code: 'soty_identity_store_unavailable' });
+  const unavailable = createRelayIdentityVerifier({ issuer, appId, fetch: fetcher, clock: () => now, consume() { throw Error('disk failure'); } });
   const token = await signer({ appId, accountId: 'alice', method: 'GET', path: '/items', expiresAt: now + 30000 });
   const req = { method: 'GET', url: '/items', headers: { 'x-soty-identity': token }, rawHeaders: ['x-soty-identity', token] };
   await assert.rejects(foreign(req), { code: 'soty_identity_invalid' });
+  await assert.rejects(unavailable(req), { code: 'soty_identity_store_unavailable', status: 503 });
   await assert.rejects(verifier({ ...req, rawHeaders: [...req.rawHeaders, 'X-Soty-Identity', token] }), { code: 'soty_identity_invalid' });
   now += 11000;
   await assert.rejects(verifier(req), { code: 'soty_identity_invalid' });
