@@ -17,6 +17,7 @@
 | Access denied / source pin changed | Свежий inspect и account/audience/source; supported prepare/promote. Не удалять app ID |
 | Документ загружен, readiness unsupported | Нейтральное loaded; app UI/auth/data проверять отдельно. Не объявлять fake authenticated ready |
 | Health200, но служебный POST возвращает405 или HTML | Проверить фактический entrypoint и порядок маршрутов с тем же методом и авторизацией; catch-all раздачи файлов может перехватить API |
+| Новый файл есть в image, а маршрут всё ещё старый | Проверить image WORKDIR/CMD и реальные пути загруженных модулей; COPY в неиспользуемый каталог не обновляет работающий код |
 | Потеря записи после reload | Активная БД/volume, stable issuer/sub association, migrations до optional workers, единственный writer |
 
 Debugger interference — гипотеза до сравнения. В расследовании 20.10.2026
@@ -42,6 +43,15 @@ Windows browser URL, прекратите управление браузеро�
 API до StaticFiles/catch-all и до запуска сервера; затем проверьте разрешённый
 вызов, отказ неверной авторизации и обычную страницу. Служебный маршрут при этом
 сохраняет авторизацию и запрет внешнего доступа.
+
+Проверка выполняется штатными ENTRYPOINT/WORKDIR и порядком import search path,
+без подмены PYTHONPATH ради теста. В одном реальном образе новый пакет лежал в
+`/app/web_controller`, а `uvicorn web_controller.standalone:app` из рабочего
+каталога `/web_controller` загружал прежний `/web_controller/web_controller`.
+Исходный порядок маршрутов был правильным; исправления требовала упаковка.
+Закрепляйте безопасные пути и хеши реально импортированных критичных модулей,
+а также доступность маршрута в этом запуске. Наличие файла и revision label
+сами по себе этого не доказывают.
 
 Root «Диагностика запуска» даёт ограниченный phase trace: только закрытые phases,
 округлённое время и Root frame visibility/hit flags; до 24 событий/120 секунд.
