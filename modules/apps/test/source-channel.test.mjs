@@ -71,6 +71,15 @@ test('unsupported and malformed advertised modes never create an implicit legacy
   }
 });
 
+test('malformed idempotency-key support never becomes a capability', async t => {
+  const f = await fixture(t);
+  for (const relayIdempotencyKey of [null, 1, 'true', {}, []]) {
+    const peer = await f.peer(auth({ targetBindingVersions: [1, 2], relayIdempotencyKey }));
+    await until(() => peer.closed, 'bad capability refused');
+    assert.equal(peer.received.some(value => value.type === 'ready'), false);
+  }
+});
+
 test('an authenticated legacy device still serves target1 but cannot attest a source change', async t => {
   const f = await fixture(t), peer = await f.peer(auth());
   await until(() => peer.received.some(value => value.type === 'ready'), 'legacy ready');

@@ -1227,6 +1227,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       :rootWorkspace&&route?.credentialFree?publicFrameSession(req,app):sessionFor(req,app);
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
+    if (req.headers['idempotency-key'] !== undefined) {
+      const key = req.headers['idempotency-key'];
+      assertApps(headerCount(req, 'idempotency-key') === 1 && typeof key === 'string' && key.length > 0
+        && key.length <= 16 * 1024 && !/[\r\n\u0000]/u.test(key), 'app_idempotency_key_invalid', 400);
+      // Selected Source uses its own explicit request/receipt protocol. The
+      // ordinary relay must never silently lose a write's duplicate key.
+      assertApps(!selected, 'app_idempotency_key_unsupported', 503);
+      const channel = channels.get(session.decision.route.connectorKey);
+      assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
+      assertApps(channel.bindingVersion === 2 && channel.relayIdempotencyKey === true, 'app_idempotency_key_unavailable', 503);
+    }
     const identityRequested = req.headers['x-soty-identity-request'] !== undefined;
     if (identityRequested) {
       assertApps(headerCount(req, 'x-soty-identity-request') === 1 && req.headers['x-soty-identity-request'] === '1' && !selected,
@@ -1666,7 +1677,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
-          let bindingVersion = 1, relayIdentity = false;
+          let bindingVersion = 1, relayIdentity = false, relayIdempotencyKey = false;
           let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
@@ -1678,6 +1689,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             if (frame.capabilities.relayIdentity !== undefined) {
               assertApps(typeof frame.capabilities.relayIdentity === 'boolean', 'app_source_protocol_required');
               relayIdentity = frame.capabilities.relayIdentity;
+            }
+            if (frame.capabilities.relayIdempotencyKey !== undefined) {
+              assertApps(typeof frame.capabilities.relayIdempotencyKey === 'boolean', 'app_source_protocol_required');
+              relayIdempotencyKey = frame.capabilities.relayIdempotencyKey;
             }
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
@@ -1693,7 +1708,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, relayIdempotencyKey, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);
@@ -1923,7 +1938,11 @@ function respondFailure(req, res, status, error, page = {}) {
   // non-reusable before ending the response: exiting its async body iterator
   // destroys the request, so advertising keep-alive would strand the next GET.
   if (!req.readableEnded && !res.headersSent) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
-  if (!String(req.headers.accept || '').includes('text/html')) { json(res, status, { ok: false, error }); return; }
+  if (!String(req.headers.accept || '').includes('text/html')) {
+    const message = error === 'app_idempotency_key_unavailable' ? 'Обновите коннектор на устройстве приложения и повторите проверку.'
+      : error === 'app_idempotency_key_unsupported' ? 'Этот режим приложения не поддерживает передачу ключа операции.' : undefined;
+    json(res, status, { ok: false, error, ...(message ? { message } : {}) }); return;
+  }
   const nonce = pageNonce(); setManagedPagePolicy(res, nonce, page.frameOrigins);
   res.statusCode = status; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store');
   res.end(renderStatusPage({ error, nonce, shellUrl: page.shellUrl, publicResetPath: page.publicResetPath }));

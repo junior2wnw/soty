@@ -63,6 +63,8 @@ const copy = Object.freeze({
   address: ['Адрес недоступен', 'Вернитесь в Соты и выберите приложение.'],
   inactive: ['Адрес ещё не открыт', 'Попробуйте открыть приложение через Соты.'],
   network: ['Не удалось подключиться', 'Проверьте соединение и откройте приложение снова.'],
+  connectorUpdate: ['Обновите коннектор', 'Устройство приложения пока не поддерживает ключ операции. Проверьте результат перед повторной отправкой.'],
+  idempotencyUnsupported: ['Ключ операции недоступен', 'Этот режим приложения не поддерживает передачу ключа операции.'],
   resetting: ['Открываем без входа', 'Переходим к публичному приложению.'],
   unavailable: ['Приложение недоступно', 'Попробуйте открыть его немного позже.'],
 });
@@ -71,6 +73,7 @@ const errorStates = Object.freeze({
   apps_access_denied: 'denied', app_access_revoked: 'denied', app_access_changed: 'denied', apps_authentication_required: 'denied',
   app_session_required: 'expired', app_ticket_invalid: 'expired', app_access_expired: 'expired',
   app_session_check_failed: 'cookie', app_cookie_required: 'cookie',
+  app_idempotency_key_unavailable: 'connectorUpdate', app_idempotency_key_unsupported: 'idempotencyUnsupported',
   app_offline: 'offline', app_stopped: 'stopped', app_device_busy: 'busy', apps_sessions_busy: 'busy', apps_launch_busy: 'busy',
   app_not_found: 'address', app_address_retired: 'address', app_named_runtime_unavailable: 'inactive',
   429: 'busy', 503: 'unavailable',
