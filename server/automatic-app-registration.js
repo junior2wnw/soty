@@ -60,10 +60,12 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       const app = apps.creationJobApp(actor, job.id);
       if (!app) return { state: problems.get(job.id) || 'waiting' };
       if (app.state === 'revoked') return { state: 'revoked', appId: app.id };
-      const value = universal?.registration.execute({ op: 'apps.universal.get', actor,
-        args: { appId: app.id, expectedAccountId: actor.accountId } }).registration;
+      let value;
+      try { value = universal?.registration.execute({ op: 'apps.universal.get', actor,
+        args: { appId: app.id, expectedAccountId: actor.accountId } }).registration; } catch { /* App launch does not depend on feedback. */ }
       const ready = value?.state === 'ready' && value.feedback?.state === 'ready';
-      return { state: ready ? 'ready' : problems.get(job.id) || 'waiting', appId: app.id, appState: app.state };
+      if (!ready && problems.get(job.id) === 'access-lost') return { state: 'access-lost', appId: app.id, appState: app.state };
+      return { state: 'ready', appId: app.id, appState: app.state, feedback: ready ? 'ready' : 'waiting' };
     } catch { return { state: 'waiting' }; }
   }
   return { reconcile, recover, poll, retryPending, status, close() { closed = true; pending.clear(); } };

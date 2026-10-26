@@ -20,6 +20,15 @@ function memory() {
   return { async read() { return structuredClone(value ?? null); }, async claim(candidate) { value ??= structuredClone(candidate); return structuredClone(value); },
     async compareAndSwap(revision, candidate) { assert.equal(value.localRevision, revision); value = structuredClone(candidate); return structuredClone(value); } };
 }
+function appRequest(url, pathname, { method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: url.port, path: pathname, method, headers: { host: url.host, ...headers } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject); req.end(body);
+  });
+}
 async function fixture(t) {
   const folder = await mkdtemp(join(tmpdir(), 'soty-auto-app-')), dist = join(folder, 'dist'), dataDir = join(folder, 'data');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html>');
@@ -110,7 +119,7 @@ test('capability gates a new auto intent while the original lost ACK replays on 
 test('one requested job registers one private app and real universal feedback despite duplicate result delivery', { timeout: 25000 }, async t => {
   const f = await fixture(t), id = await f.create();
   assert.ok((await Promise.all([f.submit(id), f.submit(id)])).every(value => value.ok));
-  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
+  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'ready' && value; });
   const appId = `app-${id.slice(4)}`; assert.equal(done.autoRegistration.appId, appId);
   const apps = (await f.owner.extension('apps.list')).apps; assert.equal(apps.length, 1); assert.equal(apps[0].id, appId);
   assert.deepEqual(apps[0].grants, { accountIds: [], communityIds: [] });
@@ -124,7 +133,7 @@ test('restart recovers a committed job even when the completion callback never r
   assert.equal((await f.service().locals.connectorService.store.finishJob(f.auth, id, f.result(id))).ok, true);
   assert.equal((await f.owner.extension('apps.list')).apps.length, 0);
   await f.restart();
-  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
+  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'ready' && value; });
   assert.equal(done.autoRegistration.appId, `app-${id.slice(4)}`); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
 });
 
@@ -136,7 +145,7 @@ test('restart finishes universal and feedback after the app transaction committe
   assert.equal(partial.app.id, `app-${id.slice(4)}`);
   assert.equal((await f.owner.extension('apps.universal.get', { appId: partial.app.id, expectedAccountId: f.account.accountId })).registration, null);
   await f.restart();
-  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
+  const done = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'ready' && value; });
   assert.equal(done.autoRegistration.appId, partial.app.id); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
   assert.ok((await f.owner.extension('apps.feedback.context', { appId: partial.app.id })).context.installationId);
 });
@@ -153,16 +162,22 @@ test('a revoked partial app never starts universal or feedback during restart re
   finally { feedback.close(); }
 });
 
-test('temporary feedback lock leaves a pending registration and the existing connector poll completes it', { timeout: 30000 }, async t => {
+test('the registered app can launch while feedback is locked and poll finishes feedback later', { timeout: 30000 }, async t => {
   const f = await fixture(t), id = await f.create(), feedback = new DatabaseSync(join(f.dataDir, 'feedback', 'feedback.sqlite'));
   feedback.exec('BEGIN IMMEDIATE');
   try {
     await f.submit(id);
-    const held = await until(async () => { const value = await f.read(id); return value.autoRegistration?.appId && value.autoRegistration.state === 'waiting' && value; });
+    const held = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'waiting' && value.autoRegistration.appState === 'ready' && value; });
     assert.equal(held.autoRegistration.appId, `app-${id.slice(4)}`);
+    const launch = await f.owner.extension('apps.launch', { appId: held.autoRegistration.appId });
+    const url = new URL(launch.launchUrl);
+    const boot = await appRequest(url, '/_soty/session', { method: 'POST', headers: { origin: url.origin, 'content-type': 'application/json' }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+    assert.equal(boot.status, 200);
+    const page = await appRequest(url, '/', { headers: { cookie: boot.headers['set-cookie'][0].split(';')[0] } });
+    assert.equal(page.status, 200); assert.equal(page.body, 'Local app');
   } finally { feedback.exec('ROLLBACK'); feedback.close(); }
   assert.equal((await f.poll()).ok, true);
-  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
+  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; });
   assert.equal(ready.autoRegistration.appId, `app-${id.slice(4)}`);
 });
 
@@ -171,10 +186,10 @@ test('existing server heartbeat retries pending feedback even after the connecto
   feedback.exec('BEGIN IMMEDIATE');
   try {
     await f.submit(id);
-    await until(async () => { const value = await f.read(id); return value.autoRegistration?.appId && value.autoRegistration.state === 'waiting'; });
+    await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'waiting'; });
   } finally { feedback.exec('ROLLBACK'); feedback.close(); }
   f.stopRuntime();
-  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; }, 14000);
+  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; }, 14000);
   assert.equal(ready.autoRegistration.appId, `app-${id.slice(4)}`);
 });
 
@@ -242,7 +257,7 @@ test('a completed registration stays ready for the owner after the initiating de
   await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
   await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
   const id = await f.create(); await f.submit(id);
-  await until(async () => (await f.read(id)).autoRegistration?.state === 'ready');
+  await until(async () => (await f.read(id)).autoRegistration?.feedback === 'ready');
   await second.revokeDevice(f.account.deviceId); await f.restart();
   const result = await f.read(id, second);
   assert.equal(result.autoRegistration.state, 'ready'); assert.equal(result.autoRegistration.appId, `app-${id.slice(4)}`);
