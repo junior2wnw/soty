@@ -82,7 +82,12 @@ async function fixture(t) {
     return response.json();
   }
   async function read(jobId, client = owner) { return client.extension('apps.agent.read', { ...target, jobId }); }
+  function watchRegistration() {
+    const service = app.locals.appsService, original = service.registerCreationJob; let calls = 0;
+    service.registerCreationJob = (...args) => { calls++; return original(...args); }; return () => calls;
+  }
   return { owner, account, makeClient, auth, target, create, submit, poll, read, result, proposal, dataDir, source, stopRuntime: () => runtime.stop(),
+    watchRegistration,
     capabilities: async () => (await fetch(origin + '/api/apps/capabilities')).json(), loseNextCreateAck: () => { loseCreateAck = true; },
     service: () => app, async restart(overrides = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...options, ...overrides }); } };
 }
@@ -176,8 +181,9 @@ test('existing server heartbeat retries pending feedback even after the connecto
 test('revoked application is a tombstone even when the connector repeats its old result', { timeout: 25000 }, async t => {
   const f = await fixture(t), id = await f.create(); await f.submit(id);
   const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
-  const appId = ready.autoRegistration.appId; await f.owner.extension('apps.revoke', { appId });
+  const appId = ready.autoRegistration.appId; await f.owner.extension('apps.revoke', { appId }); const registrations = f.watchRegistration();
   assert.equal((await f.submit(id)).ok, true);
+  await until(() => registrations() > 0);
   const revoked = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'revoked' && value; });
   assert.equal(revoked.autoRegistration.appId, appId);
   const apps = (await f.owner.extension('apps.list')).apps; assert.equal(apps.length, 1); assert.equal(apps[0].state, 'revoked'); assert.equal(apps[0].id, appId);
@@ -188,7 +194,9 @@ test('replaying a completed job never overwrites subsequent owner edits', { time
   const f = await fixture(t), id = await f.create(); await f.submit(id);
   const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value; });
   await f.owner.extension('apps.update', { appId: ready.autoRegistration.appId, name: 'Переименованное приложение' });
+  const registrations = f.watchRegistration();
   assert.equal((await f.submit(id)).ok, true);
+  await until(() => registrations() > 0);
   const [app] = (await f.owner.extension('apps.list')).apps;
   assert.equal(app.id, ready.autoRegistration.appId); assert.equal(app.name, 'Переименованное приложение');
 });
