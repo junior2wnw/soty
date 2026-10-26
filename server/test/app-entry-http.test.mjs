@@ -168,7 +168,11 @@ test('D3 offline entry lookup works before World provisioning without allocating
   assert.equal(value.entry.origin, address.origin); assert.equal(value.entry.path, target.path);
   assert.deepEqual(counts(), before);
   await assert.rejects(f.reader.extension('apps.launch', target), errorCode('app_offline'));
-  await assert.rejects(f.reader.extension('apps.entry.get', { appId: app.id }), errorCode('app_unavailable'));
+  const current = await f.reader.extension('apps.entry.get', { appId: app.id }); exactEntry(current.entry);
+  assert.equal(current.entry.domainId, address.domainId); assert.equal(current.entry.origin, address.origin);
+  assert.equal(current.entry.path, '/initial');
+  await assert.rejects(f.reader.extension('apps.launch', { appId: app.id }), errorCode('app_offline'));
+  await assert.rejects(f.reader.extension('apps.entry.get', { appId: app.id, path: '/' }), errorCode('app_unavailable'));
   await assert.rejects(f.reader.extension('apps.entry.get', { ...target, expectedAccountId: f.ownerAccount.accountId }), errorCode('authentication_required'));
   assert.deepEqual(counts(), before);
 });

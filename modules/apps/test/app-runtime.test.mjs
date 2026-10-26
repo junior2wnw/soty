@@ -65,7 +65,9 @@ test('named-only publication serves real HTTP, assets, mutations and websocket t
   assert.equal(f.service.configured, true); assert.equal(f.call('apps.list').configured, true);
   assert.equal((await f.http('/')).status, 503, 'claim by itself cannot open a runtime');
   f.publish();
-  assert.throws(() => f.call('apps.launch', { appId: f.app.id }), /apps_origin_not_configured/u);
+  const ordinary = f.call('apps.launch', { appId: f.app.id });
+  assert.equal(ordinary.entry.domainId, f.domainId); assert.equal(new URL(ordinary.launchUrl).origin, f.origin);
+  assert.throws(() => f.call('apps.launch', { appId: f.app.id, path: '/' }), /apps_origin_not_configured/u);
   const page = await f.http('/'); assert.equal(page.status, 200); assert.match(page.body, /Покупки/u);
   assert.match(page.headers['content-security-policy'], /connect-src 'self'/u); assert.equal(page.headers['set-cookie'], undefined);
   assert.equal((await f.http('/app.js')).status, 200);

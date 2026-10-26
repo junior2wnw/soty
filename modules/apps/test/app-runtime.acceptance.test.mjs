@@ -186,7 +186,7 @@ async function fixture(t, { auditMs = 10_000, namedOnly = false, secure = false 
     const pending = begin(target, localPath, { ...options, headers }); pending.req.end(options.body); return pending.done;
   }
   function launch(actor = owner, target = canonical, localPath) {
-    return call('apps.launch', { appId: app.id, ...(target?.role === 'alias' ? { domainId: target.id } : {}), ...(localPath === undefined ? {} : { path: localPath }) }, actor);
+    return call('apps.launch', { appId: app.id, ...(target ? { domainId: target.id } : {}), ...(localPath === undefined ? {} : { path: localPath }) }, actor);
   }
   async function exchange(value, target, options = {}) {
     const url = new URL(value.launchUrl);
@@ -574,7 +574,7 @@ test('real head and ACK deadlines release exactly their public slots while neigh
 });
 
 test('named-only configuration uses the named origin for policy and does not require a legacy origin', async t => {
-  const f = await fixture(t, { namedOnly: true, secure: true }); f.publish();
+  const f = await fixture(t, { namedOnly: true, secure: true }); f.publish({ aliases: [f.primary] });
   const response = await f.http(f.primary, '/');
   assert.equal(response.status, 200); assert.equal(response.headers['cache-control'], 'no-store');
   assert.match(response.headers['content-security-policy'], /frame-ancestors https:\/\/shell\.example\.com/u);
@@ -582,7 +582,9 @@ test('named-only configuration uses the named origin for policy and does not req
   const cookie = await f.cookie(visitor, f.primary);
   assert.equal((await f.http(f.primary, '/_soty/session', { cookie })).status, 200);
   denied(await f.http(f.primary, '/', { cookie: cookie.replace(/=.+$/u, '=invalid'), headers: { accept: 'application/json' } }));
-  assert.throws(() => f.launch(owner), /origin|domain|canonical/u);
+  const ordinary = f.call('apps.launch', { appId: f.app.id });
+  assert.equal(ordinary.entry.domainId, f.primary.id); assert.equal(new URL(ordinary.launchUrl).origin, f.primary.origin);
+  assert.throws(() => f.call('apps.launch', { appId: f.app.id, path: '/' }), /origin|domain|canonical/u);
 });
 
 test('public HTTP forwards only profile headers and does not turn source errors into private metadata or transport-wide failure', async t => {

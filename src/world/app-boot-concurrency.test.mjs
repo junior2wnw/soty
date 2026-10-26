@@ -24,6 +24,7 @@ const guidePathSource = fragment('  const guidePath =', '  const origins =');
 const sessionSource = fragment('  const frameRequests=', '  function setPolicy(');
 const routeSource = fragment('  async function routeApp(', '  function handleRequest(');
 const launchSource = fragment("    if (op === 'apps.launch') {", "    if (op === 'apps.revoke') {");
+const defaultEntrySource = fragment('  function defaultEntryFor(', '  function inspectSource(');
 const appId = 'app-' + 'a'.repeat(32), domainId = 'dom_' + 'b'.repeat(32);
 const origin = 'https://hive.fixture.invalid', shellOrigin = 'https://soty.fixture.invalid';
 const actor = Object.freeze({ accountId: 'synthetic-account', deviceId: 'synthetic-device' });
@@ -36,7 +37,7 @@ const turn = () => new Promise(resolve => setImmediate(resolve));
 async function settle() { for (let n = 0; n < 12; n++) await turn(); }
 
 function server() {
-  const app = { id: appId, state: 'enabled', revision: 999, appHost: { domainId, origin } };
+  const app = { id: appId, owner_account_id: actor.accountId, state: 'enabled', revision: 999, appHost: { domainId, origin } };
   const domain = { id: domainId, origin }, tickets = new Map(), sessions = new Map(), decisions = new WeakSet();
   const state = { now: 200000, active: true, policyEpoch: 7, targetRevision: 11, targetDigest: 'c'.repeat(64),
     profile: 'soty.relay-restricted.v1', floor: 2, launches: [], requests: [] };
@@ -70,7 +71,7 @@ function server() {
     checkAccess(session) { return live(session.decision); }, assertRuntimeBinding: live,
     json(res, status, value) { res.status = status; res.value = value; },
   };
-  vm.runInNewContext(guidePathSource + '\n' + sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\n'
+  vm.runInNewContext(defaultEntrySource + '\n' + guidePathSource + '\n' + sessionSource + '\n' + routeSource + '\nglobalThis.route=routeApp;\n'
     + 'globalThis.launch=function(args){const op="apps.launch";\n' + launchSource + '\n};', environment, { timeout: 1000 });
   function launch(args) {
     state.launches.push(structuredClone(args));

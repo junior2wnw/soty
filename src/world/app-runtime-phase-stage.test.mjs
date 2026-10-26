@@ -32,7 +32,7 @@ exports.harness=(host,options,state)=>{
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},external={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
- const accountId='account-synthetic';
+ const accountId='account-synthetic',saved={setEntryVerified:value=>state.verified.push(value)};
  const mountRootVoiceCarrier=()=>{throw Error('unexpected voice carrier in phase-only fixture');};
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
@@ -69,7 +69,7 @@ class Node {
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(presentation){
- const state={current:true,recoveryCurrent:true,calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],reads:[],draft:'retained discussion draft'};
+ const state={current:true,recoveryCurrent:true,verified:[],calls:{launch:0,bind:0,stopAssist:0,captureEntry:0},messages:[],order:[],probes:[],copies:[],dialogs:[],reads:[],draft:'retained discussion draft'};
  let now=0,next=0;const tasks=new Map(),doc=new Node('document',state),view=new Node('window',state),runtime=new Node('runtime',state);
  Object.assign(view,{document:doc,performance:{now:()=>now},crypto:{randomUUID:()=> 'a'.repeat(32)},getComputedStyle:n=>n.style,navigator:{clipboard:{writeText:async text=>state.copies.push(text)}},
    setTimeout:(fn,ms)=>{const id=++next;tasks.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>tasks.delete(id)});
@@ -87,10 +87,11 @@ function fixture(presentation){
 }
 
 test('actual manual buttons record one ordinary launch; initial/automatic/pending/widget paths cannot consume arm',async()=>{
- for(const action of ['refresh','retry']){const f=fixture();f.h.api.arm();f.h[action]();await flush();assert.equal(f.state.calls.launch,1);assert.equal(f.h.api.snapshot().events[0].phase,'root_launch');}
+ for(const action of ['refresh','retry']){const f=fixture();f.h.api.arm();f.h[action]();await flush();assert.equal(f.state.calls.launch,1);assert.equal(f.h.api.snapshot().events[0].phase,'root_launch');assert.deepEqual(f.state.verified,[false,true]);}
  for(const action of ['initial','automatic']){const f=fixture();f.h.api.arm();await f.h[action]();assert.equal(f.state.calls.launch,1);assert.equal(f.h.api.snapshot(),null);assert.equal(f.h.api.state(),'armed');}
- const pending=fixture();pending.h.api.arm();pending.h.pending(true);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,0);assert.equal(pending.h.api.state(),'armed');pending.h.pending(false);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,1);
+ const pending=fixture();pending.h.api.arm();pending.h.pending(true);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,0);assert.deepEqual(pending.state.verified,[]);assert.equal(pending.h.api.state(),'armed');pending.h.pending(false);pending.h.refresh();await flush();assert.equal(pending.state.calls.launch,1);
  const widget=fixture('widget');widget.h.api.arm();widget.h.refresh();await flush();assert.equal(widget.state.calls.launch,1);assert.equal(widget.h.api.snapshot(),null);assert.equal(widget.state.probes.length,0);
+ const failed=fixture();failed.state.failure=new Error('synthetic launch refusal');failed.h.refresh();await flush();assert.deepEqual(failed.state.verified,[false]);assert.equal(failed.state.calls.launch,1);assert.equal(failed.h.frame(),null);
 });
 
 test('actual launch wiring observes before src/insert and preserves existing load/error/timeout behavior and drafts',async()=>{
