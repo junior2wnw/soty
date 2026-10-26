@@ -19,6 +19,7 @@
 .sa-more-body { position: absolute; inset-inline-end: 0; top: calc(100% + 8px); display: flex; flex-direction: column; width: min(288px, calc(100vw - 32px)); padding: 6px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--sw-surface); box-shadow: 0 12px 32px rgb(0 0 0 / 14%); max-height: min(70dvh, 380px); overflow-y: auto; overscroll-behavior: contain; }
 .sa-more-body>.sw-button { justify-content: flex-start; min-height: 44px; width: 100%; padding: 10px 12px; text-align: start; }
 .sa-more-body>.sw-button>span { min-width: 0; overflow-wrap: anywhere; }
+.sa-more-body>.sw-icon-button>span { display: inline; }
 .sa-message { flex: none; margin: 0; padding: 10px 16px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; border-bottom: 1px solid var(--sw-line); }
 .sa-work-status { margin: 4px 12px 8px; color: var(--sw-muted, #777); font-size: 12px; line-height: 1.4; }
 .sa-work-status[hidden] { display: none; }
@@ -122,7 +123,6 @@
   .sa-stage:not(.sa-widget-stage) > .sa-toolbar > .sa-more { grid-area: 1 / 4; }
   .sa-stage:not(.sa-widget-stage):has(> .sw-agent-orb) > .sa-toolbar { padding-inline-end: max(60px,env(safe-area-inset-right)); }
   .sa-stage:not(.sa-widget-stage) > .sa-toolbar .sa-more-body { top: calc(100% + 2px); box-sizing: border-box; animation: none; }
-  .sa-stage:not(.sa-widget-stage) > .sa-toolbar .sa-more-body > .sw-icon-button > span { display: inline; }
 }
 
 @media(max-width:720px),(max-height:480px) {
