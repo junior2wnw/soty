@@ -1,0 +1,82 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Personal application overview isolated fixture</title>
+<style>body{font-family:system-ui}.qa-host{width:100%;height:480px;position:relative}</style>
+<h1>Изолированная проверка приложений</h1>
+<button id="run">Проверить аккаунты и поле</button><pre id="proof" data-test-status="ready">Готово</pre><div class="qa-host"></div>
+<script type="module">
+import './world.css';
+import { createUnifiedFieldScreen } from './unified-field-screen.ts';
+import { createFieldDocument, validateFieldDocument } from '../../modules/field/contract.mjs';
+
+const proof=document.querySelector('#proof'),run=document.querySelector('#run'),host=document.querySelector('.qa-host');
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const check=(value,message)=>{if(!value)throw Error(message);};
+async function until(predicate){for(let n=0;n<500;n++){if(predicate())return;await wait(10);}throw Error('fixture timeout');}
+const id=digit=>'app-'+digit.repeat(32), unique=crypto.randomUUID();
+const accountA='qa-overview-A-'+unique,accountB='qa-overview-B-'+unique;
+const values={
+ [accountA]:[{id:id('1'),name:'A placed',ownerAccountId:accountA,state:'ready',createdAt:1},{id:id('2'),name:'A available',ownerAccountId:accountA,state:'ready',createdAt:2}],
+ [accountB]:[{id:id('3'),name:'B placed',ownerAccountId:accountB,state:'ready',createdAt:3},{id:id('4'),name:'B available',ownerAccountId:accountB,state:'ready',createdAt:4}],
+};
+const documents={}, opened=[], puts=[];
+let currentAccount='',generation=0,screen,holdA=false,releaseA,offlineB=false;
+const clone=value=>structuredClone(value);
+async function hash(document){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(document)));return [...new Uint8Array(digest)].map(value=>value.toString(16).padStart(2,'0')).join('');}
+async function field(account,placed){const document=createFieldDocument();document.contexts.push({contextId:'personal',title:'Личное',x:0,y:0});
+ document.shortcuts.push({shortcutId:'placed',entity:{kind:'app',id:placed},contextId:'personal',slot:[0,0]});
+ const normalized=validateFieldDocument(document);documents[account]={revision:1,document:normalized,contentHash:await hash(normalized),updatedAt:1};}
+const projection=app=>({...app,access:'owner',canManage:true,updatedAt:app.createdAt,entry:{appId:app.id,domainId:'dom_'+app.id.slice(4),origin:location.origin,path:'/'}});
+function apiFor(account){return {async request(op,args={}){
+ if(op==='world.field.get')return clone(documents[account]);
+ if(op==='world.field.put'){puts.push(clone(args));throw Error('fixture forbids field writes');}
+ if(op==='apps.list'){
+  check(args.expectedAccountId===account,'wrong account on own app read');
+  if(account===accountA&&holdA)await new Promise(resolve=>{releaseA=resolve;});
+  if(account===accountB&&offlineB)throw Error('synthetic network outage');
+  return {apps:[...clone(values[account]),...clone(values[account===accountA?accountB:accountA])]};
+ }
+ if(op==='apps.directory.search')return {apps:values[account].map(projection),nextCursor:null};
+ if(op==='apps.directory.resolve')return {items:args.appIds.map(appId=>{const app=values[account].find(value=>value.id===appId);return app?{ref:{kind:'app',id:appId},available:true,app:projection(app)}:{ref:{kind:'app',id:appId},available:false};})};
+ if(op==='world.directory.search')return {people:[],communities:[],nextCursor:null};
+ if(op==='world.directory.resolve')return {items:[]};
+ if(op==='contacts.list')return {contacts:[]};
+ if(op==='apps.devices')return {devices:[]};
+ throw Error('Unexpected fixture operation '+op);
+}};}
+async function mount(account){screen?.dispose();currentAccount=account;const mine=++generation;
+ screen=createUnifiedFieldScreen({api:apiFor(account),accountId:account,isCurrent:()=>currentAccount===account&&generation===mine,
+  onRoute(){},onOpen(item){opened.push({account,id:item.entity.id});},onCreate(){},onMessage(){}});
+ host.replaceChildren(screen.element);await screen.ready;}
+const chips=()=>[...host.querySelectorAll('.uf-own-app')].map(node=>node.textContent);
+async function clean(account){return new Promise(resolve=>{const request=indexedDB.open('soty-field-local-v1',1);
+ request.onsuccess=()=>{const db=request.result;if(!db.objectStoreNames.contains('documents')){db.close();resolve();return;}
+ const tx=db.transaction('documents','readwrite');tx.objectStore('documents').delete(JSON.stringify([location.origin,'soty',account]));tx.oncomplete=tx.onabort=()=>{db.close();resolve();};};request.onerror=()=>resolve();});}
+run.onclick=async()=>{run.disabled=true;proof.dataset.testStatus='running';
+ try{
+  await field(accountA,id('1'));await field(accountB,id('3'));
+  await mount(accountA);await until(()=>chips().includes('A available'));
+  check(!chips().includes('A placed')&&!chips().includes('B available'),'foreign or already placed app leaked');
+  host.querySelector('.uf-own-app').click();check(opened[0]?.id===id('2')&&opened[0]?.account===accountA,'personal card did not open');
+  screen.openList();await until(()=>Boolean(document.querySelector('dialog[open] .uf-list-results')));
+  const list=document.querySelector('dialog[open] .uf-list-results'),rows=[...list.querySelectorAll('button')];
+  check(rows.filter(row=>row.textContent.includes('A available')).length===1&&rows.filter(row=>row.textContent.includes('A placed')).length===1,'list missed or duplicated an app');
+  rows.find(row=>row.textContent.includes('A available')).click();check(opened[1]?.id===id('2'),'list entry did not open');
+
+  holdA=true;screen.refresh();await until(()=>Boolean(releaseA));offlineB=true;await mount(accountB);holdA=false;releaseA();
+  await until(()=>host.textContent.includes('Не удалось обновить ваши приложения'));
+  check(!host.textContent.includes('A available')&&!chips().includes('B available'),'stale account or offline app was shown');
+  offlineB=false;await screen.refresh();await until(()=>chips().includes('B available'));
+  check(!chips().includes('A available')&&!chips().includes('B placed'),'account switch did not fence old app or duplicate placed app');
+
+  const before=documents[accountB].document;const after=clone(before);after.shortcuts=[];
+  documents[accountB]={revision:2,document:after,contentHash:await hash(after),updatedAt:2};
+  await mount(accountB);await until(()=>chips().includes('B placed')&&chips().includes('B available'));
+  check(documents[accountB].document.shortcuts.length===0&&puts.length===0,'overview rewrote or restored removed field placement');
+  screen.dispose();currentAccount='';values[accountB].push({id:id('5'),name:'B completed in background',ownerAccountId:accountB,state:'ready',createdAt:5});
+  await mount(accountB);await until(()=>chips().includes('B completed in background'));
+  check(puts.length===0,'background result changed the field document');
+  proof.dataset.testStatus='passed';proof.textContent='PASS: direct open / two accounts / delayed old response / offline after switch / existing shortcut / deleted shortcut stays deleted / background completion on return. Real side effects: 0.';
+ }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
+ finally{generation++;screen?.dispose();host.replaceChildren();await clean(accountA);await clean(accountB);run.disabled=false;}
+};
+</script></html>

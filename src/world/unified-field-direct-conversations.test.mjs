@@ -83,7 +83,7 @@ function harness(kind = 'person', { version = 1, state = 'active', mode = 'mine'
     el: node, button: (label, symbol, className, onClick) => Object.assign(node('button', className, label), { onClick }),
     iconButton: (label, symbol, onClick) => Object.assign(node('button', '', label), { onClick }),
     avatar: () => node('span'), icon: () => node('svg'), kindLabel: value => value, nounCount: value => String(value),
-    run() { throw new Error('No membership mutation permitted by this test'); }, addToContext() {}, updateMineFilter() {},
+    run() { throw new Error('No membership mutation permitted by this test'); }, addToContext() {}, updateMineFilter() {}, overviewApps: () => [],
     afterNoteSaved(action) { calls.notes++; if (defer) calls.pending = action; else action(); },
     openDirectContact: contact => calls.direct.push(contact), openGroup: (id, tab) => calls.groups.push({ id, tab }),
     runHook: action => action(), options: { openAccount: tab => calls.accounts.push(tab) },

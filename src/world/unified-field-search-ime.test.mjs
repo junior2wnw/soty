@@ -31,7 +31,7 @@ function harness(mode = 'search', value = 'Москва 東京') {
     closeList() { calls.closeList++; }, closePreview() { calls.closePreview++; },
     closeSearch: { click() { calls.closeSearch++; } },
     route() { calls.routes.push({ mode: context.mode, query: context.queries[context.mode] }); },
-    updateMineFilter() { calls.filters++; },
+    updateMineFilter() { calls.filters++; }, renderOwnApps() {},
     searchDirectory() { calls.requests++; return Promise.resolve(); }, run() { calls.run++; },
     setTimeout(fn, delay) { const id = nextTimer++; timers.set(id, { fn, delay }); calls.timers++; return id; },
     clearTimeout(id) { calls.clears++; timers.delete(id); },

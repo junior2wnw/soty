@@ -66,7 +66,7 @@ function harness() {
   const environment = {
     exports: {}, mode: 'mine', queries: { mine: '', search: '' }, filter: 'all', composing: false,
     mineGeneration: 1, mineResolvedGeneration: 1, mineConfirmedGeneration: 1, mineKnownRefs: new Set(metadata.keys()), mineFilterAdmitted: true,
-    metadata, metadataRevision: 1, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1,
+    metadata, metadataRevision: 1, emptyDocument: null, emptyScope: '', emptyMetadataRevision: -1, ownedAppsState: 'ready',
     element: { dataset: { mineState: 'ready', query: 'empty' } }, empty: node(), searchInput, clear: { hidden: true },
     search: node('label'), listButton: node('button'), sides: Object.assign(node('div'), { classList: { add() {} } }), signal: new AbortController().signal,
     searchTimer: null, searchGeneration: 0, searchCursor: null, more: { hidden: true }, searchLimit: { hidden: true },
@@ -75,7 +75,7 @@ function harness() {
     el: node, icon: () => node('svg'), button: (text, symbol, className, onClick) => Object.assign(node('button', className, text), { onClick }),
     options: { onOpen: (item, record) => calls.open.push({ item, record }), onKnownAppEntries: entries => calls.knownApps.push(entries) },
     openPreview: (item, shortcutId) => calls.preview.push({ item, shortcutId }), closePreview() {},
-    closeList() {}, openList() { calls.list++; }, closeSearch: { click() { calls.close++; } },
+    closeList() {}, openList() { calls.list++; }, closeSearch: { click() { calls.close++; } }, overviewApps: () => [], renderOwnApps() {},
     route() { calls.route.push(environment.queries.mine); },
     run() { throw new Error('Mine search must not issue a directory search'); },
     searchDirectory() { throw new Error('No search request'); },

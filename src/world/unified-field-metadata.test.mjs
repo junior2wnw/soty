@@ -48,7 +48,7 @@ function harness({ query = 'HIVE', resolve = async () => resolved(), load = asyn
     directory: { resolve, async loadMine() { state.pages++; return load(); } },
     pruneMetadata() {}, allMetadata() { return [...environment.metadata.values()]; },
     updateMineFilter() { environment.exports.updateMineEmpty(currentDocument); },
-    renderMineSearchResults() {}, publishKnownApps() {},
+    renderMineSearchResults() {}, publishKnownApps() {}, loadOwnedApps: async () => {}, overviewApps: () => [], ownedAppsState: 'ready',
     updateStatus() {}, closeList(restore) { assert.equal(restore, false); state.listCloses.push(restore); },
     closePreview() { state.previewClosed = (state.previewClosed ?? 0) + 1; environment.selected = null; }, openPreview() {},
     run(promise) { state.runs.push(promise); },
