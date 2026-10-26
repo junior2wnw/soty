@@ -228,7 +228,9 @@ Human OIDC не выдаёт агенту права автоматически;
 Для краткого guide общего входа: `node scripts/soty-app-release.mjs auth-guide --output NEW_FILE`
 или Root MCP `apps_auth_guide({})`. Режим `human-oidc` — отдельный выбранный
 confidential BFF/RP; другие режимы — private-owner
-и agent. Эти read-only помощники ничего не активируют и не требуют секретов.
+и agent. Если установленная схема MCP ещё требует `mode`, используй
+поддерживаемую старой версией схему, не предполагая наличие нового guide.
+Эти read-only помощники ничего не активируют и не требуют секретов.
 
 Для существующего Python/FastAPI сохраняй Native data model; поддерживаемый
 серверный OIDC SDK проверяй теми же настоящими Root protocol gates.
