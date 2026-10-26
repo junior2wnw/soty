@@ -7,7 +7,9 @@
 скачивание SDK и локальная проверка сами по себе не включают production.
 
 Для поддерживающего общий вход relay доступны `createRelayIdentityFetch` в браузере
-и `createRelayIdentityVerifier` на сервере из portable Source SDK. Root передаёт
+и `createSqliteRelayIdentity` на сервере из portable Source SDK для одного хоста.
+В старой версии SDK используются `createRelayIdentityVerifier` и SQLite nonce
+store; для нескольких хостов нужен общий устойчивый атомарный store. Root передаёт
 короткое подписанное подтверждение через совместимый коннектор только по запросу
 приложения; сервер проверяет issuer, appId, метод, путь, срок и одноразовость.
 Используйте проверенные `issuer/subject` с собственной ACL и устойчивым хранилищем.

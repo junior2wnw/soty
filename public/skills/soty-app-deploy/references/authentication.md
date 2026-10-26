@@ -26,7 +26,9 @@ SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Ес
 
 Когда установленные Root и коннектор действительно поддерживают этот путь,
 используй `createRelayIdentityFetch` из browser SDK и
-`createRelayIdentityVerifier` из server SDK. Проверенный issuer задаёт хост,
+`createSqliteRelayIdentity` из server SDK для одного хоста. Проверь наличие этой
+функции в установленной версии; прежний SDK использует
+`createRelayIdentityVerifier` вместе с SQLite nonce store. Проверенный issuer задаёт хост,
 appId берётся из регистрации Сот; пользовательский JSON или произвольный
 заголовок не являются личностью. На сервере проверяй ACL каждого действия и
 отделяй данные по проверенным issuer/subject. Для нескольких процессов или
