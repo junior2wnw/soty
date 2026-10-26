@@ -250,7 +250,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (!current()) return;
     const open = moreBody.hidden; moreBody.hidden = !open; more.setAttribute('aria-expanded', String(open));
     fitMore();
-    if (open) moreBody.querySelector<HTMLButtonElement>('button:not([hidden]):not(:disabled)')?.focus();
+    if (open) Array.from(moreBody.querySelectorAll<HTMLButtonElement>('button:not([hidden]):not(:disabled)'))
+      .find(control => control.getClientRects().length > 0)?.focus();
   });
   more.setAttribute('aria-controls', moreBody.id); more.setAttribute('aria-expanded', 'false'); more.dataset.stageControl = 'more';
   const expand = iconButton('На весь экран', 'expand', () => { closeMore(); void fullscreen.toggle(); });
@@ -331,7 +332,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   bookmark.append(el('p', 'sa-bookmark-label', 'Закладка в «Моём»'), savedHost);
   const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
   diagnostics.hidden = options.presentation === 'widget';
-  moreBody.append(widget, publicReviews, external, refresh, workStatus, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);
+  moreBody.append(bookmark, widget, publicReviews, external, refresh, workStatus, diagnostics, community, settings, archives, otherAccount); moreHost.append(more, moreBody);
   function openRuntimeDiagnostics(): void {
     if (!current() || options.presentation === 'widget' || diagnosticOpen) return;
     closeMore(); runtimeTrace.sample(); diagnosticOpen = true;

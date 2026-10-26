@@ -11,7 +11,7 @@
 .sa-toolbar [aria-expanded=true] { background: var(--sw-selected); color: var(--sw-ink); }
 .sa-saved { flex: none; min-width: 44px; }
 .sa-toolbar>[data-stage-control=field][hidden] { display: none; }
-.sa-bookmark { padding: 10px 8px; border-top: 1px solid var(--sw-line); }
+.sa-bookmark { padding: 10px 8px; border-bottom: 1px solid var(--sw-line); }
 .sa-bookmark-label { margin: 0 0 8px; color: var(--sw-muted); font-size: 12px; line-height: 18px; }
 .sa-bookmark .se-saved-control { width: 100%; min-height: 44px; justify-content: flex-start; }
 .sa-saved[hidden], .sa-message[hidden], .sa-discussion[hidden], .sa-more-body[hidden], .sa-more-body>[hidden] { display: none; }

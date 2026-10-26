@@ -23,6 +23,7 @@ import * as appAudience from './app-audience.mjs';
 import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
 import * as appFullscreen from './app-fullscreen.mjs';
+import * as appWorkGuard from './app-work-guard.mjs';
 import * as appDeployment from './app-deployment.mjs';
 import * as projectCapture from './project-feedback-capture.mjs';
 import * as projectPicker from './project-feedback-picker.mjs';
@@ -181,6 +182,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     } },
     './app-invitation-carrier.mjs': appInvitationCarrier,
     './app-fullscreen.mjs': appFullscreen,
+    './app-work-guard.mjs': appWorkGuard,
     './app-deployment.mjs': appDeployment,
     './project-feedback-capture.mjs': projectCapture,
     './project-feedback-picker.mjs': projectPicker,
