@@ -6,6 +6,8 @@
 доменов, настройку identity, выпуск платформы и создание коннектора на каждый
 проект. Root, id, www, discovery и прежние app-зоны сохраняются.
 
+## Только новая зона
+
 Wildcard DNS ведёт на TLS edge; Caddy требует on_demand_tls permission endpoint
 /api/apps/tls-allow. Использовать один https:// catch-all с host expression;
 не literal https://*.zone site: он требует wildcard-сертификата/DNS challenge
@@ -119,31 +121,40 @@ Native private данных без собственной Human session. Это 
 
 ## Если меняются сами Соты
 
-Выбери qualified Node24 по абсолютному пути и проверь его версию/hash **до
-импорта** operator factory: default Node18 может упасть ещё при загрузке модулей.
-Backend собирается целиком из одной immutable Git revision с frozen dependencies;
-historical backend overlay не является способом доставить новые API/identity.
-Перед prepare/promote квалифицируй exact image и обратный переход на текущей
-копии DATA; [копия и backup](recovery.md) не взаимозаменяемы.
+Используй штатные инструменты; не копируй их внутренние helpers и не создавай
+отдельные prepare/promote/collector/sender для каждой фазы. Node24 выбирается
+по проверенному абсолютному пути. UI и backend выпускаются отдельно, если их
+контракты совместимы; зависимое изменение проверяется на согласованных версиях.
 
-UI publisher получает finite release из candidate dist с retained immutable URLs.
-Independent UI source/producer и backend image/source закрепляются отдельно:
-новый static dist не является dist иного frozen image. Сверяй все retained URL
-и immutable bytes; обновлённые docs не меняют прежний sealed release.
-Оба overlay строятся из одного одобренного **unwrapped canonical ingress**;
-восстановленный current overlay должен побайтно совпасть с disk. Не оборачивай
-уже установленный overlay повторно. Изменившийся ingress требует новой сверки
-canonical. До применения нужны свежие active=disk, config SHA и точный
-PID/UID/startTicks/argv SHA процесса Caddy. При adminOFF штатный publisher посылает
-один SIGUSR1 тому же процессу; backend/DATA writer он не заменяет.
+**Backend.** Один полный image из immutable revision и frozen dependencies.
+`deploy/connector/cli.mjs prepare/promote` уже владеет lifecycle, проверками
+хранилища/готовности, журналом и возвратом на актуальной DATA. Для `latest-data`
+используй `--backup-plan`: это существующий приватный GPG backup JSON,
+проверенный image архиватора и прежний ключ через anonymous stdin. Ключ не
+передаётся в argv/env/JSON. Core вызывает backupStopped после остановки writer;
+новая обвязка для этого не нужна. Один свежий capacity/floor/reserve check
+остаётся до promote: CLI его не заменяет. Схема и команды — `deploy/connector/README.md`.
+Совместимость данных и сохранность проверяются по риску изменения; копия для
+canary и полный encrypted backup имеют разные назначения: [восстановление](recovery.md).
 
-Используй существующие publisher `execute`/`inspect` с exact plan и encrypted
-baseline/candidate. Потерянный результат не разрешает новый transaction,
-повторный execute, другой receipt directory или слепой rollback. Только readonly
-inspect и независимая сверка process/disk/active разрешают неизвестность; apply
-сам возвращает `activeReloadVerified:false`. После него проверь публичные новые
-и retained bytes, headers, PWA и восстановление WS: прежний Node PID этого не
-доказывает. Подробный bounded driver и команды находятся в `deploy/ui/README.md`.
+**UI после настройки площадки.** Постоянный Caddy root — `/srv/soty-ui/current`.
+Обычный `deploy/ui/host-publisher.mjs execute PLAN` с `action:publish` проверяет
+immutable release, все сохранённые immutable URL и expectedReleaseId, затем
+атомарно переключает controlled current. Ключ, Caddy config/PID, сигнал и Root
+DATA этому выпуску не нужны. Один manifest и журнал; `inspect` только читает.
+Потерянный ответ проверяется по исходному намерению, без повторного execute.
+Возврат старого интерфейса сохраняет новые immutable assets для открытых вкладок.
+Подготовка и формат — `deploy/ui/README.md`; actual HTTP/PWA проверяется отдельно.
+
+**Один bootstrap для прежней площадки.** Сначала проверь и установи current на
+release с retained immutable URL. Переход с literal release path к стабильному
+root использует прежний bounded config apply. Оба overlay строятся из одного
+одобренного unwrapped canonical; current overlay совпадает с disk побайтно.
+Не оборачивай установленный overlay. Нужны свежие active=disk, config SHA и
+точный PID/UID/startTicks/argv процесса Caddy; baseline/candidate зашифрованы.
+Один SIGUSR1, затем active=disk и публичный readback. Неизвестный итог — readonly
+inspect, не новый transaction/повтор/слепой rollback. После успешного bootstrap
+этот config-путь не повторяется для каждого UI/SDK/docs выпуска.
 
 ## Ограниченный оператор: причина, проверка и восстановление
 
