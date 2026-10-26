@@ -12,7 +12,7 @@ const usage = 'init --project PATH --name NAME --port N [--entry-path /]\n'
   + 'verify --plan FILE [--probes FILE] --output NEW_FILE\n'
   + 'zone --origin HTTPS_ZONE [--retain-origin HTTPS_ZONE ...] [--gateway-port N] --output NEW_FILE\n'
   + 'doctor --observations FILE --output NEW_FILE\n'
-  + 'auth-guide --mode human-oidc|private-owner|agent --output NEW_FILE\n';
+  + 'auth-guide [--mode soty|human-oidc|private-owner|agent] --output NEW_FILE\n';
 export async function main(argv) {
   const action = argv[0];
   if (action === 'help' || !action) { process.stdout.write(usage); return; }
@@ -24,12 +24,12 @@ export async function main(argv) {
     if (!argv[i]?.startsWith('--') || !allowed[action].includes(key) || !value || (!['frame-origin', 'retain-origin'].includes(key) && Object.hasOwn(args, key))) throw new AppDeploymentError('invalid_release_arguments');
     if (key === 'frame-origin') frameOrigins.push(value); else if (key === 'retain-origin') additionalOrigins.push(value); else args[key] = value;
   }
-  const required = { init: ['project', 'name', 'port'], plan: ['project', 'deployment', 'output'], verify: ['plan', 'output'], zone: ['origin', 'output'], doctor: ['observations', 'output'], 'auth-guide': ['mode', 'output'] };
+  const required = { init: ['project', 'name', 'port'], plan: ['project', 'deployment', 'output'], verify: ['plan', 'output'], zone: ['origin', 'output'], doctor: ['observations', 'output'], 'auth-guide': ['output'] };
   if (required[action].some(key => !args[key])) throw new AppDeploymentError('missing_release_argument');
   let result;
   if (action === 'doctor' || action === 'auth-guide') {
     result = action === 'doctor' ? diagnoseAppRelease({ observations: await readReleaseJson(args.observations, 8192) })
-      : appAuthenticationGuide({ mode: args.mode });
+      : appAuthenticationGuide(args.mode ? { mode: args.mode } : {});
     await writeFile(resolve(args.output), JSON.stringify(result, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   } else if (action === 'init') {
     result = await initAppManifest({ project: args.project, name: args.name, port: Number(args.port), entryPath: args['entry-path'] ?? '/' });

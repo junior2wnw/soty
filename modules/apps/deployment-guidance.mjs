@@ -29,7 +29,7 @@ export const DIAGNOSE_OUTPUT_SCHEMA = object({
   findings: { type: 'array', minItems: 1, maxItems: 16, items: object({ code: { type: 'string', pattern: '^[a-z_]+$' },
     certainty: enumeration(['observed', 'hypothesis', 'insufficient_evidence']), explanation: shortText, next: steps }) },
 });
-export const AUTH_GUIDE_INPUT_SCHEMA = object({ mode: enumeration(['human-oidc', 'private-owner', 'agent']) });
+export const AUTH_GUIDE_INPUT_SCHEMA = object({ mode: enumeration(['soty', 'human-oidc', 'private-owner', 'agent']) }, []);
 export const AUTH_GUIDE_OUTPUT_SCHEMA = object({
   schema: { const: 'soty.app-auth-guide.v1' }, mode: AUTH_GUIDE_INPUT_SCHEMA.properties.mode,
   applied: { const: false }, productionEnabled: { const: 'not_checked' }, identity: shortText,
@@ -86,7 +86,7 @@ export function diagnoseAppRelease(input) {
   if (seen.websocket === 'origin_rejected') add('websocket_origin_rejected', 'observed', 'The WebSocket Origin check rejected the request.',
     'Compare the request Origin with the exact named app origin and the app own allowlist. Keep foreign and missing browser Origins denied.');
   if (['missing', 'expired', 'wrong_subject'].includes(seen.identity)) add('app_identity_required', 'observed', 'Ingress access alone does not identify the human inside the app.',
-    'First check the exact installed approved contract/profile. For approved workspace2 with a compatible connector, use the maintained portable Source SDK, verified current context and Native ACL. Use apps_auth_guide mode human-oidc only for an explicitly selected app-owned confidential BFF/RP path; a standalone or Native URL alone does not choose that path. Retain stable existing account mappings.');
+    'Use apps_auth_guide without a mode for the common Soty login. Check the actual installed Root, connector and SDK capabilities before selecting the supported contract; a card or preview alone does not enable identity. Retain stable existing account mappings.');
   if (seen.persistence === 'lost_on_reload') add('persistence_failed', 'observed', 'A verified app change did not survive reload.',
     'Check the active database/volume, stable subject mapping, migration order and single writer. Recover the same record IDs before qualifying the release.');
   if (seen.readiness === 'unsupported' && seen.document === 'received') add('readiness_not_implemented', 'observed', 'The document loaded but this app does not implement scoped authenticated readiness.',
@@ -102,6 +102,21 @@ export function diagnoseAppRelease(input) {
 }
 
 const guides = {
+  soty: {
+    identity: 'The ordinary compatible mini app uses the current Soty account; the verified issuer and subject identify the person. App data and permissions remain separate per person and app.',
+    steps: [
+      'Check the installed Root, connector and portable Source SDK support the chosen common-login contract. A registered card or a downloaded SDK is not proof that the runtime supports it.',
+      'For a supported relay, use createRelayIdentityFetch in the browser and createRelayIdentityVerifier on the app server with a trusted issuer and exact appId. For an already admitted workspace2, retain its existing Source SDK and Native ACL.',
+      'Use the verified issuer and subject, not a browser-supplied user ID, to find the person’s existing app records. Verify the app’s own permissions for each operation.',
+      'Provide a durable atomic one-use proof store: the SDK SQLite store supports processes on one machine; distributed hosts need an atomic shared store.',
+      'Link an existing app account only after both identities are verified. Do not merge by email or display name, replace its data, or require a new app-specific login for an already compatible user.',
+    ],
+    acceptance: ['Two people get separate records; the same person retains the same records after reload and across compatible entry points.',
+      'Wrong issuer, app, method, path, expired/replayed proof, anonymous or revoked access fails closed. Verify a real permitted write and readback after reload.'],
+    boundaries: ['An ingress session or unverified request header is not proof of the person. Signed identity alone grants no app role or agent capability.',
+      'This guide does not deploy a service, enable an issuer, update a connector, migrate old accounts or grant access. Check live compatibility rather than assuming every app is supported.'],
+    references: ['docs/deployment/app-authentication.md', 'modules/source-app/README.md', 'modules/apps/README.md'],
+  },
   'human-oidc': {
     identity: 'This mode describes an explicitly selected app-owned confidential BFF/RP path outside the existing approved Source contract. A human is identified by verified (iss, sub); roles and data permissions remain app-owned.',
     steps: [
@@ -146,7 +161,7 @@ const guides = {
   },
 };
 export function appAuthenticationGuide(input) {
-  const fields = plain(input, ['mode']), mode = fields.mode?.value;
+  const fields = plain(input, ['mode']), mode = fields.mode ? fields.mode.value : 'soty';
   if (typeof mode !== 'string' || !Object.hasOwn(guides, mode)) throw new AppReleaseGuidanceError();
   return { schema: 'soty.app-auth-guide.v1', mode, applied: false, productionEnabled: 'not_checked', ...structuredClone(guides[mode]) };
 }

@@ -11,6 +11,7 @@ checkout дополнительные operator/protocol gates находятся
 | Контур | Подтверждает | Не заменяет |
 |---|---|---|
 | Gateway / Native ingress | Можно открыть конкретный app/source | Human identity и права на данные внутри приложения |
+| Поддерживающий общий вход relay + Source SDK | Проверенный Soty issuer/subject для точного приложения и запроса | Native ACL и устойчивое раздельное хранение приложения |
 | Human OIDC `/human-identity` + серверный Source RP/BFF | Проверенную identity и собственную сессию приложения | Native tenant/role ACL и согласие на продление |
 | SourceSSO по approved Source profile | Поддерживаемый адаптер получает проверенный Root-контекст точного приложения, Source, ресурса и экземпляра | Доступ к данным, отзыв и независимый standalone вход |
 | Agent OAuth / MCP | Права actor на ресурс, операции, срок и бюджет | Human identity, другие MCP и Native/project grants |
@@ -20,6 +21,17 @@ SourceSSO применим только при действующем approved d
 SSO, пути `/embed`, ingress cookie или заголовка `user_id`. Если адаптера нет,
 используй доступный квалифицированный вход либо сохрани точный статус зависимости.
 Новый Native profile из спайка не объявляй действующим контрактом.
+
+## Общий вход для совместимого relay
+
+Когда установленные Root и коннектор действительно поддерживают этот путь,
+используй `createRelayIdentityFetch` из browser SDK и
+`createRelayIdentityVerifier` из server SDK. Проверенный issuer задаёт хост,
+appId берётся из регистрации Сот; пользовательский JSON или произвольный
+заголовок не являются личностью. На сервере проверяй ACL каждого действия и
+отделяй данные по проверенным issuer/subject. Для нескольких процессов или
+перезапусков нужна устойчивая атомарная защита от повтора. Не обещай поддержку
+старого коннектора, WebSocket identity или существующей базы без проверки.
 
 ## Общий Source SDK для нового личного приложения
 
@@ -213,8 +225,9 @@ Agent OAuth `/oauth` и MCP требуют собственных audience/scope
 Доступность инструмента не означает разрешение читать или менять данные.
 Human OIDC не выдаёт агенту права автоматически; Native ACL проверяется отдельно.
 
-Для краткого guide: `node scripts/soty-app-release.mjs auth-guide --mode human-oidc --output NEW_FILE`
-или Root MCP `apps_auth_guide({mode:"human-oidc"})`. Другие режимы — private-owner
+Для краткого guide общего входа: `node scripts/soty-app-release.mjs auth-guide --output NEW_FILE`
+или Root MCP `apps_auth_guide({})`. Режим `human-oidc` — отдельный выбранный
+confidential BFF/RP; другие режимы — private-owner
 и agent. Эти read-only помощники ничего не активируют и не требуют секретов.
 
 Для существующего Python/FastAPI сохраняй Native data model; поддерживаемый

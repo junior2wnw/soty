@@ -98,7 +98,9 @@ test('actual SDK modern discovery and legacy initialize/list expose checked tool
       embedded: 'blank', document: 'stalled_before_connection', debugger: 'attached',
     } }, version), tools[4].outputSchema);
     assert.equal(diagnosis.liveVerified, false); assert.equal(diagnosis.findings[0].code, 'debugger_interference_suspected');
-    for (const mode of ['human-oidc', 'private-owner', 'agent']) {
+    const common = success(await call(f, f.identity.token, 'apps_auth_guide', {}, version), tools[5].outputSchema);
+    assert.equal(common.mode, 'soty'); assert.equal(common.productionEnabled, 'not_checked');
+    for (const mode of ['soty', 'human-oidc', 'private-owner', 'agent']) {
       const guide = success(await call(f, f.identity.token, 'apps_auth_guide', { mode }, version), tools[5].outputSchema);
       assert.equal(guide.applied, false); assert.equal(guide.productionEnabled, 'not_checked');
     }

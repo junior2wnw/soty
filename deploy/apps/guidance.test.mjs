@@ -43,8 +43,9 @@ test('guidance refuses URLs, token values, extra fields, objects and getters wit
   for (const value of [{ mode: 'SECRET' }, { mode: 'human-oidc', secret: 'SECRET' }, { mode: '__proto__' }])
     assert.throws(() => appAuthenticationGuide(value), { code: 'invalid_release_guidance' });
 });
-test('auth modes are explicit and reference existing maintained integrations without activating any authority', async () => {
-  for (const mode of ['human-oidc', 'private-owner', 'agent']) {
+test('the default Soty login and explicit alternatives reference maintained integrations without activating authority', async () => {
+  assert.deepEqual(appAuthenticationGuide({}), appAuthenticationGuide({ mode: 'soty' }));
+  for (const mode of ['soty', 'human-oidc', 'private-owner', 'agent']) {
     const value = appAuthenticationGuide({ mode });
     assert.equal(value.applied, false); assert.equal(value.productionEnabled, 'not_checked');
     for (const file of value.references) await readFile(resolve(file));
@@ -69,6 +70,8 @@ test('CLI and core guidance agree, never echo secrets, and refuse to overwrite a
   assert.equal(JSON.parse(run(args).stdout).code, 'release_output_exists');
   const guide = run(['auth-guide', '--mode', 'human-oidc', '--output', join(folder, 'auth.json')]);
   assert.equal(guide.status, 0); assert.deepEqual(JSON.parse(guide.stdout), appAuthenticationGuide({ mode: 'human-oidc' }));
+  const common = run(['auth-guide', '--output', join(folder, 'soty-auth.json')]);
+  assert.equal(common.status, 0); assert.deepEqual(JSON.parse(common.stdout), appAuthenticationGuide({}));
   await writeFile(input, JSON.stringify({ embedded: 'blank', authorization: 'DO_NOT_PRINT_SECRET' }));
   const refused = run(['doctor', '--observations', input, '--output', join(folder, 'refused.json')]);
   assert.equal(refused.status, 1); assert.equal((refused.stdout + refused.stderr).includes('DO_NOT_PRINT_SECRET'), false);

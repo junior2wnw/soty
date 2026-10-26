@@ -68,7 +68,7 @@ src/world/app-deployment.mjs. Экспорт не подписанный grant; 
 - doctor --observations FILE --output NEW_FILE — только закрытые наблюдения
   без URL/logs/credentials. Тот же код, что Root MCP apps_diagnose. Ответ
   liveVerified=false/releaseReadiness=not_assessed, без команд или grants.
-- auth-guide --mode human-oidc|private-owner|agent --output NEW_FILE — тот же
+- auth-guide [--mode soty|human-oidc|private-owner|agent] --output NEW_FILE — тот же
   guide, что apps_auth_guide. Не включает issuer и не регистрирует клиентов.
 
 HTTP receipt содержит httpOnly=true и browserAndDataChecksRequired=true.
