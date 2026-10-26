@@ -14,7 +14,7 @@ import { migrateAppsSchema, ensureInitialPublication, ensureCanonicalDomain, run
 import { createPublicationRegistry } from '../server/publications.mjs';
 import { createSourceRegistry } from '../server/sources.mjs';
 import { createScopedAdmissionRegistry } from '../scoped-embed/admissions.mjs';
-import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
+import { STANDARD_ROOT_WORKSPACE_SOURCE, STANDARD_WORKSPACE_SOURCE } from '../../source-app/server/standard-profile.mjs';
 import { readPairedNativeEntry, requireNativeEntry, assertNativePortAvailable } from '../server/native-entry.mjs';
 import { createNativeEntryGuard } from '../../source-app/server/native-entry-guard.mjs';
 
@@ -67,14 +67,15 @@ function fixture(t, options = {}) {
     const id = 'dom_' + suffix.repeat(32); domains[slug] = id;
     db.prepare("INSERT INTO app_domains VALUES(?,?,?,?,?,?,?,'alias','bound',?,NULL)").run(id, zone,
       slug + '.apps.test', 'https://' + slug + '.apps.test', slug, appId, owner.accountId, 1);
-    db.prepare('INSERT INTO app_publication_domains VALUES(?,?,?)').run(appId, id, owner.accountId);
+    if (slug !== 'source' || !options.sourceInactive)
+      db.prepare('INSERT INTO app_publication_domains VALUES(?,?,?)').run(appId, id, owner.accountId);
   }
   db.exec('COMMIT');
   const target = { appId, revision: 2, ownerAccountId: owner.accountId, connectorKey,
     port: options.sourcePort ?? 63346, entryPath: '/embed', profile: 'soty.selected-human-embed.v2' };
   target.digest = runtimeTargetDigest(target);
   const profile = { schema: target.profile, appId, connector: identity, target: { revision: 2, digest: target.digest },
-    sourceProfile: { ...STANDARD_ROOT_WORKSPACE_SOURCE }, resource: { registryId: 'soty', tenantId: owner.accountId, appId,
+    sourceProfile: { ...(options.sourceProfile ?? STANDARD_ROOT_WORKSPACE_SOURCE) }, resource: { registryId: 'soty', tenantId: owner.accountId, appId,
       environmentId: 'test', resourceId: 'workspace', selection: { kind: 'soty.workspace.v1', nativeId: 'fixture_native', incarnationId: 'one' } },
     issuer: 'https://root.test/human-identity', clientId: 'fixture_client', parentOrigin: 'https://root.test',
     embedOrigin: options.embedOrigin ?? 'https://source.apps.test', nativeOrigin: options.nativeOrigin ?? 'https://native.apps.test' };
@@ -86,7 +87,8 @@ function fixture(t, options = {}) {
   const open = () => createSourceRegistry({ db, now: () => clock, assertActor: authenticate, publications, scopedAdmission: admissions,
     prepareTarget: async input => { probes.push(input); assert.equal(db.isTransaction, false);
       return provider ? provider(input) : Object.freeze({ target: input.target, channel }); },
-    verifyPreparedTarget: input => verifier ? verifier(input) : input.evidence?.target === input.target && input.evidence.channel === channel });
+    verifyPreparedTarget: input => verifier ? verifier(input) : input.evidence?.target === input.target && input.evidence.channel === channel,
+    onChanged: event => options.onChanged?.(event) });
   sources = open(); const cleanups = [];
   t.after(async () => { for (const cleanup of cleanups) await cleanup(); sources.close(); db.close(); assert.equal(join(tmpdir(), directory.slice(tmpdir().length + 1)), directory); rmSync(directory, { recursive: true, force: true }); });
   const get = () => publications.execute({ op: 'apps.publication.get', actor: owner, args: { appId } });
@@ -96,17 +98,196 @@ function fixture(t, options = {}) {
   const prepare = extra => sources.execute({ op: 'apps.source.prepare', actor: owner, args: prepareArgs(extra) });
   const intent = (prepared, requestId = 'fixture_pair', extra = {}) => ({ appId, requestId, preparationId: prepared.preparationId,
     expectedPolicyEpoch: prepared.expectedPolicyEpoch, expectedTargetRevision: prepared.expectedTargetRevision,
-    launchPolicy: 'anyone', listed: true, exposureAck: ack(prepared.target), nativeExposureAck: ack(prepared.nativeEntry.target), ...(prepared.nativeEntryAction ? { nativeEntryAction: prepared.nativeEntryAction } : {}), ...extra });
+    launchPolicy: 'anyone', listed: true, exposureAck: ack(prepared.target), nativeExposureAck: prepared.nativeEntry ? ack(prepared.nativeEntry.target) : undefined,
+    ...(prepared.nativeEntryAction ? { nativeEntryAction: prepared.nativeEntryAction } : {}),
+    ...(prepared.sourceEntryAction ? { sourceEntryAction: prepared.sourceEntryAction } : {}), ...extra });
   const promote = args => sources.execute({ op: 'apps.source.promote', actor: owner, args });
   const requireEntry = () => requireNativeEntry({ db, appId, origin: profile.nativeOrigin, primaryDigest: target.digest,
     nativeDigest: db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(appId).digest, scopedAdmission: admissions });
-  const rows = () => Object.fromEntries(['app_publications','app_runtime_targets','app_source_heads','app_source_receipts','app_scoped_embed_admissions']
+  const rows = () => Object.fromEntries(['app_publications','app_publication_domains','app_domains','app_runtime_targets','app_source_heads','app_source_receipts','app_scoped_embed_admissions']
     .map(name => [name, db.prepare('SELECT * FROM ' + name).all()]));
   return { db, directory, databasePath, appId, owner, identity, target, profile, domains, probes, publications, admissions,
     get, prepare, prepareArgs, intent, promote, requireEntry, rows, clock: () => clock,
     advance(ms) { clock += ms; }, provider(fn) { provider = fn; }, verifier(fn) { verifier = fn; },
+    revokeActor() { active = false; },
     cleanup(fn) { cleanups.push(fn); }, reopen() { sources.close(); sources = open(); } };
 }
+
+const activation = f => ({ action: 'activate', domainId: f.domains.source });
+function publicNative(f) {
+  return f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId,
+    requestId: 'fixture_native_before_source', expectedPolicyEpoch: f.get().policyEpoch, expectedTargetRevision: 1,
+    launchPolicy: 'anyone', listed: true, activeDomainIds: [f.domains.native], exposureAck: ack(f.get().target) } });
+}
+
+test('inactive Source alias stays private during preparation and activates atomically with both exact targets', async t => {
+  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const before = f.rows();
+  await assert.rejects(f.prepare(), { code: 'app_native_entry_domain_required', status: 403 });
+  const prepared = await f.prepare({ sourceEntryAction: activation(f) });
+  assert.deepEqual(prepared.sourceEntryAction, activation(f));
+  assert.deepEqual(prepared.sourceEntry, { domainId: f.domains.source, origin: f.profile.embedOrigin });
+  assert.equal(f.probes.length, 2); assert.deepEqual(f.rows(), before);
+  assert.throws(() => f.publications.decideAccess({ domainId: f.domains.source, origin: f.profile.embedOrigin, actor: f.owner }),
+    { code: 'apps_access_denied', status: 403 });
+  const result = f.promote(f.intent(prepared));
+  assert.equal(result.receipt.schema, 'soty.app-source-receipt.v2');
+  assert.deepEqual(result.receipt.sourceEntryAction, activation(f));
+  assert.deepEqual(result.receipt.sourceEntry, prepared.sourceEntry);
+  assert.deepEqual(result.current.activeDomainIds, [f.domains.native, f.domains.source]);
+  assert.equal(result.current.activeTargetRevision, 2); assert.equal(result.current.policyEpoch, before.app_publications[0].policy_epoch + 1);
+  assert.equal(f.requireEntry().target.revision, 1); assert.equal(f.admissions.require(f.target).target.revision, 2);
+  assert.equal(f.publications.decideAccess({ domainId: f.domains.source, origin: f.profile.embedOrigin }).targetRevision, 2);
+  assert.equal(f.db.prepare('PRAGMA foreign_key_check').all().length, 0);
+});
+
+test('Source activation accepts only the exact owned inactive approved alias and a closed action before any probe', async t => {
+  for (const [label, action, error] of [
+    ['null', null, 'unexpected_argument'], ['array', [], 'unexpected_argument'],
+    ['wrong action', { action: 'publish', domainId: 'dom_' + 'c'.repeat(32) }, 'invalid_source_entry_action'],
+    ['bad id', { action: 'activate', domainId: 'not-a-domain' }, 'invalid_source_entry_action'],
+    ['extra origin', { action: 'activate', domainId: 'dom_' + 'c'.repeat(32), origin: 'https://source.apps.test' }, 'unexpected_argument'],
+    ['missing', { action: 'activate', domainId: 'dom_' + 'd'.repeat(32) }, 'app_source_entry_domain_required'],
+    ['other origin', { action: 'activate', domainId: 'dom_' + 'b'.repeat(32) }, 'app_source_entry_domain_required'],
+  ]) await t.test(label, async sub => {
+    const f = fixture(sub, { sourceInactive: true }); publicNative(f); const before = f.rows();
+    await assert.rejects(f.prepare({ sourceEntryAction: action }), { code: error });
+    assert.equal(f.probes.length, 0); assert.deepEqual(f.rows(), before);
+  });
+  for (const label of ['tombstone', 'other app', 'already active', 'non Root source', 'relay target']) await t.test(label, async sub => {
+    const f = fixture(sub, { sourceInactive: label !== 'already active', ...(label === 'non Root source' ? { sourceProfile: STANDARD_WORKSPACE_SOURCE } : {}) });
+    if (label !== 'already active') publicNative(f);
+    let extra = { sourceEntryAction: activation(f) }, error = 'app_source_entry_domain_required';
+    if (label === 'tombstone') f.db.prepare("UPDATE app_domains SET state='tombstone',retired_at=2 WHERE id=?").run(f.domains.source);
+    if (label === 'other app') {
+      f.db.prepare('INSERT INTO local_apps SELECT ?,owner_account_id,connector_key,name,port,entry_path,grants_json,state,revision,created_at,updated_at FROM local_apps WHERE id=?')
+        .run('app-' + 'd'.repeat(32), f.appId);
+      f.db.prepare('UPDATE app_domains SET app_id=? WHERE id=?').run('app-' + 'd'.repeat(32), f.domains.source);
+    }
+    if (label === 'already active') error = 'app_source_entry_action_mismatch';
+    if (label === 'non Root source') { extra.nativeEntry = undefined; error = 'invalid_source_entry_action'; }
+    if (label === 'relay target') { extra.nativeEntry = undefined; extra.source = { ...f.prepareArgs().source, profile: 'soty.relay-restricted.v1' }; error = 'invalid_source_entry_action'; }
+    const before = f.rows();
+    await assert.rejects(f.prepare(extra), { code: error });
+    assert.equal(f.probes.length, 0); assert.deepEqual(f.rows(), before);
+  });
+});
+
+test('Source activation promotes only the reviewed action with independent exact Source and Native ACKs', async t => {
+  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const prepared = await f.prepare({ sourceEntryAction: activation(f) }), args = f.intent(prepared), before = f.rows();
+  for (const [extra, error] of [
+    [{ sourceEntryAction: undefined }, 'app_source_entry_action_mismatch'],
+    [{ sourceEntryAction: { ...activation(f), domainId: f.domains.native } }, 'app_source_entry_action_mismatch'],
+    [{ nativeExposureAck: undefined }, 'app_native_exposure_ack_required'],
+    [{ nativeExposureAck: { ...args.nativeExposureAck, targetDigest: 'f'.repeat(64) } }, 'app_native_exposure_ack_required'],
+    [{ exposureAck: { ...args.exposureAck, targetDigest: 'f'.repeat(64) } }, 'app_exposure_ack_required'],
+    [{ exposureAck: { ...args.exposureAck, scope: 'whole-port', profile: 'soty.relay-restricted.v1' } }, 'invalid_source_entry_action'],
+    [{ launchPolicy: 'restricted', listed: false, exposureAck: undefined, nativeExposureAck: undefined }, 'invalid_source_entry_action'],
+  ]) {
+    assert.throws(() => f.promote({ ...args, ...extra }), { code: error }); assert.deepEqual(f.rows(), before);
+  }
+  assert.equal(f.promote(args).current.activeTargetRevision, 2);
+});
+
+test('Source activation rechecks domain, original actor, channel, CAS and TTL with zero partial writes', async t => {
+  for (const label of ['domain retires', 'actor revokes', 'channel changes', 'expiry', 'epoch changes', 'wrong revision']) await t.test(label, async sub => {
+    const f = fixture(sub, { sourceInactive: true }); publicNative(f);
+    const prepared = await f.prepare({ sourceEntryAction: activation(f) }), args = f.intent(prepared);
+    let error;
+    if (label === 'domain retires') { f.db.prepare("UPDATE app_domains SET state='tombstone',retired_at=2 WHERE id=?").run(f.domains.source); error = 'app_source_entry_domain_required'; }
+    if (label === 'actor revokes') { f.revokeActor(); error = 'ERR_ASSERTION'; }
+    if (label === 'channel changes') { f.verifier(() => false); error = 'apps_source_preparation_stale'; }
+    if (label === 'expiry') { f.advance(30001); error = 'apps_source_preparation_expired'; }
+    if (label === 'epoch changes') { f.db.prepare('UPDATE app_publications SET policy_epoch=policy_epoch+1 WHERE app_id=?').run(f.appId); error = 'app_publication_revision_conflict'; }
+    if (label === 'wrong revision') { args.expectedTargetRevision++; error = 'app_publication_target_conflict'; }
+    const before = f.rows(); assert.throws(() => f.promote(args), { code: error }); assert.deepEqual(f.rows(), before);
+  });
+});
+
+test('Source alias insert and every promotion row roll back when the final channel fence fails', async t => {
+  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const prepared = await f.prepare({ sourceEntryAction: activation(f) }), before = f.rows(); let sawUncommittedInsert = false;
+  const reader = new DatabaseSync(f.databasePath, { readOnly: true }); f.cleanup(() => reader.close());
+  f.verifier(input => {
+    if (f.db.prepare('SELECT 1 FROM app_publication_domains WHERE app_id=? AND domain_id=?').get(f.appId, f.domains.source)) {
+      sawUncommittedInsert = true;
+      const visible = reader.prepare(`SELECT active_target_revision,EXISTS(SELECT 1 FROM app_publication_domains
+        WHERE app_id=? AND domain_id=?) AS source_active FROM app_publications WHERE app_id=?`).get(f.appId, f.domains.source, f.appId);
+      assert.deepEqual({ ...visible }, { active_target_revision: 1, source_active: 0 });
+      throw Error('fixture_final_fence_after_alias_insert');
+    }
+    return input.evidence.target === input.target;
+  });
+  assert.throws(() => f.promote(f.intent(prepared)), /fixture_final_fence_after_alias_insert/u);
+  assert.equal(sawUncommittedInsert, true); assert.deepEqual(f.rows(), before); assert.equal(f.db.isTransaction, false);
+});
+
+test('lost Source activation ACK recovers one immutable receipt and never republishes a subsequently removed alias', async t => {
+  const options = { sourceInactive: true }, f = fixture(t, options); publicNative(f);
+  const prepared = await f.prepare({ sourceEntryAction: activation(f) }), args = f.intent(prepared);
+  options.onChanged = () => { throw Error('fixture_lost_activation_ACK'); };
+  assert.throws(() => f.promote(args), /fixture_lost_activation_ACK/u);
+  assert.equal(f.get().activeTargetRevision, 2); assert.equal(f.get().activeDomainIds.includes(f.domains.source), true);
+  options.onChanged = undefined; f.reopen(); f.advance(30001);
+  const replay = f.promote(args); assert.equal(replay.replayed, true); const original = replay.receipt;
+  f.publications.execute({ op: 'apps.publication.update', actor: f.owner, args: { appId: f.appId, requestId: 'fixture_deactivate_source_after_ACK',
+    expectedPolicyEpoch: f.get().policyEpoch, expectedTargetRevision: 2, launchPolicy: 'anyone', listed: true,
+    activeDomainIds: [f.domains.native], exposureAck: ack(prepared.target) } });
+  const before = f.rows(), historical = f.promote(args);
+  assert.equal(historical.replayed, true); assert.deepEqual(historical.receipt, original); assert.deepEqual(f.rows(), before);
+  assert.deepEqual(historical.current.activeDomainIds, [f.domains.native]);
+  assert.throws(() => f.promote({ ...args, sourceEntryAction: { ...activation(f), domainId: f.domains.native } }), { code: 'app_source_request_conflict' });
+  assert.throws(() => f.requireEntry(), { code: 'app_native_entry_domain_required', status: 403 });
+});
+
+test('Source activation appends exactly one domain at the existing 100-domain bound', async t => {
+  for (const count of [99, 100]) await t.test(String(count), async sub => {
+    const f = fixture(sub, { sourceInactive: true }); publicNative(f);
+    const zone = f.db.prepare('SELECT zone_id FROM app_domains WHERE id=?').get(f.domains.native).zone_id;
+    for (let i = 1; i < count; i++) {
+      const id = 'dom_' + i.toString(16).padStart(32, '0'), slug = 'extra-' + i;
+      f.db.prepare("INSERT INTO app_domains VALUES(?,?,?,?,?,?,?,'alias','bound',1,NULL)")
+        .run(id, zone, slug + '.apps.test', 'https://' + slug + '.apps.test', slug, f.appId, f.owner.accountId);
+      f.db.prepare('INSERT INTO app_publication_domains VALUES(?,?,?)').run(f.appId, id, f.owner.accountId);
+    }
+    const prepared = await f.prepare({ sourceEntryAction: activation(f) }), before = f.rows();
+    if (count === 100) { assert.throws(() => f.promote(f.intent(prepared)), { code: 'invalid_publication_domains' }); assert.deepEqual(f.rows(), before); }
+    else {
+      const result = f.promote(f.intent(prepared)); assert.equal(result.current.activeDomainIds.length, 100);
+      assert.deepEqual(result.current.activeDomainIds.filter(id => id !== f.domains.source), before.app_publication_domains.map(row => row.domain_id).sort());
+    }
+  });
+});
+
+test('no Source action preserves the previous request hash and receipt bytes shape', async t => {
+  const f = fixture(t), prepared = await f.prepare(), args = f.intent(prepared), result = f.promote(args);
+  assert.equal(Object.hasOwn(prepared, 'sourceEntryAction'), false); assert.equal(Object.hasOwn(prepared, 'sourceEntry'), false);
+  assert.equal(Object.hasOwn(result.receipt, 'sourceEntryAction'), false); assert.equal(Object.hasOwn(result.receipt, 'sourceEntry'), false);
+  const intent = ['apps.source.promote.v2', f.appId, args.preparationId, args.expectedPolicyEpoch, args.expectedTargetRevision,
+    args.launchPolicy, args.listed, args.exposureAck, args.nativeExposureAck];
+  assert.equal(f.db.prepare('SELECT intent_hash FROM app_source_receipts').get().intent_hash,
+    createHash('sha256').update(JSON.stringify(intent)).digest('hex'));
+});
+
+test('Source alias activation also works without a Native pair and does not invent a standalone permission', async t => {
+  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const prepared = await f.prepare({ nativeEntry: undefined, sourceEntryAction: activation(f) });
+  assert.equal(prepared.nativeEntry, undefined); assert.equal(f.probes.length, 1);
+  const result = f.promote(f.intent(prepared));
+  assert.equal(result.receipt.schema, 'soty.app-source-receipt.v2'); assert.equal(result.receipt.namespace, 'apps.source.promote.v2');
+  assert.deepEqual(result.receipt.sourceEntryAction, activation(f)); assert.equal(result.receipt.nativeEntry, undefined);
+  assert.deepEqual(result.current.activeDomainIds, [f.domains.native, f.domains.source]);
+  assert.equal(readPairedNativeEntry(f.db, f.appId), null);
+  assert.throws(() => f.requireEntry(), { code: 'app_native_entry_closed', status: 403 });
+});
+
+test('the actual preceding Root rejects the new activation field before any candidate probe or durable change', async t => {
+  const f = fixture(t, { sourceInactive: true }); publicNative(f);
+  const old = await import(precedingRootEntry()), live = await liveRoot(t, f, old.createAppsService), before = f.rows();
+  await assert.rejects(live.prepare({ nativeEntry: undefined, sourceEntryAction: activation(f) }), { code: 'unexpected_argument' });
+  assert.equal(live.probes.length, 0); assert.deepEqual(f.rows(), before);
+});
 
 test('pair independently probes both exact targets and needs a new whole-port ACK before one atomic v2 receipt', async t => {
   const f = fixture(t), before = f.rows(), prepared = await f.prepare();

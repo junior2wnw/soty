@@ -15,6 +15,7 @@ export interface AppInspection {
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
     launchEntry?: { domainId: string; origin: string; path: string } | null;
     integrations?: { profile: Exclude<AppSourceTarget['profile'], 'soty.relay-restricted.v1'>; entryPath: '/embed' }[];
+    sourceEntryActivation?: boolean;
     requiredBindingVersion: 1 | 2;
     binding: { state: 'offline' | 'legacy' | 'update-required' | 'pending' | 'bound' | 'rejected' | 'unavailable' };
     observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' | 'connector-v2-observation' } };
@@ -30,11 +31,13 @@ export interface AppSourcePreparation {
   expectedTargetRevision: number; requiredBindingVersion: 2; target: AppSourceTarget; checkedAt: number; expiresAt: number;
   nativeEntry?: { origin: string; domainId: string; target: AppSourceTarget };
   nativeEntryAction?: { action: 'remove'; origin: string; targetRevision: number; targetDigest: string };
+  sourceEntryAction?: { action: 'activate'; domainId: string };
+  sourceEntry?: { origin: string; domainId: string };
 }
 export interface AppSourceDraft {
   mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string; profile: AppSourceTarget['profile'];
   launchPolicy: 'restricted' | 'anyone'; exposureConfirmed: boolean; targetRevision: number | null;
-  nativeEntryMode: 'keep' | 'remove'; nativeDomainId: string | null; nativeConfirmed: boolean;
+  nativeEntryMode: 'keep' | 'remove'; nativeDomainId: string | null; nativeConfirmed: boolean; sourceDomainId: string | null;
 }
 export type SettingsPending = {
   op: 'apps.publication.update' | 'apps.domains.claim' | 'apps.domains.retire';
@@ -44,6 +47,7 @@ export type SettingsPending = {
   op: 'apps.source.promote'; args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string };
   expectedSource: AppSourceTarget;
   expectedNativeEntry?: { origin: string; domainId: string };
+  expectedSourceEntry?: { origin: string; domainId: string };
 };
 export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; audience?: AppAudience | null; launchPolicy: string; activeDomainIds: string[]; appState: string } }
 export interface AppSettingsOptions {

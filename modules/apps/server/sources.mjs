@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, runtimePath, textId, connectorKey } from './protocol.mjs';
 import { RUNTIME_PROFILE, selectedRuntimeProfile, supportedRuntimeProfile, runtimeTargetDigest } from './schema.mjs';
-import { nativeTargetTuple, verifyNativeEntryCandidate, assertNativePortAvailable, readPairedNativeEntry } from './native-entry.mjs';
+import { nativeTargetTuple, verifyNativeEntryCandidate, verifySourceEntryCandidate, assertNativePortAvailable, readPairedNativeEntry } from './native-entry.mjs';
 
 export const sourceOperations = new Set(['apps.source.prepare', 'apps.source.promote', 'apps.source.history']);
 export const SOURCE_RECEIPTS_PER_APP = 64;
@@ -73,7 +73,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     assertNativePortAvailable(db, id, key, port);
   }
   function normalizePrepare(args) {
-    exact(args, ['appId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'source', 'targetRevision', 'nativeEntry', 'nativeEntryAction']);
+    exact(args, ['appId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'source', 'targetRevision', 'nativeEntry', 'nativeEntryAction', 'sourceEntryAction']);
     const id = appId(args.appId), epoch = positive(args.expectedPolicyEpoch), revision = positive(args.expectedTargetRevision);
     let nativeEntry;
     if (args.nativeEntry !== undefined) {
@@ -85,12 +85,13 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     }
     assertApps((args.source !== undefined) !== (args.targetRevision !== undefined), 'invalid_source_selection');
     const nativeEntryAction = normalizeNativeAction(args.nativeEntryAction);
+    const sourceEntryAction = normalizeSourceAction(args.sourceEntryAction);
     assertApps(!nativeEntry || !nativeEntryAction, 'invalid_native_pair_action');
-    if (args.targetRevision !== undefined) return { id, epoch, revision, targetRevision: positive(args.targetRevision), nativeEntry, nativeEntryAction };
+    if (args.targetRevision !== undefined) return { id, epoch, revision, targetRevision: positive(args.targetRevision), nativeEntry, nativeEntryAction, sourceEntryAction };
     exact(args.source, ['hostDeviceId', 'connectorId', 'port', 'entryPath', 'profile']);
     const profile = args.source.profile ?? RUNTIME_PROFILE;
     assertApps(supportedRuntimeProfile(profile), 'app_scoped_admission_required', 503);
-    return { id, epoch, revision, nativeEntry, nativeEntryAction, source: { hostDeviceId: textId(args.source.hostDeviceId), connectorId: textId(args.source.connectorId),
+    return { id, epoch, revision, nativeEntry, nativeEntryAction, sourceEntryAction, source: { hostDeviceId: textId(args.source.hostDeviceId), connectorId: textId(args.source.connectorId),
       port: appPort(args.source.port, blockedPorts), entryPath: runtimePath(args.source.entryPath), profile } };
   }
   function normalizeNativeAction(action) {
@@ -100,6 +101,13 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       && Number.isSafeInteger(action.targetRevision) && action.targetRevision >= 1
       && typeof action.targetDigest === 'string' && /^[a-f0-9]{64}$/u.test(action.targetDigest), 'invalid_native_pair_action');
     return Object.freeze({ action: 'remove', origin: action.origin, targetRevision: action.targetRevision, targetDigest: action.targetDigest });
+  }
+  function normalizeSourceAction(action) {
+    if (action === undefined) return undefined;
+    exact(action, ['action', 'domainId']);
+    assertApps(action.action === 'activate' && typeof action.domainId === 'string'
+      && /^dom_[a-f0-9]{32}$/u.test(action.domainId), 'invalid_source_entry_action');
+    return Object.freeze({ action: 'activate', domainId: action.domainId });
   }
   function verifyNativeAction(intent) {
     const current = readPairedNativeEntry(db, intent.id), action = intent.nativeEntryAction;
@@ -143,9 +151,15 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
     const row = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(intent.id, intent.nativeEntry.targetRevision);
     assertApps(row?.owner_account_id === actor.accountId, 'apps_source_target_unavailable', 409);
     const native = nativeTargetTuple(row);
-    const entry = verifyNativeEntryCandidate({ db, app, primary, native, origin: intent.nativeEntry.origin, scopedAdmission, blockedPorts });
+    const entry = verifyNativeEntryCandidate({ db, app, primary, native, origin: intent.nativeEntry.origin, scopedAdmission, blockedPorts,
+      sourceEntryAction: intent.sourceEntryAction });
     deviceFor(native.connectorKey, actor.accountId); occupied(intent.id, native.connectorKey, native.port);
     return entry;
+  }
+  function selectSourceEntry(actor, intent, primary) {
+    if (!intent.sourceEntryAction) return null;
+    return verifySourceEntryCandidate({ db, app: owned(actor, intent.id), primary,
+      domainId: intent.sourceEntryAction.domainId, scopedAdmission });
   }
   function forget(entry) {
     clearTimeout(entry.expiryTimer); clearTimeout(entry.probeTimer);
@@ -177,16 +191,16 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
   }
   async function prepare(actor, args) {
     const intent = normalizePrepare(args), capturedActor = Object.freeze({ accountId: actor?.accountId, deviceId: actor?.deviceId });
-    const { target, nativeEntry } = transaction(false, () => {
+    const { target, nativeEntry, sourceEntry } = transaction(false, () => {
       const target = selectTarget(capturedActor, intent);
-      return { target, nativeEntry: selectNativeEntry(capturedActor, intent, target) };
+      return { target, nativeEntry: selectNativeEntry(capturedActor, intent, target), sourceEntry: selectSourceEntry(capturedActor, intent, target) };
     });
     const timestamp = sweep();
     assertApps(preparations.size < limits.global, 'apps_source_preparation_capacity', 429);
     let accountCount = 0, appCount = 0;
     for (const entry of preparations.values()) { if (entry.actor.accountId === capturedActor.accountId) accountCount++; if (entry.target.appId === intent.id) appCount++; }
     assertApps(accountCount < limits.perAccount && appCount < limits.perApp, 'apps_source_preparation_capacity', 429);
-    const entry = { id: randomBytes(32).toString('base64url'), actor: capturedActor, target, nativeEntry, intent, createdAt: timestamp,
+    const entry = { id: randomBytes(32).toString('base64url'), actor: capturedActor, target, nativeEntry, sourceEntry, intent, createdAt: timestamp,
       expiresAt: timestamp + limits.ttlMs, controller: new AbortController(), settled: false, ready: false, expired: false };
     preparations.set(entry.id, entry);
     const aborted = new Promise((_, reject) => entry.controller.signal.addEventListener('abort', () => reject(entry.controller.signal.reason), { once: true }));
@@ -209,6 +223,7 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       const view = transaction(false, () => {
         state(capturedActor, intent.id, intent.epoch, intent.revision); deviceFor(target.connectorKey, capturedActor.accountId);
         selectNativeEntry(capturedActor, intent, target);
+        assertApps(JSON.stringify(selectSourceEntry(capturedActor, intent, target)) === JSON.stringify(sourceEntry), 'app_source_entry_action_mismatch', 409);
         verification(entry, capturedActor); freshAt(entry); return targetView(target);
       });
       const checkedAt = freshAt(entry);
@@ -218,11 +233,12 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         expectedPolicyEpoch: intent.epoch, expectedTargetRevision: intent.revision, requiredBindingVersion: 2,
         target: view, ...(nativeEntry ? { nativeEntry: { origin: nativeEntry.origin, domainId: nativeEntry.domainId,
           target: targetView(nativeEntry.target) } } : {}),
-        ...(intent.nativeEntryAction ? { nativeEntryAction: intent.nativeEntryAction } : {}), checkedAt, expiresAt: entry.expiresAt };
+        ...(intent.nativeEntryAction ? { nativeEntryAction: intent.nativeEntryAction } : {}),
+        ...(sourceEntry ? { sourceEntryAction: intent.sourceEntryAction, sourceEntry } : {}), checkedAt, expiresAt: entry.expiresAt };
     } catch (error) { expire(entry); if (entry.settled) forget(entry); throw error; }
   }
   function normalizePromote(args) {
-    exact(args, ['appId', 'requestId', 'preparationId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'exposureAck', 'nativeExposureAck', 'nativeEntryAction']);
+    exact(args, ['appId', 'requestId', 'preparationId', 'expectedPolicyEpoch', 'expectedTargetRevision', 'launchPolicy', 'listed', 'exposureAck', 'nativeExposureAck', 'nativeEntryAction', 'sourceEntryAction']);
     const id = appId(args.appId), requestId = textId(args.requestId), preparationId = opaqueId(args.preparationId);
     const epoch = positive(args.expectedPolicyEpoch), revision = positive(args.expectedTargetRevision);
     assertApps(['restricted', 'anyone'].includes(args.launchPolicy) && typeof args.listed === 'boolean', 'invalid_publication_policy');
@@ -246,11 +262,15 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       nativeExposureAck = { ...args.nativeExposureAck };
     }
     const nativeEntryAction = normalizeNativeAction(args.nativeEntryAction);
+    const sourceEntryAction = normalizeSourceAction(args.sourceEntryAction);
     assertApps(!nativeEntryAction || !nativeExposureAck, 'invalid_native_pair_action');
-    const normalized = { id, requestId, preparationId, epoch, revision, launchPolicy: args.launchPolicy, listed: args.listed, exposureAck, nativeExposureAck, nativeEntryAction };
+    assertApps(!sourceEntryAction || args.launchPolicy === 'anyone' && exposureAck?.scope === 'authenticated-workspace'
+      && exposureAck.profile === 'soty.selected-human-embed.v2', 'invalid_source_entry_action');
+    const normalized = { id, requestId, preparationId, epoch, revision, launchPolicy: args.launchPolicy, listed: args.listed, exposureAck, nativeExposureAck, nativeEntryAction, sourceEntryAction };
     const intent = ['apps.source.promote.v1', id, preparationId, epoch, revision, args.launchPolicy, args.listed, exposureAck];
     if (nativeExposureAck) { intent[0] = 'apps.source.promote.v2'; intent.push(nativeExposureAck); }
     if (nativeEntryAction) { intent[0] = 'apps.source.promote.v2'; intent.push(null, nativeEntryAction); }
+    if (sourceEntryAction) { intent[0] = 'apps.source.promote.v2'; intent.push({ sourceEntryAction }); }
     return { ...normalized, requestKey: hash(requestId), intentHash: hash(JSON.stringify(intent)) };
   }
   function promote(actor, args) {
@@ -270,9 +290,12 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         && entry.intent.epoch === intent.epoch && entry.intent.revision === intent.revision, 'apps_source_preparation_mismatch', 409);
       const target = entry.target;
       assertApps(JSON.stringify(intent.nativeEntryAction) === JSON.stringify(entry.intent.nativeEntryAction), 'native_pair_action_required', 409);
+      assertApps(JSON.stringify(intent.sourceEntryAction) === JSON.stringify(entry.intent.sourceEntryAction), 'app_source_entry_action_mismatch', 409);
       verifyNativeAction(entry.intent);
       deviceFor(target.connectorKey, actor.accountId); occupied(intent.id, target.connectorKey, target.port);
       const nativeEntry = selectNativeEntry(actor, entry.intent, target);
+      const sourceEntry = selectSourceEntry(actor, entry.intent, target);
+      assertApps(JSON.stringify(sourceEntry) === JSON.stringify(entry.sourceEntry), 'app_source_entry_action_mismatch', 409);
       if (nativeEntry) {
         const ack = intent.nativeExposureAck, native = nativeEntry.target;
         assertApps(intent.launchPolicy === 'anyone' && ack && ack.targetRevision === native.revision
@@ -294,8 +317,8 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
       }
       if (selectedRuntimeProfile(target.profile)) scopedAdmission.commit(target);
       const changed = publications.promoteSourceInTransaction({ appId: intent.id, targetRevision: target.revision,
-        launchPolicy: intent.launchPolicy, listed: intent.listed, exposureAck: intent.exposureAck });
-      const versionedEntry = nativeEntry || intent.nativeEntryAction;
+        launchPolicy: intent.launchPolicy, listed: intent.listed, exposureAck: intent.exposureAck, sourceEntry });
+      const versionedEntry = nativeEntry || intent.nativeEntryAction || sourceEntry;
       const timestamp = safeClock(now()), receipt = { schema: versionedEntry ? 'soty.app-source-receipt.v2' : 'soty.app-source-receipt.v1',
         namespace: versionedEntry ? 'apps.source.promote.v2' : 'apps.source.promote.v1',
         requestKeyHash: intent.requestKey, preparationKeyHash: hash(intent.preparationId), appId: intent.id,
@@ -304,7 +327,8 @@ export function createSourceRegistry({ db, now = Date.now, assertActor, publicat
         exposureAck: intent.exposureAck, ...(nativeEntry ? { nativeEntry: { origin: nativeEntry.origin, domainId: nativeEntry.domainId,
           target: { revision: nativeEntry.target.revision, digest: nativeEntry.target.digest, profile: nativeEntry.target.profile },
           exposureAck: intent.nativeExposureAck } } : {}),
-        ...(intent.nativeEntryAction ? { nativeEntryAction: intent.nativeEntryAction } : {}), committedAt: timestamp };
+        ...(intent.nativeEntryAction ? { nativeEntryAction: intent.nativeEntryAction } : {}),
+        ...(sourceEntry ? { sourceEntryAction: intent.sourceEntryAction, sourceEntry } : {}), committedAt: timestamp };
       db.prepare('INSERT INTO app_source_receipts VALUES (?,?,?,?,?,?,?)').run(actor.accountId, intent.requestKey,
         intent.intentHash, intent.id, changed.policyEpoch, JSON.stringify(receipt), timestamp);
       db.prepare(`DELETE FROM app_source_receipts WHERE app_id=? AND committed_epoch NOT IN

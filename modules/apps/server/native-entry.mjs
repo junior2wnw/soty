@@ -18,9 +18,23 @@ function boundAlias(db, app, origin, domainId) {
   return row;
 }
 
+/** A private candidate is not an active route. Only promotion may publish it. */
+export function verifySourceEntryCandidate({ db, app, primary, domainId, scopedAdmission }) {
+  assertApps(primary.profile === 'soty.selected-human-embed.v2' && primary.appId === app.id
+    && primary.ownerAccountId === app.owner_account_id, 'invalid_source_entry_action');
+  const profile = scopedAdmission.verifyCandidate(primary).profile;
+  assertApps(isRootSignedWorkspaceSource(profile.sourceProfile), 'invalid_source_entry_action');
+  const domain = db.prepare(`SELECT * FROM app_domains WHERE id=? AND app_id=? AND owner_account_id=?
+    AND origin=? AND role='alias' AND state='bound'`).get(domainId, app.id, app.owner_account_id, profile.embedOrigin);
+  assertApps(domain, 'app_source_entry_domain_required', 403);
+  assertApps(!db.prepare('SELECT 1 FROM app_publication_domains WHERE app_id=? AND domain_id=?')
+    .get(app.id, domain.id), 'app_source_entry_action_mismatch', 409);
+  return Object.freeze({ origin: domain.origin, domainId: domain.id });
+}
+
 /** Only an independently reviewed Root workspace can acquire a second entry.
  * A different hostname keeps its frame from borrowing Native global cookies. */
-export function verifyNativeEntryCandidate({ db, app, primary, native, origin, scopedAdmission, blockedPorts = [] }) {
+export function verifyNativeEntryCandidate({ db, app, primary, native, origin, scopedAdmission, blockedPorts = [], sourceEntryAction }) {
   assertApps(primary.profile === 'soty.selected-human-embed.v2' && native.profile === RUNTIME_PROFILE
     && native.appId === app.id && native.ownerAccountId === app.owner_account_id
     && native.connectorKey === primary.connectorKey && native.port !== primary.port
@@ -31,7 +45,8 @@ export function verifyNativeEntryCandidate({ db, app, primary, native, origin, s
     && new URL(origin).hostname !== new URL(profile.embedOrigin).hostname,
   'app_native_entry_origin_invalid', 403);
   const domain = boundAlias(db, app, origin);
-  boundAlias(db, app, profile.embedOrigin);
+  if (sourceEntryAction) verifySourceEntryCandidate({ db, app, primary, domainId: sourceEntryAction.domainId, scopedAdmission });
+  else boundAlias(db, app, profile.embedOrigin);
   return Object.freeze({ origin, domainId: domain.id, target: native });
 }
 

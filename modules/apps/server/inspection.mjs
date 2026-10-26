@@ -193,7 +193,8 @@ export function createAppInspection({ db, assertActor, domains, publications, in
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
             port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,
             ...(scoped ? { launchEntry } : {}),
-            requiredBindingVersion: policy.requiredBindingVersion, binding, observation, ...(integrations.length ? { integrations } : {}) },
+            requiredBindingVersion: policy.requiredBindingVersion, binding, observation, sourceEntryActivation: true,
+            ...(integrations.length ? { integrations } : {}) },
           actions: { canReserveName: enabled && Boolean(claimOrigin) && limits.usedByApp < limits.perApp && limits.usedByAccount < limits.perAccount,
             canEdit: enabled, canPublish: enabled, canPreview: canLink && (scoped ? Boolean(launchEntry) : Boolean(canonical || aliases.some(item => item.active))) },
         };

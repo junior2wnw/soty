@@ -213,12 +213,12 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       const app = appRow(appId(id)); assertApps(app, 'apps_registry_corrupt', 500);
       return state(app);
     },
-    promoteSourceInTransaction({ appId: id, targetRevision, launchPolicy, listed, exposureAck }) {
+    promoteSourceInTransaction({ appId: id, targetRevision, launchPolicy, listed, exposureAck, sourceEntry }) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500);
       appId(id); positive(targetRevision);
       assertApps(['restricted', 'anyone'].includes(launchPolicy) && typeof listed === 'boolean'
         && (!listed || launchPolicy === 'anyone'), 'invalid_publication_policy');
-      assertApps(!listed || activeIds(id).length > 0, 'app_publication_domain_required');
+      assertApps(!listed || sourceEntry || activeIds(id).length > 0, 'app_publication_domain_required');
       const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, targetRevision);
       assertApps(target, 'apps_registry_corrupt', 500);
       const scope = launchPolicy === 'anyone' ? targetExposureScope(db, target) : null;
@@ -229,6 +229,21 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       } else assertApps(exposureAck === null || exposureAck === undefined, 'unexpected_exposure_ack');
       const audience = readAppAudience(db, id);
       assertApps(audienceMatchesPolicy(audience, launchPolicy, listed), 'invalid_app_audience_policy');
+      if (sourceEntry) {
+        exact(sourceEntry, ['domainId', 'origin']); domainId(sourceEntry.domainId);
+        assertApps(launchPolicy === 'anyone' && scope === 'authenticated-workspace'
+          && target.profile === 'soty.selected-human-embed.v2', 'invalid_source_entry_action');
+        const domain = db.prepare(`SELECT * FROM app_domains WHERE id=? AND app_id=? AND owner_account_id=?
+          AND origin=? AND role='alias' AND state='bound'`).get(sourceEntry.domainId, id, target.owner_account_id, sourceEntry.origin);
+        assertApps(domain, 'app_source_entry_domain_required', 403);
+        const active = activeIds(id);
+        assertApps(!active.includes(domain.id), 'app_source_entry_action_mismatch', 409);
+        assertApps(active.length < maxActiveDomains, 'invalid_publication_domains');
+        // The candidate alias can become reachable only with this same target,
+        // scoped admission, ACK and receipt commit; never under the old port.
+        db.prepare('INSERT INTO app_publication_domains VALUES (?,?,?)').run(id, domain.id, target.owner_account_id);
+      }
+      assertApps(!listed || activeIds(id).length > 0, 'app_publication_domain_required');
       const changed = bumpEpoch(id);
       db.prepare(`UPDATE app_publications SET active_target_revision=?,launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)
         .run(targetRevision, launchPolicy, Number(listed), exposureAck ? targetRevision : null, exposureAck ? JSON.stringify(exposureAck) : null, id);
