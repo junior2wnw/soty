@@ -17,6 +17,16 @@ export function appBuilderReceipt(job, payload) {
     && job.deviceId === payload.hostDeviceId
     && (job.connectorId === payload.connectorId || job.connectorId === '' && job.status === 'queued' && job.attempts === 0));
 }
+/** Only the exact server-confirmed job can open the automatically registered app. */
+export function appBuilderAutomatic(result, pending) {
+  if (result?.task?.autoRegister !== true || !appBuilderReceipt(result?.job, pending) || result.job.id !== pending.jobId) return { state: 'unconfirmed' };
+  const status = result.autoRegistration;
+  if (!status || !['creating', 'waiting', 'ready', 'conflict', 'access-lost', 'revoked', 'failed'].includes(status.state)) return { state: 'unconfirmed' };
+  if (status.state !== 'ready') return { state: status.state };
+  if (result.job.status !== 'succeeded' || result.job.cancelRequested || result.job.executionUncertain || !appBuilderProposal(result, pending)
+    || !/^job_[a-f0-9]{32}$/u.test(pending.jobId) || status.appId !== `app-${pending.jobId.slice(4)}`) return { state: 'unconfirmed' };
+  return { state: 'ready', appId: status.appId, appState: ['ready', 'offline', 'stopped', 'starting'].includes(status.appState) ? status.appState : 'unknown' };
+}
 export function matchingAppBuilderRegistration(apps, pending, proposal, accountId) {
   return apps.find(app => /^app-[a-f0-9]{32}$/u.test(app.id) && app.ownerAccountId === accountId && app.hostDeviceId === pending.hostDeviceId && app.connectorId === pending.connectorId
     && app.name === proposal.name && app.port === proposal.port && app.entryPath === proposal.entryPath && app.state !== 'revoked') ?? null;

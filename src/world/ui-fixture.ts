@@ -116,7 +116,10 @@ for (const group of groups) {
     ];
 }
 const notes: Record<string, Record<string, unknown>> = {};
-const proposal = { schema: 'soty.local-app.v1', name: 'Покупки', port: 5324, entryPath: '/', sourceJobId: 'qa-agent-task' };
+const fixtureJobId = 'job_1234567890abcdef1234567890abcdef', fixtureBuiltAppId = 'app-1234567890abcdef1234567890abcdef';
+const proposal = { schema: 'soty.local-app.v1', name: 'Покупки', port: 5324, entryPath: '/', sourceJobId: fixtureJobId };
+let fixtureAutomaticJob = false, fixtureRegistrationCalls = 0;
+Object.assign(window, { qaAutoBuilder: () => ({ automaticJob: fixtureAutomaticJob, browserRegistrationCalls: fixtureRegistrationCalls }) });
 // The specimen registry survives HMR/reload just like its field, so a valid
 // newly registered ref is not replaced with an unavailable tile during QA.
 const fixtureRegistryKey = 'soty.qa.app-registry.v1';
@@ -333,6 +336,7 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 result = accepted; publicationReceipts.set(key, { body, result: structuredClone(accepted) }); persistFixtureAudience(); break;
             }
             case 'apps.register': {
+                fixtureRegistrationCalls++;
                 const body = JSON.stringify(args), existing = registrations.find(value => value.port === Number(args.port));
                 if (existing && existing.body !== body) throw Object.assign(new Error('Fixture port already registered'), { code: 'app_port_already_registered' });
                 const value = existing ?? { appId: `app-${crypto.randomUUID().replaceAll('-', '')}`, name: String(args.name || 'Покупки'), port: Number(args.port), entryPath: String(args.entryPath || '/'), body };
@@ -382,13 +386,20 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 break;
             case 'apps.agent.create':
                 if (args.expectedAccountId !== self.profileId || args.hostDeviceId !== 'qa-notebook' || args.connectorId !== 'qa-connector') throw Object.assign(new Error('Локальный пример: другой владелец или компьютер'), { code: 'authentication_required' });
-                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: 'qa-agent-task', deviceId: 'qa-notebook', connectorId: '', attempts: 0, status: 'queued', result: null } };
+                fixtureAutomaticJob = args.autoRegister === true;
+                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: fixtureJobId, deviceId: 'qa-notebook', connectorId: '', attempts: 0, status: 'queued', result: null } };
                 break;
             case 'apps.agent.read':
-                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: 'qa-agent-task', deviceId: 'qa-notebook', connectorId: 'qa-connector', attempts: 1, status: 'succeeded', result: { text: 'Черновик готов. Проверьте, как всё работает.', appProposal: proposal } }, done: true, cursor: 1, events: [{ seq: 1, type: 'progress', text: 'Черновик готов' }] };
+                if (fixtureAutomaticJob && !apps.some(app => app.appId === fixtureBuiltAppId)) {
+                    apps.push({ appId: fixtureBuiltAppId, name: proposal.name, coverKey: 'notes', symbol: 'list', status: 'ready', ownerAccountId: self.profileId });
+                    fixturePublications.set(fixtureBuiltAppId, { audience: 'private', policyEpoch: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [], activeTargetRevision: 1 });
+                }
+                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: fixtureJobId, deviceId: 'qa-notebook', connectorId: 'qa-connector', attempts: 1, status: 'succeeded', result: { text: 'Приложение готово.', appProposal: proposal } },
+                    ...(fixtureAutomaticJob ? { task: { autoRegister: true }, autoRegistration: { state: 'ready', appId: fixtureBuiltAppId, appState: 'ready' } } : {}),
+                    done: true, cursor: 1, events: [{ seq: 1, type: 'progress', text: 'Готово' }] };
                 break;
             case 'apps.agent.cancel':
-                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: 'qa-agent-task', deviceId: 'qa-notebook', connectorId: 'qa-connector', attempts: 1, status: 'cancelled', result: null }, done: true };
+                result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: fixtureJobId, deviceId: 'qa-notebook', connectorId: 'qa-connector', attempts: 1, status: 'cancelled', result: null }, done: true };
                 break;
             case 'notes.list':
                 result = { notes: Object.entries(notes).map(([noteId, note]) => ({ noteId, title: note.title, preview: note.body, pinned: false, updatedAt: now })), nextCursor: null, usage: { count: 0 } };
@@ -413,7 +424,7 @@ const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, la
 const assistant = (host: HTMLElement, context?: WorldAssistantMountContext) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
   acquireVoiceCapture: () => null, connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) }, context);
 const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, {
-    readAgentCapabilities: async () => ({ agentConfigured: true }),
+    readAgentCapabilities: async () => ({ agentConfigured: true, automaticAppRegistration: { schema: 'soty.automatic-app-registration-capability.v1', available: true } }),
     openRegisteredApp: async (appId, accountId, continueIf) => {
         if (accountId !== self.profileId) throw Error('connection_entry_changed');
         const intent = parseConnectionIntent(`#app/${appId}`, location.origin);

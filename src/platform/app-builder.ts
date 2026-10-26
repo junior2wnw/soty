@@ -4,16 +4,16 @@ import { icon } from '../world/icons';
 import type { WorldDialog } from '../world/dialogs';
 import { createAppCreateState, type AppCreateDraft, type AppCreateReceipt } from './app-create-state.mjs';
 import { createAssistantFocusHandoff, type AssistantFocusClaim } from './app-builder-focus.mjs';
-import { appBuilderProposal, appBuilderReceipt, matchingAppBuilderRegistration, type AppBuilderRegisteredApp } from './app-builder-result.mjs';
-import { createAppBuilderRegistration } from './app-builder-registration.mjs';
+import { appBuilderAutomatic, appBuilderProposal, appBuilderReceipt, matchingAppBuilderRegistration, type AppBuilderRegisteredApp } from './app-builder-result.mjs';
 
 interface HostDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean }
 interface Proposal { schema: 'soty.local-app.v1'; name: string; port: number; entryPath: string; sourceJobId: string }
 export interface AppBuilderTarget { hostDeviceId: string; connectorId: string; jobId: string }
 type Pending = AppBuilderTarget;
-interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
+interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string; autoRegister?: boolean }; autoRegistration?: { state: string; appId?: string; appState?: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
+interface AgentCapabilities { agentConfigured: boolean; automaticAppRegistration?: { schema?: string; available?: boolean } }
 export interface AppActionDependencies {
-  readAgentCapabilities?: () => Promise<{ agentConfigured: boolean }>;
+  readAgentCapabilities?: () => Promise<AgentCapabilities>;
   openRegisteredApp?: (appId: string, accountId: string, continueIf?: () => boolean) => Promise<void>;
 }
 export interface AppBuilderHandle { dispose(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean }
@@ -27,9 +27,6 @@ interface BuilderOptions extends AppActionDependencies {
   createStates: Map<string, ReturnType<typeof createAppCreateState>>;
 }
 interface BuilderPanel { element: HTMLElement; body: HTMLElement; close(): void }
-function remember(key: string, value: Pending | null): void {
-  try { if (value) localStorage.setItem(key, JSON.stringify(value)); else localStorage.removeItem(key); } catch { /* The job remains on the server. */ }
-}
 function recalled(key: string): Pending | null {
   try {
     const value = JSON.parse(localStorage.getItem(key) || 'null') as Pending | null;
@@ -37,7 +34,7 @@ function recalled(key: string): Pending | null {
   } catch { return null; }
 }
 function forgetPending(key: string, expected: Pending): void {
-  if (recalled(key)?.jobId === expected.jobId) remember(key, null);
+  try { if (recalled(key)?.jobId === expected.jobId) localStorage.removeItem(key); } catch { /* The job remains on the server. */ }
 }
 
 /** App creation is separate from the general assistant. Both legacy job resumes
@@ -131,7 +128,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
     async function forget(pending: Pending): Promise<boolean> {
       if (!await current()) return false;
       const cleared = await creation.clearAccepted(pending);
-      if (cleared) forgetPending(pendingKey, pending);
+      if (cleared || !creation.read().accepted) forgetPending(pendingKey, pending);
       return cleared;
     }
     function newTask(pending: Pending): void {
@@ -148,7 +145,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       conversation.setAttribute('aria-label', 'Задача помощника'); output.setAttribute('aria-label', 'Результат помощника');
       layout.append(conversation, output); body.replaceChildren(layout); return { conversation, output, claim };
     }
-    function placeholder(output: HTMLElement, title = 'Здесь появится приложение', detail = 'Опишите идею. Помощник подготовит личный черновик.'): void {
+    function placeholder(output: HTMLElement, title = 'Здесь появится приложение', detail = 'Опишите идею, и помощник создаст приложение.'): void {
       const content = el('div', 'sx-agent-placeholder'), mark = el('span', 'sx-agent-symbol'); mark.append(icon('sparkle'));
       content.append(mark, el('h2', '', title), el('p', 'sw-muted', detail)); output.replaceChildren(content);
     }
@@ -170,107 +167,91 @@ export function createAppBuilderAction(options: BuilderOptions) {
         cancelled: 'Задача отменена · изменения не откатываются', failed: 'Нужно проверить результат', succeeded: 'Выполнение завершено' } as Record<string, string>)[job.status] || 'Уточняем состояние';
     }
 
-    async function showResult(result: JobResult, pending: Pending, autoOpen: boolean, followClaim: AssistantFocusClaim | null): Promise<void> {
+    async function showAutomatic(result: JobResult, pending: Pending, autoOpen: boolean, followClaim: AssistantFocusClaim | null): Promise<void> {
       if (!await current()) return;
-      const retainAutoOpen = autoOpen && !result.job.cancelRequested && document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(followClaim);
+      const automatic = appBuilderAutomatic(result, pending), proposal = appBuilderProposal(result, pending);
+      if (automatic.state !== 'ready' || !automatic.appId || !proposal) return;
+      const appId = automatic.appId, retainAutoOpen = autoOpen && automatic.appState === 'ready'
+        && document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(followClaim);
+      const { conversation, output, claim } = workspace();
+      conversation.append(bubble('Приложение добавлено в ваши Соты.', 'assistant'));
+      const actions = el('div', 'sx-agent-result-actions'), actionState = el('div', 'sx-agent-action-state');
+      conversation.append(actions, actionState);
+      const card = el('article', 'sx-agent-draft'), heading = el('header', 'sx-agent-draft-heading'), mark = el('span', 'sx-agent-symbol'); mark.append(icon('grid'));
+      const state = el('span', 'sx-agent-draft-state', 'Добавлено'); state.setAttribute('role', 'status'); heading.append(mark, el('h2', '', proposal.name), state); card.append(heading);
+      const visual = el('div', 'sx-agent-draft-visual'), summary = el('div', 'sx-agent-draft-summary'), appMark = el('span', 'sx-agent-draft-mark sx-agent-symbol'); appMark.append(icon('grid'));
+      const detail = automatic.appState === 'offline' ? 'Устройство не в сети' : automatic.appState === 'stopped' ? 'Приложение остановлено' : automatic.appState === 'starting' || automatic.appState === 'unknown' ? 'Проверяем состояние приложения' : 'Ваше приложение в Сотах';
+      summary.append(appMark, el('h3', '', proposal.name), el('p', '', detail));
+      const access = el('span', 'sx-agent-draft-access'); access.append(icon('lock'), el('span', '', 'Доступ — в настройках')); visual.append(summary, access); card.append(visual); output.replaceChildren(card);
+      let opening = false; let automaticClaim: AssistantFocusClaim | null = null;
+      const canContinue = () => !closed && document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(automaticClaim);
+      const open = button('Открыть приложение', 'external', 'sw-button-primary', () => { void openApp(false); });
+      actions.append(open, button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending))); focus.restore(claim, open);
+      automaticClaim = retainAutoOpen ? focus.capture() : null;
+      async function openApp(automaticAttempt: boolean): Promise<void> {
+        if (opening) return;
+        opening = true; open.disabled = true; actionState.replaceChildren();
+        try {
+          if (!await current() || automaticAttempt && !canContinue()) return;
+          if (!options.openRegisteredApp) throw new Error('app_open_unavailable');
+          await options.openRegisteredApp(appId, accountId, automaticAttempt ? canContinue : undefined);
+          if (await sameAccount()) { const cleared = await creation.clearAccepted(pending); if (cleared) forgetPending(pendingKey, pending); }
+          if (!closed) panel.close();
+        } catch (cause) {
+          if (await current() && (!automaticAttempt || canContinue())) { const error = el('p', 'sw-error sx-agent-error', friendly(cause)); error.setAttribute('role', 'alert'); actionState.replaceChildren(error); }
+        } finally { opening = false; if (await current()) open.disabled = false; }
+      }
+      if (retainAutoOpen && canContinue()) void openApp(true);
+    }
+
+    async function showResult(result: JobResult, pending: Pending): Promise<void> {
+      if (!await current()) return;
       const proposal = appBuilderProposal(result, pending), { conversation: content, output, claim } = workspace();
       const transcript = el('div', 'sx-agent-transcript');
       if (typeof result.task?.text === 'string' && result.task.text.trim()) transcript.append(bubble(result.task.text.slice(0, 16_000), 'user'));
-      const assistantReply = bubble(proposal ? 'Черновик готов. Добавьте его в свои соты, чтобы открыть.' : label(result), 'assistant');
+      const assistantReply = bubble(proposal ? 'Эта задача создана в прежней версии Сот. Проверьте её подключение.' : label(result), 'assistant');
       transcript.append(assistantReply); content.append(transcript);
       const actions = el('div', 'sx-agent-result-actions'), actionState = el('div', 'sx-agent-action-state'); content.append(actions, actionState);
       const reset = button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending));
       const report = (cause: unknown) => { const error = el('p', 'sw-error sx-agent-error', friendly(cause)); error.setAttribute('role', 'alert'); actionState.replaceChildren(error); };
       if (proposal) {
-        let registered: AppBuilderRegisteredApp | null = null, registering = false, automatic = false, retryExplicit = false;
-        let autoClaim: AssistantFocusClaim | null = null;
-        const continueAutomatically = () => document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(autoClaim);
-        const registration = createAppBuilderRegistration({ accountId, pending, proposal, storage, locks: navigator.locks });
+        const legacyProposal = proposal;
+        let registered: AppBuilderRegisteredApp | null = null, working = false;
         const card = el('article', 'sx-agent-draft'), heading = el('header', 'sx-agent-draft-heading'), mark = el('span', 'sx-agent-symbol'); mark.append(icon('grid'));
-        const state = el('span', 'sx-agent-draft-state', 'Черновик'); state.setAttribute('role', 'status'); heading.append(mark, el('h2', '', proposal.name), state); card.append(heading);
+        const state = el('span', 'sx-agent-draft-state', 'Старая задача'); state.setAttribute('role', 'status'); heading.append(mark, el('h2', '', proposal.name), state); card.append(heading);
         const visual = el('div', 'sx-agent-draft-visual'), summary = el('div', 'sx-agent-draft-summary'), appMark = el('span', 'sx-agent-draft-mark sx-agent-symbol'); appMark.append(icon('grid'));
-        summary.append(appMark, el('h3', '', proposal.name), el('p', '', 'Готово к добавлению в ваши соты'));
-        const access = el('span', 'sx-agent-draft-access'); access.append(icon('lock'), el('span', '', 'Личный черновик')); visual.append(summary, access); card.append(visual); output.replaceChildren(card);
-        const add = button('Добавить и открыть', 'plus', 'sw-button-primary', () => {
-          if (registering) return;
-          const automaticAttempt = automatic, retryRequested = retryExplicit;
-          registering = true; add.disabled = true; retry.disabled = true; actionState.replaceChildren();
-          void (async () => {
-            let attempt: string | null = null, navigating = false;
-            try {
-              if (!registered) {
-                const existing = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {});
-                registered = matchingAppBuilderRegistration(existing.apps, pending, proposal, accountId);
-                if (registered) attempt = await registration.inspect();
-                else {
-                  let claim: { dispatch: boolean; attempt: string | null } = await registration.begin();
-                  if (!claim.dispatch && retryRequested && claim.attempt) claim = await registration.retry(claim.attempt);
-                  attempt = claim.attempt;
-                  if (claim.dispatch) {
-                    if (!await current()) { await registration.clear(attempt); return; }
-                    try {
-                      const response = await request<{ app: AppBuilderRegisteredApp }>('apps.register', { hostDeviceId: pending.hostDeviceId, connectorId: pending.connectorId,
-                        name: proposal.name, port: proposal.port, entryPath: proposal.entryPath, grants: { accountIds: [], communityIds: [] } });
-                      registered = matchingAppBuilderRegistration([response.app], pending, proposal, accountId);
-                    } catch (cause) {
-                      if (!await current()) return;
-                      const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
-                      if (['apps_device_not_owned', 'app_port_already_registered', 'apps_limit_reached', 'reserved_app_path'].includes(code)) {
-                        await registration.clear(attempt); throw cause;
-                      }
-                      const observed = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {}).catch(() => null);
-                      registered = observed ? matchingAppBuilderRegistration(observed.apps, pending, proposal, accountId) : null;
-                    }
-                  }
-                }
-              } else attempt = await registration.inspect();
-              if (!await current()) return;
-              if (!registered) throw Object.assign(new Error('app_registration_unconfirmed'), { code: 'app_registration_unconfirmed' });
-              const transferAutoClaim = automaticAttempt && continueAutomatically();
-              renderActions();
-              if (transferAutoClaim) autoClaim = focus.capture();
-              if (automaticAttempt && !continueAutomatically()) return;
-              await forget(pending);
-              if (!await current()) return;
-              if (automaticAttempt && !continueAutomatically()) return;
-              await registration.clear(attempt);
-              if (!await current()) return;
-              if (automaticAttempt && !continueAutomatically()) return;
-              if (!options.openRegisteredApp) throw new Error('app_open_unavailable');
-              navigating = true;
-              await options.openRegisteredApp(registered.id, accountId, automaticAttempt ? continueAutomatically : undefined);
-              if (!closed) panel.close();
-            } catch (cause) {
-              if (!await current()) return;
-              const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
-              if (code === 'app_registration_unconfirmed') {
-                add.replaceChildren(icon('refresh'), el('span', '', 'Проверить'));
-                actions.replaceChildren(add, retry, reset);
-              }
-              if (!automaticAttempt || !navigating || continueAutomatically()) report(cause);
+        summary.append(appMark, el('h3', '', proposal.name), el('p', '', 'Для ручного подключения: порт ' + proposal.port + ', путь ' + proposal.entryPath));
+        const access = el('span', 'sx-agent-draft-access'); access.append(icon('lock'), el('span', '', 'Ваше устройство')); visual.append(summary, access); card.append(visual); output.replaceChildren(card);
+        const check = button('Проверить подключение', 'refresh', 'sw-button-primary', () => { void checkExisting(); });
+        const open = button('Открыть приложение', 'external', 'sw-button-primary', () => { void openExisting(); });
+        actions.append(check, reset); focus.restore(claim, check);
+        async function checkExisting(): Promise<void> {
+          if (working) return; working = true; check.disabled = true; actionState.replaceChildren();
+          try {
+            const existing = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {});
+            registered = matchingAppBuilderRegistration(existing.apps, pending, legacyProposal, accountId);
+            if (!await current()) return;
+            if (!registered) {
+              actionState.append(el('p', 'sw-muted', 'Подходящее приложение не найдено. Используйте «Подключить приложение» в Сотах и укажите данные с карточки.'));
+              return;
             }
-            finally { registering = false; if (await current()) { add.disabled = false; retry.disabled = false; } }
-          })();
-        });
-        const retry = button('Добавить заново', 'plus', 'sw-button-quiet', () => {
-          retryExplicit = true; add.click(); retryExplicit = false;
-        });
-        function renderActions(): void {
-          const handoff = focus.capture(actions);
-          if (!registered) { actions.replaceChildren(add, reset); return; }
-          assistantReply.querySelector('p')!.textContent = 'Добавлено в ваши соты. Можно открыть приложение.';
-          state.textContent = 'Добавлено'; state.classList.add('is-added');
-          access.replaceChildren(icon('check'), el('span', '', registered.grants && (registered.grants.accountIds.length || registered.grants.communityIds.length) ? 'Доступ настроен' : 'Только вам'));
-          summary.querySelector('p')!.textContent = registered.state === 'offline' ? 'Устройство не в сети' : registered.state === 'stopped' ? 'Приложение остановлено' : 'Ваше приложение в Сотах';
-          const launch = button('Открыть приложение', 'external', 'sw-button-primary', () => {
-            if (!registered || registering) return;
-            add.click();
-          });
-          actions.replaceChildren(launch, reset); focus.restore(handoff, launch);
+            assistantReply.querySelector('p')!.textContent = 'Найдено подходящее приложение. Вы можете его открыть.';
+            const handoff = focus.capture(actions);
+            state.textContent = 'Найдено'; state.classList.add('is-added'); actions.replaceChildren(open, reset); focus.restore(handoff, open);
+          } catch (cause) { if (await current()) report(cause); }
+          finally { working = false; if (await current()) check.disabled = false; }
         }
-        renderActions(); focus.restore(claim, add);
-        autoClaim = retainAutoOpen ? focus.capture() : null;
-        if (!result.job.cancelRequested) { automatic = true; add.click(); automatic = false; }
+        async function openExisting(): Promise<void> {
+          if (working || !registered) return; working = true; open.disabled = true; actionState.replaceChildren();
+          try {
+            if (!await current()) return;
+            if (!options.openRegisteredApp) throw new Error('app_open_unavailable');
+            await options.openRegisteredApp(registered.id, accountId);
+            if (await sameAccount()) { const cleared = await creation.clearAccepted(pending); if (cleared || !creation.read().accepted) forgetPending(pendingKey, pending); }
+            if (!closed) panel.close();
+          } catch (cause) { if (await current()) report(cause); }
+          finally { working = false; if (await current()) open.disabled = false; }
+        }
         if (communityId) content.append(el('small', 'sw-muted', 'Доступ сообществу можно открыть в настройках приложения.'));
       } else {
         placeholder(output, label(result), result.job.executionUncertain ? 'Устройство не подтвердило завершение. Проверьте ответ перед повтором.' : 'Ответ и состояние задачи сохранены в деталях.');
@@ -307,7 +288,8 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const version = ++runVersion;
       formAbort?.abort();
       following = pending.jobId; if (timer) clearTimeout(timer);
-      remember(pendingKey, pending);
+      const saved = creation.read();
+      let automaticJob = saved.schema === 2 && saved.accepted?.jobId === pending.jobId, protectedAutomatic = automaticJob, polling = false;
       const { conversation: activity, output, claim } = workspace();
       const progress = bubble('Задача принята', 'assistant'); progress.setAttribute('role', 'status'); progress.tabIndex = -1;
       const progressCopy = progress.querySelector('p')!;
@@ -319,19 +301,28 @@ export function createAppBuilderAction(options: BuilderOptions) {
         void request<JobResult>('apps.agent.cancel', { ...pending }).then(result => { if (!closed) progressCopy.textContent = label(result); })
           .catch(async error => { if (await current()) { progressCopy.textContent = friendly(error); cancel.disabled = false; } });
       });
+      const recheck = button('Проверить', 'refresh', 'sw-button-quiet', () => { if (timer) clearTimeout(timer); void poll(); }); recheck.hidden = true;
+      const reset = button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending)); reset.hidden = true;
+      const terminalDetails = el('details', 'sw-agent-details'); terminalDetails.hidden = true;
+      const terminalText = el('pre'); terminalDetails.append(el('summary', '', 'Ответ задачи'), terminalText);
       const context = deviceContext(pending);
-      activity.append(transcript, history, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, context);
+      activity.append(transcript, history, terminalDetails, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, recheck, reset, context);
       placeholder(output, 'Создаём приложение', 'Состояние и ответ будут доступны здесь.'); focus.restore(claim, progress);
       const followClaim = autoOpen ? focus.capture() : null;
       void request<{ devices: HostDevice[] }>('apps.devices', {}).then(async result => {
         if (!await current()) return; devices = result.devices; context.replaceChildren(...Array.from(deviceContext(pending).childNodes));
       }).catch(() => { /* An unknown device status is never shown as online. */ });
-      let cursor = 0;
+      let cursor = 0, readyWaitingSince = 0;
       const poll = async () => {
-        if (!await current() || version !== runVersion) return;
+        if (polling) return; polling = true;
         try {
+          if (!await current() || version !== runVersion) return;
           const result = await request<JobResult>('apps.agent.read', { ...pending, after: cursor });
           if (!await current() || version !== runVersion) return;
+          if (result.task?.autoRegister === true) {
+            automaticJob = true;
+            if (!protectedAutomatic) { await creation.protectAutomatic(pending); protectedAutomatic = true; if (!await current()) return; }
+          }
           if (!taskShown && typeof result.task?.text === 'string' && result.task.text.trim()) { transcript.prepend(bubble(result.task.text.slice(0, 16_000), 'user')); taskShown = true; }
           for (const event of result.events || []) {
             if (!event.text || event.seq <= cursor) continue;
@@ -342,7 +333,38 @@ export function createAppBuilderAction(options: BuilderOptions) {
           progressCopy.textContent = label(result);
           output.querySelector('h2')!.textContent = label(result);
           cancel.disabled = Boolean(result.job.cancelRequested);
-          if (result.done) { await showResult(result, pending, autoOpen, followClaim); return; }
+          if (result.done && automaticJob) {
+            const status = appBuilderAutomatic(result, pending);
+            if (status.state === 'ready') {
+              // Registration can finish just before the device reports that its
+              // app is running. Give that existing poll a bounded chance to
+              // open the app automatically, then offer the honest status.
+              if (status.appState !== 'starting' || !autoOpen || (readyWaitingSince && Date.now() - readyWaitingSince >= 10_000)) {
+                await showAutomatic(result, pending, autoOpen, followClaim); return;
+              }
+              readyWaitingSince ||= Date.now();
+              progressCopy.textContent = 'Приложение добавлено. Ждём запуска…';
+              output.querySelector('h2')!.textContent = progressCopy.textContent;
+              cancel.hidden = true; reset.hidden = false;
+            } else {
+              const validJob = result.job.id === pending.jobId && appBuilderReceipt(result.job, pending);
+              const terminalFailure = validJob && (['failed', 'cancelled'].includes(result.job.status) || result.job.cancelRequested || result.job.executionUncertain);
+              const message = result.job.executionUncertain && validJob ? 'Устройство не подтвердило завершение. Проверьте ответ задачи.'
+                : result.job.cancelRequested && validJob ? 'Остановка запрошена. Автоматическое добавление не подтверждено.'
+                : ({ conflict: 'Мешает другое приложение или занятый порт. Проверьте подключения на устройстве.',
+                  'access-lost': 'Доступ исходного устройства или связь с ним изменились. Не удалось завершить подключение.',
+                  revoked: 'Приложение удалено из Сот и не будет добавлено снова.',
+                  failed: 'Не удалось создать приложение. Проверьте ответ задачи.',
+                  waiting: 'Подключаем приложение к Сотам…',
+                  unconfirmed: 'Ждём подтверждения от Сот. Если оно долго не появляется, проверьте обновление.' } as Record<string, string>)[terminalFailure ? 'failed' : status.state] || 'Ждём подтверждения от Сот.';
+              progressCopy.textContent = message; output.querySelector('h2')!.textContent = message;
+              cancel.hidden = true; reset.hidden = false;
+              recheck.hidden = !terminalFailure && !['conflict', 'access-lost', 'revoked', 'failed'].includes(status.state);
+              if (terminalFailure || ['access-lost', 'revoked', 'failed'].includes(status.state)) {
+                terminalText.textContent = result.job.result?.text || 'Ответ недоступен.'; terminalDetails.hidden = false; return;
+              }
+            }
+          } else if (result.done) { await showResult(result, pending); return; }
         } catch (error) {
           if (!await current() || version !== runVersion) return;
           progressCopy.textContent = friendly(error);
@@ -352,7 +374,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
             panel.body.replaceChildren(emptyState('Эта задача больше недоступна', 'Уже добавленные приложения остаются в ваших сотах.', reset, 'sparkle')); focus.restore(handoff, reset);
             return;
           }
-        }
+        } finally { polling = false; }
         if (!closed && version === runVersion) timer = setTimeout(() => { void poll(); }, document.hidden ? 8000 : 2000);
       };
       void poll();
@@ -363,12 +385,11 @@ export function createAppBuilderAction(options: BuilderOptions) {
     const saved = creation.read();
     const known = (useRestore ? restore : undefined) ?? saved.accepted ?? recalled(pendingKey);
     if (!saved.pending && known) {
-      try { await creation.adoptAccepted(known); } catch { /* A known job remains readable even when browser storage is unavailable. */ }
       if (await current()) follow(known);
       return;
     }
     const form = el('form', 'sw-stack sx-agent-form'), hosts = el('select', 'sw-input');
-    const heading = el('div', 'sx-agent-form-heading'); heading.append(el('h2', '', 'Что создаём?'), el('p', 'sw-muted', 'Опишите идею. Помощник подготовит личный черновик.'));
+    const heading = el('div', 'sx-agent-form-heading'); heading.append(el('h2', '', 'Что создаём?'), el('p', 'sw-muted', 'Опишите идею. Помощник создаст приложение и добавит его в ваши Соты.'));
     const prompt = el('textarea', 'sw-input sx-agent-prompt'); prompt.rows = 4; prompt.maxLength = 16_000; prompt.required = true; prompt.placeholder = 'Например, общий список покупок';
     const cwd = textInput('', 'Выбрать существующую папку', 2000);
     const advanced = el('details', 'sw-agent-details');
@@ -379,10 +400,10 @@ export function createAppBuilderAction(options: BuilderOptions) {
     const status = el('p', 'sw-muted'); status.setAttribute('role', 'status');
     const create = button('Создать', 'sparkle', 'sw-button-primary sx-agent-submit'); create.type = 'submit';
     const availability = el('div', 'sw-stack'), recovery = el('div', 'sw-stack'); recovery.hidden = true;
-    const footer = el('div', 'sx-agent-form-footer'), personal = el('span', 'sx-agent-personal'); personal.append(icon('lock'), el('span', '', 'Личный черновик')); footer.append(personal, create);
+    const footer = el('div', 'sx-agent-form-footer'), personal = el('span', 'sx-agent-personal'); personal.append(icon('lock'), el('span', '', 'Личное приложение')); footer.append(personal, create);
     form.append(heading, labeledField('Идея приложения', prompt), labeledField('На устройстве', hosts), advanced, availability, status, error, recovery, footer, privilege);
     const initial = workspace(); initial.conversation.append(form); placeholder(initial.output);
-    let modelReady = false, busy = false, loading = true, hostSelectionTouched = false, editGeneration = 0, loadGeneration = 0, closeGeneration = 0;
+    let modelReady = false, autoSupported = false, autoReady = false, busy = false, loading = true, hostSelectionTouched = false, editGeneration = 0, loadGeneration = 0, closeGeneration = 0;
     const keyOf = (value: Pick<AppCreateDraft, 'hostDeviceId' | 'connectorId'>) => JSON.stringify([value.hostDeviceId, value.connectorId]);
     function requestClose(action: () => void = panel.close, event?: Event): void {
       event?.preventDefault(); event?.stopImmediatePropagation();
@@ -430,8 +451,10 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const snapshot = creation.read(), pending = snapshot.pending;
       prompt.readOnly = Boolean(pending) || busy; hosts.disabled = Boolean(pending) || busy; cwd.readOnly = Boolean(pending) || busy;
       create.replaceChildren(icon(pending ? 'refresh' : 'sparkle'), el('span', '', pending ? 'Проверить отправку' : 'Создать'));
-      create.disabled = busy || !creation.canDispatch() || (!pending && (loading || !modelReady || !prompt.value.trim() || !devices.some(device => keyOf(device) === hosts.value)));
+      create.disabled = busy || !creation.canDispatch() || (Boolean(pending?.payload.autoRegister) && (loading || !autoSupported))
+        || (!pending && (loading || !modelReady || !autoReady || !prompt.value.trim() || !devices.some(device => keyOf(device) === hosts.value)));
       status.textContent = creation.hasUnsavedChanges() ? 'Черновик только в этом окне. Перед отправкой нужно сохранить его в браузере.'
+        : pending?.payload.autoRegister && !autoSupported ? 'Чтобы проверить эту отправку, нужно подключиться к обновлённым Сотам.'
         : pending ? 'Подтверждение не получено. Проверим ту же отправку, не создавая другую задачу.' : prompt.value ? 'Черновик сохранён на этом устройстве.' : '';
       if (!creation.canDispatch()) error.textContent = friendly(new Error('app_create_lock_unavailable'));
     }
@@ -457,19 +480,22 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const version = ++loadGeneration; loading = true; updateControls();
       const values = await Promise.allSettled([request<{ devices: HostDevice[] }>('apps.devices', {}),
         options.readAgentCapabilities ? options.readAgentCapabilities() : fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.any([AbortSignal.timeout(8000), formSignal]) }).then(async response => {
-          if (!response.ok) throw new TypeError('Network unavailable'); return await response.json() as { agentConfigured: boolean };
+          if (!response.ok) throw new TypeError('Network unavailable'); return await response.json() as AgentCapabilities;
         })]);
       if (!await current() || formSignal.aborted || version !== loadGeneration) return;
       loading = false;
       devices = values[0].status === 'fulfilled' ? values[0].value.devices : [];
       modelReady = values[1].status === 'fulfilled' && values[1].value.agentConfigured === true;
+      autoSupported = values[1].status === 'fulfilled' && values[1].value.automaticAppRegistration?.schema === 'soty.automatic-app-registration-capability.v1';
+      autoReady = autoSupported && values[1].status === 'fulfilled' && values[1].value.automaticAppRegistration?.available === true;
       availability.replaceChildren();
       if (values[0].status === 'rejected') {
         const failure = el('p', 'sw-error', 'Не удалось загрузить ваши устройства. Проверьте соединение и повторите.'); failure.setAttribute('role', 'alert'); availability.append(failure);
       } else if (!devices.length) availability.append(el('p', 'sw-muted', 'Нет доступного компьютера для новой задачи.'),
         button('Подключить компьютер', 'laptop', 'sw-button-quiet', () => { requestClose(() => { if (!host) panel.close(); void connectDevice(); }); }));
-      if (!modelReady) availability.append(el('p', 'sw-muted', values[1].status === 'rejected' ? 'Не удалось проверить доступность ИИ. Сохранённую отправку можно проверить.' : 'Подключение к ИИ пока недоступно. Сохранённую отправку можно проверить.'));
-      if (!devices.length || !modelReady) availability.append(button('Проверить доступность', 'refresh', 'sw-button-quiet', () => { void loadDevices(); }));
+      if (!modelReady) availability.append(el('p', 'sw-muted', values[1].status === 'rejected' ? 'Не удалось проверить доступность ИИ. Ранее отправленные задачи сохраняются.' : 'Подключение к ИИ пока недоступно. Ранее отправленные задачи сохраняются.'));
+      if (!autoReady) availability.append(el('p', 'sw-muted', 'Автоматическое добавление недоступно. Проверьте соединение или обновите Соты.'));
+      if (!devices.length || !modelReady || !autoReady) availability.append(button('Проверить доступность', 'refresh', 'sw-button-quiet', () => { void loadDevices(); }));
       fill(true);
     }
     form.addEventListener('submit', event => {
@@ -480,12 +506,15 @@ export function createAppBuilderAction(options: BuilderOptions) {
         try {
           const snapshot = creation.read(), device = devices.find(value => keyOf(value) === hosts.value);
           if (snapshot.accepted) { follow(snapshot.accepted); return; }
+          if (loading && (!snapshot.pending || snapshot.pending.payload.autoRegister === true)) return;
+          if (snapshot.pending?.payload.autoRegister === true && !autoSupported || !snapshot.pending && !autoReady) return;
           if (!snapshot.pending && (!device || !modelReady || !prompt.value.trim())) return;
           // Re-read under the lock on every retry; even an already visible
           // pending cannot dispatch through an unreadable storage record.
           const pending = await creation.prepare(snapshot.pending?.payload ?? { expectedAccountId: accountId, hostDeviceId: device!.hostDeviceId,
-            connectorId: device!.connectorId, text: prompt.value, cwd: cwd.value });
+            connectorId: device!.connectorId, text: prompt.value, cwd: cwd.value, autoRegister: true });
           if (!await current()) return;
+          if (pending.payload.autoRegister && (loading || !autoSupported || !snapshot.pending && !autoReady)) { fill(); return; }
           fill();
           // A late response may settle the durable intent after the modal closes,
           // but only in the same account. It must never repaint a closed dialog.
@@ -493,7 +522,13 @@ export function createAppBuilderAction(options: BuilderOptions) {
           if (!await sameAccount()) return;
           if ('admission' in result) {
             await creation.reject(pending.payload, result.admission);
-            if (!closed) { if (result.admission.reason === 'app_model_unavailable') modelReady = false; fill(); error.textContent = friendly({ code: result.admission.reason }); }
+            if (!closed) {
+              const unavailable = ['app_model_unavailable', 'app_autoregistration_unavailable'].includes(result.admission.reason);
+              if (result.admission.reason === 'app_model_unavailable') modelReady = false;
+              if (result.admission.reason === 'app_autoregistration_unavailable') autoReady = false;
+              fill(); error.textContent = friendly({ code: result.admission.reason });
+              if (unavailable) void loadDevices();
+            }
             return;
           }
           if (!appBuilderReceipt(result.job, pending.payload)) throw new Error('invalid_app_create_receipt');

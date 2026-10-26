@@ -1,8 +1,8 @@
 export interface AppCreateDraft { text: string; cwd: string; hostDeviceId: string; connectorId: string }
-export interface AppCreatePayload extends AppCreateDraft { expectedAccountId: string; requestId: string }
+export interface AppCreatePayload extends AppCreateDraft { expectedAccountId: string; requestId: string; autoRegister?: true }
 export interface AppCreateTarget { hostDeviceId: string; connectorId: string; jobId: string }
 export interface AppCreatePending { payload: AppCreatePayload; draftRevision: number }
-export interface AppCreateSnapshot { schema: 1; accountId: string; draft: AppCreateDraft; revision: number; pending: AppCreatePending | null; accepted: AppCreateTarget | null }
+export interface AppCreateSnapshot { schema: 1 | 2; accountId: string; draft: AppCreateDraft; revision: number; pending: AppCreatePending | null; accepted: AppCreateTarget | null }
 export interface AppCreateReceipt { status: string; requestId: string; reason: string }
 export function createAppCreateState(options: {
   accountId: string; storage: Pick<Storage, 'getItem' | 'setItem'>;
@@ -14,5 +14,5 @@ export function createAppCreateState(options: {
   prepare(input: Omit<AppCreatePayload, 'requestId'>): Promise<AppCreatePending>;
   acknowledge(expected: AppCreatePayload, job: AppCreateTarget): Promise<boolean>;
   reject(expected: AppCreatePayload, receipt: AppCreateReceipt): Promise<boolean>;
-  adoptAccepted(job: AppCreateTarget): Promise<boolean>; clearAccepted(job: AppCreateTarget): Promise<boolean>;
+  protectAutomatic(job: AppCreateTarget): Promise<boolean>; clearAccepted(job: AppCreateTarget): Promise<boolean>;
 };

@@ -1,0 +1,64 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Two-tab app creation fixture</title>
+<h1>Две вкладки: одна отправка</h1><p>Синтетические данные, без реальных API.</p>
+<button id="run">Проверить две вкладки</button><pre id="proof" data-test-status="ready">Готово</pre>
+<script type="module">
+import '../world/world.css';
+import { createAppActions } from './local-apps.ts';
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const check=(value,message)=>{if(!value)throw Error(message);};
+async function until(predicate){for(let n=0;n<500;n++){if(predicate())return;await wait(10);}throw Error('fixture timeout');}
+const params=new URLSearchParams(location.search), accountId=params.get('account'), worker=params.get('worker')==='1';
+if(worker){
+  document.querySelector('#run').hidden=true;
+  const device={hostDeviceId:'fixture-host',connectorId:'fixture-connector',name:'Компьютер',online:true};
+  const client={async getLocalState(){return {accountId};},async extension(op,args,context){
+    check(context.expectedAccountId===accountId,'account mismatch');
+    if(op==='apps.devices')return {devices:[device]};
+    if(op==='apps.agent.create'){
+      await navigator.locks.request('soty.qa-ledger:'+accountId,()=>{
+        const key='soty.qa-ledger:'+accountId, current=JSON.parse(localStorage.getItem(key)||'{"calls":[],"intents":{}}');
+        current.calls.push(structuredClone(args));
+        if(current.intents[args.requestId])check(JSON.stringify(current.intents[args.requestId])===JSON.stringify(args),'retry changed intent');
+        else current.intents[args.requestId]=structuredClone(args);
+        localStorage.setItem(key,JSON.stringify(current));
+      });
+      await wait(100);
+      return {job:{schema:'soty.connector-job.v4',kind:'agent',id:'job_1234567890abcdef1234567890abcdef',deviceId:device.hostDeviceId,connectorId:device.connectorId,status:'running',attempts:1,result:null}};
+    }
+    if(op==='apps.agent.read')return {job:{schema:'soty.connector-job.v4',kind:'agent',id:args.jobId,deviceId:device.hostDeviceId,connectorId:device.connectorId,status:'running',attempts:1,result:null},task:{autoRegister:true},done:false,events:[],cursor:0};
+    if(op==='apps.register')throw Error('browser registration forbidden');
+    throw Error('Unexpected '+op);
+  }};
+  const actions=createAppActions(client,async()=>{},undefined,{readAgentCapabilities:async()=>({agentConfigured:true,automaticAppRegistration:{schema:'soty.automatic-app-registration-capability.v1',available:true}})});
+  const form=()=>document.querySelector('dialog[open] form');
+  window.qaTabs={
+    async open(){await actions.agentCreate();await until(()=>form()?.querySelector('select')?.value);},
+    async fill(){const prompt=form().querySelector('textarea');prompt.value='Общая идея для обеих вкладок';prompt.dispatchEvent(new Event('input'));await until(()=>!form().querySelector('[type=submit]').disabled);},
+    submit(){form().requestSubmit();},
+    close(){actions.destroy();}
+  };
+}else{
+  const run=document.querySelector('#run'),proof=document.querySelector('#proof');
+  run.onclick=async()=>{
+    run.disabled=true;proof.dataset.testStatus='running';
+    const account='qa_tabs_'+crypto.randomUUID(),url=location.pathname+'?worker=1&account='+encodeURIComponent(account);
+    const first=window.open(url,'qa-first-'+account),second=window.open(url,'qa-second-'+account);
+    try{
+      check(first&&second,'browser blocked test tabs');await until(()=>first.qaTabs&&second.qaTabs);
+      await Promise.all([first.qaTabs.open(),second.qaTabs.open()]);
+      await Promise.all([first.qaTabs.fill(),second.qaTabs.fill()]);
+      first.qaTabs.submit();second.qaTabs.submit();
+      await until(()=>JSON.parse(localStorage.getItem('soty.app-create.v1:'+account)||'null')?.accepted);
+      await wait(200);
+      const record=JSON.parse(localStorage.getItem('soty.app-create.v1:'+account)),ledger=JSON.parse(localStorage.getItem('soty.qa-ledger:'+account));
+      check(record.schema===2&&record.accepted.jobId==='job_1234567890abcdef1234567890abcdef','automatic task not durable');
+      check(ledger.calls.length>=1&&ledger.calls.length<=2&&Object.keys(ledger.intents).length===1,'tabs produced duplicate tasks');
+      check(ledger.calls.every(call=>call.autoRegister===true&&call.requestId===ledger.calls[0].requestId),'tabs sent different or stripped intents');
+      check(!localStorage.getItem('soty.world.agent:'+account)&&!localStorage.getItem('soty.app-registration.v1:'+account+':'+record.accepted.jobId),'new path wrote a browser marker');
+      proof.dataset.testStatus='passed';proof.textContent='PASS: two real tabs / Web Locks / one durable request / no stripped flag / no browser registration marker.';
+    }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
+    finally{first?.qaTabs?.close();second?.qaTabs?.close();first?.close();second?.close();localStorage.removeItem('soty.app-create.v1:'+account);localStorage.removeItem('soty.qa-ledger:'+account);run.disabled=false;}
+  };
+}
+</script></html>

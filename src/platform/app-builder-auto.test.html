@@ -1,0 +1,55 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Automatic app status fixture</title>
+<h1>Состояние автоматического подключения</h1><p>Изолированные ответы; реальное подключение не выполняется.</p>
+<button id="run">Проверить состояния</button><pre id="proof" data-test-status="ready">Готово</pre>
+<script type="module">
+import '../world/world.css';
+import { createAppActions } from './local-apps.ts';
+import { createAppCreateState } from './app-create-state.mjs';
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const check=(value,message)=>{if(!value)throw Error(message);};
+async function until(predicate){for(let n=0;n<600;n++){if(predicate())return;await wait(10);}throw Error('fixture timeout');}
+const token='1234567890abcdef1234567890abcdef',jobId='job_'+token,appId='app-'+token;
+const target={hostDeviceId:'qa-host',connectorId:'qa-connector',jobId};
+const proposal={schema:'soty.local-app.v1',name:'Приложение',port:5111,entryPath:'/',sourceJobId:jobId};
+let accountId,actions,status,missingTask=false,cancelled=false,opened=[],registerCalls=0;
+const accounts=[];
+const client={async getLocalState(){return {accountId};},async extension(op,args,context){
+  check(context.expectedAccountId===accountId,'account mismatch');
+  if(op==='apps.devices')return {devices:[{...target,name:'Компьютер',online:true}]};
+  if(op==='apps.agent.read')return {job:{schema:'soty.connector-job.v4',kind:'agent',id:jobId,deviceId:target.hostDeviceId,connectorId:target.connectorId,status:'succeeded',attempts:1,cancelRequested:cancelled,result:{text:'Выполнение завершено',appProposal:proposal}},
+    ...(!missingTask?{task:{autoRegister:true},autoRegistration:{state:status,appId,appState:'ready'}}:{}),done:true,events:[],cursor:0};
+  if(op==='apps.register'){registerCalls++;throw Error('browser registration forbidden');}
+  throw Error('Unexpected '+op);
+}};
+const button=label=>[...document.querySelectorAll('dialog[open] button')].find(item=>item.textContent.trim()===label&&!item.hidden);
+const body=()=>document.querySelector('dialog[open]')?.textContent||'';
+async function fresh(next,options={}){
+  actions?.destroy();accountId='qa_status_'+crypto.randomUUID();accounts.push(accountId);status=next;missingTask=Boolean(options.missingTask);cancelled=Boolean(options.cancelled);
+  const state=createAppCreateState({accountId,storage:localStorage,locks:navigator.locks});
+  const intent=await state.prepare({expectedAccountId:accountId,hostDeviceId:target.hostDeviceId,connectorId:target.connectorId,text:'Создать',cwd:'',autoRegister:true});
+  await state.acknowledge(intent.payload,target);
+  actions=createAppActions(client,async()=>{},undefined,{openRegisteredApp:async(id,expected)=>{check(expected===accountId,'account changed');opened.push(id);}});
+  await actions.agentCreate();
+}
+const run=document.querySelector('#run'),proof=document.querySelector('#proof');
+run.onclick=async()=>{
+  run.disabled=true;proof.dataset.testStatus='running';
+  try{
+    await fresh('waiting');await until(()=>body().includes('Подключаем приложение'));
+    check(!button('Открыть приложение')&&opened.length===0,'waiting opened early');status='ready';
+    await until(()=>button('Открыть приложение'));button('Открыть приложение').click();await until(()=>opened.length===1);
+    check(opened[0]===appId,'opened wrong app');
+    await fresh('conflict');await until(()=>body().includes('занятый порт'));check(button('Проверить')&&button('Новая задача'),'conflict lacks recovery');
+    status='ready';button('Проверить').click();await until(()=>button('Открыть приложение'));
+    await fresh('access-lost');await until(()=>body().includes('Доступ исходного устройства'));check(button('Проверить'),'access loss hidden');
+    await fresh('revoked');await until(()=>body().includes('не будет добавлено снова'));check(!button('Открыть приложение'),'revoked opened');
+    await fresh('failed');await until(()=>body().includes('Не удалось создать приложение'));check(body().includes('Ответ задачи'),'failure lacks result');
+    await fresh('waiting',{missingTask:true});await until(()=>body().includes('Ждём подтверждения от Сот'));check(!button('Проверить подключение'),'old backend triggered legacy fallback');
+    await fresh('waiting',{cancelled:true});await until(()=>body().includes('Остановка запрошена'));check(body().includes('Ответ задачи'),'cancellation lacks answer');
+    check(registerCalls===0&&opened.length===1,'unexpected browser registration or navigation');
+    proof.dataset.testStatus='passed';proof.textContent='PASS: waiting / ready / conflict recovery / access loss / revocation / failed job / unavailable old backend / cancellation / zero browser registrations.';
+  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
+  finally{actions?.destroy();for(const account of accounts)localStorage.removeItem('soty.app-create.v1:'+account);run.disabled=false;}
+};
+</script></html>

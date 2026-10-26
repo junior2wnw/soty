@@ -7,12 +7,13 @@
 import '../world/world.css';
 import { createPalette } from '../world/theme/palette.mjs';
 import { createAppActions } from './local-apps.ts';
+import { createAppCreateState } from './app-create-state.mjs';
 for (const [key,value] of Object.entries(createPalette('dark',50))) document.documentElement.style.setProperty(key,value);
 const proof=document.querySelector('#proof'), run=document.querySelector('#run');
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const check=(value,message)=>{if(!value)throw new Error(message);};
 async function until(predicate){for(let n=0;n<300;n++){if(predicate())return;await wait(10);}throw new Error('fixture timeout');}
-let accountId='', actions, modelReady=true, mode='lost', release;
+let accountId='', actions, modelReady=true, autoSupported=true, autoReady=true, mode='lost', release;
 const accounts=[], calls=[], ledger=new Map();
 const originalSetItem=Storage.prototype.setItem;let quotaKey='';
 const fixtureSetItem=function(key,value){if(quotaKey&&key===quotaKey)throw new DOMException('Synthetic fixture quota','QuotaExceededError');return originalSetItem.call(this,key,value);};
@@ -37,11 +38,11 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
  throw new Error('Unexpected synthetic operation '+op);
 }};
 const originalFetch=window.fetch;
-window.fetch=async input=>{if(String(input)==='/api/apps/capabilities')return new Response(JSON.stringify({agentConfigured:modelReady}),{headers:{'content-type':'application/json'}});throw new Error('Fixture forbids real network');};
+window.fetch=async input=>{if(String(input)==='/api/apps/capabilities')return new Response(JSON.stringify({agentConfigured:modelReady,...(autoSupported?{automaticAppRegistration:{schema:'soty.automatic-app-registration-capability.v1',available:autoReady}}:{})}),{headers:{'content-type':'application/json'}});throw new Error('Fixture forbids real network');};
 const activeForm=()=>document.querySelector('dialog[open] form');
 const state=()=>JSON.parse(localStorage.getItem('soty.app-create.v1:'+accountId));
 async function open(){actions?.destroy();actions=createAppActions(client,async()=>{});await actions.agentCreate();}
-async function fresh(){accountId='qa_app_create_'+crypto.randomUUID();accounts.push(accountId);devices=[first,second];modelReady=true;await open();}
+async function fresh(){accountId='qa_app_create_'+crypto.randomUUID();accounts.push(accountId);devices=[first,second];modelReady=true;autoSupported=true;autoReady=true;await open();}
 async function fill(){await until(()=>activeForm()?.querySelectorAll('select option').length===3);const form=activeForm();
  const prompt=form.querySelector('textarea'),host=form.querySelector('select');host.value=JSON.stringify([first.hostDeviceId,first.connectorId]);host.dispatchEvent(new Event('change'));
  prompt.value='Тестовая личная аппка';prompt.dispatchEvent(new Event('input'));await until(()=>state()?.draft.text===prompt.value&&!form.querySelector('[type=submit]').disabled);return form;}
@@ -49,13 +50,25 @@ run.onclick=async()=>{
  Storage.prototype.setItem=fixtureSetItem;run.disabled=true;proof.dataset.testStatus='running';proof.textContent='Проверяем…';
  try{
   await fresh();const form=await fill();form.requestSubmit();await until(()=>state()?.pending&&form.querySelector('.sw-error').textContent);
-  const original=structuredClone(state().pending.payload);actions.destroy();devices=[second,first];modelReady=false;mode='ok';await open();
+  const original=structuredClone(state().pending.payload);check(original.autoRegister===true&&state().schema===2,'automatic intent not stored');actions.destroy();devices=[second,first];modelReady=false;autoSupported=false;autoReady=false;mode='ok';await open();
   const restored=activeForm();check(restored.querySelector('textarea').readOnly,'pending prompt should be read-only');
   check(restored.querySelector('select').value===JSON.stringify([first.hostDeviceId,first.connectorId]),'device reorder retargeted A');
+  await until(()=>restored.textContent.includes('Автоматическое добавление недоступно'));
+  check(restored.querySelector('[type=submit]').disabled,'unknown capability allowed a pending auto intent');
+  restored.requestSubmit();await wait(50);check(calls.length===1&&state().pending.payload.autoRegister===true,'capability loss changed or resent intent');
+  autoSupported=true;[...restored.querySelectorAll('button')].find(button=>button.textContent.includes('Проверить доступность')).click();
+  await until(()=>!restored.querySelector('[type=submit]').disabled);
   check(!restored.querySelector('[type=submit]').disabled,'model unavailability disabled pending recheck');
   restored.requestSubmit();await until(()=>state()?.accepted);
   check(calls.length===2&&calls[0].requestId===calls[1].requestId&&ledger.size===1,'lost ACK created another task');
   check(calls[1].cwd===original.cwd&&calls[1].text===original.text,'retry lost original intent');
+  accountId='qa_legacy_pending_'+crypto.randomUUID();accounts.push(accountId);autoSupported=false;autoReady=false;modelReady=false;mode='ok';devices=[first];
+  const legacy=createAppCreateState({accountId,storage:localStorage,locks:navigator.locks});
+  await legacy.prepare({expectedAccountId:accountId,hostDeviceId:first.hostDeviceId,connectorId:first.connectorId,text:'Старая незавершённая задача',cwd:''});
+  const legacyCalls=calls.length;await open();await until(()=>activeForm()?.textContent.includes('Автоматическое добавление недоступно'));
+  check(!activeForm().querySelector('[type=submit]').disabled,'legacy pending was blocked by missing capability');
+  activeForm().requestSubmit();await until(()=>state()?.accepted);
+  check(calls.length===legacyCalls+1&&!('autoRegister' in calls.at(-1)),'legacy pending was changed or duplicated');
   await fresh();mode='defer';const late=await fill();late.requestSubmit();await until(()=>Boolean(release));
   const before=calls.length;actions.destroy();release();release=null;await until(()=>state()?.accepted);await open();
   check(!activeForm()&&calls.length===before,'late same-account ACK after close did not restore known job');
@@ -95,7 +108,7 @@ run.onclick=async()=>{
   accountId='qa_two_devices_'+crypto.randomUUID();accounts.push(accountId);devices=[first,second];await open();
   await until(()=>activeForm()?.querySelectorAll('select option').length===3);
   check(activeForm().querySelector('select').value==='', 'several online devices were selected without a choice');
-  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate Escape flush / newer edit cancels close / quota recovery / single online default / saved offline choice / multiple-device choice. Real side effects: 0.';
+  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / capability loss and recovery / legacy pending on old server / remount / A-B reorder / model-off retry / late ACK after close / account change / draft and quota recovery / device choices. Real side effects: 0.';
  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
  finally{quotaKey='';Storage.prototype.setItem=originalSetItem;actions?.destroy();for(const account of accounts){localStorage.removeItem('soty.app-create.v1:'+account);localStorage.removeItem('soty.world.agent:'+account);}run.disabled=false;}
 };

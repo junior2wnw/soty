@@ -19,6 +19,7 @@ function friendly(error: unknown): string {
     apps_origin_not_configured: 'Адрес приложений ещё не настроен на сервере.',
     app_job_failed: 'Не удалось запустить задачу. Проверьте подключение компьютера.',
     app_model_unavailable: 'Подключение к ИИ ещё не настроено. Попробуйте позже.',
+    app_autoregistration_unavailable: 'Автоматическое добавление пока недоступно. Проверьте состояние Сот и повторите.',
     invalid_workspace: 'Укажите папку проекта на выбранном компьютере.',
     job_request_conflict: 'Параметры задачи изменились. Откройте новую задачу.',
     authentication_required: 'Аккаунт изменился. Откройте задачу заново.',

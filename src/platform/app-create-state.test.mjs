@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAppCreateState } from './app-create-state.mjs';
+import { createAppCreateState as createLegacyAppCreateState } from './fixtures/app-create-state-v1.mjs';
 
 const accountId = 'account_alice';
 const input = { expectedAccountId: accountId, hostDeviceId: 'host:alice', connectorId: 'connector:one', text: 'Create a private app', cwd: 'C:\\projects\\one' };
@@ -34,6 +35,41 @@ test('two tabs serialize prepare; a competing intent cannot create a second unco
   assert.equal(a.payload.requestId, b.payload.requestId);
   await assert.rejects(second.prepare({ ...input, text: 'another app' }), /app_create_pending_unconfirmed/u);
   assert.ok(f.lockNames.every(value => value === first.key));
+});
+
+test('automatic intent survives lost ACK, two tabs, and a v1 reader without losing its flag', async () => {
+  const f = fixture(), first = f.open(), second = f.open(), automatic = { ...input, autoRegister: true };
+  const [a, b] = await Promise.all([first.prepare(automatic), second.prepare(automatic)]);
+  assert.deepEqual(a, b); assert.equal(a.payload.autoRegister, true); assert.equal(first.read().schema, 2);
+  assert.deepEqual(await f.open().prepare(automatic), a);
+  await assert.rejects(second.prepare(input), /app_create_pending_unconfirmed/u);
+  const before = f.values.get(first.key), legacy = createLegacyAppCreateState({ accountId, storage: f.storage, locks: f.locks });
+  legacy.read(); assert.equal(legacy.hasUnsavedChanges(), true);
+  await assert.rejects(legacy.prepare(input), /app_create_storage_unavailable/u);
+  assert.equal(f.values.get(first.key), before, 'an old tab must never rewrite the auto intent');
+  assert.equal(await second.acknowledge(a.payload, job), true); assert.equal(second.read().schema, 2);
+  const accepted = f.values.get(first.key); await assert.rejects(legacy.adoptAccepted(job), /app_create_storage_unavailable/u);
+  assert.equal(f.values.get(first.key), accepted, 'the accepted auto job remains protected from old tabs');
+  assert.equal(await first.clearAccepted(job), true); assert.equal(first.read().schema, 1);
+  assert.ok((await legacy.prepare(input)).payload.requestId, 'ordinary legacy use resumes after the auto task is cleared');
+});
+
+test('a rejected automatic intent returns to the original editable v1 draft', async () => {
+  const f = fixture(), state = f.open(), pending = await state.prepare({ ...input, autoRegister: true });
+  assert.equal(await state.reject(pending.payload, { status: 'rejected', requestId: pending.payload.requestId, reason: 'app_autoregistration_unavailable' }), true);
+  assert.equal(state.read().schema, 1); assert.equal(state.read().draft.text, input.text); assert.equal(state.read().pending, null);
+});
+
+test('protecting a known automatic task never restores an intentionally cleared or replaced task', async () => {
+  const f = fixture(), state = f.open();
+  assert.equal(await state.protectAutomatic(job), false);
+  const legacy = createLegacyAppCreateState({ accountId, storage: f.storage, locks: f.locks });
+  assert.equal(await legacy.adoptAccepted(job), true);
+  assert.equal(await state.protectAutomatic(job), true); assert.equal(state.read().schema, 2);
+  assert.equal(await state.clearAccepted(job), true);
+  assert.equal(await state.protectAutomatic(job), false); assert.equal(state.read().accepted, null);
+  const newer = await state.prepare({ ...input, text: 'New request' });
+  assert.equal(await state.protectAutomatic(job), false); assert.deepEqual(state.read().pending, newer);
 });
 
 test('a matching accepted receipt is durable after reload, and a newer draft is not erased', async () => {
@@ -97,14 +133,6 @@ test('corrupted or foreign saved intent fails closed without overwriting its raw
   assert.equal(f.open('account_bob').read().pending, null);
   await assert.rejects(state.prepare({ ...input, expectedAccountId: 'account_bob' }), /invalid_account/u);
   assert.ok(pending.payload.requestId);
-});
-
-test('known legacy results may be adopted but never replace an unconfirmed or newer known task', async () => {
-  const f = fixture(), state = f.open(); assert.equal(await state.adoptAccepted(job), true);
-  assert.equal(await state.adoptAccepted({ ...job, jobId: 'other_job' }), false);
-  assert.deepEqual(f.open().read().accepted, job);
-  await state.clearAccepted(job); const pending = await state.prepare(input);
-  assert.equal(await state.adoptAccepted(job), false); assert.deepEqual(state.read().pending, pending);
 });
 
 test('a missing Web Locks implementation permits recovery and drafts, but never new dispatch', async () => {
