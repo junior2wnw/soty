@@ -1,8 +1,9 @@
 // Synthetic local-only cross-origin app; never connects to an account or production.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-const port = Number(process.argv[2] ?? 5199), parentPort = Number(process.argv[3] ?? 5198);
+const port = Number(process.argv[2] ?? 5199), parentPort = Number(process.argv[3] ?? 5198), delayMs = Number(process.argv[4] ?? 0);
 if (![port, parentPort].every(value => Number.isInteger(value) && value > 1024 && value < 65536) || port === parentPort) throw Error('fixture_ports_invalid');
+if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 5000) throw Error('fixture_delay_invalid');
 const sdk = await readFile(new URL('../../modules/source-app/browser/app-work.mjs', import.meta.url));
 const html = `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Тестовый черновик</title>
 <style>body{font:16px system-ui;padding:24px}textarea{display:block;width:80%;height:120px;margin:12px 0}label{display:block;margin:12px 0}</style>
@@ -12,6 +13,7 @@ const html = `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Тес
 import {createSotyAppWork} from '/work.mjs';
 const input=document.querySelector('#draft'), mode=document.querySelector('#mode'), status=document.querySelector('#status');
 let saved=localStorage.getItem('synthetic-draft')??'',resume=null;input.value=saved;
+if (${delayMs}) await new Promise(resolve=>setTimeout(resolve,${delayMs}));
 const work=createSotyAppWork({parentOrigin:'http://127.0.0.1:${parentPort}',isDirty:()=>input.value!==saved,
  save:async()=>{status.textContent='Сохранение';if(mode.value==='error')throw Error('synthetic_save_error');
  if(mode.value==='lost')await new Promise(resolve=>{resume=resolve});saved=input.value;localStorage.setItem('synthetic-draft',saved);status.textContent='Сохранено';}});
