@@ -40,8 +40,8 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
   };
   window.addEventListener('beforeunload', beforeUnload);
   const unregisterUpdateGuard = registerUpdateGuard(async () => {
-    try { await Promise.all([...createStates.values()].map(state => state.flush())); return [...createStates.values()].every(state => !state.hasUnsavedChanges()); }
-    catch { return false; }
+    try { await Promise.all([...createStates.values()].map(state => state.flush())); return [...createStates.values()].every(state => !state.hasUnsavedChanges()) ? true : 'work'; }
+    catch { return 'save'; }
   });
   const dialog = (title: string, close?: () => void) => {
     const value = createDialog(title, () => { dialogs.delete(value); close?.(); }); dialogs.add(value); return value;

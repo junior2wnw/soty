@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { getPwaController, registerUpdateGuard, watchFormEdits } from './platform/pwa';
+import { getPwaController, registerUpdateGuard, updateBlockMessage, watchFormEdits, type PwaState } from './platform/pwa';
 import { createLegacyDraftStore } from './platform/legacy-drafts.mjs';
 import jsQR from "jsqr";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, PendingFileTransfer, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
@@ -679,14 +679,15 @@ async function registerServiceWorker(): Promise<void> {
   pwaGuardRegistered = true;
   const pwa = getPwaController(), edits = watchFormEdits();
   const unguard = registerUpdateGuard(async () => {
-    if (!localDrafts.flush() || composer?.value || activeFileSends > 0 || fileDeletions.size > 0 || commandFileTransfers.size > 0 || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream || edits.hasUnsavedChanges()) return false;
+    if (!localDrafts.flush()) return 'save';
+    if (composer?.value) return 'work';
+    if (activeFileSends > 0 || fileDeletions.size > 0 || commandFileTransfers.size > 0 || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream) return 'busy';
+    if (edits.hasUnsavedChanges()) return 'form';
     await idbSet('connect:before-update:v1', buildConnectSnapshot());
     for (const [id, value] of texts) saveTextSnapshotNow(id, value);
     return true;
   });
-  const unsubscribe = pwa.subscribe(state => {
-    if (['available', 'blocked', 'failed'].includes(state.update)) offerSafeUpdate(() => { void pwa.applyUpdate(); });
-  });
+  const unsubscribe = pwa.subscribe(state => offerSafeUpdate(state, () => { void pwa.applyUpdate(); }));
   window.addEventListener('pagehide', event => { if (!event.persisted) { unsubscribe(); unguard(); edits.destroy(); } });
 }
 
@@ -800,27 +801,18 @@ async function restoreFromOperatorExportText(textOrPromise: string | Promise<str
   }
 }
 
-function offerSafeUpdate(activate: () => void): void {
-  if (document.querySelector(".connect-update-notice")) return;
-  const notice = document.createElement("aside");
-  notice.className = "connect-update-notice";
-  notice.textContent = "Доступно обновление. Выберите удобный момент для перезапуска.";
-  const button = document.createElement("button");
-  button.textContent = "Сохранить работу и обновить";
-  button.addEventListener("click", async () => {
-    try {
-      // Saving must finish before reload; a quota error keeps the page open.
-      if (composer?.value || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream) {
-        notice.firstChild!.textContent = "Сначала завершите ввод сообщения, сканирование или выполняемое действие.";
-        return;
-      }
-      const snapshot = buildConnectSnapshot();
-      await idbSet("connect:before-update:v1", snapshot);
-      for (const [id, value] of texts) saveTextSnapshotNow(id, value);
-      activate();
-    } catch { notice.firstChild!.textContent = "Не удалось сохранить копию. Страница останется открыта; освободите место и повторите."; }
-  });
-  notice.append(button); document.body.append(notice);
+function offerSafeUpdate(state: PwaState, activate: () => void): void {
+  let notice = document.querySelector<HTMLElement>('.connect-update-notice');
+  if (state.update === 'idle') { notice?.remove(); return; }
+  if (!notice) {
+    notice = document.createElement('aside'); notice.className = 'connect-update-notice'; notice.setAttribute('role', 'status');
+    const text = document.createElement('span'), action = document.createElement('button');
+    action.addEventListener('click', activate); notice.append(text, action); document.body.append(notice);
+  }
+  const text = notice.querySelector('span')!, action = notice.querySelector('button')!;
+  text.textContent = state.update === 'blocked' ? updateBlockMessage(state) : state.update === 'failed' ? 'Обновление не удалось. Можно повторить.' : state.update === 'saving' ? 'Проверяем сохранение работы…' : state.update === 'activating' ? 'Обновляем Соты…' : 'Готова новая версия Сот.';
+  action.textContent = state.update === 'blocked' || state.update === 'failed' ? 'Повторить' : 'Обновить';
+  action.disabled = state.update === 'saving' || state.update === 'activating';
 }
 
 async function restoreFromAccountTransferText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {

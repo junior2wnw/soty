@@ -1,8 +1,12 @@
 export type PwaInstallState = 'unavailable' | 'available' | 'prompting' | 'accepted' | 'installed';
 export type PwaUpdateState = 'idle' | 'available' | 'saving' | 'activating' | 'blocked' | 'failed';
+export type UpdateBlockReason = 'work' | 'form' | 'dialog' | 'busy' | 'signin' | 'save' | 'unresponsive' | 'tabs-changed' | 'unknown';
+export type UpdateBlockLocation = 'current' | 'other' | 'unknown';
 export interface PwaState {
   install: PwaInstallState;
   update: PwaUpdateState;
+  updateBlockReason: UpdateBlockReason | null;
+  updateBlockLocation: UpdateBlockLocation | null;
   connection: 'checking' | 'online' | 'offline' | 'unreachable';
   worker: 'unsupported' | 'development' | 'registering' | 'active' | 'failed';
   offlineReady: boolean;
@@ -17,7 +21,10 @@ export interface PwaController {
   destroy(): void;
 }
 type InstallPrompt = Event & { prompt(): Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
-type UpdateGuard = () => boolean | void | Promise<boolean | void>;
+type UpdateGuard = () => boolean | void | UpdateBlockReason | Promise<boolean | void | UpdateBlockReason>;
+const blockReasons: readonly string[] = ['work', 'form', 'dialog', 'busy', 'signin', 'save', 'unresponsive', 'tabs-changed', 'unknown'];
+const blockReason = (value: unknown): UpdateBlockReason => typeof value === 'string' && blockReasons.includes(value) ? value as UpdateBlockReason : 'unknown';
+const blockLocation = (value: unknown): UpdateBlockLocation => value === 'current' || value === 'other' ? value : 'unknown';
 const guards = new Set<UpdateGuard>();
 let singleton: PwaController | undefined;
 
@@ -25,24 +32,41 @@ let singleton: PwaController | undefined;
 export function registerUpdateGuard(guard: UpdateGuard): () => void { guards.add(guard); return () => guards.delete(guard); }
 export function getPwaController(): PwaController { return singleton ??= createPwaController(); }
 
+/** Use only verified, non-sensitive categories; older tabs can return no reason. */
+export function updateBlockMessage(state: PwaState): string {
+  const where = state.updateBlockLocation === 'current' ? 'в этом окне' : state.updateBlockLocation === 'other' ? 'в другой вкладке Сот' : 'в открытых окнах Сот';
+  switch (state.updateBlockReason) {
+    case 'work': return `Сохраните незавершённую работу ${where}, затем нажмите «Повторить».`;
+    case 'form': return `Сохраните изменения в форме ${where}, затем нажмите «Повторить».`;
+    case 'dialog': return `Сохраните или закройте открытую форму ${where}, затем нажмите «Повторить».`;
+    case 'busy': return `Дождитесь завершения операции ${where}, затем нажмите «Повторить».`;
+    case 'signin': return `Завершите вход ${where}, затем нажмите «Повторить».`;
+    case 'save': return `Не удалось сохранить работу ${where}. Проверьте её и нажмите «Повторить».`;
+    case 'unresponsive': return 'Одна из вкладок Сот не ответила. Откройте её, проверьте работу и нажмите «Повторить».';
+    case 'tabs-changed': return 'Открытые вкладки изменились во время проверки. Нажмите «Повторить».';
+    default: return 'Не удалось проверить открытые окна Сот. Проверьте незавершённую работу и нажмите «Повторить».';
+  }
+}
+
 export function createPwaController(): PwaController {
   const supported = 'serviceWorker' in navigator, development = import.meta.env.DEV;
   const display = matchMedia('(display-mode: standalone)');
   const installed = () => display.matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
-  let state: PwaState = { install: installed() ? 'installed' : 'unavailable', update: 'idle', connection: 'checking',
+  let state: PwaState = { install: installed() ? 'installed' : 'unavailable', update: 'idle', updateBlockReason: null, updateBlockLocation: null, connection: 'checking',
     worker: development ? 'development' : supported ? 'registering' : 'unsupported', offlineReady: false };
   let prompt: InstallPrompt | undefined, registration: ServiceWorkerRegistration | undefined, destroyed = false, installGeneration = 0;
-  let connectionFlight: Promise<void> | undefined, guardFlight: Promise<boolean> | undefined, updateFlight: Promise<boolean> | undefined;
+  let connectionFlight: Promise<void> | undefined, guardFlight: Promise<UpdateBlockReason | null> | undefined, updateFlight: Promise<boolean> | undefined;
   let reloadArmed = false, reloadRequired = false, reloading = false, lastUpdateCheck = 0;
   let reloadWorker: ServiceWorker | undefined, requestedWorker: ServiceWorker | undefined;
   const listeners = new Set<(state: PwaState) => void>(), abort = new AbortController();
   const publish = (patch: Partial<PwaState>) => {
+    if (patch.update && patch.update !== 'blocked') patch = { ...patch, updateBlockReason: null, updateBlockLocation: null };
     if (destroyed || Object.entries(patch).every(([key, value]) => state[key as keyof PwaState] === value)) return;
     state = { ...state, ...patch }; for (const listener of listeners) listener({ ...state });
   };
-  const saveDrafts = (): Promise<boolean> => guardFlight ??= (async () => {
-    try { for (const guard of guards) if (await guard() === false) return false; return true; }
-    catch { return false; }
+  const saveDrafts = (): Promise<UpdateBlockReason | null> => guardFlight ??= (async () => {
+    try { for (const guard of guards) { const result = await guard(); if (result === false) return 'unknown'; if (typeof result === 'string') return blockReason(result); } return null; }
+    catch { return 'save'; }
   })().finally(() => { guardFlight = undefined; });
   const workerRequest = <T>(worker: ServiceWorker, type: string, timeout = 5000): Promise<T> => new Promise((resolve, reject) => {
     const channel = new MessageChannel();
@@ -113,7 +137,10 @@ export function createPwaController(): PwaController {
     if (event.data?.type === 'SOTY_PREPARE_UPDATE') {
       const port = event.ports[0]; if (!port) return;
       publish({ update: 'saving' });
-      void saveDrafts().then(ready => { port.postMessage({ ready }); port.close(); publish({ update: ready ? 'available' : 'blocked' }); });
+      void saveDrafts().then(reason => {
+        port.postMessage(reason ? { ready: false, reason } : { ready: true }); port.close();
+        publish(reason ? { update: 'blocked', updateBlockReason: reason, updateBlockLocation: 'current' } : { update: 'available' });
+      });
     } else if (event.data?.type === 'SOTY_UPDATE_COMMIT') {
       if (reloading || requestedWorker && source !== requestedWorker || source.state === 'redundant') return;
       observeReloadWorker(source);
@@ -129,11 +156,11 @@ export function createPwaController(): PwaController {
     const worker = reloadWorker;
     if (!reloadArmed || !worker || rejectRedundant(worker) || navigator.serviceWorker.controller !== worker) return false;
     // Typing may resume between prepare and activation: recheck before navigation.
-    const ready = await saveDrafts();
+    const reason = await saveDrafts();
     if (destroyed) return false;
     if (reloading) return true;
     if (!reloadArmed || reloadWorker !== worker || rejectRedundant(worker) || navigator.serviceWorker.controller !== worker) return false;
-    if (!ready) { reloadArmed = false; publish({ update: 'blocked' }); return false; }
+    if (reason) { reloadArmed = false; publish({ update: 'blocked', updateBlockReason: reason, updateBlockLocation: 'current' }); return false; }
     reloading = true; reloadArmed = false; reloadRequired = false; location.reload(); publish({ update: 'idle' }); return true;
   };
   window.addEventListener('beforeinstallprompt', beforeInstall, { signal: abort.signal });
@@ -187,7 +214,8 @@ export function createPwaController(): PwaController {
           if (!reloadWorker || navigator.serviceWorker.controller !== reloadWorker) { publish({ update: 'failed' }); return false; }
           reloadArmed = true; return controllerChanged();
         }
-        if (!await saveDrafts()) { publish({ update: 'blocked' }); return false; }
+        const reason = await saveDrafts();
+        if (reason) { publish({ update: 'blocked', updateBlockReason: reason, updateBlockLocation: 'current' }); return false; }
         if (destroyed) return false;
         if (reloading) return true;
         if (registration?.waiting !== worker) {
@@ -195,11 +223,11 @@ export function createPwaController(): PwaController {
           publish({ update: registration?.waiting ? 'available' : 'failed' }); return false;
         }
         try {
-          const result = await workerRequest<{ ready?: boolean }>(worker, 'SOTY_ACTIVATE_UPDATE', 20_000);
+          const result = await workerRequest<{ ready?: boolean; reason?: unknown; location?: unknown }>(worker, 'SOTY_ACTIVATE_UPDATE', 20_000);
           if (destroyed || state.update === 'blocked') return false;
           if (reloading) return true;
           if (rejectRedundant(worker)) return false;
-          if (!result.ready) { publish({ update: 'blocked' }); return false; }
+          if (!result.ready) { publish({ update: 'blocked', updateBlockReason: blockReason(result.reason), updateBlockLocation: blockLocation(result.location) }); return false; }
           observeReloadWorker(worker);
           reloadArmed = true; reloadRequired = true; publish({ update: 'activating' });
           if (navigator.serviceWorker.controller === worker) return controllerChanged();

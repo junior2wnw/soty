@@ -74,6 +74,33 @@ function updateFixture(t,{lostActivationAck=false,actualWorker=lostActivationAck
     expireActivationAck(){assert.equal(activationTimers.size,1);const [timer]=activationTimers;activationTimers.delete(timer);timer.fn();}};
 }
 
+test('a local unsaved form reports an actionable reason and still requires a safe retry',async t=>{
+  const f=updateFixture(t);let dirty=true;f.exports.registerUpdateGuard(()=>dirty?'form':true);await setImmediate();f.offerUpdate();
+  assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
+  assert.equal(f.control.get().updateBlockReason,'form');assert.equal(f.control.get().updateBlockLocation,'current');
+  assert.match(f.exports.updateBlockMessage(f.control.get()),/форме в этом окне/);
+  dirty=false;f.offerUpdate(port=>{f.activate();port.postMessage({ready:true});port.close();});
+  assert.equal(await f.control.applyUpdate(),true);assert.equal(f.reloads(),1);
+});
+
+test('an older guard and a saving exception keep data safe and distinguish an unknown cause',async t=>{
+  for(const {guard,expected} of [{guard:()=>false,expected:'unknown'},{guard:()=>{throw Error('write unavailable');},expected:'save'}]){
+    const f=updateFixture(t);f.exports.registerUpdateGuard(guard);await setImmediate();f.offerUpdate();
+    assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
+    assert.equal(f.control.get().updateBlockReason,expected);
+  }
+});
+
+test('another tab reason reaches the user and old workers stay honestly unknown',async t=>{
+  for(const result of [{ready:false,reason:'dialog',location:'other'},{ready:false}]){
+    const f=updateFixture(t);await setImmediate();f.offerUpdate(port=>{port.postMessage(result);port.close();});
+    assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
+    assert.equal(f.control.get().updateBlockReason,result.reason??'unknown');
+    assert.equal(f.control.get().updateBlockLocation,result.location??'unknown');
+    assert.match(f.exports.updateBlockMessage(f.control.get()),result.reason?/другой вкладке/:/Не удалось проверить/);
+  }
+});
+
 test('a positive ACK from a now-redundant clicked worker settles instead of staying activating',async t=>{
   const f=updateFixture(t,{actualWorker:true});await setImmediate();f.useForeignController();f.offerUpdate();
   const first=f.control.applyUpdate();await f.workerFinished();assert.equal(await first,false);

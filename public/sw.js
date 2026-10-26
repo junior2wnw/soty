@@ -174,7 +174,10 @@ self.addEventListener("message", (event) => {
       event.ports[0]?.postMessage({ version: cacheName, offlineReady: ready.every(Boolean) });
     })());
   } else if (event.data?.type === 'SOTY_ACTIVATE_UPDATE' || event.data?.type === 'skipWaiting') {
-    event.waitUntil(prepareUpdate().then(ready => event.ports[0]?.postMessage({ ready })));
+    event.waitUntil(prepareUpdate().then(result => {
+      const location = result.clientId && event.source?.id ? (result.clientId === event.source.id ? 'current' : 'other') : 'unknown';
+      event.ports[0]?.postMessage(result.ready ? { ready: true } : { ready: false, reason: result.reason, location });
+    }));
   }
 });
 
@@ -186,18 +189,23 @@ function prepareUpdate() {
     const confirmedDocuments = new Map(clients.map(client => [client.id, client.url]));
     const decisions = await Promise.all(clients.map(client => new Promise(resolve => {
       const channel = new MessageChannel();
-      const timer = setTimeout(() => { channel.port1.close(); resolve(false); }, 10_000);
-      channel.port1.onmessage = event => { clearTimeout(timer); channel.port1.close(); resolve(event.data?.ready === true); };
+      const timer = setTimeout(() => { channel.port1.close(); resolve({ ready: false, reason: 'unresponsive', clientId: client.id }); }, 10_000);
+      channel.port1.onmessage = event => {
+        clearTimeout(timer); channel.port1.close();
+        const reason = ['work', 'form', 'dialog', 'busy', 'signin', 'save'].includes(event.data?.reason) ? event.data.reason : 'unknown';
+        resolve(event.data?.ready === true ? { ready: true } : { ready: false, reason, clientId: client.id });
+      };
       client.postMessage({ type: 'SOTY_PREPARE_UPDATE' }, [channel.port2]);
     })));
-    if (!decisions.every(Boolean)) return false;
+    const blocked = decisions.find(decision => !decision.ready);
+    if (blocked) return blocked;
     // A newly opened client has not yet confirmed durable drafts.
     const latest = (await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })).filter(client => isSotyDocument(client.url));
-    if (latest.some(client => confirmedDocuments.get(client.id) !== client.url)) return false;
+    if (latest.some(client => confirmedDocuments.get(client.id) !== client.url)) return { ready: false, reason: 'tabs-changed' };
     for (const client of latest) client.postMessage({ type: 'SOTY_UPDATE_COMMIT' });
     await self.skipWaiting();
-    return true;
-  })().catch(() => false).finally(() => { preparing = undefined; });
+    return { ready: true };
+  })().catch(() => ({ ready: false, reason: 'unknown' })).finally(() => { preparing = undefined; });
   return preparing;
 }
 

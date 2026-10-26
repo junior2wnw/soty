@@ -52,7 +52,7 @@ export async function startHumanLogin(root: HTMLElement, interactionId: string):
       if (dialog) await new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true })); else panel.close();
     },
   });
-  const unguard = registerUpdateGuard(() => handle.canReload());
+  const unguard = registerUpdateGuard(() => handle.canReload() ? true : 'signin');
   window.addEventListener('pagehide', event => { if (!event.persisted) { unguard(); handle.dispose(); } }, { once: true });
   window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 }

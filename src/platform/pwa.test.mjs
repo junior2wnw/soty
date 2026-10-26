@@ -16,15 +16,15 @@ function worker({ clients = [], latest = clients, present = true, origin = 'http
     self: { location: { origin }, addEventListener: (name, handler) => handlers.set(name, handler),
       skipWaiting: async () => { records.activated++; }, clients: { claim: async () => {}, matchAll: async () => ++reads > 1 ? latest : clients } },
   });
-  const emit = async (type, data) => {
+  const emit = async (type, data, source) => {
     let pending = Promise.resolve(), response;
-    handlers.get(type)({ data, ports: [{ postMessage: value => { response = value; } }], waitUntil: value => { pending = value; } });
+    handlers.get(type)({ data, source, ports: [{ postMessage: value => { response = value; } }], waitUntil: value => { pending = value; } });
     await pending; return response;
   };
   return { records, handlers, emit };
 }
-function client(id, ready, committed) { return { id, url: 'https://soty.test/', postMessage(message, ports) {
-  if (message.type === 'SOTY_PREPARE_UPDATE') { ports[0].postMessage({ ready }); ports[0].close(); }
+function client(id, ready, committed, reason) { return { id, url: 'https://soty.test/', postMessage(message, ports) {
+  if (message.type === 'SOTY_PREPARE_UPDATE') { ports[0].postMessage(reason ? { ready, reason } : { ready }); ports[0].close(); }
   if (message.type === 'SOTY_UPDATE_COMMIT') committed.push(id);
 } }; }
 
@@ -46,6 +46,24 @@ test('an unsaved draft in either tab blocks update for every tab', async () => {
   assert.equal(runtime.records.activated, 0); assert.deepEqual(committed, []);
 });
 
+test('a blocking tab reports only its safe category and relation to the requester', async () => {
+  const committed = [], a = client('a', true, committed), b = client('b', false, committed, 'form');
+  const runtime = worker({ clients: [a, b] });
+  const result = await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' }, a);
+  assert.equal(result.ready, false); assert.equal(result.reason, 'form'); assert.equal(result.location, 'other');
+  assert.equal('clientId' in result, false); assert.equal(runtime.records.activated, 0); assert.deepEqual(committed, []);
+});
+
+test('old tabs and unexpected reason strings remain blocked without inventing a cause', async () => {
+  for (const reason of [undefined, 'private text must not cross tabs']) {
+    const committed = [], a = client('a', true, committed), b = client('b', false, committed, reason);
+    const runtime = worker({ clients: [a, b] });
+    const result = await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' }, a);
+    assert.equal(result.ready, false); assert.equal(result.reason, 'unknown'); assert.equal(result.location, 'other');
+    assert.equal(runtime.records.activated, 0); assert.deepEqual(committed, []);
+  }
+});
+
 test('update activates and arms reload only after every tab has saved', async () => {
   const committed = [], runtime = worker({ clients: [client('a', true, committed), client('b', true, committed)] });
   assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, true);
@@ -55,7 +73,8 @@ test('update activates and arms reload only after every tab has saved', async ()
 test('a tab opened during preparation must participate before activation', async () => {
   const committed = [], a = client('a', true, committed), b = client('b', true, committed);
   const runtime = worker({ clients: [a], latest: [a, b] });
-  assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, false);
+  const result = await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' });
+  assert.equal(result.ready, false); assert.equal(result.reason, 'tabs-changed');
   assert.equal(runtime.records.activated, 0); assert.deepEqual(committed, []);
 });
 
@@ -188,7 +207,8 @@ test('read-only documentation optionally acknowledges only a real worker prepara
 
 test('a script-free or blocked documentation client still blocks update without an affirmative reply', { timeout: 15_000 }, async () => {
   const runtime = worker({ clients: [{ id: 'silent-doc', url: 'https://soty.test/agents', postMessage() {} }] });
-  assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, false);
+  const result = await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' });
+  assert.equal(result.ready, false); assert.equal(result.reason, 'unresponsive');
   assert.equal(runtime.records.activated, 0);
 });
 

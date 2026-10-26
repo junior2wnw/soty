@@ -38,7 +38,7 @@ import { mountAccountCenter, type AccountAction } from './account-center';
 import type { AppEntry } from './app-saved-state.mjs';
 import { loadAppDiscussionInbox, type AppDiscussionInboxRow } from './app-inbox.mjs';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
-import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
+import { getPwaController, registerUpdateGuard, updateBlockMessage, watchFormEdits, type PwaState } from '../platform/pwa';
 import { AvatarHydrator, prepareAvatar } from './avatars';
 import { avatar, badge, button, el, emptyState, heading, iconButton, labeledField, nounCount, textInput, timeLabel } from './dom';
 import { createDialog, errorText, isDialogFocusTarget, pinDialogSubmit, switchControl, type DialogCloseContext, type DialogReturnTarget, type WorldDialog } from './dialogs';
@@ -316,7 +316,13 @@ class WorldApplication {
         if (!this.profile && this.deskAccount && !this.refreshInFlight) void this.refresh(true);
       }
     });
-    this.unregisterUpdateGuard = registerUpdateGuard(async () => { await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush(); return !this.screenHasUnsavedChanges() && !this.agentOrb?.hasUnsavedChanges() && !this.widgets?.hasUnsavedChanges() && !this.chatDrafts.hasVolatile() && !this.formEdits.hasUnsavedChanges() && !document.querySelector('dialog[open] form'); });
+    this.unregisterUpdateGuard = registerUpdateGuard(async () => {
+      await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush();
+      if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile()) return 'work';
+      if (this.formEdits.hasUnsavedChanges()) return 'form';
+      if (document.querySelector('dialog[open] form')) return 'dialog';
+      return true;
+    });
     let lastNotificationCode: string | null = null;
     this.unsubscribeNotifications = options.notifications?.subscribe(state => {
       if (state.code !== lastNotificationCode && ['push_navigation_blocked', 'push_notification_unavailable'].includes(state.code ?? ''))
@@ -2688,15 +2694,15 @@ class WorldApplication {
   }
 
   private renderPwaBanner(state: PwaState): void {
-    const key = `${state.connection}:${state.update}`; if (this.pwaBannerKey === key) return; this.pwaBannerKey = key;
+    const key = `${state.connection}:${state.update}:${state.updateBlockReason}:${state.updateBlockLocation}`; if (this.pwaBannerKey === key) return; this.pwaBannerKey = key;
     const offline = state.connection === 'offline' || state.connection === 'unreachable';
     const update = state.update !== 'idle';
     this.pwaBanner.hidden = !offline && !update;
     if (this.pwaBanner.hidden) { this.pwaBanner.replaceChildren(); return; }
-    const text = offline ? 'Нет связи с сервером · проверьте состояние отправки в открытой работе' : state.update === 'blocked' ? 'Обновление ждёт сохранения открытой работы' : state.update === 'failed' ? 'Обновление не удалось. Можно повторить.' : state.update === 'saving' ? 'Сохраняем работу перед обновлением…' : state.update === 'activating' ? 'Обновляем Соты…' : 'Готова новая версия Сот';
+    const text = offline ? 'Нет связи с сервером · проверьте состояние отправки в открытой работе' : state.update === 'blocked' ? updateBlockMessage(state) : state.update === 'failed' ? 'Обновление не удалось. Можно повторить.' : state.update === 'saving' ? 'Сохраняем работу перед обновлением…' : state.update === 'activating' ? 'Обновляем Соты…' : 'Готова новая версия Сот';
     this.pwaBanner.replaceChildren(icon(offline ? 'activity' : 'refresh'), el('span', '', text));
     if (offline) this.pwaBanner.append(button('Проверить', 'refresh', 'sw-button-small', () => { void this.pwa.checkConnection(); }));
-    else if (['available', 'blocked', 'failed'].includes(state.update)) this.pwaBanner.append(button('Обновить', 'refresh', 'sw-button-small', () => { void this.pwa.applyUpdate(); }));
+    else if (['available', 'blocked', 'failed'].includes(state.update)) this.pwaBanner.append(button(state.update === 'available' ? 'Обновить' : 'Повторить', 'refresh', 'sw-button-small', () => { void this.pwa.applyUpdate(); }));
   }
   private renderPwaSettings(host: HTMLElement, state: PwaState): void {
     const key = `${state.install}:${state.offlineReady}:${state.worker}`; if (host.dataset.state === key) return; host.dataset.state = key;
@@ -2716,11 +2722,11 @@ class WorldApplication {
       if (!current() || !dialog.element.open) return;
       this.renderPwaSettings(install, state);
       status.textContent = state.connection === 'offline' || state.connection === 'unreachable' ? 'Связь с сервером не подтверждена. Доступность данных приложений проверяется отдельно.'
-        : state.update === 'available' ? 'Готова новая версия Сот.' : state.update === 'blocked' ? 'Обновление ждёт сохранения открытой работы.'
+        : state.update === 'available' ? 'Готова новая версия Сот.' : state.update === 'blocked' ? updateBlockMessage(state)
           : state.update === 'failed' ? 'Обновление не удалось; можно повторить.' : state.update === 'saving' ? 'Проверяем сохранение открытой работы…'
             : state.update === 'activating' ? 'Обновляем Соты…' : 'Оболочка Сот готова. Состояние каждого приложения проверяется в нём.';
       actions.replaceChildren(button('Проверить соединение', 'refresh', 'sw-button-quiet', () => { void this.pwa.checkConnection(); }));
-      if (['available', 'blocked', 'failed'].includes(state.update)) actions.append(button('Обновить Соты', 'refresh', 'sw-button-primary', () => { void this.pwa.applyUpdate(); }));
+      if (['available', 'blocked', 'failed'].includes(state.update)) actions.append(button(state.update === 'available' ? 'Обновить Соты' : 'Повторить', 'refresh', 'sw-button-primary', () => { void this.pwa.applyUpdate(); }));
     });
   }
 
