@@ -41,7 +41,7 @@ export function cleanGrants(value = {}) {
   return { accountIds: list(value.accountIds ?? []), communityIds: list(value.communityIds ?? []) };
 }
 export function connectorKey(identity) { return [textId(identity.linkId), textId(identity.hostDeviceId), textId(identity.connectorId)].join('|'); }
-const REQUEST_HEADERS = new Set(['accept', 'accept-language', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range']);
+const REQUEST_HEADERS = new Set(['accept', 'accept-language', 'content-type', 'content-encoding', 'if-none-match', 'if-modified-since', 'range', 'if-range', 'idempotency-key']);
 const RESPONSE_HEADERS = new Set(['content-type', 'content-encoding', 'content-language', 'content-disposition', 'etag', 'last-modified', 'accept-ranges', 'content-range', 'vary']);
 const UPGRADE_HEADERS = new Set(['sec-websocket-accept', 'sec-websocket-protocol', 'sec-websocket-extensions']);
 export function cleanHeaders(headers, direction = 'request') {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +17,14 @@ const serverModule = installed ? pathToFileURL(join(installed, 'dist', 'server.m
 const { createRelayIdentityVerifier } = await import(serverModule ?? '../../source-app/server/relay-identity.mjs');
 const { createSqliteRelayNonceStore } = await import(serverModule ?? '../../source-app/server/sqlite-relay-nonces.mjs');
 const { createRelayIdentityFetch } = await import(installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs');
+// Exercise the exact module shipped in the generated single-file connector,
+// as well as source. The full bundle's process/update path has separate tests.
+const bundle = await readFile(new URL('../../../public/agent/soty-connector.mjs', import.meta.url), 'utf8');
+const moduleStart = bundle.indexOf('// bundled connector module: ./agent-modules/local-apps.mjs\n');
+const moduleEnd = bundle.indexOf('// bundled connector module:', moduleStart + 1);
+assert.ok(moduleStart >= 0 && moduleEnd > moduleStart, 'connector release module is missing');
+const bundledModule = bundle.slice(moduleStart, moduleEnd) + '\nexport { createLocalAppsRuntime };\n';
+const { createLocalAppsRuntime: bundledRuntime } = await import('data:text/javascript;base64,' + Buffer.from(bundledModule).toString('base64'));
 
 const secret = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -36,7 +44,8 @@ function http(port, path, { origin, cookie, method = 'GET', headers = {}, body }
   });
 }
 
-test('signed Root identity is explicitly requested, isolated by app/person, and stops at revocation', { timeout: 20000 }, async t => {
+for (const [mode, makeRuntime] of [['source', createLocalAppsRuntime], ['released bundle', bundledRuntime]])
+test(`signed Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'soty-relay-identity-'));
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const privateJwk = { ...pair.privateKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
@@ -44,7 +53,7 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   const issuer = 'https://soty.example/human-identity';
   const profile = { enabled: true, issuer, providerKeys: () => ({ jwks: { keys: [privateJwk] } }) };
   const actualSigner = createRelayIdentitySigner({ profile });
-  let gate, failSigner = false, service, runtime;
+  let gate, failSigner = false, service, runtime, legacyWire = false, legacyAuthSeen = false;
   const root = createServer((req, res) => service?.handleRequest(req, res) || res.writeHead(404).end());
   root.on('upgrade', (req, socket, head) => { if (!service.handleUpgrade(req, socket, head)) socket.destroy(); });
   await new Promise(done => root.listen(0, '127.0.0.1', done));
@@ -59,7 +68,13 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
     signRelayIdentity: async input => { if (failSigner) throw Object.assign(Error('synthetic'), { code: 'app_identity_unavailable' });
       const proof = await actualSigner(input); if (gate) { gate.enter(); await gate.wait; } return proof; } });
   const identity = { linkId: 'link', hostDeviceId: 'host', connectorId: 'connector', name: 'fixture' };
-  runtime = createLocalAppsRuntime({ randomSecret: secret, digest: hash, createWebSocket: url => new WebSocket(url), httpRequest: request,
+  runtime = makeRuntime({ randomSecret: secret, digest: hash, createWebSocket: url => {
+    const ws = new WebSocket(url), send = ws.send.bind(ws);
+    ws.send = data => { const frame = JSON.parse(data); if (legacyWire && frame.type === 'auth') {
+      delete frame.capabilities.relayIdempotencyKey; legacyAuthSeen = true; return send(JSON.stringify(frame));
+    } return send(data); };
+    return ws;
+  }, httpRequest: request,
     encodeBase64: value => Buffer.from(value).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') },
   { serverUrl: rootOrigin, identity, token: 'fixture' });
   const servers = [], stores = [], businessStores = [];
@@ -76,12 +91,38 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
     let verifier; const seen = [], businessPath = join(directory, `business-${index}.sqlite`);
     let business = new DatabaseSync(businessPath);
     business.exec('CREATE TABLE records (issuer TEXT NOT NULL, subject TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issuer,subject))');
+    business.exec('CREATE TABLE receipts (issuer TEXT NOT NULL, subject TEXT NOT NULL, request_id TEXT NOT NULL, input_hash TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issuer,subject,request_id))');
     businessStores.push(() => business.close());
     const upstream = createServer((req, res) => {
       if (req.method === 'HEAD') { res.writeHead(200).end(); return; }
-      seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'] });
+      seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'], key: req.headers['idempotency-key'], authorization: req.headers.authorization });
       void (async () => {
         try { const person = await verifier(req);
+          if (req.method === 'GET' && req.url.startsWith('/receipt?')) {
+            const key = new URL(req.url, 'http://fixture.invalid').searchParams.get('key');
+            const receipt = business.prepare('SELECT count FROM receipts WHERE issuer=? AND subject=? AND request_id=?').get(person.issuer, person.subject, key);
+            if (!receipt) { res.writeHead(404).end(); return; }
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count: receipt.count })); return;
+          }
+          if (req.method === 'POST' && req.url === '/idempotent') {
+            const key = req.headers['idempotency-key']; if (typeof key !== 'string' || !key) { res.writeHead(400).end(); return; }
+            const chunks = []; for await (const chunk of req) chunks.push(chunk);
+            const raw = Buffer.concat(chunks).toString('utf8'), inputHash = hash(raw);
+            let count; business.exec('BEGIN IMMEDIATE');
+            try {
+              const prior = business.prepare('SELECT input_hash,count FROM receipts WHERE issuer=? AND subject=? AND request_id=?').get(person.issuer, person.subject, key);
+              if (prior && prior.input_hash !== inputHash) { business.exec('ROLLBACK'); res.writeHead(409).end(); return; }
+              if (prior) count = prior.count;
+              else {
+                business.prepare('INSERT INTO records VALUES(?,?,1) ON CONFLICT(issuer,subject) DO UPDATE SET count=count+1').run(person.issuer, person.subject);
+                count = business.prepare('SELECT count FROM records WHERE issuer=? AND subject=?').get(person.issuer, person.subject).count;
+                business.prepare('INSERT INTO receipts VALUES(?,?,?,?,?)').run(person.issuer, person.subject, key, inputHash, count);
+              }
+              business.exec('COMMIT');
+            } catch (error) { business.exec('ROLLBACK'); throw error; }
+            if (key === 'lost-reply' && !seen.some(item => item.key === key && item.lost)) { seen.at(-1).lost = true; res.destroy(); return; }
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count })); return;
+          }
           if (req.method === 'POST') business.prepare('INSERT INTO records VALUES(?,?,1) ON CONFLICT(issuer,subject) DO UPDATE SET count=count+1').run(person.issuer, person.subject);
           const count = business.prepare('SELECT count FROM records WHERE issuer=? AND subject=?').get(person.issuer, person.subject)?.count ?? 0;
           res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ subject: person.subject, count })); }
@@ -110,9 +151,9 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   let aliceSession, bobSession, otherSession;
   await until(() => { try { aliceSession = call('apps.launch', { appId: apps[0].app.id }, owner); return true; } catch { return false; } });
   aliceSession = await session(apps[0].app, owner); bobSession = await session(apps[0].app, bob); otherSession = await session(apps[1].app, owner);
-  const fetchApp = (session, method = 'GET', headers = {}) => createRelayIdentityFetch({ origin: session.origin,
-    fetch: (path, options) => http(port, path, { ...session, method: options.method, headers: Object.fromEntries(options.headers) })
-  })('/items?x=1', { method, headers });
+  const fetchApp = (session, method = 'GET', headers = {}, path = '/items?x=1', body) => createRelayIdentityFetch({ origin: session.origin,
+    fetch: (url, options) => http(port, url, { ...session, method: options.method, headers: Object.fromEntries(options.headers), body: options.body })
+  })(path, { method, headers, ...(body === undefined ? {} : { body }) });
   assert.equal((await http(port, '/items?x=1', aliceSession)).status, 401);
   assert.equal(apps[0].seen.at(-1).token, undefined, 'identity is never sent on an ordinary request');
   const alice = await fetchApp(aliceSession, 'POST', { 'x-soty-identity': 'browser-forgery' });
@@ -122,6 +163,30 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   assert.deepEqual(JSON.parse((await fetchApp(aliceSession)).text), { subject: 'alice', count: 1 }, 'personal data survives closing and reopening the app store');
   assert.deepEqual(JSON.parse((await fetchApp(bobSession)).text), { subject: 'bob', count: 0 });
   assert.deepEqual(JSON.parse((await fetchApp(otherSession)).text), { subject: 'alice', count: 0 });
+  const operation = { 'idempotency-key': 'same-action', authorization: 'must-not-reach-app' }, body = JSON.stringify({ item: 'bread' });
+  const firstWrite = await fetchApp(aliceSession, 'POST', operation, '/idempotent', body);
+  const repeatedWrite = await fetchApp(aliceSession, 'POST', operation, '/idempotent', body);
+  assert.equal(firstWrite.status, 200); assert.equal(repeatedWrite.status, 200);
+  assert.deepEqual(JSON.parse(firstWrite.text), { subject: 'alice', count: 2 });
+  assert.deepEqual(JSON.parse(repeatedWrite.text), JSON.parse(firstWrite.text), 'same operation must use the app receipt');
+  assert.equal(apps[0].seen.at(-1).key, 'same-action'); assert.equal(apps[0].seen.at(-1).authorization, undefined, 'other forbidden headers remain filtered');
+  assert.equal((await fetchApp(aliceSession, 'POST', operation, '/idempotent', JSON.stringify({ item: 'changed' }))).status, 409);
+  const bobWrite = await fetchApp(bobSession, 'POST', operation, '/idempotent', body);
+  assert.deepEqual(JSON.parse(bobWrite.text), { subject: 'bob', count: 1 }, 'same key must not merge people');
+  const otherWrite = await fetchApp(otherSession, 'POST', operation, '/idempotent', body);
+  assert.deepEqual(JSON.parse(otherWrite.text), { subject: 'alice', count: 1 }, 'same key must not merge applications');
+  const lostBefore = apps[0].seen.filter(value => value.key === 'lost-reply').length;
+  const lost = await fetchApp(aliceSession, 'POST', { 'idempotency-key': 'lost-reply' }, '/idempotent', body);
+  assert.equal(lost.status, 502); await delay(100);
+  assert.equal(apps[0].seen.filter(value => value.key === 'lost-reply').length, lostBefore + 1, 'transport must not retry a lost response');
+  const readback = await fetchApp(aliceSession, 'GET', {}, '/receipt?key=lost-reply');
+  assert.deepEqual(JSON.parse(readback.text), { subject: 'alice', count: 3 }, 'read-only app receipt confirms the original write');
+  assert.equal(apps[0].seen.filter(value => value.key === 'lost-reply').length, lostBefore + 1, 'readback does not send the write again');
+  const recovered = await fetchApp(aliceSession, 'POST', { 'idempotency-key': 'lost-reply' }, '/idempotent', body);
+  assert.deepEqual(JSON.parse(recovered.text), { subject: 'alice', count: 3 }, 'app receipt returns the original result without a second write');
+  const priorSeen = apps[0].seen.length;
+  const duplicate = await http(port, '/idempotent', { ...aliceSession, method: 'POST', headers: { 'x-soty-identity-request': '1', 'idempotency-key': ['one', 'two'] } });
+  assert.equal(duplicate.status, 400); assert.equal(apps[0].seen.length, priorSeen, 'duplicate keys must fail before reaching the app');
   const normalized = await http(port, '/folder/../items?x=1', { ...aliceSession, headers: { 'x-soty-identity-request': '1' } });
   assert.equal(normalized.status, 200); assert.equal(apps[0].seen.at(-1).path, '/items?x=1');
   const old = apps[0].seen.find(value => value.method === 'POST').token;
@@ -160,6 +225,19 @@ test('signed Root identity is explicitly requested, isolated by app/person, and 
   const publicBefore = apps[0].seen.length;
   assert.equal((await fetchApp({ origin: alias.origin })).status, 401);
   assert.equal(apps[0].seen.length, publicBefore, 'anonymous access never receives an identity proof');
+  runtime.stop(); legacyWire = true; runtime.start();
+  await until(() => legacyAuthSeen && runtime.status().connected && runtime.status().apps === 2);
+  await until(() => { try { call('apps.launch', { appId: apps[0].app.id }); return true; } catch { return false; } });
+  aliceSession = await session(apps[0].app, owner);
+  const legacyBefore = apps[0].seen.length;
+  const unsupported = await fetchApp(aliceSession, 'POST', { 'idempotency-key': 'old-connector' }, '/idempotent', body);
+  assert.equal(unsupported.status, 503);
+  assert.match(unsupported.text, /app_idempotency_key_unavailable/u); assert.match(unsupported.text, /Обновите коннектор/u);
+  assert.equal(apps[0].seen.length, legacyBefore, 'a connector that does not advertise support must not receive the request');
+  const unsupportedPage = await fetchApp(aliceSession, 'POST', { 'idempotency-key': 'old-connector', accept: 'text/html' }, '/idempotent', body);
+  assert.equal(unsupportedPage.status, 503); assert.match(unsupportedPage.text, /Обновите коннектор/u);
+  assert.equal(apps[0].seen.length, legacyBefore, 'HTML error must also refuse before delivery');
+  assert.equal((await fetchApp(aliceSession)).status, 200, 'requests without an idempotency key still work on the older protocol');
 });
 
 test('browser helper cannot send the request flag to another origin or follow a redirect', async () => {
