@@ -106,7 +106,7 @@ const guides = {
     identity: 'The ordinary compatible mini app uses the current Soty account; the verified issuer and subject identify the person. App data and permissions remain separate per person and app.',
     steps: [
       'Check the installed Root, connector and portable Source SDK support the chosen common-login contract. A registered card or a downloaded SDK is not proof that the runtime supports it.',
-      'For a supported relay, use createRelayIdentityFetch in the browser and createRelayIdentityVerifier on the app server with a trusted issuer and exact appId. For an already admitted workspace2, retain its existing Source SDK and Native ACL.',
+      'For a supported relay, use createRelayIdentityFetch in the browser and createRelayIdentityVerifier on the app server with a trusted issuer and exact appId. SDK index admission describes workspace2, not per-app relay profiles. For admitted workspace2 retain its Source SDK and Native ACL.',
       'Use the verified issuer and subject, not a browser-supplied user ID, to find the person’s existing app records. Verify the app’s own permissions for each operation.',
       'Provide a durable atomic one-use proof store: the SDK SQLite store supports processes on one machine; distributed hosts need an atomic shared store.',
       'Link an existing app account only after both identities are verified. Do not merge by email or display name, replace its data, or require a new app-specific login for an already compatible user.',
