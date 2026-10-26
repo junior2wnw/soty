@@ -55,10 +55,24 @@ candidate, guards the SAME original image against current DATA, checks zero
 work and an owned marker, starts it under maintenance, verifies storage and the
 original model-readiness hash, then clears only its own marker.
 
-Promotion **requires** the trusted operator port
-`runConnectorCli(argv, { fullEncryptedBackup })`. Direct standalone CLI promotion
-without that port refuses before STOP. Prepare needs no key or backup callback.
-The callback runs only after the exact original STOP and confirmed
+For shell promotion, add `--backup-plan /private/backup.json` to the same
+`promote --rollback-mode latest-data` arguments. Use the existing GPG `backup`
+plan below: its `containerId` and `operationId` must match the original and transaction.
+The file is private mode0600; the qualified helper image and new backup directory
+are nonsecret references. Send the existing 64-character key plus newline only
+through anonymous stdin (the qualified DPAPI/SSH path); never argv, Env or a key file.
+Plan, helper image and key are checked before STOP; the key buffer is cleared on exit.
+The backup helper uses the default Docker socket, so this flag refuses a different
+`--docker-socket`. Keep the operator's existing fresh capacity/floor/reserve check.
+
+```json
+{"operation":"backup","containerId":"EXACT_ORIGINAL64HEX","image":"sha256:QUALIFIED_HELPER64HEX","operationId":"SAME_TRANSACTION32HEX","directory":"/private/release/backup"}
+```
+
+Library callers may continue using `runConnectorCli(argv, { fullEncryptedBackup })`;
+do not combine that callback with the flag. Without either, promotion refuses
+before STOP. Prepare needs no key or backup callback. The callback runs only after
+the exact original STOP and confirmed
 `RestartPolicy:{Name:"no",MaximumRetryCount:0}`, and before enter or candidate
 START. It receives only `containerId`, `originalImage`, `transaction` and
 `storageProbeImage`. Wire it directly to the maintained full

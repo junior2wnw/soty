@@ -9,10 +9,12 @@ import {createReleaseJournal} from './journal.mjs';
 import {readApprovedPolicy} from './application-policy.mjs';
 import {openUniversalCliPolicy} from './universal-cli-policy.mjs';
 import {readUniversalLocalFile,parseUniversalLocalJson} from './universal-policy.mjs';
+import {backupStopped,readPlan as readBackupPlan,stdinKey} from '../connect/gpg-release-backup.mjs';
+import {limits as backupLimits} from '../connect/gpg-tar.mjs';
 // Never print inspect, request/config bodies, private fingerprints, helper logs or error causes.
 const flags=new Set(['journal','original-id','original-image','candidate-image','storage-probe-image','revision','transaction','preserve-queued-sha256',
   'legacy-recovery','policy-file','policy-sha256','reviewed-receipt','health-origin','docker-socket','universal-plan','universal-custody-file',
-  'universal-witness-file','universal-shell-origins','fixture-root','fixture-mode','rollback-mode']);
+  'universal-witness-file','universal-shell-origins','fixture-root','fixture-mode','rollback-mode','backup-plan']);
 const require=(ok,code='invalid_cli')=>{if(!ok)throw new SafeError(code);};
 async function receipt(file,context){
  if(context){const input=await readUniversalLocalFile(file,context,{privateFile:true});try{return parseUniversalLocalJson(input.bytes);}finally{input.dispose();}}
@@ -21,7 +23,7 @@ async function receipt(file,context){
  }finally{await descriptor.close();}
 }
 export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}){
- let lock,lockPath,universal;
+ let lock,lockPath,universal,backupKey;
  try{
   require(afterJournal===undefined||typeof afterJournal==='function','journal_checkpoint_invalid');
   require(fullEncryptedBackup===undefined||typeof fullEncryptedBackup==='function','full_encrypted_backup_invalid');
@@ -37,9 +39,20 @@ export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}
   if(opts['rollback-mode']){require(opts['rollback-mode']==='latest-data','rollback_mode_invalid');args.rollbackMode=opts['rollback-mode'];}
   if(opts['preserve-queued-sha256'])args.preserveQueuedSha256=opts['preserve-queued-sha256'];
   if(opts['legacy-recovery']){require(opts['legacy-recovery']==='committed-state','invalid_recovery_mode');args.legacyRecovery=true;}
+  let backupPlan;
+  if(opts['backup-plan']){
+   require(action==='promote'&&args.rollbackMode==='latest-data'&&!fullEncryptedBackup,'backup_plan_not_applicable');
+   require(process.platform==='linux','backup_runtime_unsupported');
+   try{const {operation,...value}=await readBackupPlan(opts['backup-plan']);
+    require(operation==='backup'&&value.containerId===args.originalId&&value.operationId===args.transaction
+      &&/^sha256:[a-f0-9]{64}$/.test(value.image??'')&&path.isAbsolute(value.directory??''),'backup_plan_invalid');
+    backupLimits(value.cap);backupPlan=value;
+   }catch{throw new SafeError('backup_plan_invalid');}
+  }
   if(opts['policy-file']||opts['policy-sha256'])args.applicationPolicy=await readApprovedPolicy(opts['policy-file'],opts['policy-sha256']);
   const socket=opts['docker-socket'];if(socket)require(path.isAbsolute(socket)||process.platform==='win32'&&/^\\\\.\\pipe\\soty-fixture-[a-z0-9-]+$/u.test(socket),'engine_socket_invalid');
   if(fixture)require(socket&&(process.platform==='win32'?socket.includes('soty-fixture-'):path.dirname(socket)===opts['fixture-root']&&path.basename(socket)==='engine.sock'),'universal_fixture_engine_required');
+  require(!backupPlan||!socket||socket==='/var/run/docker.sock','backup_socket_unsupported');
   lockPath=opts.journal+'.lock';lock=await open(lockPath,'wx',0o600);
   let prior,approval;
   if(action==='promote'){require(opts['reviewed-receipt']);prior=await receipt(opts.journal,context);approval=await receipt(opts['reviewed-receipt'],context);}
@@ -47,6 +60,7 @@ export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}
    args.universalPolicy=universal.handle;if(universal.witnessId)args.universalWitnessId=universal.witnessId;
   }
   const engine=new DockerApi(socket?{socketPath:socket}:{});
+  if(backupPlan)fullEncryptedBackup=()=>backupStopped({...backupPlan,key:backupKey},engine);
   const run=new Rollout({engine,maintenance:productionMaintenance(engine),ready:readiness(opts['health-origin']||'http://127.0.0.1:18182'),
    universalMeasurement:universalMeasurement(engine),allowUniversalFixture:fixture,fullEncryptedBackup,record:createReleaseJournal(opts.journal,{afterJournal})});
   if(action==='prepare'){
@@ -70,11 +84,15 @@ export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}
    run.candidate=await engine.inspect(prior.candidateId);run.validateCandidate(run.candidate,{stopped:true});
    const origin=new URL(opts['health-origin']||'http://127.0.0.1:18182');
    require(origin.protocol==='http:'&&origin.hostname==='127.0.0.1'&&run.original.HostConfig.PortBindings?.['8080/tcp']?.some(b=>b.HostIp==='127.0.0.1'&&b.HostPort===origin.port),'health_binding_mismatch');
+   if(backupPlan){
+    require((await engine.image(backupPlan.image)).Id===backupPlan.image,'backup_image_invalid');
+    try{backupKey=await stdinKey();}catch{throw new SafeError('backup_key_invalid');}
+   }
    run.state=prior;await run.promote();
   }
   return {ok:true,...run.state};
  }catch(error){return {ok:false,code:error instanceof SafeError?error.code:'rollout_failed',...(universalMeasurementDiagnostic(error)?{universalMeasurementDiagnostic:universalMeasurementDiagnostic(error)}:{})};}
- finally{universal?.dispose();if(lock){await lock.close();await unlink(lockPath);}}
+ finally{backupKey?.fill(0);universal?.dispose();if(lock){await lock.close();await unlink(lockPath);}}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
  const result=await runConnectorCli(process.argv.slice(2));process.stdout.write(JSON.stringify(result)+'\n');if(result.ok!==true)process.exitCode=1;

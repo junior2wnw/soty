@@ -262,6 +262,8 @@ async function readPlan(file){
     return value;
   }finally{await f.close();}
 }
+export {readPlan,stdinKey};
+
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
   let key;
   try{
