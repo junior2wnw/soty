@@ -69,7 +69,7 @@ async page => {
   await page.getByLabel('Подключение', { exact: true }).selectOption('soty.selected-human-embed.v2');
   await page.getByLabel('Порт проекта', { exact: true }).fill('5321');
   await page.getByRole('button', { name: 'Проверить', exact: true }).click();
-  await page.getByText('Закрепите именной адрес входа Сот в разделе «Доступ и публикация» и оставьте выключенным. Выберите его здесь; он включится вместе с переключением источника.', { exact: true }).waitFor({ state: 'visible' });
+  await page.getByText('Проверьте оба адреса приложения: адрес прежнего сайта должен быть включён, а адрес входа Сот — закреплён. Новый адрес входа Сот включается вместе с источником; предварительно публиковать прежний порт не нужно.', { exact: true }).waitFor({ state: 'visible' });
   ensure(await page.locator('#qa-results').getAttribute('data-prepare-calls') === '1', 'unbound_address_prepare_replayed');
   ensure(await page.locator('#qa-results').getAttribute('data-promote-calls') === '0', 'unbound_address_promoted');
   ensure(await page.getByLabel('Порт проекта', { exact: true }).inputValue() === '5321', 'unbound_address_lost_draft');

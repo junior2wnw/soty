@@ -55,9 +55,20 @@ async page => {
     rows.push({ width, longOriginAndRussianName: width === 320, inactiveThroughCheck: true, independentAcks: 2, lostAckReloadExactRecovery: true, extraPrepareAfterReload: 0, horizontalOverflow: false });
   }
   await open('oldcaps');
-  ensure(await key('source-check').getAttribute('aria-disabled') === 'true' && !await key('source-entry-domain').isEnabled(), 'old_server_activation_not_blocked');
+  ensure(await key('source-check').getAttribute('aria-disabled') === 'true' && await key('source-entry-domain').isEnabled(), 'old_server_activation_not_blocked_or_picker_locked');
   await page.getByText('Обновите Соты, чтобы включать адрес вместе с защищённым источником. Текущий адрес и источник не изменены.', { exact: true }).waitFor();
   ensure(await page.locator('#qa-results').getAttribute('data-prepare-calls') === '0', 'old_server_received_new_action'); await leaveDraft();
+  await open('oldlegacy');
+  await page.getByLabel('Адрес отдельного сайта', { exact: true }).selectOption({ label: 'https://demo.apps.fixture.invalid' });
+  ensure(await key('source-check').getAttribute('aria-disabled') === 'true', 'old_server_candidate_not_blocked');
+  await page.getByLabel('Адрес входа Сот', { exact: true }).selectOption('');
+  ensure(await key('source-check').getAttribute('aria-disabled') === 'false', 'old_server_legacy_choice_unavailable');
+  await page.getByRole('button', { name: 'Проверить', exact: true }).click();
+  await key('source-public-ack').waitFor({ state: 'visible' });
+  ensure(await page.locator('#qa-results').getAttribute('data-last-source-entry-action') === 'false'
+    && await page.locator('#qa-results').getAttribute('data-prepare-calls') === '1'
+    && await page.locator('#qa-results').getAttribute('data-promote-calls') === '0', 'legacy_check_sent_activation_or_publication');
+  await leaveDraft();
   await open('atomic'); await page.getByLabel('Доступ после переключения', { exact: true }).selectOption('restricted');
   ensure(!await key('source-entry-domain').isVisible(), 'restricted_activation_offered'); await leaveDraft();
   await open('noalias'); await key('source-entry-addresses').click();
@@ -69,5 +80,5 @@ async page => {
     && await page.getByLabel('Подключение', { exact: true }).inputValue() === 'soty.selected-human-embed.v2', 'reserve_link_lost_source_draft');
   await leaveDraft();
   return { ok: true, actualComponent: true, syntheticBackend: true, productionWrites: 0, rows,
-    oldCapabilityBlocked: true, restrictedActivationHidden: true, nameNavigationPreservesDraftWithoutMutation: true };
+    oldCapabilityBlocked: true, oldCapabilityLegacyChoiceAndCheck: true, restrictedActivationHidden: true, nameNavigationPreservesDraftWithoutMutation: true };
 }

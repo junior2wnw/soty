@@ -45,7 +45,7 @@ function settingsError(reason: unknown): string {
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
     native_pair_action_required: 'Приложение имеет отдельный сайт. Выберите, сохранить его или отключить, и проверьте источник заново.',
     app_source_native_alias_required: 'Выберите действующий адрес отдельного сайта и проверьте источник заново.',
-    app_native_entry_domain_required: 'Закрепите именной адрес входа Сот в разделе «Доступ и публикация» и оставьте выключенным. Выберите его здесь; он включится вместе с переключением источника.',
+    app_native_entry_domain_required: 'Проверьте оба адреса приложения: адрес прежнего сайта должен быть включён, а адрес входа Сот — закреплён. Новый адрес входа Сот включается вместе с источником; предварительно публиковать прежний порт не нужно.',
     app_source_entry_domain_required: 'Закрепите именной адрес входа Сот в разделе «Доступ и публикация» и оставьте выключенным. Выберите его здесь; он включится вместе с переключением источника.',
     app_source_entry_activation_unsupported: 'Обновите Соты, чтобы включать адрес вместе с защищённым источником. Текущий адрес и источник не изменены.',
     invalid_source_entry_action: 'Выберите закреплённый адрес входа Сот. Он включится только вместе с защищённым источником.',
@@ -652,7 +652,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       if (!option) { option = el('option'); option.value = alias.domainId; sourceAliasOptions.set(alias.domainId, option); sourceAliasChoice.append(option); }
       text(option, alias.origin);
     }
-    sourceAliasChoice.value = draft.sourceDomainId ?? ''; sourceAliasChoice.disabled = !editable || blocked || !state.sourceEntryActivationSupported;
+    sourceAliasChoice.value = draft.sourceDomainId ?? ''; sourceAliasChoice.disabled = !editable || blocked;
     sourceAliasField.hidden = draft.profile !== 'soty.selected-human-embed.v2' || draft.launchPolicy !== 'anyone'
       || state.sourceEntryChoices.length === 0 && draft.sourceDomainId === null;
     sourceAliasHint.hidden = draft.profile !== 'soty.selected-human-embed.v2';
