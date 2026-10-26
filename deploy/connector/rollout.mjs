@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { installedModuleCandidateBase, installedModuleOriginalForRollout, restoreInstalledModuleOriginal, assertInstalledModuleOriginalProof } from './installed-module-rotation.mjs';
-import { SafeError } from './docker-api.mjs';
+import { SafeError, universalMeasurementDiagnostic } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
 import { applyUniversalPolicy, publicUniversalPolicy, bindUniversalRollout, assertUniversalPolicyCurrent,
@@ -309,7 +309,8 @@ export class Rollout {
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
-      if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed'});
+      if(!this.state.activationFailureCode)await this.note(this.state.phase,{activationFailureCode:error instanceof SafeError&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,95}$/u.test(error.code)?error.code:'activation_failed',
+        ...(universalMeasurementDiagnostic(error)?{universalMeasurementDiagnostic:universalMeasurementDiagnostic(error)}:{})});
       if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
         ||(this.latestData()&&['backup_helper_unresolved','full_encrypted_backup_unresolved'].includes(error.code))
         ||(this.latestData()&&stopped&&['original_stop_not_clean','original_lifecycle_changed','original_lifecycle_invalid'].includes(error.code))

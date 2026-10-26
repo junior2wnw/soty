@@ -95,6 +95,14 @@ test('real CLI prepares a distinct-source selected feature and seals both files 
   assert.equal(changed.body.ok, false); assert.equal(f.engine.events.some(event => event.startsWith('stop:')), false);
 });
 
+test('real CLI returns only the reader-owned diagnostic on an ambiguous operator read before candidate CREATE',async t=>{
+  const f=await fixture(t,{human:true});f.engine.setExecAbort(true);
+  const result=await f.run('prepare');assert.equal(result.body.ok,false);assert.equal(result.body.code,'universal_measurement_unresolved');
+  const d=result.body.universalMeasurementDiagnostic;assert.equal(d.stage,'exec-start');assert.equal(d.errorCategory,'http_ambiguous');assert.match(d.execId,/^[a-f0-9]{64}$/);
+  assert.equal(f.engine.events.some(e=>e.startsWith('create:')),false);assert.equal(f.engine.events.some(e=>e.startsWith('stop:')),false);
+  assert.equal(result.output.includes('ProcessConfig'),false);assert.equal(result.output.includes('PRIVATE_SYNTHETIC'),false);
+});
+
 test('real CLI processes prepare/seal and supervised promote with one exact encrypted private witness', async t => {
   const f = await fixture(t), prepared = await f.run('prepare'); assert.equal(prepared.exit, 0, prepared.body.code); assert.equal(prepared.body.phase, 'prepared');
   assert.equal(/^[A-Za-z0-9_-]{32}$/u.test(prepared.body.universalWitnessId), true); const bytes = await readFile(f.files.witness);

@@ -11,7 +11,7 @@ import { Rollout, createConfig, preservationHash, hash } from './rollout.mjs';
 import { prepareUniversalPolicy, publicUniversalPolicy, sealUniversalPolicy, restoreUniversalPolicy, disposeUniversalPolicy,
   captureUniversalPreparedness, universalModeLabel, bindUniversalRollout } from './universal-policy.mjs';
 import { createHumanIdentityHostProfile } from '../../modules/human-identity/profile.mjs';
-import { SafeError } from './docker-api.mjs';
+import { SafeError, DockerApi, universalMeasurementDiagnostic } from './docker-api.mjs';
 import { storageReaderLabel, currentStorageReaders } from './storage-guard.mjs';
 import { STANDARD_ROOT_WORKSPACE_SOURCE } from '../../modules/source-app/server/standard-profile.mjs';
 import { loadUniversalConfiguration } from '../../server/universal-configuration.js';
@@ -680,4 +680,19 @@ test('selected feature latest-data failure backs up unchanged old8 and restores 
   assert.equal(loadUniversalConfiguration({ SOTY_SELECTED_EMBED_REGISTRY_FILE: f.source }, { legacyMode: false }).scopedEmbedProfiles.length, 8);
   assert.equal(await readFile(f.source, 'utf8'), f.oldBytes); assert.equal(await readFile(f.nextSource, 'utf8'), f.nextBytes);
   assert.equal(f.events.filter(event => event === 'start-candidate').length, 1); assert.equal(f.events.filter(event => event === 'start-old').length, 1);
+});
+
+test('activation journal retains the safe reader stage and execID before an automatic restoration',async t=>{
+  const f=await fixture(t),execId='8'.repeat(64),target='9'.repeat(64);
+  const fake={timeoutMs:100,async inspect(){return {Id:target,Image:args.candidateImage,State:{Running:true,StartedAt:'fixed'}};},
+    async request(_method,route){if(route.endsWith('/exec'))return {Id:execId};throw new SafeError('engine_response_ambiguous');}};
+  let failure;try{await DockerApi.prototype.universalPreparedness.call(fake,target);}catch(e){failure=e;}
+  assert.equal(universalMeasurementDiagnostic(failure).execId,execId);
+  await f.run.prepare(f.request);const measure=f.run.universalMeasurement;
+  f.run.universalMeasurement=async id=>{if(id===f.run.candidate.Id)throw failure;return measure(id);};
+  await assert.rejects(f.run.promote(),/universal_measurement_unresolved/);
+  const recorded=f.records.find(r=>r.universalMeasurementDiagnostic);assert.equal(recorded.activationFailureCode,'universal_measurement_unresolved');
+  assert.equal(recorded.universalMeasurementDiagnostic.stage,'exec-start');assert.equal(recorded.universalMeasurementDiagnostic.execId,execId);
+  assert.equal(recorded.universalMeasurementDiagnostic.errorCategory,'http_ambiguous');assert.equal(f.run.state.phase,'restored');
+  assert.equal(JSON.stringify(recorded).includes('synthetic-sensitive'),false);
 });

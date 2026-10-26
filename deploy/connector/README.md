@@ -151,6 +151,31 @@ Prior Rooms/Apps limits remain: no JSON-only Rooms reader after Rooms2 writes or
 
 ## Checks
 
+The private operator reader creates and starts its fixed read-only Docker exec
+once. A complete, validated DTO can arrive before Docker marks that exec stopped.
+In that case it polls only `GET /exec/<same-id>/json`, with the original configured
+timeout as one operation deadline (10 seconds by default). Every HTTP request and
+the metadata-settling wait shares that budget; the server socket deadline stays
+unchanged. Terminal exit0, the exact fixed command/identity/privilege/TTY metadata
+and the unchanged running container are still required. Invalid or lost stdout,
+HTTP ambiguity, nonzero exit and changed metadata never authorize another
+CREATE/START or output recovery by replay.
+
+Existing top-level error codes remain. Reader failures additionally carry a
+closed `soty.universal-measurement-diagnostic.v1` record: container/exec IDs,
+failed stage, observed HTTP status (null if headers did not arrive), safe exit and
+identity booleans, error category and bounded timing/poll counts. This metadata
+is reader-owned; arbitrary error properties are not serialized. CLI failures
+return it and activation failures retain it in the existing journal before
+restoration. It contains no stdout/stderr, command arguments, response body,
+configuration, Env, credentials or error messages.
+
+The historical feature9 `universal_measurement_unresolved` failure predates this
+record. Its purged exec/event metadata cannot establish whether that particular
+failure was an exec-state race, transport loss or runtime/socket failure. The
+correction does not claim that a historical race was observed. A restored
+transaction must not be replayed; a fresh operation requires separate review.
+
 `node --test deploy/connector/*.test.mjs deploy/connect/*.test.mjs` runs synthetic injected-engine and local SQLite tests; the Docker archive test requires its explicit opt-in, and file-symlink coverage requires OS permission. `node --check` on every deploy/connector/*.mjs verifies parsability. There is no dependency install or application rebuild for these standalone Node built-in modules. Root separately builds the integrated application image and tests real synthetic migration/readiness/rollback before controller acceptance.
 
 

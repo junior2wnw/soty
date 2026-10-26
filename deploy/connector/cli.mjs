@@ -2,7 +2,7 @@
 import {readFile,open,unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {DockerApi,SafeError} from './docker-api.mjs';
+import {DockerApi,SafeError,universalMeasurementDiagnostic} from './docker-api.mjs';
 import {Rollout,hash} from './rollout.mjs';
 import {productionMaintenance,readiness,universalMeasurement} from './runtime.mjs';
 import {createReleaseJournal} from './journal.mjs';
@@ -73,7 +73,7 @@ export async function runConnectorCli(argv,{afterJournal,fullEncryptedBackup}={}
    run.state=prior;await run.promote();
   }
   return {ok:true,...run.state};
- }catch(error){return {ok:false,code:error instanceof SafeError?error.code:'rollout_failed'};}
+ }catch(error){return {ok:false,code:error instanceof SafeError?error.code:'rollout_failed',...(universalMeasurementDiagnostic(error)?{universalMeasurementDiagnostic:universalMeasurementDiagnostic(error)}:{})};}
  finally{universal?.dispose();if(lock){await lock.close();await unlink(lockPath);}}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){

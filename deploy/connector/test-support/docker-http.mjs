@@ -9,7 +9,7 @@ export function frame(value, stream = 1) {
   return Buffer.concat([header, payload]);
 }
 export async function dockerHttpFixture(root) {
-  const f = fixture(), calls = [], execs = new Map(); let abortExec = false, originalMeasurement, candidateMode = '1', maintenance = false, measurement = captureUniversalPreparedness({ compiledLegacyMode: true,
+  const f = fixture(), calls = [], execs = new Map(); let abortExec = false, execStartDelay=0, execCreateStatus=200, originalMeasurement, candidateMode = '1', maintenance = false, measurement = captureUniversalPreparedness({ compiledLegacyMode: true,
     universalConfigured: false, reviewsConfigured: false, humanProfile: null, humanHttpEnabled: false }), serial = 100;
   const image = f.engine.image;
   f.engine.image = async id => { const value = await image(id); value.Config.Labels[universalModeLabel] = id === args.candidateImage ? candidateMode : '1'; return value; };
@@ -26,10 +26,12 @@ export async function dockerHttpFixture(root) {
       const body = text ? JSON.parse(text) : undefined; calls.push({ method: req.method, route, body });
       let value;
       if (route.endsWith('/exec') && req.method === 'POST') {
+        if(execCreateStatus!==200){res.statusCode=execCreateStatus;res.end('{"message":"PRIVATE_SYNTHETIC_ENGINE_BODY"}');return;}
         const id = (++serial).toString(16).padStart(64, '0'); execs.set(id, { containerId: route.split('/')[2], body, started: false }); value = { Id: id };
       } else if (route.startsWith('/exec/')) {
         const id = route.split('/')[2], exec = execs.get(id);
         if (route.endsWith('/start')) { exec.started = true;
+          if(execStartDelay){res.writeHead(200);res.flushHeaders();await new Promise(resolve=>setTimeout(resolve,execStartDelay));}
           if(abortExec){res.writeHead(200);res.write(frame(measurement).subarray(0,16));res.socket.destroy();return;}
           res.end(frame(exec.containerId===args.originalId
           ? originalMeasurement||captureUniversalPreparedness({compiledLegacyMode:true,universalConfigured:false,reviewsConfigured:false,humanProfile:null,humanHttpEnabled:false}) : measurement)); return; }
@@ -66,6 +68,8 @@ export async function dockerHttpFixture(root) {
     setMeasurement(value) { measurement = value; },
     setOriginalMeasurement(value) { originalMeasurement = value; },
     setExecAbort(value) { abortExec = value; },
+    setExecStartDelay(value) { execStartDelay = value; },
+    setExecCreateStatus(value) { execCreateStatus = value; },
     setCandidateMode(value) { candidateMode = value; },
     async close() { health.closeAllConnections(); server.closeAllConnections(); await Promise.all([new Promise(done => health.close(done)), new Promise(done => server.close(done))]); } };
 }
