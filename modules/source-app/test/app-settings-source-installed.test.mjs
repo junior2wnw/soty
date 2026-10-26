@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { createOrdinaryInstalledFixture } from './support/ordinary-installed.mjs';
+import { createOrdinaryInstalledFixture, freePort } from './support/ordinary-installed.mjs';
 import { STANDARD_SELECTED_SOURCE_V3 } from '../server/standard-profile.mjs';
 import { createAppSourceState } from '../../../src/world/app-source-state.mjs';
 import { createAppSettingsState, createAppSettingsDraftState, dispatchAppSettingsIntent } from '../../../src/world/app-settings-state.mjs';
@@ -9,10 +9,13 @@ import { createAppSettingsState, createAppSettingsDraftState, dispatchAppSetting
 // Real signed owner RPC, installed connector, HTTP Source probe, Apps admission
 // and SQL receipts. Local storage/locks replace browser APIs only; no UI or
 // production deployment is claimed by this gate.
-test('owner moves relay 18438 to installed Source 18437; exact prepare and durable retry preserve both ordinary apps', { timeout: 120000 }, async t => {
+test('owner moves relay to installed Source; exact prepare and durable retry preserve both ordinary apps', { timeout: 120000 }, async t => {
   let promoted = 0;
+  const nativePort = await freePort();
+  let registrationPort; do { registrationPort = await freePort(); } while (registrationPort === nativePort);
+  const wrongPort = nativePort === 65535 ? nativePort - 1 : nativePort + 1;
   const f = await createOrdinaryInstalledFixture(t, { sourceProfile: STANDARD_SELECTED_SOURCE_V3,
-    nativePorts: [18437], registrationPorts: [18438],
+    nativePorts: [nativePort], registrationPorts: [registrationPort],
     connectorScript: fileURLToPath(new URL('../../../scripts/soty-connector.mjs', import.meta.url)),
     async promoteSource({ realm, owner, reader }) {
       const { appId } = realm, accountId = owner.account.accountId;
@@ -24,14 +27,14 @@ test('owner moves relay 18438 to installed Source 18437; exact prepare and durab
       const source = createAppSourceState({ accountId, appId, snapshot: before });
       source.patch({ profile: before.source.integrations[0].profile });
       if (realm.realmId === 'board') {
-        assert.equal(before.source.port, 18438); assert.equal(realm.port, 18437);
+        assert.equal(before.source.port, registrationPort); assert.equal(realm.port, nativePort);
         let nativeProbes = 0;
         realm.instance.server.on('request', req => { if (req.method === 'HEAD') nativeProbes++; });
-        source.patch({ port: '18436' }); assert.equal(source.read().canPrepare, true);
+        source.patch({ port: String(wrongPort) }); assert.equal(source.read().canPrepare, true);
         await assert.rejects(source.prepare({ api, isCurrent: () => true }), { code: 'app_scoped_admission_mismatch' });
         assert.equal(nativeProbes, 0, 'wrong digest is denied before any Native probe');
         assert.equal(source.read().preparation, null);
-        assert.equal((await api.request('apps.inspect', { appId })).source.port, 18438);
+        assert.equal((await api.request('apps.inspect', { appId })).source.port, registrationPort);
       }
       source.patch({ port: String(realm.port) });
       assert.equal((await source.prepare({ api, isCurrent: () => true })).status, 'ready');
