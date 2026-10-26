@@ -162,7 +162,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   });
   report.setAttribute('aria-label', 'Сообщить проблему'); report.title = 'Сообщить проблему';
   report.dataset.stageControl = 'feedback';
-  const field = iconButton('Добавить в Моё', 'plus', () => {
+  const field = iconButton('Разместить на поле', 'plus', () => {
     if (!current() || field.disabled || !saved) return;
     field.disabled = true;
     const returnToMore = field.parentElement === moreBody;
@@ -328,7 +328,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       .finally(() => { if (current()) { accountPending = false; otherAccount.disabled = false; } });
   });
   const bookmark = el('div', 'sa-bookmark'); bookmark.hidden = true;
-  bookmark.append(el('p', 'sa-bookmark-label', 'Сохранённый вход в «Моё»'), savedHost);
+  bookmark.append(el('p', 'sa-bookmark-label', 'Закладка в «Моём»'), savedHost);
   const diagnostics = button('Диагностика загрузки', 'info', 'sw-button-quiet', openRuntimeDiagnostics);
   diagnostics.hidden = options.presentation === 'widget';
   moreBody.append(widget, publicReviews, external, refresh, workStatus, diagnostics, community, settings, archives, otherAccount, bookmark); moreHost.append(more, moreBody);

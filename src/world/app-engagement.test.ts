@@ -42,7 +42,7 @@ const paint = (): Promise<void> => new Promise(resolve => requestAnimationFrame(
 const AUTOSIZE_CASE = 'Многострочный черновик читается после восстановления и изменения размера без потери позиции';
 const ARCHIVE_FOCUS_CASE = 'Переходы в архив и обратно сохраняют фокус, поздний ответ не забирает его';
 const MESSAGE_ANCHOR_CASE = 'Точная ссылка открывает сообщение без iframe; последние сообщения сохраняют черновик';
-const WORKSPACE_ADD_CASE = 'Добавить в Моё сохраняет точный вход один раз и не размещает соту при неизвестном результате';
+const WORKSPACE_ADD_CASE = 'Размещение на поле сохраняет точный вход один раз и не размещает соту при неизвестном результате';
 const WORKSPACE_CHOICE_CASE = 'Другой сохранённый вход требует выбора и заново проверяется перед добавлением';
 const SAVED_ENTRY_SHORTCUT_CASE = 'Актуальный сохранённый вход меняется через видимое сравнение с CAS и восстановлением прежнего запроса';
 const scopedBrowserKeys = new Set<string>(), errors: string[] = [];
