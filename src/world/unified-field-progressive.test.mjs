@@ -23,7 +23,7 @@ const parse = path => ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.S
 const printer = ts.createPrinter();
 const named = (nodes, name) => { const n = nodes.find(n => ts.isFunctionDeclaration(n) && n.name?.text === name); assert.ok(n, name); return n; };
 const screenParsed = parse(sourcePath), screen = named(screenParsed.statements, 'createUnifiedFieldScreen');
-const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
+const screenCode = compile(['merge', 'pruneMetadata', 'allMetadata', 'currentEntity', 'updateMineFilter', 'updateMineEmpty', 'loadMine', 'loadMinePass', 'loadOwnedApps', 'openPreview', 'searchSlot', 'releaseSearchSlot', 'searchDirectory'].filter(name => name !== 'loadMinePass' || screen.body.statements.some(node => ts.isFunctionDeclaration(node) && node.name?.text === name)).map(name => printer.printNode(ts.EmitHint.Unspecified, named(screen.body.statements, name), screenParsed)).join('\n')
   + '\nObject.assign(exports, { loadMine, updateMineFilter, updateMineEmpty, searchDirectory, openPreview, allMetadata });');
 const directoryPath = process.argv[4] ? resolve(process.argv[4]) : join(repo, 'src/world/field-directory.ts');
 const directoryCode = compile(readFileSync(directoryPath, 'utf8'));
@@ -49,7 +49,7 @@ const app = (id, title = 'Готовое приложение') => ({ id, name: 
 const person = ref => ({ profileId: ref.id, displayName: 'Готовый человек', avatarColor: '#abcdef', revision: 1 });
 const documentFor = refs => ({ schema: 'soty.field.v1', contexts: [{ contextId: 'studio', title: 'Студия', x: 0, y: 0 }],
   shortcuts: refs.map((entity, i) => ({ shortcutId: `shortcut_${i}`, entity, contextId: 'studio', slot: [i * 3, 0] })) });
-function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGate, pageGate, appGate, unavailable = false, worldFailure = false, mode = 'mine', searchApps = false, communitySearchGate, peopleSearchGate, searchAppGate, contacts = [], searchPeople = [] } = {}) {
+function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGate, pageGate, appGate, ownedGate, unavailable = false, worldFailure = false, mode = 'mine', searchApps = false, communitySearchGate, peopleSearchGate, searchAppGate, contacts = [], searchPeople = [] } = {}) {
   let current = true, sourceGeneration = 1, inFlight = 0, resolveActive = 0;
   const state = { calls: [], updates: [], maxInFlight: 0, maxResolveInFlight: 0, empties: [], pages: 0, previewClosed: 0, listCloses: 0 };
   const api = { async request(op, args) {
@@ -60,6 +60,7 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
       if (op === 'apps.directory.resolve') { if (appGate) await appGate(args.appIds); return { items: args.appIds.map(id => ({ ref: { kind: 'app', id }, available: !unavailable, ...(unavailable ? {} : { app: app(id) }) })) }; }
       if (op === 'world.directory.resolve') { if (worldGate) await worldGate.promise; if (worldFailure) throw Object.assign(new Error('Synthetic offline source'), { code: 'NETWORK_ERROR' }); return { items: args.entities.map(ref => ({ ref, available: true, access: 'member', person: person(ref) })) }; }
       if (op === 'apps.devices') { if (deviceGate) await deviceGate.promise; return { devices: [] }; }
+      if (op === 'apps.list') { state.ownedStartedWith = inFlight; if (ownedGate) await ownedGate.promise; return { apps: [] }; }
       if (op === 'contacts.list') return { contacts };
       if (op === 'world.directory.search') { state.pages++; if (pageGate) await pageGate.promise; if (args.kind === 'communities' && communitySearchGate) await communitySearchGate.promise; if (args.kind === 'people' && peopleSearchGate) await peopleSearchGate.promise; return { people: args.kind === 'people' ? searchPeople : [], communities: [], nextCursor: null }; }
       if (op === 'apps.directory.search') { if (searchAppGate) await searchAppGate.promise; return { apps: searchApps ? [app(appRef(1).id)] : [], nextCursor: null }; }
@@ -89,14 +90,14 @@ function harness({ refs = [appRef(1), personRef, deviceRef], worldGate, deviceGa
     current: () => current && sourceGeneration === 1, element: Object.assign(node('section'), { dataset: { ready: 'loading' } }), loading: { hidden: false },
     empty: { hidden: true, replaceChildren(...nodes) { state.empties.push(nodes[0]?.textContent); } },
     searchGeneration: 0, searchResponseScope: '', searchCursor: null, activeSearches: 0, queuedSearch: null, searchPlacement: createFieldSearchPlacement(),
-    more: { disabled: false, hidden: true }, searchLimit: { hidden: true }, options: { onMessage() {} },
+    more: { disabled: false, hidden: true }, searchLimit: { hidden: true }, options: { onMessage() {}, api, accountId: 'owner' },
     preview: null, previewOpener: null, selected: null, summary: null, firstResolve: false, wide: { matches: false }, BUILTINS: [], available: [], availableCursor: null, searchItems: [], state: null,
     matches: (item, query, filter) => (filter === 'all' || filter === item.entity.kind) && item.title.toLowerCase().includes(query.trim().toLowerCase()),
     el: node, button: (textContent, _, className, onClick) => Object.assign(node('button', className, textContent), { onClick }),
     icon: () => node('svg'), iconButton: (label, _, onClick) => Object.assign(node('button', '', label), { onClick }),
     avatar: () => node('span', 'avatar'),
     kindLabel: kind => kind,
-    renderMineSearchResults() {}, publishKnownApps() {},
+    renderMineSearchResults() {}, renderOwnApps() {}, renderOpenList: null, ownedApps: [], ownedAppsState: 'loading', overviewApps: () => [], publishKnownApps() {},
     closeList() { state.listCloses++; }, closePreview() { state.previewClosed++; environment.preview?.remove(); environment.preview = null; delete environment.element.dataset.preview; environment.selected = null; },
   };
   vm.createContext(environment);
@@ -356,4 +357,18 @@ test('bursts keep one private pass and two public searches bounded at nine concu
   try { peak = h.state.maxInFlight; assert.equal(h.environment.activeSearches, 2); }
   finally { worldGate.resolve(); deviceGate.resolve(); appsGate.resolve(); communitySearchGate.resolve(); peopleSearchGate.resolve(); searchAppGate.resolve(); await Promise.all([mine, ...queuedMines, ...searches]); }
   assert.ok(peak <= 9); assert.ok(peak >= 8, 'The fixture must exercise the overlapping upper bound'); assert.ok(h.state.maxInFlight <= 9); assert.equal(h.environment.activeSearches, 0); assert.equal(h.environment.mineBusy, false);
+});
+
+test('the own app overview starts after the current field reads and shares the same refresh queue', async () => {
+  const worldGate = deferred(), deviceGate = deferred(), appsGate = deferred(), ownedGate = deferred();
+  const h = harness({ worldGate, deviceGate, appGate: () => appsGate.promise, ownedGate });
+  const first = h.api.loadMine(); await settle();
+  assert.equal(h.state.calls.some(call => call.op === 'apps.list'), false);
+  worldGate.resolve(); deviceGate.resolve(); appsGate.resolve(); await settle();
+  assert.equal(h.state.calls.filter(call => call.op === 'apps.list').length, 1);
+  assert.equal(h.state.ownedStartedWith, 1, 'the registry read must not overlap personal field reads');
+  const queued = h.api.loadMine(); await settle();
+  assert.equal(h.state.calls.filter(call => call.op === 'apps.list').length, 1);
+  ownedGate.resolve(); await Promise.all([first, queued]);
+  assert.equal(h.state.calls.filter(call => call.op === 'apps.list').length, 2);
 });

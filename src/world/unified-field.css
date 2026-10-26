@@ -21,6 +21,12 @@
 .uf-screen button { -webkit-tap-highlight-color: transparent; }
 .uf-screen [hidden] { display: none !important; }
 .uf-screen :is(button,input):focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 4px; }
+.uf-own-apps { flex: none; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 24px; }
+.uf-own-apps h2 { flex: none; margin: 0; color: var(--sw-muted); font-size: 13px; line-height: 18px; font-weight: 650; }
+.uf-own-apps-list { display: flex; min-width: 0; gap: 8px; overflow-x: auto; padding: 3px; scrollbar-width: thin; }
+.uf-own-app.sw-button { flex: none; min-height: 44px; max-width: 260px; padding: 8px 14px; border: 1px solid var(--sw-line); border-radius: 14px; background: var(--sw-surface-subtle); color: var(--sw-ink); }
+.uf-own-app span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uf-own-apps-status { margin: 0; color: var(--sw-muted); font-size: 13px; }
 .uf-screen-head { flex: none; display: flex; align-items: center; gap: 40px; min-width: 0; min-height: 114px; padding: 24px 32px 18px; }
 .uf-screen-head h1 { margin: 0; font-size: clamp(32px,4.55vw,72px); line-height: 1.05; letter-spacing: -.048em; font-weight: 650; }
 .uf-screen-title { min-width: 0; }
@@ -221,6 +227,10 @@
   .uf-node-icon { width: 22px; height: 22px; }
 }
 @media (max-width:720px) {
+.uf-own-apps { padding: 6px 12px; gap: 8px; }
+.sw-app[data-experience=one-field] .uf-own-apps { margin-top: 112px; }
+.uf-own-apps h2 { max-width: 74px; }
+.uf-own-app.sw-button { max-width: 190px; }
   .uf-screen-head { display: block; min-height: 0; padding: 12px 16px; }
   .uf-screen-head h1 { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .uf-screen-switch { width: 100%; min-height: 48px; }
