@@ -18,8 +18,9 @@ function payload(value, withRequest = false) {
   if (typeof value.text !== 'string' || !value.text.trim() || value.text.length > 16_000 || typeof value.cwd !== 'string'
     || value.cwd.length > 2000 || /[\u0000-\u001f]/u.test(value.cwd)) fail('invalid_app_create_prompt');
   if (withRequest && !id(value.requestId)) fail('invalid_app_create_receipt');
+  if (value.autoRegister !== undefined && value.autoRegister !== true) fail('invalid_app_create_receipt');
   return { expectedAccountId: value.expectedAccountId, hostDeviceId: value.hostDeviceId, connectorId: value.connectorId,
-    text: value.text.trim(), cwd: value.cwd.trim(), ...(withRequest ? { requestId: value.requestId } : {}) };
+    text: value.text.trim(), cwd: value.cwd.trim(), ...(value.autoRegister === true ? { autoRegister: true } : {}), ...(withRequest ? { requestId: value.requestId } : {}) };
 }
 
 /** One account has one recoverable app-creation intent. All read/modify/write
@@ -35,14 +36,15 @@ export function createAppCreateState({ accountId, storage, locks, randomId = () 
       if (raw === null) { last = fresh(); readFailed = false; return last; }
       if (typeof raw !== 'string' || raw.length > 220_000) fail('app_create_storage_unavailable');
       const value = JSON.parse(raw);
-      if (value?.schema !== 1 || value.accountId !== accountId || !Number.isSafeInteger(value.revision) || value.revision < 0) fail('app_create_storage_unavailable');
-      const next = { schema: 1, accountId, draft: draft(value.draft), revision: value.revision, pending: null, accepted: value.accepted ? target(value.accepted) : null };
+      if (![1, 2].includes(value?.schema) || value.accountId !== accountId || !Number.isSafeInteger(value.revision) || value.revision < 0) fail('app_create_storage_unavailable');
+      const next = { schema: value.schema, accountId, draft: draft(value.draft), revision: value.revision, pending: null, accepted: value.accepted ? target(value.accepted) : null };
       if (value.pending) {
         const request = payload(value.pending.payload, true);
-        if (request.expectedAccountId !== accountId || !Number.isSafeInteger(value.pending.draftRevision)
+        if ((value.schema === 2) !== (request.autoRegister === true) || request.expectedAccountId !== accountId || !Number.isSafeInteger(value.pending.draftRevision)
           || value.pending.draftRevision < 0 || value.pending.draftRevision > next.revision || next.accepted) fail('app_create_storage_unavailable');
         next.pending = { payload: request, draftRevision: value.pending.draftRevision };
       }
+      if (value.schema === 2 && !next.pending && !next.accepted) fail('app_create_storage_unavailable');
       last = next; readFailed = false; return next;
     } catch { readFailed = true; fail('app_create_storage_unavailable'); }
   }
@@ -100,6 +102,7 @@ export function createAppCreateState({ accountId, storage, locks, randomId = () 
           const exact = draft({ text: input.text, cwd: input.cwd, hostDeviceId: input.hostDeviceId, connectorId: input.connectorId });
           if (!same(next.draft, exact)) { next.draft = exact; next.revision++; }
           const requestId = randomId(); if (!id(requestId)) fail('invalid_app_create_request');
+          if (value.autoRegister === true) next.schema = 2;
           next.pending = { payload: { ...value, requestId }, draftRevision: next.revision };
         }
         write(next); volatileDraft = null; return clone(next.pending);
@@ -122,15 +125,15 @@ export function createAppCreateState({ accountId, storage, locks, randomId = () 
         if (!matches(expected, next.pending)) return false;
         if (receipt?.status !== 'rejected' || receipt.requestId !== next.pending.payload.requestId
           || typeof receipt.reason !== 'string' || !/^[a-z][a-z0-9_]{2,100}$/u.test(receipt.reason)) fail('invalid_app_create_receipt');
-        next.pending = null; write(next); volatileDraft = null; return true;
+        next.pending = null; next.schema = 1; write(next); volatileDraft = null; return true;
       }, true);
     },
-    async adoptAccepted(job) {
+    async protectAutomatic(job) {
       const accepted = target(job);
       return lock(() => {
         const next = mergeVolatile(load());
-        if (next.pending || next.accepted) return false;
-        next.accepted = accepted; write(next); volatileDraft = null; return true;
+        if (next.pending || !next.accepted || !same(next.accepted, accepted)) return false;
+        next.schema = 2; write(next); volatileDraft = null; return true;
       }, true);
     },
     async clearAccepted(job) {
@@ -138,7 +141,7 @@ export function createAppCreateState({ accountId, storage, locks, randomId = () 
       return lock(() => {
         const next = mergeVolatile(load());
         if (next.pending || !same(expected, next.accepted)) return false;
-        next.accepted = null; write(next); volatileDraft = null; return true;
+        next.accepted = null; next.schema = 1; write(next); volatileDraft = null; return true;
       }, true);
     },
   };
