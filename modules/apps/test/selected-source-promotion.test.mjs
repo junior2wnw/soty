@@ -226,8 +226,25 @@ test('actual Apps launch maps a saved root path only for admitted workspace2, pr
       if (!['app_offline', 'app_binding_pending'].includes(error.code) || Date.now() >= deadline) throw error;
       await new Promise(done => setTimeout(done, 5)); } }
     assert.equal(initial.entry.origin, f.profile.embedOrigin);
+    const beforeDefaultOpen = f.rows(), forwardedBeforeDefault = forwardedRequests;
+    const ordinary = service.execute({ op: 'apps.launch', actor: f.owner, args: { appId: f.appId, instanceId: 'main' } });
+    assert.deepEqual(ordinary.entry, { appId: f.appId, ...preferred }, 'app-only launch uses the admitted current address before issuing its boot');
+    assert.deepEqual(service.execute({ op: 'apps.entry.get', actor: f.owner, args: { appId: f.appId } }).entry,
+      ordinary.entry, 'cold app-only discussion uses the same current selector');
+    assert.deepEqual(f.rows(), beforeDefaultOpen, 'opening and resolving an app do not rewrite bookmarks, grants or publication state');
+    assert.equal(forwardedRequests, forwardedBeforeDefault, 'issuing the default boot never replays an upstream request');
+    const subjectsBeforeDenial = humanSubjects.length;
+    assert.throws(() => service.execute({ op: 'apps.launch', actor: { ...f.owner, deviceId: 'untrusted-browser' },
+      args: { appId: f.appId } }), { code: 'apps_authentication_required' });
+    assert.throws(() => service.execute({ op: 'apps.launch', actor: f.owner,
+      args: { appId: f.appId, expectedAccountId: reader.accountId } }), { code: 'authentication_required' });
+    assert.equal(humanSubjects.length, subjectsBeforeDenial, 'stale profile/device cannot acquire a scoped identity');
+    assert.deepEqual(f.rows(), beforeDefaultOpen);
     const wrongAddress = inspection.addresses.canonical.origin === preferred.origin ? inspection.addresses.aliases[0] : inspection.addresses.canonical;
     assert.throws(() => call({ domainId: wrongAddress.id, path: '/embed' }), { code: 'scoped_embed_source_changed' }, 'the other same-app address is still fenced');
+    assert.throws(() => call({ domainId: wrongAddress.id }), { code: 'scoped_embed_source_changed' }, 'explicit domain without a path remains exact');
+    if (inspection.addresses.canonical.origin !== preferred.origin) assert.throws(() => service.execute({ op: 'apps.launch', actor: f.owner,
+      args: { appId: f.appId, path: '/embed' } }), { code: 'scoped_embed_source_changed' }, 'an explicit path without domain keeps its previous canonical meaning');
     for (const actor of [f.owner, reader]) {
       const current = service.execute({ op: 'apps.entry.get', actor, args: { appId: f.appId, current: true } });
       assert.deepEqual(current.entry, { appId: f.appId, ...preferred }, 'explicit current lookup resolves the admitted origin for an allowed participant');

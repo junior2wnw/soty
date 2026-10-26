@@ -571,9 +571,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     current:()=>current()&&!runtimePending&&!projectCapture.isCapturing(),readBinding:readRenewBinding,
     lastLaunchAt:()=>lastRuntimeLaunchAt,recover:async()=>{await renewal.refresh();}});
   function routeWith(presentation?: AppLaunchPresentation): AppLaunchIntent {
-    // Preserve canonical/community route identity, while pinning the path that
-    // was actually admitted. A named route always keeps its exact domain ID.
-    return parseAppLaunchRoute(formatAppLaunchRoute({ ...initial.target, ...(selectedEntry ? { path: selectedEntry.path } : {}) }, initial.communityId, presentation))!;
+    // Ordinary app routes stay app-only across reload. The admitted location
+    // remains in this launcher; explicit named/deep routes keep their exact path.
+    const exact = initial.target.domainId !== undefined || initial.target.path !== undefined;
+    return parseAppLaunchRoute(formatAppLaunchRoute({ ...initial.target, ...(exact && selectedEntry ? { path: selectedEntry.path } : {}) }, initial.communityId, presentation))!;
   }
   async function navigatePresentation(presentation?: AppLaunchPresentation, focus = false): Promise<void> {
     const generation = ++routeGeneration;

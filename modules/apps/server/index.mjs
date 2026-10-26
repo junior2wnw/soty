@@ -171,9 +171,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const requested = { appId: appId(args.appId), ...(args.domainId === undefined ? {} : { domainId: textId(args.domainId) }),
         ...(args.path === undefined ? {} : { path: guideLaunchPath(args.path).entryPath }) };
       return readEntryTransaction(actor, captured => {
-        // Explicit recovery asks for a locator for the currently admitted Source.
-        // It never rewrites an exact saved/deep link or opens a scoped context.
-        if (args.current === true) {
+        // An app-only locator follows the currently admitted entry. Exact
+        // saved/deep links stay pinned; metadata never opens a scoped context.
+        if (args.current === true || args.domainId === undefined && args.path === undefined) {
           const app = row(requested.appId), target = activeTarget(requested.appId);
           assertApps(app?.state === 'enabled' && target, 'app_unavailable', 404);
           if (args.surface === 'native') {
@@ -199,23 +199,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             // No Root ticket, cookie, identity witness or session is created.
             return { entry: { appId: app.id, domainId: entry.domainId, origin: entry.origin, path: runtimePath(entry.target.entryPath) } };
           }
-          let preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
-            app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
-            target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,
-              connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path },
-          }, captured) : undefined;
-          assertApps(!selectedRuntimeProfile(target.profile) || preferred, 'app_unavailable', 404);
-          if (!selectedRuntimeProfile(target.profile)) {
-            // Explicit recovery selects the ordinary application's current
-            // named entry too. A public participant cannot use its private
-            // canonical address, including after a Source-to-Native rollback.
-            const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
-              JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
-              JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
-              WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
-              ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
-            if (address) preferred = { domainId: address.id };
-          }
+          const preferred = defaultEntryFor(app, target, captured);
           const entry = resolveEntry({ actor: captured, appId: app.id, ...preferred });
           assertApps(entry, 'app_unavailable', 404);
           return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: entry.path } };
@@ -528,6 +512,24 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       || decision.route.port !== target.port || decision.route.entryPath !== target.entryPath) return null;
     return { domainId: domain.id, origin: domain.origin, path: target.entryPath };
   }
+  function defaultEntryFor(app, target, actor) {
+    assertApps(target, 'app_unavailable', 404);
+    let preferred = selectedRuntimeProfile(target.profile) ? inspectLaunchEntry({
+      app: { id: app.id, ownerAccountId: app.owner_account_id, state: app.state },
+      target: { appId: app.id, revision: target.revision, digest: target.digest, profile: target.profile,
+        connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path },
+    }, actor) : undefined;
+    assertApps(!selectedRuntimeProfile(target.profile) || preferred, 'app_unavailable', 404);
+    if (!selectedRuntimeProfile(target.profile)) {
+      const address = db.prepare(`SELECT d.id FROM app_publication_domains pd
+        JOIN app_domains d ON d.id=pd.domain_id AND d.app_id=pd.app_id AND d.owner_account_id=pd.owner_account_id
+        JOIN app_domain_zones z ON z.id=d.zone_id AND z.kind='named'
+        WHERE pd.app_id=? AND pd.owner_account_id=? AND d.role='alias' AND d.state='bound'
+        ORDER BY d.created_at,d.id LIMIT 1`).get(app.id, app.owner_account_id);
+      if (address) preferred = { domainId: address.id };
+    }
+    return preferred;
+  }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });
     const channel = channels.get(target.connectorKey);
@@ -744,9 +746,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       exact(args, ['appId', 'domainId', 'path', 'instanceId']);
       assertApps(args.instanceId === undefined || typeof args.instanceId === 'string' && /^(?:main|widget-[a-f0-9-]{36})$/u.test(args.instanceId), 'app_instance_invalid', 400);
       assertApps(app?.state === 'enabled', 'apps_access_denied', 403);
-      const domain = args.domainId === undefined
+      const domainId = args.domainId === undefined && args.path === undefined
+        ? defaultEntryFor(app, activeTarget(id), actor)?.domainId : args.domainId;
+      const domain = domainId === undefined
         ? db.prepare("SELECT * FROM app_domains WHERE app_id=? AND role='canonical'").get(id)
-        : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(args.domainId));
+        : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(domainId));
       assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
       const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
       assertRuntimeBinding(decision, { requireReady: true });

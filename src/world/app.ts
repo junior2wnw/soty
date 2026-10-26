@@ -2828,8 +2828,8 @@ class WorldApplication {
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
     // An ordinary open resolves the active target's entry on the server. A
     // cached catalogue/field path is not an explicit deep link.
-    const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
-      ...(app.entry ? { domainId: app.entry.domainId } : {}) }, app.entry ? undefined : previousGroup?.communityId))!;
+    const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId },
+      app.entry ? undefined : previousGroup?.communityId))!;
     const communityId = launchIntent.communityId;
     const knownGroup = communityId ? [previousGroup, ...this.communities].find(value => value?.communityId === communityId && value.membership?.state === 'active') ?? null : null;
     this.group = knownGroup; this.view = 'mine'; this.renderNavigation(); this.writeRoute(launchIntent.route);

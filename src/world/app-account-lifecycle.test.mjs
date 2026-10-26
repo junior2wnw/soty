@@ -855,11 +855,44 @@ test('ordinary application click resolves the active entry after actual Apps8 So
   assert.equal(cached.entry.path, '/', 'the existing field/catalogue snapshot remains stale');
   assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
   assert.equal(Object.hasOwn(calls[0].args, 'path'), false, 'ordinary click asks the server for its current default');
-  assert.equal(calls[0].args.domainId, cached.entry.domainId);
+  assert.equal(Object.hasOwn(calls[0].args, 'domainId'), false, 'ordinary click does not pin a cached address');
   assert.equal(f.app.appStage.entry().path, '/embed');
   assert.equal(new URL(f.app.main.querySelector('iframe').src).searchParams.get('path'), '/embed');
-  assert.equal(appLaunch.parseAppLaunchRoute(f.location.hash).target.path, '/embed');
+  assert.deepEqual(appLaunch.parseAppLaunchRoute(f.location.hash).target, { appId: stageAppId }, 'reload keeps the ordinary app intent');
   f.app.cleanScreen();
+});
+
+test('ordinary card follows a changed server address in one launch and keeps app-only intent across reload', async () => {
+  const f = fixture(), calls = [], cached = { appId: stageAppId, name: 'Moved Source', entry: stageResponse('/').entry };
+  const selected = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
+  // The actual server selector is covered by selected-source-promotion.test;
+  // this inert transport exercises the real controller/launcher boundary.
+  entryTransport(f, { entry: () => selected }, calls);
+  await f.app.openApplication(cached);
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
+  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main' });
+  assert.equal(new URL(f.app.main.querySelector('iframe').src).origin, selected.origin);
+  assert.deepEqual(f.app.appStage.entry(), selected); assert.equal(cached.entry.domainId, stageDomainId);
+  const reload = appLaunch.parseAppLaunchRoute(f.location.hash);
+  assert.deepEqual(reload.target, { appId: stageAppId });
+  calls.length = 0; f.app.cleanScreen();
+  await f.app.openApplication(cached, reload);
+  assert.equal(calls.length, 1); assert.equal(calls[0].op, 'apps.launch');
+  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A', instanceId: 'main' });
+  assert.deepEqual(f.app.appStage.entry(), selected); f.app.cleanScreen();
+});
+
+test('cold app-only discussion resolves the current address without launching or pinning it into the route', async () => {
+  const f = fixture(), calls = [];
+  const selected = { appId: stageAppId, domainId: `dom_${'f'.repeat(32)}`, origin: 'https://current.example', path: '/embed' };
+  entryTransport(f, { entry: () => selected }, calls);
+  const route = appLaunch.parseAppLaunchRoute(appLaunch.formatAppLaunchRoute({ appId: stageAppId }, undefined, { panel: 'discussion' }));
+  await f.app.openApplication({ appId: stageAppId, name: 'Moved Source', entry: stageResponse('/').entry }, route);
+  assert.deepEqual(calls.map(value => value.op), ['apps.entry.get']);
+  assert.deepEqual(calls[0].args, { appId: stageAppId, expectedAccountId: 'account-A' });
+  assert.deepEqual(f.app.appStage.entry(), selected);
+  assert.deepEqual(appLaunch.parseAppLaunchRoute(f.location.hash).target, { appId: stageAppId });
+  assert.equal(f.app.main.querySelector('iframe'), null); f.app.cleanScreen();
 });
 
 test('explicit legacy deep links stay exact on refusal; a new ordinary click recovers the active Source entry', async t => {
