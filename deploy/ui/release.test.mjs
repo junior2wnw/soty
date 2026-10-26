@@ -135,10 +135,10 @@ test('symlinked public files and a changed staged buffer fail closed', t => {
   const release = createUiRelease(f.dist); release.files.get('index.html').bytes[0] = 0;
   assert.throws(() => writeUiRelease(release, path.join(f.root, release.id)), { code: 'ui_release_changed' });
 });
-test('forged inventory and mutable/nonliteral roots are refused before Caddy is called', async t => {
+test('forged inventory and uncontrolled/nonliteral roots are refused before Caddy is called', async t => {
   const f = fixture(t), release = createUiRelease(f.dist);
   const adapt = () => assert.fail('Caddy must not receive invalid release input');
-  for (const root of ['/srv/soty-ui/current', `/srv/soty-ui//${release.id}`, `/srv/soty-ui/../${release.id}`, `/srv/soty-ui/${release.id};bad`]) {
+  for (const root of ['/srv/current', `/srv/current/${release.id}`, `/srv/soty-ui//${release.id}`, `/srv/soty-ui/../${release.id}`, `/srv/soty-ui/${release.id};bad`]) {
     await assert.rejects(createCaddyOverlay({ caddyfile: '', release, root, adapt }), { code: 'ui_release_root_invalid' });
   }
   await assert.rejects(createCaddyOverlay({ caddyfile: '', release: { ...release, id: 'a'.repeat(64) }, root: '/srv/' + 'a'.repeat(64), adapt }), { code: 'ui_release_manifest_invalid' });

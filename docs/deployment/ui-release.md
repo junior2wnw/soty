@@ -10,7 +10,7 @@ writeUiRelease(release, freshStagingDirectory);
 const overlay = await createCaddyOverlay({
   caddyfile: privateOriginalText,
   release,
-  root: `/srv/soty-ui/releases/${release.id}`,
+  root: '/srv/soty-ui/current', // одноразовый bootstrap; следующие UI без Caddy
   host: '4-2.xn--p1ai',
   adapt: privateCaddyAdapter,
 });
@@ -21,7 +21,9 @@ verifyStructuralDelta(overlay.config, independentlyAdaptedCandidate);
 
 Допущены только корневые файлы оболочки, известные иконки/шрифты, hashed assets, публичные manifest/изображения обложек, `/help/interaction.html` и конечный `PUBLIC_SKILL_FILES` из `deploy/ui/release.mjs`: каталог `/skills/index.json/html`, пакет `soty-cover-art` и пакет `soty-app-deploy` с перечисленными references. Соседние skills и лишние файлы пакета исключены. Документы skill обновляются с UI и не получают immutable cache. `.env`, source maps, `/agent`, HIVE/другие app entrypoints и прочие файлы не входят в release. Проверяются ссылки index, manifest и все три массива precache worker. Прежние releases добавляют только immutable URLs. Один immutable URL с разными байтами останавливает сборку; обычные `index.html`/worker/manifest меняются вместе с выпуском.
 
-Продуктивный каталог должен принадлежать установщику и быть недоступным для записи runtime/user, без symlink в любом компоненте пути. Генератор проверяет буквальный POSIX-путь, оканчивающийся точным release ID; реальную файловую систему и права перед применением проверяет установщик. Он копирует только этот inventory и повторно сверяет байты.
+Продуктивный каталог принадлежит root и недоступен для записи runtime/user. Единственное исключение из запрета symlink — контролируемый `soty-ui/current`, указывающий ровно на `releases/<id>`; сам release и его inventory по-прежнему без symlink. Установщик повторно сверяет точные bytes/modes и сохранность всех прежних immutable URLs. Caddy следует symlink: его root не является sandbox, поэтому произвольные цели и writable parent запрещены.
+
+Обычный выпуск выполняет `node deploy/ui/host-publisher.mjs execute publish-plan.json`: один план `action:publish` с public stage, manifest, `base`, `expectedReleaseId` и transaction. Он сам устанавливает sealed release и переключает `current` под Linux kernel flock с CAS. Caddyfile, ключ, PID и DATA не участвуют. `inspect` строго read-only сверяет реальный pointer и исходный журнал; после неизвестного результата повторять execute нельзя. Откат тем же publish меняет mutable UI, сохраняя новые immutable URLs. Полная форма плана и одноразовый bootstrap — [deploy/ui/README.md](../../deploy/ui/README.md).
 
 ## Узкая вставка Caddy
 
@@ -37,7 +39,7 @@ Node сначала обрабатывает исходный запрос. То
 
 `file_server.hide` **не игнорируется и не нормализуется**. Все вызовы `adapt(text)` должны иметь одинаковые filename и cwd. Для реальной приёмки применяйте физический `/etc/caddy/Caddyfile` в изолированной tmpfs-копии; stdin `--config -` добавляет другое auto-hide имя и не доказывает совпадение с физическим именем. stdout/stderr адаптера могут содержать секреты — держать их приватными, наружу только безопасные хеши/статусы. Возвращённые `overlay.caddyfile/config` тоже приватны.
 
-Генератор работает от одобренного baseline до overlay, без повторного разбора собственного уже установленного overlay. Следующий UI выпускается из сохранённого одобренного baseline; до установки нужно подтвердить, что active/disk равны последнему принятому candidate. При независимых изменениях ingress требуется новая сверка baseline, а не перезапись старым шаблоном.
+Генератор работает от одобренного baseline до overlay, без повторного разбора собственного установленного overlay. При одноразовом переходе со старого literal root нужна прежняя полная сверка active/disk и encrypted backup. Stable handler использует общую fixed/hashed public-path policy, а не inventory конкретного выпуска; следующие UI требуют только publish/CAS pointer. При независимых изменениях ingress требуется новая сверка baseline, а не перезапись старым шаблоном.
 
 ## Проверка и установка
 

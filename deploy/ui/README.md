@@ -1,11 +1,67 @@
 # Root UI host publisher
 
-`host-publisher.mjs` maintains the accepted `core-ui-native`, `core-ui-swap`
-and `core-ui-active-readonly` mechanism. It installs a finite public release,
-atomically replaces one pinned Caddyfile and sends exactly `SIGUSR1` to one
-pinned process. It never opens Root DATA, calls Gateway, restarts a service or
-edits the frozen public SDK packet. `config-swap.mjs` supplies authenticated
-AES-256-GCM backup/readback and the atomic file operation.
+`host-publisher.mjs` installs a finite, sealed public release and atomically
+switches `/srv/soty-ui/current`. Routine UI updates do not change Caddy or its
+process, need no encryption key and never open Root DATA. Backend replacement
+is unnecessary when the UI/API contract remains compatible.
+
+## Normal publication: one plan, one command
+
+Compose `createUiRelease(candidateDist, [currentReleaseRoot])`, write the stage
+with `writeUiRelease`, and save `{id,manifest}`. Retain every current immutable
+URL with identical bytes. Use one plan:
+
+```json
+{
+  "schema":"soty.ui.host.v1","action":"publish","transaction":"<32 hex>",
+  "releaseId":"<manifest SHA>","receiptDirectory":"<private root-owned directory>",
+  "base":"/srv","input":"<public stage>","manifestFile":"<manifest.json>",
+  "expectedReleaseId":"<current release SHA>"
+}
+```
+
+```sh
+node deploy/ui/host-publisher.mjs execute publish-plan.json
+# Only if the response is lost, or to read the current result:
+node deploy/ui/host-publisher.mjs inspect publish-plan.json
+```
+
+Execute requires Linux root and `/usr/bin/flock` (util-linux). It verifies or
+installs `releases/<id>` with the existing exact inventory, seals files444 and
+directories555, checks current release CAS and retained immutable bytes, then
+atomically renames one root-owned relative symlink. Only `current` may be a
+symlink, exactly to `releases/<64 hex>`; public inventory still forbids symlinks.
+The permanent owned `.publish.lock` uses a kernel lock: concurrent execution
+fails, process exit/SIGKILL releases the lock. Never unlink the lock inode.
+
+One fsynced transaction journal precedes the switch. `inspect` changes nothing:
+it verifies the actual link/release and reports `published`, `not-applied` or
+`changed`, including the original journal phases. Never replay an unknown
+operation or change its receipt directory. A known failed operation can be
+followed by a new reviewed transaction after inspection; partial unsealed
+directories are refused. Keep old releases. Rollback uses the same publish
+command with old mutable UI composed with **all current immutable URLs**.
+
+`reloadRequired:false` means no reload was needed; it does not claim HTTP or
+browser acceptance. Check the public index, new/retained assets and protected
+routes after publication. No new backend build or full Root identity packet is
+required merely to publish compatible static files.
+
+## One-time stable-root bootstrap
+
+For an existing literal release path, use the encrypted/pinned Caddy mechanism
+below once, deriving the candidate from the approved unwrapped canonical with
+`root:"/srv/soty-ui/current"`. Initialize that verified pointer using publish
+with `expectedReleaseId:null` before applying the bootstrap. Confirm the
+pointer still names the intended release immediately before apply. Stable
+matchers derive from the same fixed/hashed public-file policy as the installer;
+the configuration is independent of release manifests. GET/HEAD, Root200,
+dynamic security headers, project/HIVE exclusions and unknown-route fallback
+remain intact. This bootstrap preserves TLS/auth/other ingress unchanged.
+
+The retained `install/apply/rollback` operations below support this migration
+and ingress repair. They are not part of a routine UI update. `config-swap.mjs`
+supplies their authenticated AES-256-GCM backup/readback and atomic replacement.
 
 ## Build the operator closure
 
@@ -140,7 +196,11 @@ SOTY_UI_CADDY_BINARY=/usr/local/bin/soty-test-caddy node --test --test-concurren
 ```
 
 Run the host gate in an owned Linux namespace as root, network none, without
-production mounts or credentials. It boots an **old overlay**, installs/replaces
+production mounts or credentials. The stable-current gate proves new hash URLs
+and rollback while Caddy PID/config/autosave stay unchanged. Unit gates exercise
+a real competing CLI, SIGKILL before/after rename, read-only reconciliation,
+immutable retention, CAS and tampered/escaping targets. The legacy gate boots
+an **old overlay**, installs/replaces
 with a new overlay, checks new index + both assets + protected ingress, checks
 actual autosave against real adapt, reverses on the same PID and tests strict
 process pins and the lost-response barrier. Set `SOTY_UI_PUBLISHER_BUNDLE` to the

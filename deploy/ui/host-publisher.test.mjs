@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { sha256, encryptConfig, decryptConfig, writeEncryptedConfigs, swapConfig } from './config-swap.mjs';
 import { validateHostPlan, installPublicRelease, verifyInstalledRelease, executeHostPlan, inspectHostPlan, verifyCaddyProcess } from './host-publisher.mjs';
-import { createUiRelease } from './release.mjs';
+import { createUiRelease, writeUiRelease } from './release.mjs';
 import { fixtureDist } from './test-support.mjs';
 
 const linux = process.platform === 'linux', root = linux && process.getuid() === 0;
@@ -133,4 +135,87 @@ test('wrong key/ciphertext and nonexistent exact process leave config untouched'
     assert.deepEqual(fs.readFileSync(f.filename), f.baseline);
   }
   assert.throws(() => verifyCaddyProcess(plan(f.directory)), { code: 'caddy_process_changed' });
+});
+
+function publishPlan(f, input, expectedReleaseId, counter = 'a') {
+  const release = createUiRelease(input), manifestFile = path.join(f.directory, 'manifest-' + counter + '.json');
+  fs.writeFileSync(manifestFile, JSON.stringify({ id: release.id, manifest: release.manifest }));
+  return { schema: 'soty.ui.host.v1', action: 'publish', transaction: counter.repeat(32), releaseId: release.id,
+    receiptDirectory: f.directory, input, manifestFile, base: f.directory, expectedReleaseId };
+}
+function publishFixture(t) {
+  const f = fixture(t), oldInput = fixtureDist(path.join(f.directory, 'old'));
+  const first = publishPlan(f, oldInput, null); executeHostPlan(first);
+  const input = fixtureDist(path.join(f.directory, 'next'), { 'index.html': 'NEXT UI', 'assets/new-12345678.js': 'new lazy asset' });
+  return { ...f, oldInput, first, next: publishPlan(f, input, first.releaseId, 'b') };
+}
+
+test('publish needs no Caddy/config/key and inspect is read-only; CAS and immutable retention fail closed', { skip: !root }, t => {
+  const f = publishFixture(t), current = path.join(f.directory, 'soty-ui/current'), config = fs.readFileSync(f.filename);
+  const result = executeHostPlan(f.next);
+  assert.equal(result.currentReleaseId, f.next.releaseId); assert.equal(result.signalsSent, 0); assert.equal(result.reloadRequired, false);
+  assert.deepEqual(fs.readFileSync(f.filename), config);
+  const before = fs.lstatSync(current), journal = fs.readFileSync(path.join(f.directory, 'publish-' + f.next.transaction + '.jsonl'));
+  assert.equal(inspectHostPlan(f.next).state, 'published');
+  assert.equal(fs.lstatSync(current).ino, before.ino); assert.deepEqual(fs.readFileSync(path.join(f.directory, 'publish-' + f.next.transaction + '.jsonl')), journal);
+  assert.throws(() => executeHostPlan(f.next), { code: 'EEXIST' });
+  assert.throws(() => executeHostPlan({ ...f.next, transaction: 'c'.repeat(32) }), { code: 'current_release_changed' });
+  const oldWithoutNewAssets = publishPlan(f, f.oldInput, f.next.releaseId, 'd');
+  assert.throws(() => executeHostPlan(oldWithoutNewAssets), { code: 'ui_immutable_url_missing' });
+  assert.equal(fs.lstatSync(current).ino, before.ino);
+});
+
+test('publish rejects tampered release and a current link escaping controlled releases', { skip: !root }, t => {
+  const f = publishFixture(t), target = installPublicRelease({ input: f.next.input, manifest: createUiRelease(f.next.input), base: f.directory });
+  fs.chmodSync(path.join(target.root, 'index.html'), 0o644); fs.writeFileSync(path.join(target.root, 'index.html'), 'TAMPERED');
+  assert.throws(() => executeHostPlan(f.next), { code: 'installed_release_changed' });
+  const current = path.join(f.directory, 'soty-ui/current'); assert.equal(fs.readlinkSync(current), 'releases/' + f.first.releaseId);
+  fs.unlinkSync(current); fs.symlinkSync(f.oldInput, current);
+  assert.throws(() => executeHostPlan({ ...f.next, transaction: 'c'.repeat(32) }), { code: 'current_pointer_invalid' });
+  assert.equal(fs.readlinkSync(current), f.oldInput);
+});
+
+test('OS lock excludes another real publisher process and releases after success', { skip: !root }, t => {
+  const f = publishFixture(t), competing = { ...f.next, transaction: 'c'.repeat(32) }, planFile = path.join(f.directory, 'competing.json');
+  fs.writeFileSync(planFile, JSON.stringify(competing));
+  const rename = fs.renameSync; let response;
+  fs.renameSync = (from, to) => {
+    if (to === path.join(f.directory, 'soty-ui/current')) {
+      const child = spawnSync(process.execPath, [fileURLToPath(new URL('./host-publisher.mjs', import.meta.url)), 'execute', planFile], { encoding: 'utf8', timeout: 5000 });
+      assert.equal(child.status, 1); response = JSON.parse(child.stdout); assert.equal(response.code, 'publish_busy');
+    }
+    return rename(from, to);
+  };
+  try { executeHostPlan(f.next); } finally { fs.renameSync = rename; }
+  assert.equal(response.ok, false); assert.equal(inspectHostPlan(f.next).state, 'published');
+  const rollbackStage = path.join(f.directory, 'rollback');
+  const composed = createUiRelease(f.oldInput, [path.join(f.directory, 'soty-ui/releases', f.next.releaseId)]);
+  // Rollback changes mutable UI while retaining every URL used by newer tabs.
+  writeUiRelease(composed, rollbackStage);
+  const rollback = publishPlan(f, rollbackStage, f.next.releaseId, 'd');
+  assert.equal(executeHostPlan(rollback).published, true); assert.equal(inspectHostPlan(rollback).state, 'published');
+  assert.equal(fs.readFileSync(path.join(f.directory, 'soty-ui/current/assets/new-12345678.js'), 'utf8'), 'new lazy asset');
+});
+
+for (const position of ['before', 'after']) test(`SIGKILL ${position} atomic rename: inspect reconciles without replay and OS lock is released`, { skip: !root }, t => {
+  const f = publishFixture(t), planFile = path.join(f.directory, 'crash.json'); fs.writeFileSync(planFile, JSON.stringify(f.next));
+  const script = `import fs from 'node:fs'; import {executeHostPlan} from ${JSON.stringify(new URL('./host-publisher.mjs', import.meta.url).href)};
+    const plan=JSON.parse(fs.readFileSync(process.argv[1])); const rename=fs.renameSync;
+    fs.renameSync=(from,to)=>{if(to.endsWith('/soty-ui/current') && ${JSON.stringify(position)}==='before')process.kill(process.pid,'SIGKILL');
+      const result=rename(from,to); if(to.endsWith('/soty-ui/current'))process.kill(process.pid,'SIGKILL'); return result;}; executeHostPlan(plan);`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, planFile], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.signal, 'SIGKILL');
+  const state = inspectHostPlan(f.next); assert.equal(state.readOnly, true); assert.equal(state.signalsSent, 0);
+  assert.equal(state.state, position === 'before' ? 'not-applied' : 'published');
+  assert.deepEqual(state.phases, ['started', 'locked', 'installed', 'switch-intent']);
+  assert.throws(() => executeHostPlan(f.next), { code: 'EEXIST' });
+  let recovery;
+  if (position === 'before') recovery = { ...f.next, transaction: 'd'.repeat(32) };
+  else {
+    const stage = path.join(f.directory, 'rollback');
+    writeUiRelease(createUiRelease(f.oldInput, [path.join(f.directory, 'soty-ui/releases', f.next.releaseId)]), stage);
+    recovery = publishPlan(f, stage, f.next.releaseId, 'd');
+  }
+  assert.equal(executeHostPlan(recovery).published, true);
+  assert.equal(inspectHostPlan(recovery).state, 'published');
 });

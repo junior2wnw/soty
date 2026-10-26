@@ -22,9 +22,19 @@ const fixed = new Set(['index.html', 'sw.js', 'manifest.webmanifest', 'icon.svg'
   'app-art/manifest.json', 'app-art/field-profile.json', 'fonts/manrope.woff2', 'fonts/manrope-OFL.txt',
   'icons/soty.svg', 'icons/soty-180.png', 'icons/soty-192.png', 'icons/soty-512.png',
   'help/interaction.html', SOURCE_SDK_INDEX, ...PUBLIC_SKILL_FILES]);
-const hashed = name => /^assets\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|jpe?g|webp|svg|avif)$/u.test(name)
-  || /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u.test(name)
-  || sourceSdkArchiveName(name);
+const hashedPatterns = [
+  /^assets\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|png|jpe?g|webp|svg|avif)$/u,
+  /^app-art\/[a-z0-9-]+\/v\d{3,}-[a-f0-9]{12}\/cover-(?:160|320|640|960|1440)\.[a-f0-9]{12}\.webp$/u,
+  /^sdk\/source-app\/[a-f0-9]{64}\.tgz$/u,
+];
+const hashed = name => hashedPatterns.some(pattern => pattern.test(name));
+// One public-path policy feeds both the exact installer and Caddy's stable
+// matcher. In particular, this is never an /assets/* or /skills/* allowlist.
+// SDK routing mirrors its frozen contract; readDist still independently calls
+// sourceSdkArchiveName, and the real-Caddy gate checks grammar parity.
+const regexEscape = text => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+const immutablePathPattern = `^/(?:${hashedPatterns.map(pattern => pattern.source.slice(1, -1)).join('|')})$`;
+const publicPathPattern = `^(?:/|/(?:${[...fixed].map(regexEscape).join('|')}|${hashedPatterns.map(pattern => pattern.source.slice(1, -1)).join('|')}))$`;
 const publicDirectory = name => ['assets', 'app-art', 'fonts', 'icons'].includes(name)
   || ['help', 'sdk', 'sdk/source-app', 'skills', 'skills/soty-cover-art', 'skills/soty-cover-art/references',
     'skills/soty-app-deploy', 'skills/soty-app-deploy/references'].includes(name)
@@ -142,7 +152,7 @@ function locateProxy(config, host) {
 
 // Keep the old native path matcher as the first OR branch, including all its
 // methods/queries. Only new, exact inventory URLs gain a GET/HEAD-only branch.
-function coverInventory(caddyfile, config, selected, release) {
+function coverInventory(caddyfile, config, selected, release, stable) {
   if (!selected.boundaries.length) return { caddyfile, config };
   const boundary = selected.boundaries[0], paths = boundary.matches[0]?.path;
   if (selected.boundaries.length !== 1 || !Array.isArray(paths)
@@ -151,12 +161,13 @@ function coverInventory(caddyfile, config, selected, release) {
     || paths.some(name => typeof name !== 'string' || !/^\/[A-Za-z0-9_./-]*\*?$/u.test(name))) fail('ui_fallback_unknown_or_ambiguous');
   const missing = release.manifest.map(file => '/' + file.name).filter(url => !paths.some(pattern => pattern.endsWith('*')
     ? url.toLowerCase().startsWith(pattern.slice(0, -1).toLowerCase()) : url.toLowerCase() === pattern.toLowerCase()));
-  if (!missing.length) return { caddyfile, config };
+  if (!stable && !missing.length) return { caddyfile, config };
   const definitions = [...caddyfile.matchAll(/^([\t ]*)(@[A-Za-z0-9_]+)[\t ]+path[\t ]+([^\r\n]+)\r?$/gmu)]
     .filter(match => isDeepStrictEqual(match[3].trim().split(/[\t ]+/u), paths));
   if (definitions.length !== 1) fail('ui_fallback_unknown_or_ambiguous');
   const definition = definitions[0], args = values => values.map(value => JSON.stringify(value)).join(', ');
-  const expression = `path(${args(paths)}) || (method("GET", "HEAD") && path(${args(missing)}) && !query({"project": "*"}) && !query({"hive": "*"}))`;
+  const publicPaths = stable ? `path_regexp(${JSON.stringify(publicPathPattern)})` : `path(${args(missing)})`;
+  const expression = `path(${args(paths)}) || (method("GET", "HEAD") && ${publicPaths} && !query({"project": "*"}) && !query({"hive": "*"}))`;
   const text = `${definition[1]}${definition[2]} expression \`${expression}\``;
   const expected = structuredClone(config); let owner = expected;
   boundary.pointer.slice(0, -1).forEach(key => { owner = owner[key]; });
@@ -212,14 +223,15 @@ function proxyBlocks(text) {
 
 function replacement(original, release, root) {
   const urls = ['/', ...release.manifest.map(file => '/' + file.name)], immutable = release.manifest.filter(file => file.immutable).map(file => '/' + file.name);
+  const stable = root.endsWith('/soty-ui/current');
   const body = original.slice(original.indexOf('{') + 1, original.lastIndexOf('}'));
   return `@soty_ui_release {
     method GET HEAD
-    path ${urls.join(' ')}
+    ${stable ? 'path_regexp soty_ui_public `' + publicPathPattern + '`' : 'path ' + urls.join(' ')}
     not {\n query project=*\n }
     not {\n query hive=*\n }
   }
-  @soty_ui_immutable path ${immutable.join(' ')}
+  @soty_ui_immutable ${stable ? 'path_regexp soty_ui_immutable `' + immutablePathPattern + '`' : 'path ' + immutable.join(' ')}
   reverse_proxy @soty_ui_release 127.0.0.1:18182 {${body}
     header_up -If-None-Match
     header_up -If-Modified-Since
@@ -248,11 +260,12 @@ function replacement(original, release, root) {
  * adapt must keep stdout/stderr private; its output can contain existing secrets. */
 export async function createCaddyOverlay({ caddyfile, release, root, adapt, host = '4-2.xn--p1ai' }) {
   validateRelease(release);
+  const stable = typeof root === 'string' && root.endsWith('/soty-ui/current');
   if (!/^[a-z0-9.-]+$/u.test(host) || !/^[a-f0-9]{64}$/u.test(release.id)
-    || !/^\/[A-Za-z0-9_/-]+$/u.test(root) || path.posix.normalize(root) !== root || root.split('/').some(part => ['.', '..', 'current'].includes(part))
-    || !root.endsWith('/' + release.id) || !release.manifest.some(file => file.immutable)) fail('ui_release_root_invalid');
+    || !/^\/[A-Za-z0-9_/-]+$/u.test(root) || path.posix.normalize(root) !== root || root.split('/').some(part => ['.', '..'].includes(part))
+    || (!stable && (root.split('/').includes('current') || !root.endsWith('/' + release.id))) || !release.manifest.some(file => file.immutable)) fail('ui_release_root_invalid');
   const before = await adapt(caddyfile), selected = locateProxy(before, host), accepted = [];
-  const covered = coverInventory(caddyfile, before, selected, release);
+  const covered = coverInventory(caddyfile, before, selected, release, stable);
   const matches = proxyBlocks(covered.caddyfile); if (matches.length > 64) fail('ui_fallback_unknown_or_ambiguous');
   for (const match of matches) {
     const text = replacement(match.text.trimStart(), release, root);

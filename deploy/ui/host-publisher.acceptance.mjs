@@ -12,6 +12,7 @@ import { createUiRelease, writeUiRelease, createCaddyOverlay } from './release.m
 import { fixtureDist } from './test-support.mjs';
 import { sha256, writeEncryptedConfigs } from './config-swap.mjs';
 import { prepareOverlayReplacement, executeHostPlan, inspectHostPlan, verifyActiveDisk, verifyCaddyProcess } from './host-publisher.mjs';
+import { sourceSdkArchiveName } from '../../modules/source-app/package-contract.mjs';
 
 const binary = process.env.SOTY_UI_CADDY_BINARY;
 assert.ok(binary, 'explicit qualified Caddy binary required');
@@ -127,4 +128,85 @@ test('real Caddy old overlay -> new overlay -> old on one process; finite assets
     expectedDiskSha256: pins.candidate.plainSha256, expectedActiveSha256: sha256(Buffer.from('{}')), expectedUid: 0 }), { code: 'active_disk_mismatch' });
   assert.equal(invoke({ ...plan, action: 'rollback' }).ok, true); await waitBody('OLD ACCEPTED UI'); await waitActive(pins.baseline.plainSha256);
   assert.equal(caddy.exitCode, null); assert.equal(caddy.pid, processPin.pid); assert.equal(verifyCaddyProcess(plan), true);
+});
+
+test('real Caddy stable current serves new hash URLs and rollback without any config reload', { timeout: 20000 }, async t => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), 'soty-ui-stable-real-'))); fs.chmodSync(directory, 0o700);
+  let caddy, backend;
+  t.after(async () => {
+    if (caddy?.exitCode === null) { const exited = once(caddy, 'exit'); caddy.kill('SIGTERM'); await exited; }
+    if (backend?.listening) { backend.closeAllConnections(); await new Promise(resolve => backend.close(resolve)); }
+    const unseal = current => { fs.chmodSync(current, 0o700); for (const entry of fs.readdirSync(current, { withFileTypes: true })) if (entry.isDirectory()) unseal(path.join(current, entry.name)); };
+    unseal(directory); fs.rmSync(directory, { recursive: true, force: true });
+  });
+  backend = createServer((req, res) => {
+    res.setHeader('Content-Security-Policy', "default-src 'self'; frame-src https://dynamic.example"); res.setHeader('X-Frame-Options', 'DENY');
+    if (req.url.startsWith('/api/') || req.url.includes('blocked=1')) { res.writeHead(403); res.end('original denied'); return; }
+    if (req.url.includes('redirect=1')) { res.writeHead(302, { Location: '/original' }); res.end(); return; }
+    res.end('BACKEND ORIGINAL');
+  });
+  backend.listen(18182, '127.0.0.1'); await once(backend, 'listening');
+  const reserve = createServer(); reserve.listen(0, '127.0.0.1'); await once(reserve, 'listening');
+  const port = reserve.address().port; await new Promise(resolve => reserve.close(resolve));
+  // Production-shaped finite legacy path boundary: stable bootstrap must add
+  // the SAME public policy, not freeze the old inventory or widen to a glob.
+  const canonical = `{\n admin off\n auto_https off\n}\nhttp://127.0.0.1:${port} {
+    @private query project=*
+    handle @private {\n respond "HIVE original"\n }
+    handle /api/* {\n respond "original denied" 403\n }
+    @ui path / /assets/* /sw.js /manifest.webmanifest /icon.svg
+    handle @ui {\n reverse_proxy 127.0.0.1:18182 {\n flush_interval -1\n transport http {\n dial_timeout 5s\n }\n }\n }
+    handle {\n respond "unknown original" 404\n }
+  }`;
+  const root = path.join(directory, 'soty-ui/current');
+  const planFor = (release, input, expectedReleaseId, counter) => {
+    const manifestFile = path.join(directory, counter + '-manifest.json'); fs.writeFileSync(manifestFile, JSON.stringify({ id: release.id, manifest: release.manifest }));
+    return { schema: 'soty.ui.host.v1', action: 'publish', transaction: counter.repeat(32), releaseId: release.id,
+      receiptDirectory: directory, base: directory, input, manifestFile, expectedReleaseId };
+  };
+  const oldInput = fixtureDist(path.join(directory, 'old'), { 'index.html': 'OLD STABLE UI' }), old = createUiRelease(oldInput);
+  executeHostPlan(planFor(old, oldInput, null, '1'));
+  const nextInput = fixtureDist(path.join(directory, 'next'), { 'index.html': 'NEXT STABLE UI', 'assets/new-12345678.js': 'NEW HASH BYTES',
+    'fonts/manrope.woff2': 'NEW FONT', 'app-art/example/v001-123456abcdef/cover-160.123456abcdef.webp': 'NEW COVER' });
+  const next = createUiRelease(nextInput, [path.join(directory, 'soty-ui/releases', old.id)]);
+  const overlay = await createCaddyOverlay({ caddyfile: canonical, release: old, root, adapt, host: '127.0.0.1' });
+  assert.equal((await createCaddyOverlay({ caddyfile: canonical, release: next, root, adapt, host: '127.0.0.1' })).caddyfile, overlay.caddyfile, 'stable configuration is independent of both release manifests');
+  const policyPatterns = [];
+  const findPatterns = value => { if (!value || typeof value !== 'object') return;
+    if (['soty_ui_public', 'soty_ui_immutable'].includes(value.path_regexp?.name)) policyPatterns.push(new RegExp(value.path_regexp.pattern));
+    Object.values(value).forEach(child => Array.isArray(child) ? child.forEach(findPatterns) : findPatterns(child)); };
+  findPatterns(overlay.config); assert.equal(policyPatterns.length, 2);
+  for (const name of ['a'.repeat(64) + '.tgz', 'A'.repeat(64) + '.tgz', 'a'.repeat(63) + '.tgz', 'a'.repeat(65) + '.tgz', 'a'.repeat(64) + '.zip', 'operator.json'])
+    for (const pattern of policyPatterns) assert.equal(pattern.test('/sdk/source-app/' + name), sourceSdkArchiveName('sdk/source-app/' + name), 'stable SDK grammar matches frozen authority');
+  const configPath = path.join(directory, 'Caddyfile'); fs.writeFileSync(configPath, overlay.caddyfile);
+  const xdg = path.join(directory, 'xdg'); fs.mkdirSync(xdg);
+  caddy = spawn(binary, ['run', '--config', configPath, '--adapter', 'caddyfile'], { stdio: ['ignore', 'ignore', 'pipe'],
+    env: { PATH: '/usr/bin:/bin', HOME: directory, XDG_CONFIG_HOME: xdg, XDG_DATA_HOME: path.join(directory, 'data') } }); caddy.stderr.resume();
+  const base = 'http://127.0.0.1:' + port, activeFile = path.join(xdg, 'caddy/autosave.json');
+  for (let attempt = 0; ; attempt++) {
+    try { if ((await (await fetch(base)).text()) === 'OLD STABLE UI' && fs.existsSync(activeFile)) break; } catch { /* Own process only. */ }
+    assert.ok(attempt < 100 && caddy.exitCode === null, 'bounded stable Caddy readiness'); await delay();
+  }
+  const configBefore = fs.readFileSync(configPath), activeBefore = fs.readFileSync(activeFile), pid = caddy.pid;
+  const nextPlan = planFor(next, nextInput, old.id, '2'); assert.equal(executeHostPlan(nextPlan).reloadRequired, false);
+  for (const [url, body] of [['/', 'NEXT STABLE UI'], ['/assets/new-12345678.js', 'NEW HASH BYTES'], ['/fonts/manrope.woff2', 'NEW FONT'],
+    ['/app-art/example/v001-123456abcdef/cover-160.123456abcdef.webp', 'NEW COVER']]) {
+    const response = await fetch(base + url); assert.equal(response.status, 200); assert.equal(await response.text(), body);
+    assert.equal(response.headers.get('content-security-policy'), "default-src 'self'; frame-src https://dynamic.example");
+    assert.equal(response.headers.get('x-frame-options'), 'DENY');
+    assert.equal(response.headers.get('cache-control'), url.includes('123456') ? 'public, max-age=31536000, immutable' : 'no-store');
+  }
+  for (const [url, method, status, body] of [['/?project=owned', 'GET', 200, 'HIVE original'], ['/?hive=owned', 'GET', 200, 'BACKEND ORIGINAL'],
+    ['/', 'POST', 200, 'BACKEND ORIGINAL'], ['/fonts/manrope.woff2', 'POST', 404, 'unknown original'],
+    ['/fonts/manrope.woff2?hive=owned', 'GET', 404, 'unknown original'], ['/api/test', 'GET', 403, 'original denied'],
+    ['/admin', 'GET', 404, 'unknown original'], ['/.env', 'GET', 404, 'unknown original'], ['/skills/private/SKILL.md', 'GET', 404, 'unknown original'],
+    ['/?blocked=1', 'GET', 403, 'original denied'], ['/', 'HEAD', 200, '']]) {
+    const response = await fetch(base + url, { method }); assert.equal(response.status, status, method + ' ' + url); assert.equal(await response.text(), body);
+  }
+  assert.equal((await fetch(base + '/?redirect=1', { redirect: 'manual' })).status, 302);
+  const response = await fetch(base + '/assets/new-12345678.js', { headers: { Range: 'bytes=0-2' } }); assert.equal(response.status, 206); assert.equal(await response.text(), 'NEW');
+  const rollbackInput = path.join(directory, 'rollback'); const rollback = createUiRelease(oldInput, [path.join(directory, 'soty-ui/releases', next.id)]); writeUiRelease(rollback, rollbackInput);
+  executeHostPlan(planFor(rollback, rollbackInput, next.id, '3'));
+  assert.equal(await (await fetch(base)).text(), 'OLD STABLE UI'); assert.equal(await (await fetch(base + '/assets/new-12345678.js')).text(), 'NEW HASH BYTES');
+  assert.equal(caddy.pid, pid); assert.equal(caddy.exitCode, null); assert.deepEqual(fs.readFileSync(configPath), configBefore); assert.deepEqual(fs.readFileSync(activeFile), activeBefore);
 });

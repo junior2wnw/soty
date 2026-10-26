@@ -25,8 +25,10 @@ export function validateHostPlan(plan) {
   const common = ['schema', 'action', 'transaction', 'releaseId', 'receiptDirectory'];
   need(plan?.schema === 'soty.ui.host.v1' && /^[a-f0-9]{32}$/u.test(plan.transaction) && hex(plan.releaseId)
     && absolute(plan.receiptDirectory), 'host_plan_invalid');
-  if (plan.action === 'install') {
-    need(exact(plan, [...common, 'input', 'manifestFile', 'base']) && [plan.input, plan.manifestFile, plan.base].every(absolute), 'host_plan_invalid');
+  if (['install', 'publish'].includes(plan.action)) {
+    need(exact(plan, [...common, 'input', 'manifestFile', 'base', ...(plan.action === 'publish' ? ['expectedReleaseId'] : [])])
+      && [plan.input, plan.manifestFile, plan.base].every(absolute)
+      && (plan.action !== 'publish' || plan.expectedReleaseId === null || hex(plan.expectedReleaseId) && plan.expectedReleaseId !== plan.releaseId), 'host_plan_invalid');
   } else {
     need(['apply', 'rollback'].includes(plan.action) && exact(plan, [...common, 'releaseRoot', 'configPath', 'profile', 'process', 'baseline', 'candidate', 'overlay'])
       && absolute(plan.releaseRoot) && plan.releaseRoot.endsWith('/' + plan.releaseId) && absolute(plan.configPath)
@@ -83,15 +85,20 @@ export function verifyCaddyProcess({ process: expected, configPath }) {
   return true;
 }
 
-export function installPublicRelease({ input, manifest, base }) {
+function releaseDirectories(base) {
   ownedDirectory(base);
-  const release = createUiRelease(input);
-  need(release.id === manifest?.id && isDeepStrictEqual(release.manifest, manifest.manifest), 'public_inventory_changed');
   for (const directory of [path.join(base, 'soty-ui'), path.join(base, 'soty-ui', 'releases')]) {
     try { fs.mkdirSync(directory, { mode: 0o755 }); fsyncDirectory(path.dirname(directory)); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
     ownedDirectory(directory);
   }
+  return path.join(base, 'soty-ui');
+}
+
+export function installPublicRelease({ input, manifest, base }) {
+  releaseDirectories(base);
+  const release = createUiRelease(input);
+  need(release.id === manifest?.id && isDeepStrictEqual(release.manifest, manifest.manifest), 'public_inventory_changed');
   const root = path.join(base, 'soty-ui', 'releases', release.id);
   writeUiRelease(release, root); // Fresh directory only, no reuse of partial output.
   const installed = createUiRelease(root);
@@ -126,8 +133,74 @@ export function verifyInstalledRelease(root, releaseId) {
   visit(root); return release;
 }
 
+const publishFingerprint = plan => sha256(Buffer.from(JSON.stringify(Object.entries(plan).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))));
+function currentRelease(directory) {
+  ownedDirectory(directory); ownedDirectory(path.join(directory, 'releases'));
+  const current = path.join(directory, 'current'); let stat;
+  try { stat = fs.lstatSync(current); } catch (error) { if (error.code === 'ENOENT') return { id: null }; throw error; }
+  need(stat.isSymbolicLink() && stat.uid === 0 && stat.nlink === 1, 'current_pointer_invalid');
+  const target = fs.readlinkSync(current);
+  need(/^releases\/[a-f0-9]{64}$/u.test(target), 'current_pointer_invalid');
+  const id = target.slice('releases/'.length), root = path.join(directory, target);
+  need(fs.realpathSync(current) === root, 'current_pointer_invalid');
+  return { id, stat, release: verifyInstalledRelease(root, id) };
+}
+
+function publishRelease(plan, record) {
+  const directory = releaseDirectories(plan.base), lockPath = path.join(directory, '.publish.lock');
+  // flock(2) belongs to the inherited open-file description, so the Node FD
+  // retains it after flock exits. Kernel close/exit releases it, including kill.
+  // The permanent lock inode is never unlinked; there is no stale-lock protocol.
+  const lock = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const identity = fs.fstatSync(lock), sameLock = () => {
+    const actual = fs.lstatSync(lockPath);
+    need(actual.isFile() && actual.uid === 0 && actual.nlink === 1 && (actual.mode & 0o777) === 0o600
+      && actual.dev === identity.dev && actual.ino === identity.ino, 'publish_lock_invalid');
+  };
+  const current = path.join(directory, 'current'), temporary = path.join(directory, '.current-' + plan.transaction);
+  let temporaryIdentity, switchAttempted = false;
+  try {
+    sameLock();
+    try { execFileSync('/usr/bin/flock', ['--exclusive', '--nonblock', '3'], { stdio: ['ignore', 'pipe', 'pipe', lock], timeout: 5000 }); }
+    catch (error) { need(false, error.status === 1 ? 'publish_busy' : 'publish_lock_unavailable'); }
+    sameLock(); record('locked');
+    const before = currentRelease(directory);
+    need(before.id === plan.expectedReleaseId, 'current_release_changed');
+    const manifest = JSON.parse(fs.readFileSync(plan.manifestFile, 'utf8'));
+    need(manifest.id === plan.releaseId, 'host_plan_invalid');
+    const root = path.join(directory, 'releases', plan.releaseId);
+    if (!fs.existsSync(root)) installPublicRelease({ input: plan.input, manifest, base: plan.base });
+    const release = verifyInstalledRelease(root, plan.releaseId);
+    need(isDeepStrictEqual(release.manifest, manifest.manifest), 'public_inventory_changed');
+    const files = new Map(release.manifest.map(file => [file.name, file]));
+    need((before.release?.manifest ?? []).filter(file => file.immutable).every(file => isDeepStrictEqual(files.get(file.name), file)), 'ui_immutable_url_missing');
+    record('installed');
+    fs.symlinkSync('releases/' + plan.releaseId, temporary); temporaryIdentity = fs.lstatSync(temporary); fsyncDirectory(directory);
+    record('switch-intent');
+    const fresh = currentRelease(directory); sameLock();
+    need(fresh.id === before.id && (!before.stat || fresh.stat.dev === before.stat.dev && fresh.stat.ino === before.stat.ino), 'current_release_changed');
+    switchAttempted = true; fs.renameSync(temporary, current); fsyncDirectory(directory);
+    need(currentRelease(directory).id === plan.releaseId, 'current_release_changed');
+    record('published');
+    return { published: true, currentReleaseId: plan.releaseId, previousReleaseId: before.id, root,
+      fileCount: release.manifest.length, signalsSent: 0, reloadRequired: false };
+  } catch (error) {
+    if (switchAttempted) error.recoveryRequired = true;
+    throw error;
+  } finally {
+    try {
+      if (temporaryIdentity) {
+        try {
+          const stat = fs.lstatSync(temporary);
+          if (stat.dev === temporaryIdentity.dev && stat.ino === temporaryIdentity.ino && stat.isSymbolicLink()) { fs.unlinkSync(temporary); fsyncDirectory(directory); }
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+    } finally { fs.closeSync(lock); }
+  }
+}
+
 const ledgerPath = plan => path.join(plan.receiptDirectory, plan.action + '-' + plan.transaction + '.jsonl');
-const phaseNames = new Set(['started', 'installed', 'replace-intent', 'replaced', 'signal-sent', 'reload-unconfirmed', 'not-applied']);
+const phaseNames = new Set(['started', 'locked', 'installed', 'switch-intent', 'published', 'replace-intent', 'replaced', 'signal-sent', 'reload-unconfirmed', 'not-applied']);
 /** A transport loss does not authorize replay. inspect never sends signals. */
 export function inspectHostPlan(plan) {
   validateHostPlan(plan); ownedDirectory(plan.receiptDirectory, true);
@@ -135,8 +208,16 @@ export function inspectHostPlan(plan) {
   if (operationExists) {
     const stat = fs.lstatSync(file); need(stat.isFile() && !stat.isSymbolicLink() && stat.size < 65536, 'host_journal_invalid');
     for (const line of fs.readFileSync(file, 'utf8').trim().split('\n')) {
-      const value = JSON.parse(line); need(phaseNames.has(value.phase), 'host_journal_invalid'); phases.push(value.phase);
+      const value = JSON.parse(line); need(phaseNames.has(value.phase)
+        && (plan.action !== 'publish' || value.planSha256 === publishFingerprint(plan)), 'host_journal_invalid'); phases.push(value.phase);
     }
+  }
+  if (plan.action === 'publish') {
+    ownedDirectory(plan.base);
+    const directory = path.join(plan.base, 'soty-ui'), actual = fs.existsSync(directory) ? currentRelease(directory) : { id: null };
+    return { readOnly: true, operationExists, phases, currentReleaseId: actual.id,
+      state: actual.id === plan.releaseId ? 'published' : actual.id === plan.expectedReleaseId ? 'not-applied' : 'changed',
+      signalsSent: 0, reloadRequired: false };
   }
   if (plan.action === 'install') return { readOnly: true, operationExists, phases, activeReloadVerified: false, signalsSent: 0 };
   const diskSha256 = sha256(fs.readFileSync(plan.configPath)); let processMatches = false;
@@ -174,10 +255,11 @@ export function executeHostPlan(plan, key) {
   const ledger = fs.openSync(ledgerPath(plan), 'wx', 0o600); let baseline, candidate;
   const record = phase => {
     if (phase === 'replace-intent') verifyCaddyProcess(plan);
-    fs.writeSync(ledger, JSON.stringify({ phase, at: new Date().toISOString() }) + '\n'); fs.fsyncSync(ledger);
+    fs.writeSync(ledger, JSON.stringify({ phase, at: new Date().toISOString(), ...(plan.action === 'publish' ? { planSha256: publishFingerprint(plan) } : {}) }) + '\n'); fs.fsyncSync(ledger);
   };
   try {
     fsyncDirectory(plan.receiptDirectory); record('started');
+    if (plan.action === 'publish') return publishRelease(plan, record);
     if (plan.action === 'install') {
       const manifest = JSON.parse(fs.readFileSync(plan.manifestFile, 'utf8'));
       need(manifest.id === plan.releaseId, 'host_plan_invalid');
@@ -202,6 +284,7 @@ export function executeHostPlan(plan, key) {
 
 const safeCodes = new Set(['host_plan_invalid', 'host_linux_required', 'host_profile_changed', 'host_directory_invalid', 'host_journal_invalid',
   'public_inventory_changed', 'public_install_changed', 'installed_release_changed', 'caddy_process_changed', 'encrypted_file_invalid',
+  'current_pointer_invalid', 'current_release_changed', 'ui_immutable_url_missing', 'publish_lock_invalid', 'publish_busy', 'publish_lock_unavailable',
   'encrypted_file_changed', 'encrypted_config_invalid', 'decrypted_config_mismatch', 'config_environment_requires_explicit_binding',
   'config_file_invalid', 'current_config_changed', 'candidate_bytes_changed', 'installed_config_changed', 'swap_arguments_invalid']);
 async function main() {
@@ -210,7 +293,7 @@ async function main() {
     need(process.argv.length === 4 && ['execute', 'inspect'].includes(process.argv[2]), 'host_plan_invalid');
     const plan = JSON.parse(fs.readFileSync(process.argv[3], 'utf8')); validateHostPlan(plan);
     if (process.argv[2] === 'inspect') { console.log(JSON.stringify({ ok: true, ...inspectHostPlan(plan) })); return; }
-    if (plan.action !== 'install') {
+    if (!['install', 'publish'].includes(plan.action)) {
       let input = ''; for await (const chunk of process.stdin) { input += chunk; need(input.length <= 1024, 'host_plan_invalid'); }
       const value = JSON.parse(input); need(exact(value, ['key']) && typeof value.key === 'string', 'host_plan_invalid');
       key = Buffer.from(value.key, 'base64'); need(key.length === 32 && key.toString('base64') === value.key, 'host_plan_invalid');
