@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appBuilderProposal, appBuilderReceipt, appBuilderLaunchUrl, matchingAppBuilderRegistration } from './app-builder-result.mjs';
+import { appBuilderProposal, appBuilderReceipt, matchingAppBuilderRegistration } from './app-builder-result.mjs';
 
 const pending = { hostDeviceId: 'device-1', connectorId: 'connector-1', jobId: 'job-1' };
 const proposal = { schema: 'soty.local-app.v1', name: 'Личный проект', port: 5111, entryPath: '/board', sourceJobId: 'job-1' };
@@ -17,13 +17,8 @@ test('only confirmed, succeeded, job-bound proposals become app drafts', () => {
   for (const patch of [{ sourceJobId: 'other-job' }, { schema: 'wrong' }, { name: ' ' }, { name: 'a'.repeat(65) }, { port: 49424 }, { port: 80 }, { entryPath: '//external' }, { entryPath: '/_soty/control' }, { entryPath: '/\u0000' }]) assert.equal(appBuilderProposal(result(patch), pending), null);
 });
 test('lost registration ACK recovery requires the exact owner, device and draft without changing access', () => {
-  const app = { ...pending, ...proposal, id: 'app-1', ownerAccountId: 'owner-1', state: 'offline', grants: { accountIds: ['friend-1'], communityIds: [] } };
+  const app = { ...pending, ...proposal, id: 'app-11111111111111111111111111111111', ownerAccountId: 'owner-1', state: 'offline', grants: { accountIds: ['friend-1'], communityIds: [] } };
   assert.equal(matchingAppBuilderRegistration([app], pending, proposal, 'owner-1'), app);
-  for (const patch of [{ ownerAccountId: 'other-owner' }, { hostDeviceId: 'other-device' }, { connectorId: 'other-connector' }, { port: 5112 }, { entryPath: '/' }, { name: 'Other' }, { state: 'revoked' }]) assert.equal(matchingAppBuilderRegistration([{ ...app, ...patch }], pending, proposal, 'owner-1'), null);
+  for (const patch of [{ id: 'bad-route' }, { ownerAccountId: 'other-owner' }, { hostDeviceId: 'other-device' }, { connectorId: 'other-connector' }, { port: 5112 }, { entryPath: '/' }, { name: 'Other' }, { state: 'revoked' }]) assert.equal(matchingAppBuilderRegistration([{ ...app, ...patch }], pending, proposal, 'owner-1'), null);
   assert.deepEqual(app.grants, { accountIds: ['friend-1'], communityIds: [] });
-});
-test('actual launch URLs require a separate trustworthy origin and never downgrade HTTPS', () => {
-  assert.equal(appBuilderLaunchUrl('https://app.apps.example/board', 'https://soty.example/'), 'https://app.apps.example/board');
-  assert.equal(appBuilderLaunchUrl('http://app.localhost:5331/', 'http://127.0.0.1:5331/'), 'http://app.localhost:5331/');
-  for (const value of ['javascript:alert(1)', 'data:text/html,x', '/board', 'https://soty.example/board', 'https://u:p@app.apps.example/', 'http://app.apps.example/']) assert.equal(appBuilderLaunchUrl(value, 'https://soty.example/'), null);
 });

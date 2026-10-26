@@ -133,7 +133,16 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     throw Object.assign(Error('The local profile keeps changing'), { code: 'ACTIVE_PROFILE_CHANGED' });
   };
   const refresh = async () => { await world?.refresh(); };
-  const actions = createAppActions(accountClient, refresh, () => openAccount('devices'));
+  const actions = createAppActions(accountClient, refresh, () => openAccount('devices'), {
+    openRegisteredApp: async (appId, accountId, continueIf) => {
+      const mounted = world, generation = mountGeneration;
+      if (!mounted || pageClosed || !root.isConnected || activeAccount !== accountId) throw Error('connection_entry_changed');
+      const intent = parseConnectionIntent(`#app/${appId}`, window.location.origin);
+      if (!intent || intent.kind !== 'application') throw Error('connection_route_invalid');
+      await mounted.followConnection(intent, undefined, continueIf);
+      if (pageClosed || world !== mounted || mountGeneration !== generation || activeAccount !== accountId) throw Error('connection_entry_changed');
+    },
+  });
   destroyActions = () => actions.destroy();
   const openLegacy = (tool?: 'notes' | 'files' | 'chess' | 'terminal' | 'internet') => {
     if (tool === 'internet') {

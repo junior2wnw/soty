@@ -26,6 +26,8 @@ function friendly(error: unknown): string {
     app_create_lock_unavailable: 'Этот браузер не поддерживает безопасную отправку между вкладками. Откройте Соты в обновлённом браузере.',
     app_create_pending_unconfirmed: 'Сначала проверьте предыдущую отправку. Её устройство и текст сохранены.',
     app_create_result_pending: 'Предыдущая задача уже принята. Откройте её результат.',
+    app_registration_unconfirmed: 'Добавление не подтверждено. Проверьте результат; если приложение не найдено или было удалено, можно добавить его заново.',
+    app_registration_conflict: 'Данные добавления изменились. Проверьте результат задачи, прежде чем продолжить.',
     invalid_app_create_receipt: 'Ответ не подтверждает эту отправку. Повторная проверка использует тот же запрос.',
     invalid_app_create_target: 'Выберите доступное устройство.',
     invalid_app_create_prompt: 'Проверьте текст задачи и полный путь к папке.',
@@ -153,7 +155,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     connectionChoices();
   }
 
-  const builder = createAppBuilderAction({ client, refresh, connectDevice, openAccount, dialog, friendly, createStates, ...deps });
+  const builder = createAppBuilderAction({ client, connectDevice, openAccount, dialog, friendly, createStates, ...deps });
   const agentCreate = builder.open;
   const resetAccount = () => { builder.destroy(); for (const panel of [...dialogs]) panel.close(); dialogs.clear(); createStates.clear(); };
   return { connectDevice, agentCreate, mountAppBuilder: builder.mountInline, resetAccount, destroy: () => { resetAccount(); unregisterUpdateGuard(); window.removeEventListener('beforeunload', beforeUnload); } };

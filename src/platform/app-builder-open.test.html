@@ -1,0 +1,146 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>App registration and open isolated fixture</title>
+<h1>Изолированная проверка добавления приложения</h1>
+<p>Синтетические аккаунты и ответы; реальные устройства и API не используются.</p>
+<button id="run">Запустить проверку</button><pre id="proof" data-test-status="ready">Готово</pre>
+<script type="module">
+import '../world/world.css';
+import { createAppActions } from './local-apps.ts';
+import { createAppBuilderRegistration } from './app-builder-registration.mjs';
+
+const proof = document.querySelector('#proof'), run = document.querySelector('#run');
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const check = (value, message) => { if (!value) throw Error(message); };
+async function until(predicate) { for (let n = 0; n < 400; n++) { if (predicate()) return; await wait(10); } throw Error('fixture timeout'); }
+const target = { hostDeviceId: 'fixture-device', connectorId: 'fixture-connector', jobId: 'fixture-job' };
+const proposal = { schema: 'soty.local-app.v1', name: 'Тестовое приложение', port: 5111, entryPath: '/', sourceJobId: target.jobId };
+const appId = 'app-11111111111111111111111111111111';
+let accountId, actions, storedApp, registrationCalls, mode, readable, release, opened, openFailure, allowAuto, holdRead, releaseRead;
+const accounts = [];
+const client = {
+  async getLocalState() { return { accountId }; },
+  async extension(op, args, context) {
+    check(context.expectedAccountId === accountId, 'account context changed');
+    if (op === 'apps.devices') return { devices: [{ ...target, name: 'Компьютер', online: true, claimed: true }] };
+    if (op === 'apps.agent.create') return { job: { schema: 'soty.connector-job.v4', kind: 'agent', attempts: 1, id: target.jobId,
+      deviceId: target.hostDeviceId, connectorId: target.connectorId, status: 'running', result: null } };
+    if (op === 'apps.agent.read') {
+      if (holdRead) await new Promise(resolve => { releaseRead = resolve; });
+      return { job: { id: target.jobId, status: 'succeeded', cancelRequested: !allowAuto, executionUncertain: false,
+        result: { appProposal: proposal, text: 'Готово' } }, done: true, events: [], cursor: 0 };
+    }
+    if (op === 'apps.list') { if (!readable) throw Error('synthetic read unavailable'); return { apps: storedApp ? [storedApp] : [] }; }
+    if (op === 'apps.register') {
+      registrationCalls++;
+      check(JSON.stringify(args.grants) === JSON.stringify({ accountIds: [], communityIds: [] }), 'registration changed private grants');
+      if (mode === 'reject') { mode = 'normal'; throw Object.assign(Error('port in use'), { code: 'app_port_already_registered' }); }
+      storedApp = { id: appId, name: proposal.name, ownerAccountId: accountId, hostDeviceId: target.hostDeviceId, connectorId: target.connectorId,
+        port: proposal.port, entryPath: proposal.entryPath, state: 'ready', grants: args.grants };
+      if (mode === 'lost') { readable = false; throw Error('synthetic lost ACK'); }
+      if (mode === 'defer') return new Promise(resolve => { release = () => resolve({ app: storedApp }); });
+      return { app: storedApp };
+    }
+    throw Error('Unexpected operation ' + op);
+  },
+};
+function action(label) { return [...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === label); }
+async function show() {
+  actions?.destroy();
+  actions = createAppActions(client, async () => {}, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }), openRegisteredApp: async (id, expectedAccount, continueIf) => {
+    check(expectedAccount === accountId, 'opened after account change');
+    if (continueIf && !continueIf()) throw Error('synthetic navigation cancelled');
+    if (openFailure) throw Error('synthetic navigation failure');
+    opened.push(id);
+  } });
+  await actions.agentCreate(undefined, target);
+  await until(() => action('Добавить и открыть') || action('Открыть приложение') || action('Проверить'));
+}
+async function fresh(nextMode = 'normal') {
+  actions?.destroy(); accountId = 'qa_open_' + crypto.randomUUID(); accounts.push(accountId);
+  storedApp = null; registrationCalls = 0; mode = nextMode; readable = true; release = null; opened = []; openFailure = false; allowAuto = false; holdRead = false; releaseRead = null;
+  await show();
+}
+async function newTask() {
+  actions?.destroy(); accountId = 'qa_auto_' + crypto.randomUUID(); accounts.push(accountId);
+  storedApp = null; registrationCalls = 0; mode = 'normal'; readable = true; release = null; opened = []; openFailure = false; allowAuto = true; releaseRead = null;
+  actions = createAppActions(client, async () => {}, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }),
+    openRegisteredApp: async (id, expectedAccount, continueIf) => {
+      check(expectedAccount === accountId, 'automatic transition changed accounts');
+      if (continueIf && !continueIf()) throw Error('synthetic navigation cancelled');
+      opened.push(id);
+    } });
+  await actions.agentCreate();
+  await until(() => document.querySelector('dialog[open] form select')?.value);
+  const form = document.querySelector('dialog[open] form'), prompt = form.querySelector('textarea'), submit = form.querySelector('[type=submit]');
+  prompt.value = 'Создать список'; prompt.dispatchEvent(new Event('input'));
+  await until(() => !submit.disabled); submit.focus(); submit.click();
+}
+run.onclick = async () => {
+  run.disabled = true; proof.dataset.testStatus = 'running';
+  try {
+    holdRead = false; await newTask(); await until(() => opened.length === 1);
+    check(opened[0] === appId && registrationCalls === 1, 'one submitted task did not automatically add and open');
+
+    holdRead = true; await newTask(); await until(() => Boolean(releaseRead));
+    action('Остановить').focus(); releaseRead();
+    await until(() => Boolean(storedApp) && Boolean(action('Открыть приложение')));
+    check(registrationCalls === 1 && opened.length === 0, 'automatic transition stole focus');
+    storedApp = null; holdRead = false; await show();
+    await until(() => action('Добавить заново') && !action('Добавить заново').disabled && Boolean(document.querySelector('dialog[open] .sx-agent-error')));
+    check(registrationCalls === 1, 'revoked app was automatically re-registered');
+    action('Добавить заново').click(); await until(() => opened.length === 1);
+    check(registrationCalls === 2, 'explicit re-add after revocation failed');
+
+    holdRead = true; await newTask(); await until(() => Boolean(releaseRead));
+    action('Остановить').focus(); mode = 'lost'; releaseRead();
+    await until(() => Boolean(document.querySelector('dialog[open] .sx-agent-error')));
+    check(opened.length === 0 && registrationCalls === 1, 'registration error disappeared after focus moved');
+
+    await fresh();
+    const beforeSend = createAppBuilderRegistration({ accountId, pending: target, proposal, storage: localStorage, locks: navigator.locks });
+    check((await beforeSend.begin()).dispatch, 'fixture could not simulate page closure before send');
+    action('Добавить и открыть').click(); await until(() => action('Добавить заново') && !action('Добавить заново').disabled);
+    check(registrationCalls === 0, 'unknown pre-send state caused an automatic write');
+    action('Добавить заново').click(); await until(() => opened.length === 1);
+    check(registrationCalls === 1, 'explicit recovery did not escape pre-send state');
+
+    await fresh(); action('Добавить и открыть').click();
+    await until(() => opened.length === 1); check(opened[0] === appId && registrationCalls === 1, 'one click did not add and open');
+
+    await fresh('lost'); action('Добавить и открыть').click();
+    await until(() => document.querySelector('dialog[open] .sx-agent-error'));
+    check(registrationCalls === 1 && opened.length === 0, 'lost ACK changed outcome');
+    await show(); readable = true; action('Добавить и открыть')?.click();
+    await until(() => opened.length === 1); check(registrationCalls === 1, 'lost ACK caused another registration');
+
+    await fresh('defer'); action('Добавить и открыть').click(); await until(() => Boolean(release));
+    const previous = accountId; accountId = 'qa_changed_' + crypto.randomUUID(); accounts.push(accountId); release();
+    await until(() => !document.querySelector('dialog[open]')); check(opened.length === 0, 'late response opened under another account');
+    accountId = previous; readable = true; await show();
+    const recovered = action('Открыть приложение') ?? action('Добавить и открыть'); recovered.click();
+    await until(() => opened.length === 1); check(registrationCalls === 1, 'returning account re-registered the app');
+
+    await fresh('reject'); action('Добавить и открыть').click();
+    await until(() => document.querySelector('dialog[open] .sx-agent-error'));
+    action('Добавить и открыть').click(); await until(() => opened.length === 1);
+    check(registrationCalls === 2, 'confirmed rejection did not permit correction');
+
+    await fresh(); openFailure = true; action('Добавить и открыть').click();
+    await until(() => action('Открыть приложение') && document.querySelector('dialog[open] .sx-agent-error'));
+    openFailure = false; action('Открыть приложение').click(); await until(() => opened.length === 1);
+    check(registrationCalls === 1, 'navigation retry re-registered the app');
+    check(!document.querySelector('.sx-agent-preview-frame'), 'builder retained separate preview iframe');
+
+    proof.dataset.testStatus = 'passed'; proof.textContent = 'PASS: automatic add and open / focus change / error visibility / revoke requires explicit re-add / crash before send / lost ACK / account change / confirmed rejection / navigation retry. Real side effects: 0.';
+  } catch (error) { proof.dataset.testStatus = 'failed'; proof.textContent = String(error.stack || error); }
+  finally {
+    actions?.destroy();
+    for (const account of accounts) {
+      localStorage.removeItem('soty.app-create.v1:' + account);
+      localStorage.removeItem('soty.world.agent:' + account);
+      localStorage.removeItem('soty.app-registration.v1:' + account + ':' + target.jobId);
+    }
+    run.disabled = false;
+  }
+};
+</script></html>

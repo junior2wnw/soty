@@ -47,3 +47,17 @@ test('a handoff is restricted to its replacement area, even inside the same assi
   p.focus(add); const accepted = p.tracker.capture(actionArea); p.focus(elsewhere); p.remove(add);
   assert.equal(p.tracker.restore(accepted, launch), false); assert.equal(p.active, elsewhere);
 });
+
+test('an automatic transition loses its claim when a person moves focus', () => {
+  const p = page(), first = p.node('status'), other = p.node('details'); p.focus(first);
+  const claim = p.tracker.capture(); assert.equal(p.tracker.isCurrent(claim), true);
+  p.focus(other); assert.equal(p.tracker.isCurrent(claim), false);
+  const next = p.tracker.capture(); p.focus(p.outside); assert.equal(p.tracker.isCurrent(next), false);
+});
+
+test('disabling the owned submit control does not cancel its automatic transition', () => {
+  const p = page(), submit = p.node('submit'); p.focus(submit);
+  const claim = p.tracker.capture(); submit.disabled = true; p.blur();
+  assert.equal(p.tracker.isCurrent(claim), true);
+  p.tracker.releaseOutside(p.outside); assert.equal(p.tracker.isCurrent(claim), false);
+});
