@@ -2,12 +2,36 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSync, linkSync, lstatSync, openSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 const META = "CREATE TABLE soty_nonce_meta (id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL, last_ms INTEGER NOT NULL) STRICT";
 const USES = "CREATE TABLE soty_nonce_uses (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT";
 const EXPIRY = 'CREATE INDEX soty_nonce_expiry ON soty_nonce_uses(expires_at)';
 const SCHEMA = 'soty.relay-nonce-store.v1', APP_ID = 1397707865;
 const unavailable = () => { throw Object.assign(new Error('soty_identity_store_unavailable'), { code: 'soty_identity_store_unavailable', status: 503 }); };
+const waitCell = new Int32Array(new SharedArrayBuffer(4));
+
+// SQLite can return BUSY immediately when concurrent journal-mode changes
+// would deadlock, even with busy_timeout set. Retry only that transient error
+// within the caller's existing budget; subsequent transactions keep its timeout.
+function enableWal(db, busyTimeoutMs) {
+  const deadline = performance.now() + busyTimeoutMs;
+  try {
+    for (;;) {
+      const remaining = Math.max(0, Math.floor(deadline - performance.now()));
+      db.exec(`PRAGMA busy_timeout=${remaining}`);
+      try {
+        if (db.prepare('PRAGMA journal_mode=WAL').get()?.journal_mode !== 'wal') unavailable();
+        return;
+      } catch (error) {
+        const left = deadline - performance.now();
+        if (error?.code !== 'ERR_SQLITE_ERROR' || !Number.isSafeInteger(error.errcode)
+          || (error.errcode & 255) !== 5 || left <= 0) throw error;
+        Atomics.wait(waitCell, 0, 0, Math.min(10, left));
+      }
+    }
+  } finally { db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`); }
+}
 
 // Initialize off to the side, then atomically link without replacing an existing file.
 function initialize(path) {
@@ -44,7 +68,7 @@ export function createSqliteRelayNonceStore({ databasePath, maxItems = 10000, bu
       || db.prepare('PRAGMA application_id').get().application_id !== APP_ID || db.prepare('PRAGMA user_version').get().user_version !== 1
       || meta.length !== 1 || meta[0].id !== 1 || meta[0].schema !== SCHEMA || !Number.isSafeInteger(meta[0].last_ms) || meta[0].last_ms < 0
       || db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') unavailable();
-    if (db.prepare('PRAGMA journal_mode=WAL').get()?.journal_mode !== 'wal') unavailable();
+    enableWal(db, busyTimeoutMs);
     db.exec('PRAGMA synchronous=FULL;');
     if (db.prepare('PRAGMA synchronous').get()?.synchronous !== 2) unavailable();
   } catch { try { db?.close(); } catch {} unavailable(); }
