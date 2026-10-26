@@ -4,4 +4,3 @@ export interface AppBuilderRegisteredApp { id: string; name: string; ownerAccoun
 export function appBuilderProposal(result: { job: { status: string; executionUncertain?: boolean; result: { appProposal?: AppBuilderProposal } | null } }, pending: AppBuilderTarget): AppBuilderProposal | null;
 export function appBuilderReceipt(job: { schema?: string; kind?: string; id: string; deviceId: string; connectorId: string; status: string; attempts?: number }, payload: Pick<AppBuilderTarget, 'hostDeviceId' | 'connectorId'>): boolean;
 export function matchingAppBuilderRegistration(apps: AppBuilderRegisteredApp[], pending: AppBuilderTarget, proposal: AppBuilderProposal, accountId: string): AppBuilderRegisteredApp | null;
-export function appBuilderLaunchUrl(value: unknown, pageUrl: string): string | null;

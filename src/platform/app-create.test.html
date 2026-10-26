@@ -19,9 +19,10 @@ const fixtureSetItem=function(key,value){if(quotaKey&&key===quotaKey)throw new D
 const first={hostDeviceId:'host:a',connectorId:'connector:a',name:'Тестовый компьютер A',online:true};
 const second={hostDeviceId:'host:b',connectorId:'connector:b',name:'Тестовый компьютер B',online:true};
 let devices=[first,second];
-const jobFor=(args,id)=>({id,deviceId:args.hostDeviceId,connectorId:args.connectorId,status:'running',result:null});
-const client={async getLocalState(){return {accountId};},async extension(op,args){
- check(args.expectedAccountId===accountId,'expected account missing or wrong');
+const jobFor=(args,id)=>({schema:'soty.connector-job.v4',kind:'agent',attempts:1,id,deviceId:args.hostDeviceId,connectorId:args.connectorId,status:'running',result:null});
+const client={async getLocalState(){return {accountId};},async extension(op,args,context){
+ check(context.expectedAccountId===accountId,'expected account context missing or wrong');
+ if(op.startsWith('apps.agent.'))check(args.expectedAccountId===accountId,'expected agent account missing or wrong');
  if(op==='apps.devices')return {devices};
  if(op==='apps.agent.create'){
   calls.push(structuredClone(args));
@@ -84,7 +85,17 @@ run.onclick=async()=>{
   await until(()=>afterReset.textContent.includes('Закрыть без несохранённых изменений'));
   quotaKey='';newPrompt.dispatchEvent(new Event('input'));await until(()=>state()?.draft.text===newPrompt.value);
   const durable=new Event('beforeunload',{cancelable:true});window.dispatchEvent(durable);check(!durable.defaultPrevented,'saved draft remained volatile after storage recovery');
-  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate Escape flush / newer edit cancels close / quota recovery. Real side effects: 0.';
+  accountId='qa_single_device_'+crypto.randomUUID();accounts.push(accountId);devices=[first,{...second,online:false}];modelReady=true;await open();
+  await until(()=>activeForm()?.querySelectorAll('select option').length===3);
+  const single=activeForm().querySelector('select');check(single.value===JSON.stringify([first.hostDeviceId,first.connectorId]),'only online device was not selected');
+  single.value=JSON.stringify([second.hostDeviceId,second.connectorId]);single.dispatchEvent(new Event('change'));
+  await until(()=>state()?.draft.hostDeviceId===second.hostDeviceId);actions.destroy();await open();
+  await until(()=>activeForm()?.querySelectorAll('select option').length===3);
+  check(activeForm().querySelector('select').value===JSON.stringify([second.hostDeviceId,second.connectorId]),'offline saved choice was replaced by online default');
+  accountId='qa_two_devices_'+crypto.randomUUID();accounts.push(accountId);devices=[first,second];await open();
+  await until(()=>activeForm()?.querySelectorAll('select option').length===3);
+  check(activeForm().querySelector('select').value==='', 'several online devices were selected without a choice');
+  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate Escape flush / newer edit cancels close / quota recovery / single online default / saved offline choice / multiple-device choice. Real side effects: 0.';
  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
  finally{quotaKey='';Storage.prototype.setItem=originalSetItem;actions?.destroy();for(const account of accounts){localStorage.removeItem('soty.app-create.v1:'+account);localStorage.removeItem('soty.world.agent:'+account);}run.disabled=false;}
 };

@@ -18,15 +18,6 @@ export function appBuilderReceipt(job, payload) {
     && (job.connectorId === payload.connectorId || job.connectorId === '' && job.status === 'queued' && job.attempts === 0));
 }
 export function matchingAppBuilderRegistration(apps, pending, proposal, accountId) {
-  return apps.find(app => app.ownerAccountId === accountId && app.hostDeviceId === pending.hostDeviceId && app.connectorId === pending.connectorId
+  return apps.find(app => /^app-[a-f0-9]{32}$/u.test(app.id) && app.ownerAccountId === accountId && app.hostDeviceId === pending.hostDeviceId && app.connectorId === pending.connectorId
     && app.name === proposal.name && app.port === proposal.port && app.entryPath === proposal.entryPath && app.state !== 'revoked') ?? null;
-}
-export function appBuilderLaunchUrl(value, pageUrl) {
-  if (typeof value !== 'string') return null;
-  try {
-    const page = new URL(pageUrl), url = new URL(value, page);
-    if (!['http:', 'https:'].includes(url.protocol) || url.origin === page.origin || url.username || url.password
-      || (page.protocol === 'https:' && url.protocol !== 'https:')) return null;
-    return url.href;
-  } catch { return null; }
 }

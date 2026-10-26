@@ -1,6 +1,7 @@
 import { mountWorldApp } from './app';
 import { createDirectFixture } from './ui-fixture-direct';
 import { openConnectionHub } from '../platform/connection-hub';
+import { parseConnectionIntent } from '../platform/connection-intent.mjs';
 import { resolveFieldAppArt } from './field-art.mjs';
 import { createFieldDocument, validateFieldDocument, type FieldDocument } from '../../modules/field/contract.mjs';
 import { el, button } from './dom';
@@ -411,7 +412,15 @@ const fakeClient = { getLocalState: async () => ({ accountId: self.profileId, la
     ? Promise.resolve({ cardId: 'card_qa1111111111111111111111111111' } as T) : api.request<T>(op, args) };
 const assistant = (host: HTMLElement, context?: WorldAssistantMountContext) => mountAssistant(host, { client: fakeClient as unknown as ConnectClient,
   acquireVoiceCapture: () => null, connectDevice: () => action.connectDevice(), createApp: () => action.agentCreate(), resumeApp: target => action.agentCreate(undefined, target) }, context);
-const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, { readAgentCapabilities: async () => ({ agentConfigured: true }) });
+const action = createAppActions(fakeClient as unknown as ConnectClient, async () => { }, undefined, {
+    readAgentCapabilities: async () => ({ agentConfigured: true }),
+    openRegisteredApp: async (appId, accountId, continueIf) => {
+        if (accountId !== self.profileId) throw Error('connection_entry_changed');
+        const intent = parseConnectionIntent(`#app/${appId}`, location.origin);
+        if (!intent || intent.kind !== 'application') throw Error('connection_route_invalid');
+        await world.followConnection(intent, undefined, continueIf);
+    },
+});
 const toast = (text: string) => { const dialog = document.createElement('dialog'); dialog.className = 'sw-dialog'; dialog.append(el('p', '', text), button('Закрыть', undefined, '', () => dialog.close())); document.body.append(dialog); dialog.showModal(); dialog.addEventListener('close', () => dialog.remove(), { once: true }); };
 const openConnections = async (): Promise<void> => {
   const hub = openConnectionHub({ client: fakeClient as unknown as ConnectClient, origin: location.origin, isCurrent: () => true,

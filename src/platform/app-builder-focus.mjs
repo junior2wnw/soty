@@ -24,6 +24,11 @@ export function createAssistantFocusHandoff({ root, getActiveElement, isNeutral 
       }
       return null;
     },
+    isCurrent(claim) {
+      const active = getActiveElement();
+      return Boolean(claim && claim.revision === revision && root.isConnected
+        && (active && root.contains(active) || isNeutral(active) && owner === claim.anchor && unavailable(owner)));
+    },
     restore(claim, fallback) {
       if (!claim || claim.revision !== revision || !root.isConnected || !fallback?.isConnected || !root.contains(fallback)) return false;
       const active = getActiveElement();

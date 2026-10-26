@@ -77,14 +77,14 @@ interface ConversationPresentation {
 
 export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void;
   openNotification(target: NotificationTarget, context: { assertCurrent(): Promise<void>; signal: AbortSignal }): Promise<void>;
-  followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void>; }
+  followConnection(intent: ConnectionIntent, navigate?: () => void, continueIf?: () => boolean): Promise<void>; }
 
 export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): WorldAppHandle {
   const app = new WorldApplication(root, options);
   void app.refresh();
   return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(),
     openNotification: (target, context) => app.openNotification(target, context),
-    followConnection: (intent, navigate) => app.followConnection(intent, navigate) };
+    followConnection: (intent, navigate, continueIf) => app.followConnection(intent, navigate, continueIf) };
 }
 
 class WorldApplication {
@@ -917,10 +917,10 @@ class WorldApplication {
     } catch (error) { if (current()) this.toast(errorText(error)); }
   }
 
-  async followConnection(intent: ConnectionIntent, navigate?: () => void): Promise<void> {
+  async followConnection(intent: ConnectionIntent, navigate?: () => void, continueIf?: () => boolean): Promise<void> {
     const current = this.accountTask(), sequence = this.screenSequence;
     await Promise.all([this.flushScreen(), this.agentOrb?.flush(), this.widgets?.flush()]);
-    if (!current() || sequence !== this.screenSequence) throw Error('connection_entry_changed');
+    if (!current() || sequence !== this.screenSequence || continueIf && !continueIf()) throw Error('connection_entry_changed');
     if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()
       || this.chatDrafts.hasVolatile() || this.formEdits?.hasUnsavedChanges() || this.appSettingsDialog?.element.open || this.appPlacementDialog?.element.open)
       throw Error('Сохраните или закройте открытые настройки перед переходом');
@@ -2742,7 +2742,7 @@ class WorldApplication {
     option('Записку', 'note', () => this.afterNoteSaved(() => this.openNotes('new')));
     option('Устройство', 'laptop', () => this.runHook(this.options.connectDevice));
     option('Комнату', 'people', () => this.openCommunityForm());
-    option('Создать с ИИ', 'sparkle', () => this.navigate('assistant'));
+    option('Создать с ИИ', 'sparkle', () => this.afterNoteSaved(() => { this.assistantMode = 'create'; this.navigateReady('assistant'); }));
     option('Контакт', 'person', () => this.runHook(() => this.options.openAccount('people')));
     dialog.body.append(list);
   }
@@ -2993,23 +2993,10 @@ class WorldApplication {
           if (!current()) return;
           if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
           dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
-          // Registration changes the owner's available directory even when
-          // the independent placement chooser is closed without adding a cell.
-          const field = this.unifiedField;
-          const fieldCurrent = (): boolean => accountCurrent() && sequence === this.screenSequence && field === this.unifiedField;
-          if (field) void field.ready.then(async () => {
-            if (fieldCurrent()) await field.refresh({ preserveView: true });
-          }).catch(reason => { if (fieldCurrent()) this.toast(errorText(reason), true); });
-          this.openAppFieldPlacement({ appId: result.app.id, name: result.app.name }, contextId => {
-            if (!accountCurrent()) return;
-            this.homeQuery = ''; this.unifiedFieldFilters.mine = 'all';
-            this.navigate('mine'); const field = this.unifiedField;
-            const showPlacement = (): boolean => accountCurrent() && field === this.unifiedField && this.view === 'mine' && !this.group && !this.appStage;
-            void field?.ready.then(async () => {
-              if (!showPlacement()) return;
-              await field.refresh();
-              if (showPlacement()) field.focusContext(contextId);
-            }).catch(reason => { if (showPlacement()) this.toast(errorText(reason), true); });
+          this.afterNoteSaved(() => {
+            if (!accountCurrent() || sequence !== this.screenSequence) return;
+            void this.openApplication({ appId: result.app.id, name: result.app.name, status: 'unknown', ownerAccountId: accountId,
+              grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }, undefined, true);
           });
         }).catch(reason => { if (current()) { status.textContent = ''; error.textContent = errorText(reason); } })
           .finally(() => { registering = false; if (current()) { save.disabled = false; for (const control of [name, device, port, path, audience]) control.disabled = false; } });

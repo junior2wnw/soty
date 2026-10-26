@@ -3,20 +3,23 @@ import { button, el, emptyState, initials, labeledField, textInput } from '../wo
 import { icon } from '../world/icons';
 import type { WorldDialog } from '../world/dialogs';
 import { createAppCreateState, type AppCreateDraft, type AppCreateReceipt } from './app-create-state.mjs';
-import { createAssistantFocusHandoff } from './app-builder-focus.mjs';
-import { appBuilderProposal, appBuilderReceipt, appBuilderLaunchUrl, matchingAppBuilderRegistration, type AppBuilderRegisteredApp } from './app-builder-result.mjs';
+import { createAssistantFocusHandoff, type AssistantFocusClaim } from './app-builder-focus.mjs';
+import { appBuilderProposal, appBuilderReceipt, matchingAppBuilderRegistration, type AppBuilderRegisteredApp } from './app-builder-result.mjs';
+import { createAppBuilderRegistration } from './app-builder-registration.mjs';
 
 interface HostDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean }
 interface Proposal { schema: 'soty.local-app.v1'; name: string; port: number; entryPath: string; sourceJobId: string }
 export interface AppBuilderTarget { hostDeviceId: string; connectorId: string; jobId: string }
 type Pending = AppBuilderTarget;
 interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
-export interface AppActionDependencies { readAgentCapabilities?: () => Promise<{ agentConfigured: boolean }> }
+export interface AppActionDependencies {
+  readAgentCapabilities?: () => Promise<{ agentConfigured: boolean }>;
+  openRegisteredApp?: (appId: string, accountId: string, continueIf?: () => boolean) => Promise<void>;
+}
 export interface AppBuilderHandle { dispose(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean }
 interface InlineSession { close(): void; creation?: ReturnType<typeof createAppCreateState>; handle: AppBuilderHandle }
 interface BuilderOptions extends AppActionDependencies {
   client: ConnectClient;
-  refresh(): Promise<void>;
   connectDevice(): Promise<void>;
   dialog(title: string, close?: () => void): WorldDialog;
   friendly(error: unknown): string;
@@ -40,7 +43,7 @@ function forgetPending(key: string, expected: Pending): void {
 /** App creation is separate from the general assistant. Both legacy job resumes
  * and inline views use the production durable intent and account guards. */
 export function createAppBuilderAction(options: BuilderOptions) {
-  const { client, refresh, connectDevice, dialog, friendly, createStates } = options;
+  const { client, connectDevice, dialog, friendly, createStates } = options;
   const sessions = new Set<() => void>(), inlineSessions = new Map<HTMLElement, InlineSession>();
 
   async function agentCreate(communityId?: string, hostOrRestore?: HTMLElement | Pending): Promise<void> {
@@ -89,8 +92,8 @@ export function createAppBuilderAction(options: BuilderOptions) {
       return;
     }
     const accountId = identity.accountId, pendingKey = `soty.world.agent:${accountId}`;
-    let storage: Pick<Storage, 'getItem' | 'setItem'>;
-    try { storage = localStorage; } catch { storage = { getItem() { throw new Error('storage_unavailable'); }, setItem() { throw new Error('storage_unavailable'); } }; }
+    let storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+    try { storage = localStorage; } catch { storage = { getItem() { throw new Error('storage_unavailable'); }, setItem() { throw new Error('storage_unavailable'); }, removeItem() { throw new Error('storage_unavailable'); } }; }
     let drafts = createStates.get(accountId);
     if (!drafts) { drafts = createAppCreateState({ accountId, storage, locks: navigator.locks }); createStates.set(accountId, drafts); }
     const creation = drafts;
@@ -167,8 +170,9 @@ export function createAppBuilderAction(options: BuilderOptions) {
         cancelled: 'Задача отменена · изменения не откатываются', failed: 'Нужно проверить результат', succeeded: 'Выполнение завершено' } as Record<string, string>)[job.status] || 'Уточняем состояние';
     }
 
-    async function showResult(result: JobResult, pending: Pending): Promise<void> {
+    async function showResult(result: JobResult, pending: Pending, autoOpen: boolean, followClaim: AssistantFocusClaim | null): Promise<void> {
       if (!await current()) return;
+      const retainAutoOpen = autoOpen && !result.job.cancelRequested && document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(followClaim);
       const proposal = appBuilderProposal(result, pending), { conversation: content, output, claim } = workspace();
       const transcript = el('div', 'sx-agent-transcript');
       if (typeof result.task?.text === 'string' && result.task.text.trim()) transcript.append(bubble(result.task.text.slice(0, 16_000), 'user'));
@@ -178,37 +182,78 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const reset = button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending));
       const report = (cause: unknown) => { const error = el('p', 'sw-error sx-agent-error', friendly(cause)); error.setAttribute('role', 'alert'); actionState.replaceChildren(error); };
       if (proposal) {
-        let registered: AppBuilderRegisteredApp | null = null, registering = false;
+        let registered: AppBuilderRegisteredApp | null = null, registering = false, automatic = false, retryExplicit = false;
+        let autoClaim: AssistantFocusClaim | null = null;
+        const continueAutomatically = () => document.visibilityState === 'visible' && document.hasFocus() && focus.isCurrent(autoClaim);
+        const registration = createAppBuilderRegistration({ accountId, pending, proposal, storage, locks: navigator.locks });
         const card = el('article', 'sx-agent-draft'), heading = el('header', 'sx-agent-draft-heading'), mark = el('span', 'sx-agent-symbol'); mark.append(icon('grid'));
         const state = el('span', 'sx-agent-draft-state', 'Черновик'); state.setAttribute('role', 'status'); heading.append(mark, el('h2', '', proposal.name), state); card.append(heading);
         const visual = el('div', 'sx-agent-draft-visual'), summary = el('div', 'sx-agent-draft-summary'), appMark = el('span', 'sx-agent-draft-mark sx-agent-symbol'); appMark.append(icon('grid'));
         summary.append(appMark, el('h3', '', proposal.name), el('p', '', 'Готово к добавлению в ваши соты'));
         const access = el('span', 'sx-agent-draft-access'); access.append(icon('lock'), el('span', '', 'Личный черновик')); visual.append(summary, access); card.append(visual); output.replaceChildren(card);
-        const add = button('Добавить в мои соты', 'plus', 'sw-button-primary', () => {
+        const add = button('Добавить и открыть', 'plus', 'sw-button-primary', () => {
           if (registering) return;
-          registering = true; add.disabled = true; actionState.replaceChildren();
+          const automaticAttempt = automatic, retryRequested = retryExplicit;
+          registering = true; add.disabled = true; retry.disabled = true; actionState.replaceChildren();
           void (async () => {
+            let attempt: string | null = null, navigating = false;
             try {
-              const response = await request<{ app: AppBuilderRegisteredApp }>('apps.register', { hostDeviceId: pending.hostDeviceId, connectorId: pending.connectorId,
-                name: proposal.name, port: proposal.port, entryPath: proposal.entryPath, grants: { accountIds: [], communityIds: [] } });
+              if (!registered) {
+                const existing = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {});
+                registered = matchingAppBuilderRegistration(existing.apps, pending, proposal, accountId);
+                if (registered) attempt = await registration.inspect();
+                else {
+                  let claim: { dispatch: boolean; attempt: string | null } = await registration.begin();
+                  if (!claim.dispatch && retryRequested && claim.attempt) claim = await registration.retry(claim.attempt);
+                  attempt = claim.attempt;
+                  if (claim.dispatch) {
+                    if (!await current()) { await registration.clear(attempt); return; }
+                    try {
+                      const response = await request<{ app: AppBuilderRegisteredApp }>('apps.register', { hostDeviceId: pending.hostDeviceId, connectorId: pending.connectorId,
+                        name: proposal.name, port: proposal.port, entryPath: proposal.entryPath, grants: { accountIds: [], communityIds: [] } });
+                      registered = matchingAppBuilderRegistration([response.app], pending, proposal, accountId);
+                    } catch (cause) {
+                      if (!await current()) return;
+                      const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+                      if (['apps_device_not_owned', 'app_port_already_registered', 'apps_limit_reached', 'reserved_app_path'].includes(code)) {
+                        await registration.clear(attempt); throw cause;
+                      }
+                      const observed = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {}).catch(() => null);
+                      registered = observed ? matchingAppBuilderRegistration(observed.apps, pending, proposal, accountId) : null;
+                    }
+                  }
+                }
+              } else attempt = await registration.inspect();
               if (!await current()) return;
-              registered = response.app; renderActions();
+              if (!registered) throw Object.assign(new Error('app_registration_unconfirmed'), { code: 'app_registration_unconfirmed' });
+              const transferAutoClaim = automaticAttempt && continueAutomatically();
+              renderActions();
+              if (transferAutoClaim) autoClaim = focus.capture();
+              if (automaticAttempt && !continueAutomatically()) return;
               await forget(pending);
-              if (!host) await refresh();
+              if (!await current()) return;
+              if (automaticAttempt && !continueAutomatically()) return;
+              await registration.clear(attempt);
+              if (!await current()) return;
+              if (automaticAttempt && !continueAutomatically()) return;
+              if (!options.openRegisteredApp) throw new Error('app_open_unavailable');
+              navigating = true;
+              await options.openRegisteredApp(registered.id, accountId, automaticAttempt ? continueAutomatically : undefined);
+              if (!closed) panel.close();
             } catch (cause) {
               if (!await current()) return;
-              if (!registered) {
-                try {
-                  const existing = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {});
-                  if (!await current()) return;
-                  registered = matchingAppBuilderRegistration(existing.apps, pending, proposal, accountId);
-                  if (registered) { renderActions(); await forget(pending); if (!host) await refresh(); return; }
-                } catch { /* Keep the original failure and the exact durable result. */ }
+              const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+              if (code === 'app_registration_unconfirmed') {
+                add.replaceChildren(icon('refresh'), el('span', '', 'Проверить'));
+                actions.replaceChildren(add, retry, reset);
               }
-              if (await current()) report(cause);
+              if (!automaticAttempt || !navigating || continueAutomatically()) report(cause);
             }
-            finally { registering = false; if (await current()) add.disabled = false; }
+            finally { registering = false; if (await current()) { add.disabled = false; retry.disabled = false; } }
           })();
+        });
+        const retry = button('Добавить заново', 'plus', 'sw-button-quiet', () => {
+          retryExplicit = true; add.click(); retryExplicit = false;
         });
         function renderActions(): void {
           const handoff = focus.capture(actions);
@@ -218,41 +263,14 @@ export function createAppBuilderAction(options: BuilderOptions) {
           access.replaceChildren(icon('check'), el('span', '', registered.grants && (registered.grants.accountIds.length || registered.grants.communityIds.length) ? 'Доступ настроен' : 'Только вам'));
           summary.querySelector('p')!.textContent = registered.state === 'offline' ? 'Устройство не в сети' : registered.state === 'stopped' ? 'Приложение остановлено' : 'Ваше приложение в Сотах';
           const launch = button('Открыть приложение', 'external', 'sw-button-primary', () => {
-            launch.disabled = true; actionState.replaceChildren();
-            void (async () => {
-              try {
-                if (!registered || !await current()) return;
-                const response = await request<{ launchUrl: string }>('apps.launch', { appId: registered.id });
-                if (!await current()) return;
-                const url = appBuilderLaunchUrl(response.launchUrl, location.href); if (!url) throw new Error('invalid_application_origin');
-                const frame = el('iframe', 'sx-agent-preview-frame'); frame.src = url; frame.title = proposal!.name;
-                frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin'); frame.referrerPolicy = 'no-referrer';
-                visual.replaceChildren(frame); visual.classList.add('has-preview'); state.textContent = 'Предпросмотр';
-              } catch (cause) { if (await current()) report(cause); }
-              finally { if (await current()) launch.disabled = false; }
-            })();
+            if (!registered || registering) return;
+            add.click();
           });
-          const external = button('В новой вкладке', 'arrow', 'sw-button-quiet', () => {
-            const target = window.open('about:blank', '_blank'); if (!target) { report(new Error('popup_blocked')); return; } target.opener = null;
-            void (async () => {
-              try {
-                if (!registered || !await current()) { target.close(); return; }
-                const response = await request<{ launchUrl: string }>('apps.launch', { appId: registered.id });
-                if (!await current()) { target.close(); return; }
-                const url = appBuilderLaunchUrl(response.launchUrl, location.href); if (!url) throw new Error('invalid_application_origin'); target.location.replace(url);
-              } catch (cause) { target.close(); if (await current()) report(cause); }
-            })();
-          });
-          actions.replaceChildren(launch, external, reset); focus.restore(handoff, launch);
+          actions.replaceChildren(launch, reset); focus.restore(handoff, launch);
         }
         renderActions(); focus.restore(claim, add);
-        void (async () => {
-          try {
-            const response = await request<{ apps: AppBuilderRegisteredApp[] }>('apps.list', {}); if (!await current() || registering) return;
-            const recovered = matchingAppBuilderRegistration(response.apps, pending, proposal, accountId);
-            if (recovered) { registered = recovered; await forget(pending); if (await current()) renderActions(); }
-          } catch { /* A read failure does not authorize automatic registration or grant changes. */ }
-        })();
+        autoClaim = retainAutoOpen ? focus.capture() : null;
+        if (!result.job.cancelRequested) { automatic = true; add.click(); automatic = false; }
         if (communityId) content.append(el('small', 'sw-muted', 'Доступ сообществу можно открыть в настройках приложения.'));
       } else {
         placeholder(output, label(result), result.job.executionUncertain ? 'Устройство не подтвердило завершение. Проверьте ответ перед повтором.' : 'Ответ и состояние задачи сохранены в деталях.');
@@ -284,7 +302,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       content.append(detail, deviceContext(pending));
     }
 
-    function follow(pending: Pending): void {
+    function follow(pending: Pending, autoOpen = false): void {
       if (closed || following === pending.jobId) return;
       const version = ++runVersion;
       formAbort?.abort();
@@ -304,6 +322,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const context = deviceContext(pending);
       activity.append(transcript, history, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, context);
       placeholder(output, 'Создаём приложение', 'Состояние и ответ будут доступны здесь.'); focus.restore(claim, progress);
+      const followClaim = autoOpen ? focus.capture() : null;
       void request<{ devices: HostDevice[] }>('apps.devices', {}).then(async result => {
         if (!await current()) return; devices = result.devices; context.replaceChildren(...Array.from(deviceContext(pending).childNodes));
       }).catch(() => { /* An unknown device status is never shown as online. */ });
@@ -323,7 +342,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
           progressCopy.textContent = label(result);
           output.querySelector('h2')!.textContent = label(result);
           cancel.disabled = Boolean(result.job.cancelRequested);
-          if (result.done) { await showResult(result, pending); return; }
+          if (result.done) { await showResult(result, pending, autoOpen, followClaim); return; }
         } catch (error) {
           if (!await current() || version !== runVersion) return;
           progressCopy.textContent = friendly(error);
@@ -363,7 +382,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
     const footer = el('div', 'sx-agent-form-footer'), personal = el('span', 'sx-agent-personal'); personal.append(icon('lock'), el('span', '', 'Личный черновик')); footer.append(personal, create);
     form.append(heading, labeledField('Идея приложения', prompt), labeledField('На устройстве', hosts), advanced, availability, status, error, recovery, footer, privilege);
     const initial = workspace(); initial.conversation.append(form); placeholder(initial.output);
-    let modelReady = false, busy = false, loading = true, editGeneration = 0, loadGeneration = 0, closeGeneration = 0;
+    let modelReady = false, busy = false, loading = true, hostSelectionTouched = false, editGeneration = 0, loadGeneration = 0, closeGeneration = 0;
     const keyOf = (value: Pick<AppCreateDraft, 'hostDeviceId' | 'connectorId'>) => JSON.stringify([value.hostDeviceId, value.connectorId]);
     function requestClose(action: () => void = panel.close, event?: Event): void {
       event?.preventDefault(); event?.stopImmediatePropagation();
@@ -393,7 +412,9 @@ export function createAppBuilderAction(options: BuilderOptions) {
     function fill(preserveInput = false): void {
       const snapshot = creation.read(), bound = snapshot.pending?.payload ?? snapshot.draft;
       const keep = preserveInput && !snapshot.pending;
-      const selectedKey = keep ? hosts.value : bound.hostDeviceId && bound.connectorId ? keyOf(bound) : '';
+      let selectedKey = keep ? hosts.value : bound.hostDeviceId && bound.connectorId ? keyOf(bound) : '';
+      const online = devices.filter(device => device.online);
+      if (!selectedKey && !bound.hostDeviceId && !snapshot.pending && !hostSelectionTouched && online.length === 1) selectedKey = keyOf(online[0]!);
       if (!keep) { prompt.value = bound.text; cwd.value = bound.cwd; }
       hosts.replaceChildren(el('option', '', 'Выберите устройство'));
       hosts.options[0]!.value = '';
@@ -431,7 +452,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
       if (!closed && revision === editGeneration) updateControls();
     }
     prompt.addEventListener('input', () => { void saveDraft(); }, { signal: formSignal }); cwd.addEventListener('input', () => { void saveDraft(); }, { signal: formSignal });
-    hosts.addEventListener('change', () => { if (cwd.value) { cwd.value = ''; error.textContent = 'Выбрано другое устройство. Проверьте папку проекта.'; } void saveDraft(); }, { signal: formSignal });
+    hosts.addEventListener('change', () => { hostSelectionTouched = true; if (cwd.value) { cwd.value = ''; error.textContent = 'Выбрано другое устройство. Проверьте папку проекта.'; } void saveDraft(); }, { signal: formSignal });
     async function loadDevices(): Promise<void> {
       const version = ++loadGeneration; loading = true; updateControls();
       const values = await Promise.allSettled([request<{ devices: HostDevice[] }>('apps.devices', {}),
@@ -478,7 +499,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
           if (!appBuilderReceipt(result.job, pending.payload)) throw new Error('invalid_app_create_receipt');
           const accepted = { hostDeviceId: pending.payload.hostDeviceId, connectorId: pending.payload.connectorId, jobId: result.job.id };
           const acknowledged = await creation.acknowledge(pending.payload, accepted);
-          if (await current() && (acknowledged || creation.read().accepted?.jobId === accepted.jobId)) follow(accepted);
+          if (await current() && (acknowledged || creation.read().accepted?.jobId === accepted.jobId)) follow(accepted, true);
         } catch (cause) {
           if (cause && typeof cause === 'object' && 'code' in cause && ['authentication_required', 'device_revoked', 'device_not_found'].includes(String(cause.code))) {
             accountInvalid = true; createStates.delete(accountId); panel.body.replaceChildren(); if (!closed) panel.close();

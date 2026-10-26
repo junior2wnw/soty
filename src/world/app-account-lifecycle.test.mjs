@@ -616,6 +616,22 @@ test('actual app onboarding pins A at dispatch and ignores a late success after 
   assert.equal(f.app.lastToast, undefined); assert.equal(f.personalFrames.length, 0); assert.equal(dialog.element.open, false);
 });
 
+test('successful manual registration opens the app and does not require field placement', async () => {
+  const f = fixture(), appId = 'app-11111111111111111111111111111111'; let opened;
+  f.app.api = { request(op) {
+    if (op === 'apps.devices') return Promise.resolve({ devices: [{ claimed: true, online: true, hostDeviceId: 'host-A', connectorId: 'connector-A', name: 'A device' }] });
+    assert.equal(op, 'apps.register'); return Promise.resolve({ app: { id: appId, name: 'Synthetic project' } });
+  } };
+  f.app.openApplication = async app => { opened = app; };
+  f.app.openAppFieldPlacement = () => assert.fail('placement must stay optional');
+  f.app.openAddApp(); await turn(); const dialog = f.dialogs.at(-1), form = dialog.body.children[0];
+  const collect = (element, tag) => [element, ...element.children.flatMap(child => child instanceof ElementPort ? collect(child, tag) : [])].filter(child => child.tagName === tag);
+  const inputs = collect(form, 'input'), selectors = collect(form, 'select');
+  inputs[0].value = 'Synthetic project'; inputs[1].value = '3000'; selectors[0].value = 'host-A'; selectors[1].value = '';
+  form.listeners.get('submit')({ preventDefault() {} }); await turn();
+  assert.equal(dialog.element.open, false); assert.equal(opened.appId, appId); assert.equal(opened.ownerAccountId, 'account-A');
+});
+
 test('first local identity keeps a visible status while the real profile request is pending', async () => {
   const f = fixture({ initial: '' }), pending = deferred(), original = f.app.api.request;
   f.setLocal('account-A');
