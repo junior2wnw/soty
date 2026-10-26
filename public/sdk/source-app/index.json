@@ -3,15 +3,15 @@
   "status": "preview",
   "package": {
     "name": "@soty/source-app",
-    "version": "0.1.0-preview.5",
+    "version": "0.1.0-preview.6",
     "nodeEngine": ">=24.15.0",
     "testedNode": "24.19.0"
   },
-  "sourceCommit": "d6e9c61dcc67650326ae17a6cc6a804c961011c0",
+  "sourceCommit": "25ad0091bf1ea65ec496aba72afdc9487d89a53b",
   "artifact": {
-    "url": "/sdk/source-app/97d26dff9d14d67021c9dd7ab8533d19e4a4a0fc5da52a76537b666b32f07cc8.tgz",
-    "sha256": "97d26dff9d14d67021c9dd7ab8533d19e4a4a0fc5da52a76537b666b32f07cc8",
-    "bytes": 263062
+    "url": "/sdk/source-app/54a0dda326bae9acf1de80677cc1b8d99b466c0a96566aa6b4877340ae64e7d7.tgz",
+    "sha256": "54a0dda326bae9acf1de80677cc1b8d99b466c0a96566aa6b4877340ae64e7d7",
+    "bytes": 264924
   },
   "admission": {
     "required": true,
