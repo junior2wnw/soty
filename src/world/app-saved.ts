@@ -13,9 +13,10 @@ export interface AppSavedOptions extends EngagementStorageOptions {
   api: WorldApi; accountId: string; entry: AppEntry & { name?: string };
   isCurrent(): boolean; onChanged?(): void;
   asBookmark?: boolean;
+  replacementHost?: HTMLElement;
   dialogReturnTarget?: DialogReturnTarget;
 }
-export interface AppSavedHandle { dispose(): void; refresh(): Promise<void>; ensureSaved(): Promise<boolean>; }
+export interface AppSavedHandle { dispose(): void; refresh(): Promise<void>; ensureSaved(): Promise<boolean>; setEntryVerified(verified: boolean): void; }
 
 export function engagementError(reason: unknown): string {
   const code = typeof reason === 'string' ? reason : reason && typeof reason === 'object' && 'code' in reason ? String(reason.code) : '';
@@ -68,9 +69,13 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
   const root = el('div', 'se-saved'), control = button('Сохранить', 'folder', 'se-saved-control');
   const live = el('span', 'sw-sr-only'); live.setAttribute('role', 'status');
   control.dataset.engagementKey = 'save'; root.append(control, live); host.replaceChildren(root);
+  const replacement = options.replacementHost ? button('Сохранить актуальный вход', 'folder', 'sw-button-quiet') : null;
+  const replacementText = el('p'); replacementText.setAttribute('role', 'status');
+  if (replacement) { replacement.dataset.engagementKey = 'save-current-entry'; options.replacementHost!.replaceChildren(replacementText, replacement); }
   let snapshot: SavedSnapshot | null = null, loading = false, busy = false, disposed = false, generation = 0, refreshAfterMutation = false;
   let error = '', notice = '', lastPending: SavedPending | null = null, dialog: WorldDialog | null = null;
   let ensuring: Promise<boolean> | null = null;
+  let entryVerified = false;
   const current = (): boolean => !disposed && options.isCurrent();
   const disabled = (): boolean => busy || loading;
   function closeDialog(): void { const previous = dialog; dialog = null; previous?.close(); }
@@ -79,11 +84,20 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
     value.element.classList.add('se-dialog'); dialog = value; return value;
   }
   function render(): void {
-    if (!current()) { root.hidden = true; closeDialog(); return; }
+    if (!current()) { root.hidden = true; if (options.replacementHost) options.replacementHost.hidden = true; closeDialog(); return; }
     try { lastPending = state.read().pending; } catch (reason) { error = engagementError(reason); lastPending = null; }
     control.setAttribute('aria-pressed', String(!!snapshot?.entry));
     control.setAttribute('aria-disabled', String(disabled()));
     const different = !!snapshot?.entry && !sameAppEntry(snapshot.entry, entry);
+    if (replacement && options.replacementHost) {
+      const ownPending = lastPending?.entry.appId === entry.appId;
+      const wasVisible = !options.replacementHost.hidden;
+      options.replacementHost.hidden = !entryVerified || (!different && !ownPending) || !!lastPending && !ownPending;
+      replacement.disabled = disabled();
+      replacement.querySelector('span')!.textContent = lastPending || error ? 'Проверить сохранение' : 'Сохранить актуальный вход';
+      replacementText.textContent = error || (lastPending ? 'Результат сохранения ещё не подтверждён.' : 'В «Моё» сохранён другой вход.');
+      if (wasVisible && options.replacementHost.hidden && replacement === host.ownerDocument.activeElement) options.dialogReturnTarget?.resolve()?.focus();
+    }
     const label = busy ? 'Проверяем…' : lastPending || error ? 'Проверить' : snapshot?.entry ? options.asBookmark ? 'В закладках' : 'Сохранено' : options.asBookmark ? 'В закладки' : 'Сохранить';
     const span = control.querySelector('span')!; if (span.textContent !== label) span.textContent = label;
     control.title = lastPending ? 'Проверить прежнее изменение сохранённых' : error || (different ? 'Сохранён другой вход в это приложение' : snapshot?.entry ? 'Убрать из сохранённых' : 'Сохранить в аккаунте');
@@ -177,7 +191,7 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
     });
     actions.append(dismiss, retry); surface.body.append(actions, abandon); dismiss.focus();
   }
-  control.addEventListener('click', () => {
+  function activate(): void {
     if (!current() || disabled()) return;
     const pending = lastPending;
     if (pending) { showPending(pending); return; }
@@ -199,9 +213,13 @@ export function mountAppSaved(host: HTMLElement, options: AppSavedOptions): AppS
       })); no.focus(); return;
     }
     void mutate({ intent: { entry, saved: !captured.entry, expectedRevision: captured.revision, currentEntry: captured.entry } });
-  });
+  }
+  control.addEventListener('click', activate);
+  replacement?.addEventListener('click', () => { if (entryVerified && !options.replacementHost?.hidden) activate(); });
   const unsubscribe = state.subscribe(render), view = host.ownerDocument.defaultView;
   const onStorage = (): void => { if (!current()) return; try { state.refreshLocal(); render(); } catch (reason) { error = engagementError(reason); render(); } };
   view?.addEventListener('storage', onStorage); render(); void refresh();
-  return { refresh, ensureSaved, dispose() { if (disposed) return; disposed = true; generation++; unsubscribe(); state.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove(); } };
+  return { refresh, ensureSaved, setEntryVerified(verified) { entryVerified = verified; render(); },
+    dispose() { if (disposed) return; disposed = true; generation++; unsubscribe(); state.dispose(); view?.removeEventListener('storage', onStorage); closeDialog(); root.remove();
+      if (options.replacementHost) { options.replacementHost.hidden = true; options.replacementHost.replaceChildren(); } } };
 }
