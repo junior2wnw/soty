@@ -5,7 +5,7 @@
 Размещение веб-проектов как приложений: [повторяемый процесс](docs/deployment/app-release.md).
 Skill для агента: [soty-app-deploy](skills/soty-app-deploy/SKILL.md),
 установка — node scripts/install-soty-deploy-skill.mjs.
-Вход людей: [Human OIDC/BFF](docs/deployment/app-authentication.md).
+Вход людей: [Source SDK и вход через Соты](docs/deployment/app-authentication.md).
 Пустое окно, WS и auth: [диагностика](docs/deployment/app-troubleshooting.md).
 Проверка пайплайна: `npm run app:release:check` с `SOTY_CADDY_BIN`;
 [что именно считается готовым](docs/deployment/app-release-readiness.md).
