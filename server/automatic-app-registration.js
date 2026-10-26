@@ -5,8 +5,10 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
   const failure = error => {
     const code = String(error?.code || '');
     if (code === 'app_port_already_registered' || code === 'app_job_id_conflict') return 'conflict';
+    if (code === 'apps_limit_reached') return 'capacity';
     if (['apps_device_not_owned', 'apps_authentication_required', 'connect_authority_actor_mismatch', 'device_revoked', 'authentication_required'].includes(code)) return 'access-lost';
-    return 'waiting';
+    if (['feedback_busy', 'registration_feedback_pending', 'SQLITE_BUSY', 'SQLITE_LOCKED'].includes(code)) return 'waiting';
+    return 'attention';
   };
   async function reconcile(jobId) {
     if (closed) return;
@@ -15,6 +17,10 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       const [job] = await store.automaticAppJobs(jobId);
       if (closed) return;
       if (!job) { pending.delete(jobId); problems.delete(jobId); return; }
+      if (!job.sourceActorDeviceId || job.assignedConnectorId !== job.connectorId) {
+        pending.delete(job.id); problems.set(job.id, 'access-lost'); return;
+      }
+      if (job.executionUncertain) { pending.delete(job.id); problems.set(job.id, 'attention'); return; }
       pending.set(job.id, { linkId: job.linkId, deviceId: job.deviceId, connectorId: job.connectorId });
       if (!universal) { problems.set(job.id, 'waiting'); return; }
       const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
@@ -26,10 +32,26 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
           if (device.linkId !== job.linkId) throw Object.assign(new Error('apps_device_not_owned'), { code: 'apps_device_not_owned' });
           return universal.registerCreationJob(actor, job);
         });
-        if (result.app.state === 'revoked') { pending.delete(job.id); problems.delete(job.id); return; }
-        if (result.universalRegistration?.state === 'ready' && result.universalRegistration.feedback?.state === 'ready') {
-          pending.delete(job.id); problems.delete(job.id);
-        } else problems.set(job.id, 'waiting');
+        let outcome = '';
+        if (result.app.state === 'revoked' || result.universalRegistration?.state === 'ready' && result.universalRegistration.feedback?.state === 'ready') {
+          // Read the persisted app and feedback again before releasing its
+          // reserved job. The databases do not share a transaction.
+          outcome = connect.withCurrentContacts(actor, () => {
+            const app = apps.creationJobApp(actor, job.id);
+            if (!app || app.id !== `app-${job.id.slice(4)}`) return '';
+            if (app.state === 'revoked') return 'revoked';
+            const registration = universal.registration.execute({ op: 'apps.universal.get', actor,
+              args: { appId: app.id, expectedAccountId: actor.accountId } }).registration;
+            return registration?.state === 'ready' && registration.feedback?.state === 'ready' ? 'ready' : '';
+          });
+        }
+        if (!outcome) { problems.set(job.id, 'waiting'); return; }
+        const current = () => {
+          if (closed || connect.isActorActive(actor) !== true) return false;
+          try { return apps.resolveOwnedDevice(actor, job.deviceId, job.connectorId).linkId === job.linkId; } catch { return false; }
+        };
+        if (!await store.confirmAutomaticAppJob(job, outcome, current)) { problems.set(job.id, 'access-lost'); pending.delete(job.id); return; }
+        pending.delete(job.id); problems.delete(job.id);
       } catch (error) {
         const problem = failure(error); problems.set(job.id, problem);
         if (problem === 'access-lost') pending.delete(job.id);

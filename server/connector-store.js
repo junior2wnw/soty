@@ -36,6 +36,8 @@ class ConnectorStore {
     this.legacyModelSponsorEligible = typeof options.legacyModelSponsorEligible === 'function' ? options.legacyModelSponsorEligible : null;
     this.preserveHistory = options.preserveHistory ?? process.env.SOTY_CONNECTOR_PRESERVE_HISTORY === "1";
     this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
+    this.maxAutomaticReservations = safeInteger(options.maxAutomaticReservations, 1, maxJobs, maxJobs);
+    this.maxAutomaticReservationsPerAccount = safeInteger(options.maxAutomaticReservationsPerAccount, 1, maxJobs, 100);
     this.requestIndex = new Map();
     this.leaseMs = safeInteger(options.leaseMs, 5_000, 10 * 60_000, defaultLeaseMs);
     this.events = new EventEmitter();
@@ -232,6 +234,16 @@ class ConnectorStore {
           : { ok: false, error: "job-request-retired", jobId: previous.jobId };
       }
       if (requestKey && this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: "connector-request-limit" };
+      // Reserve capacity before accepting an automatic creation. A replay of
+      // an already accepted request was handled above, even at capacity.
+      const reservations = ownerAccountId && clean.kind === 'agent' && clean.input.output === 'local-app' && clean.input.autoRegister === true
+        ? this.state.jobs.filter(holdsAutomaticReservation) : [];
+      if (reservations.length >= this.maxAutomaticReservations || reservations.filter(job => job.ownerAccountId === ownerAccountId).length >= this.maxAutomaticReservationsPerAccount) {
+        if (!requestKey || !/^[a-f0-9]{64}$/u.test(auth?.requestIntent || '')) return { ok: false, error: 'app-auto-capacity' };
+        this.state.requests = [...this.state.requests, { id: requestKey, fingerprint: auth.requestIntent, requestIntent: auth.requestIntent,
+          jobId: `rejected_${randomUUID().replaceAll('-', '')}`, rejection: 'app_auto_capacity' }];
+        return { ok: true, admission: { status: 'rejected', requestId, reason: 'app_auto_capacity' } };
+      }
       if (ownerAccountId && auth.conversationGuard === true) {
         const conversation = this.state.jobs.filter(item => item.ownerAccountId === ownerAccountId && item.threadId === clean.threadId
           && item.deviceId === clean.deviceId && item.requestedConnectorId === ownedConnectorId);
@@ -336,14 +348,25 @@ class ConnectorStore {
   /** Host-only recovery source. Read the durable job, never the connector's retry body. */
   async automaticAppJobs(jobId = '') {
     await this.writeQueue; await this.readable();
-    const now = this.now();
-    return this.state.jobs.filter(job => (!jobId || job.id === jobId) && job.schema === accountJobSchema
-      && job.kind === 'agent' && job.input?.output === 'local-app' && job.input.autoRegister === true
-      && job.status === 'succeeded' && !job.cancelRequested && !job.executionUncertain && job.result?.ok === true
-      && job.result.appProposal?.sourceJobId === job.id && job.sourceActorDeviceId
-      && job.connectorId === job.requestedConnectorId && job.finishedAt > 0 && now - job.finishedAt < finishedRetentionMs)
+    return this.state.jobs.filter(job => (!jobId || job.id === jobId) && isAutomaticResult(job)
+      && (jobId || job.autoRegistrationFinal === undefined))
       .map(job => ({ id: job.id, schema: job.schema, status: job.status, autoRegister: true, ownerAccountId: job.ownerAccountId, sourceActorDeviceId: job.sourceActorDeviceId,
-        linkId: job.linkId, deviceId: job.deviceId, connectorId: job.requestedConnectorId, proposal: { ...job.result.appProposal } }));
+        linkId: job.linkId, deviceId: job.deviceId, connectorId: job.requestedConnectorId, assignedConnectorId: job.connectorId,
+        executionUncertain: job.executionUncertain === true, proposal: { ...job.result.appProposal } }));
+  }
+
+  /** Called only by the host reconciler after reading the durable Apps result. */
+  async confirmAutomaticAppJob(expected, outcome, guard) {
+    if (!expected || !['ready', 'revoked'].includes(outcome) || typeof guard !== 'function') return false;
+    return this.mutate(() => {
+      const job = this.state.jobs.find(item => item.id === expected.id);
+      if (!job || !isAutomaticResult(job) || job.executionUncertain || job.autoRegistrationFinal === 'revoked' && outcome !== 'revoked'
+          || job.ownerAccountId !== expected.ownerAccountId || job.sourceActorDeviceId !== expected.sourceActorDeviceId
+          || job.linkId !== expected.linkId || job.deviceId !== expected.deviceId || job.connectorId !== expected.connectorId
+          || job.requestedConnectorId !== expected.connectorId || JSON.stringify(job.result.appProposal) !== JSON.stringify(expected.proposal)
+          || guard() !== true) return false;
+      job.autoRegistrationFinal = outcome; return true;
+    });
   }
 
   async getOwnedRequest(auth, options) {
@@ -700,12 +723,13 @@ class ConnectorStore {
 
     this.state.connectors = this.state.connectors.filter((item) => now - item.lastSeenAt < finishedRetentionMs || this.state.jobs.some((job) => !terminalStatuses.has(job.status) && job.linkId === item.linkId && job.deviceId === item.deviceId && job.connectorId === item.connectorId));
     const retained = this.state.jobs
-      .filter((job) => !job.finishedAt || now - job.finishedAt < finishedRetentionMs)
+      .filter((job) => holdsAutomaticReservation(job) || !job.finishedAt || now - job.finishedAt < finishedRetentionMs)
       .sort((a, b) => a.createdAt - b.createdAt);
     const active = retained.filter((job) => !terminalStatuses.has(job.status));
-    const finished = retained.filter((job) => terminalStatuses.has(job.status));
-    const finishedSlots = Math.max(0, maxJobs - active.length);
-    const keep = [...active, ...finished.slice(Math.max(0, finished.length - finishedSlots))];
+    const reserved = retained.filter((job) => terminalStatuses.has(job.status) && holdsAutomaticReservation(job));
+    const finished = retained.filter((job) => terminalStatuses.has(job.status) && !holdsAutomaticReservation(job));
+    const finishedSlots = Math.max(0, maxJobs - active.length - reserved.length);
+    const keep = [...active, ...reserved, ...finished.slice(Math.max(0, finished.length - finishedSlots))];
     this.state.jobs = keep.sort((a, b) => a.createdAt - b.createdAt);
     this.state.accessGrants = this.state.accessGrants.filter((grant) => {
       const inactiveAt = grant.revokedAt || (grant.expiresAt <= now ? grant.expiresAt : 0);
@@ -801,6 +825,22 @@ class ConnectorStore {
   }
 }
 
+function holdsAutomaticReservation(job) {
+  if (job?.schema !== accountJobSchema || job.kind !== 'agent' || job.input?.output !== 'local-app' || job.input.autoRegister !== true) return false;
+  if (!terminalStatuses.has(job.status)) return true;
+  return isAutomaticResult(job) && job.autoRegistrationFinal === undefined;
+}
+
+/** An older SQLite reader must not open a store with protected work. */
+export function connectorHasAutomaticReservations(state) {
+  return Array.isArray(state?.jobs) && state.jobs.some(holdsAutomaticReservation);
+}
+
+function isAutomaticResult(job) {
+  return job?.schema === accountJobSchema && job.kind === 'agent' && job.input?.output === 'local-app' && job.input.autoRegister === true
+    && job.status === 'succeeded' && !job.cancelRequested && job.result?.ok === true && job.result.appProposal?.sourceJobId === job.id;
+}
+
 function sameRecord(left, right) {
   if (!left || !right) return left === right;
   const keys = Object.keys(left);
@@ -829,6 +869,7 @@ function changesSince(before, after, revision) {
     delta[kind] = { changed, removed };
     dirty ||= changed.length > 0 || removed.length > 0;
   }
+  if (dirty) delta.automaticFence = connectorHasAutomaticReservations(after);
   return dirty ? delta : null;
 }
 
@@ -864,6 +905,10 @@ export function normalizeConnectorState(value) {
       || !/^[a-f0-9]{64}$/u.test(job.requestDigest) || !safeId(job.requestedConnectorId,160) || !safeDeviceId(job.deviceId)
       || job.accessGrantId)) throw new Error('Account job missing account/request binding');
     if (job.sourceActorDeviceId !== undefined && (job.schema !== accountJobSchema || !safeDeviceId(job.sourceActorDeviceId))) throw new Error('Invalid local task actor binding');
+    if (job.autoRegistrationFinal !== undefined && (!['ready','revoked'].includes(job.autoRegistrationFinal)
+      || job.schema !== accountJobSchema || job.kind !== 'agent' || job.input?.autoRegister !== true
+      || job.input?.output !== 'local-app' || job.status !== 'succeeded' || job.result?.appProposal?.sourceJobId !== job.id))
+      throw new Error('Invalid automatic registration completion; preserve data for recovery');
     if (job.schema !== accountJobSchema && job.ownerAccountId) throw new Error('Account ownership requires the account job schema');
   }
   for (const [records,key] of [[value.connectors,connectorKey],[value.jobs,(job)=>job.id],[value.accessGrants || [],(grant)=>grant.id]]) {

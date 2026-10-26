@@ -21,7 +21,7 @@ export function appBuilderReceipt(job, payload) {
 export function appBuilderAutomatic(result, pending) {
   if (result?.task?.autoRegister !== true || !appBuilderReceipt(result?.job, pending) || result.job.id !== pending.jobId) return { state: 'unconfirmed' };
   const status = result.autoRegistration;
-  if (!status || !['creating', 'waiting', 'ready', 'conflict', 'access-lost', 'revoked', 'failed'].includes(status.state)) return { state: 'unconfirmed' };
+  if (!status || !['creating', 'waiting', 'ready', 'conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed'].includes(status.state)) return { state: 'unconfirmed' };
   if (status.state !== 'ready') return { state: status.state };
   if (result.job.status !== 'succeeded' || result.job.cancelRequested || result.job.executionUncertain || !appBuilderProposal(result, pending)
     || !/^job_[a-f0-9]{32}$/u.test(pending.jobId) || status.appId !== `app-${pending.jobId.slice(4)}`) return { state: 'unconfirmed' };
