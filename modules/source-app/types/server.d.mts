@@ -5,6 +5,10 @@ export declare function createRelayIdentityVerifier(options:{issuer:string;appId
 /** Use a dedicated SQLite file on one local filesystem; it is not an app data database. */
 export declare function createSqliteRelayNonceStore(options:{databasePath:string;maxItems?:number;busyTimeoutMs?:number;clock?:()=>number}):Readonly<{
   consume(id:string,expiresAt:number):boolean;close():void}>;
+/** Use one dedicated local database for all workers of this application. */
+export declare function createSqliteRelayIdentity(options:{issuer:string;appId:string;databasePath:string;fetch?:typeof globalThis.fetch;
+  clock?:()=>number;maxItems?:number;busyTimeoutMs?:number}):Readonly<{
+  verify(request:IncomingMessage):Promise<Readonly<{issuer:string;subject:string}>>;close():void}>;
 import type {SourceRpProfile, SourceRpMarker, SourceRpCurrentProof} from './source-rp.d.mts';
 export {createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE} from './source-rp.mjs';
 export interface SourceProfile {schema:'soty.selected-human-embed.v2';appId:string;connector:{linkId:string;hostDeviceId:string;connectorId:string};target:{revision:number;digest:string};

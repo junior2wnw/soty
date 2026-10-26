@@ -16,6 +16,7 @@ const installed = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY;
 const serverModule = installed ? pathToFileURL(join(installed, 'dist', 'server.mjs')).href : null;
 const { createRelayIdentityVerifier } = await import(serverModule ?? '../../source-app/server/relay-identity.mjs');
 const { createSqliteRelayNonceStore } = await import(serverModule ?? '../../source-app/server/sqlite-relay-nonces.mjs');
+const { createSqliteRelayIdentity } = await import(serverModule ?? '../../source-app/server/sqlite-relay-identity.mjs');
 const { createRelayIdentityFetch } = await import(installed ? pathToFileURL(join(installed, 'dist', 'browser.mjs')).href : '../../source-app/browser/relay-identity-fetch.mjs');
 // Exercise the exact module shipped in the generated single-file connector,
 // as well as source. The full bundle's process/update path has separate tests.
@@ -133,13 +134,12 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
     const app = call('apps.register', { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId,
       name: 'fixture ' + index, port: upstream.address().port, entryPath: '/', grants: { accountIds: [bob.accountId] } }).app;
     const noncePath = join(directory, `nonce-${index}.sqlite`);
-    let store = createSqliteRelayNonceStore({ databasePath: noncePath }); stores.push(store);
-    const makeVerifier = () => createRelayIdentityVerifier({ issuer, appId: app.id, consume: store.consume, fetch: async url => {
+    const makeIdentity = () => createSqliteRelayIdentity({ issuer, appId: app.id, databasePath: noncePath, fetch: async url => {
       assert.equal(new URL(url).href, issuer + '/jwks'); return new Response(JSON.stringify({ keys: [publicJwk] }), { headers: { 'content-type': 'application/json' } });
     } });
-    verifier = makeVerifier();
+    let store = makeIdentity(); stores.push(store); verifier = store.verify;
     apps.push({ app, seen, get verifier() { return verifier; }, restartStore() { business.close(); business = new DatabaseSync(businessPath); },
-      restartVerifier() { store.close(); store = createSqliteRelayNonceStore({ databasePath: noncePath }); stores[index] = store; verifier = makeVerifier(); } });
+      restartVerifier() { store.close(); store = makeIdentity(); stores[index] = store; verifier = store.verify; } });
   }
   await until(() => runtime.status().apps === 2);
   async function session(app, actor) {

@@ -16,11 +16,10 @@ const response = await sotyFetch('/api/items');
 настроенный **своим доверенным** issuer и appId:
 
 ```js
-import { createRelayIdentityVerifier, createSqliteRelayNonceStore } from '@soty/source-app/server';
-const nonces = createSqliteRelayNonceStore({ databasePath: trustedNonceDatabasePath });
-const identityFor = createRelayIdentityVerifier({ issuer: trustedSotyIssuer, appId: trustedAppId, consume: nonces.consume });
+import { createSqliteRelayIdentity } from '@soty/source-app/server';
+const identity = createSqliteRelayIdentity({ issuer: trustedSotyIssuer, appId: trustedAppId, databasePath: trustedNonceDatabasePath });
 // В обработчике запроса:
-const person = await identityFor(req); // { issuer, subject }
+const person = await identity.verify(req); // { issuer, subject }
 // Проверить собственные права person и работать с его данными.
 ```
 
@@ -28,15 +27,16 @@ const person = await identityFor(req); // { issuer, subject }
 устойчивый ключ своей базы. Заголовки/JSON из браузера, имя профиля и адрес
 приложения сами по себе не подтверждают личность. Проверка привязана к appId,
 методу, пути и короткому сроку, одно подтверждение принимается один раз.
-Экземпляры store и verifier создаются один раз на процесс, не на каждый запрос;
-при штатной остановке вызовите `nonces.close()`. Путь — абсолютный, в защищённой
+Модуль создаётся один раз на процесс, не на каждый запрос; при штатной остановке
+вызовите `identity.close()`. Путь — абсолютный, в защищённой
 уже существующей папке и указывает на **отдельную** базу SDK, не на базу данных
 приложения. Для одного компьютера все процессы используют один файл на локальной
 файловой системе с исправными блокировками и fsync. SDK не принимает чужую базу
 и не создаёт таблицы в ней. В Windows права на папку и файл задаются ACL самой
 системы; POSIX mode не подтверждает их.
 
-Для нескольких хостов передайте вместо SQLite собственный `consume(id, expiresAt)`
+Для нескольких хостов используйте `createRelayIdentityVerifier` и передайте вместо
+SQLite собственный `consume(id, expiresAt)`
 с устойчивым атомарным хранилищем, общим всем работникам. Без явного `consume`
 verifier не создаётся: скрытого in-memory fallback нет. Нехватка места, отказ
 записи, превышение квоты или обратный скачок часов вызывают отказ 503; просроченные

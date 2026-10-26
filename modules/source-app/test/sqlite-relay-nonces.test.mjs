@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,6 +13,8 @@ const moduleUrl = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY
   ? pathToFileURL(join(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY, 'dist', 'server.mjs')).href
   : new URL('../server/sqlite-relay-nonces.mjs', import.meta.url).href;
 const { createSqliteRelayNonceStore } = await import(moduleUrl);
+const { createSqliteRelayIdentity } = await import(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY
+  ? moduleUrl : new URL('../server/sqlite-relay-identity.mjs', import.meta.url).href);
 const env = { ...process.env, NODE_NO_WARNINGS: '1' };
 
 async function fixture(t) {
@@ -20,6 +22,13 @@ async function fixture(t) {
   t.after(async () => { for (const close of closers) close(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 30 }); });
   return { directory, path: join(directory, 'nonce.sqlite'), close: callback => closers.push(callback) };
 }
+
+test('the single identity module rejects invalid configuration before creating storage', async t => {
+  const f = await fixture(t);
+  assert.throws(() => createSqliteRelayIdentity({ issuer: 'http://untrusted.example/human-identity',
+    appId: 'app-' + 'a'.repeat(32), databasePath: f.path }), { code: 'soty_identity_invalid' });
+  await assert.rejects(stat(f.path), { code: 'ENOENT' });
+});
 
 test('consumption survives an actual process restart', async t => {
   const f = await fixture(t), id = nonce(), expiresAt = Date.now() + 10000;
