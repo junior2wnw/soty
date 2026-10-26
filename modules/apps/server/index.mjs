@@ -39,6 +39,10 @@ import { synchronous } from './engagement-transaction.mjs';
 import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
+export function appIdForCreationJob(jobId) {
+  assertApps(typeof jobId === 'string' && /^job_[a-f0-9]{32}$/u.test(jobId), 'invalid_identifier');
+  return `app-${jobId.slice(4)}`;
+}
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -47,7 +51,7 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', namedCanonical = false, retainedNamedAppZones = [], domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
-  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
+  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
   coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
   identitySignTimeoutMs = 8000, readAppGuide } = {}) {
@@ -642,6 +646,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // resetting unchanged per-app ACKs or replaying user HTTP requests.
       try { sync(channel); } catch { channel.ws.terminate(); }
     }
+    try { onHeartbeat(); } catch { /* The current channel heartbeat stays independent of recovery. */ }
   }, 10_000);
   heartbeatTimer.unref();
   const connectorAuditTimer = setInterval(() => {
@@ -679,6 +684,60 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       .map(app => ({ id: app.id, port: app.port, entryPath: app.entry_path }));
     send(channel, { type: 'sync', apps });
   }
+  function registerLocalApp(actor, args, job = null) {
+    exact(args, ['hostDeviceId', 'connectorId', 'name', 'port', 'entryPath', 'grants']);
+    const device = db.prepare('SELECT * FROM app_devices WHERE owner_account_id=?').all(actor.accountId).find(item => {
+      const identity = JSON.parse(item.identity_json); return identity.hostDeviceId === args.hostDeviceId && identity.connectorId === args.connectorId;
+    });
+    assertApps(device, 'apps_device_not_owned', 403);
+    const name = appName(args.name), port = appPort(args.port, blockedPorts), entryPath = requestPath(args.entryPath ?? '/'), grants = cleanGrants(args.grants);
+    assertApps(!entryPath.startsWith('/_soty/'), 'reserved_app_path'); assertGrants(actor, grants);
+    const jobAppId = job ? appIdForCreationJob(job.id) : '';
+    const id = transaction(() => {
+      assertActor(actor); assertApps(binding(device.connector_key)?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); assertGrants(actor, grants);
+      if (job) {
+        const identity = JSON.parse(device.identity_json);
+        assertApps(identity.linkId === job.linkId && identity.hostDeviceId === job.deviceId && identity.connectorId === job.connectorId, 'apps_device_not_owned', 403);
+        const prior = row(jobAppId);
+        if (prior) { assertApps(prior.owner_account_id === actor.accountId, 'app_job_id_conflict', 409); return prior.id; }
+      }
+      assertNativePortAvailable(db, '', device.connector_key, port);
+      const existing = db.prepare(`SELECT a.*,t.entry_path AS current_entry_path FROM local_apps a
+        JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+        JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+        WHERE t.connector_key=? AND t.port=? AND a.state='enabled'`).get(device.connector_key, port);
+      if (existing) {
+        assertApps(!job && existing.owner_account_id === actor.accountId && existing.name === name && existing.current_entry_path === entryPath
+          && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
+        publications.execute({ actor, op: 'apps.publication.get', args: { appId: existing.id } });
+        return existing.id;
+      }
+      assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
+      const id = jobAppId || `app-${randomBytes(16).toString('hex')}`, timestamp = now();
+      db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
+      persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); publications.initForApp(row(id));
+      return id;
+    });
+    sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
+  }
+  function registerCreationJob(actor, job) {
+    return withContactAuthority(actor, () => {
+      assertActor(actor);
+      assertApps(job && job.schema === 'soty.connector-job.v4' && job.status === 'succeeded' && job.autoRegister === true
+        && job.ownerAccountId === actor.accountId && job.sourceActorDeviceId === actor.deviceId
+        && job.proposal?.sourceJobId === job.id, 'app_job_authority_invalid', 403);
+      return registerLocalApp(actor, { hostDeviceId: job.deviceId, connectorId: job.connectorId, name: job.proposal.name,
+        port: job.proposal.port, entryPath: job.proposal.entryPath, grants: { accountIds: [], communityIds: [] } }, job);
+    });
+  }
+  function creationJobApp(actor, jobId) {
+    return withContactAuthority(actor, () => {
+      assertActor(actor); const app = row(appIdForCreationJob(jobId));
+      if (!app) return null;
+      assertApps(app.owner_account_id === actor.accountId, 'apps_owner_required', 403);
+      return publicApp(app, actor);
+    });
+  }
   function execute(request) { return withContactAuthority(request.actor, () => executeCurrent(request)); }
   function executeCurrent({ op, args = {}, actor }) {
     if (directoryOperations.includes(op)) assertApps(Object.hasOwn(args, 'expectedAccountId'), 'apps_directory_account_required');
@@ -714,33 +773,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         (canUse(actor, app) || app.owner_account_id === actor.accountId) && (!community || JSON.parse(app.grants_json).communityIds.includes(community))).map(app => publicApp(app, actor)) };
     }
     if (op === 'apps.register') {
-      exact(args, ['hostDeviceId', 'connectorId', 'name', 'port', 'entryPath', 'grants']);
-      const device = db.prepare('SELECT * FROM app_devices WHERE owner_account_id=?').all(actor.accountId).find(item => {
-        const identity = JSON.parse(item.identity_json); return identity.hostDeviceId === args.hostDeviceId && identity.connectorId === args.connectorId;
-      });
-      assertApps(device, 'apps_device_not_owned', 403);
-      const name = appName(args.name), port = appPort(args.port, blockedPorts), entryPath = requestPath(args.entryPath ?? '/'), grants = cleanGrants(args.grants);
-      assertApps(!entryPath.startsWith('/_soty/'), 'reserved_app_path'); assertGrants(actor, grants);
-      const id = transaction(() => {
-        assertActor(actor); assertApps(binding(device.connector_key)?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); assertGrants(actor, grants);
-        assertNativePortAvailable(db, '', device.connector_key, port);
-        const existing = db.prepare(`SELECT a.*,t.entry_path AS current_entry_path FROM local_apps a
-          JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
-          JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
-          WHERE t.connector_key=? AND t.port=? AND a.state='enabled'`).get(device.connector_key, port);
-        if (existing) {
-          assertApps(existing.owner_account_id === actor.accountId && existing.name === name && existing.current_entry_path === entryPath
-            && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
-          publications.execute({ actor, op: 'apps.publication.get', args: { appId: existing.id } });
-          return existing.id;
-        }
-        assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
-        const id = `app-${randomBytes(16).toString('hex')}`, timestamp = now();
-        db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
-        persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); publications.initForApp(row(id));
-        return id;
-      });
-      sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
+      return registerLocalApp(actor, args);
     }
     const id = appId(args.appId), app = row(id);
     if(op==='apps.scoped.close') {
@@ -1831,7 +1864,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
+  return { operations, execute, registerCreationJob, creationJobApp, publicCatalog, sourcePreparationExtension, coverExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, isUnownedConnector, allowsTlsDomain,
     withScopedVoiceSourceAuthority,callScopedVoiceSource,withScopedContextSourceAuthority,callScopedContextSource,callScopedNativeSource,
     canOpenScopedSourceContext,openScopedSourceContext,
     withAppAuthority: appAuthority,

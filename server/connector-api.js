@@ -11,6 +11,7 @@ const modelJsonParser = express.json({ limit: "4mb", type: "application/json" })
 export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountAi } = {}) {
   const root = dataDir || "data";
   const store = createConnectorStore(root, storeOptions);
+  let automaticApps;
   const modelProxy = createGonkaProxy({ store, ...gonka, accountAi });
   const applicationAuthenticator = createApplicationTokenAuthenticator(gonka?.applicationTokens, {
     filePath: gonka?.applicationTokensFile
@@ -73,7 +74,9 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountA
   app.get("/api/connectors/poll", route(async (req, res) => {
     const auth = connectorAuth(req);
     const waitMs = req.query.wait === "1" ? 25_000 : 0;
-    respond(res, await store.poll(auth, waitMs, responseSignal(res)));
+    const result = await store.poll(auth, waitMs, responseSignal(res));
+    if (result.ok) automaticApps?.poll(auth);
+    respond(res, result);
   }));
 
   app.post("/api/connectors/jobs/:id/events", jsonParser, route(async (req, res) => {
@@ -81,7 +84,9 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountA
   }));
 
   app.post("/api/connectors/jobs/:id/result", resultJsonParser, route(async (req, res) => {
-    respondRuntimeState(res, await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body));
+    const result = await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body);
+    if (result.ok && automaticApps) void automaticApps.reconcile(result.job.id).catch(() => {});
+    respondRuntimeState(res, result);
   }));
 
   for (const [prefix, auth] of [["/api/connectors/gonka/v1", {}], ["/api/inference/v1", { authenticateToken: applicationAuthenticator }]]) {
@@ -109,6 +114,7 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountA
 
   return {
     store,
+    setAutomaticAppRegistration(value) { automaticApps = value; },
     modelProxy: {
       ready: modelProxy.ready,
       model: modelProxy.model,

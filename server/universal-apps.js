@@ -35,6 +35,21 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
       return request.op === 'apps.universal.admit' ? confirmFeedback(request, result) : result;
     }
   });
+  function completeRegistration(actor, result) {
+    if (result.app.state === 'revoked') return result;
+    const appId = result.app.id;
+    const found = registration.execute({ op: 'apps.universal.get', actor,
+      args: { appId, expectedAccountId: actor.accountId } }).registration;
+    if (found) {
+      const current = found.state === 'pending-feedback'
+        ? confirmFeedback({ actor, args: { appId } }, { registration: found }).registration : found;
+      return { ...result, universalRegistration: current };
+    }
+    const accepted = universalExtension.execute({ op: 'apps.universal.admit', actor,
+      args: { expectedAccountId: actor.accountId, appId, requestId: `initial.${appId}`,
+        expectedRevision: 0, proposal: { kind: 'author-draft', draft: { title: result.app.name } } } });
+    return { ...result, universalRegistration: accepted.registration };
+  }
   const appsExtension = Object.freeze({ operations: apps.operations,
     execute(request) {
       const result = apps.execute(request);
@@ -42,19 +57,10 @@ export function createUniversalApps({ dataDir, apps, actorActive, reviews: revie
       // Legacy registration already has stable per-owner/connector/port replay.
       // The deterministic universal request key joins that same app without
       // creating another card, namespace or feedback installation.
-      const appId = result.app.id;
-      const found = registration.execute({ op: 'apps.universal.get', actor: request.actor,
-        args: { appId, expectedAccountId: request.actor.accountId } }).registration;
-      if (found) {
-        const current = found.state === 'pending-feedback'
-          ? confirmFeedback({ actor: request.actor, args: { appId } }, { registration: found }).registration : found;
-        return { ...result, universalRegistration: current };
-      }
-      const accepted = universalExtension.execute({ op: 'apps.universal.admit', actor: request.actor,
-        args: { expectedAccountId: request.actor.accountId, appId, requestId: `initial.${appId}`,
-          expectedRevision: 0, proposal: { kind: 'author-draft', draft: { title: result.app.name } } } });
-      return { ...result, universalRegistration: accepted.registration };
+      return completeRegistration(request.actor, result);
     }
   });
-  return { registration, feedback, reviews, universalExtension, appsExtension, close() { registration.close(); feedback.close(); reviews.close(); } };
+  return { registration, feedback, reviews, universalExtension, appsExtension,
+    registerCreationJob(actor, job) { return completeRegistration(actor, apps.registerCreationJob(actor, job)); },
+    close() { registration.close(); feedback.close(); reviews.close(); } };
 }
