@@ -3,6 +3,11 @@
 При наличии checkout подробные gates находятся в `docs/deployment/app-troubleshooting.md`. Порядок:
 документ/Network timing → boot/admission/cookie → app transport/CSP → identity →
 данные/reload. HTTP 200, iframe.src и событие load сами не подтверждают приложение.
+Boot проверяй GET: неподдерживаемый HEAD или ожидание HEAD body не измеряют его
+загрузку. Parent frame-src и child frame-ancestors/XFO проверяются отдельно.
+Cross-origin AX about:blank не устанавливает actual document URL. Один человек
+с двумя наблюдениями в разных браузерах — не два участника и не общий диагноз
+Root auth; точный профиль, persistence и другие приложения проверяются отдельно.
 
 | Наблюдение | Проверить следующим | Корректный статус |
 |---|---|---|
@@ -12,7 +17,11 @@
 | ACK записи потерян | Receipt/history/readback того же намерения | Confirmed либо pending/unknown; новый requestId не создаётся вслепую |
 | Роль/доступ не подходят | Текущий grant, владелец, source pin и frame binding | Нормальный отказ; аудитория автоматически не расширяется |
 | Долго ждёт поле | Navigation/resources → entry/shell → данные поля → приложение | Сопоставимый trace по фазам/версии, а не выдуманное ускорение |
-| Operator падает до работы с DATA | Абсолютный qualified Node24 до import, полный source closure | Ошибка инструмента, не повреждение данных |
+| Operator падает до работы с DATA | Qualified Node24 и настоящий Linux CLI/module graph, включая TLA cycle; safe exit/stdout/stderr | Ошибка инструмента; потерянный stderr оставляет причину выводом |
+| Изолированный reader получает EACCES | Сначала public code mode/UID, затем отдельно DAC own-copy DATA; только finite observer role/RO exception | Не расширять права production и не менять DATA ownership |
+| Docker list превышает bound | Exact label и volume filters, all=true, inspect всех peers | Не снимать bound глобального inventory; stopped peer тоже удерживает том |
+| CREATE preservation mismatch | Exact prospective/full diff; у QA network:none пустой верхнеуровневый /MacAddress может быть omitted | Исправить только доказанный input; не нормализовать все конфигурации |
+| Holder STOP истёк по времени | Тот же intent, actual stopped state и terminal helper; SIGTERM handler собственного PID1 | Не повторять STOP/операцию по одному transport timeout |
 | Storage probe exit0 без JSON | Независимый probe с `SOTY_STORAGE_PROBE=1`, явный World и v7 gate | START запрещён до настоящего результата |
 | Mount CAS отличается | Детерминированный порядок полных Mount records, затем все поля | Перестановка отличается от изменения mount; поля не выбрасываются |
 | UI publisher потерял ответ | Тот же plan/receipt, readonly inspect, exact process/disk/active | Unknown до сверки; execute/transaction не создаются заново |

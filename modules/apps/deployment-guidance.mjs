@@ -86,15 +86,16 @@ export function diagnoseAppRelease(input) {
   if (seen.websocket === 'origin_rejected') add('websocket_origin_rejected', 'observed', 'The WebSocket Origin check rejected the request.',
     'Compare the request Origin with the exact named app origin and the app own allowlist. Keep foreign and missing browser Origins denied.');
   if (['missing', 'expired', 'wrong_subject'].includes(seen.identity)) add('app_identity_required', 'observed', 'Ingress access alone does not identify the human inside the app.',
-    'Use apps_auth_guide with mode human-oidc. Verify issuer/sub, fresh userinfo, app session and native ACL; retain stable existing account mappings.');
+    'First check the exact installed approved contract/profile. For approved workspace2 with a compatible connector, use the maintained portable Source SDK, verified current context and Native ACL. Use apps_auth_guide mode human-oidc only for an explicitly selected app-owned confidential BFF/RP path; a standalone or Native URL alone does not choose that path. Retain stable existing account mappings.');
   if (seen.persistence === 'lost_on_reload') add('persistence_failed', 'observed', 'A verified app change did not survive reload.',
     'Check the active database/volume, stable subject mapping, migration order and single writer. Recover the same record IDs before qualifying the release.');
   if (seen.readiness === 'unsupported' && seen.document === 'received') add('readiness_not_implemented', 'observed', 'The document loaded but this app does not implement scoped authenticated readiness.',
     'Use neutral document-loaded status. Verify real UI, identity, read/write and reload separately; do not emit a fake ready signal.');
   if (seen.document === 'http_error') add('document_http_error', 'observed', 'The document request returned an HTTP error.',
-    'Check the safe status/error code, exact route, current access and source pin. A boot HTTP 200 alone does not prove that the application loaded.');
-  if (seen.embedded === 'blank' && !findings.length) add('blank_frame_unclassified', 'insufficient_evidence', 'A blank frame alone does not identify its cause.',
-    'Compare standalone and embedded opening; capture a bounded Root phase trace and Network timing without cookies, tokens, full boot URLs or child DOM.');
+    'Check the request method: Boot uses GET; an unsupported HEAD or a wait for a HEAD body does not establish a GET failure. Then check the safe status, route, current access and source pin. Public Boot 200 alone is not browser admission or app readiness.');
+  if (seen.embedded === 'blank' && !findings.length) add('blank_frame_unclassified', 'insufficient_evidence', 'A blank frame or a cross-origin accessibility-tree label alone does not identify its document URL or cause.',
+    'Check Boot with GET and separate parent frame-src from child frame-ancestors/X-Frame-Options. Public GET 200 does not verify the browser cookie or admission.',
+    'Compare authorized browser observations and a bounded Root phase trace. One person with two observations is not two participants or a general authentication diagnosis. Do not send cookies, tokens, full boot URLs or child DOM.');
   if (!findings.length) add('no_conclusive_fault', 'insufficient_evidence', 'These observations do not establish a fault or release readiness.',
     'Complete the release acceptance matrix: two users, denied/expired/revoked access, real app data, persistence/reload and rollback.');
   return { schema: 'soty.app-diagnosis.v1', basis: 'reported_observations', liveVerified: false, releaseReadiness: 'not_assessed', findings };
@@ -102,9 +103,10 @@ export function diagnoseAppRelease(input) {
 
 const guides = {
   'human-oidc': {
-    identity: 'A human is identified by the verified pair (iss, sub). App roles and data permissions remain app-owned.',
+    identity: 'This mode describes an explicitly selected app-owned confidential BFF/RP path outside the existing approved Source contract. A human is identified by verified (iss, sub); roles and data permissions remain app-owned.',
     steps: [
-      'Check that the target host has explicitly enabled modules/human-identity and approved this confidential BFF client with an exact HTTPS callback. Module presence or an app card does not prove activation.',
+      'Choose the exact installed approved contract first. If workspace2 and the compatible connector support it, use the maintained portable Source SDK and its existing authority/Native ACL instead of adding an RP client. Preview/download/local QA is not production activation. A standalone or Native entry alone does not require a separate RP; the remaining steps apply only to the explicitly chosen BFF/RP branch.',
+      'For that BFF/RP branch, check that the target host has explicitly enabled modules/human-identity and approved this confidential client with an exact HTTPS callback. Module presence or an app card does not prove activation.',
       'Use the maintained server-only modules/source-rp library. The two-BFF example in modules/human-identity/examples/bff.mjs is a protocol test fixture, not a production server. Keep client secrets, PKCE verifier, tokens and encryption keys on the server.',
       'Start Authorization Code with S256 PKCE, state and nonce. Complete current Connect-device approval and human consent through the issuer.',
       'At the server callback validate state, nonce, signature, issuer, audience and expiry using the maintained OIDC client; create the app own Secure/HttpOnly session.',
@@ -118,13 +120,13 @@ const guides = {
     boundaries: ['The Soty ingress cookie and /_soty/session prove app admission, not human identity. Never trust an arbitrary identity header.',
       'Never store client secrets or bearer/refresh tokens in browser JavaScript, localStorage, launch URLs or diagnostics.',
       'Do not enable the issuer, register a client, expand grants or migrate accounts solely because this guide was requested.'],
-    references: ['docs/deployment/app-authentication.md', 'modules/human-identity/README.md', 'modules/source-rp/README.md'],
+    references: ['docs/deployment/app-authentication.md', 'modules/source-app/install/README.md', 'modules/human-identity/README.md', 'modules/source-rp/README.md'],
   },
   'private-owner': {
     identity: 'A single-owner compatibility adapter identifies only that private installation owner; it is not a shared human identity service.',
     steps: ['Keep the source listener on fixed loopback behind a restricted Soty app and per-request current access/source-pin checks.',
       'Review server-side session issuance, request origin, cookie policy and the app own ACL. Protect any adapter/session script from foreign-origin reads.',
-      'Migrate to human-oidc before admitting multiple people. Reusing local user 1 for different people would mix their data.'],
+      'Before admitting multiple people, replace the owner-only adapter with a qualified approved Source SDK contract or an explicitly chosen human-oidc BFF/RP integration. Reusing local user 1 for different people would mix their data.'],
     acceptance: ['The authorized owner can read/write/reload the same records.',
       'Anonymous, other-owner, foreign-origin, changed-source and expired/revoked admission fail closed.'],
     boundaries: ['Do not publish the listener or reuse its local account ID as a global Soty person.',

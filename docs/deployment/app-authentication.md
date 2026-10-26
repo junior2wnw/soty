@@ -1,9 +1,11 @@
 # Вход в приложение через Соты
 
-Для общего входа людей используйте **Human OIDC + серверный BFF**. Человек
-определяется проверенной парой `(iss, sub)`. Локальный аккаунт, роли и данные
-остаются у приложения. Доступ к карточке Сот сам по себе человека внутри
-приложения не идентифицирует.
+Сначала выберите точный действующий approved contract/profile приложения.
+Для поддерживаемого workspace2 с совместимым коннектором используйте существующий
+portable Source SDK; отдельная RP регистрация этому контракту не требуется.
+Собственный confidential Human OIDC/BFF — отдельный осознанно выбранный путь.
+Роли и данные остаются у приложения; доступ к карточке Сот сам по себе не даёт
+прав на них. Preview, скачивание SDK и локальная проверка не включают production.
 
 ## Выбор режима
 
@@ -13,20 +15,26 @@
 RP registration или OIDC refresh family для самой соты. Активный issuer может
 иметь явный `clients: []`: ключи/issuer/origin остаются обязательными, JWKS и
 подпись Source authority работают, а незарегистрированные RP получают отказ.
-Обычный standalone OIDC вход по-прежнему требует approved confidential client.
-Пустой список ничего не регистрирует и не включает dynamic registration.
+Native/standalone адрес сам по себе не выбирает протокол и не создаёт RP client.
+Отдельно выбранный confidential BFF/RP требует approved client. Пустой список
+ничего не регистрирует и не включает dynamic registration. Source-only профиль
+не обещает отдельный Native сайт. Установка и условия Source SDK описаны в
+[действующем skill](../../skills/soty-app-deploy/references/authentication.md) и
+[maintained installer](../../modules/source-app/install/README.md); новый протокол
+или автоматический admission из этой инструкции не выводятся.
 
 | Задача | Контракт | Что он подтверждает |
 |---|---|---|
-| Вход разных людей в приложение | Human OIDC `/human-identity` + Source RP/BFF | Текущий human subject, отдельная app session, затем собственный ACL |
+| Действующий approved `soty.standard-workspace@2` и совместимый коннектор | Source SDK / signed-current-context | Проверенный текущий контекст точного Source/ресурса, затем собственный Native ACL; без отдельного RP client |
+| Явно выбранный собственный confidential BFF/RP | Human OIDC `/human-identity` + Source RP/BFF | Текущий human subject, отдельная app session, затем собственный ACL |
 | Закрытый старый проект одного владельца | Private owner adapter за restricted ingress | Только владельца этой закрытой установки |
 | Работа агента с данными/операциями | Root OAuth `/oauth` + MCP + app grants | Разрешённого agent principal и конкретные операции |
 | Открыть приложение через коннектор | `/_soty/boot` → ingress cookie → `/_soty/ingress-check` | Допуск к текущему app/source, без human claims |
 
 `/_soty/session` с `{ok:true}` не является `/me`. App ID, владелец карточки,
 заголовок от клиента и номер локального пользователя не заменяют `(iss,sub)`.
-Приватный адаптер Spreadex из восстановления 20.10.2026 относится ко второй
-строке. Он не является универсальной многопользовательской авторизацией.
+Приватный адаптер Spreadex из восстановления 20.10.2026 относится к строке
+`Private owner adapter`. Он не является универсальной многопользовательской авторизацией.
 
 ## Управление собственными входами
 
@@ -39,7 +47,7 @@ Family-only и forget app/device/version имеют разные scopes; Root So
 короткие сессии и agent grants в этот список не входят. Подробности и ограничения:
 [редактор входов S29/S30](../implementation/human-signins-settings.md).
 
-## 1. Подготовить issuer и approved client
+## Собственный BFF/RP: подготовить issuer и approved client
 
 Сначала прочитайте [Human identity](../../modules/human-identity/README.md).
 Issuer — точный `https://<проверенный shell origin>/human-identity`. Discovery:

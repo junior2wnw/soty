@@ -127,6 +127,9 @@ historical backend overlay не является способом достави
 копии DATA; [копия и backup](recovery.md) не взаимозаменяемы.
 
 UI publisher получает finite release из candidate dist с retained immutable URLs.
+Independent UI source/producer и backend image/source закрепляются отдельно:
+новый static dist не является dist иного frozen image. Сверяй все retained URL
+и immutable bytes; обновлённые docs не меняют прежний sealed release.
 Оба overlay строятся из одного одобренного **unwrapped canonical ingress**;
 восстановленный current overlay должен побайтно совпасть с disk. Не оборачивай
 уже установленный overlay повторно. Изменившийся ingress требует новой сверки
@@ -141,6 +144,49 @@ inspect и независимая сверка process/disk/active разреш�
 сам возвращает `activeReloadVerified:false`. После него проверь публичные новые
 и retained bytes, headers, PWA и восстановление WS: прежний Node PID этого не
 доказывает. Подробный bounded driver и команды находятся в `deploy/ui/README.md`.
+
+## Ограниченный оператор: причина, проверка и восстановление
+
+Обычное приложение использует короткий maintained recipe. Preflight, конечный
+inventory, сравнение pins и readback выполняются автоматически, а человек
+проверяет понятное намерение и результат. Новый агент продолжает по receipt,
+а не по сотне ручных сверок из старого чата. Эта ветка платформенного QA нужна
+только при изменении самих Сот, не для каждого нового приложения.
+
+Окончательный app/operator plan до stage прогоняй локально его фактическим
+schema/contract validator со всеми требуемыми ID/hash зависимых receipts.
+Проверка шаблона или несвязанные pure tests не заменяют проверку финального DTO.
+
+Для wrapper проверяй настоящий CLI module graph в безопасном Linux subprocess,
+не только импорт factory: top-level-await цикл может завершиться до операций.
+Сохраняй ограниченные exit/stdout/stderr; утраченный stderr не превращается в
+наблюдённую причину после отдельного воспроизведения.
+
+Публичный reader-код через bind требует явных mode 0644 и каталога 0755 даже при
+umask 077; private ops/bin остаются 0700, планы/reviews/executors и секреты 0600.
+Это не решает DAC закрытого файла DATA. Отдельный reviewed observer может
+получить только DAC_OVERRIDE при CapDrop:ALL для finite observer allowlist
+(baseline/new-first/old/new-second), own-copy DATA/code
+RO, rootfs RO, network:none и прежних ресурсных guards. Negative write должен дать
+EROFS. Это не право canary/production и не повод менять ownership, добавлять
+DAC_READ_SEARCH или общие capabilities; отдельное существующее исключение
+config-extract не расширяется на другие роли.
+
+Собственные Docker-объекты перечисляй по exact label с all=true. Peers тома
+ищи отдельным volume filter с all=true без своего label: остановленный и чужой
+контейнер тоже удерживает том. Сохраняй GET limit 4 MiB и inspect каждого результата.
+CREATE проверяется по точному prospective body и полной существующей projection.
+Если network:none не использует MAC, не отправляй только пустой верхнеуровневый
+`/MacAddress` в QA body. Остальные поля сохраняются; глобальная normalization
+не следует из одного доказанного roundtrip diff.
+
+Собственный holder с Node PID1 должен штатно завершаться по SIGTERM. Если STOP
+потерял ответ или transport истёк, читай тот же intent и actual state/terminal
+helper; второй STOP не следует из timeout. Поля transaction/operation берутся
+из своего контракта. Специальный purpose outcome с ok:false принимается только
+по закрытому predicate и независимому readback. Reclaim старой cipher-копии
+опирается на фактический off-Dev rehash и exact план, сохраняя backup/ключ/журнал.
+Названия restore/candidate не заменяют проверку текущих mounts и назначения.
 
 ## Минимальные receipts
 

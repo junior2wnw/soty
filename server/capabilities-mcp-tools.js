@@ -47,9 +47,9 @@ function definitions() {
       inputSchema: standalone('NativeDraftRequest', schemas), outputSchema: standalone('NativeCreateResponse', schemas), readOnly: false },
     { name: 'invocations_get', description: 'Read your historical Notes invocation status and creation receipt. This does not execute, read current Note text or prove the Note still exists.',
       inputSchema: object({ invocationId: structuredClone(schemas.NativeInvocationId) }), outputSchema: standalone('NativeReadResponse', schemas), readOnly: true },
-    { name: 'apps_diagnose', description: 'Explain reported Soty app launch observations and suggest bounded next checks. Accepts closed enums only: no URLs, logs, tokens or child DOM. Does not inspect a live browser/server, change access, execute commands or qualify a release.',
+    { name: 'apps_diagnose', description: 'Explain reported Soty app launch observations through the maintained CLI/MCP guidance. A blank frame or AX label is not an authentication diagnosis; distinguish Boot GET from browser admission and compare authorized observations. Accepts closed enums only: no URLs, logs, tokens or child DOM. Does not inspect a live browser/server, grant rights, execute commands or qualify a release.',
       inputSchema: DIAGNOSE_INPUT_SCHEMA, outputSchema: DIAGNOSE_OUTPUT_SCHEMA, readOnly: true },
-    { name: 'apps_auth_guide', description: 'Read the maintained integration steps for human OIDC/BFF, a private single-owner adapter, or agent OAuth/MCP. Does not activate an issuer, configure clients, authenticate anyone or grant rights. Use human-oidc for shared multi-user app login.',
+    { name: 'apps_auth_guide', description: 'Read maintained authentication guidance. First choose the exact approved profile: use the portable Source SDK for supported approved workspace2, without adding an RP client. Mode human-oidc is an explicitly selected app-owned confidential BFF/RP branch, not a requirement for every shared app or standalone/Native entry. Also covers a private single-owner adapter or agent OAuth/MCP. Does not activate Source/issuer, configure clients, authenticate anyone or grant rights.',
       inputSchema: AUTH_GUIDE_INPUT_SCHEMA, outputSchema: AUTH_GUIDE_OUTPUT_SCHEMA, readOnly: true },
   ];
   return values.map(({ readOnly, ...tool }) => freezeDeep({ ...tool,

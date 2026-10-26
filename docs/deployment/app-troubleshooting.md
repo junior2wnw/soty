@@ -3,6 +3,12 @@
 Сначала разделите **внешний документ, boot, приложение, вход и его данные**.
 Успешный HTTP boot или событие iframe `load` не доказывают работу приложения.
 Нельзя исправлять пустое окно расширением аудитории или отключением защиты.
+Boot документ проверяется GET; неподдерживаемый HEAD/ожидание HEAD body не
+устанавливает проблему GET. Parent frame-src и child frame-ancestors/XFO
+проверяются отдельно; public GET 200 не подтверждает browser admission/cookie.
+Cross-origin AX about:blank не является actual document URL. Независимая
+видимость у владельца в другом браузере — отдельный факт, не доказательство
+причины управляемого браузера или общей исправности/поломки Root auth.
 
 | Наблюдение | Следующая проверка |
 |---|---|
@@ -67,6 +73,19 @@ Root «Диагностика запуска» даёт ограниченный
 Это частичные наблюдения, не authority/readiness. `root_load` и
 `boot_document_ack` различаются; отсутствие ACK не доказывает сбой. Не добавляйте
 к trace child DOM, приватный текст, boot/watch IDs или полные URL.
+
+## Ошибка ограниченного оператора
+
+Проверь настоящий Linux CLI/module graph, а не только factory import. Для EACCES
+раздели public code modes и DAC own-copy DATA; scoped observer exception требует
+exact role/RO mounts и negative write→EROFS. Большой Docker GET заменяется exact
+label/volume filters с all=true, включая stopped peers; bound 4 MiB сохраняется.
+Prospective CREATE сверяется полноценно: у QA network:none исключается только
+доказанный пустой верхнеуровневый /MacAddress; остальные поля не нормализуются. Собственный holder/PID1 получает
+SIGTERM handler. После transport timeout STOP сначала читаются intent, actual
+state и terminal helper; повтор STOP не является проверкой первого результата.
+Детали платформенной ветки находятся в operations.md установленного skill;
+обычному app recipe эти ручные операции не добавляются.
 
 ## Один doctor для CLI и MCP
 
