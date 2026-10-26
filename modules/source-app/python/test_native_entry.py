@@ -215,6 +215,8 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
         await NativeEntryMiddleware(app, self.guard)({'type': 'http', 'path': '/', 'method': 'GET', 'headers': [(b'accept', b'text/html')]}, None, send)
         self.assertEqual(messages[0]['status'], 403)
         self.assertEqual(dict(messages[0]['headers'])[b'content-type'], b'text/html; charset=utf-8')
+        self.assertIn('Этот вход недоступен.'.encode('utf-8'), messages[1]['body'])
+        self.assertNotIn('Сейчас не получилось проверить доступ.'.encode('utf-8'), messages[1]['body'])
 
     async def test_policy_closed_during_document_work_uses_one_public_503_before_headers(self):
         await self.guard.acquire()

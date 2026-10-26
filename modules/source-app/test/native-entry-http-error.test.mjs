@@ -46,6 +46,7 @@ test('API, HEAD, writes and explicit non-navigation formats keep JSON and failur
     if(method==='HEAD')assert.equal(response.body,'');else assert.deepEqual(JSON.parse(response.body),{code:'native_entry_policy_unavailable'});
   }
   const denied=await get('GET',{accept:'text/html'},'/denied');assert.equal(denied.status,403);
+  assert.match(denied.body,/Этот вход недоступен/u);assert.doesNotMatch(denied.body,/Сейчас не получилось проверить доступ/u);
 });
 
 test('a started HTTP response is terminated; WebSocket and unrelated errors remain host-owned',()=>{

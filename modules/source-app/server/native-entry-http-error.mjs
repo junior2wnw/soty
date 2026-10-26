@@ -4,6 +4,7 @@ const page = `<!doctype html>
 <title>Не удалось открыть приложение</title>
 <style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f5f7;color:#17212b;font:16px/1.55 system-ui,sans-serif}main{box-sizing:border-box;width:min(100%,480px);padding:28px}h1{font-size:clamp(24px,5vw,32px);line-height:1.2;margin:0 0 16px}p{margin:0 0 24px}a{display:inline-block;padding:12px 18px;border-radius:12px;background:#145da0;color:#fff;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid currentColor;outline-offset:4px}@media(prefers-color-scheme:dark){body{background:#161b22;color:#f0f4f8}}</style>
 <main><h1>Не удалось открыть приложение</h1><p>Сейчас не получилось проверить доступ. Начните открытие заново. Если до этого выполняли действие, сначала проверьте его результат.</p><a href="/" rel="noreferrer">Открыть приложение заново</a></main></html>`;
+const deniedPage = page.replace('Сейчас не получилось проверить доступ. Начните открытие заново. Если до этого выполняли действие, сначала проверьте его результат.', 'Этот вход недоступен. Адрес приложения или доступ могли измениться. Проверьте актуальный вход в Сотах.');
 const vary = 'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest';
 function documentNavigation(request) {
   if (request.method !== 'GET') return false;
@@ -34,7 +35,7 @@ export function sendNativeEntryHttpError(request, response, error) {
   for (const name of ['Content-Length','Content-Encoding','Content-Range','Content-Disposition','Content-Location',
     'Transfer-Encoding','Trailer','ETag','Last-Modified','Location','Refresh','Set-Cookie','Set-Cookie2','Link','Retry-After',
     'WWW-Authenticate','Proxy-Authenticate','Authentication-Info','Proxy-Authentication-Info']) response.removeHeader(name);
-  const document = documentNavigation(request), body = document ? page : JSON.stringify({code:error.code});
+  const document = documentNavigation(request), body = document ? (error.status === 403 ? deniedPage : page) : JSON.stringify({code:error.code});
   const headers = {'Content-Type':document ? 'text/html; charset=utf-8' : 'application/json',
     'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Vary':previousVary ? `${previousVary}, ${vary}` : vary};
   if (document) headers['Referrer-Policy'] = 'no-referrer';

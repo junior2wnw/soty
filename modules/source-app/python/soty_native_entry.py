@@ -21,6 +21,7 @@ _NATIVE_ENTRY_HTML = """<!doctype html>
 <title>Не удалось открыть приложение</title>
 <style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f5f7;color:#17212b;font:16px/1.55 system-ui,sans-serif}main{box-sizing:border-box;width:min(100%,480px);padding:28px}h1{font-size:clamp(24px,5vw,32px);line-height:1.2;margin:0 0 16px}p{margin:0 0 24px}a{display:inline-block;padding:12px 18px;border-radius:12px;background:#145da0;color:#fff;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid currentColor;outline-offset:4px}@media(prefers-color-scheme:dark){body{background:#161b22;color:#f0f4f8}}</style>
 <main><h1>Не удалось открыть приложение</h1><p>Сейчас не получилось проверить доступ. Начните открытие заново. Если до этого выполняли действие, сначала проверьте его результат.</p><a href="/" rel="noreferrer">Открыть приложение заново</a></main></html>""".encode('utf-8')
+_NATIVE_ENTRY_DENIED_HTML = _NATIVE_ENTRY_HTML.replace('Сейчас не получилось проверить доступ. Начните открытие заново. Если до этого выполняли действие, сначала проверьте его результат.'.encode('utf-8'), 'Этот вход недоступен. Адрес приложения или доступ могли измениться. Проверьте актуальный вход в Сотах.'.encode('utf-8'))
 _ERROR_VARY = b'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest'
 
 
@@ -54,7 +55,7 @@ def _document_navigation(scope):
 
 async def _send_entry_failure(scope, send, status, data):
     document = _document_navigation(scope)
-    body = _NATIVE_ENTRY_HTML if document else data
+    body = (_NATIVE_ENTRY_DENIED_HTML if status == 403 else _NATIVE_ENTRY_HTML) if document else data
     headers = [(b'content-type', b'text/html; charset=utf-8' if document else b'application/json'),
                (b'cache-control', b'no-store'), (b'x-content-type-options', b'nosniff'), (b'vary', _ERROR_VARY)]
     if document:
