@@ -32,6 +32,7 @@ exports.harness=(host,options,state)=>{
  const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},external={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
+  const appWork={requiresCheck:()=>false,flush:async()=>{},attach(){}};
  const accountId='account-synthetic',saved={setEntryVerified:value=>state.verified.push(value)};
  const mountRootVoiceCarrier=()=>{throw Error('unexpected voice carrier in phase-only fixture');};
  ${voiceCode}

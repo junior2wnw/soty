@@ -319,6 +319,7 @@ class WorldApplication {
     this.unregisterUpdateGuard = registerUpdateGuard(async () => {
       await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush();
       if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile()) return 'work';
+      if (this.appStage?.hasUnconfirmedWork() || this.widgets?.hasUnconfirmedWork()) return 'app';
       if (this.formEdits.hasUnsavedChanges()) return 'form';
       if (document.querySelector('dialog[open] form')) return 'dialog';
       return true;
@@ -819,7 +820,7 @@ class WorldApplication {
       this.appPlacementRouteClose(() => this.afterNoteSaved(action)); return;
     }
     const sequence = this.screenSequence;
-    if (!this.screenHasUnsavedChanges()) { action(); return; }
+    if (!this.screenHasUnsavedChanges() && !this.appStage?.requiresCloseCheck()) { action(); return; }
     this.noteActionPending = true;
     void this.flushScreen().then(() => {
       this.noteActionPending = false;
@@ -1304,7 +1305,7 @@ class WorldApplication {
       }
       return true;
     }
-    if (this.screenHasUnsavedChanges()) {
+    if (this.screenHasUnsavedChanges() || this.appStage?.requiresCloseCheck()) {
       const accountId = this.deskAccount, sequence = this.screenSequence;
       await this.flushScreen().catch(() => {});
       if (this.destroyed || sequence !== this.screenSequence || accountId !== this.deskAccount) return true;
@@ -2829,6 +2830,12 @@ class WorldApplication {
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;
+    const previousStage = this.appStage, sequenceBeforeOpen = this.screenSequence, accountBeforeOpen = this.deskAccount;
+    if (previousStage?.requiresCloseCheck()) {
+      try { await previousStage.flush(); } catch { this.toast('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.', true); return; }
+      if (this.destroyed || this.appStage !== previousStage || this.screenSequence !== sequenceBeforeOpen || this.deskAccount !== accountBeforeOpen) return;
+      if (previousStage.hasUnsavedChanges()) { this.toast('Сохраните незавершённую работу перед переходом.', true); return; }
+    }
     const returnView = this.appStage ? this.appReturnView : /^#world(?:\?|$)/u.test(this.activeRoute) ? 'world' : 'mine';
     this.appReturnView = returnView;
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;

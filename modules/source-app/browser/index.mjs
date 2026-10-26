@@ -6,3 +6,4 @@ export { createSourceFeedbackProcessingClient } from './processing-client.mjs';
 export { createSourceFrameFetch } from './frame-fetch.mjs';
 export { createSourceWorkspaceClient, SourceWorkspaceClientError } from './workspace-client.mjs';
 export { createRelayIdentityFetch } from './relay-identity-fetch.mjs';
+export { createSotyAppWork } from './app-work.mjs';

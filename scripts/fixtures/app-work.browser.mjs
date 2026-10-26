@@ -1,0 +1,50 @@
+// Run with pinned playwright-cli run-code in a clean, local synthetic browser.
+async page => {
+  page.setDefaultTimeout(6000);
+  const checks = {}, check = (value, name) => { if (!value) throw Error('app_work_browser_' + name); checks[name] = true; };
+  const title = 'Доска с длинным понятным названием проекта';
+  const app = () => page.frameLocator('iframe.sa-frame');
+  const open = async () => { await page.getByRole('button', { name: title, exact: true }).click(); await app().getByLabel('Текст').waitFor(); };
+  let closeCount = 0;
+  const close = async () => { closeCount++; try { await page.getByRole('button', { name: 'Закрыть приложение', exact: true }).click(); }
+    catch (error) { throw Error('close_' + closeCount + ': ' + error.message); } };
+  await open();
+  check(page.frames().some(frame => frame.url().startsWith('http://127.0.0.1:5199/_soty/boot')), 'realCrossOrigin');
+  await page.evaluate(() => { window.__workFrame = document.querySelector('iframe.sa-frame'); });
+  await app().getByLabel('Текст').fill('Первый черновик');
+  await page.getByRole('button', { name: 'Обсуждение', exact: true }).click();
+  check(await page.evaluate(() => window.__workFrame === document.querySelector('iframe.sa-frame')), 'sameIframeWhileDiscussing');
+  await page.getByRole('button', { name: 'Приложение', exact: true }).click();
+  check(await app().getByLabel('Текст').inputValue() === 'Первый черновик', 'draftWhileDiscussing');
+  await close(); await page.getByRole('button', { name: title, exact: true }).waitFor(); await open();
+  check(await app().getByLabel('Текст').inputValue() === 'Первый черновик', 'savedAcrossCloseAndReopen');
+  await app().getByLabel('Текст').fill('Ошибка сохранения');
+  await app().getByLabel('Состояние сохранения').selectOption('error'); await close();
+  await page.getByText('Изменения ещё не сохранены.', { exact: false }).first().waitFor();
+  check(await app().getByLabel('Текст').inputValue() === 'Ошибка сохранения', 'errorKeepsFrame');
+  await app().getByLabel('Состояние сохранения').selectOption('ok'); await close();
+  await page.getByRole('button', { name: title, exact: true }).waitFor(); await open();
+  check(await app().getByLabel('Текст').inputValue() === 'Ошибка сохранения', 'explicitRetrySaves');
+  await app().getByLabel('Текст').fill('Нет ответа'); await app().getByLabel('Состояние сохранения').selectOption('lost');
+  await close(); await app().getByText('Сохранение', { exact: true }).waitFor(); await page.waitForTimeout(2700);
+  check(await app().getByLabel('Текст').inputValue() === 'Нет ответа', 'timeoutKeepsFrame');
+  await app().getByLabel('Состояние сохранения').selectOption('ok'); await close();
+  await page.getByRole('button', { name: title, exact: true }).waitFor(); await open();
+  check(await app().getByLabel('Текст').inputValue() === 'Нет ответа', 'retryAfterUnresponsiveSave');
+  await app().getByLabel('Текст').fill('Кнопка назад'); await page.goBack();
+  await page.getByRole('button', { name: title, exact: true }).waitFor(); await open();
+  check(await app().getByLabel('Текст').inputValue() === 'Кнопка назад', 'browserBackSaves');
+  await app().getByLabel('Текст').fill('Обновление окна'); await app().getByLabel('Состояние сохранения').selectOption('error');
+  await page.evaluate(() => { window.__workFrame = document.querySelector('iframe.sa-frame'); });
+  await page.getByRole('button', { name: 'Действия с приложением', exact: true }).click();
+  await page.getByRole('button', { name: 'Обновить приложение', exact: true }).click();
+  await page.getByText('Не удалось подтвердить сохранение. Окно приложения остаётся открытым.', { exact: true }).first().waitFor();
+  check(await page.evaluate(() => window.__workFrame === document.querySelector('iframe.sa-frame')), 'failedManualRefreshKeepsFrame');
+  await app().getByLabel('Состояние сохранения').selectOption('ok');
+  await page.getByRole('button', { name: 'Действия с приложением', exact: true }).click();
+  await page.getByRole('button', { name: 'Обновить приложение', exact: true }).click();
+  await page.waitForFunction(() => window.__workFrame !== document.querySelector('iframe.sa-frame'));
+  await app().getByLabel('Текст').waitFor();
+  check(await app().getByLabel('Текст').inputValue() === 'Обновление окна', 'manualRefreshSaves');
+  return checks;
+}

@@ -1,6 +1,6 @@
 export type PwaInstallState = 'unavailable' | 'available' | 'prompting' | 'accepted' | 'installed';
 export type PwaUpdateState = 'idle' | 'available' | 'saving' | 'activating' | 'blocked' | 'failed';
-export type UpdateBlockReason = 'work' | 'form' | 'dialog' | 'busy' | 'signin' | 'save' | 'unresponsive' | 'tabs-changed' | 'unknown';
+export type UpdateBlockReason = 'work' | 'app' | 'form' | 'dialog' | 'busy' | 'signin' | 'save' | 'unresponsive' | 'tabs-changed' | 'unknown';
 export type UpdateBlockLocation = 'current' | 'other' | 'unknown';
 export interface PwaState {
   install: PwaInstallState;
@@ -22,7 +22,7 @@ export interface PwaController {
 }
 type InstallPrompt = Event & { prompt(): Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> };
 type UpdateGuard = () => boolean | void | UpdateBlockReason | Promise<boolean | void | UpdateBlockReason>;
-const blockReasons: readonly string[] = ['work', 'form', 'dialog', 'busy', 'signin', 'save', 'unresponsive', 'tabs-changed', 'unknown'];
+const blockReasons: readonly string[] = ['work', 'app', 'form', 'dialog', 'busy', 'signin', 'save', 'unresponsive', 'tabs-changed', 'unknown'];
 const blockReason = (value: unknown): UpdateBlockReason => typeof value === 'string' && blockReasons.includes(value) ? value as UpdateBlockReason : 'unknown';
 const blockLocation = (value: unknown): UpdateBlockLocation => value === 'current' || value === 'other' ? value : 'unknown';
 const guards = new Set<UpdateGuard>();
@@ -37,6 +37,7 @@ export function updateBlockMessage(state: PwaState): string {
   const where = state.updateBlockLocation === 'current' ? 'в этом окне' : state.updateBlockLocation === 'other' ? 'в другой вкладке Сот' : 'в открытых окнах Сот';
   switch (state.updateBlockReason) {
     case 'work': return `Сохраните незавершённую работу ${where}, затем нажмите «Повторить».`;
+    case 'app': return `Сохраните данные приложения ${where} и закройте его или скройте виджет. Затем нажмите «Повторить».`;
     case 'form': return `Сохраните изменения в форме ${where}, затем нажмите «Повторить».`;
     case 'dialog': return `Сохраните или закройте открытую форму ${where}, затем нажмите «Повторить».`;
     case 'busy': return `Дождитесь завершения операции ${where}, затем нажмите «Повторить».`;

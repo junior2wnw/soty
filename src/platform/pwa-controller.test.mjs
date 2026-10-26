@@ -74,6 +74,15 @@ function updateFixture(t,{lostActivationAck=false,actualWorker=lostActivationAck
     expireActivationAck(){assert.equal(activationTimers.size,1);const [timer]=activationTimers;activationTimers.delete(timer);timer.fn();}};
 }
 
+test('an unconfirmed app blocks PWA update with a close-or-hide explanation',async t=>{
+  const f=updateFixture(t);let open=true;
+  f.exports.registerUpdateGuard(()=>open?'app':true);await setImmediate();f.offerUpdate();
+  assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
+  assert.match(f.exports.updateBlockMessage(f.control.get()),/закройте его или скройте виджет/);
+  open=false;f.offerUpdate(port=>{f.activate();port.postMessage({ready:true});port.close();});
+  assert.equal(await f.control.applyUpdate(),true);assert.equal(f.reloads(),1);
+});
+
 test('a local unsaved form reports an actionable reason and still requires a safe retry',async t=>{
   const f=updateFixture(t);let dirty=true;f.exports.registerUpdateGuard(()=>dirty?'form':true);await setImmediate();f.offerUpdate();
   assert.equal(await f.control.applyUpdate(),false);assert.equal(f.reloads(),0);
