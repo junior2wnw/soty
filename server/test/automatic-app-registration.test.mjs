@@ -6,6 +6,8 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { createHttpApp } from '../http-app.js';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createLocalAppsRuntime } from '../../scripts/agent-modules/local-apps.mjs';
@@ -137,6 +139,94 @@ test('restart recovers a committed job even when the completion callback never r
   assert.equal(done.autoRegistration.appId, `app-${id.slice(4)}`); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
 });
 
+test('an eight-day-old unfinished result survives pruning, restart and real Apps/feedback readback', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
+  assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
+  await store.mutate(() => {
+    const job = store.state.jobs.find(value => value.id === id), before = Date.now() - 8 * 24 * 60 * 60_000;
+    job.createdAt = before - 100; job.updatedAt = before; job.finishedAt = before; store.expire(Date.now());
+  });
+  assert.ok(store.state.jobs.find(value => value.id === id)); await f.restart();
+  const current = f.service().locals.connectorService.store;
+  await until(() => current.state.jobs.find(value => value.id === id)?.autoRegistrationFinal === 'ready');
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  assert.equal((await f.read(id)).autoRegistration.feedback, 'ready');
+  await current.mutate(() => current.expire(Date.now()));
+  assert.equal(current.state.jobs.some(value => value.id === id), false, 'verified completion releases the old job');
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1, 'the application is not deleted by queue cleanup');
+});
+
+test('the actual previous reader refuses protected work; after confirmed completion it can reopen safely', { timeout: 30000 }, async t => {
+  const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
+  assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
+  await store.mutate(() => {
+    const job = store.state.jobs.find(value => value.id === id), before = Date.now() - 8 * 24 * 60 * 60_000;
+    job.createdAt = before - 100; job.updatedAt = before; job.finishedAt = before;
+  });
+  const directory = dirname(store.filePath), oldDir = join(dirname(directory), 'frozen-old-reader'); await mkdir(oldDir);
+  for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
+    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+  await writeFile(join(oldDir, 'package.json'), '{"type":"module"}');
+  const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
+  await f.service().locals.closeServices();
+  const old = legacy.createConnectorStore(directory);
+  await assert.rejects(old.ready, /Invalid connector database/); await old.close();
+  const guarded = new DatabaseSync(join(directory, 'connector-store.sqlite'), { readOnly: true });
+  try { assert.equal(guarded.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2');
+    assert.equal(guarded.prepare('SELECT count(*) AS n FROM jobs WHERE id=?').get(id).n, 1); }
+  finally { guarded.close(); }
+  await f.restart(); const restored = f.service().locals.connectorService.store;
+  await until(() => restored.state.jobs.find(value => value.id === id)?.autoRegistrationFinal === 'ready');
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  await f.service().locals.closeServices(); const olderAfterCompletion = legacy.createConnectorStore(directory);
+  try { await olderAfterCompletion.ready; assert.ok(olderAfterCompletion.state.jobs.find(job => job.id === id)); }
+  finally { await olderAfterCompletion.close(); }
+  await f.restart(); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('an existing v1 store with a legacy automatic job is fenced before the new server starts serving', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), directory = dirname(f.service().locals.connectorService.store.filePath);
+  await f.service().locals.closeServices();
+  const db = new DatabaseSync(join(directory, 'connector-store.sqlite'));
+  try { db.prepare("UPDATE meta SET value='soty.connector-sqlite.v1' WHERE key='schema'").run(); }
+  finally { db.close(); }
+  // An old producer stored the v4 job under v1; the new reader must fence it
+  // even when universal registration is temporarily disabled.
+  await f.restart({ universalAppsEnabled: false }); const current = f.service().locals.connectorService.store;
+  await current.ready; assert.ok(current.state.jobs.find(job => job.id === id));
+  const checked = new DatabaseSync(join(directory, 'connector-store.sqlite'), { readOnly: true });
+  try { assert.equal(checked.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2'); }
+  finally { checked.close(); }
+});
+
+test('a lost Apps readback retains the job; restart reads the same committed app and releases it once', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), apps = f.service().locals.appsService;
+  apps.creationJobApp = () => null;
+  assert.equal((await f.submit(id)).ok, true);
+  await until(async () => (await f.owner.extension('apps.list')).apps.length === 1);
+  const original = f.service().locals.connectorService.store;
+  assert.equal(original.state.jobs.find(value => value.id === id).autoRegistrationFinal, undefined);
+  await f.restart(); const restored = f.service().locals.connectorService.store;
+  await until(() => restored.state.jobs.find(value => value.id === id)?.autoRegistrationFinal === 'ready');
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  assert.equal((await f.read(id)).autoRegistration.feedback, 'ready');
+});
+
+test('capacity and unexpected failures are explicit and can recover without duplicating an app', { timeout: 25000 }, async t => {
+  for (const [code, expected] of [['apps_limit_reached', 'capacity'], ['synthetic_unexpected_failure', 'attention']]) {
+    const f = await fixture(t), id = await f.create(), universal = f.service().locals.universalApps;
+    const actual = universal.registerCreationJob;
+    universal.registerCreationJob = () => { throw Object.assign(Error('synthetic'), { code }); };
+    assert.equal((await f.submit(id)).ok, true);
+    await until(async () => (await f.read(id)).autoRegistration?.state === expected);
+    assert.equal((await f.owner.extension('apps.list')).apps.length, 0);
+    assert.equal(f.service().locals.connectorService.store.state.jobs.find(value => value.id === id).autoRegistrationFinal, undefined);
+    universal.registerCreationJob = actual; await f.poll();
+    await until(async () => (await f.read(id)).autoRegistration?.feedback === 'ready');
+    assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+  }
+});
+
 test('restart finishes universal and feedback after the app transaction committed alone', { timeout: 25000 }, async t => {
   const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
   assert.equal((await store.finishJob(f.auth, id, f.result(id))).ok, true);
@@ -169,6 +259,7 @@ test('the registered app can launch while feedback is locked and poll finishes f
     await f.submit(id);
     const held = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'ready' && value.autoRegistration.feedback === 'waiting' && value.autoRegistration.appState === 'ready' && value; });
     assert.equal(held.autoRegistration.appId, `app-${id.slice(4)}`);
+    assert.equal(f.service().locals.connectorService.store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
     const launch = await f.owner.extension('apps.launch', { appId: held.autoRegistration.appId });
     const url = new URL(launch.launchUrl);
     const boot = await appRequest(url, '/_soty/session', { method: 'POST', headers: { origin: url.origin, 'content-type': 'application/json' }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
@@ -179,6 +270,7 @@ test('the registered app can launch while feedback is locked and poll finishes f
   assert.equal((await f.poll()).ok, true);
   const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; });
   assert.equal(ready.autoRegistration.appId, `app-${id.slice(4)}`);
+  await until(() => f.service().locals.connectorService.store.state.jobs.find(job => job.id === id)?.autoRegistrationFinal === 'ready');
 });
 
 test('existing server heartbeat retries pending feedback even after the connector goes offline', { timeout: 30000 }, async t => {
@@ -234,6 +326,7 @@ test('revoking the original signed device before recovery prevents automatic reg
   await second.revokeDevice(f.account.deviceId); await f.restart();
   const denied = await until(async () => { const value = await f.read(id, second); return value.autoRegistration?.state === 'access-lost' && value; });
   assert.equal(denied.autoRegistration.state, 'access-lost'); assert.equal((await second.extension('apps.list')).apps.length, 0);
+  assert.equal(f.service().locals.connectorService.store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
 });
 
 test('loss of the original actor after the app commit is reported without completing feedback under another device', { timeout: 25000 }, async t => {

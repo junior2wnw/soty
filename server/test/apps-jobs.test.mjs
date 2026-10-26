@@ -7,6 +7,7 @@ import { join, dirname, resolve } from 'node:path';
 import { createConnectService, digestArgs } from '../../modules/connect/server/index.mjs';
 import { createConnectorStore, normalizeConnectorState } from '../connector-store.js';
 import { createAppJobsExtension } from '../apps-jobs.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const origin = 'http://localhost:5200';
 function identity() {
@@ -127,6 +128,74 @@ test('automatic registration is an explicit immutable job intent and old jobs re
   assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...args, autoRegister: false })).error.code, 'job_request_conflict');
   const restored = normalizeConnectorState(structuredClone(f.store.state));
   assert.equal(restored.jobs.find(job => job.id === created.job.id).input.autoRegister, true);
+});
+
+test('automatic creation reserves bounded capacity before acceptance and replays exact receipts', async t => {
+  const f = await setup(t); f.store.maxAutomaticReservations = 2; f.store.maxAutomaticReservationsPerAccount = 1;
+  const firstArgs = { ...f.createArgs, requestId: 'capacity-first', autoRegister: true };
+  const [first, replay] = await Promise.all([invoke(f.service, f.owner, 'apps.agent.create', firstArgs), invoke(f.service, f.owner, 'apps.agent.create', firstArgs)]);
+  assert.equal(first.ok, true); assert.equal(replay.ok, true); assert.equal(first.job.id, replay.job.id);
+  const blockedArgs = { ...firstArgs, requestId: 'capacity-blocked' };
+  const blocked = await invoke(f.service, f.owner, 'apps.agent.create', blockedArgs);
+  assert.equal(blocked.ok, true); assert.equal(blocked.admission.reason, 'app_auto_capacity');
+  assert.equal(f.store.state.jobs.length, 1, 'the accepted result remains intact');
+  const cancel = await invoke(f.service, f.owner, 'apps.agent.cancel', { hostDeviceId: f.host.hostDeviceId, connectorId: f.host.connectorId, jobId: first.job.id });
+  assert.equal(cancel.ok, true);
+  assert.deepEqual((await invoke(f.service, f.owner, 'apps.agent.create', blockedArgs)).admission, blocked.admission, 'a rejected intention never turns into an execution');
+  const next = await invoke(f.service, f.owner, 'apps.agent.create', { ...firstArgs, requestId: 'capacity-next' });
+  assert.equal(next.ok, true); assert.ok(next.job.id); assert.notEqual(next.job.id, first.job.id);
+});
+
+test('the global history limit preserves an unresolved automatic result through a real store restart', async t => {
+  const f = await setup(t), created = await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, autoRegister: true });
+  const id = created.job.id; assert.equal((await f.store.lease(f.auth)).jobs[0].id, id);
+  const proposal = { schema: 'soty.local-app.v1', name: 'Список', port: 3000, entryPath: '/', sourceJobId: id };
+  assert.equal((await f.store.finishJob(f.auth, id, { ok: true, text: 'Готово', exitCode: 0, appProposal: proposal })).ok, true);
+  await f.store.mutate(() => {
+    const now = Date.now(), source = f.store.state.jobs.find(job => job.id === id); source.createdAt = now - 4000;
+    for (let n = 0; n < 2000; n++) {
+      const job = structuredClone(source); job.id = `job_${(n + 1).toString(16).padStart(32, '0')}`;
+      job.requestId = `synthetic-filler-${n}`; job.input.autoRegister = false; delete job.result.appProposal;
+      job.createdAt = now - 3000 + n; f.store.state.jobs.push(job);
+    }
+    f.store.expire(now);
+  });
+  assert.equal(f.store.state.jobs.length, 2000); assert.ok(f.store.state.jobs.find(job => job.id === id));
+  await f.store.close(); const reopened = createConnectorStore(dirname(f.store.filePath));
+  try { assert.equal((await reopened.automaticAppJobs(id)).length, 1); assert.equal(reopened.state.jobs.length, 2000); }
+  finally { await reopened.close(); }
+});
+
+test('reservation and rollback fence commit together, or neither is accepted', async t => {
+  const f = await setup(t), db = new DatabaseSync(join(dirname(f.store.filePath), 'connector-store.sqlite'));
+  try {
+  db.exec("CREATE TRIGGER fixture_fail_fence BEFORE INSERT ON meta WHEN NEW.key='schema' AND NEW.value='soty.connector-sqlite.v2' BEGIN SELECT RAISE(ABORT,'synthetic fence failure'); END");
+  const args = { ...f.createArgs, requestId: 'fence-failure', autoRegister: true };
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', args)).ok, false);
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v1');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM jobs').get().n, 0);
+  assert.equal(f.store.state.jobs.length, 0); db.exec('DROP TRIGGER fixture_fail_fence');
+  const retried = await invoke(f.service, f.owner, 'apps.agent.create', args);
+  assert.equal(retried.ok, true); assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM jobs').get().n, 1);
+  } finally { db.close(); }
+});
+
+test('failed completion leaves both reservation and old-reader fence intact', async t => {
+  const f = await setup(t), created = await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, autoRegister: true });
+  const id = created.job.id; assert.equal((await f.store.lease(f.auth)).jobs[0].id, id);
+  const proposal = { schema: 'soty.local-app.v1', name: 'Список', port: 3000, entryPath: '/', sourceJobId: id };
+  assert.equal((await f.store.finishJob(f.auth, id, { ok: true, text: 'Готово', exitCode: 0, appProposal: proposal })).ok, true);
+  const [expected] = await f.store.automaticAppJobs(id), db = new DatabaseSync(join(dirname(f.store.filePath), 'connector-store.sqlite'));
+  try {
+  db.exec("CREATE TRIGGER fixture_fail_release BEFORE INSERT ON meta WHEN NEW.key='schema' AND NEW.value='soty.connector-sqlite.v1' BEGIN SELECT RAISE(ABORT,'synthetic release failure'); END");
+  await assert.rejects(f.store.confirmAutomaticAppJob(expected, 'ready', () => true));
+  assert.equal(f.store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2');
+  db.exec('DROP TRIGGER fixture_fail_release');
+  assert.equal(await f.store.confirmAutomaticAppJob(expected, 'ready', () => true), true);
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v1');
+  } finally { db.close(); }
 });
 
 test('async Connect extensions release the proof transaction and recheck owner access inside the job queue', async t => {

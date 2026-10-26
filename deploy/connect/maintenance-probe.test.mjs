@@ -9,7 +9,7 @@ import { probe } from './maintenance-probe.mjs';
 async function fixture(jobs = []) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'soty-maintenance-'));
   const database = path.join(dataDir, 'connector-store.sqlite');
-  const db = new DatabaseSync(database); db.exec('CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);CREATE TABLE jobs(id TEXT PRIMARY KEY,value TEXT);');
+  const db = new DatabaseSync(database); db.exec('CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT);CREATE TABLE jobs(id TEXT PRIMARY KEY,value TEXT);CREATE TABLE inputs(id TEXT PRIMARY KEY,value TEXT);CREATE TABLE results(id TEXT PRIMARY KEY,value TEXT);');
   db.prepare('INSERT INTO meta VALUES (?,?)').run('schema', 'soty.connector-sqlite.v1');
   for (let i = 0; i < jobs.length; i++) db.prepare('INSERT INTO jobs VALUES (?,?)').run('private-job-' + i, JSON.stringify(jobs[i]));
   db.close();
@@ -44,4 +44,22 @@ test('missing SQLite never falls back to JSON or creates a new database and lega
   await assert.rejects(stat(f.database), error => error.code === 'ENOENT');
   await writeFile(path.join(f.dataDir, 'connector-rollback.json'), '{}');
   await assert.rejects(probe(f), /legacy_rollback_pending/);
+});
+
+test('protected automatic work blocks cutover but does not trap an existing owned maintenance marker', async () => {
+  const f = await fixture([{ status: 'succeeded' }]), db = new DatabaseSync(f.database);
+  db.prepare("UPDATE meta SET value='soty.connector-sqlite.v2' WHERE key='schema'").run(); db.close();
+  const status = await probe(f); assert.equal(status.automaticPending, true); assert.equal(status.count, 1);
+  await assert.rejects(probe({ ...f, verb: 'enter' }), /probe_automatic_pending/);
+  await writeFile(path.join(f.dataDir, 'connector-maintenance.json'), JSON.stringify({ schema: 'soty.connector-maintenance.v1', connectTransaction: f.transaction }));
+  assert.equal((await probe({ ...f, verb: 'leave' })).maintenance, false);
+});
+
+test('v1 automatic result from an older producer blocks cutover before its reader can prune it', async () => {
+  const id = 'private-job-0', f = await fixture([{ schema: 'soty.connector-job.v4', kind: 'agent', status: 'succeeded' }]);
+  const db = new DatabaseSync(f.database);
+  db.prepare('INSERT INTO inputs VALUES (?,?)').run(id, JSON.stringify({ output: 'local-app', autoRegister: true }));
+  db.prepare('INSERT INTO results VALUES (?,?)').run(id, JSON.stringify({ ok: true, appProposal: { sourceJobId: id } })); db.close();
+  const status = await probe(f); assert.equal(status.automaticPending, true); assert.equal(status.count, 1);
+  await assert.rejects(probe({ ...f, verb: 'enter' }), /probe_automatic_pending/);
 });

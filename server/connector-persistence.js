@@ -98,7 +98,7 @@ if (!isMainThread && workerData?.connectorPersistence) {
   const putMeta = (key, value) => db.prepare("INSERT OR REPLACE INTO meta VALUES (?,?)").run(key, String(value));
 
   async function load() {
-    const { normalizeConnectorState } = await import("./connector-store.js");
+    const { normalizeConnectorState, connectorHasAutomaticReservations } = await import("./connector-store.js");
     await mkdir(path.dirname(filePath), { recursive: true });
     owner = await acquireConnectorOwner(path.dirname(filePath));
     await rejectRollbackIntent(path.dirname(filePath));
@@ -137,7 +137,7 @@ if (!isMainThread && workerData?.connectorPersistence) {
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     }
-    if (getMeta("schema") !== "soty.connector-sqlite.v1" || db.prepare("PRAGMA quick_check").get().quick_check !== "ok") throw new Error("Invalid connector database; preserve files for recovery");
+    if (!["soty.connector-sqlite.v1", "soty.connector-sqlite.v2"].includes(getMeta("schema")) || db.prepare("PRAGMA quick_check").get().quick_check !== "ok") throw new Error("Invalid connector database; preserve files for recovery");
     revision = Number(getMeta("revision"));
     if (!Number.isSafeInteger(revision)) throw new Error("Invalid connector database revision");
     const state = {
@@ -165,6 +165,14 @@ if (!isMainThread && workerData?.connectorPersistence) {
       }
     } else {
       await atomicFile(filePath, json({ schema: sqliteMarkerSchema, database: databaseName, databaseId: getMeta("uuid") }) + "\n");
+    }
+    // Legacy v1 databases can already contain unresolved auto jobs. Fence
+    // older readers before this process starts serving, after full validation.
+    const schema = connectorHasAutomaticReservations(validatedState) ? 'soty.connector-sqlite.v2' : 'soty.connector-sqlite.v1';
+    if (getMeta('schema') !== schema) {
+      db.exec('BEGIN IMMEDIATE');
+      try { putMeta('schema', schema); db.exec('COMMIT'); }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
     }
     return { state: validatedState, revision };
   }
@@ -198,6 +206,9 @@ if (!isMainThread && workerData?.connectorPersistence) {
       for (const id of delta.jobs.removed) db.prepare("DELETE FROM jobs WHERE id=?").run(id);
       for (const change of delta.jobs.changed) putJob(change);
       for (const request of delta.requests) db.prepare("INSERT INTO requests VALUES (?,?)").run(request.id, json(request));
+      if (typeof delta.automaticFence !== 'boolean') throw new Error('Automatic reservation fence is missing');
+      const wantedSchema = delta.automaticFence ? 'soty.connector-sqlite.v2' : 'soty.connector-sqlite.v1';
+      if (getMeta('schema') !== wantedSchema) putMeta('schema', wantedSchema);
       putMeta("revision", ++revision);
       db.exec("COMMIT");
       return { revision };

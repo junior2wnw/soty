@@ -352,6 +352,8 @@ export function createAppBuilderAction(options: BuilderOptions) {
               const message = result.job.executionUncertain && validJob ? 'Устройство не подтвердило завершение. Проверьте ответ задачи.'
                 : result.job.cancelRequested && validJob ? 'Остановка запрошена. Автоматическое добавление не подтверждено.'
                 : ({ conflict: 'Мешает другое приложение или занятый порт. Проверьте подключения на устройстве.',
+                  capacity: 'Достигнут предел приложений в аккаунте. Обратитесь к администратору Сот: существующие записи сохранены.',
+                  attention: 'Не удалось завершить подключение. Проверьте устройство и доступ, затем проверьте результат снова.',
                   'access-lost': 'Доступ исходного устройства или связь с ним изменились. Не удалось завершить подключение.',
                   revoked: 'Приложение удалено из Сот и не будет добавлено снова.',
                   failed: 'Не удалось создать приложение. Проверьте ответ задачи.',
@@ -359,7 +361,7 @@ export function createAppBuilderAction(options: BuilderOptions) {
                   unconfirmed: 'Ждём подтверждения от Сот. Если оно долго не появляется, проверьте обновление.' } as Record<string, string>)[terminalFailure ? 'failed' : status.state] || 'Ждём подтверждения от Сот.';
               progressCopy.textContent = message; output.querySelector('h2')!.textContent = message;
               cancel.hidden = true; reset.hidden = false;
-              recheck.hidden = !terminalFailure && !['conflict', 'access-lost', 'revoked', 'failed'].includes(status.state);
+              recheck.hidden = !terminalFailure && !['conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed'].includes(status.state);
               if (terminalFailure || ['access-lost', 'revoked', 'failed'].includes(status.state)) {
                 terminalText.textContent = result.job.result?.text || 'Ответ недоступен.'; terminalDetails.hidden = false; return;
               }

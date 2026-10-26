@@ -42,13 +42,16 @@ run.onclick=async()=>{
     check(opened[0]===appId,'opened wrong app');
     await fresh('conflict');await until(()=>body().includes('занятый порт'));check(button('Проверить')&&button('Новая задача'),'conflict lacks recovery');
     status='ready';button('Проверить').click();await until(()=>button('Открыть приложение'));
+    await fresh('capacity');await until(()=>body().includes('предел приложений в аккаунте'));check(button('Проверить')&&button('Новая задача'),'capacity lacks recovery');
+    status='ready';button('Проверить').click();await until(()=>button('Открыть приложение'));
+    await fresh('attention');await until(()=>body().includes('Не удалось завершить подключение'));check(button('Проверить'),'unexpected failure hidden');
     await fresh('access-lost');await until(()=>body().includes('Доступ исходного устройства'));check(button('Проверить'),'access loss hidden');
     await fresh('revoked');await until(()=>body().includes('не будет добавлено снова'));check(!button('Открыть приложение'),'revoked opened');
     await fresh('failed');await until(()=>body().includes('Не удалось создать приложение'));check(body().includes('Ответ задачи'),'failure lacks result');
     await fresh('waiting',{missingTask:true});await until(()=>body().includes('Ждём подтверждения от Сот'));check(!button('Проверить подключение'),'old backend triggered legacy fallback');
     await fresh('waiting',{cancelled:true});await until(()=>body().includes('Остановка запрошена'));check(body().includes('Ответ задачи'),'cancellation lacks answer');
     check(registerCalls===0&&opened.length===1,'unexpected browser registration or navigation');
-    proof.dataset.testStatus='passed';proof.textContent='PASS: waiting / ready / conflict recovery / access loss / revocation / failed job / unavailable old backend / cancellation / zero browser registrations.';
+    proof.dataset.testStatus='passed';proof.textContent='PASS: waiting / ready / conflict / capacity / unexpected failure / access loss / revocation / failed job / unavailable old backend / cancellation / zero browser registrations.';
   }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
   finally{actions?.destroy();for(const account of accounts)localStorage.removeItem('soty.app-create.v1:'+account);run.disabled=false;}
 };
