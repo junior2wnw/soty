@@ -20,7 +20,7 @@ function stageMessagePorts(readRenewBinding, runtimeDisplay) {
   const message={textContent:'',hidden:true},attributes={};
   // Shared scalar/DOM ports; the actual showMessage implementation owns all writes.
   const context={exports:{},message,messageOwner:'manual',current:()=>true,isRootSsoWorkspacePin,readRenewBinding,runtimeDisplay,
-    runtime:{setAttribute(name,value){attributes[name]=value;}},options:{presentation:'main'},recoveryRetry:{},externalRecovery:{},dismissRuntimeNotice:{}};
+    runtime:{setAttribute(name,value){attributes[name]=value;}},options:{presentation:'main'},externalAvailability:'unknown',recoveryRetry:{},externalRecovery:{},dismissRuntimeNotice:{}};
   const code=show+`\nObject.assign(exports,{onState:(${renewal}),nativeFor:(live)=>(${native}),showMessage,owner:()=>messageOwner});`;
   vm.runInNewContext(ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
   return{api:context.exports,message,context,attributes};
@@ -163,4 +163,15 @@ test('actual Stage W2 warning yields to current Native status after Source ACK a
   assert.deepEqual({message:ports.message.textContent,owner:ports.api.owner(),attributes:{...ports.attributes},external:ports.context.externalRecovery.hidden},before);
   current(nativeMessageState('ready'));stale(native);
   assert.equal(ports.message.textContent,'');assert.equal(ports.api.owner(),'runtime');
+});
+
+test('actual Stage recovery offers an external entry only when both availability and current status allow it',()=>{
+  const ports=stageMessagePorts(()=>null,null),current=ports.api.nativeFor(()=>true);
+  for(const availability of ['unknown','unavailable','available']){
+    ports.context.externalAvailability=availability;
+    current(nativeMessageState('unconfirmed','Загрузка окна не подтверждена.'));
+    assert.equal(ports.context.externalRecovery.hidden,availability!=='available');
+    current(nativeMessageState('ready'));
+    assert.equal(ports.context.externalRecovery.hidden,true,'a ready window needs no external recovery action');
+  }
 });
