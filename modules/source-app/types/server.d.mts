@@ -1,4 +1,7 @@
 import type {IncomingMessage, ServerResponse} from 'node:http';
+/** Multi-worker deployments must supply an atomic, shared one-use store. */
+export declare function createRelayIdentityVerifier(options:{issuer:string;appId:string;fetch?:typeof globalThis.fetch;clock?:()=>number;
+  consume?:(id:string,expiresAt:number)=>boolean|Promise<boolean>}):(request:IncomingMessage)=>Promise<Readonly<{issuer:string;subject:string}>>;
 import type {SourceRpProfile, SourceRpMarker, SourceRpCurrentProof} from './source-rp.d.mts';
 export {createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE} from './source-rp.mjs';
 export interface SourceProfile {schema:'soty.selected-human-embed.v2';appId:string;connector:{linkId:string;hostDeviceId:string;connectorId:string};target:{revision:number;digest:string};

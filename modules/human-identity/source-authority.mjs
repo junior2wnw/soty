@@ -1,9 +1,21 @@
-import { createPrivateKey } from 'node:crypto';
+import { createPrivateKey, randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { closed, data, digest, nonce, synchronous, requireHuman as require } from './profile.mjs';
 import { selectedResourceProfile } from '../apps/scoped-embed/resource-profile.mjs';
 import { isRootSignedWorkspaceSource } from '../source-app/server/standard-profile.mjs';
+import { relayRequestDigest } from '../source-app/shared/relay-identity.mjs';
+
+function issuerSigner(profile) {
+  const jwk = profile.providerKeys().jwks.keys[0], key = createPrivateKey({ key: jwk, format: 'jwk' }), kid = jwk.kid;
+  const requireProvider = createRequire(createRequire(import.meta.url).resolve('oidc-provider'));
+  let jose;
+  return async (payload, typ) => {
+    jose ??= import(pathToFileURL(requireProvider.resolve('jose')).href);
+    const { SignJWT } = await jose;
+    return new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid, typ }).sign(key);
+  };
+}
 
 function workspaceProfiles(profiles, issuer) {
   const approved = new Map();
@@ -53,10 +65,8 @@ export function createRootWorkspaceSubjectAuthority({ profile, scopedProfiles, w
  * Human/Apps/reference check. Reuse the issuer key, not the connector's MAC key. */
 export function createSourceAuthoritySigner({ profile, scopedProfiles = [], clock = Date.now }) {
   require(profile?.enabled && typeof clock === 'function', 'human_identity_disabled', 503);
-  const jwk = profile.providerKeys().jwks.keys[0], key = createPrivateKey({ key: jwk, format: 'jwk' }), kid = jwk.kid;
-  const requireProvider = createRequire(createRequire(import.meta.url).resolve('oidc-provider'));
+  const sign = issuerSigner(profile);
   const approved = workspaceProfiles(scopedProfiles, profile.issuer);
-  let jose;
   return async function signSourceAuthority(input) {
     closed(input, ['context', 'sourceChallenge']);
     const context = data(input.context), sourceChallenge = nonce(input.sourceChallenge), now = clock();
@@ -72,12 +82,27 @@ export function createSourceAuthoritySigner({ profile, scopedProfiles = [], cloc
       'human_identity_subject_mismatch', 403);
     const iat = Math.floor(now / 1000), exp = Math.floor(Math.min(now + 10000, context.expiresAt) / 1000);
     require(exp > iat, 'human_identity_authority_expired', 401);
-    jose ??= import(pathToFileURL(requireProvider.resolve('jose')).href);
-    const { SignJWT } = await jose;
-    const witness = await new SignJWT({ iss: profile.issuer, sub: context.humanPrincipal.subject,
-      aud: 'urn:soty:source-authority', iat, exp, sourceChallenge, contextDigest: digest(context) })
-      .setProtectedHeader({ alg: 'RS256', kid, typ: 'soty-source-authority+jwt' }).sign(key);
+    const witness = await sign({ iss: profile.issuer, sub: context.humanPrincipal.subject,
+      aud: 'urn:soty:source-authority', iat, exp, sourceChallenge, contextDigest: digest(context) }, 'soty-source-authority+jwt');
     require(exp * 1000 > clock(), 'human_identity_authority_expired', 401);
     return witness;
+  };
+}
+
+/** Private Apps host port: only the host may derive these fields from a fresh access decision. */
+export function createRelayIdentitySigner({ profile, clock = Date.now }) {
+  require(profile?.enabled && typeof clock === 'function', 'human_identity_disabled', 503);
+  const sign = issuerSigner(profile);
+  return async function signRelayIdentity({ appId, accountId, method, path, expiresAt }) {
+    const now = clock();
+    require(/^app-[a-f0-9]{32}$/u.test(appId) && typeof accountId === 'string' && accountId.length > 0
+      && accountId.length <= 128 && Number.isSafeInteger(now) && Number.isSafeInteger(expiresAt), 'human_identity_subject_mismatch', 403);
+    const iat = Math.floor(now / 1000), exp = Math.floor(Math.min(now + 10000, expiresAt) / 1000);
+    require(exp > iat, 'human_identity_authority_expired', 401);
+    const requestDigest = relayRequestDigest(method, path);
+    const proof = await sign({ iss: profile.issuer, sub: accountId, aud: 'urn:soty:app:' + appId, iat, exp,
+      jti: randomBytes(24).toString('base64url'), requestDigest }, 'soty-relay-identity+jwt');
+    require(exp * 1000 > clock(), 'human_identity_authority_expired', 401);
+    return proof;
   };
 }

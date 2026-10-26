@@ -19,3 +19,4 @@ export { createRootWorkspaceServer } from './workspace-server.mjs';
 export { createSourceReadinessObserver } from './operation-observer.mjs';
 
 export { sendNativeEntryHttpError } from './native-entry-http-error.mjs';
+export { createRelayIdentityVerifier } from './relay-identity.mjs';

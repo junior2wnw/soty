@@ -224,6 +224,17 @@ function denied(response, context = '') { assert.ok([401, 403].includes(response
 function frameCount(f, id, type) { return f.log.frames.filter(frame => frame.id === id && frame.type === type).length; }
 async function closed(ws) { if (ws.readyState === WebSocket.CLOSED) return; await bounded(new Promise(resolve => ws.once('close', resolve)), 'visitor closed'); }
 
+test('old connector keeps ordinary relay behavior and refuses explicit identity request', async t => {
+  const f = await fixture(t), cookie = await f.cookie(owner), before = f.log.frames.length;
+  const unavailable = await f.http(f.canonical, '/identity', { cookie, headers: { 'x-soty-identity-request': '1' } });
+  assert.equal(unavailable.status, 503);
+  assert.equal(f.log.frames.slice(before).some(frame => frame.type === 'open' && frame.path === '/identity'), false);
+  const ordinary = await f.http(f.canonical, '/ordinary', { cookie, headers: { 'x-soty-identity': 'forged' } });
+  assert.equal(ordinary.status, 200);
+  const open = f.log.frames.slice(before).find(frame => frame.type === 'open' && frame.path === '/ordinary');
+  assert.ok(open); assert.equal(open.headers['x-soty-identity'], undefined);
+});
+
 test('independent real-socket baseline: canonical HTTP bytes and WebSocket survive without leaking visitor credentials', async t => {
   const f = await fixture(t), cookie = await f.cookie(member);
   const payload = Buffer.from('independent transfer '.repeat(8000));
