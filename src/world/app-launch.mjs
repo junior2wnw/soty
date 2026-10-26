@@ -180,6 +180,12 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
   const parameters = () => Object.freeze({ ...(selected ? { appId: selected.appId, domainId: selected.domainId, path: selected.path } : requestedTarget), expectedAccountId: accountId, ...(instanceId === undefined ? {} : { instanceId }) });
   const current = () => !disposed && isCurrent(accountId);
   const close = value => { try { value?.close(); } catch { /* A closed/isolated window is already out of our control. */ } };
+  const needsNativeEntry = () => typeof resolveExternalEntry === 'function' && (rootWorkspace(scoped?.source) || sourceEntryChanged);
+  async function readNativeEntry() {
+    const result = await resolveExternalEntry({ appId: requestedTarget.appId, expectedAccountId: accountId });
+    if (!current()) return null;
+    return result?.entry ? validateAppEntry(result.entry, { appId: requestedTarget.appId }, shellUrl) : null;
+  }
   function capture(value, requested, url, binding) {
     // A signed launch may replace the historical default only for the exact Root-SSO pin.
     // Offline resolution and every other deep link keep the strict entry contract.
@@ -279,6 +285,8 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,
     scopedCapture:()=>current()&&scoped?Object.freeze({handle:scoped.handle,source:scoped.source,slot:scoped.slot}):null,
+    // Presentation only. Opening still performs its own fresh signed read.
+    async canOpenExternal() { return current() && (!needsNativeEntry() || !!await readNativeEntry()); },
     prepareRenewal(result){requireValue(current()&&scoped&&selected,'invalid_app_scoped_launch');
       requireValue(result.runtimeProfile===scoped.profile&&/^[A-Za-z0-9_-]{43}$/.test(result.scopedCloseHandle??''),'invalid_app_scoped_launch');
       const source=captureSourcePin(result.scopedSource);requireValue(source&&scoped.source&&source.id===scoped.source.id&&source.version===scoped.source.version
@@ -303,11 +311,10 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
         destination = openPopup();
         if (!destination) return 'blocked';
         popup = destination; destination.opener = null;
-        if (typeof resolveExternalEntry === 'function' && (rootWorkspace(scoped?.source) || sourceEntryChanged)) {
-          const result = await resolveExternalEntry({ appId: requestedTarget.appId, expectedAccountId: accountId });
+        if (needsNativeEntry()) {
+          const native = await readNativeEntry();
           if (!current() || destination.closed) { close(destination); return 'stale'; }
-          if (!result?.entry) { close(destination); return 'unavailable'; }
-          const native = validateAppEntry(result.entry, { appId: requestedTarget.appId }, shellUrl);
+          if (!native) { close(destination); return 'unavailable'; }
           // An explicit Native bookmark keeps its exact path. A Source entry
           // opens the separately admitted Native start page, without a Source
           // ticket, frame credential or silent change to the saved bookmark.

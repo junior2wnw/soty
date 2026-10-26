@@ -11,7 +11,7 @@ function fields(value,keys){
 export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,onChange=()=>{},timeoutMs=12000}){
   const expected=new URL(origin);if(expected.origin!==origin||!['https:','http:'].includes(expected.protocol))throw Error('invalid_runtime_display_origin');
   if(typeof isCurrent!=='function'||typeof readiness!=='function'||timeoutMs!==12000)throw Error('invalid_runtime_display_options');
-  let disposed=false,terminal=false,dismissed=false,loaded=false,flight=false,queued=false,checks=0,phase='opening',timer;
+  let disposed=false,terminal=false,dismissed=false,loaded=false,lateLoaded=false,flight=false,queued=false,checks=0,phase='opening',timer;
   let nonce='';try{const n=view.crypto.randomUUID().replaceAll('-','');if(/^[a-f0-9]{32}$/u.test(n))nonce=n;}catch{}
   const probes=[],live=()=>!disposed&&isCurrent();
   const snapshot=()=>{
@@ -26,13 +26,15 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
   const notify=()=>{if(live())onChange(snapshot());};
   const stopProbes=()=>{for(const id of probes)view.clearTimeout(id);probes.length=0;};
   // Source-session ready is not Native DOM paint. A later current-frame
-  // transport error must remain visible; other terminal choices stay final.
-  const finish=next=>{if(!live()||(terminal&&!(['ready','loaded'].includes(phase)&&next==='error')))return;terminal=true;phase=next;view.clearTimeout(timer);stopProbes();notify();};
+  // transport error must remain visible. A first late document may refine a
+  // no-load timeout using the same bounded read budget, never a new admission.
+  const lateDocument=()=>terminal&&phase==='unconfirmed'&&lateLoaded&&!dismissed;
+  const finish=next=>{if(!live()||(terminal&&!lateDocument()&&!(['ready','loaded'].includes(phase)&&next==='error')))return;terminal=true;phase=next;view.clearTimeout(timer);stopProbes();notify();};
   const check=async()=>{
-    if(!live()||terminal||!loaded||checks>=3)return;
+    if(!live()||terminal&&!lateDocument()||!loaded||checks>=3)return;
     if(flight){queued=true;return;}
     flight=true;checks++;
-    try{const answer=await readiness();if(!live()||terminal)return;
+    try{const answer=await readiness();if(!live()||terminal&&!lateDocument())return;
       if(answer==='ready')finish('ready');else if(answer==='denied')finish('denied');
       // Legacy/native apps have no Source readiness protocol. Their document
       // loaded; this says nothing about authenticated app state or data paint.
@@ -42,7 +44,8 @@ export function createAppRuntimeDisplay({view,frame,origin,isCurrent,readiness,o
     finally{flight=false;if(queued){queued=false;void check();}}
   };
   // A pre-load probe may reach about:blank; a fast ready read cancels later timers.
-  const load=()=>{if(!live()||terminal)return;if(!loaded){loaded=true;probe();}void check();};
+  const load=()=>{if(!live()||terminal&&!(phase==='unconfirmed'&&!loaded&&!dismissed))return;
+    if(!loaded){loaded=true;lateLoaded=terminal;if(terminal)notify();else probe();}void check();};
   const error=()=>finish('error');
   const receive=event=>{
     if(!live()||terminal&&!['ready','loaded'].includes(phase)||!nonce||event.source!==frame.contentWindow||event.origin!==origin||event.ports?.length)return;

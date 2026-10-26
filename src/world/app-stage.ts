@@ -90,6 +90,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   let presentationVersion = 0, applyingPresentation = false;
   let displayEpoch = 0, entryRecoveryEpoch = 0, entryRecoveryPending = false, releaseRuntimeDisplay: (() => void) | null = null;
   let runtimeDisplay: RuntimeDisplayHandle | null = null;
+  let externalAvailability: 'unknown' | 'available' | 'unavailable' = 'unknown';
   let feedback: AppFeedbackHandle | null = null;
   let reviews: AppReviewsHandle | null = null;
   let lastVisiblePresentation = initial.presentation;
@@ -259,7 +260,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   const refresh = button('Обновить приложение', 'refresh', 'sw-button-quiet', () => { closeMore(true); void launchRuntime(false, () => true, true); });
   refresh.dataset.stageControl = 'refresh';
   const external = button('Открыть отдельно', 'external', 'sw-button-quiet', () => {
-    if (!current() || external.disabled) return;
+    if (!current() || external.disabled || externalAvailability !== 'available') return;
     closeMore(true); external.disabled = externalRecovery.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
     // Do not await a route, flush or API read before this user-gesture popup.
     void launcher.openExternal(() => {
@@ -273,13 +274,29 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!current()) return;
       captureEntry();
       if (result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
-      if (result === 'unavailable') showMessage('Отдельный сайт пока не подключён. Это приложение доступно внутри Сот.');
+      if (result === 'unavailable') {
+        externalAvailability = 'unavailable'; syncExternalControls();
+        showMessage('Отдельный сайт пока не подключён. Это приложение доступно внутри Сот.');
+      }
     }).catch(reason => { const failure = appLaunchFailure(reason); showMessage(`${failure.title}. ${failure.detail}`); })
       .finally(() => { if (current()) { external.disabled = externalRecovery.disabled = false; external.removeAttribute('aria-busy'); } });
   });
-  external.dataset.stageControl = 'external';
+  external.dataset.stageControl = 'external'; external.hidden = voiceResolved;
+  // Preserve the existing explicit gesture while optional voice metadata is
+  // unresolved. Its own admission gate still runs; no Source capability is known yet.
+  if (!voiceResolved) externalAvailability = 'available';
   const externalRecovery = button('Открыть в новой вкладке', 'external', 'sw-button-quiet sa-recovery-retry sa-external-recovery', () => { external.click(); });
   externalRecovery.dataset.stageControl = 'external-recovery'; externalRecovery.hidden = true;
+  function syncExternalControls(): void {
+    external.hidden = externalAvailability !== 'available';
+    externalRecovery.hidden = external.hidden || !runtimeDisplay?.snapshot().canExternal;
+  }
+  function checkExternalAvailability(): void {
+    const epoch = displayEpoch;
+    void launcher.canOpenExternal().then(available => {
+      if (current() && epoch === displayEpoch) { externalAvailability = available ? 'available' : 'unavailable'; syncExternalControls(); }
+    }).catch(() => { /* Unknown availability stays hidden; no fallback or grant is guessed. */ });
+  }
   const dismissRuntimeNotice = button('Скрыть сообщение', 'close', 'sw-button-quiet sa-recovery-retry', () => {
     if (current() && runtimeDisplay?.dismiss()) name.focus();
   });
@@ -676,7 +693,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       if (!message.textContent || messageOwner === 'runtime') {
         showMessage(state.message, 'runtime');
         recoveryRetry.hidden = options.presentation === 'widget' ? false : !state.canRetry;
-        externalRecovery.hidden = !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
+        externalRecovery.hidden = externalAvailability !== 'available' || !state.canExternal; dismissRuntimeNotice.hidden = !state.canDismiss;
       }
     } });
     runtimeDisplay = display;
@@ -695,6 +712,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
     entryRecoveryEpoch++; entryRecoveryPending = false; currentEntryRetry.disabled = false; currentEntryRetry.hidden = true;
     runtimeStarted = true; runtimePending = true; refresh.disabled = true; recoveryRetry.disabled = true;
+    externalAvailability = voiceResolved ? 'unknown' : 'available'; external.hidden = voiceResolved;
     recoveryRetry.hidden = options.presentation !== 'widget'; externalRecovery.hidden = true; showMessage('');
     stopAssist();
     const existingFrame = runtime.querySelector('iframe');
@@ -714,6 +732,8 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const url = await launcher.launch({ requireSameBinding: automatic });
       if (!url || !alive()) return;
       captureEntry();
+      externalAvailability = 'unknown'; external.hidden = true;
+      checkExternalAvailability();
       const frame = el('iframe', 'sa-frame'); frame.title = app.name;
       const voiceFrame=nativeVoice?.mount.appId===app.appId&&nativeVoice.mount.parentOrigin===view.location.origin
         &&new URL(url).origin===nativeVoice.mount.frameOrigin&&new URL(url).pathname==='/soty-voice';

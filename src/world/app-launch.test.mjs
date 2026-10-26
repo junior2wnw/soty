@@ -17,6 +17,23 @@ test('message presentation roundtrips its exact conversation and anchor; malform
 });
 const scopedReply=()=>({url:boot(),runtimeProfile:'soty.selected-human-embed.v2',scopedCloseHandle:'C'.repeat(43),
   scopedSource:{id:'soty.standard-workspace',version:2,digest:'23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9'}});
+test('external availability uses the exact existing Native read, creates no popup/admission, and opening rechecks it',async()=>{
+ let native={...target,origin:'https://native.apps.example'},reads=0,launches=0,current=true;
+ const launcher=createAppLauncher({target,accountId:'account-a',shellUrl,isCurrent:()=>current,
+  request:async()=>{launches++;return{...scopedReply(),entry:{...target,origin:'https://demo.apps.example'}};},
+  resolveExternalEntry:async args=>{assert.deepEqual(args,{appId,expectedAccountId:'account-a'});reads++;return{entry:native};}});
+ await launcher.launch();assert.equal(await launcher.canOpenExternal(),true);assert.equal(reads,1);assert.equal(launches,1);
+ native=null;const window=makePopup();assert.equal(await launcher.openExternal(()=>window),'unavailable');
+ assert.equal(window.closed,true);assert.equal(reads,2);assert.equal(launches,1);assert.equal(await launcher.canOpenExternal(),false);
+ current=false;assert.equal(await launcher.canOpenExternal(),false);assert.equal(reads,3);
+});
+test('legacy external availability adds no Native RPC and unknown Native errors never become supported',async()=>{
+ const legacy=fixture(async()=>({url:boot()}));await legacy.launcher.launch();assert.equal(await legacy.launcher.canOpenExternal(),true);assert.equal(legacy.calls.length,1);
+ const f=createAppLauncher({target,accountId:'account-a',shellUrl,isCurrent:()=>true,
+  request:async()=>({...scopedReply(),entry:{...target,origin:'https://demo.apps.example'}}),
+  resolveExternalEntry:async()=>{throw Error('offline');}});
+ await f.launch();await assert.rejects(f.canOpenExternal(),/offline/u);
+});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const popup = () => ({ opener: {}, closed: false, visits: [], location: { replace(url) { this.owner.visits.push(url); } }, close() { this.closed = true; } });
 function makePopup() { const value = popup(); value.location.owner = value; return value; }

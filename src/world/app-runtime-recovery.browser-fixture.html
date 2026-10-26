@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Изолированная проверка восстановления окна</title>
+<style>
+body{margin:0;font:14px system-ui;background:var(--sw-bg);color:var(--sw-ink)}
+.fixture-tools{padding:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fixture-tools button,.fixture-tools label{min-height:44px;display:flex;align-items:center}
+#fixture-status{margin:0;padding:4px 8px;font-size:12px;overflow-wrap:anywhere}
+#fixture-host{position:relative;display:flex;flex-direction:column;height:calc(100dvh - 140px);min-height:260px;overflow:hidden}
+</style>
+<div class="fixture-tools"><label><input id="fixture-native" type="checkbox">Вымышленный отдельный вход</label>
+<button id="fixture-mount">Новое открытие стенда</button><button id="fixture-release">Загрузить тестовый документ</button></div>
+<p id="fixture-status" role="status">Только локальный интерфейс и вымышленные ответы. Не проверяет вход рабочего аккаунта.</p>
+<main id="fixture-host" class="sw-app" aria-label="Изолированное приложение"></main>
+<script type="module" src="./app-runtime-recovery.browser-fixture.ts"></script>
+</html>

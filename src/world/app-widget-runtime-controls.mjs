@@ -12,7 +12,7 @@ export function createWidgetRuntimeControls(options) {
   control.classList.add(main?'sa-stage-runtime-action':'sa-widget-runtime-action');control.dataset.stageControl=main?'runtime-details':'widget-runtime';
   const mark=el('b','sa-widget-runtime-notice-mark');mark.setAttribute('aria-hidden','true');if(!main)control.append(mark);
   if(!message.id)message.id=`${main?'stage':'widget'}-runtime-message-${view.crypto.randomUUID()}`;
-  message.after(fallback);if(main){fallback.append(message,...(neutralExternal?[neutralExternal]:[]));(mainControlHost??fallback).append(control);}else fallback.append(control);
+  message.after(fallback);if(main){fallback.append(message,retry,...(neutralExternal?[neutralExternal]:[]));(mainControlHost??fallback).append(control);}else fallback.append(control);
   screen.classList.add(main?'has-stage-runtime-controls':'has-widget-runtime-controls');
   if(main){control.setAttribute('aria-haspopup','dialog');control.setAttribute('aria-expanded','false');}
   const live=()=>!disposed&&current()&&(!owner||owner.isCurrent());
@@ -43,7 +43,7 @@ export function createWidgetRuntimeControls(options) {
     record.text.textContent=message.textContent||'Если окно пустое, обновите его или откройте в новой вкладке.';
     record.retry.hidden=retry.hidden;record.retry.disabled=!canAct()||retry.disabled;
     record.currentEntry.hidden=currentEntry.hidden;record.currentEntry.disabled=!canAct()||currentEntry.disabled;
-    record.external.disabled=!canAct()||external.disabled;
+    record.external.hidden=external.hidden;record.external.disabled=!canAct()||external.disabled;
     record.dismiss.hidden=dismiss.hidden;record.dismiss.disabled=dismiss.disabled;
   }
   function open(){
@@ -83,7 +83,7 @@ export function createWidgetRuntimeControls(options) {
     }
     record.retry=button(main?'Открыть приложение заново':'Обновить окно','refresh','sw-button-quiet',()=>act(retry,true));
     record.currentEntry=button('Открыть актуальный вход','arrow','sw-button-primary',()=>act(currentEntry,true));
-    record.external=button('Открыть в новой вкладке','external','sw-button-quiet',()=>act(external,false));
+    record.external=button('Открыть в новой вкладке','external','sw-button-quiet',()=>act(external,true));
     record.dismiss=button('Скрыть сообщение','close','sw-button-quiet',()=>act(dismiss,true));
     actions.append(record.retry,record.currentEntry,record.external,record.dismiss);dialog.body.append(record.text,actions);
     record.timer=view.setInterval(()=>{if(active===record&&!valid(record))close(false);},250);
@@ -93,6 +93,8 @@ export function createWidgetRuntimeControls(options) {
   const observer=new view.MutationObserver(sync);
   observer.observe(message,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   observer.observe(runtimeActions,{subtree:true,attributes:true,attributeFilter:['hidden','disabled']});
+  observer.observe(retry,{attributes:true,attributeFilter:['hidden','disabled']});
+  observer.observe(external,{attributes:true,attributeFilter:['hidden','disabled']});
   if(neutralExternal)observer.observe(neutralExternal,{attributes:true,attributeFilter:['hidden','disabled']});
   observer.observe(runtime,{childList:true,attributes:true,attributeFilter:['aria-busy']});
   sync();
@@ -104,6 +106,7 @@ export function createWidgetRuntimeControls(options) {
     },
     dispose(){
       if(disposed)return;disposed=true;observer.disconnect();close(false);control.remove();if(main&&message.parentElement===fallback)fallback.after(message);
+      if(main&&retry.parentElement===fallback)runtimeActions.append(retry);
       if(neutralExternal?.parentElement===fallback)runtimeActions.append(neutralExternal);fallback.remove();
       screen.classList.remove(main?'has-stage-runtime-controls':'has-widget-runtime-controls');owner=header=null;
     },

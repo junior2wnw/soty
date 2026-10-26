@@ -71,6 +71,16 @@ test('compact recovery retains the full failure and refuses an action from an ob
  assert.equal(f.slot.children.length,0);assert.equal(f.externalRecovery.parentElement,f.runtimeActions);
 });
 
+test('main failure exposes the original retry inline and hides unsupported external in the notice and dialog',()=>{
+ const f=fixture();try{
+  const notice=f.screen.querySelector('.sa-stage-runtime-notice');assert.equal(f.options.retry.parentElement,notice);
+  f.options.retry.click();assert.equal(f.counts.retry,1);assert.equal(f.frame.parentElement,f.runtime);
+  f.options.external.hidden=true;f.externalRecovery.hidden=true;f.mutate();
+  const d=f.open(),action=f.action(d,'Открыть в новой вкладке');assert.equal(action.hidden,true);
+  action.click();assert.equal(f.counts.external,0,'hidden stale external action cannot dispatch');
+ }finally{f.api.dispose();}
+});
+
 test('actual Stage wiring preserves widget ports and routes main controls into their explicit mode',()=>{
  assert.equal(callback(mainProps,'presentation'),"'main'");
  for(const name of ['capture','matchesCapture','canAct'])assert.equal(callback(mainProps,name),callback(widgetProps,name),name);

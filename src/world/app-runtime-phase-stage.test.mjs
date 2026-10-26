@@ -26,10 +26,10 @@ const declaration=name=>{for(const n of statements)if(ts.isVariableStatement(n))
 const compiled=ts.transpileModule(`
 exports.harness=(host,options,state)=>{
  const view=host.view,runtime=host.runtime,controller=new AbortController(),message=host.message;
- let disposed=false,runtimeStarted=false,runtimePending=false,displayEpoch=0,releaseRuntimeDisplay=null,runtimeDisplay=null,entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0,frameGeneration=0;
+ let disposed=false,runtimeStarted=false,runtimePending=false,displayEpoch=0,releaseRuntimeDisplay=null,runtimeDisplay=null,entryRecoveryEpoch=0,entryRecoveryPending=false,lastRuntimeLaunchAt=0,frameGeneration=0,externalAvailability='unknown';
  let diagnosticOpen=false,closeDiagnostic=null,renderDiagnostic=null,routeGeneration=0,intent={},presentationVersion=0;
  const current=()=>state.current,matches=()=>true,app={appId:'app-synthetic',name:'Synthetic'},panel=host.panel;
- const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
+ const dismissRuntimeNotice={hidden:true},currentEntryRetry={hidden:true,disabled:false},externalRecovery={hidden:true},external={hidden:true},more={},recovery={bind(){state.calls.bind++;}};
  const stopAssist=()=>{state.calls.stopAssist++;},captureEntry=()=>{state.calls.captureEntry++;},ensureDiscussion=()=>{},showPanel=()=>{},applyPresentation=async()=>{},discussion=null;
  const closeMore=()=>{};
  const accountId='account-synthetic';
@@ -37,13 +37,15 @@ exports.harness=(host,options,state)=>{
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>state.binding??null};
+ const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>state.binding??null};
  const button=host.button,el=host.el,emptyState=()=>host.el('div'),createDialog=host.createDialog;
  const appLaunchFailure=()=>({title:'Existing error',detail:'Existing detail'});
  ${declaration('runtimeTrace')}
  ${declaration('refresh')}
  ${declaration('recoveryRetry')}
  ${fn('resetRuntimeDisplay')}
+ ${fn('syncExternalControls')}
+ ${fn('checkExternalAvailability')}
  ${fn('watchRuntimeDisplay')}
  ${fn('launchRuntime')}
  ${fn('openRuntimeDiagnostics')}
@@ -95,7 +97,7 @@ test('actual launch wiring observes before src/insert and preserves existing loa
  const run=async diagnostic=>{const f=fixture();if(diagnostic)f.h.api.arm();f.h.refresh();await flush();const frame=f.h.frame();assert.ok(frame);if(diagnostic){assert.ok(f.state.order.indexOf('listen:iframe:load')<f.state.order.indexOf('src'));assert.ok(f.state.order.indexOf('src')<f.state.order.lastIndexOf('insert:runtime'));}
    frame.emit('load');f.tick(12_001);assert.equal(f.state.draft,'retained discussion draft');return f;};
  const off=await run(false),on=await run(true);assert.deepEqual(on.state.calls,off.state.calls);assert.deepEqual(on.state.messages,off.state.messages);assert.equal(on.state.calls.launch,1);assert.equal(on.h.api.snapshot().events.some(x=>x.phase==='root_timeout'),false);assert.equal(on.h.api.snapshot().observation,'partial');
- const late=fixture();late.h.api.arm();late.h.refresh();await flush();late.tick(12_000);assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);late.h.frame().emit('load');assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);assert.equal(late.h.api.snapshot().observation,'partial');
+ const late=fixture();late.h.api.arm();late.h.refresh();await flush();late.tick(12_000);assert.match(late.state.messages.at(-1),/Загрузка окна не подтверждена/u);late.h.frame().emit('load');assert.match(late.state.messages.at(-1),/Окно загружено/u);assert.equal(late.h.api.snapshot().observation,'partial');
 });
 
 test('actual route reset rejects old peers and erases diagnostics without remounting iframe or touching drafts',async()=>{

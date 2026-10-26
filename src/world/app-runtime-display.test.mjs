@@ -71,12 +71,28 @@ test('first document load sends one bounded watch before a fast ready response c
  assert.equal(f.sent.length,2);assert.equal(f.calls(),1);
 });
 
-test('an old load cannot send a watch after account/route loss, disposal, pagehide or the deadline',()=>{
- for(const mode of ['stale','dispose','pagehide','timeout']){
+test('an old load cannot send a watch after account/route loss, disposal or pagehide',()=>{
+ for(const mode of ['stale','dispose','pagehide']){
   const f=displayFixture();f.tick(0);
   if(mode==='stale')f.stale();if(mode==='dispose')f.api.dispose();if(mode==='pagehide')f.view.emit('pagehide');if(mode==='timeout')f.tick(12000);
   const before=f.sent.length;f.frame.emit('load');assert.equal(f.sent.length,before);assert.equal(f.calls(),0);
  }
+});
+
+test('first late document load replaces the stale no-load warning without claiming authentication',async()=>{
+ for(const answer of ['unsupported','pending','unknown','ready','denied']){
+  const f=displayFixture(answer);f.tick(12000);assert.match(f.api.snapshot().message,/Загрузка окна не подтверждена/u);
+  const probes=f.sent.length;f.frame.emit('load');await tickFlush();assert.equal(f.sent.length,probes,'deadline does not restart Boot probes');
+  assert.equal(f.calls(),1);assert.equal(f.api.snapshot().busy,false);
+  if(answer==='unsupported')assert.equal(f.api.snapshot().phase,'loaded');
+  else if(answer==='ready'||answer==='denied')assert.equal(f.api.snapshot().phase,answer);
+  else {assert.equal(f.api.snapshot().phase,'unconfirmed');assert.match(f.api.snapshot().message,/Окно загружено/u);}
+  f.frame.emit('load');await tickFlush();assert.equal(f.calls(),1,'duplicate late loads do not replay reads');
+ }
+});
+test('dismissed timeout cannot be revived by a late load or frame assertion',async()=>{
+ const f=displayFixture('ready');f.tick(12000);assert.equal(f.api.dismiss(),true);
+ f.frame.emit('load');f.phase('boot_navigation');await tickFlush();assert.equal(f.calls(),0);assert.equal(f.api.snapshot().message,'');
 });
 
 test('load/navigation arriving during a pending Root read coalesce into one bounded fresh read',async()=>{

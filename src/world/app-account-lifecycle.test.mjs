@@ -997,8 +997,9 @@ for (const profile of ['legacy', 'scoped']) test(`${profile} widget no-load has 
   assert.equal(separate.hidden, false, 'an unconfirmed frame exposes the existing explicit external-launch action');
   f.app.main.querySelector('iframe').emit('load'); await turn();
   assert.equal(separate.hidden, false, 'a late load cannot attest Native paint or clear an unconfirmed notice');
-  assert.match(message.textContent, /не подтверждена/u);
-  assert.equal(calls, 1); assert.deepEqual(f.requests, []); assert.equal(f.timers.size, 0);
+  if (profile === 'legacy') assert.equal(message.hidden, true, 'late Native document load stays neutral, without an authenticated-paint assertion');
+  else assert.match(message.textContent, /Окно загружено, но запуск приложения не подтверждён/u);
+  assert.equal(calls, 1); assert.deepEqual(f.requests.map(value => value.op), profile === 'scoped' ? ['apps.scoped.context'] : []); assert.equal(f.timers.size, 0);
 });
 
 for (const profile of ['legacy', 'scoped']) test(`${profile} widget load settles transport only and keeps manual recovery after load-to-blank`, async t => {
@@ -1069,7 +1070,7 @@ test('actual stage uses one fresh launch per original open and offers a manual a
   const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], { appId: stageAppId, domainId: stageDomainId, path: '/', expectedAccountId: 'account-A', instanceId: 'main' });
   bootHint(f, second)(); await turn(); assert.equal(calls.length, 2);
-  const actions = f.app.main.querySelector('.sa-runtime-actions'), retry = actions.querySelector('.sa-recovery-retry');
+  const actions = f.app.main.querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
   assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
   assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
   assert.equal(retry.hidden, false);
@@ -1131,7 +1132,7 @@ test('actual stage rejects source drift and lost ACK with a clear manual recover
     });
     const original = f.app.main.querySelector('iframe'); bootHint(f, original)(); await turn();
     assert.equal(f.app.main.querySelector('iframe'), original); assert.equal(calls, 2);
-    const actions = f.app.main.querySelector('.sa-runtime-actions'), retry = actions.querySelector('.sa-recovery-retry');
+    const actions = f.app.main.querySelector('.sa-stage-runtime-notice'), retry = actions.querySelector('.sa-recovery-retry');
     assert.equal(retry.parent, actions); assert.equal(retry.textContent, 'Открыть приложение заново');
     assert.notEqual(retry, f.app.main.querySelector('.sa-external-recovery'));
     assert.equal(retry.hidden, false);
