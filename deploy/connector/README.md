@@ -240,6 +240,11 @@ reviews, personal-agent, account-AI and installed-module inputs. The new field i
 closed to `source` and `sha256`. The actual existing startup loader and profile
 validators must accept the NEW file. It must append exactly one approved profile
 and preserve every prior profile, value and order. Neither file is rewritten.
+After a successful switch the NEW file is a live production bind, even if its
+filename or parent directory contains `candidate` or `staging`. Retain it and
+every other live bind source. Derive the next plan and cleanup exclusions from
+the actual current container mounts and loaded registry, not the old filename.
+
 Both files' private bytes, identities and parent chains enter the existing
 encrypted witness. Only the NEW file becomes the candidate's fixed RO bind at
 `/run/config/soty-selected-embed.json`. The OLD actual bind and loaded registry
