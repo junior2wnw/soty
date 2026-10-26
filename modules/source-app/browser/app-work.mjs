@@ -37,6 +37,9 @@ export function createSotyAppWork({ parentOrigin, isDirty, save, view = globalTh
     })();
   };
   view.addEventListener('message', receive);
+  // An app may initialise after the iframe load event. Ask the already mounted
+  // shell for its current challenge without supplying identity or authority.
+  view.parent.postMessage({ schema: SCHEMA, type: 'hello' }, parentOrigin);
   return Object.freeze({
     changed() { if (disposed) return; revision++; if (!session) return;
       try { send({ type: 'changed', dirty: read(), revision }); }

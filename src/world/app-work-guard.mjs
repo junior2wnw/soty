@@ -14,7 +14,13 @@ export function createAppWorkGuard({ view, getFrame, isCurrent, onStatus = () =>
   const receive = event => {
     const data = event.data;
     if (!live() || event.source !== active.frame.contentWindow || event.origin !== active.origin || !data ||
-        data.schema !== SCHEMA || data.session !== active.session || !['state', 'changed', 'reply'].includes(data.type) ||
+        data.schema !== SCHEMA) return;
+    if (data.type === 'hello') {
+      if (!active.session) active.session = view.crypto.randomUUID();
+      try { send({ type: 'probe' }); } catch { /* No authority or state is inferred from a failed probe. */ }
+      return;
+    }
+    if (data.session !== active.session || !['state', 'changed', 'reply'].includes(data.type) ||
         !Number.isSafeInteger(data.revision) || data.revision < 0 || data.revision < revision ||
         (data.error !== true && typeof data.dirty !== 'boolean')) return;
     if (data.type === 'reply' && (!pending || data.requestId !== pending.id)) return;
