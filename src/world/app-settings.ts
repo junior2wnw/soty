@@ -45,6 +45,7 @@ function settingsError(reason: unknown): string {
     app_source_invalid_target: 'Данные источника не удалось подтвердить. Обновите состояние.',
     native_pair_action_required: 'Приложение имеет отдельный сайт. Выберите, сохранить его или отключить, и проверьте источник заново.',
     app_source_native_alias_required: 'Выберите действующий адрес отдельного сайта и проверьте источник заново.',
+    app_native_entry_domain_required: 'Добавьте именной адрес для входа Сот в разделе «Доступ и публикация», включите его, затем проверьте источник.',
     app_native_entry_origin_invalid: 'Этот адрес не совпадает с проверенным отдельным входом проекта. Выберите его прежний адрес; он должен отличаться от адреса приложения в Сотах.',
     app_native_entry_target_invalid: 'Для отдельного сайта нужен прежний источник на том же устройстве и другой порт. Проверьте выбранный источник.',
     app_native_exposure_ack_required: 'Подтвердите показанное действие с отдельным сайтом.',
@@ -438,9 +439,22 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceDetails = keyed(el('details', 'sw-app-settings-details sw-app-settings-source-editor'), 'source-editor');
   const sourceSummary = el('summary', '', 'Изменить источник');
   const sourceForm = el('form', 'sw-app-settings-source-form');
+  sourceForm.id = `app-source-${crypto.randomUUID()}`;
+  const sourceLabel = (label: HTMLElement, control: HTMLElement, caption: Element): void => {
+    control.id = `${sourceForm.id}-${control.dataset.settingsKey}`;
+    caption.id = `${control.id}-label`;
+    label.setAttribute('for', control.id);
+    control.setAttribute('aria-labelledby', caption.id);
+  };
+  const sourceField = (label: string, control: HTMLElement): HTMLElement => {
+    const field = labeledField(label, control);
+    // A select's options are not part of its visible field caption.
+    sourceLabel(field, control, field.querySelector('.sw-field-label')!);
+    return field;
+  };
   const sourceProfile = keyed(el('select', 'sw-select'), 'source-profile');
   const profileOptions = new Map<string, HTMLOptionElement>();
-  const sourceProfileField = labeledField('Подключение', sourceProfile);
+  const sourceProfileField = sourceField('Подключение', sourceProfile);
   const sourceProfileHint = el('p', 'sw-muted sw-app-settings-hint', 'Подготовленное подключение выбранного пространства. Переключение изменит источник всего приложения. Доступ помощнику разрешается отдельно.');
   sourceProfile.addEventListener('change', () => {
     if (!sourceModel) return;
@@ -457,14 +471,14 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceSelect = keyed(el('select', 'sw-select'), 'source-device'); sourceSelect.required = true;
   const deviceOptions = new Map<string, HTMLOptionElement>();
   const reloadDevices = keyed(iconButton('Обновить компьютеры с приложениями', 'refresh', () => { void loadSourceDevices(); }), 'source-devices-refresh');
-  const deviceRow = el('div', 'sw-app-settings-device-row'); deviceRow.append(labeledField('Компьютер с приложением', sourceSelect), reloadDevices);
+  const deviceRow = el('div', 'sw-app-settings-device-row'); deviceRow.append(sourceField('Компьютер с приложением', sourceSelect), reloadDevices);
   const deviceHint = el('p', 'sw-muted sw-app-settings-hint'), deviceFailure = el('p', 'sw-error'); deviceFailure.setAttribute('role', 'alert');
   const sourcePortInput = keyed(el('input', 'sw-input'), 'source-port');
   sourcePortInput.type = 'number'; sourcePortInput.min = '1024'; sourcePortInput.max = '65535'; sourcePortInput.step = '1'; sourcePortInput.inputMode = 'numeric'; sourcePortInput.required = true;
   const sourcePathInput = keyed(textInput('/', '/', 8192), 'source-path');
   sourcePathInput.required = true; sourcePathInput.pattern = '/.*'; sourcePathInput.autocomplete = 'off'; sourcePathInput.spellcheck = false; sourcePathInput.setAttribute('autocapitalize', 'off');
   const sourceFields = el('div', 'sw-app-settings-source-fields');
-  sourceFields.append(labeledField('Порт проекта', sourcePortInput), labeledField('Начальная страница', sourcePathInput));
+  sourceFields.append(sourceField('Порт проекта', sourcePortInput), sourceField('Начальная страница', sourcePathInput));
   const sourceAudience = keyed(el('select', 'sw-select'), 'source-audience');
   for (const [value, label] of [['restricted', 'Владелец и выбранные люди'], ['anyone', 'Все по включённым ссылкам']] as const) {
     const option = el('option', '', label); option.value = value; sourceAudience.append(option);
@@ -481,12 +495,12 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   for (const [value, label] of [['keep', 'Сохранить отдельный сайт'], ['remove', 'Отключить отдельный сайт']] as const) {
     const option = el('option', '', label); option.value = value; nativeEntryChoice.append(option);
   }
-  const nativeEntryField = labeledField('Отдельный сайт после переключения', nativeEntryChoice);
+  const nativeEntryField = sourceField('Отдельный сайт после переключения', nativeEntryChoice);
   nativeEntryChoice.addEventListener('change', () => { sourceModel?.patch({ nativeEntryMode: nativeEntryChoice.value === 'remove' ? 'remove' : 'keep' }); changedSource(); });
   const nativeAliasChoice = keyed(el('select', 'sw-select'), 'source-native-domain');
   const nativeAliasPlaceholder = el('option', '', 'Выберите прежний адрес сайта'); nativeAliasPlaceholder.value = ''; nativeAliasChoice.append(nativeAliasPlaceholder);
   const nativeAliasOptions = new Map<string, HTMLOptionElement>();
-  const nativeAliasField = labeledField('Адрес отдельного сайта', nativeAliasChoice), nativeChoiceHint = el('p', 'sw-muted sw-app-settings-hint');
+  const nativeAliasField = sourceField('Адрес отдельного сайта', nativeAliasChoice), nativeChoiceHint = el('p', 'sw-muted sw-app-settings-hint');
   const nativeChooseAddress = keyed(button('Добавить или включить именной адрес', 'link', 'sw-button-quiet', () => {
     if (!current() || !model) return;
     selectSettingsSection('access'); claimDetails.open = true; addresses.tabIndex = -1;
@@ -508,8 +522,10 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const sourceCheckedTarget = el('p', 'sw-app-settings-source-target'), sourceResultHint = el('p', 'sw-muted sw-app-settings-hint', 'Ответ не подтверждает исправность всех страниц проекта.');
   const sourceAck = el('label', 'sw-app-settings-ack'), sourceAckInput = keyed(el('input'), 'source-public-ack'), sourceAckText = el('span'); sourceAckInput.type = 'checkbox';
   sourceAckInput.addEventListener('change', () => { sourceModel?.patch({ exposureConfirmed: sourceAckInput.checked }); render(); }); sourceAck.append(sourceAckInput, sourceAckText);
+  sourceLabel(sourceAck, sourceAckInput, sourceAckText);
   const nativeAck = el('label', 'sw-app-settings-ack'), nativeAckInput = keyed(el('input'), 'source-native-ack'), nativeAckText = el('span'); nativeAckInput.type = 'checkbox';
   nativeAckInput.addEventListener('change', () => { sourceModel?.patch({ nativeConfirmed: nativeAckInput.checked }); render(); }); nativeAck.append(nativeAckInput, nativeAckText);
+  sourceLabel(nativeAck, nativeAckInput, nativeAckText);
   sourceResult.append(sourceResultHeader, sourceCheckedTarget, sourceResultHint, sourceAck, nativeAck, sourcePromote);
   const sourceActions = el('div', 'sw-app-settings-actions'); sourceActions.append(sourceCheck);
   const sourceFailure = el('p', 'sw-error'), sourceFeedback = el('p', 'sw-app-settings-notice'); sourceFailure.setAttribute('role', 'alert'); sourceFeedback.setAttribute('role', 'status');
@@ -520,7 +536,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     void perform(async () => { try { await mutation(undefined, undefined, undefined, pending); } catch (reason) { if (current()) sourceError = settingsError(reason); } });
   }), 'source-pending-retry');
   sourcePending.append(el('p', '', 'Результат пока не подтверждён. Прежний запрос сохранён.'), sourcePendingRetry);
-  sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, labeledField('Доступ после переключения', sourceAudience),
+  sourceForm.append(sourceProfileField, sourceProfileHint, deviceRow, deviceHint, deviceFailure, sourceFields, sourceField('Доступ после переключения', sourceAudience),
     nativeEntryField, nativeAliasField, nativeChoiceHint, nativeChooseAddress, sourceAccessBlock, sourceConflict, sourceActions, sourceResult, sourceFailure, sourceFeedback, sourcePending);
   sourceForm.addEventListener('submit', event => { event.preventDefault(); void checkSource(); });
   sourceDetails.append(sourceSummary, sourceForm);

@@ -12,10 +12,10 @@
 <strong>Изолированный стенд настроек источника</strong>
 <p class="qa-label">Настоящий компонент и диалог; вымышленные ответы. Сеть, рабочие приложения и аккаунты не используются. Проверка событий DOM не заменяет ручную проверку клавиатуры и экрана.</p>
 <div class="qa-controls">
-  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="initial">Первое подключение с сохранением сайта</option><option value="canonical">Первое подключение без именного адреса</option><option value="paired">Приложение и отдельный сайт</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="initial">Первое подключение с сохранением сайта</option><option value="unbound">Нет адреса для входа Сот</option><option value="canonical">Первое подключение без именного адреса</option><option value="paired">Приложение и отдельный сайт</option><option value="selected">Готовое подключение пространства</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
   <button id="qa-open">Открыть</button><button id="qa-reset">Сбросить только стенд</button><button id="qa-tests">Проверить сценарии DOM</button><button id="qa-theme">Сменить тему</button>
 </div>
-<p id="qa-results" role="status" data-test-status="idle">Готов к запуску.</p>
+<p id="qa-results" role="status" data-test-status="idle" data-prepare-calls="0" data-promote-calls="0">Готов к запуску.</p>
 <script type="module">
 import './world.css';
 import { createPalette } from './theme/palette.mjs';
@@ -55,16 +55,19 @@ function inspect(){const now=Date.now(),active=backend.app.state==='enabled';ret
     limits:{perApp:5,perAccount:30,usedByApp:1,usedByAccount:1}},
   publication:{...(backend.nativeEntry?{nativeEntry:clone(backend.nativeEntry)}:{}),policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:activeIds(),activeTargetRevision:backend.source.revision},
   source:{...clone(backend.source),requiredBindingVersion:backend.source.revision===1?1:2,binding:{state:active?'bound':'unavailable'},
-    ...(['selected','initial','canonical'].includes(mode.value)&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
+    ...(['selected','initial','unbound','canonical'].includes(mode.value)&&backend.source.profile===profile?{integrations:[{profile:'soty.selected-human-embed.v2',entryPath:'/embed'}]}:{}),
     observation:{state:active?'responding':'unknown',observedAt:active?now:null,freshUntil:active?now+45000:null,evidence:active?'connector-v2-observation':'not-observed'}},
   actions:{canEdit:active,canPublish:active,canPreview:active,canReserveName:active}};}
 function summary(){return {appId,policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:activeIds(),activeTargetRevision:backend.source.revision,requiredBindingVersion:backend.source.revision===1?1:2,appState:backend.app.state};}
 const api={async request(op,args){
   if(args.expectedAccountId!==accountId||args.appId&&args.appId!==appId)fail('ACTIVE_PROFILE_CHANGED');calls.push({op,args:clone(args)});
+  result.dataset.prepareCalls=String(calls.filter(value=>value.op==='apps.source.prepare').length);
+  result.dataset.promoteCalls=String(calls.filter(value=>value.op==='apps.source.promote').length);
   if(op==='apps.inspect'){if(failedInspections>0){failedInspections--;throw new TypeError('synthetic inspection response unavailable');}return inspect();}
   if(op==='apps.devices')return {devices:clone(mode.value==='missing'?[deviceB]:[deviceA,deviceB])};
   if(op==='apps.source.history')return {schema:'soty.app-source-history.v1',...summary(),targets:clone([...backend.targets].reverse().slice(0,args.limit)),nextCursor:null};
   if(op==='apps.source.prepare'){
+    if(mode.value==='unbound')throw Object.assign(new Error('Synthetic unbound Source address'),{code:'app_native_entry_domain_required',status:403});
     if(args.expectedPolicyEpoch!==backend.epoch||args.expectedTargetRevision!==backend.source.revision)fail('app_publication_revision_conflict');
     const chosen=args.source??backend.targets.find(value=>value.revision===args.targetRevision);if(!chosen)fail('apps_source_target_unavailable');
     const device=[deviceA,deviceB].find(value=>value.hostDeviceId===chosen.hostDeviceId&&value.connectorId===chosen.connectorId);if(!device)fail('apps_device_not_owned');
