@@ -16,6 +16,54 @@ from urllib.parse import urlsplit
 import httpx
 
 
+_NATIVE_ENTRY_HTML = """<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Не удалось открыть приложение</title>
+<style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f5f7;color:#17212b;font:16px/1.55 system-ui,sans-serif}main{box-sizing:border-box;width:min(100%,480px);padding:28px}h1{font-size:clamp(24px,5vw,32px);line-height:1.2;margin:0 0 16px}p{margin:0 0 24px}a{display:inline-block;padding:12px 18px;border-radius:12px;background:#145da0;color:#fff;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid currentColor;outline-offset:4px}@media(prefers-color-scheme:dark){body{background:#161b22;color:#f0f4f8}}</style>
+<main><h1>Не удалось открыть приложение</h1><p>Сейчас не получилось проверить доступ. Начните открытие заново. Если до этого выполняли действие, сначала проверьте его результат.</p><a href="/" rel="noreferrer">Открыть приложение заново</a></main></html>""".encode('utf-8')
+_ERROR_VARY = b'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest'
+
+
+def _document_navigation(scope):
+    if scope.get('method') != 'GET':
+        return False
+    headers = {name.lower(): value.lower() for name, value in scope.get('headers', ())}
+    if headers.get(b'sec-fetch-mode', b'navigate') != b'navigate' or headers.get(b'sec-fetch-dest', b'document') not in (b'document', b'iframe', b'frame'):
+        return False
+    accept = b','.join(value.lower() for name, value in scope.get('headers', ()) if name.lower() == b'accept')
+    if len(accept) > 4096:
+        return False
+    html = False
+    for item in accept.split(b','):
+        kind, *parameters = item.strip().split(b';')
+        quality = 1.0
+        for parameter in parameters:
+            key, _, value = parameter.strip().partition(b'=')
+            if key == b'q':
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0
+        if not 0 < quality <= 1:
+            continue
+        if kind == b'application/json':
+            return False
+        html |= kind in (b'text/html', b'application/xhtml+xml')
+    return html
+
+
+async def _send_entry_failure(scope, send, status, data):
+    document = _document_navigation(scope)
+    body = _NATIVE_ENTRY_HTML if document else data
+    headers = [(b'content-type', b'text/html; charset=utf-8' if document else b'application/json'),
+               (b'cache-control', b'no-store'), (b'x-content-type-options', b'nosniff'), (b'vary', _ERROR_VARY)]
+    if document:
+        headers.append((b'referrer-policy', b'no-referrer'))
+        headers.append((b'content-security-policy', b"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"))
+    await send({'type': 'http.response.start', 'status': status, 'headers': headers})
+    await send({'type': 'http.response.body', 'body': body})
+
+
 class NativeEntryError(Exception):
     def __init__(self, code, status=403):
         super().__init__(code)
@@ -306,9 +354,7 @@ class NativeEntryMiddleware:
             endpoint_task.uncancel()
             if not is_ws and not started:
                 data = b'{"code":"native_entry_policy_closed"}'
-                await raw_send({'type': 'http.response.start', 'status': 503,
-                    'headers': [(b'content-type', b'application/json'), (b'cache-control', b'no-store')]})
-                await raw_send({'type': 'http.response.body', 'body': data})
+                await _send_entry_failure(scope, raw_send, 503, data)
             elif not is_ws:
                 raise
         except NativeEntryError as error:
@@ -316,9 +362,7 @@ class NativeEntryMiddleware:
                 await policy_close(error.code)
             elif not started:
                 data = json.dumps({'code': error.code}).encode()
-                await raw_send({'type': 'http.response.start', 'status': error.status,
-                    'headers': [(b'content-type', b'application/json'), (b'cache-control', b'no-store')]})
-                await raw_send({'type': 'http.response.body', 'body': data})
+                await _send_entry_failure(scope, raw_send, error.status, data)
             else:
                 raise  # Headers already sent: terminate, never append a private error body.
         finally:

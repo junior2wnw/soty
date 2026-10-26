@@ -17,3 +17,5 @@ export { createNativeEntryGuard } from './native-entry-guard.mjs';
 export { createSqliteRootWorkspaceHost, SQLITE_ROOT_WORKSPACE_LIMITS } from './sqlite-root-workspace-host.mjs';
 export { createRootWorkspaceServer } from './workspace-server.mjs';
 export { createSourceReadinessObserver } from './operation-observer.mjs';
+
+export { sendNativeEntryHttpError } from './native-entry-http-error.mjs';

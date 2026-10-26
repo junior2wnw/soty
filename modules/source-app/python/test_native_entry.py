@@ -34,6 +34,8 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
             self.requests.append((await reader.readuntil(b'\r\n\r\n')).decode())
             if self.gate is not None:
                 await self.gate.wait()
+            if self.mode == 'disconnect':
+                return
             if self.mode == 'slow':
                 await asyncio.sleep(.12)
             if self.mode == 'error':
@@ -156,6 +158,92 @@ class NativePolicyTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, .3)
         self.assertEqual(len(self.guard._streams), 0)
         await asyncio.sleep(.21)  # The independently bounded close callback finishes too.
+
+
+    async def test_document_failure_is_static_503_and_never_replays_callback_query(self):
+        self.mode = 'disconnect'
+        calls, messages = [], []
+        async def app(*_args):
+            calls.append(True)
+        async def send(message):
+            messages.append(message)
+        scope = {'type': 'http', 'path': '/auth/callback', 'method': 'GET',
+                 'query_string': b'code=PRIVATE_CODE&state=PRIVATE_STATE&access_token=PRIVATE_BEARER',
+                 'headers': [(b'accept', b'text/html'), (b'sec-fetch-mode', b'navigate'), (b'sec-fetch-dest', b'document')]}
+        await NativeEntryMiddleware(app, self.guard)(scope, None, send)
+        self.assertEqual(calls, [])
+        self.assertEqual(messages[0]['status'], 503)
+        headers = dict(messages[0]['headers'])
+        self.assertEqual(headers[b'content-type'], b'text/html; charset=utf-8')
+        self.assertEqual(headers[b'cache-control'], b'no-store')
+        self.assertEqual(headers[b'referrer-policy'], b'no-referrer')
+        self.assertEqual(headers[b'x-content-type-options'], b'nosniff')
+        self.assertIn(b'Accept', headers[b'vary'])
+        self.assertIn(b"default-src 'none'", headers[b'content-security-policy'])
+        self.assertNotIn(b'frame-ancestors', headers[b'content-security-policy'])
+        self.assertNotIn(b'x-frame-options', headers)
+        body = messages[1]['body']
+        self.assertIn(b'href="/" rel="noreferrer"', body)
+        for value in (b'PRIVATE_', b'/auth/callback', b'<script', b'<form', b'http-equiv', b'native_entry_policy_unavailable'):
+            self.assertNotIn(value, body)
+        self.assertNotIn(b'location', headers)
+        self.assertNotIn(b'refresh', headers)
+
+    async def test_api_head_write_and_non_navigation_errors_keep_json_and_status(self):
+        self.mode = 'disconnect'
+        async def app(*_args):
+            self.fail('Denied application must never execute')
+        for method, headers in [('POST', [(b'accept', b'text/html')]), ('HEAD', [(b'accept', b'text/html')]),
+                                ('GET', [(b'accept', b'application/json')]), ('GET', [(b'accept', b'text/html;q=0')]),
+                                ('GET', [(b'accept', b'text/html'), (b'sec-fetch-mode', b'cors')]),
+                                ('GET', [(b'accept', b'application/json'), (b'accept', b'text/html')])]:
+            messages = []
+            async def send(message):
+                messages.append(message)
+            await NativeEntryMiddleware(app, self.guard)({'type': 'http', 'path': '/api/write', 'method': method, 'headers': headers}, None, send)
+            self.assertEqual(messages[0]['status'], 503)
+            self.assertEqual(dict(messages[0]['headers'])[b'content-type'], b'application/json')
+            self.assertEqual(json.loads(messages[1]['body']), {'code': 'native_entry_policy_unavailable'})
+
+    async def test_denied_document_keeps_403_and_never_executes_app(self):
+        self.mode = 'error'
+        messages = []
+        async def app(*_args):
+            self.fail('Revoked policy cannot execute app')
+        async def send(message):
+            messages.append(message)
+        await NativeEntryMiddleware(app, self.guard)({'type': 'http', 'path': '/', 'method': 'GET', 'headers': [(b'accept', b'text/html')]}, None, send)
+        self.assertEqual(messages[0]['status'], 403)
+        self.assertEqual(dict(messages[0]['headers'])[b'content-type'], b'text/html; charset=utf-8')
+
+    async def test_policy_closed_during_document_work_uses_one_public_503_before_headers(self):
+        await self.guard.acquire()
+        messages, entered = [], []
+        async def app(_scope, _receive, _send):
+            entered.append(True)
+            self.mode = 'error'
+            await asyncio.sleep(10)
+        async def send(message):
+            messages.append(message)
+        await asyncio.wait_for(NativeEntryMiddleware(app, self.guard)({'type': 'http', 'path': '/', 'method': 'GET',
+            'headers': [(b'accept', b'text/html')]}, None, send), 1)
+        self.assertEqual(entered, [True])
+        self.assertEqual([m['type'] for m in messages], ['http.response.start', 'http.response.body'])
+        self.assertEqual(messages[0]['status'], 503)
+        self.assertEqual(dict(messages[0]['headers'])[b'content-type'], b'text/html; charset=utf-8')
+
+    async def test_policy_failure_after_headers_never_appends_a_second_response(self):
+        await self.guard.acquire()
+        messages = []
+        async def app(_scope, _receive, send):
+            await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            self.mode = 'error'
+            await asyncio.sleep(10)
+        async def send(message):
+            messages.append(message)
+        with self.assertRaises(asyncio.CancelledError):
+            await NativeEntryMiddleware(app, self.guard)({'type': 'http', 'path': '/', 'method': 'GET', 'headers': [(b'accept', b'text/html')]}, None, send)
+        self.assertEqual([m['type'] for m in messages], ['http.response.start'])
 
 
 if __name__ == '__main__':

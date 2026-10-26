@@ -720,3 +720,9 @@ sealed receipt recovery after Native restart/new Root frame. Its test-owned
 Native private envelope retains the original SQL bytes; another Root person
 cannot recover or read that person's records. Clock expiry is controlled, not
 a long wall-clock uptime claim.
+
+### Native policy failure navigation
+
+Python `NativeEntryMiddleware` presents a finite error page for an explicit HTML document GET; its HTTP403/503 remains unchanged. Node hosts can call `sendNativeEntryHttpError(req,res,error)` from their existing HTTP error handler and keep their own fallback when it returns false. API/HEAD and WebSocket handling retain their existing denial semantics; a started response is terminated, never replaced with an error document.
+
+The single manual link opens only `/` on the current Native origin. It does not reuse callback/code/state/query/bearer URLs, auto-refresh, repeat an effect, create a session or extend a lease. After an uncertain action, check its existing receipt/result before trying the action again. The two bindings embed the same static page; no unpinned runtime template is loaded. This UX does not diagnose a transport timeout or change the fixed policy/lease bounds.

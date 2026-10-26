@@ -165,3 +165,6 @@ export function createSourceReadinessObserver(options:{directory:string;profile:
     lastObservation:SourceOperationObservation|null;writeStatus:'not_attempted'|'recorded'|'observation_unavailable';
     currentAuthority:'not_checked';clientAcknowledgement:'not_observed';connected:false;releaseReady:false};close():void;
 };
+
+/** Public error UI only; call from the existing HTTP error handler. No auth retry or authority. */
+export function sendNativeEntryHttpError(request:IncomingMessage,response:ServerResponse,error:unknown):boolean;
