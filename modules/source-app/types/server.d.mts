@@ -1,4 +1,10 @@
 import type {IncomingMessage, ServerResponse} from 'node:http';
+/** consume must atomically and durably mark a nonce as used until its expiry. */
+export declare function createRelayIdentityVerifier(options:{issuer:string;appId:string;fetch?:typeof globalThis.fetch;clock?:()=>number;
+  consume:(id:string,expiresAt:number)=>boolean|Promise<boolean>}):(request:IncomingMessage)=>Promise<Readonly<{issuer:string;subject:string}>>;
+/** Use a dedicated SQLite file on one local filesystem; it is not an app data database. */
+export declare function createSqliteRelayNonceStore(options:{databasePath:string;maxItems?:number;busyTimeoutMs?:number;clock?:()=>number}):Readonly<{
+  consume(id:string,expiresAt:number):boolean;close():void}>;
 import type {SourceRpProfile, SourceRpMarker, SourceRpCurrentProof} from './source-rp.d.mts';
 export {createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE} from './source-rp.mjs';
 export interface SourceProfile {schema:'soty.selected-human-embed.v2';appId:string;connector:{linkId:string;hostDeviceId:string;connectorId:string};target:{revision:number;digest:string};

@@ -114,7 +114,7 @@ const respond = (req, status = 200) => req.emit('response', { statusCode: status
 
 test('legacy negotiation remains functional, and new auth advertises both binding versions', async t => {
   const app = await upstream(t), f = await fixture(t, { mode: 1 });
-  assert.deepEqual(f.frames.find(frame => frame.type === 'auth').capabilities, { targetBindingVersions: [1, 2] });
+  assert.deepEqual(f.frames.find(frame => frame.type === 'auth').capabilities, { targetBindingVersions: [1, 2], relayIdentity: true });
   f.send({ type: 'sync', apps: [{ id: appId(1), port: app.port, entryPath: '/' }] });
   await until(() => f.frames.some(frame => frame.type === 'observation'));
   const result = await f.exchange({ target: target(1, app.port) }, { path: '/old', method: 'POST', body: 'kept' });

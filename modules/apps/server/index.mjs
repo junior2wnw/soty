@@ -49,7 +49,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
-  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
+  identitySignTimeoutMs = 8000, readAppGuide } = {}) {
   assertApps(typeof allowCoverMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
   assertApps(coverDecoder === undefined || coverDecoder && typeof coverDecoder.decode === 'function'
     && typeof withCurrentContacts === 'function' && typeof withWorldAuthorityFence === 'function'
@@ -97,6 +98,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
+  assertApps(signRelayIdentity===undefined || typeof signRelayIdentity==='function','app_identity_configuration_invalid',503);
+  assertApps(Number.isSafeInteger(identitySignTimeoutMs) && identitySignTimeoutMs >= 1 && identitySignTimeoutMs <= 8000,
+    'app_identity_configuration_invalid', 503);
   assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
     'app_scoped_identity_witness_unavailable',503);
   assertApps(readAppGuide === undefined || typeof readAppGuide === 'function', 'app_guide_configuration_invalid', 500);
@@ -581,7 +585,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (notify) send(stream.channel, { type: 'cancel', id: stream.id, error });
     if (stream.kind === 'ws') { if (error === 'app_stream_complete') stream.socket.end(); else stream.socket.destroy(); }
     else if (!stream.res.writableEnded) {
-      if (!stream.res.headersSent) respondAppFailure(stream.req, stream.res, error === 'app_access_revoked' ? 403 : error === 'app_offline' ? 503 : 502, error, false);
+      if (!stream.res.headersSent) respondAppFailure(stream.req, stream.res, error === 'app_access_revoked' ? 403
+        : ['app_offline', 'app_identity_unavailable'].includes(error) ? 503 : 502, error, false);
       else stream.res.destroy();
     }
   }
@@ -1189,6 +1194,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       :rootWorkspace&&route?.credentialFree?publicFrameSession(req,app):sessionFor(req,app);
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
+    const identityRequested = req.headers['x-soty-identity-request'] !== undefined;
+    if (identityRequested) {
+      assertApps(headerCount(req, 'x-soty-identity-request') === 1 && req.headers['x-soty-identity-request'] === '1' && !selected,
+        'app_identity_request_invalid', 400);
+      assertApps(session.decision.subject === 'account' && session.sessionKey && sessions.get(session.sessionKey) === session,
+        'apps_authentication_required', 401);
+      const channel = channels.get(session.decision.route.connectorKey);
+      assertApps(channel?.bindingVersion === 2 && channel.relayIdentity === true && signRelayIdentity,
+        'app_identity_unavailable', 503);
+    }
     const stream = openStream(app, session, { kind: 'http', req, res });
     stream.requestPath=path;
     if (!selected && path === '/guide' && ['GET','HEAD'].includes(req.method)) stream.guideApp = app;
@@ -1197,11 +1212,32 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
       const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
-      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers });
+      let identityWitness;
+      if (identityRequested) {
+        const original = stream.session.decision;
+        let timer, onClose;
+        try {
+          const stopped = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new AppsError('app_identity_unavailable', 503)), identitySignTimeoutMs); timer.unref?.();
+            onClose = () => reject(new AppsError('app_access_revoked', 403)); res.once('close', onClose);
+            if (stream.closed) onClose();
+          });
+          identityWitness = await Promise.race([Promise.resolve().then(() => signRelayIdentity({ appId: app.id, accountId: original.actor.accountId,
+            method: req.method, path, expiresAt: original.expiresAt })), stopped]);
+        } finally { clearTimeout(timer); res.off('close', onClose); }
+        const current = sessionFor(req, app, { requireCookie: true }), fresh = checkStream(stream);
+        assertApps(current === session && sessions.get(session.sessionKey) === session && typeof identityWitness === 'string'
+          && identityWitness.length > 0 && identityWitness.length <= 8192 && fresh.actor?.accountId === original.actor.accountId
+          && fresh.actor?.deviceId === original.actor.deviceId && fresh.policyEpoch === original.policyEpoch
+          && fresh.targetRevision === original.targetRevision && fresh.targetDigest === original.targetDigest,
+          'app_access_revoked', 403);
+      }
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers,
+        ...(identityWitness ? { identityWitness } : {}) });
       let count = 0;
       for await (const chunk of req) { count += chunk.length; assertApps(count <= (route?route.requestBytes:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
       sendStream(stream, { type: 'end', id: stream.id });
-    } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
+    } catch (error) { closeStream(stream, [401, 403].includes(error.status) ? 'app_access_revoked' : error.code || 'app_request_failed'); }
   }
   function handleRequest(req, res) {
     if (closed) { setStatusPolicy(res); respondRuntimeFailure(req, res, 503, 'app_server_closed'); return true; }
@@ -1597,7 +1633,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
           if (closed || admissionClosed || ws.readyState !== 1) return;
-          let bindingVersion = 1;
+          let bindingVersion = 1, relayIdentity = false;
           let runtimeProfiles = ['soty.relay-restricted.v1'];
           if (frame.capabilities !== undefined) {
             const versions = frame.capabilities?.targetBindingVersions;
@@ -1606,6 +1642,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
               && versions.every(value => Number.isSafeInteger(value) && value >= 1) && new Set(versions).size === versions.length
               && (versions.includes(1) || versions.includes(2)), 'app_source_protocol_required');
             bindingVersion = versions.includes(2) ? 2 : 1;
+            if (frame.capabilities.relayIdentity !== undefined) {
+              assertApps(typeof frame.capabilities.relayIdentity === 'boolean', 'app_source_protocol_required');
+              relayIdentity = frame.capabilities.relayIdentity;
+            }
             if (frame.capabilities.runtimeProfiles !== undefined) {
               const profiles = frame.capabilities.runtimeProfiles;
               assertApps(Array.isArray(profiles) && profiles.length > 0 && profiles.length <= 8
@@ -1620,7 +1660,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
             for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
             previous.ws.terminate();
           }
-          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, relayIdentity, runtimeProfiles: Object.freeze(runtimeProfiles), ...(bindingVersion === 2 ? { channelId: secret() } : {}),
             authorityWitnesses:0, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
           channels.set(key, channel); clearTimeout(timer);

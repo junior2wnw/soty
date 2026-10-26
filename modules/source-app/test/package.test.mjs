@@ -17,13 +17,19 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
   await mkdir(join(directory, 'node_modules')); await symlink(protocolDir, join(directory, 'node_modules/openid-client'), process.platform === 'win32' ? 'junction' : 'dir');
   const server = await readFile(join(directory, 'server.mjs'), 'utf8'), browser = await readFile(join(directory, 'browser.mjs'), 'utf8');
   assert.equal(/from ['"]\.\.\//u.test(server), false); assert.equal(/node:|openid-client/u.test(browser), false);
-  const script = `import {STANDARD_SELECTED_SOURCE,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
+  const script = `import {STANDARD_SELECTED_SOURCE,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort,createRelayIdentityVerifier,createSqliteRelayNonceStore} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
+    import {createRelayIdentityFetch} from ${JSON.stringify(pathToFileURL(join(directory, 'browser.mjs')).href)};
     import{createOrdinaryAppServer}from${JSON.stringify(pathToFileURL(join(directory, 'example.mjs')).href)};
     import{createServer}from'node:http';import{randomBytes}from'node:crypto';
     const p=createSourceNativeAuthorityPort({capture:async()=>({}),withCurrent:(_p,_s,f)=>f()});
     if(!isSourceNativeAuthorityPort(p))throw new Error('brand');
     const reserve=createServer();await new Promise(done=>reserve.listen(0,'127.0.0.1',done));const port=reserve.address().port;await new Promise(done=>reserve.close(done));
     const appId='app-'+'a'.repeat(32),parentOrigin='https://fixture.invalid',nativeOrigin='http://localhost:'+port;
+    const nonces=createSqliteRelayNonceStore({databasePath:${JSON.stringify(join(directory, 'relay-nonces.sqlite'))}});
+    if(typeof createRelayIdentityVerifier({issuer:parentOrigin+'/human-identity',appId,consume:nonces.consume})!=='function')throw new Error('relay verifier');nonces.close();
+    let requested=false;const identityFetch=createRelayIdentityFetch({origin:parentOrigin,fetch:async(path,options)=>{
+      requested=path==='/api/items'&&options.headers.get('x-soty-identity-request')==='1';return new Response();}});
+    await identityFetch('/api/items');if(!requested)throw new Error('relay browser helper');
     const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'synthetic-link',hostDeviceId:'synthetic-host',connectorId:'synthetic-connector'},
       target:{revision:1,digest:'a'.repeat(64)},sourceProfile:STANDARD_SELECTED_SOURCE,resource:{registryId:'soty',environmentId:'fixture',tenantId:'synthetic-owner',appId,resourceId:'selected',selection:{kind:'soty.resource.v1',nativeId:'selected',incarnationId:'one'}},
       issuer:parentOrigin+'/human-identity',clientId:'synthetic-client',embedOrigin:'https://'+appId+'.localhost:24444',nativeOrigin,parentOrigin};

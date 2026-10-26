@@ -3366,7 +3366,7 @@ function createLocalAppsRuntime(deps, options = {}) {
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2], ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
+        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -3640,7 +3640,8 @@ function createLocalAppsRuntime(deps, options = {}) {
   }
   function openStream(context, frame) {
     if (frame.type === 'bound-open') {
-      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(localAppsSelected(frame.profile)?['context']:[])]);
+      channelFrame(context, frame, ['syncId', 'appId', 'revision', 'digest', 'profile', 'id', 'kind', 'path', 'method', 'headers', ...(localAppsSelected(frame.profile)?['context']:[]),
+        ...(frame.identityWitness === undefined ? [] : ['identityWitness'])]);
       localAppsCheck(localAppsNonce(frame.syncId) && localAppsId(frame.appId) && Number.isSafeInteger(frame.revision) && frame.revision >= 1
         && typeof frame.digest === 'string' && /^[a-f0-9]{64}$/u.test(frame.digest) && typeof frame.profile === 'string', 'apps_bad_open');
     } else localAppsCheck(context.version === 1, 'apps_bad_open');
@@ -3658,6 +3659,11 @@ function createLocalAppsRuntime(deps, options = {}) {
       const path = context.version === 2 ? localAppsHttpPath(frame.path, binding.port) : localAppsPath(frame.path);
       localAppsCheck(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(frame.method), 'apps_bad_method');
       const headers = localAppsHeaders(frame.headers, frame.kind === 'ws' ? 'ws-request' : 'request');
+      if (frame.identityWitness !== undefined) {
+        localAppsCheck(context.version === 2 && frame.kind === 'http' && typeof frame.identityWitness === 'string'
+          && frame.identityWitness.length > 0 && frame.identityWitness.length <= 8192, 'apps_bad_identity');
+        headers['x-soty-identity'] = frame.identityWitness;
+      }
       if (frame.kind === 'ws') { headers.connection = 'Upgrade'; headers.upgrade = 'websocket'; }
       stream = { id: frame.id, appId: binding.appId, kind: frame.kind, binding, context, received: 0, sent: 0,
         recvSeq: 0, sendSeq: 0, pending: new Map(), receiving: false, closed: false, head: false };
@@ -4006,7 +4012,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.10";
+const connectorVersion = "1.4.11";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
