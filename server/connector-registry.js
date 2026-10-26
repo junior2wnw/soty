@@ -15,7 +15,9 @@ async function database(dataDir, { ignoreRollbackIntent = false } = {}) {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=1000; BEGIN");
-    if (db.prepare("SELECT value FROM meta WHERE key='schema'").get()?.value !== "soty.connector-sqlite.v1") throw new Error("Unsupported connector registry schema");
+    // v2 protects unfinished automatic jobs from old writers; the on-disk
+    // records remain readable by this explicitly read-only adapter.
+    if (!["soty.connector-sqlite.v1", "soty.connector-sqlite.v2"].includes(db.prepare("SELECT value FROM meta WHERE key='schema'").get()?.value)) throw new Error("Unsupported connector registry schema");
     let markerText, marker;
     try { markerText=await readFile(path.join(dataDir,"connector-store.json"),"utf8"); marker=parse(markerText); } catch { throw new Error("Connector registry authority marker missing or malformed"); }
     const meta = (key) => db.prepare("SELECT value FROM meta WHERE key=?").get(key)?.value;
