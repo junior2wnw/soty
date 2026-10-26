@@ -391,7 +391,10 @@ const api: WorldApi = { async request<T>(op: string, args: Record<string, unknow
                 break;
             case 'apps.agent.read':
                 if (fixtureAutomaticJob && !apps.some(app => app.appId === fixtureBuiltAppId)) {
-                    apps.push({ appId: fixtureBuiltAppId, name: proposal.name, coverKey: 'notes', symbol: 'list', status: 'ready', ownerAccountId: self.profileId });
+                    const created = { appId: fixtureBuiltAppId, name: proposal.name, port: proposal.port, entryPath: proposal.entryPath, body: JSON.stringify({ autoJob: fixtureJobId }) };
+                    localStorage.setItem(fixtureRegistryKey, JSON.stringify([...registrations, created]));
+                    registrations.push(created);
+                    addRegisteredProjection(created);
                     fixturePublications.set(fixtureBuiltAppId, { audience: 'private', policyEpoch: 1, launchPolicy: 'restricted', listed: false, activeDomainIds: [], activeTargetRevision: 1 });
                 }
                 result = { job: { schema: 'soty.connector-job.v4', kind: 'agent', id: fixtureJobId, deviceId: 'qa-notebook', connectorId: 'qa-connector', attempts: 1, status: 'succeeded', result: { text: 'Приложение готово.', appProposal: proposal } },
