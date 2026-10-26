@@ -298,7 +298,8 @@ async function main() {
       const value = JSON.parse(input); need(exact(value, ['key']) && typeof value.key === 'string', 'host_plan_invalid');
       key = Buffer.from(value.key, 'base64'); need(key.length === 32 && key.toString('base64') === value.key, 'host_plan_invalid');
     }
-    console.log(JSON.stringify({ ok: true, action: plan.action, ...executeHostPlan(plan, key), activeReloadVerified: false, dataMounted: false }));
+    console.log(JSON.stringify({ ok: true, action: plan.action, ...executeHostPlan(plan, key),
+      ...(plan.action === 'publish' ? {} : { activeReloadVerified: false }), dataMounted: false }));
   } catch (error) {
     console.log(JSON.stringify({ ok: false, code: safeCodes.has(error.code) ? error.code : error.code === 'EEXIST' ? 'host_operation_already_exists' : 'bounded_host_action_failed',
       recoveryRequired: error.recoveryRequired === true, activeReloadVerified: false })); process.exitCode = 1;

@@ -152,7 +152,10 @@ function publishFixture(t) {
 
 test('publish needs no Caddy/config/key and inspect is read-only; CAS and immutable retention fail closed', { skip: !root }, t => {
   const f = publishFixture(t), current = path.join(f.directory, 'soty-ui/current'), config = fs.readFileSync(f.filename);
-  const result = executeHostPlan(f.next);
+  const planFile = path.join(f.directory, 'publish.json'); fs.writeFileSync(planFile, JSON.stringify(f.next));
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('./host-publisher.mjs', import.meta.url)), 'execute', planFile], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stdout); const result = JSON.parse(child.stdout);
+  assert.equal(Object.hasOwn(result, 'activeReloadVerified'), false);
   assert.equal(result.currentReleaseId, f.next.releaseId); assert.equal(result.signalsSent, 0); assert.equal(result.reloadRequired, false);
   assert.deepEqual(fs.readFileSync(f.filename), config);
   const before = fs.lstatSync(current), journal = fs.readFileSync(path.join(f.directory, 'publish-' + f.next.transaction + '.jsonl'));
