@@ -1,19 +1,7 @@
 .sw-app[data-agent-orb=ready]>header.sw-topbar { padding-inline-end: calc(60px + env(safe-area-inset-right,0px)); }
-.sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner {
-  padding-inline-end: calc(60px + env(safe-area-inset-right,0px));
-}
 @media (max-width: 720px) {
-  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner {
-    flex-wrap: wrap; justify-content: flex-start;
-  }
-  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner>span {
-    flex: 1 1 calc(100% - 26px);
-  }
-  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner>.sw-button {
-    margin-inline-start: 26px;
-  }
-  /* Keep a 44px dock below QR and above the app when no status row exists. */
-  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb):not(:has(>.sw-pwa-banner:not([hidden]))) .sa-stage.of-app-surface>.sa-toolbar {
+  /* Keep a 44px dock below QR and above the app. */
+  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb) .sa-stage.of-app-surface>.sa-toolbar {
     min-height: 112px;
   }
 }

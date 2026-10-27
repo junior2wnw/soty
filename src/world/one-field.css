@@ -12,7 +12,7 @@
 .sw-app[data-experience=one-field]>.sw-main {
   grid-column: 1; grid-row: 3; padding: 0; z-index: 1;
 }
-.sw-app[data-experience=one-field]>.sw-pwa-banner { grid-column: 1; grid-row: 1; }
+.sw-app[data-experience=one-field]>.sw-pwa-banner { grid-column: 1; grid-row: 1; position: relative; z-index: 2; }
 .sw-app[data-experience=one-field]>.sw-human-call-strip { grid-column: 1; grid-row: 2; }
 /* Status keeps its own row; floating chrome follows the existing main row. */
 .sw-app[data-experience=one-field]:has(>.sw-pwa-banner:not([hidden]))>:is(.sw-topbar,.of-connect-button,.of-field-navigation) {

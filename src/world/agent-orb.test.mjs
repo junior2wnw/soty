@@ -198,22 +198,26 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   };
 }
 
-test('assistant leaves the offline message and action readable at 320px without changing its preference', () => {
-  const f = fixture({ width: 320, height: 568 });
-  const banner = f.el('aside', 'sw-pwa-banner'), text = f.el('span'), action = f.el('button');
-  const bounds = { left: 42, top: 6, right: 246, bottom: 58, width: 204, height: 52 };
-  text.getBoundingClientRect = () => bounds;
-  action.getBoundingClientRect = () => ({ left: 42, top: 69, right: 168, bottom: 113, width: 126, height: 44 });
-  banner.append(text, action);
-  f.root.append(banner); f.agent.setAccount('A');
-  const projected = f.orb.getBoundingClientRect();
-  assert.ok(projected.left >= bounds.right + 6, 'the reserved right corner keeps the message readable');
-  assert.ok(projected.right <= action.getBoundingClientRect().left || projected.left >= action.getBoundingClientRect().right
-    || projected.bottom <= action.getBoundingClientRect().top || projected.top >= action.getBoundingClientRect().bottom, 'the action stays reachable');
-  assert.equal(f.saved.size, 0, 'a temporary status never changes the account placement preference');
-  banner.remove(); f.agent.raise();
-  assert.equal(f.orb.getBoundingClientRect().top, 6);
-  assert.equal(f.orb.dataset.docked, 'true'); f.agent.dispose();
+test('assistant avoids the offline message and action without changing its preference', () => {
+  const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  for (const [bounds, actionBounds] of [
+    [{ left: 42, top: 6, right: 246, bottom: 58, width: 204, height: 52 }, { left: 42, top: 69, right: 168, bottom: 113, width: 126, height: 44 }],
+    [{ left: 42, top: 7, right: 168, bottom: 77, width: 126, height: 70 }, { left: 178, top: 20, right: 304, bottom: 64, width: 126, height: 44 }],
+  ]) {
+    const f = fixture({ width: 320, height: 568 });
+    const banner = f.el('aside', 'sw-pwa-banner'), text = f.el('span'), action = f.el('button');
+    text.getBoundingClientRect = () => bounds;
+    action.getBoundingClientRect = () => actionBounds;
+    banner.append(text, action);
+    f.root.append(banner); f.agent.setAccount('A');
+    const projected = f.orb.getBoundingClientRect();
+    assert.equal(overlaps(projected, bounds), false, 'the message stays readable');
+    assert.equal(overlaps(projected, actionBounds), false, 'the action stays reachable');
+    assert.equal(f.saved.size, 0, 'a temporary status never changes the account placement preference');
+    banner.remove(); f.agent.raise();
+    assert.equal(f.orb.getBoundingClientRect().top, 6);
+    assert.equal(f.orb.dataset.docked, 'true'); f.agent.dispose();
+  }
 });
 test('a mobile app keeps the assistant, QR, title and app controls reachable when the iframe fills the rest', () => {
   const f = fixture({ width: 320, height: 568 });
