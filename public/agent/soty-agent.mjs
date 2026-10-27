@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from 'node:events';
 import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1451,6 +1451,127 @@ var ScopedConnectorHost = (() => {
 
 return ScopedConnectorHost;
 })(createScopedRequire(import.meta.url));
+"use strict";
+var PreparedStrictJson = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // modules/source-app/shared/strict-json.mjs
+  var strict_json_exports = {};
+  __export(strict_json_exports, {
+    parseSourceJson: () => parseSourceJson
+  });
+  function parseSourceJson(text, { depth = 18, nodes = 4096, bytes = 15e5 } = {}) {
+    const invalid = () => {
+      throw Object.assign(new Error("source_app_input_invalid"), { code: "source_app_input_invalid", status: 400 });
+    };
+    if (typeof text !== "string" || new TextEncoder().encode(text).length > bytes) invalid();
+    let at = 0, count = 0;
+    const space = () => {
+      while (at < text.length && " 	\n\r".includes(text[at])) at++;
+    };
+    function string() {
+      if (text[at] !== '"') invalid();
+      const start = at++;
+      while (at < text.length) {
+        const char = text[at++];
+        if (char === "\\") {
+          at++;
+          continue;
+        }
+        if (char === '"') {
+          try {
+            return JSON.parse(text.slice(start, at));
+          } catch {
+            invalid();
+          }
+        }
+      }
+      invalid();
+    }
+    function value(level) {
+      if (level > depth || ++count > nodes) invalid();
+      space();
+      if (text[at] === "{") {
+        at++;
+        space();
+        const keys = /* @__PURE__ */ new Set();
+        if (text[at] === "}") {
+          at++;
+          return;
+        }
+        while (at < text.length) {
+          const key = string();
+          if (keys.has(key)) invalid();
+          keys.add(key);
+          if (++count > nodes) invalid();
+          space();
+          if (text[at++] !== ":") invalid();
+          value(level + 1);
+          space();
+          if (text[at] === "}") {
+            at++;
+            return;
+          }
+          if (text[at++] !== ",") invalid();
+          space();
+        }
+      } else if (text[at] === "[") {
+        at++;
+        space();
+        if (text[at] === "]") {
+          at++;
+          return;
+        }
+        while (at < text.length) {
+          value(level + 1);
+          space();
+          if (text[at] === "]") {
+            at++;
+            return;
+          }
+          if (text[at++] !== ",") invalid();
+          space();
+        }
+      } else if (text[at] === '"') {
+        string();
+        return;
+      } else {
+        const start = at;
+        while (at < text.length && !" 	\n\r,]}".includes(text[at])) at++;
+        if (start === at) invalid();
+        return;
+      }
+      invalid();
+    }
+    value(0);
+    space();
+    if (at !== text.length) invalid();
+    try {
+      return JSON.parse(text);
+    } catch {
+      invalid();
+    }
+  }
+  return __toCommonJS(strict_json_exports);
+})();
+
+const { parseSourceJson } = PreparedStrictJson;
 // bundled connector module: ./agent-modules/traffic-fabric.mjs
 const { createTrafficFabric, trafficFabricSchema } = (() => {
 const trafficFabricSchema = "soty.traffic-fabric.v1";
@@ -3259,7 +3380,7 @@ function backoff(failures) {
 return { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed };
 })();
 // bundled connector module: ./agent-modules/local-apps.mjs
-const { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } = (() => {
+const { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal } = (() => {
 const localAppsSchema = 'soty.apps-channel.v1';
 const localAppsChunkBytes = 48 * 1024;
 const localAppsFrameBytes = 72 * 1024;
@@ -3366,7 +3487,10 @@ function createLocalAppsRuntime(deps, options = {}) {
     ws.addEventListener('open', () => {
       if (!current(context)) return;
       send(context, { type: 'auth', schema: localAppsSchema, ...identity, token: authToken,
-        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true, ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
+        capabilities: { targetBindingVersions: [1, 2], relayIdentity: true, relayIdempotencyKey: true,
+          ...(typeof options.preparedBrowse === 'function' ? { preparedBrowse: true } : {}),
+          ...(typeof options.preparedInspect === 'function' ? { preparedInspect: true } : {}),
+          ...(scoped?.profiles?.length?{runtimeProfiles:[localAppsProfile,...scoped.profiles]}:{}) } });
       authToken = undefined;
     });
     ws.addEventListener('message', event => {
@@ -3569,6 +3693,18 @@ function createLocalAppsRuntime(deps, options = {}) {
     if (frame.type === 'binding-set') { setBinding(context, frame); return; }
     if (frame.type === 'binding-remove') { removeBindings(context, frame); return; }
     if (frame.type === 'target-prepare') { prepareTarget(context, frame); return; }
+    if (frame.type === 'prepared-browse' || frame.type === 'prepared-inspect') {
+      const inspect = frame.type === 'prepared-inspect', handler = inspect ? options.preparedInspect : options.preparedBrowse;
+      channelFrame(context, frame, inspect ? ['nonce', 'location', 'digest'] : ['nonce', 'location', 'after']);
+      localAppsCheck(localAppsNonce(frame.nonce) && typeof handler === 'function' && (context.preparedBrowseCount || 0) < 4, 'apps_bad_frame');
+      context.preparedBrowseCount = (context.preparedBrowseCount || 0) + 1;
+      void Promise.resolve().then(() => handler(inspect ? { location: frame.location, digest: frame.digest }
+        : { location: frame.location ?? null, after: frame.after ?? '' }))
+        .then(result => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: true, result }); })
+        .catch(() => { if (connected(context)) send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: false }); })
+        .finally(() => { context.preparedBrowseCount--; });
+      return;
+    }
     if (frame.type === 'sync') { legacySync(context, frame); return; }
     if (frame.type === 'open' || frame.type === 'bound-open') { openStream(context, frame); return; }
     localAppsCheck(['cancel', 'ack', 'end', 'data'].includes(frame.type), 'apps_bad_frame');
@@ -3861,7 +3997,114 @@ function localAppsHeaders(value, direction) {
 }
 function write(stream, chunk) { return new Promise((resolve, reject) => { if (!stream || stream.destroyed) return reject(new Error('app_stream_closed')); stream.write(chunk, error => error ? reject(error) : resolve()); }); }
 
-return { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal };
+return { createLocalAppsRuntime, normalizeLocalAppManifest, prepareLocalAppWorkspace, probeLocalApp, readLocalAppProposal };
+})();
+// bundled connector module: ./agent-modules/prepared-projects.mjs
+const { createPreparedProjectBrowser } = (() => {
+// This module is dependency-injected so the connector release can bundle it.
+// It never executes project code or treats a pathname as authorization.
+function createPreparedProjectBrowser(deps) {
+  const fail = code => { throw Object.assign(new Error(code), { code }); };
+  const need = (ok, code) => { if (!ok) fail(code); };
+  const validSegment = value => typeof value === 'string' && value.length > 0 && value.length <= 255
+    && value.isWellFormed() && value !== '.' && value !== '..' && !/[\\/\u0000-\u001f\u007f]/u.test(value);
+  const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key));
+  const within = (root, target) => { const rel = deps.relative(root, target);
+    return rel === '' || rel !== '..' && !rel.startsWith(`..${deps.sep}`) && !deps.isAbsolute(rel); };
+
+  async function roots() {
+    const configured = await deps.allowedRoots();
+    need(Array.isArray(configured) && configured.length > 0 && configured.length <= 16, 'prepared_roots_unavailable');
+    const values = [];
+    for (const item of configured) {
+      if (typeof item !== 'string' || !deps.isAbsolute(item)) continue;
+      try {
+        const root = await deps.realpath(item), stat = await deps.lstat(root);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+        const id = deps.digest(root);
+        if (!values.some(value => value.id === id)) values.push({ id, root, label: deps.basename(root) || root });
+      } catch { /* A missing configured root is not a new authorization. */ }
+    }
+    need(values.length > 0, 'prepared_roots_unavailable'); return values;
+  }
+  async function resolveLocation(location) {
+    need(exact(location, ['rootId', 'segments']) && typeof location.rootId === 'string' && /^[a-f0-9]{64}$/u.test(location.rootId)
+      && Array.isArray(location.segments) && location.segments.length <= 32 && location.segments.every(validSegment)
+      && new TextEncoder().encode(JSON.stringify(location)).byteLength <= 4096, 'prepared_location_invalid');
+    const root = (await roots()).find(value => value.id === location.rootId);
+    need(root, 'prepared_root_changed'); let current = root.root;
+    for (const segment of location.segments) {
+      const next = deps.join(current, segment), info = await deps.lstat(next);
+      need(info.isDirectory() && !info.isSymbolicLink(), 'prepared_directory_invalid');
+      const resolved = await deps.realpath(next); need(within(root.root, resolved), 'prepared_directory_invalid'); current = resolved;
+    }
+    return { root, path: current };
+  }
+  async function manifest(path) {
+    try {
+      const folder = deps.join(path, '.soty'), dir = await deps.lstat(folder);
+      need(dir.isDirectory() && !dir.isSymbolicLink(), 'prepared_manifest_invalid');
+      const file = deps.join(folder, 'app.json'), before = await deps.lstat(file);
+      need(before.isFile() && !before.isSymbolicLink() && before.size >= 2 && before.size <= 4096, 'prepared_manifest_invalid');
+      const resolved = await deps.realpath(file); need(within(path, resolved), 'prepared_manifest_invalid');
+      const handle = await deps.open(resolved, 'r'); let bytes;
+      try {
+        const opened = await handle.stat();
+        need(opened.isFile() && opened.size === before.size && opened.ino === before.ino && opened.dev === before.dev, 'prepared_manifest_changed');
+        const buffer = new Uint8Array(before.size + 1); let used = 0;
+        while (used < buffer.length) { const read = await handle.read(buffer, used, buffer.length - used, null); if (!read.bytesRead) break; used += read.bytesRead; }
+        const final = await handle.stat();
+        need(used === before.size && final.size === before.size && final.mtimeMs === before.mtimeMs
+          && final.ino === before.ino && final.dev === before.dev, 'prepared_manifest_changed');
+        bytes = buffer.subarray(0, used);
+      } finally { await handle.close(); }
+      const after = await deps.lstat(file);
+      need(after.isFile() && !after.isSymbolicLink() && after.size === before.size && after.mtimeMs === before.mtimeMs
+        && after.ino === before.ino && after.dev === before.dev, 'prepared_manifest_changed');
+      let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { fail('prepared_manifest_invalid'); }
+      const value = deps.normalizeManifest(deps.parseJson(text, { bytes: 4096 }), deps.blockedPorts);
+      return { value, digest: deps.digest(JSON.stringify(value)) };
+    } catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  }
+  async function list({ location = null, after = '' } = {}) {
+    if (location === null) return { schema: 'soty.prepared-directories.v1', roots: (await roots()).map(({ id, label }) => ({ id, label })) };
+    need(typeof after === 'string' && (after === '' || validSegment(after)), 'prepared_cursor_invalid');
+    const selected = await resolveLocation(location), names = [], directory = await deps.opendir(selected.path); let count = 0;
+    for await (const entry of directory) {
+      need(++count <= 4096, 'prepared_directory_too_large');
+      if (entry.isDirectory() && !entry.isSymbolicLink() && entry.name !== '.soty' && validSegment(entry.name)) names.push(entry.name);
+    }
+    names.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const matching = names.filter(name => name > after), page = []; let pageBytes = 0;
+    for (const name of matching) {
+      const bytes = new TextEncoder().encode(JSON.stringify(name)).byteLength;
+      if (page.length === 100 || pageBytes + bytes > 16 * 1024) break;
+      page.push(name); pageBytes += bytes;
+    }
+    let found = null, projectError = null;
+    try { found = await manifest(selected.path); } catch { projectError = 'unreadable'; }
+    let responding = false;
+    if (found) responding = await deps.probe(found.value);
+    // Recheck the directory after asynchronous enumeration/probing.
+    const again = await resolveLocation(location); need(again.path === selected.path, 'prepared_directory_changed');
+    return { schema: 'soty.prepared-directories.v1', location, entries: page,
+      next: matching.length > page.length ? page.at(-1) : null,
+      project: found ? { name: found.value.name, digest: found.digest, responding } : null, projectError };
+  }
+  async function inspect({ location, digest } = {}) {
+    need(typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest), 'prepared_request_invalid');
+    const selected = await resolveLocation(location), found = await manifest(selected.path);
+    need(found && found.digest === digest, 'prepared_manifest_changed');
+    need(await deps.probe(found.value), 'prepared_app_not_responding');
+    const again = await resolveLocation(location), latest = await manifest(again.path);
+    need(again.path === selected.path && latest && latest.digest === digest, 'prepared_manifest_changed');
+    return found.value;
+  }
+  return Object.freeze({ list, inspect });
+}
+
+return { createPreparedProjectBrowser };
 })();
 // bundled connector module: ./agent-modules/executor-policy.mjs
 const { resolveJobExecutor } = (() => {
@@ -4094,13 +4337,17 @@ function loadScopedHostEntries(file) {
     return value.entries;
   } catch {throw new Error('scoped_embed_host_configuration_invalid');}
 }
+const preparedProjects = createPreparedProjectBrowser({ allowedRoots: allowedJobRoots, lstat, open, opendir, realpath,
+  basename, isAbsolute, join, relative, sep, digest: sha256, normalizeManifest: normalizeLocalAppManifest,
+  parseJson: parseSourceJson, blockedPorts: [port], probe: value => probeLocalApp({ httpRequest }, value) });
 const localApps = createLocalAppsRuntime({
   randomSecret: () => randomBytes(32).toString('base64url'),
   digest: value => createHash('sha256').update(value).digest('hex'),
   createWebSocket: url => new globalThis.WebSocket(url),
   httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
 }, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
-  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory });
+  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port],scopedFactory,
+  preparedBrowse: request => preparedProjects.list(request), preparedInspect: request => preparedProjects.inspect(request) });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,
