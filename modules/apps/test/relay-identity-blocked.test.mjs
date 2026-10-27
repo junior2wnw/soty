@@ -72,7 +72,7 @@ test(`ordinary relay identity is refused before signing or upstream on ${mode}`,
   }
   assert.equal(seen.length, before); assert.equal(signatures, 0);
   const html = await callIdentity(a, 'GET', { accept: 'text/html' });
-  assert.equal(html.status, 503); assert.match(html.text, /Общий вход временно недоступен/u); assert.equal(seen.length, before);
+  assert.equal(html.status, 503); assert.match(html.text, /Не удалось подтвердить вход/u); assert.equal(seen.length, before);
   const ordinary = await http(port, '/ordinary', { ...a, headers: { 'x-soty-identity': 'untrusted-browser-value' } });
   assert.equal(ordinary.status, 200); assert.equal(ordinary.text, 'ordinary app'); assert.equal(seen.at(-1).identity, undefined);
   const write = await http(port, '/ordinary', { ...a, method: 'POST', headers: { 'idempotency-key': 'safe-fixture-key' }, body: 'record' });

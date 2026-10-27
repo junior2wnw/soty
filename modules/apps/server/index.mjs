@@ -2015,7 +2015,7 @@ function respondFailure(req, res, status, error, page = {}) {
   // destroys the request, so advertising keep-alive would strand the next GET.
   if (!req.readableEnded && !res.headersSent) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
   if (!String(req.headers.accept || '').includes('text/html')) {
-    const message = error === 'app_identity_window_unavailable' ? 'Общий вход временно недоступен. Попробуйте позже.'
+    const message = error === 'app_identity_window_unavailable' ? 'Не удалось подтвердить вход. Откройте приложение заново или проверьте вход в Соты.'
       : error === 'app_idempotency_key_unavailable' ? 'Обновите коннектор на устройстве приложения и повторите проверку.'
       : error === 'app_idempotency_key_unsupported' ? 'Этот режим приложения не поддерживает передачу ключа операции.' : undefined;
     json(res, status, { ok: false, error, ...(message ? { message } : {}) }); return;
