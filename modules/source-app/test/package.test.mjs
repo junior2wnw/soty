@@ -27,8 +27,14 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
     const appId='app-'+'a'.repeat(32),parentOrigin='https://fixture.invalid',nativeOrigin='http://localhost:'+port;
     const identity=createSqliteRelayIdentity({issuer:parentOrigin+'/human-identity',appId,databasePath:${JSON.stringify(join(directory, 'relay-nonces.sqlite'))}});
     if(typeof identity.verify!=='function')throw new Error('relay verifier');identity.close();
-    let requested=false;const identityFetch=createRelayIdentityFetch({origin:parentOrigin,fetch:async(path,options)=>{
-      requested=path==='/api/items'&&options.headers.get('x-soty-identity-request')==='1';return new Response();}});
+    const listeners=new Set(),relayParent={postMessage(data,target){if(target!==parentOrigin)throw Error('identity origin');
+      queueMicrotask(()=>{for(const listener of listeners)listener({source:relayParent,origin:parentOrigin,
+        data:{schema:'soty.relay-window-identity.v1',type:'grant',requestId:data.requestId,grant:'A'.repeat(43)}});});}};
+    const relayView={parent:relayParent,crypto:globalThis.crypto,setTimeout,clearTimeout,
+      addEventListener(_type,fn){listeners.add(fn);},removeEventListener(_type,fn){listeners.delete(fn);}};
+    let requested=false;const identityFetch=createRelayIdentityFetch({origin:'https://app.fixture.invalid',parentOrigin,view:relayView,fetch:async(path,options)=>{
+      requested=path==='/api/items'&&options.headers.get('x-soty-identity-request')==='1'
+        &&options.headers.get('x-soty-window-grant')==='A'.repeat(43);return new Response();}});
     await identityFetch('/api/items');if(!requested)throw new Error('relay browser helper');
     let received,handler;const parent={postMessage(data,target){if(target!==parentOrigin)throw Error('work origin');received=data;}};
     const work=createSotyAppWork({parentOrigin,isDirty:()=>true,save:async()=>{},view:{parent,addEventListener(_type,fn){handler=fn;},removeEventListener(){}}});

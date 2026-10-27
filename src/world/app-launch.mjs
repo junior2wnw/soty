@@ -173,7 +173,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
   let selected = null, initializing = null, disposed = false, popup = null, externalPending = false;
   let scoped=null;
   function abandon(value) {if(!value)return;const action=value.cleanup??(typeof abandonScoped==='function'?()=>abandonScoped({appId:requestedTarget.appId,handle:value.handle}):null);if(action)void Promise.resolve(action()).catch(()=>{});}
-  let originalBinding = null, bindingPinned = false;
+  let originalBinding = null, latestBinding = null, bindingPinned = false;
   let sourceEntryChanged = false;
   const rootWorkspace = source => source?.id === 'soty.standard-workspace' && source.version === 2
     && source.digest === '23061fc95610e3011ec42b3ecf229308bce44b0a1268408ca9b6ee138c98f7e9';
@@ -221,6 +221,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
       const url = validateAppLaunchUrl(result?.url, shellUrl);
       capture(result?.entry, intended, url, binding);
       if(!bindingPinned&&!external){originalBinding=provenance;bindingPinned=true;}
+      if(!external)latestBinding=provenance;
       if(!external){const previous=scoped;scoped=binding;abandon(previous);}
       return url;
     } catch (error) {
@@ -281,6 +282,7 @@ export function createAppLauncher({ target, accountId, instanceId, shellUrl, isC
     get parameters() { return parameters(); },
     entry: () => current() ? selected : null,
     binding: () => current() ? originalBinding : null,
+    latestBinding: () => current() ? latestBinding : null,
     launch, resolve,
     isCurrent: current,
     runtimeProfile:()=>scoped?.profile??null,

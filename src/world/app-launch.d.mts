@@ -28,6 +28,7 @@ export function createAppLauncher(options: {
   readonly parameters: AppLaunchRequest;
   entry(): AppResolvedEntry | null;
   binding(): AppLaunchBinding | null;
+  latestBinding(): AppLaunchBinding | null;
   launch(options?: { requireSameBinding?: boolean }): Promise<string | null>;
   canOpenExternal(): Promise<boolean>;
   /** Resolve and pin the permitted entry without creating an app runtime/session. */

@@ -12,6 +12,7 @@ import { createAppRuntimeDisplay, type RuntimeDisplayHandle } from './app-runtim
 import { createWidgetRuntimeControls } from './app-widget-runtime-controls.mjs';
 import { createAppRuntimePhaseTrace, type RuntimePhase } from './app-runtime-phase-trace.mjs';
 import { createAppWorkGuard } from './app-work-guard.mjs';
+import { createRelayIdentityBridge } from './app-relay-identity-bridge.mjs';
 import type { AppLaunchBinding } from './app-launch.mjs';
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
@@ -436,6 +437,12 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     resolveExternalEntry: parameters => options.api.request<{ entry: AppResolvedEntry | null }>('apps.entry.get', { ...parameters, current: true, surface: 'native' }),
     abandonScoped:parameters=>options.api.request('apps.scoped.close',{...parameters}),
   });
+  let relayPeer: { frame: HTMLIFrameElement; entry: AppResolvedEntry; binding: AppLaunchBinding } | null = null;
+  const relayIdentity = createRelayIdentityBridge({ view, isCurrent: current,
+    getFrame: () => runtime.querySelector('iframe') === relayPeer?.frame ? relayPeer.frame : null,
+    getEntry: () => relayPeer?.entry ?? null, getBinding: () => relayPeer?.binding ?? null,
+    request: value => options.api.request('apps.relay.identity', { ...value, expectedAccountId: accountId }),
+    close: value => options.api.request('apps.relay.identity.close', { ...value, expectedAccountId: accountId }) });
   const readCapturePeer=():ProjectCapturePeer|null=>{
     const binding=launcher.scopedCapture(),source=captureSourcePin(binding?.source),frame=runtime.querySelector('iframe');
     return current()&&!runtimePending&&source&&binding&&frame?.contentWindow&&selectedEntry&&frameGeneration>0
@@ -723,6 +730,13 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       finally { runtimePending = false; }
       if (!alive()) return;
     }
+    if (relayIdentity.hasActive()) {
+      runtimePending = true;
+      try { await relayIdentity.clear(); }
+      catch { relayIdentity.resume(); if (current()) showMessage('Не удалось безопасно закрыть вход. Окно приложения остаётся открытым.'); return; }
+      finally { runtimePending = false; }
+      if (!alive()) return;
+    }
     saved?.setEntryVerified(false);
     resetRuntimeDisplay();
     if (diagnosticManual && !automatic && options.presentation !== 'widget') runtimeTrace.beginManual();
@@ -761,10 +775,15 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       lastRuntimeLaunchAt=Date.now();
       if(!isScopedRuntimeProfile(launcher.runtimeProfile()))recovery.bind(frame,{origin:launcher.entry()!.origin,binding:launcher.binding()});
       watchRuntimeDisplay(frame);
+      if (relayIdentity.hasActive()) { await relayIdentity.clear(); if (!alive()) return; }
+      const peerEntry = launcher.entry(), peerBinding = launcher.latestBinding();
       runtime.replaceChildren(frame);
+      relayPeer = peerEntry && peerBinding ? { frame, entry: peerEntry, binding: peerBinding } : null;
+      relayIdentity.resume();
       appWork.attach(frame, launcher.entry()!.origin);
       runtimeTrace.inserted();
     } catch (reason) {
+      relayIdentity.resume();
       if (!alive()) return;
       runtimeTrace.launchFailed();
       runtime.setAttribute('aria-busy', 'false');
@@ -891,6 +910,6 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
     hasUnsavedChanges: () => !!discussion?.hasUnsavedChanges() || !!feedback?.hasUnsavedChanges() || !!reviews?.hasUnsavedChanges() || appWork.hasUnsavedChanges(),
     requiresCloseCheck: () => appWork.requiresCheck(),
     hasUnconfirmedWork: () => appWork.hasUnconfirmedWork(),
-    dispose() { if (disposed) return; appWork.dispose(); editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
+    dispose() { if (disposed) return; relayIdentity.dispose(); appWork.dispose(); editorHost.close(); mainRuntimeControls?.dispose(); widgetRuntimeControls?.dispose(); closeDiagnostic?.(); runtimeTrace.dispose(); resetRuntimeDisplay(); stopAssist(); assist.close(); view.clearInterval(assistWatch); projectCapture.dispose();detachInvitation();detachRootWake();detachRenewalLoads();renewal.dispose();renewalFrame?.remove();feedback?.dispose(); reviews?.dispose(); disposed = true; recovery.dispose(); fullscreen.dispose(); detachVoiceBridge(); detachHiveBridge(); routeGeneration++; presentationVersion++; controller.abort(); launcher.dispose(); saved?.dispose(); discussion?.dispose(); screen.remove(); },
   };
 }

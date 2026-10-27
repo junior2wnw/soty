@@ -39,7 +39,7 @@ import { synchronous } from './engagement-transaction.mjs';
 import { createAppCoverAdapter, appCoverOperations } from './cover.mjs';
 import { createPreparedBrowse } from './prepared-browse.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.relay.identity', 'apps.relay.identity.close', 'apps.scoped.close', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations, ...directoryOperations]);
 export function appIdForCreationJob(jobId) {
   assertApps(typeof jobId === 'string' && /^job_[a-f0-9]{32}$/u.test(jobId), 'invalid_identifier');
   return `app-${jobId.slice(4)}`;
@@ -54,7 +54,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence: withWorldAuthorityFence, withCurrentContacts,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, connectorCurrent = () => false, onHeartbeat = () => {}, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000,
   allowScopedEmbedMigration = false, allowSelectedResourceMigration = false, allowAudienceMigration = false, allowCoverMigration = false,
-  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, readAppGuide } = {}) {
+  coverDecoder, coverLimits, scopedEmbedProfiles = [], withHumanSubjectAuthority, signSourceAuthority, signRelayIdentity,
+  identitySignTimeoutMs = 8000, readAppGuide } = {}) {
   assertApps(typeof allowCoverMigration === 'boolean', 'apps_cover_migration_configuration_invalid', 503);
   assertApps(coverDecoder === undefined || coverDecoder && typeof coverDecoder.decode === 'function'
     && typeof withCurrentContacts === 'function' && typeof withWorldAuthorityFence === 'function'
@@ -102,6 +103,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(Array.isArray(scopedEmbedProfiles)&&scopedEmbedProfiles.length<=64&&typeof allowScopedEmbedMigration==='boolean'&&typeof allowSelectedResourceMigration==='boolean','app_scoped_configuration_invalid',503);
   scopedEmbedProfiles=scopedEmbedProfiles.map(value=>{const {digest:_derived,...pin}=approvedEmbedProfile(value);return Object.freeze(pin);});
   assertApps(signSourceAuthority===undefined || typeof signSourceAuthority==='function','app_scoped_configuration_invalid',503);
+  assertApps(signRelayIdentity===undefined || typeof signRelayIdentity==='function','app_identity_configuration_invalid',503);
+  assertApps(Number.isSafeInteger(identitySignTimeoutMs) && identitySignTimeoutMs >= 1 && identitySignTimeoutMs <= 8000,
+    'app_identity_configuration_invalid', 503);
   assertApps(!scopedEmbedProfiles.some(profile=>isRootSignedWorkspaceSource(profile.sourceProfile)) || typeof signSourceAuthority==='function',
     'app_scoped_identity_witness_unavailable',503);
   assertApps(readAppGuide === undefined || typeof readAppGuide === 'function', 'app_guide_configuration_invalid', 500);
@@ -137,7 +141,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
   const scopedAdmissions = createScopedAdmissionRegistry({ db, profiles: scopedEmbedProfiles, clock: now });
-  const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
+  const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map(), relayWindows = new Map();
   const voiceSourceCalls=new Set(),contextSourceCalls=new Set();
   const voiceSourceActors=new WeakMap();
   const backendSourceContexts=new Map();
@@ -624,6 +628,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function invalidateAccess(filter = {}) {
     for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) {tickets.delete(key);if(item.scopedRecord)scopedGateway.invalidate(item.scopedRecord);}
     for (const [key, item] of sessions) if (matches(item, filter) && !retainAccess(item)) {sessions.delete(key);if(item.scopedRecord)scopedGateway.invalidate(item.scopedRecord);}
+    for (const [key, item] of relayWindows) if (matches(item, filter) && !retainAccess(item)) relayWindows.delete(key);
     for (const stream of live.values()) if (matches(stream.session, filter)) { try { checkStream(stream); } catch {} }
   }
   function invalidateConnector({ hostDeviceId, connectorId } = {}) {
@@ -786,6 +791,38 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       return registerLocalApp(actor, args);
     }
     const id = appId(args.appId), app = row(id);
+    if (op === 'apps.relay.identity.close') {
+      exact(args, ['appId', 'grant']);
+      assertApps(typeof args.grant === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(args.grant), 'app_identity_window_unavailable', 403);
+      const key = digest(args.grant), holder = relayWindows.get(key);
+      assertApps(!holder || holder.decision.appId === id && holder.decision.actor?.accountId === actor.accountId
+        && holder.decision.actor?.deviceId === actor.deviceId, 'app_identity_window_unavailable', 403);
+      relayWindows.delete(key);
+      for (const stream of live.values()) if (stream.session.windowKey === key && stream.session.decision.appId === id && stream.session.decision.actor?.accountId === actor.accountId
+        && stream.session.decision.actor?.deviceId === actor.deviceId) closeStream(stream, 'app_access_revoked');
+      return { closed: true };
+    }
+    if (op === 'apps.relay.identity') {
+      exact(args, ['appId', 'domainId', 'launchBinding']);
+      const pin = args.launchBinding;
+      assertApps(pin && typeof pin === 'object' && !Array.isArray(pin)
+        && Object.keys(pin).sort().join(',') === 'bindingFloor,policyEpoch,profile,schema,targetDigest,targetRevision'
+        && pin.schema === 'soty.app-launch-binding.v1', 'app_identity_window_unavailable', 503);
+      const domain = db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(args.domainId));
+      assertApps(domain && app?.state === 'enabled', 'apps_access_denied', 403);
+      const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor, ttlMs: 30_000 });
+      assertApps(!selectedRuntimeProfile(decision.profile) && decision.subject === 'account'
+        && decision.policyEpoch === pin.policyEpoch && decision.targetRevision === pin.targetRevision
+        && decision.targetDigest === pin.targetDigest && decision.profile === pin.profile
+        && decision.requiredBindingVersion === pin.bindingFloor, 'app_access_changed', 403);
+      assertRuntimeBinding(decision, { requireReady: true });
+      const channel = channels.get(decision.route.connectorKey);
+      assertApps(channel?.bindingVersion === 2 && channel.relayIdentity === true && signRelayIdentity, 'app_identity_unavailable', 503);
+      for (const [key, value] of relayWindows) if (value.decision.expiresAt <= now()) relayWindows.delete(key);
+      assertApps(relayWindows.size < 4096, 'apps_sessions_busy', 429);
+      const grant = secret(); relayWindows.set(digest(grant), { decision });
+      return { schema: 'soty.relay-window-grant.v1', grant, expiresAt: decision.expiresAt };
+    }
     if(op==='apps.scoped.close') {
       exact(args,['appId','handle']);assertApps(scopedGateway,'app_scoped_context_closed',403);
       return scopedGateway.abandon(actor,id,args.handle);
@@ -1124,6 +1161,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const internalUrl = new URL(path, app.appHost.origin);
     assertApps(req.headers['x-soty-boot-check']===undefined||path==='/_soty/session'&&req.method==='GET'
       ||selected&&path==='/api/embed/session-continue'&&req.method==='POST','app_scoped_candidate_route_denied',403);
+    if (internalUrl.pathname === '/_soty/relay-identity-config') {
+      assertApps(!selected && path === '/_soty/relay-identity-config' && req.method === 'GET', 'app_identity_unavailable', 403);
+      json(res, 200, { schema: 'soty.relay-identity-config.v1', shellOrigins: [...origins] }); return;
+    }
     if (internalUrl.pathname === '/_soty/ingress-check') {
       // A fixed operator-managed upstream may keep its own host-only cookies.
       // This check grants no identity or arbitrary destination: ingress pins
@@ -1233,7 +1274,28 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const route=selected?embedRoute(scopedProfile,req.method,path):null;
     const candidate=req.headers['x-soty-boot-check']!==undefined;
     assertApps(!candidate||selected&&route?.kind==='auth-continue'&&req.method==='POST','app_scoped_candidate_route_denied',403);
-    const session=callbackRecord?callbackRecord.session:candidate?candidateFor(req,app)
+    const identityRequested = req.headers['x-soty-identity-request'] !== undefined;
+    let windowKey;
+    if (identityRequested) {
+      assertApps(headerCount(req, 'x-soty-identity-request') === 1 && req.headers['x-soty-identity-request'] === '1' && !selected,
+        'app_identity_request_invalid', 400);
+      const grant = req.headers['x-soty-window-grant'];
+      assertApps(headerCount(req, 'x-soty-window-grant') === 1 && typeof grant === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(grant),
+        'app_identity_window_unavailable', 503);
+      windowKey = digest(grant);
+    }
+    const holder = identityRequested ? relayWindows.get(windowKey) : undefined;
+    if (identityRequested) {
+      if (!holder || holder.decision.appId !== app.id || holder.decision.domainId !== app.appHost.domainId
+        || holder.decision.origin !== app.appHost.origin || holder.decision.subject !== 'account') {
+        // This response is generated by Root before a stream or upstream dispatch.
+        // Upstream response headers are allowlisted and cannot set this marker.
+        res.setHeader('X-Soty-Identity-Window', 'not-dispatched');
+        assertApps(false, 'app_identity_window_unavailable', 503);
+      }
+    }
+    const session=identityRequested?{ decision: publications.recheckAccess(holder.decision, { ttlMs: accountSessionMs }), windowKey }
+      :callbackRecord?callbackRecord.session:candidate?candidateFor(req,app)
       :rootWorkspace&&route?.credentialFree?publicFrameSession(req,app):sessionFor(req,app);
     if(selected){assertApps(session.scopedRecord,'app_scoped_context_closed',403);scopedGateway.context(session.scopedRecord);}
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
@@ -1248,17 +1310,6 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
       assertApps(channel.bindingVersion === 2 && channel.relayIdempotencyKey === true, 'app_idempotency_key_unavailable', 503);
     }
-    const identityRequested = req.headers['x-soty-identity-request'] !== undefined;
-    if (identityRequested) {
-      assertApps(headerCount(req, 'x-soty-identity-request') === 1 && req.headers['x-soty-identity-request'] === '1' && !selected,
-        'app_identity_request_invalid', 400);
-      assertApps(session.decision.subject === 'account' && session.sessionKey && sessions.get(session.sessionKey) === session,
-        'apps_authentication_required', 401);
-      // The ordinary ingress cookie is shared by same-origin windows. Until
-      // identity is bound to the originating window, signing it could silently
-      // change the person in an already-open app after another account enters.
-      assertApps(false, 'app_identity_window_unavailable', 503);
-    }
     const stream = openStream(app, session, { kind: 'http', req, res });
     stream.requestPath=path;
     if (!selected && path === '/guide' && ['GET','HEAD'].includes(req.method)) stream.guideApp = app;
@@ -1267,7 +1318,30 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
       const headers=cleanHeaders(req.headers);if(selected&&req.headers.origin)headers.origin=req.headers.origin;
-      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers });
+      let identityWitness;
+      if (identityRequested) {
+        assertApps(stream.channel.bindingVersion === 2 && stream.channel.relayIdentity === true && typeof signRelayIdentity === 'function',
+          'app_identity_unavailable', 503);
+        const original = stream.session.decision;
+        let timer, onClose;
+        try {
+          const stopped = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new AppsError('app_identity_unavailable', 503)), identitySignTimeoutMs); timer.unref?.();
+            onClose = () => reject(new AppsError('app_access_revoked', 403)); res.once('close', onClose);
+            if (stream.closed) onClose();
+          });
+          identityWitness = await Promise.race([Promise.resolve().then(() => signRelayIdentity({ appId: app.id, accountId: original.actor.accountId,
+            method: req.method, path, expiresAt: original.expiresAt })), stopped]);
+        } finally { clearTimeout(timer); res.off('close', onClose); }
+        const fresh = checkStream(stream);
+        assertApps(relayWindows.get(windowKey) === holder && holder.decision.expiresAt > now() && typeof identityWitness === 'string'
+          && identityWitness.length > 0 && identityWitness.length <= 8192 && fresh.actor?.accountId === original.actor.accountId
+          && fresh.actor?.deviceId === original.actor.deviceId && fresh.policyEpoch === original.policyEpoch
+          && fresh.targetRevision === original.targetRevision && fresh.targetDigest === original.targetDigest,
+          'app_access_revoked', 403);
+      }
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers,
+        ...(identityWitness ? { identityWitness } : {}) });
       let count = 0;
       for await (const chunk of req) { count += chunk.length; assertApps(count <= (route?route.requestBytes:LIMITS.requestBytes), 'app_request_too_large', 413); await sendChunks(stream, chunk); }
       sendStream(stream, { type: 'end', id: stream.id });

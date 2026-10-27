@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,7 +46,7 @@ function http(port, path, { origin, cookie, method = 'GET', headers = {}, body }
 }
 
 for (const [mode, makeRuntime] of [['source', createLocalAppsRuntime], ['released bundle', bundledRuntime]])
-test(`signed Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000, skip: 'Ordinary relay identity is intentionally unavailable until it is bound to a window.' }, async t => {
+test(`window-bound Root identity and idempotency stay isolated through ${mode}`, { timeout: 20000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'soty-relay-identity-'));
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const privateJwk = { ...pair.privateKey.export({ format: 'jwk' }), kid: 'fixture', alg: 'RS256', use: 'sig' };
@@ -60,10 +60,10 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
   await new Promise(done => root.listen(0, '127.0.0.1', done));
   const port = root.address().port, rootOrigin = `http://127.0.0.1:${port}`;
   const owner = { accountId: 'alice', deviceId: 'alice-device' }, bob = { accountId: 'bob', deviceId: 'bob-device' };
-  const revoked = new Set();
+  const revoked = new Set(); let clockOffset = 0;
   service = createAppsService({ databasePath: join(directory, 'apps.sqlite'), shellOrigins: [rootOrigin],
     appOriginTemplate: `http://{appId}.localhost:${port}`, namedAppZone: `http://apps.localhost:${port}`,
-    actorActive: actor => [owner, bob].some(person => person.accountId === actor?.accountId && person.deviceId === actor?.deviceId) && !revoked.has(actor.deviceId),
+    actorActive: actor => [owner, bob].some(person => person.accountId === actor?.accountId && person.deviceId === actor?.deviceId) && !revoked.has(actor.deviceId), now: () => Date.now() + clockOffset,
     canAccessCommunity: () => false, isGroupAdmin: () => false, authenticateConnector: async () => true,
     identitySignTimeoutMs: 300,
     signRelayIdentity: async input => { if (failSigner) throw Object.assign(Error('synthetic'), { code: 'app_identity_unavailable' });
@@ -96,9 +96,10 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
     businessStores.push(() => business.close());
     const upstream = createServer((req, res) => {
       if (req.method === 'HEAD') { res.writeHead(200).end(); return; }
-      seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'], key: req.headers['idempotency-key'], authorization: req.headers.authorization });
+      seen.push({ method: req.method, path: req.url, token: req.headers['x-soty-identity'], windowGrant: req.headers['x-soty-window-grant'], key: req.headers['idempotency-key'], authorization: req.headers.authorization });
       void (async () => {
         try { const person = await verifier(req);
+          if (req.url === '/upstream-503') { res.writeHead(503, { 'x-soty-identity-window': 'not-dispatched' }).end('app failure'); return; }
           if (req.method === 'GET' && req.url.startsWith('/receipt?')) {
             const key = new URL(req.url, 'http://fixture.invalid').searchParams.get('key');
             const receipt = business.prepare('SELECT count FROM receipts WHERE issuer=? AND subject=? AND request_id=?').get(person.issuer, person.subject, key);
@@ -146,22 +147,48 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
     const result = call('apps.launch', { appId: app.id }, actor), url = new URL(result.launchUrl);
     const boot = await http(port, '/_soty/session', { origin: url.origin, method: 'POST',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
-    assert.equal(boot.status, 200); return { origin: url.origin, cookie: boot.headers['set-cookie'][0].split(';')[0] };
+    assert.equal(boot.status, 200); return { origin: url.origin, cookie: boot.headers['set-cookie'][0].split(';')[0],
+      actor, appId: app.id, domainId: result.entry.domainId, binding: result.launchBinding };
   }
   let aliceSession, bobSession, otherSession;
   await until(() => { try { aliceSession = call('apps.launch', { appId: apps[0].app.id }, owner); return true; } catch { return false; } });
   aliceSession = await session(apps[0].app, owner); bobSession = await session(apps[0].app, bob); otherSession = await session(apps[1].app, owner);
-  const fetchApp = (session, method = 'GET', headers = {}, path = '/items?x=1', body) => createRelayIdentityFetch({ origin: session.origin,
-    fetch: (url, options) => http(port, url, { ...session, method: options.method, headers: Object.fromEntries(options.headers), body: options.body })
-  })(path, { method, headers, ...(body === undefined ? {} : { body }) });
+  const config = await http(port, '/_soty/relay-identity-config', { origin: aliceSession.origin });
+  assert.equal(config.status, 200); assert.deepEqual(JSON.parse(config.text), { schema: 'soty.relay-identity-config.v1', shellOrigins: [rootOrigin] });
+  assert.equal(config.headers['cache-control'], 'no-store');
+  assert.equal((await http(port, '/_soty/relay-identity-config?wrong=1', { origin: aliceSession.origin })).status, 403);
+  assert.equal(apps[0].seen.length, 0, 'configuration is served by Root, not forwarded to the application');
+  const issue = session => call('apps.relay.identity', { appId: session.appId, domainId: session.domainId, launchBinding: session.binding }, session.actor).grant;
+  const fetchApp = (session, method = 'GET', headers = {}, path = '/items?x=1', body) => http(port, path, { ...session, method,
+    headers: { ...headers, 'x-soty-identity-request': '1', ...(session.actor ? { 'x-soty-window-grant': issue(session) } : {}) }, body });
   assert.equal((await http(port, '/items?x=1', aliceSession)).status, 401);
   assert.equal(apps[0].seen.at(-1).token, undefined, 'identity is never sent on an ordinary request');
   const alice = await fetchApp(aliceSession, 'POST', { 'x-soty-identity': 'browser-forgery' });
   assert.equal(alice.status, 200, JSON.stringify({ text: alice.text, upstreamSawProof: !!apps[0].seen.at(-1)?.token })); assert.deepEqual(JSON.parse(alice.text), { subject: 'alice', count: 1 });
+  assert.equal(apps[0].seen.at(-1).windowGrant, undefined, 'window grants never reach the upstream application');
   assert.equal(alice.text.includes(apps[0].seen.at(-1).token), false);
   apps[0].restartStore();
   assert.deepEqual(JSON.parse((await fetchApp(aliceSession)).text), { subject: 'alice', count: 1 }, 'personal data survives closing and reopening the app store');
+  const oldWindowGrant = issue(aliceSession);
+  assert.throws(() => call('apps.relay.identity.close', { appId: aliceSession.appId, grant: oldWindowGrant }, bob), /app_identity_window_unavailable/u);
+  const wrongApp = await http(port, '/items?x=1', { ...otherSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': oldWindowGrant } });
+  assert.equal(wrongApp.status, 503, 'a grant for another app cannot select an actor');
+  const mismatchedCookie = await http(port, '/items?x=1', { ...bobSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': oldWindowGrant } });
+  assert.deepEqual(JSON.parse(mismatchedCookie.text), { subject: 'alice', count: 1 }, 'window grant, not the later account cookie, selects the actor');
+  assert.deepEqual(call('apps.relay.identity.close', { appId: aliceSession.appId, grant: oldWindowGrant }, owner), { closed: true });
+  const beforeClosed = apps[0].seen.length;
+  const closedReply = await http(port, '/items?x=1', { ...bobSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': oldWindowGrant } });
+  assert.equal(closedReply.status, 503); assert.equal(closedReply.headers['x-soty-identity-window'], 'not-dispatched');
+  assert.equal(apps[0].seen.length, beforeClosed, 'a closed window grant never reaches the app');
+  const fakeMarker = await fetchApp(aliceSession, 'GET', {}, '/upstream-503');
+  assert.equal(fakeMarker.status, 503); assert.equal(fakeMarker.headers['x-soty-identity-window'], undefined, 'the upstream cannot forge Root\'s pre-dispatch marker');
   assert.deepEqual(JSON.parse((await fetchApp(bobSession)).text), { subject: 'bob', count: 0 });
+  const revokedGrant = issue(bobSession), bobHeaders = { 'x-soty-identity-request': '1', 'x-soty-window-grant': revokedGrant };
+  assert.equal((await http(port, '/items?x=1', { ...bobSession, headers: bobHeaders })).status, 200);
+  const beforeRevoked = apps[0].seen.length; revoked.add(bob.deviceId);
+  assert.equal((await http(port, '/items?x=1', { ...bobSession, headers: bobHeaders })).status, 401);
+  assert.equal(apps[0].seen.length, beforeRevoked, 'device revocation overrides an unexpired window grant before dispatch');
+  revoked.delete(bob.deviceId);
   assert.deepEqual(JSON.parse((await fetchApp(otherSession)).text), { subject: 'alice', count: 0 });
   const operation = { 'idempotency-key': 'same-action', authorization: 'must-not-reach-app' }, body = JSON.stringify({ item: 'bread' });
   const firstWrite = await fetchApp(aliceSession, 'POST', operation, '/idempotent', body);
@@ -185,9 +212,9 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
   const recovered = await fetchApp(aliceSession, 'POST', { 'idempotency-key': 'lost-reply' }, '/idempotent', body);
   assert.deepEqual(JSON.parse(recovered.text), { subject: 'alice', count: 3 }, 'app receipt returns the original result without a second write');
   const priorSeen = apps[0].seen.length;
-  const duplicate = await http(port, '/idempotent', { ...aliceSession, method: 'POST', headers: { 'x-soty-identity-request': '1', 'idempotency-key': ['one', 'two'] } });
+  const duplicate = await http(port, '/idempotent', { ...aliceSession, method: 'POST', headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': issue(aliceSession), 'idempotency-key': ['one', 'two'] } });
   assert.equal(duplicate.status, 400); assert.equal(apps[0].seen.length, priorSeen, 'duplicate keys must fail before reaching the app');
-  const normalized = await http(port, '/folder/../items?x=1', { ...aliceSession, headers: { 'x-soty-identity-request': '1' } });
+  const normalized = await http(port, '/folder/../items?x=1', { ...aliceSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': issue(aliceSession) } });
   assert.equal(normalized.status, 200); assert.equal(apps[0].seen.at(-1).path, '/items?x=1');
   const old = apps[0].seen.find(value => value.method === 'POST').token;
   const replay = { headers: { 'x-soty-identity': old }, rawHeaders: ['x-soty-identity', old], method: 'POST', url: '/items?x=1' };
@@ -210,9 +237,11 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
   gate.release(); gate = null; await delay(30);
   assert.equal(apps[0].seen.length, unchanged, 'late signer completion cannot dispatch a timed-out request');
   let enter, release; gate = { entered: new Promise(done => { enter = done; }), wait: new Promise(done => { release = done; }), enter: () => enter(), release: () => release() };
-  const before = apps[0].seen.length, pending = fetchApp(bobSession, 'POST'); await gate.entered;
+  const cachedBob = issue(bobSession), before = apps[0].seen.length, pending = fetchApp(bobSession, 'POST'); await gate.entered;
   call('apps.update', { appId: apps[0].app.id, grants: {} }); gate.release(); gate = null;
   const denied = await pending; assert.equal(denied.status, 403); assert.equal(apps[0].seen.length, before, 'revocation during signing never dispatches the write');
+  const afterGrantRevoke = await http(port, '/items?x=1', { ...bobSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': cachedBob } });
+  assert.ok([403, 503].includes(afterGrantRevoke.status)); assert.equal(apps[0].seen.length, before, 'revoked app access defeats a still-unexpired grant');
 
   const domains = call('apps.domains.get', { appId: apps[0].app.id });
   const aliasId = call('apps.domains.claim', { appId: apps[0].app.id, slug: 'relay-auth-fixture',
@@ -223,7 +252,7 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
     expectedTargetRevision: publication.activeTargetRevision, launchPolicy: 'anyone', listed: false, activeDomainIds: [alias.id],
     exposureAck: { scope: 'whole-port', targetRevision: publication.target.revision, targetDigest: publication.target.digest, profile: publication.target.profile } });
   const publicBefore = apps[0].seen.length;
-  assert.equal((await fetchApp({ origin: alias.origin })).status, 401);
+  assert.equal((await fetchApp({ origin: alias.origin })).status, 503);
   assert.equal(apps[0].seen.length, publicBefore, 'anonymous access never receives an identity proof');
   runtime.stop(); legacyWire = true; runtime.start();
   await until(() => legacyAuthSeen && runtime.status().connected && runtime.status().apps === 2);
@@ -238,14 +267,21 @@ test(`signed Root identity and idempotency stay isolated through ${mode}`, { tim
   assert.equal(unsupportedPage.status, 503); assert.match(unsupportedPage.text, /Обновите коннектор/u);
   assert.equal(apps[0].seen.length, legacyBefore, 'HTML error must also refuse before delivery');
   assert.equal((await fetchApp(aliceSession)).status, 200, 'requests without an idempotency key still work on the older protocol');
+  const expiring = issue(aliceSession), beforeExpiry = apps[0].seen.length; clockOffset += 31000;
+  const expired = await http(port, '/items?x=1', { ...aliceSession, headers: { 'x-soty-identity-request': '1', 'x-soty-window-grant': expiring } });
+  assert.ok([403, 503].includes(expired.status)); assert.equal(apps[0].seen.length, beforeExpiry, 'expired grants never reach the app');
 });
 
 test('browser helper cannot send the request flag to another origin or follow a redirect', async () => {
-  let calls = 0, captured;
-  const sotyFetch = createRelayIdentityFetch({ origin: 'https://app.example', fetch: async (path, options) => { calls++; captured = { path, options }; return new Response(); } });
+  let calls = 0, captured, receive;
+  const parent = { postMessage(data, origin) { assert.equal(origin, 'https://shell.example'); queueMicrotask(() => receive({ source: parent, origin, data: { schema: data.schema, type: 'grant', requestId: data.requestId, grant: 'A'.repeat(43) } })); } };
+  const view = { parent, crypto: { randomUUID }, addEventListener(_type, fn) { receive = fn; }, removeEventListener() {}, setTimeout, clearTimeout };
+  const sotyFetch = createRelayIdentityFetch({ origin: 'https://app.example', parentOrigin: 'https://shell.example', view,
+    fetch: async (path, options) => { calls++; captured = { path, options }; return new Response(); } });
   await sotyFetch('/items?x=1', { headers: { accept: 'application/json' } });
   assert.equal(captured.path, '/items?x=1'); assert.equal(captured.options.headers.get('x-soty-identity-request'), '1');
   assert.equal(captured.options.credentials, 'same-origin'); assert.equal(captured.options.redirect, 'error');
+  assert.equal(captured.options.headers.get('x-soty-window-grant'), 'A'.repeat(43));
   assert.throws(() => sotyFetch('https://other.example/items'), /invalid_soty_request/u);
   assert.throws(() => sotyFetch('/items', { mode: 'no-cors' }), /invalid_soty_request/u);
   assert.throws(() => sotyFetch('/items', { redirect: 'follow' }), /invalid_soty_request/u); assert.equal(calls, 1);

@@ -24,6 +24,7 @@ import * as appActions from './app-actions.mjs';
 import * as hiveDeviceBridge from './hive-device-bridge.mjs';
 import * as appFullscreen from './app-fullscreen.mjs';
 import * as appWorkGuard from './app-work-guard.mjs';
+import * as appRelayIdentityBridge from './app-relay-identity-bridge.mjs';
 import * as appDeployment from './app-deployment.mjs';
 import * as projectCapture from './project-feedback-capture.mjs';
 import * as projectPicker from './project-feedback-picker.mjs';
@@ -141,7 +142,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
-  const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, Event, crypto, btoa,
+  const view = Object.assign(new EventTarget(), { location, document, Node: ElementPort, Event, crypto, btoa, performance,
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
     setInterval(fn, delay) { const id = ++timerId; intervals.set(id, { fn, delay }); return id; }, clearInterval(id) { intervals.delete(id); },
     navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: coarse, addEventListener() {} }) });
@@ -183,6 +184,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './app-invitation-carrier.mjs': appInvitationCarrier,
     './app-fullscreen.mjs': appFullscreen,
     './app-work-guard.mjs': appWorkGuard,
+    './app-relay-identity-bridge.mjs': appRelayIdentityBridge,
     './app-deployment.mjs': appDeployment,
     './project-feedback-capture.mjs': projectCapture,
     './project-feedback-picker.mjs': projectPicker,
@@ -948,6 +950,76 @@ async function recoveryStage(request) {
   await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
   return f;
 }
+
+test('actual stage binds relay identity to its mounted frame and closes the old grant before replacement', async t => {
+  let launches = 0; const f = await recoveryStage(async () => { launches++; return { ...stageResponse('/'), launchBinding: stageBinding }; });
+  t.after(() => f.app.cleanScreen());
+  const requests = [], fallback = f.app.api.request;
+  f.app.api.request = async (operation, args) => {
+    if (!operation.startsWith('apps.relay.identity')) return fallback(operation, args);
+    requests.push({ operation, args });
+    return operation.endsWith('.close') ? { closed: true }
+      : { schema: 'soty.relay-window-grant.v1', grant: (args.expectedAccountId === 'account-A' ? 'A' : 'B').repeat(43), expiresAt: Date.now() + 30000 };
+  };
+  const first = f.app.main.querySelector('iframe');
+  const ask = (frame, origin = 'https://runtime.example') => f.view.dispatchEvent(Object.assign(new Event('message'), {
+    data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) }, source: frame.contentWindow, origin,
+  }));
+  ask(first, 'https://wrong.example'); await turn(); assert.equal(requests.length, 0);
+  ask(first); await turn(); assert.equal(requests.length, 1); assert.equal(requests[0].args.expectedAccountId, 'account-A');
+  assert.equal(first.contentWindow.sent.filter(value => value.data?.schema === 'soty.relay-window-identity.v1').length, 1);
+  bootHint(f, first)(); await turn(); await turn();
+  const second = f.app.main.querySelector('iframe'); assert.notEqual(first, second); assert.equal(launches, 2);
+  assert.equal(requests[1].operation, 'apps.relay.identity.close');
+  ask(first); ask(second); await turn(); assert.equal(requests.length, 3);
+  assert.equal(second.contentWindow.sent.filter(value => value.data?.schema === 'soty.relay-window-identity.v1').length, 1);
+  f.app.transitionAccount('account-B'); ask(second); await turn();
+  assert.equal(requests.filter(value => value.operation === 'apps.relay.identity').length, 2, 'retired account cannot receive a new grant');
+  f.setLocal('account-B');
+  const route = appLaunch.formatAppLaunchRoute({ appId: stageAppId, domainId: stageDomainId, path: '/' });
+  await f.app.openApplication({ appId: stageAppId, name: 'Editor' }, appLaunch.parseAppLaunchRoute(route));
+  const current = f.app.main.querySelector('iframe'); assert.ok(current); assert.notEqual(current, second);
+  ask(second); ask(current); await turn();
+  const grants = requests.filter(value => value.operation === 'apps.relay.identity');
+  assert.equal(grants.length, 3); assert.equal(grants[2].args.expectedAccountId, 'account-B');
+  assert.equal(current.contentWindow.sent.findLast(value => value.data?.schema === 'soty.relay-window-identity.v1').data.grant, 'B'.repeat(43));
+});
+
+test('repeated refresh while an old relay grant is closing starts only one launch', async t => {
+  let launches = 0; const closeGate = deferred(), f = await recoveryStage(async () => { launches++; return { ...stageResponse('/'), launchBinding: stageBinding }; });
+  t.after(() => f.app.cleanScreen());
+  let closes = 0; const fallback = f.app.api.request;
+  f.app.api.request = async (operation, args) => {
+    if (operation === 'apps.relay.identity') return { schema: 'soty.relay-window-grant.v1', grant: 'A'.repeat(43), expiresAt: Date.now() + 30000 };
+    if (operation === 'apps.relay.identity.close') { closes++; await closeGate.promise; return { closed: true }; }
+    return fallback(operation, args);
+  };
+  const frame = f.app.main.querySelector('iframe');
+  f.view.dispatchEvent(Object.assign(new Event('message'), { data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) },
+    source: frame.contentWindow, origin: 'https://runtime.example' })); await turn();
+  const refresh = f.app.main.querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh');
+  refresh.emit('click'); refresh.emit('click'); await turn();
+  assert.equal(closes, 1); assert.equal(launches, 1); assert.equal(f.app.main.querySelector('iframe'), frame);
+  closeGate.resolve(); await turn(); await turn(); assert.equal(launches, 2); assert.notEqual(f.app.main.querySelector('iframe'), frame);
+});
+
+test('manual reopen attaches identity to the new launch binding', async t => {
+  let launches = 0; const f = await recoveryStage(async () => ({ ...stageResponse('/'), launchBinding: { ...stageBinding, policyEpoch: ++launches } }));
+  t.after(() => f.app.cleanScreen());
+  const identity = [], fallback = f.app.api.request;
+  f.app.api.request = async (op, args) => {
+    if (op === 'apps.relay.identity') { identity.push(args); return { schema: 'soty.relay-window-grant.v1', grant: 'A'.repeat(43), expiresAt: Date.now() + 30000 }; }
+    if (op === 'apps.relay.identity.close') return { closed: true };
+    return fallback(op, args);
+  };
+  const ask = frame => f.view.dispatchEvent(Object.assign(new Event('message'), { data: { schema: 'soty.relay-window-identity.v1', type: 'request', requestId: 'a'.repeat(36) },
+    source: frame.contentWindow, origin: 'https://runtime.example' }));
+  ask(f.app.main.querySelector('iframe')); await turn();
+  f.app.main.querySelectorAll('button').find(value => value.dataset.stageControl === 'refresh').emit('click');
+  await turn(); await turn(); assert.equal(launches, 2);
+  ask(f.app.main.querySelector('iframe')); await turn();
+  assert.deepEqual(identity.map(value => value.launchBinding.policyEpoch), [1, 2]);
+});
 
 async function widgetStage(request) {
   const f = fixture({ hash: '#world' }), account = f.app.deskAccount, generation = f.app.accountGeneration;

@@ -8,7 +8,6 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAppsService } from '../server/index.mjs';
 import { createLocalAppsRuntime } from '../../../scripts/agent-modules/local-apps.mjs';
-import { createRelayIdentityFetch } from '../../source-app/browser/relay-identity-fetch.mjs';
 
 const bundle = await readFile(new URL('../../../public/agent/soty-connector.mjs', import.meta.url), 'utf8');
 const start = bundle.indexOf('// bundled connector module: ./agent-modules/local-apps.mjs\n');
@@ -63,8 +62,9 @@ test(`ordinary relay identity is refused before signing or upstream on ${mode}`,
     const boot = await http(port, '/_soty/session', { origin: url.origin, method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
     assert.equal(boot.status, 200); return { origin: url.origin, cookie: boot.headers['set-cookie'][0].split(';')[0] };
   }
+  // The old helper sent only this flag and supplied no window grant.
   const a = await session(alice), b = await session(bob), callIdentity = (session, method = 'GET', headers = {}) =>
-    createRelayIdentityFetch({ origin: session.origin, fetch: (path, options) => http(port, path, { ...session, method: options.method, headers: Object.fromEntries(options.headers) }) })('/items', { method, headers });
+    http(port, '/items', { ...session, method, headers: { ...headers, 'x-soty-identity-request': '1' } });
   const before = seen.length;
   for (const session of [a, b]) for (const method of ['GET', 'POST']) {
     const response = await callIdentity(session, method, { 'x-soty-frame': 'A'.repeat(43) });
@@ -78,7 +78,7 @@ test(`ordinary relay identity is refused before signing or upstream on ${mode}`,
   const write = await http(port, '/ordinary', { ...a, method: 'POST', headers: { 'idempotency-key': 'safe-fixture-key' }, body: 'record' });
   assert.equal(write.status, 200); assert.equal(seen.at(-1).key, 'safe-fixture-key');
   revoked.add(bob.deviceId); const revokedBefore = seen.length;
-  assert.ok([401, 403].includes((await callIdentity(b)).status)); assert.equal(seen.length, revokedBefore); assert.equal(signatures, 0);
+  assert.equal((await callIdentity(b)).status, 503); assert.equal(seen.length, revokedBefore); assert.equal(signatures, 0);
   runtime.stop(); legacy = true; runtime.start(); await until(() => legacyReady && runtime.status().connected && runtime.status().apps === 1);
   await until(() => { try { call('apps.launch', { appId: app.id }); return true; } catch { return false; } });
   const a2 = await session(alice), legacyBefore = seen.length;

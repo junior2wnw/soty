@@ -1,5 +1,6 @@
 export interface FeedbackAttachment {kind:'image'|'audio';name:string;mimeType:string;dataBase64:string}
-export function createRelayIdentityFetch(options?:{fetch?:typeof globalThis.fetch;origin?:string}):(path:string,options?:RequestInit)=>Promise<Response>;
+/** parentOrigin, when supplied, must come from trusted Soty configuration; otherwise Root supplies exact origins. */
+export function createRelayIdentityFetch(options?:{fetch?:typeof globalThis.fetch;origin?:string;view?:Window;parentOrigin?:string;timeoutMs?:number}):(path:string,options?:RequestInit)=>Promise<Response>;
 /** `parentOrigin` is trusted application configuration, never a caller-provided URL. */
 export function createSotyAppWork(options:{parentOrigin:string;isDirty():boolean;save():void|Promise<void>;view?:Window}):{changed():void;dispose():void};
 export interface FeedbackDraft {body:string;attachments:FeedbackAttachment[]}
