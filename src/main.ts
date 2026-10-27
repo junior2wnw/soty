@@ -6,7 +6,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, PendingFil
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, createConnectorAccessGrant, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, revokeConnectorAccessGrant, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, createConnectorAccessGrant, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, resumeAgentRelayReply, revokeConnectorAccessGrant, runConnectorJob } from "./features/connector";
 import type { ConnectorAccessCredential, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
 import { agentSide, applyChessMove, boardSquares, buildChessCoachPosition, buildChessOpponentPosition, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -512,12 +512,6 @@ async function safeBoot(): Promise<void> {
 
 async function boot(): Promise<void> {
   chessPrivateCoach ??= createChessCoachForPage(() => { renderChessCoachDialog(); renderPersonalChessControls(); }, retirePersonalChess);
-  const spreadExPairCode = spreadExPairCodeFromUrl();
-  if (spreadExPairCode) {
-    await registerServiceWorker();
-    await renderSpreadExInstall(spreadExPairCode);
-    return;
-  }
   adoptAgentRelayFromUrl();
   void retryPendingConnectorRevocations();
   trafficProfileWasAdopted = adoptTrafficProfileFromUrl() || trafficProfileWasAdopted;
@@ -589,89 +583,6 @@ async function boot(): Promise<void> {
     trafficProfileWasAdopted = false;
     void openTrafficFabricModal();
   }
-}
-
-async function renderSpreadExInstall(pairCode: string): Promise<void> {
-  app.innerHTML = `
-    <main class="spreadex-install-screen">
-      <section class="spreadex-install-card" aria-live="polite">
-        <div class="spreadex-install-mark">S</div>
-        <p class="spreadex-install-kicker">SOTY AGENT × SPREADEX</p>
-        <h1>Подключаем умный анализ</h1>
-        <p class="spreadex-install-copy">Проверяем агент на этом компьютере. Код одноразовый; ключи бирж агенту не передаются.</p>
-        <div class="spreadex-install-state"><span></span><b>Ищем Soty Agent…</b></div>
-        <div class="spreadex-install-actions"></div>
-        <small class="spreadex-install-note">Агент работает локально и обновляется автоматически.</small>
-      </section>
-    </main>`;
-  const state = app.querySelector<HTMLDivElement>(".spreadex-install-state");
-  const actions = app.querySelector<HTMLDivElement>(".spreadex-install-actions");
-  if (!state || !actions) return;
-
-  const showSuccess = (): void => {
-    clearSpreadExPairCodeFromUrl();
-    state.dataset.tone = "ok";
-    state.innerHTML = "<span></span><b>Компьютер подключён</b>";
-    actions.innerHTML = '<button class="spreadex-return" type="button">Вернуться в SpreadEx</button>';
-    actions.querySelector<HTMLButtonElement>(".spreadex-return")?.addEventListener("click", () => {
-      window.location.assign("https://miniapp.spreadex.me");
-    });
-  };
-
-  const attempt = async (): Promise<boolean> => {
-    state.dataset.tone = "busy";
-    state.innerHTML = "<span></span><b>Связываем компьютер…</b>";
-    const result = await pairLocalSpreadEx(pairCode);
-    if (result.ok) {
-      showSuccess();
-      return true;
-    }
-    if (!["network", "timeout", "agent-incompatible"].includes(result.error || "")) {
-      state.dataset.tone = "error";
-      state.innerHTML = "<span></span><b>Ссылка недействительна или уже использована</b>";
-      actions.innerHTML = '<button class="spreadex-return" type="button">Получить новую ссылку в SpreadEx</button>';
-      actions.querySelector<HTMLButtonElement>(".spreadex-return")?.addEventListener("click", () => {
-        window.location.assign("https://miniapp.spreadex.me");
-      });
-      return false;
-    }
-    state.dataset.tone = "idle";
-    state.innerHTML = "<span></span><b>Soty Agent пока не найден</b>";
-    if (!canInstallMachineAgent()) {
-      actions.innerHTML = '<p>Откройте эту ссылку на компьютере Windows, macOS или Linux.</p>';
-      return false;
-    }
-    actions.innerHTML = '<button class="spreadex-download" type="button">Установить Soty Agent</button><button class="spreadex-retry" type="button">Проверить ещё раз</button>';
-    actions.querySelector<HTMLButtonElement>(".spreadex-download")?.addEventListener("click", () => {
-      downloadAgentInstallerForDevice("machine");
-      state.dataset.tone = "busy";
-      state.innerHTML = "<span></span><b>Ждём завершения установки…</b>";
-      void watchSpreadExPairing(pairCode, showSuccess, state);
-    });
-    actions.querySelector<HTMLButtonElement>(".spreadex-retry")?.addEventListener("click", () => void attempt());
-    return false;
-  };
-
-  await attempt();
-}
-
-async function watchSpreadExPairing(pairCode: string, onSuccess: () => void, state: HTMLDivElement): Promise<void> {
-  const deadline = Date.now() + 10 * 60_000;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-    const result = await pairLocalSpreadEx(pairCode, 2_500);
-    if (result.ok) {
-      onSuccess();
-      return;
-    }
-    if (!["network", "timeout", "agent-incompatible"].includes(result.error || "")) {
-      state.dataset.tone = "error";
-      state.innerHTML = "<span></span><b>Код подключения истёк. Получите новую ссылку в SpreadEx.</b>";
-      return;
-    }
-  }
-  state.dataset.tone = "error";
-  state.innerHTML = "<span></span><b>Агент не появился. Запустите установщик и нажмите «Проверить ещё раз».</b>";
 }
 
 async function registerServiceWorker(): Promise<void> {

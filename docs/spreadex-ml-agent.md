@@ -18,7 +18,7 @@ Browser requests are accepted only from the exact configured SpreadEx origin, th
 
 ## Installation deep-link
 
-SpreadEx opens `https://соты.online/install/spreadex?pair=<one-time-code>`. The Soty page validates the code, moves it immediately from the address bar into tab-scoped `sessionStorage`, and calls the loopback `/pair` endpoint. If a compatible agent is unavailable, the page offers the existing OS-aware installer and retries every two seconds for up to ten minutes. A successful pairing clears the stored code and shows a single return action to `https://miniapp.spreadex.me`.
+The former `/install/spreadex?pair=…` page is retired in this source tree. It now displays that this pairing method is unavailable and provides a link to Soty; it does not call the connector or pair a device. The separate connector and worker integration described below is unchanged. Existing deployments keep their old behavior until this shell is deployed.
 
 ## Remote protocol
 

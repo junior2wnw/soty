@@ -47,16 +47,6 @@ export interface LocalAgentReply {
 
 export type LocalAgentMessageHandler = (message: string) => void;
 
-export interface SpreadExPairResult {
-  readonly ok: boolean;
-  readonly error?: string;
-  readonly status?: {
-    readonly paired?: boolean;
-    readonly deviceId?: string;
-    readonly baseOrigin?: string;
-  };
-}
-
 export interface LocalAgentPendingRelayReply {
   readonly relayId?: string;
   readonly access?: ConnectorAccessCredential;
@@ -133,7 +123,6 @@ interface ControllerAuth {
 const linkStorageKey = "soty:connector:link-id";
 const previousLinkStorageKey = "soty:agent:relay-id";
 const pendingJobsStorageKey = "soty:connector:pending-jobs:v1";
-const spreadExPairSessionKey = "soty:spreadex:pair-code:v1";
 const linkParamNames = ["connector", "link", "agent", "agentRelay", "agentRelayId"];
 const pendingJobTtlMs = 2 * 60 * 60_000 + 30 * 60_000;
 const maxMessages = 64;
@@ -146,53 +135,6 @@ export function adoptAgentRelayFromUrl(): boolean {
   for (const name of linkParamNames) url.searchParams.delete(name);
   window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   return true;
-}
-
-export function spreadExPairCodeFromUrl(): string {
-  const url = new URL(window.location.href);
-  if (!/^\/install\/spreadex\/?$/u.test(url.pathname)) return "";
-  const code = String(url.searchParams.get("pair") || "").trim();
-  if (/^[A-Za-z0-9_-]{8,192}$/u.test(code)) {
-    try { sessionStorage.setItem(spreadExPairSessionKey, code); } catch { /* The current URL remains the fallback. */ }
-    url.searchParams.delete("pair");
-    url.searchParams.set("pairing", "1");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-    return code;
-  }
-  try {
-    const saved = String(sessionStorage.getItem(spreadExPairSessionKey) || "").trim();
-    return /^[A-Za-z0-9_-]{8,192}$/u.test(saved) ? saved : "";
-  } catch { return ""; }
-}
-
-export function clearSpreadExPairCodeFromUrl(): void {
-  const url = new URL(window.location.href);
-  try { sessionStorage.removeItem(spreadExPairSessionKey); } catch { /* Session storage is optional. */ }
-  url.searchParams.delete("pair");
-  url.searchParams.delete("pairing");
-  url.searchParams.set("paired", "1");
-  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
-export async function pairLocalSpreadEx(pairCode: string, timeoutMs = 4_000): Promise<SpreadExPairResult> {
-  const code = String(pairCode || "").trim();
-  if (!/^[A-Za-z0-9_-]{8,192}$/u.test(code)) return { ok: false, error: "invalid-pair-code" };
-  const result = await requestJson("http://127.0.0.1:49424/integrations/spreadex/v1/pair", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-    targetAddressSpace: "loopback"
-  } as RequestInit & { readonly targetAddressSpace: "loopback" }, timeoutMs);
-  const paired = result.ok === true
-    && result.schema === "soty.spreadex-ml.v1"
-    && result.status?.paired === true
-    && typeof result.status?.deviceId === "string"
-    && Boolean(result.status.deviceId);
-  return {
-    ok: paired,
-    ...(typeof result.error === "string" ? { error: result.error } : !paired ? { error: "agent-incompatible" } : {}),
-    ...(result.status && typeof result.status === "object" ? { status: result.status } : {})
-  };
 }
 
 export async function checkLocalAgent(timeoutMs = 3_000): Promise<LocalAgentStatus> {
