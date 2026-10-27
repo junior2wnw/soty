@@ -72,3 +72,40 @@ test('scrolled-out children of a reserved result panel do not falsely occupy the
     getBoundingClientRect: () => ({ left: 21, top: 760, width: 278, height: 88 }) };
   assert.deepEqual(floatingObstacles({ querySelectorAll: () => [group, clipped] }, () => false), [surface]);
 });
+
+test('field cards yield only when they otherwise leave no room for hard shell controls', () => {
+  const preferred = { x: 270, y: 6 };
+  const hard = [
+    { left: 12, top: 16, width: 240, height: 94 },
+    { left: 260, top: 16, width: 44, height: 44 },
+    { left: 12, top: 110, width: 296, height: 72 },
+  ];
+  const soft = { left: 0, top: 182, width: 320, height: 66, soft: true };
+  const placed = placeFloatingControl(preferred, view(320, 360), [...hard, soft]);
+  assert.ok(hard.every(control => !touches(placed, control)), 'QR and other hard controls stay reachable');
+  assert.ok(touches(placed, soft), 'only the soft obstacle is allowed to yield');
+  assert.deepEqual(preferred, { x: 270, y: 6 }, 'saved preference is not changed');
+  assert.deepEqual(placeFloatingControl(preferred, view(320, 360), []), preferred, 'preference returns after obstacles leave');
+});
+
+test('field cards are still avoided when a free placement exists', () => {
+  const hard = { left: 260, top: 16, width: 44, height: 44 };
+  const soft = { left: 220, top: 66, width: 44, height: 44, soft: true };
+  const result = placeFloatingControl({ x: 270, y: 6 }, view(320, 568), [hard, soft]);
+  assert.equal(touches(result, hard), false);
+  assert.equal(touches(result, soft), false);
+});
+
+test('collector marks only explicitly movable field elements as soft', () => {
+  const rect = { left: 10, top: 20, width: 44, height: 44 };
+  const element = soft => ({ closest: () => null, getClientRects: () => [rect], getBoundingClientRect: () => rect,
+    hasAttribute: name => name === 'data-floating-soft' && soft });
+  const result = floatingObstacles({ querySelectorAll: () => [element(true), element(false)] }, () => false);
+  assert.deepEqual(result, [{ ...rect, soft: true }, rect]);
+});
+
+test('hard-only impossibility keeps the existing clamped fallback', () => {
+  const preferred = { x: 270, y: 6 }, hard = { left: 0, top: 0, width: 320, height: 360 };
+  assert.deepEqual(placeFloatingControl(preferred, view(320, 360), [hard]), preferred);
+  assert.deepEqual(placeFloatingControl(preferred, view(320, 360), [hard, { ...hard, soft: true }]), preferred);
+});

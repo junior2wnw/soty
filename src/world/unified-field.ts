@@ -416,7 +416,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       if (!wrapper) {
         wrapper = el('div', 'uf-context'); wrapper.dataset.contextId = context.contextId;
         const svg = document.createElementNS(SVG_NS, 'svg'); svg.classList.add('uf-contour'); svg.setAttribute('aria-hidden', 'true'); svg.append(document.createElementNS(SVG_NS, 'path'));
-        const title = el('button', 'uf-context-title'); title.type = 'button'; title.dataset.contextId = context.contextId;
+        const title = el('button', 'uf-context-title'); title.type = 'button'; title.dataset.floatingSoft = ''; title.dataset.contextId = context.contextId;
         title.addEventListener('click', () => { if (mode === 'search') options.onContextActivate?.(context.contextId); else if (!arranging) focusContext(context.contextId); }, { signal });
         wrapper.append(svg, title); plane.append(wrapper); contextElements.set(context.contextId, wrapper);
       }
@@ -449,7 +449,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
     for (const node of nodes) {
       let target = nodeElements.get(node.shortcutId);
       if (!target) {
-        target = el('button', 'uf-node'); target.type = 'button'; target.dataset.shortcutId = node.shortcutId;
+        target = el('button', 'uf-node'); target.type = 'button'; target.dataset.floatingSoft = ''; target.dataset.shortcutId = node.shortcutId;
         target.addEventListener('focus', () => { selectedId = node.shortcutId; remember(); schedule(); emit(); }, { signal });
         target.addEventListener('click', event => {
           const item = available(node.shortcutId); if (!item) return;
@@ -490,7 +490,7 @@ export function createUnifiedField(options: UnifiedFieldOptions): UnifiedField {
       target.dataset.interactive = String(!target.disabled);
       if (options.onInspect && mode === 'mine' && !target.disabled && !preview) {
         let action = inspectElements.get(node.shortcutId);
-        if (!action) { action = el('button', 'uf-inspect'); action.type = 'button'; action.dataset.shortcutId = node.shortcutId; action.append(icon('more'));
+        if (!action) { action = el('button', 'uf-inspect'); action.type = 'button'; action.dataset.floatingSoft = ''; action.dataset.shortcutId = node.shortcutId; action.append(icon('more'));
           action.addEventListener('click', () => { const current = available(node.shortcutId); if (current) { selectedId = current.shortcutId; remember(); options.onInspect?.(current.entity, current.shortcutId); } }, { signal }); plane.append(action); inspectElements.set(node.shortcutId, action); }
         const left = node.x + node.width;
         const top = node.y;

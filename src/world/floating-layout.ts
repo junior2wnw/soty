@@ -1,5 +1,5 @@
 export interface FloatingPoint { x: number; y: number }
-export interface FloatingRect { left: number; top: number; width: number; height: number }
+export interface FloatingRect { left: number; top: number; width: number; height: number; soft?: true }
 export interface FloatingViewport extends FloatingRect { bottomInset?: number }
 
 const size = 44, gap = 6;
@@ -15,28 +15,30 @@ export function placeFloatingControl(preferred: FloatingPoint, view: FloatingVie
     && rect.top < maxY + size + gap && rect.top + rect.height + gap > minY);
   const collision = (candidate: FloatingPoint, rect: FloatingRect): boolean => candidate.x < rect.left + rect.width + gap
     && candidate.x + size + gap > rect.left && candidate.y < rect.top + rect.height + gap && candidate.y + size + gap > rect.top;
-  if (!blocks.some(rect => collision(point, rect))) return point;
-
-  // A nearest free rectangle has an edge at the preference, a viewport edge,
-  // or an obstacle edge. Search these coordinates, nearest first, and stop
-  // considering distances once a closer free placement has been found.
-  const xs = [...new Set([point.x, minX, maxX, ...blocks.flatMap(rect => [clamp(rect.left - size - gap, minX, maxX), clamp(rect.left + rect.width + gap, minX, maxX)])])]
-    .sort((a, b) => Math.abs(a - point.x) - Math.abs(b - point.x));
-  const ys = [...new Set([point.y, minY, maxY, ...blocks.flatMap(rect => [clamp(rect.top - size - gap, minY, maxY), clamp(rect.top + rect.height + gap, minY, maxY)])])]
-    .sort((a, b) => Math.abs(a - point.y) - Math.abs(b - point.y));
-  let best: FloatingPoint | null = null, distance = Infinity;
-  for (const x of xs) {
-    if ((x - point.x) ** 2 >= distance) break;
-    for (const y of ys) {
-      const nextDistance = (x - point.x) ** 2 + (y - point.y) ** 2;
-      if (nextDistance >= distance) break;
-      const candidate = { x, y };
-      if (!blocks.some(rect => collision(candidate, rect))) { best = candidate; distance = nextDistance; }
+  const find = (items: readonly FloatingRect[]): FloatingPoint | null => {
+    if (!items.some(rect => collision(point, rect))) return point;
+    // A nearest free rectangle has an edge at the preference, a viewport edge,
+    // or an obstacle edge. Search these coordinates, nearest first.
+    const xs = [...new Set([point.x, minX, maxX, ...items.flatMap(rect => [clamp(rect.left - size - gap, minX, maxX), clamp(rect.left + rect.width + gap, minX, maxX)])])]
+      .sort((a, b) => Math.abs(a - point.x) - Math.abs(b - point.x));
+    const ys = [...new Set([point.y, minY, maxY, ...items.flatMap(rect => [clamp(rect.top - size - gap, minY, maxY), clamp(rect.top + rect.height + gap, minY, maxY)])])]
+      .sort((a, b) => Math.abs(a - point.y) - Math.abs(b - point.y));
+    let best: FloatingPoint | null = null, distance = Infinity;
+    for (const x of xs) {
+      if ((x - point.x) ** 2 >= distance) break;
+      for (const y of ys) {
+        const nextDistance = (x - point.x) ** 2 + (y - point.y) ** 2;
+        if (nextDistance >= distance) break;
+        const candidate = { x, y };
+        if (!items.some(rect => collision(candidate, rect))) { best = candidate; distance = nextDistance; }
+      }
     }
-  }
-  // A viewport smaller than its controls may have no free rectangle. Keep the
-  // control reachable; ordinary shell layouts reserve a free header dock.
-  return best ?? point;
+    return best;
+  };
+  const all = find(blocks); if (all) return all;
+  const hard = blocks.filter(rect => !rect.soft);
+  // If the field fills the viewport, its movable cards yield before shell controls.
+  return (hard.length < blocks.length ? find(hard) : null) ?? point;
 }
 
 /** Read visible shell controls, including iframe bounds we cannot inspect. */
@@ -55,7 +57,7 @@ export function floatingObstacles(doc: Document, ignore: (element: Element) => b
     if (collapsed) continue;
     if (doc.defaultView?.getComputedStyle?.(element).visibility === 'hidden') continue;
     const rect = element.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) result.push({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    if (rect.width > 0 && rect.height > 0) result.push({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, ...(element.hasAttribute?.('data-floating-soft') ? { soft: true as const } : {}) });
   }
   return result;
 }
