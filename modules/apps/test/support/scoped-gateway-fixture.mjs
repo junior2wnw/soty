@@ -128,7 +128,9 @@ export async function createScopedGatewayFixture({frontPort,appPort,backendPort:
   const wire=new FixtureWire({backendPort,sourcePort,embedded,native,origin});let serial=0;
   async function launch(signer=reader){const value=await signer.client.extension('apps.launch',{appId});const url=new URL(value.launchUrl);
     const session=await wire.request(embedded+'/_soty/session',{body:{ticket:url.hash.slice(1)}});assert.equal(session.status,200);return value;}
-  async function login(signer=reader,long=renewal){let result=await wire.request(embedded+'/api/embed/login');assert.equal(result.status,302);
+  async function login(signer=reader,long=renewal){let result=await wire.request(embedded+'/api/embed/login');
+    const observed=safeFixtureHttp(result);
+    assert.equal(result.status,302,JSON.stringify({phase:'fixture.login.initial-get',status:observed.status,code:observed.code}));
     result=await wire.request(result.location);assert.ok([302,303].includes(result.status));const flow=result.location;
     await wire.request(flow);const context=(await wire.request(flow.href+'/context')).body;
     await signer.client.extension('identity.human.approve',{interactionId:context.interactionId,browserNonce:context.browserNonce,csrf:context.csrf,requestId:'scoped-decision-'+(++serial),decision:'approve',expectedAccountId:signer.account.accountId,...(long?{stayInAppSeconds:86400}:{})},{expectedAccountId:signer.account.accountId});
@@ -164,7 +166,7 @@ export function wireHttp(port,path,{host,cookie,origin,method,body,fields,header
 
 // Diagnostics for three genuine maintained Source failures. Never print URL,
 // cookies, state/intent, subject, request payload, error message or raw body.
-const fixtureHttpCodes=new Set([...sourceDiagnosticCodes,'embed_session_required','embed_csrf_invalid','embed_profile_changed','embed_provider_unavailable',
+const fixtureHttpCodes=new Set([...sourceDiagnosticCodes,'scoped_embed_proof_expired','embed_session_required','embed_csrf_invalid','embed_profile_changed','embed_provider_unavailable',
   'embed_proof_expired','embed_binding_changed','embed_link_required','embed_transport_denied','embed_resume_unavailable','embed_login_preparation_unavailable',
   'app_upstream_failed','app_bad_head','app_bad_data','app_bad_end','app_bad_frame','app_scoped_auth_invalid','app_scoped_auth_binding_invalid',
   'app_scoped_auth_binding_conflict','app_scoped_context_closed','app_binding_pending','app_binding_changed','app_access_revoked','app_offline',
