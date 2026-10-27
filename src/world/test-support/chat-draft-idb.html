@@ -18,7 +18,7 @@ document.querySelector('#run').onclick=async()=>{try{
  let oldChoice=false;try{await a.draftSelect(prefix,recovered.heads.map(h=>h.id),'recovered_001','selection_stale','tab_A');}catch(e){oldChoice=e.code==='chat_draft_changed'}
  const afterOld=await a.draftRead(prefix);ok(oldChoice&&afterOld.heads.length===1&&afterOld.heads[0].text==='Old tab newer','new old-tab edit survives stale choice');
  const ownList=await a.draftList('synthetic:'),otherList=await a.draftList('unrelated_synthetic_account:');
- ok(ownList.some(row=>row.key==='$draft:'+prefix&&row.heads.length===0)&&!otherList.some(row=>row.key==='$draft:'+prefix),'list is account-scoped and retains the tombstone');
+ ok(ownList.some(row=>row.key==='$draft:'+prefix&&row.heads[0]?.text==='Old tab newer')&&!otherList.some(row=>row.key==='$draft:'+prefix),'list is account-scoped and retains the recovered version');
  const intentPrefix='synthetic-intent:'+crypto.randomUUID()+':';
  await a.draftInitialize(intentPrefix,{text:'',replyTo:null},'legacy_A');
  await a.draftWrite(intentPrefix,{baseId:null,id:'sent_draft',writer:'tab_A',text:'Same',replyTo:null});
