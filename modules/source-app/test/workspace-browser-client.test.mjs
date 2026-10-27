@@ -191,8 +191,9 @@ test('a copied intent cannot become a new invoke, but its exact read-only receip
   await f.api.invoke(intent);
   await assert.rejects(f.api.invoke(structuredClone(intent)), /source_client_input_invalid/);
   assert.equal((await f.api.receipt({ requestId: intent.requestId, contextRef: intent.contextRef, inputDigest: intent.inputDigest })).outcome, 'committed');
-  const absent = await f.api.receipt({ requestId: id('absent-reference'), contextRef: intent.contextRef, inputDigest: '0'.repeat(64) });
-  assert.equal(absent.outcome, 'not_applied'); assert.equal(f.effects(), 1);
+  await assert.rejects(f.api.receipt({ requestId: id('absent-reference'), contextRef: intent.contextRef, inputDigest: '0'.repeat(64) }),
+    error => error.code === 'source_receipt_unknown' && error.effectUnknown === true);
+  assert.equal(f.effects(), 1);
 });
 
 test('query/invoke cannot smuggle bootstrap, ambiguous JSON, oversized payloads or an implicit request id', async () => {

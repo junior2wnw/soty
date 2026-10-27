@@ -28,12 +28,13 @@ export function createRelayPersonalServer(options){
     &&(value.clock===undefined||typeof value.clock==='function'),
     'relay_personal_configuration_invalid',503);
   for(const fn of [domain.read,domain.execute].filter(Boolean))check(!['AsyncFunction','AsyncGeneratorFunction'].includes(fn.constructor?.name),'relay_personal_configuration_invalid',503);
-  const identity=createSqliteRelayIdentity({issuer:value.issuer,appId:value.appId,databasePath:value.nonceDatabasePath,
-    ...(value.fetch?{fetch:value.fetch}:{}),...(value.clock?{clock:value.clock}:{})});
-  let database,closed=false,inTransaction=false;
+  let identity,database,closed=false,inTransaction=false;
   try{
     if(!existsSync(value.databasePath)){check(value.initialize===true,'relay_personal_not_initialized',503);const file=openSync(value.databasePath,'wx',0o600);closeSync(file);}
-    const stat=lstatSync(value.databasePath);check(stat.isFile()&&!stat.isSymbolicLink(),'relay_personal_file_invalid',503);
+    const stat=lstatSync(value.databasePath);check(stat.isFile()&&!stat.isSymbolicLink()
+      &&(process.platform!=='linux'||stat.uid===process.getuid()&&(stat.mode&0o777)===0o600),'relay_personal_file_invalid',503);
+    identity=createSqliteRelayIdentity({issuer:value.issuer,appId:value.appId,databasePath:value.nonceDatabasePath,
+      ...(value.fetch?{fetch:value.fetch}:{}),...(value.clock?{clock:value.clock}:{})});
     database=new DatabaseSync(value.databasePath);database.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');
     const tables=database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
     if(!tables.length){check(value.initialize===true,'relay_personal_not_initialized',503);database.exec('BEGIN IMMEDIATE');
@@ -44,7 +45,7 @@ export function createRelayPersonalServer(options){
       &&database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='soty_workspace_documents'").get()?.sql===PERSONAL_DOCUMENT_DDL
       &&database.prepare('PRAGMA foreign_key_check').all().length===0,'relay_personal_schema_mismatch',503);
     database.exec('PRAGMA journal_mode=WAL');
-  }catch(error){try{database?.close();}finally{identity.close();}throw error;}
+  }catch(error){try{database?.close();}finally{identity?.close();}throw error;}
   const namespace=digest([SCHEMA,value.appId,value.issuer]);
   function transaction(action){check(!closed&&!inTransaction,'relay_personal_unavailable',503);inTransaction=true;
     try{database.exec('BEGIN IMMEDIATE');const result=syncResult(action());check(database.isTransaction,'relay_personal_transaction_lost',503);database.exec('COMMIT');return result;}

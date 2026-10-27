@@ -68,6 +68,8 @@ test('usable Native reporter consent + independently proven Native owner grant, 
 });
 test('default-off worker/JSON proof denied; actual Native SQL claim/final + encrypted DATA result; exact lost ACK readback/restart never reprocess',async t=>{
   const f=await fixture(t);await f.invoke('reporter',f.consent);const created=await f.invoke('owner',f.grant),jobId=created.data.jobId;
+  const queued=await f.runtime.call(await f.proof('reporter'),'read',{requestId:'job-queued-readback-0001',input:{operation:'feedback.job.result',jobId}});
+  assert.equal(queued.state,'queued');assert.equal(queued.outcome,'unknown','a queued job can still run');
   await assert.rejects(f.runner({enforcer:false}).process(jobId),error=>error.code==='source_feedback_processor_not_ready');
   await assert.rejects(f.runner({syntheticTestOnly:false}).process(jobId),error=>error.code==='source_feedback_processor_not_ready');
   await assert.rejects(f.runner({proofPort:async()=>({sessionHash:f.sessions.owner})}).process(jobId),error=>error.code==='source_feedback_authority_invalid');

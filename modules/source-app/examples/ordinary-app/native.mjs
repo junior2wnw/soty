@@ -206,7 +206,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
       const actor = dataActor(proof, binding), input = fields(args.input, ['inputDigest']); check(/^[a-f0-9]{64}$/u.test(input.inputDigest));
       const row = db.prepare('SELECT * FROM native_receipts WHERE resource_id=? AND principal_id=? AND request_id=?').get(resourceId, actor.principalId, args.requestId);
       check(!row || row.input_digest === input.inputDigest, 'ordinary_native_request_conflict', 409); dataActor(proof, binding);
-      return row ? JSON.parse(row.result_json) : { requestId: args.requestId, inputDigest: input.inputDigest, outcome: 'not_applied' };
+      return row ? JSON.parse(row.result_json) : { requestId: args.requestId, inputDigest: input.inputDigest, outcome: 'unknown' };
     },
     feedback: {
       async context(proof, binding) { const actor = dataActor(proof, binding); return { schema: 'soty.source-feedback.context.v1', ready: true, canSubmit: true,

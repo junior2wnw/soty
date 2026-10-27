@@ -47,7 +47,7 @@ export interface SourceReceiptReference { readonly requestId: string; readonly c
 /** Prepared by this client, pinned to the original context; JSON cannot restore write authority. */
 export interface SourceWriteIntent extends SourceReceiptReference { readonly input: Readonly<SourceWorkspaceRequest['input']>; }
 export interface SourceWriteResult {
-  readonly requestId: string; readonly inputDigest: string; readonly outcome: 'committed' | 'not_applied';
+  readonly requestId: string; readonly inputDigest: string; readonly outcome: 'committed';
   readonly replayed?: boolean; readonly receipt?: SourceJson; readonly data?: SourceJson; readonly result?: SourceJson;
   readonly contextAfter?: Readonly<Record<string, SourceJson>>; readonly workspaceReceipt?: Readonly<Record<string, SourceJson>>;
   readonly recovery?: Readonly<{schema: 'soty.workspace-receipt-recovery.v1'; contextRef: string; receiptDigest: string; contextAfter: Readonly<Record<string, SourceJson>>}>;
@@ -67,7 +67,7 @@ export interface SourceWorkspaceClient {
   /** Refreshes read-only authority before preparing a new intent; sent intents never move. */
   prepareInvoke(args: SourceWorkspaceRequest, signal?: AbortSignal): Promise<SourceWriteIntent>;
   invoke(intent: SourceWriteIntent, signal?: AbortSignal): Promise<SourceWriteResult>;
-  /** Reads an original receipt; never sends an invoke. A retained reference may be used after reload only in its same current context. */
+  /** Reads an original receipt; unknown results reject with effectUnknown=true. Never sends an invoke. */
   receipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;
   /** Fresh current context may read the sealed original result; never rewrites its intent or sends an invoke. */
   recoverReceipt(reference: SourceReceiptReference, signal?: AbortSignal): Promise<SourceWriteResult>;

@@ -27,7 +27,7 @@ async function connect(){if(busy)return;busy=true;retry.hidden=true;content.hidd
       if(typeof client.recoverReceipt!=='function'){unresolved=true;save.textContent='Предыдущая запись требует проверки в совместимой версии приложения.';}
       else{
       try{const receipt=await client.recoverReceipt(prior);if(receipt.outcome==='committed'){forget();save.textContent='Предыдущая запись сохранена.';}
-        else{forget();save.textContent='Предыдущая запись не была добавлена. Можно отправить её заново.';}}
+        else{unresolved=true;save.textContent='Результат предыдущей записи пока неизвестен. Запрос не повторялся.';}}
       catch{unresolved=true;save.textContent='Результат предыдущей записи пока неизвестен. Запрос не повторялся.';}}
     }
     form.querySelector('button').disabled=unresolved;retry.hidden=!unresolved;retry.textContent=unresolved?'Проверить сохранение':'Повторить подключение';

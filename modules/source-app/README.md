@@ -819,8 +819,11 @@ JSON-restored intent cannot call `invoke`; a retained
 `{requestId,contextRef,inputDigest}` may call `receipt` in that same current
 context. If authority/context changed, keep the outcome unknown and ask the
 person to check it in the original context; do not silently resubmit it with a
-new context or a new ID. `not_applied` is a receipt result, not an assumption
-made from a timeout,401,403 or a lost response.
+new context or a new ID. A missing receipt does not prove that the original
+request cannot arrive later: the BFF returns `source_receipt_unknown` and the
+browser SDK rejects with `effectUnknown:true`. Legacy `not_applied` responses
+are also treated as unknown; this version has no standard final-fence proof.
+If the original request never arrives, recovery can remain unknown indefinitely.
 
 Keep three separate facts in the UI: the **confirmed original receipt**,
 the **separately refreshed current context**, and the **current domain
@@ -838,8 +841,8 @@ The existing `receipt` method remains limited to its exact original current
 reference. Use explicit `recoverReceipt` after a new frame/session or Source
 restart. An older host without a sealed binding, an inaccessible original,
 a changed actor/device/resource or a forged recovery remains unknown. In a
-different context, `not_applied` without a sealed original is insufficient to
-confirm the old action; the SDK rejects it and never falls back to `invoke`.
+any context, an absent or legacy `not_applied` receipt cannot confirm the old
+action; the SDK rejects it and never falls back to `invoke`.
 Applications should retain the original reference for checking and display
 current business data from a new read, rather than treating the historical
 receipt revision as the present state.

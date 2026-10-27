@@ -226,7 +226,10 @@ export function createNativeAuthorityRuntime(port, options = {}) {
     },
     async call(proof, operation, input) {
       check(['read', 'execute', 'readProof'].includes(operation) && typeof port[operation] === 'function', 'source_app_capability_disabled', 503);
-      if (!workspace) return invoke(proof, port[operation], input, { mutation: operation === 'execute' });
+      if (!workspace) {
+        const result = await invoke(proof, port[operation], input, { mutation: operation === 'execute' });
+        return operation === 'readProof' && result?.outcome === 'not_applied' ? { ...result, outcome: 'unknown' } : result;
+      }
       const captured = proofs.get(proof); await assertCurrent(proof);
       const nativeProjection = () => syncResult(port.currentContext(captured.native, captured.binding));
       if (operation === 'read' && input.input?.operation === 'soty.context.select') {
@@ -250,7 +253,10 @@ export function createNativeAuthorityRuntime(port, options = {}) {
       const context = { check: () => workspace.assert(captured.binding, nativeProjection(), contextRef),
         receiptScope: () => workspace.receiptScope(captured.binding, nativeProjection(), contextRef),
         intent: { requestId: args.requestId, inputDigest, contextRef }, mutationRef: workspaceMutationRef(args.requestId, inputDigest, contextRef) };
-      const result = await invoke(proof, port[operation], args, { mutation: operation === 'execute', receiptRecovery: operation === 'readProof', context });
+      let result = await invoke(proof, port[operation], args, { mutation: operation === 'execute', receiptRecovery: operation === 'readProof', context });
+      // Legacy adapters used an absent receipt as an assertion of rollback.
+      // A request may still arrive, and no standard final-fence proof exists.
+      if (operation === 'readProof' && result?.outcome === 'not_applied') result = { ...result, outcome: 'unknown' };
       if (operation === 'readProof' && result.outcome === 'committed') {
         const after = workspaceReadProofContext(result, context.intent), current = withCurrent(proof, context.check);
         check(after.mutationRef === context.mutationRef && after.generation === current.generation, 'source_workspace_receipt_denied', 403);

@@ -91,7 +91,7 @@ export function createOrdinaryWorkspacePort({ base, store, children, initialChil
       const held = inspect(proof, binding), input = fields(args.input, ['inputDigest']); check(/^[a-f0-9]{64}$/u.test(input.inputDigest));
       const row = db.prepare('SELECT * FROM native_receipts WHERE resource_id=? AND principal_id=? AND request_id=?').get(held.child.id, held.member.principal_id, args.requestId);
       check(!row || row.input_digest === input.inputDigest, 'workspace_request_conflict', 409);
-      return row ? JSON.parse(row.result_json) : { requestId: args.requestId, inputDigest: input.inputDigest, outcome: 'not_applied' };
+      return row ? JSON.parse(row.result_json) : { requestId: args.requestId, inputDigest: input.inputDigest, outcome: 'unknown' };
     },
   };
   for (const name of ['rememberLogin', 'linkVerifiedIdentity', 'createEmptyGuest']) if (base[name]) methods[name] = (proof, binding, ...args) => base[name](proofs.get(proof).native, binding, ...args);

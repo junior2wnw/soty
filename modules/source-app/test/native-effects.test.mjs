@@ -88,6 +88,13 @@ test('actual Native SQLite lost ACK after COMMIT is unknown; readonly receipt su
   await assert.rejects(f.runtime.call(f.proof, 'readProof', { requestId: input.requestId, inputDigest: 'a'.repeat(64) }), error => error.code === 'source_app_request_conflict');
 });
 
+test('a legacy Native missing receipt cannot assert that a pending write will not apply', async t => {
+  const f=await fixture(t);
+  const receipt=await f.runtime.call(f.proof,'readProof',{requestId:input.requestId,inputDigest:digest(input.input)});
+  assert.equal(receipt.outcome,'unknown');
+  assert.equal(f.count('effects'),0);
+});
+
 test('post-COMMIT Native revoke is unknown, never a false rollback or private receipt under revoked access', async t => {
   let f; f = await fixture(t, { afterCommit() { f.revoke(); } });
   await assert.rejects(f.runtime.call(f.proof, 'execute', input), error => error.code === 'source_app_effect_unknown');

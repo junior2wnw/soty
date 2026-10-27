@@ -117,7 +117,9 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
     return selected;
   }
   function proof(value, entry) {
-    if (value.requestId !== entry.requestId || value.inputDigest !== entry.inputDigest || !['committed', 'not_applied'].includes(value.outcome)) fail('source_client_response_invalid', 502);
+    if (value.requestId !== entry.requestId || value.inputDigest !== entry.inputDigest) fail('source_client_response_invalid', 502);
+    if (['not_applied', 'unknown'].includes(value.outcome)) fail('source_receipt_unknown', 409);
+    if (value.outcome !== 'committed') fail('source_client_response_invalid', 502);
     if (value.outcome === 'committed' && (value.replayed !== undefined && typeof value.replayed !== 'boolean' || value.contextAfter?.schema !== 'soty.context-after.v1'
       || value.contextAfter.mutationRef !== entry.mutationRef || value.contextAfter.generation !== entry.generation
       || !metadata(value.contextAfter) || value.workspaceReceipt?.schema !== 'soty.workspace-receipt.v1'
@@ -245,7 +247,7 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
       if (entry.flight) return entry.flight;
       // A sent intent is never automatically applied again. Retry reads its
       // original receipt, including after a network-unknown invoke outcome.
-      if (entry.sent) return receipt(intent, signal);
+      if (entry.sent) return receipt(intent, signal).catch(error => { throw new SourceWorkspaceClientError(error?.code ?? 'source_receipt_unknown', error?.status ?? 503, true); });
       signal?.throwIfAborted(); entry.sent = true;
       entry.flight = (async () => {
         try {
@@ -258,7 +260,9 @@ export function createSourceWorkspaceClient({ fetch: fetcher = globalThis.fetch,
       })().finally(() => { entry.flight = null; });
       return entry.flight;
     },
-    receipt,
+    receipt(reference, signal) {
+      return receipt(reference, signal).catch(error => { throw new SourceWorkspaceClientError(error?.code ?? 'source_receipt_unknown', error?.status ?? 503, true); });
+    },
     recoverReceipt(reference, signal) {
       return recoverReceipt(reference, signal).catch(error => { throw new SourceWorkspaceClientError(error?.code ?? 'source_receipt_recovery_unavailable', error?.status ?? 503, true); });
     },

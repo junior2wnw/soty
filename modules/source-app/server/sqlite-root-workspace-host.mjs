@@ -163,7 +163,7 @@ export function createSqliteRootWorkspaceHost(options) {
     readProof(proof,binding,args,recovery){return tx(()=>{denied(binding.operation==='readProof');const actor=nativeContext(proof,binding),input=fields(args.input,['inputDigest']);
       const row=db.prepare('SELECT * FROM soty_workspace_receipts WHERE principal_id=? AND request_id=?').get(actor.principalId,args.requestId);
       check(!row||row.input_digest===input.inputDigest,'source_workspace_request_conflict',409);
-      if(!row)return{requestId:args.requestId,inputDigest:input.inputDigest,outcome:'not_applied'};
+      if(!row)return{requestId:args.requestId,inputDigest:input.inputDigest,outcome:'unknown'};
       check(isSourceNativeReceiptRecoveryPort(recovery),'source_workspace_recovery_unsupported',503);return recovery.recover(JSON.parse(row.result_json),JSON.parse(row.binding_json));});},
   });
   return Object.freeze({native,storage,profile,

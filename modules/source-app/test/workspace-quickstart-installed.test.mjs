@@ -113,6 +113,38 @@ test('same-origin Source-only reading-list quickstart: installed CLI and actual 
   const db=new DatabaseSync(realm.databasePath);try{assert.equal(db.prepare('SELECT count(*) n FROM soty_workspace_documents').get().n,1);}finally{db.close();}
 });
 
+test('a delayed original Source write stays unknown until its actual receipt commits', {timeout:120000},async t=>{
+  const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['reading'],withoutRpClients:['reading'],
+    sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,
+    connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
+  const realm=f.realms[0],launch=await f.reader.client.extension('apps.launch',{appId:realm.appId});
+  const boot=await f.wire(realm.embedded+'/_soty/session',{body:{ticket:new URL(launch.launchUrl).hash.slice(1)}});assert.equal(boot.status,200);
+  let release,delayed,hold=true,invokeCount=0,lastReceipt;
+  const client=createSourceWorkspaceClient({href:realm.embedded+'/embed?sotyFrame='+boot.value.frame,
+    fetch:async(path,init)=>{
+      const send=async()=>{const response=await f.wire(realm.embedded+path,{method:init.method,body:JSON.parse(init.body),headers:Object.fromEntries(new Headers(init.headers))});
+        if(path==='/api/embed/receipt')lastReceipt={status:response.status,body:response.value};
+        return new Response(response.text,{status:response.status,headers:response.headers});};
+      if(path==='/api/embed/invoke'){
+        invokeCount++;
+        if(hold){hold=false;delayed=new Promise(resolve=>{release=resolve;}).then(send);throw Error('synthetic transport loss before delivery');}
+      }
+      return send();
+    }});
+  t.after(()=>client.dispose());
+  await client.connect({requestId:'delayed-source-connect-001'});
+  const intent=await client.prepareInvoke({requestId:'delayed-source-write-0001',input:{operation:'reading.add',title:'One delayed item'}});
+  await assert.rejects(client.invoke(intent),error=>error.effectUnknown===true);
+  await assert.rejects(client.recoverReceipt(intent),error=>error.code==='source_receipt_unknown'&&error.status===409&&error.effectUnknown===true);
+  assert.equal(lastReceipt.status,409);assert.equal(lastReceipt.body.error.code,'source_receipt_unknown');
+  await assert.rejects(client.invoke(intent),error=>error.code==='source_receipt_unknown'&&error.effectUnknown===true);
+  assert.equal(invokeCount,1,'the sent intent is not submitted again or given a new request ID');
+  release();assert.equal((await delayed).status,200);
+  assert.equal((await client.recoverReceipt(intent)).outcome,'committed');
+  assert.deepEqual((await client.query({requestId:'delayed-source-readback-001',input:{operation:'reading.list'}})).items,
+    [{id:intent.requestId,title:'One delayed item'}]);
+});
+
 test('two authored modules use shared personal storage with actual signed Root and installed device channel', {timeout:120000},async t=>{
   const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['reading','notes'],withoutRpClients:['reading','notes'],
     sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,

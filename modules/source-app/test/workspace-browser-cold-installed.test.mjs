@@ -107,6 +107,14 @@ async function fixture(t) {
     } };
 }
 
+test('legacy Native absent receipt is not exposed as not applied by the BFF', {timeout:120000},async t=>{
+  const {client}=await fixture(t);
+  await client.connect({requestId:'cold-legacy-receipt-connect'});
+  await assert.rejects(client.recoverReceipt({requestId:'cold-legacy-receipt-missing',contextRef:client.context().context.ref,inputDigest:'0'.repeat(64)}),
+    error=>error.code==='source_receipt_unknown'&&error.status===409&&error.effectUnknown===true);
+  client.dispose();
+});
+
 test('one SDK connect cold-starts an installed Root frame with no Source/Native cookie or RP registration, then resumes', { timeout: 120000 }, async t => {
   const { f, realm, client, paths } = await fixture(t);
   assert.equal(realm.instance.store.db.prepare('SELECT COUNT(*) n FROM source_sessions').get().n, 0);

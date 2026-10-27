@@ -100,7 +100,10 @@ test('one relay host implementation serves two domains and two signed users with
   pending.write(encoded.subarray(0,8));await reachedUpstream;
   const before=await call(heldWindow,'/api/receipt',{requestId:held.requestId,inputDigest:digest(held.input)});
   assert.equal(before.value.data.outcome,'unknown','an absent receipt is not proof that an in-flight request failed');
+  const retry=await call(heldWindow,'/api/invoke',held);assert.equal(retry.status,200,retry.text);
+  assert.equal(retry.value.data.outcome,'committed','same request and body may commit while its original is still in flight');
   pending.end(encoded.subarray(8));const delivered=await completed;assert.equal(delivered.status,200,delivered.text);
+  assert.deepEqual(JSON.parse(delivered.text).data,retry.value.data,'the delayed original returns the same durable receipt');
   const after=await call(heldWindow,'/api/receipt',{requestId:held.requestId,inputDigest:digest(held.input)});
   assert.equal(after.value.data.outcome,'committed');assert.deepEqual((await call(heldWindow,'/api/invoke',held)).value.data,after.value.data);
   const paged=await frame(f.realms[0],f.reader),titles=[];
@@ -109,6 +112,7 @@ test('one relay host implementation serves two domains and two signed users with
   let cursor=null;const seen=[];do{const response=await call(paged,'/api/query',{requestId:'relay-page-query-0001',input:{operation:'reading.list',...(cursor?{cursor}:{})}});
     assert.equal(response.status,200,response.text);seen.push(...response.value.data.items);cursor=response.value.data.nextCursor;}while(cursor);
   assert.deepEqual(seen.slice(0,50),titles.reverse());assert.equal(seen.length,53);
+  assert.equal(seen.filter(item=>item.id===held.requestId).length,1,'overlapping deliveries create only one item');
   for(const {realm,op}of definitions){const reader=await frame(realm,f.reader);
     await f.owner.client.extension('apps.update',{appId:realm.appId,grants:{accountIds:[f.foreign.account.accountId],communityIds:[]}});
     assert.notEqual((await call(reader,'/api/query',{requestId:`relay-${op}-revoked-query`,input:{operation:op+'.list'}})).status,200);

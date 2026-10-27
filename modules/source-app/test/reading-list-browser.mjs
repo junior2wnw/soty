@@ -37,6 +37,7 @@ const server=createServer(async(req,res)=>{try{
   else if(path.endsWith('/query'))value={ok:true,data:{requestId:args.requestId,storageScope:'opaque-personal-'+scope,
     items:pagination?[args.input?.cursor?{id:'older',title:'Более ранняя запись'}:{id:'newer',title:'Новая запись'}]:[],
     nextCursor:pagination&&!args.input?.cursor?'fixture-next-page':null}};
+  else if(path.endsWith('/receipt')){res.writeHead(409,{'content-type':'application/json'}).end('{"ok":false,"error":{"code":"source_receipt_unknown"}}');return;}
   else{if(path.endsWith('/invoke'))invokes++;res.writeHead(503,{'content-type':'application/json'}).end('{"ok":false,"error":{"code":"fixture_no_write"}}');return;}
   res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'}).end(JSON.stringify(value));
 }catch{res.writeHead(503).end();}});

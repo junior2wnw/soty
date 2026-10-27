@@ -145,7 +145,7 @@ export function createOrdinaryFeedbackJobs({store,resourceId,incarnationId,polic
           canConsent:ticket.row.reporter_id===actor.principalId,canGrant:native.member.role==='owner',hasImage:ticket.input.attachments.some(item=>item.kind==='image'),hasAudio:ticket.input.attachments.some(item=>item.kind==='audio')};
       }
       const args=fields(input,['operation','jobId']);check(['feedback.job.status','feedback.job.result'].includes(args.operation),'ordinary_native_operation_denied',403);
-      const state=status(actor,args.jobId);return args.operation==='feedback.job.result'?{...state,outcome:state.state==='completed'?'committed':state.state==='queued'?'not_applied':'unknown',result:processorReceipt(args.jobId)}:state;
+      const state=status(actor,args.jobId);return args.operation==='feedback.job.result'?{...state,outcome:state.state==='completed'?'committed':'unknown',result:processorReceipt(args.jobId)}:state;
     },
     async process(jobId,{signal}={}){
       check(workerConfigured,'source_feedback_processor_not_ready',503);

@@ -469,6 +469,11 @@ export function createSourceAppBff(options) {
         if (rootSigned) await native.assertCurrent(current.authority); }
       if (contract.kind === 'soty.workspace.v1') finalWorkspaceContext(current.authority,
         args.contextRef ?? (data?.schema === 'soty.current-context.v2' ? data.context.ref : undefined), operation === 'execute');
+      // A missing Native receipt is not a fence: an earlier request may still
+      // arrive. Do not give legacy clients a successful negative receipt.
+      // Non-workspace adapters can still return their own opaque proof shape.
+      if(operation==='readProof'&&(contract.kind==='soty.workspace.v1'?data?.outcome!=='committed':
+        ['not_applied','unknown'].includes(data?.outcome)))throw new SourceAppError('source_receipt_unknown',409);
       send(res, 200, { ok: true, data });
       observed(operation,operation==='execute'&&data?.outcome==='committed'?'commit_verified':
         operation==='readProof'&&data?.outcome==='committed'?'receipt_verified':
