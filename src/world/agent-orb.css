@@ -1,13 +1,20 @@
 .sw-app[data-agent-orb=ready]>header.sw-topbar { padding-inline-end: calc(60px + env(safe-area-inset-right,0px)); }
+.sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner {
+  padding-inline-end: calc(60px + env(safe-area-inset-right,0px));
+}
 @media (max-width: 720px) {
-  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner {
-    padding-inline-end: calc(60px + env(safe-area-inset-right,0px));
+  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner {
+    flex-wrap: wrap; justify-content: flex-start;
   }
-  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner>.sw-button {
-    width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 10px;
+  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner>span {
+    flex: 1 1 calc(100% - 26px);
   }
-  .sw-app[data-agent-orb=ready]:has(.sw-inbox.has-room,.sw-detail-view.has-chat):has(>.sw-agent-orb[data-docked=true])>.sw-pwa-banner>.sw-button>span {
-    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb)>.sw-pwa-banner>.sw-button {
+    margin-inline-start: 26px;
+  }
+  /* Keep a 44px dock below QR and above the app when no status row exists. */
+  .sw-app[data-agent-orb=ready]:has(>.sw-agent-orb):not(:has(>.sw-pwa-banner:not([hidden]))) .sa-stage.of-app-surface>.sa-toolbar {
+    min-height: 112px;
   }
 }
 .sa-stage:has(>.sw-agent-orb)>.sa-toolbar { padding-inline-end: 60px; }
@@ -21,7 +28,6 @@
   .sa-toolbar>[data-stage-control=fullscreen] { grid-column: 4; grid-row: 2; }
   .sa-toolbar>.sa-more { grid-column: 5; grid-row: 2; }
   .sa-stage:has(>.sw-agent-orb)>.sa-toolbar { padding-inline-end: max(8px,env(safe-area-inset-right)); }
-  .sa-stage:has(>.sw-agent-orb)>.sa-toolbar>.sa-title { padding-inline-end: 56px; }
 }
 .sw-agent-orb.sw-icon-button { position: fixed; z-index: 120; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 10px; border: 1px solid var(--sw-control-border); border-radius: 50%; background: var(--sw-action); color: var(--sw-action-ink); box-shadow: 0 3px 12px #0002; touch-action: none; user-select: none; cursor: grab; }
 .sw-agent-orb[data-voice-active=true]::after { content: ''; position: absolute; right: 3px; top: 3px; width: 8px; height: 8px; border: 1px solid var(--sw-action-ink); border-radius: 50%; background: var(--sw-focus); }

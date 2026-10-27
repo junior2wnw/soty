@@ -79,6 +79,10 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
     }
     matches(selector) {
       if (selector.includes(',')) return selector.split(',').some(part => this.matches(part.trim()));
+      if (selector.includes('>')) {
+        const [parent, child] = selector.split('>').map(part => part.trim());
+        return this.matches(child) && !!this.parentElement?.matches(parent);
+      }
       if (selector === ':disabled') return this.disabled;
       if (selector === 'dialog[open]') return this.tagName === 'DIALOG' && this.open;
       if (selector === '[hidden]') return this.hidden;
@@ -194,18 +198,59 @@ function fixture({ width = 390, height = 844, delayed = false } = {}) {
   };
 }
 
-test('assistant leaves the whole offline status readable at 320px and returns to its preferred dock after dismissal', () => {
+test('assistant leaves the offline message and action readable at 320px without changing its preference', () => {
   const f = fixture({ width: 320, height: 568 });
-  const banner = f.el('aside', 'sw-pwa-banner');
-  const bounds = { left: 0, top: 0, right: 320, bottom: 78, width: 320, height: 78 };
-  banner.getBoundingClientRect = () => bounds;
+  const banner = f.el('aside', 'sw-pwa-banner'), text = f.el('span'), action = f.el('button');
+  const bounds = { left: 42, top: 6, right: 246, bottom: 58, width: 204, height: 52 };
+  text.getBoundingClientRect = () => bounds;
+  action.getBoundingClientRect = () => ({ left: 42, top: 69, right: 168, bottom: 113, width: 126, height: 44 });
+  banner.append(text, action);
   f.root.append(banner); f.agent.setAccount('A');
   const projected = f.orb.getBoundingClientRect();
-  assert.ok(projected.top >= bounds.bottom + 6, 'status text is an obstacle even without a button');
+  assert.ok(projected.left >= bounds.right + 6, 'the reserved right corner keeps the message readable');
+  assert.ok(projected.right <= action.getBoundingClientRect().left || projected.left >= action.getBoundingClientRect().right
+    || projected.bottom <= action.getBoundingClientRect().top || projected.top >= action.getBoundingClientRect().bottom, 'the action stays reachable');
   assert.equal(f.saved.size, 0, 'a temporary status never changes the account placement preference');
   banner.remove(); f.agent.raise();
   assert.equal(f.orb.getBoundingClientRect().top, 6);
   assert.equal(f.orb.dataset.docked, 'true'); f.agent.dispose();
+});
+test('a mobile app keeps the assistant, QR, title and app controls reachable when the iframe fills the rest', () => {
+  const f = fixture({ width: 320, height: 568 });
+  const add = (tag, className, left, top, width, height, parent = f.main) => {
+    const node = f.el(tag, className);
+    node.getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height });
+    parent.append(node); return node;
+  };
+  const title = add('h2', 'sa-title', 12, 16, 96, 22);
+  const controls = [add('button', '', 264, 6, 44, 44, f.root), add('button', '', 112, 5, 44, 44),
+    add('button', '', 160, 5, 44, 44), add('button', '', 208, 5, 44, 44),
+    add('button', '', 14, 53, 117, 44), add('button', '', 133, 53, 116, 44)];
+  const frame = add('iframe', '', 0, 112, 320, 370);
+  f.agent.setAccount('A');
+  const orb = f.orb.getBoundingClientRect();
+  const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  for (const element of [title, frame, ...controls]) assert.equal(overlaps(orb, element.getBoundingClientRect()), false);
+  assert.equal(f.orb.dataset.projected, 'true'); assert.equal(f.saved.size, 0);
+  f.agent.dispose();
+});
+test('native fullscreen ignores surrounding shell controls but protects the app title', async () => {
+  const f = fixture({ width: 320, height: 568 }); f.agent.setAccount('A');
+  const full = f.fullscreen();
+  const add = (parent, tag, className, left, top, width, height) => {
+    const node = f.el(tag, className);
+    node.getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height });
+    parent.append(node); return node;
+  };
+  add(f.root, 'button', 'outside-qr', 264, 6, 44, 44);
+  add(full.stage, 'h2', 'sa-title', 12, 16, 96, 22);
+  for (const left of [112, 160, 208]) add(full.stage, 'button', '', left, 5, 44, 44);
+  add(full.stage, 'button', '', 14, 53, 117, 44); add(full.stage, 'button', '', 133, 53, 116, 44);
+  full.frame.getBoundingClientRect = () => ({ left: 0, top: 105, width: 320, height: 400, right: 320, bottom: 505 });
+  await full.controller.toggle();
+  assert.equal(f.orb.parentElement, full.stage);
+  assert.equal(f.orb.getBoundingClientRect().left, 270); assert.equal(f.orb.getBoundingClientRect().top, 6);
+  await full.controller.leave(); full.controller.dispose(); f.agent.dispose();
 });
 function event(type, properties = {}) { const value = new Event(type, { cancelable: true, bubbles: true }); for (const [name, property] of Object.entries(properties)) Object.defineProperty(value, name, { value: property }); return value; }
 const pointer = (node, type, properties = {}) => node.dispatchEvent(event(type, { button: 0, isPrimary: true, pointerType: 'touch', pointerId: 1, clientX: 300, clientY: 20, ...properties }));

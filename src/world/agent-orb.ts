@@ -66,7 +66,10 @@ export function mountAgentOrb(root: HTMLElement, options: {
   function layout(): void {
     if (disposed) return;
     const box = viewport(), preferred = position ? clampOrb(position, box) : dockOrb(box);
-    const point = placeFloatingControl(preferred, box, floatingObstacles(doc, element => element === orb || orb.contains(element), modal ? '' : '.sa-stage-runtime-notice,.sw-pwa-banner'));
+    const expanded = !modal && expandedStage?.isConnected ? expandedStage : null;
+    const point = placeFloatingControl(preferred, box, floatingObstacles(doc,
+      element => element === orb || orb.contains(element) || (!!expanded && !expanded.contains(element)),
+      modal ? '' : '.sa-stage-runtime-notice,.sa-title,.sw-pwa-banner>span,.sw-pwa-banner>.sw-icon'));
     orb.style.left = `${point.x}px`; orb.style.top = `${point.y}px`;
     orb.dataset.projected = String(point.x !== preferred.x || point.y !== preferred.y);
     root.dataset.agentOrb = account ? 'ready' : 'hidden';
