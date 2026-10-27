@@ -18,12 +18,23 @@ integrity и прежним строкам/IDs, а не размеру. Secure e
 
 Для полного Root release используй maintained `deploy/connect/gpg-release-backup.mjs`,
 а не прежний `deploy/connect/backup.mjs`. Штатный latest-data promote требует
-operator `fullEncryptedBackup` callback после подтверждённого STOP exact writer
+поддерживаемый `--backup-plan` или operator `fullEncryptedBackup` callback
+после подтверждённого STOP exact writer
 и restart policy `no`, до candidate START. Нужны **оба** артефакта: полный DATA
 volume и effective configuration (inspect/Env и все binds), с authenticated
 decrypt/readback и отдельным isolated restore. Частичный архив не заменяет их.
 Проверь clean exit/PID0/неизменный lifecycle и отсутствие других writers до и
 после. Дополнительные внешние зависимости учитываются отдельно.
+
+До выбора процедуры установи свежие effective DATA_DIR и соответствующий mount
+Destination (`mountedDestination`), точные container/image IDs и полный config
+fingerprint. Старое имя тома не является default. Проверь full v7 probe с явным
+World и все форматы по readers **обоих фактических images**. Если всё совместимо,
+нужен обычный latest-data с квалифицированным полным backup/isolated restore,
+а не миграция World. World3 bridge остаётся условным историческим вариантом
+только при фактическом World3 и отдельно проверенной migration/recovery-цепи.
+Признание формата parser не подтверждает его чтение image. Перед возвратом
+проверяются последние DATA; старый snapshot не возвращается автоматически.
 
 Используй существующие CurrentUser-DPAPI `windows-backup-key.py init/check/send`
 и SSH stdin → GPG fd3; Node24/hash/helper проверяются до unwrap. Ключ не попадает

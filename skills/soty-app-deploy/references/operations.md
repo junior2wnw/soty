@@ -127,6 +127,8 @@ Native private данных без собственной Human session. Это 
 контракты совместимы; зависимое изменение проверяется на согласованных версиях.
 
 **Backend.** Один полный image из immutable revision и frozen dependencies.
+Сначала установи свежие DATA/mountedDestination и readers исходного и нового
+точных images; старые имена томов и форматы не являются defaults.
 `deploy/connector/cli.mjs prepare/promote` уже владеет lifecycle, проверками
 хранилища/готовности, журналом и возвратом на актуальной DATA. Для `latest-data`
 используй `--backup-plan`: это существующий приватный GPG backup JSON,

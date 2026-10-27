@@ -1,41 +1,52 @@
 # GPG backup and isolated restore for the Soty release
 
-Status: Source v4 candidate, 2026-10-21. Creating these files does not create a key,
+Status: maintained operator instructions, updated 2026-10-27. These instructions do not create a key,
 backup, restore, maintenance window, migration or deployment. Root is the sole
 operator. Qualify the exact helper and images on synthetic data before using
 production. No helper in this packet stops or starts the production container.
 
 ## Scope and the rollback prerequisite
 
-The original installation observed by Root has Rooms2, Apps8, Notes1,
-Capabilities1, AppRegistration1, Feedback1, Human2, Connect4 and World3 with
-field1. These are initial observations, not instructions to assume they remain
-current. Recheck them read-only and pin the exact serving container and image
-before the maintenance window. Full inspect/Env values must stay private.
+Start with fresh read-only evidence, before choosing a release or recovery path:
 
-The new image declares World6 and needs explicit offline World3→6 and Apps8→14
-migrations. Its parser recognizing World3 does not make its runtime a World3
-reader. The original image has no World declaration and the current guard must
-refuse START on a nonempty World for that image. Do not change its labels to claim
-support, forge a storage receipt, select a legacy receipt to evade a fresh
-observation, or weaken the guard.
+1. Pin the actual serving container and immutable image. Establish its effective
+   `DATA_DIR` and matching mount Destination (`mountedDestination` in operator
+   evidence), volume identity and complete mount/config fingerprint. Keep those
+   private. A volume name in an old document is not a production default. The
+   maintained guard/helper profile requires explicit `DATA_DIR=/data` and its
+   sole supported local volume at `/data`; a different topology needs separate
+   qualification and must not be made to match by editing evidence.
+2. Use the pinned maintained probe/source to obtain fresh full
+   `soty.storage-format.v7` JSON, including World and all nine stores. An old
+   observation, parser support or exit0 without that result is not current DATA.
+3. Inspect `io.soty.storage.readers` on **both exact immutable images**, original
+   and candidate. Match every observed format and qualify the real images on an
+   isolated current-data copy. A Dockerfile declaration alone is insufficient.
 
-Before any production stop, Root must separately build and qualify:
+If both images support all actual formats and configuration, use the ordinary
+[latest-data release](../connector/README.md#code-only-release-on-latest-data).
+For example, actual World6/Apps14 with compatible readers on both images does
+not require a World3 migration or a World3 bridge. Before STOP qualify the key,
+exact helper/images, complete encrypted DATA/config backup, authenticated
+isolated restore and data/ACL/ID checks. Then take the full stopped-writer backup
+for this operation. Latest-data rollback preserves current DATA and requires a
+fresh compatible-reader check before the original image can START.
 
-1. The new release image, including native dependencies and the exact declared
-   storage readers.
-2. A World-aware baseline bridge that genuinely runs the compatible original
-   World3/Apps8 application code and declares only readers it actually supports.
-   The bridge is a separately reviewed image, not a relabeled unsupported binary.
-   This packet neither builds nor qualifies it.
-3. Synthetic originals with all nine actual stores, the known literal World3
-   layout, rows/IDs/ACLs, SQLite sidecars and private configuration fixtures.
-   Run the whole backup → authenticated isolated restore → data/ACL checks →
-   explicit migration → new-image canary and baseline-bridge rollback sequence.
+### Conditional historical World3 path
 
-Do not enter the production window until those checks and the recovery key check
-pass. Existing `HostController.restore` keeps the migrated SQLite and cannot
-substitute for restoring the original complete data volume after a World change.
+Earlier observations included World3/Apps8. Only if the **fresh actual probe**
+still reports World3, and an explicitly reviewed migration is needed, qualify
+the offline migration and a genuine compatible World3 recovery image/bridge
+before the production window. Its runtime must really support the original
+formats and private configuration; an unsupported binary cannot gain readers
+through copied labels. Test full backup, authenticated restore, original-data
+checks, explicit migration, candidate canary and the qualified recovery route
+on isolated owned volumes. This packet does not build or qualify that bridge.
+
+Unknown formats, missing image/restore proof or incompatible original readers
+block the release. Do not forge a receipt, relabel an unsupported image or weaken
+the guard. `HostController.restore` keeps latest SQLite and cannot substitute
+for a complete data/config restore when an actual format migration requires it.
 Existing R0 `SOTYBAK1` RSA/AES-GCM helpers remain unchanged. Their envelope,
 manifest, callbacks and receipt format are different. This GPG operator helper
 is an explicit release checkpoint; it is not silently wired into that controller.
@@ -269,26 +280,30 @@ metadata and bind files stay there until Root explicitly prepares private
 runtime configuration. Never print `metadata.json`, recursively copy it to
 public evidence, or auto-follow its original host paths.
 
-## Migration, switch and rollback gates
+## Switch, rollback and conditional migration gates
 
 Authenticated restore success is not migration, image acceptance or deployment.
 Root must independently open the restored stores using the genuine compatible
 reader, compare safe row/ACL/ID fingerprints, check SQLite integrity and literal
-schemas, then execute only the explicit reviewed offline migrations. Migrations
-run on an isolated copy first; back up the complete stopped original again if
-the source checkpoint changed. After migration obtain a fresh full v7 storage
-observation and the current image's real reader match before START. Confirm
+schemas. Execute an offline migration only when fresh actual formats require
+that separately reviewed change; run it on an isolated copy first. Back up the
+complete stopped original again if the source checkpoint changed. Obtain a
+fresh full v7 observation and the exact image's reader match before START. Confirm
 actual call → persistence → reopen and browser behavior through Root's canary.
 
-To roll back a failed new release: retain failed migrated data and logs; isolate
-all writers; authenticate both original artifacts and restore each into fresh
-owned volumes; check the restored original World3/Apps8 data and private config;
-then use the **previously qualified World-aware baseline bridge** with its
-truthful readers and a fresh observation. Root's reviewed operator performs the
-final controlled volume/config switch and health checks. This helper never
-overwrites production, starts an image, changes a guard flag, or pretends that
-an unsupported binary can read World3. If the bridge/recovery route was not
-qualified, that is a release blocker, not authorization for a bypass.
+For a compatible code-only failure use the maintained latest-data recovery
+path with the exact qualified original image and current DATA/configuration.
+After admission, a reviewed reverse handoff is a fresh latest-data operation
+with its own backup and guards; it is not an unconditional restart or rewind.
+
+If an actual migration needs cold recovery, retain failed data/logs, isolate all
+writers, authenticate both checkpoint artifacts and restore them into fresh
+owned volumes. Check the actual restored formats, data/ACL/IDs and private
+configuration, then select the previously qualified compatible recovery image.
+A World3 bridge is relevant only for a checkpoint that actually contains World3.
+Account for acknowledged writes and revocations after the checkpoint before any
+controlled data/config switch. This helper never overwrites production, starts
+an image or weakens a guard. Missing backup, image or restore proof is a blocker.
 # Protected Docker volume paths (v5 operator adapter)
 
 Host `realpath` remains mandatory for the artifact parent and every accessible
