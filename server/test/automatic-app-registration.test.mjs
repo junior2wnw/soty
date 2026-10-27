@@ -428,7 +428,7 @@ test('the revoked-device maintenance blocker clears only after the current owner
   assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
   const cancellation = await second.extension('apps.agent.cancel', { ...f.target, jobId: id }); assert.equal(cancellation.job.status, 'succeeded');
   const current = f.service().locals.connectorService.store; await current.mutate(() => current.expire(Date.now() + 8 * 24 * 60 * 60_000));
-  assert.ok(current.state.jobs.find(job => job.id === id)); await f.restart();
+  assert.ok(current.state.jobs.find(job => job.id === id)); await f.restart({}, { announce: false });
   const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await second.extension('apps.agent.archive', args);
   assert.equal(archived.state, 'archived'); const status = await probe({ dataDir: f.dataDir }); assert.equal(status.count, 0); assert.equal(status.automaticPending, undefined);
   const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'revoked-old-reader'); await mkdir(oldDir);
@@ -437,7 +437,7 @@ test('the revoked-device maintenance blocker clears only after the current owner
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
   try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0); } finally { await old.close(); }
-  await f.restart(); assert.deepEqual((await second.extension('apps.agent.archive', args)).receipt, archived.receipt);
+  await f.restart({}, { announce: false }); assert.deepEqual((await second.extension('apps.agent.archive', args)).receipt, archived.receipt);
   assert.equal((await second.extension('apps.list')).apps.length, 0);
 });
 
@@ -488,7 +488,7 @@ test('the previous reader cannot resume an archived job, and its historical rece
     await old.mutate(() => old.expire(Date.now() + 8 * 24 * 60 * 60_000));
     assert.equal(old.state.jobs.some(job => job.id === id), false, 'the old reader really cleaned up the job'); }
   finally { await old.close(); }
-  await f.restart(); assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
+  await f.restart({}, { announce: false }); assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
   assert.deepEqual((await f.owner.extension('apps.agent.archive', args)).receipt, archived.receipt);
   assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
 });
@@ -525,7 +525,7 @@ test('lost host access exposes only an owner-bound recovery entry and a durable 
   assert.equal((await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId })).jobs.find(job => job.id === id).restrictedAuto, 'archived');
   assert.equal((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt.requestId, archived.receipt.requestId);
   await store.mutate(() => store.expire(Date.now() + 8 * 24 * 60 * 60_000));
-  assert.equal(store.state.jobs.some(job => job.id === id), false); await f.restart();
+  assert.equal(store.state.jobs.some(job => job.id === id), false); await f.restart({}, { announce: false });
   const recovered = await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId });
   const final = recovered.jobs.find(job => job.id === id); assert.equal(final.restrictedAuto, 'archived'); assert.equal(final.cwd, '');
   assert.doesNotMatch(JSON.stringify(recovered), /SECRET-PROMPT|SECRET-PATH|SECRET-RESULT/u);
