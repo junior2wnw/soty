@@ -65,6 +65,12 @@ class ConnectorStore {
 
   maintenance() { try { statSync(this.maintenancePath); return true; } catch(error) { if(error.code === "ENOENT") return false; throw error; } }
 
+  // Every protected automatic job may need one terminal archive receipt.
+  // Derive the reservation from the durable job so restart needs no new schema.
+  requestCapacity(additional = 1) {
+    return this.state.requests.length + this.state.jobs.filter(holdsAutomaticReservation).length + additional <= this.maxRequestRecords;
+  }
+
   close() {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
@@ -240,7 +246,7 @@ class ConnectorStore {
         return priorJob ? { ok: true, reused: true, job: publicJob(priorJob, projection) }
           : { ok: false, error: "job-request-retired", jobId: previous.jobId };
       }
-      if (requestKey && this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: "connector-request-limit" };
+      if (requestKey && !this.requestCapacity()) return { ok: false, error: "connector-request-limit" };
       const rejectAutomatic = (reason, error) => {
         if (!requestKey || !/^[a-f0-9]{64}$/u.test(auth?.requestIntent || '')) return { ok: false, error };
         this.state.requests = [...this.state.requests, { id: requestKey, fingerprint: auth.requestIntent, requestIntent: auth.requestIntent,
@@ -253,6 +259,9 @@ class ConnectorStore {
         // rather than silently queueing work for a connector that cannot check.
         if (!this.automaticDeviceReady(clean.linkId, clean.deviceId, ownedConnectorId, now))
           return rejectAutomatic('app_auto_device_update_required', 'app-auto-device-update-required');
+        // One record accepts this request, another is reserved for an explicit
+        // terminal decision if the automatic result cannot be completed.
+        if (!this.requestCapacity(2)) return rejectAutomatic('app_auto_capacity', 'app-auto-capacity');
       }
       // Reserve capacity before accepting an automatic creation. A replay of
       // an already accepted request was handled above, even at capacity.
@@ -445,7 +454,9 @@ class ConnectorStore {
           || job.deviceId !== expected.deviceId || job.requestedConnectorId !== expected.connectorId
           || job.requestId !== expected.requestId || JSON.stringify(job.result.appProposal) !== JSON.stringify(expected.proposal))
         return { ok: false, error: 'app-archive-unavailable' };
-      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'app-archive-capacity' };
+      // This job was already accepted and must be allowed one immutable
+      // receipt. Legacy stores may already be full before this reservation was
+      // introduced; only those existing jobs can take the ledger over its cap.
       const archivedAt = this.now(), archive = { schema: 'soty.app-auto-archive.v1', ownerAccountId, actorDeviceId, jobId: job.id, requestId: job.requestId, archivedAt };
       const record = { id: key, fingerprint: automaticArchiveFingerprint(archive), jobId: job.id, autoArchive: archive };
       job.cancelRequested = true; job.autoRegistrationFinal = 'archived';
@@ -487,7 +498,7 @@ class ConnectorStore {
       if (this.maintenance() || guard() !== true) return { ok: false, error: 'job-access-denied' };
       const key = preparedRequestKey(intent), previous = this.requestIndex.get(key);
       if (previous) return preparedReceipt(previous, intent);
-      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'connector-request-limit' };
+      if (!this.requestCapacity()) return { ok: false, error: 'connector-request-limit' };
       const fingerprint = hashToken(JSON.stringify(intent));
       const record = { id: key, fingerprint, requestIntent: fingerprint, jobId: `job_${randomUUID().replaceAll('-', '')}`, prepared: intent };
       this.state.requests = [...this.state.requests, record];
@@ -507,7 +518,7 @@ class ConnectorStore {
         const job = this.findOwnedJob(auth, previous.jobId, options);
         return job ? { ok: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) } : { ok: false, error: 'job-request-retired' };
       }
-      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'connector-request-limit' };
+      if (!this.requestCapacity()) return { ok: false, error: 'connector-request-limit' };
       // A rejection is an immutable receipt too. A racing request with this ID
       // can never turn it into a later execution after the UI has corrected it.
       this.state.requests = [...this.state.requests, { id: key, fingerprint: options.requestIntent, requestIntent: options.requestIntent,
