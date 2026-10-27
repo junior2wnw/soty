@@ -10,6 +10,8 @@ export { SOURCE_FEEDBACK_LIMITS } from '../shared/feedback-wire.mjs';
 export { createSourceRpProtocol, createSourceRpSessionService, sourceRpCipherBinding, SOURCE_RP_PROFILE } from '../../source-rp/server/index.mjs';
 export {createFeedbackProcessorEngine,feedbackProcessingPolicy,FEEDBACK_JOB_LIMITS} from './feedback-job-contract.mjs';
 export {createFeedbackJobEnforcer} from './feedback-job-enforcer.mjs';
+// Internal bundle entry: the example and processor factories share one closure.
+export {createOrdinaryAppServer as __sourceSdkOrdinaryAppServer} from '../examples/ordinary-app/index.mjs';
 export { createSqliteSourceStorage } from './sqlite-source-storage.mjs';
 export { createNativeEntryGuard } from './native-entry-guard.mjs';
 // Optional ready-to-use host for NEW personal SQLite apps. Existing Native

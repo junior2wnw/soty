@@ -3,7 +3,7 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {check} from '../server/wire.mjs';
 import {createOrdinaryAppStore} from '../examples/ordinary-app/store.mjs';
-import {createOrdinaryAppServer} from '../examples/ordinary-app/index.mjs';
+import {__sourceSdkOrdinaryAppServer as createOrdinaryAppServer} from '../server/index.mjs';
 import {readOrdinaryFormat3} from '../examples/ordinary-app/reader3.mjs';
 import {withSourceOperatorConfiguration} from './config.mjs';
 import {probeInstalledSourceKey} from './key-probe.mjs';

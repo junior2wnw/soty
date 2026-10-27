@@ -25,11 +25,19 @@ export async function buildSourceAppPackage({ outdir = join(packageRoot, 'dist')
   const packageVersion=JSON.parse(await bytes(join(packageRoot,'package.json'))).version;
   if(!sourceSdkVersion(packageVersion))throw Error('source_app_package_version_invalid');
   for (const [name, platform] of [['server', 'node'], ['browser', 'browser'], ['example', 'node'], ['install','node']]) {
-    const entry = name === 'example' ? join(packageRoot, 'examples/ordinary-app/index.mjs') : name==='install'?join(packageRoot,'install/cli.mjs'):join(packageRoot, name, 'index.mjs');
+    const entry = name === 'example' ? join(packageRoot, 'examples/ordinary-app/package-entry.mjs') : name==='install'?join(packageRoot,'install/cli.mjs'):join(packageRoot, name, 'index.mjs');
+    // Packaged example/install use one server closure, including its private
+    // processor and Root/Native authority brands. Only these imports may cross.
+    const sharedServer={name:'source-ordinary-package-bridge',setup(build){build.onResolve({filter:/server\/index\.mjs$/},args=>{
+      if(resolve(args.resolveDir,args.path)!==join(packageRoot,'server/index.mjs'))return;
+      const allowed=new Map([[join(packageRoot,'examples/ordinary-app/package-entry.mjs'),'../../server/index.mjs'],[join(packageRoot,'install/runtime.mjs'),'../server/index.mjs']]);
+      if(args.path!==allowed.get(resolve(args.importer)))throw Error('source_app_package_bridge_import_invalid');
+      return {path:'./server.mjs',external:true};
+    });}};
     const result = await esbuild.build({ entryPoints: [entry], outfile: join(outdir, name + '.mjs'),
       bundle: true, platform, format: 'esm', target: platform === 'node' ? 'node24' : 'es2022', external: ['openid-client'],
       define: { __SOTY_SOURCE_APP_BUNDLE__: 'true' },
-      sourcemap: false, metafile: true, logLevel: 'silent', absWorkingDir: packageRoot,plugins });
+      sourcemap: false, metafile: true, logLevel: 'silent', absWorkingDir: packageRoot,plugins:[...plugins,...(['example','install'].includes(name)?[sharedServer]:[])] });
     Object.keys(result.metafile.inputs).forEach(path => inputs.add(resolve(packageRoot, path)));
   }
   const sha = data => createHash('sha256').update(data).digest('hex');

@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createOrdinaryInstalledFixture } from './support/ordinary-installed.mjs';
-import { createFeedbackProcessorEngine,feedbackAttachmentDigest } from '../server/feedback-job-contract.mjs';
+import { createFeedbackProcessorEngine as createLocalEngine,feedbackAttachmentDigest } from '../server/feedback-job-contract.mjs';
 import { digest } from '../server/wire.mjs';
-import { createFeedbackJobEnforcer } from '../server/feedback-job-enforcer.mjs';
+import { createFeedbackJobEnforcer as createLocalEnforcer } from '../server/feedback-job-enforcer.mjs';
+
+const {createFeedbackProcessorEngine,createFeedbackJobEnforcer} = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY
+  ? await import(pathToFileURL(join(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,'dist','server.mjs')).href)
+  : {createFeedbackProcessorEngine:createLocalEngine,createFeedbackJobEnforcer:createLocalEnforcer};
 
 const policyRef={id:'local.synthetic-policy',version:1,digest:'b'.repeat(64)},engineRef={id:'local.synthetic-ocr',version:1,digest:'a'.repeat(64)};
 const budget={wallMs:5000,cpuMs:1000,cleanupMs:1000,scratchBytes:65536,outputBytes:16000,mediaBytes:1024,attachments:1,parallel:1};

@@ -378,6 +378,19 @@ idempotent receipt. PNG/JPEG/WebP и Opus ограничены 1 MiB, 3 влож
 Выбор файла/preview не отправляет сообщение. ASR/OCR и публичные отзывы не
 включены; managed reviews подключаются отдельным проверенным provider/binding.
 
+При разработке **опционального** локального обработчика используйте фабрики и
+пример из одного установленного экземпляра SDK:
+
+```js
+import { createFeedbackProcessorEngine, createFeedbackJobEnforcer } from '@soty/source-app/server';
+import { createOrdinaryAppServer } from '@soty/source-app/example';
+```
+
+Передавайте созданные фабриками объекты непосредственно в `feedbackProcessing`
+примера: их нельзя сериализовать или брать из другого экземпляра SDK. Фабрика не
+доказывает изоляцию процесса и качество OCR/ASR; реальный обработчик остаётся
+не готовым без проверки ограничений хоста и необходимых согласий.
+
 Проверка: `node --test modules/source-app/test/*.test.mjs`.
 Native SQLite commit/revoke/receipt restart проверены на synthetic данных.
 BFF HTTP тест использует настоящий maintained Root OIDC и signed consent,

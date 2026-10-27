@@ -17,7 +17,12 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
   await mkdir(join(directory, 'node_modules')); await symlink(protocolDir, join(directory, 'node_modules/openid-client'), process.platform === 'win32' ? 'junction' : 'dir');
   const server = await readFile(join(directory, 'server.mjs'), 'utf8'), browser = await readFile(join(directory, 'browser.mjs'), 'utf8');
   assert.equal(/from ['"]\.\.\//u.test(server), false); assert.equal(/node:|openid-client/u.test(browser), false);
-  const script = `import {STANDARD_SELECTED_SOURCE,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort,createSqliteRelayIdentity} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
+  for(const name of ['example','install']) {
+    const bundle=await readFile(join(directory,name+'.mjs'),'utf8');
+    const imports=[...bundle.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]\.\/server\.mjs['"]/gu)];assert.equal(imports.length,1);
+    assert.deepEqual(imports[0][1].split(',').map(value=>value.trim().split(/\s+/u)[0]),['__sourceSdkOrdinaryAppServer']);
+  }
+  const script = `import {STANDARD_SELECTED_SOURCE,createSourceNativeAuthorityPort,isSourceNativeAuthorityPort,createSqliteRelayIdentity,createFeedbackProcessorEngine,createFeedbackJobEnforcer} from ${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href)};
     import {createRelayIdentityFetch,createSotyAppWork} from ${JSON.stringify(pathToFileURL(join(directory, 'browser.mjs')).href)};
     import{createOrdinaryAppServer}from${JSON.stringify(pathToFileURL(join(directory, 'example.mjs')).href)};
     import{createServer}from'node:http';import{randomBytes}from'node:crypto';
@@ -43,11 +48,23 @@ test('portable server/browser bundles load outside Root checkout with pinned pro
     const profile={schema:'soty.selected-human-embed.v2',appId,connector:{linkId:'synthetic-link',hostDeviceId:'synthetic-host',connectorId:'synthetic-connector'},
       target:{revision:1,digest:'a'.repeat(64)},sourceProfile:STANDARD_SELECTED_SOURCE,resource:{registryId:'soty',environmentId:'fixture',tenantId:'synthetic-owner',appId,resourceId:'selected',selection:{kind:'soty.resource.v1',nativeId:'selected',incarnationId:'one'}},
       issuer:parentOrigin+'/human-identity',clientId:'synthetic-client',embedOrigin:'https://'+appId+'.localhost:24444',nativeOrigin,parentOrigin};
-    const app=await createOrdinaryAppServer({profile,transportKey:randomBytes(32),connectorPort:49424,rp:{issuer:profile.issuer,clientId:profile.clientId,clientSecret:'a'.repeat(43),redirectUri:nativeOrigin+'/soty/callback'},
-      databasePath:${JSON.stringify(join(directory, 'example.sqlite'))},realmId:'standalone',cipherKey:randomBytes(32),keyId:'synthetic',initialize:true,newResource:{title:'Empty synthetic resource',guestEmpty:true},allowEmptyGuest:true});
+    const ref={id:'synthetic.ocr',version:1,digest:'a'.repeat(64)},policyRef={id:'synthetic.policy',version:1,digest:'b'.repeat(64)};
+    const budget={wallMs:5000,cpuMs:1000,cleanupMs:1000,scratchBytes:65536,outputBytes:16000,mediaBytes:1024,attachments:1,parallel:1};
+    const spec={ref,purposes:['ocr'],localOnly:true,synthetic:true,process:async()=>({kind:'transcript',text:'synthetic'})};
+    const engine=createFeedbackProcessorEngine(spec),enforcer=createFeedbackJobEnforcer({engine,platform:'linux',maxBudget:budget,syntheticTestOnly:true,execute:async()=>({kind:'transcript',text:'synthetic'})});
+    const processing={policy:{schema:'soty.feedback.processing-policy.v1',ref:policyRef,purposes:['ocr'],localOnly:true,requiresReporterConsent:true,maxBudget:budget},engines:[engine],enforcer};
+    const options={profile,transportKey:randomBytes(32),connectorPort:49424,rp:{issuer:profile.issuer,clientId:profile.clientId,clientSecret:'a'.repeat(43),redirectUri:nativeOrigin+'/soty/callback'},
+      databasePath:${JSON.stringify(join(directory, 'example.sqlite'))},realmId:'standalone',cipherKey:randomBytes(32),keyId:'synthetic',initialize:true,newResource:{title:'Empty synthetic resource',guestEmpty:true},allowEmptyGuest:true,feedbackProcessing:processing};
+    const app=await createOrdinaryAppServer(options);
     try{await app.listen();for(const path of ['/embed','/assets/ordinary-app.js','/assets/ordinary-app.css','/assets/source-sdk.js']){const r=await fetch('http://127.0.0.1:'+port+path);if(r.status!==200)throw new Error('public asset');}
       const denied=await fetch('http://127.0.0.1:'+port+'/api/embed/context');if(denied.status!==403)throw new Error('anonymous read');
-      process.stdout.write(JSON.stringify(STANDARD_SELECTED_SOURCE));}finally{await app.close();}`;
+    }finally{await app.close();}
+    const foreign=await import(${JSON.stringify(pathToFileURL(join(directory, 'server.mjs')).href+'?foreign=1')});
+    const foreignEngine=foreign.createFeedbackProcessorEngine(spec);
+    let refused=false;try{await createOrdinaryAppServer({...options,databasePath:${JSON.stringify(join(directory, 'foreign.sqlite'))},feedbackProcessing:{...processing,engines:[foreignEngine]}});}catch(error){refused=error.code==='source_feedback_engine_unapproved';}
+    if(!refused)throw Error('foreign engine accepted');
+    refused=false;try{await createOrdinaryAppServer({...options,databasePath:${JSON.stringify(join(directory, 'forged.sqlite'))},feedbackProcessing:{...processing,enforcer:{...enforcer}}});}catch(error){refused=error.code==='source_feedback_processor_not_ready';}
+    if(!refused)throw Error('forged enforcer accepted');process.stdout.write(JSON.stringify(STANDARD_SELECTED_SOURCE));`;
   const result = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = ''; child.stdout.on('data', part => { out += part; }); child.stderr.on('data', part => { err += part; }); child.on('error', reject);
