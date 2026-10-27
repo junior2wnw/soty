@@ -8,17 +8,17 @@ import {SOURCE_FEEDBACK_LIMITS} from '../shared/feedback-wire.mjs';
 import {buildSourceAppPackage} from '../scripts/build.mjs';
 
 const directory=await mkdtemp(join(tmpdir(),'soty-processing-ui-'));
-const sdk=process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,itemsMode=process.argv.includes('--items');
+const sdk=process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,itemsMode=process.argv.includes('--items'),feedbackUnavailable=process.argv.includes('--feedback-unavailable');
 if(!sdk)await buildSourceAppPackage({outdir:directory});
 const browser=await readFile(sdk?join(sdk,'dist','browser.mjs'):join(directory,'browser.mjs'));
 const processing=await readFile(sdk?join(sdk,'dist','assets','processing.js'):new URL('../examples/ordinary-app/assets/processing.js',import.meta.url));
 const itemsApp=await readFile(sdk?join(sdk,'dist','assets','app.js'):new URL('../examples/ordinary-app/assets/app.js',import.meta.url));
 const inbox=await readFile(sdk?join(sdk,'dist','assets','feedback-inbox.js'):new URL('../examples/ordinary-app/assets/feedback-inbox.js',import.meta.url));
-const calls={A:[],B:[]},committed={A:false,B:false};
+const calls={A:[],B:[]},committed={A:false,B:false};let feedbackContextRequests=0;
 const json=(res,status,data)=>res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'}).end(JSON.stringify(data));
 const server=createServer(async(req,res)=>{try{
   const url=new URL(req.url,'http://localhost'),scope=/fixture_profile=B(?:;|$)/u.test(req.headers.cookie??'')?'B':'A';
-  if(url.pathname==='/__fixture/state')return json(res,200,{calls,committed});
+  if(url.pathname==='/__fixture/state')return json(res,200,{calls,committed,feedbackContextRequests});
   if(url.pathname==='/__fixture/commit'){committed[scope]=true;return json(res,200,{ok:true});}
   if(url.pathname==='/__fixture/stop'){res.end('stopped');setImmediate(()=>void close());return;}
   if(url.pathname==='/assets/source-sdk.js')return res.writeHead(200,{'content-type':'text/javascript'}).end(browser);
@@ -34,14 +34,18 @@ const server=createServer(async(req,res)=>{try{
   if(url.pathname==='/')return res.writeHead(200,{'content-type':'text/html; charset=utf-8'}).end(`<!doctype html><meta charset="utf-8"><title>Проверка обработки</title>
     <button id="processing-open">Обработка материалов обращения</button><div id="processing-panel" hidden><ul id="processing-tickets"></ul><p id="processing-state" role="status"></p></div>
     <script type="module">import{mountProcessingUi}from'/assets/processing.js';mountProcessingUi();</script>`);
-  if(url.pathname==='/api/embed/feedback/context')return json(res,200,{ok:true,data:{schema:'soty.source-feedback.context.v1',bindingDigest:scope.toLowerCase().repeat(64),
-    ready:true,canSubmit:true,recipientLabel:'Учебный владелец',limits:SOURCE_FEEDBACK_LIMITS,capabilities:{text:true,voice:true,screenshot:true,asr:false}}});
+  if(url.pathname==='/api/embed/feedback/context'){
+    feedbackContextRequests++;if(feedbackUnavailable)return json(res,503,{ok:false,error:{code:'fixture_feedback_unavailable'}});
+    return json(res,200,{ok:true,data:{schema:'soty.source-feedback.context.v1',bindingDigest:scope.toLowerCase().repeat(64),
+      ready:true,canSubmit:true,recipientLabel:'Учебный владелец',limits:SOURCE_FEEDBACK_LIMITS,capabilities:{text:true,voice:true,screenshot:true,asr:false}}});
+  }
   if(url.pathname==='/api/embed/feedback')return json(res,200,{ok:true,data:{tickets:[{id:'fixture-ticket',revision:1,status:'received',body:'Учебное обращение',
     createdAt:1,updatedAt:1,canReply:true,canManage:false,canAccept:false,attachments:[],messages:[]}],nextCursor:null}});
   if(url.pathname==='/api/embed/context')return json(res,200,{ready:true});
   const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
   if(url.pathname==='/api/embed/query'){
     if(body.input.operation==='items.list')return json(res,200,{ok:true,data:{requestId:body.requestId,items:[]}});
+    if(body.input.operation==='items.pending-scope')return json(res,200,{ok:true,data:{requestId:body.requestId,scope:scope.toLowerCase().repeat(64)}});
     if(body.input.operation==='feedback.processing.context')return json(res,200,{ok:true,data:{schema:'soty.feedback.processing-context.v1',localOnly:true,
       requiresReporterConsent:true,purposes:['ocr'],policyRef:{id:'policy',version:1,digest:'a'.repeat(64)},maxBudget:{},engines:[]}});
     if(body.input.operation==='feedback.processing.ticket')return json(res,200,{ok:true,data:{ticketId:'fixture-ticket',ticketRevision:1,attachmentDigest:'a'.repeat(64),

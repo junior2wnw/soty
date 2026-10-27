@@ -54,6 +54,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     return { ...captured, role: membership.role };
   }
   function dataActor(proof,binding){const actor=inspect(proof,binding);check(!actor.linkedLogin&&!actor.guest,'ordinary_native_login_only',403);return actor;}
+  function actorScope(actor){return digest({realm:store.realmId,resourceId,incarnationId,principal:actor.principalId});}
   function link(proof, binding, identity, guest) {
     check(store.inTransaction(), 'ordinary_native_transaction_required', 503); let actor = inspect(proof, binding);
     check(identity.issuer === binding.identity.issuer && identity.subject === binding.identity.subject, 'ordinary_native_link_denied', 403);
@@ -171,6 +172,10 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     ...(allowEmptyGuest ? { createEmptyGuest: (proof, binding, identity) => link(proof, binding, identity, true) } : {}),
     async read(proof, binding, args) {
       if(jobs&&['feedback.job.status','feedback.job.result','feedback.processing.context','feedback.processing.ticket'].includes(args.input?.operation)){const result=jobs.read(dataActor(proof,binding),args.input);dataActor(proof,binding);return result;}
+      if(args.input?.operation==='items.pending-scope'){
+        fields(args.input,['operation']);const scope=actorScope(dataActor(proof,binding));dataActor(proof,binding);
+        return{requestId:args.requestId,scope};
+      }
       if (args.input?.operation === 'soty.current_context') {
         fields(args.input, ['operation']); const actor = dataActor(proof, binding), selected = resource(binding);
         const title = selected.title.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 240).replace(/[\uD800-\uDBFF]$/u, '') || 'Моё приложение';
@@ -210,7 +215,7 @@ export function createOrdinaryAppNativePort({ store, resourceId, incarnationId, 
     },
     feedback: {
       async context(proof, binding) { const actor = dataActor(proof, binding); return { schema: 'soty.source-feedback.context.v1', ready: true, canSubmit: true,
-        bindingDigest: digest({ realm: store.realmId, resourceId, incarnationId, principal: actor.principalId }), recipientLabel: 'Владелец приложения',
+        bindingDigest: actorScope(actor), recipientLabel: 'Владелец приложения',
         limits: SOURCE_FEEDBACK_LIMITS, capabilities: { text: true, voice: true, screenshot: true, asr: false } }; },
       async list(proof, binding, args) {
         const actor = dataActor(proof, binding), limit = args.limit ?? 20;

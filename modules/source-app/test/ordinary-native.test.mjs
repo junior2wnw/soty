@@ -33,6 +33,17 @@ async function fixture(t, { realm = 'board', beforeCommit, emptyGuest = false } 
     restart() { runtime.close(); store.close(); store = createOrdinaryAppStore({ ...options, initialize: false }); createRuntime(); } };
 }
 
+test('item pending scope follows the Native person and survives restart without changing the list contract',async t=>{
+  const f=await fixture(t),participant=await f.legacy('participant'),owner=await f.legacy('owner');
+  const scope=proof=>f.runtime.call(proof,'read',{requestId:'ordinary-pending-scope-0001',input:{operation:'items.pending-scope'}});
+  const a=await scope(participant),b=await scope(owner);
+  assert.match(a.scope,/^[a-f0-9]{64}$/u);assert.notEqual(a.scope,b.scope);
+  assert.equal(a.scope,(await f.runtime.feedback(participant,'context')).bindingDigest);
+  const list=await f.runtime.call(participant,'read',{requestId:'ordinary-list-contract-0001',input:{operation:'items.list'}});
+  assert.deepEqual(Object.keys(list).sort(),['items','requestId']);
+  f.restart();assert.equal((await scope(await f.legacy('participant'))).scope,a.scope);
+});
+
 test('current context projects a bounded display title without changing Native data or its ACL', async t => {
   const f = await fixture(t), proof = await f.legacy('participant');
   const read = () => f.runtime.call(proof, 'read', { requestId: 'ordinary-context-title-0001', input: { operation: 'soty.current_context' } });

@@ -825,10 +825,11 @@ browser SDK rejects with `effectUnknown:true`. Legacy `not_applied` responses
 are also treated as unknown; this version has no standard final-fence proof.
 If the original request never arrives, recovery can remain unknown indefinitely.
 The ordinary item and processing examples save only the original request ID
-and digest under their existing feedback binding before dispatch. If tab
+and digest under the current Native person and resource scope before dispatch. If tab
 storage is blocked, they do not send the action. Reloading that tab keeps the
 reference; another browser tab or a cleared/closed session is not coordinated
-by sessionStorage.
+by sessionStorage. The ordinary item example also keeps its draft text locally
+in that tab so it remains readable and copyable while the outcome is unknown.
 
 Keep three separate facts in the UI: the **confirmed original receipt**,
 the **separately refreshed current context**, and the **current domain
