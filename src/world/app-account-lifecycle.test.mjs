@@ -2950,3 +2950,30 @@ test('history acknowledgement clears the shared old intent without erasing a dif
   assert.deepEqual(events,['ack:queued_old']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_ack').pending.clientId,'local_next');assert.equal(drafts.read('account-A','room_ack').text,'Next thought');
   f.app.chatCleanup();
 });
+
+test('chat recreates the shared queue after an initial IndexedDB open failure without reopening the conversation', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},events=[];
+  const drafts=chatState.createChatDraftStore(storage,()=> 'after_idb_recovery');drafts.edit('account-A','room_recover','Keep and send');f.app.chatDrafts=drafts;f.app.preferences={motion:false};
+  Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  const makeBox=f.ports['./attachment-outbox.mjs'].createAttachmentOutbox;let attempts=0;
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=options=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB open failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){events.push('close failed');}};return makeBox(options);};
+  const target={kind:'community',id:'room_recover',draftKey:'room_recover',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_recovered',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
+  assert.equal(attempts,1);assert.equal(parent.querySelector('textarea').value,'Keep and send');assert.equal(parent.querySelector('.sw-error').textContent,'chat_local_storage_unavailable');
+  parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+  assert.equal(attempts,2);assert.deepEqual(events,['close failed','send:after_idb_recovery']);assert.equal(drafts.read('account-A','room_recover').pending,null);assert.equal(drafts.read('account-A','room_recover').text,'');
+  f.app.chatCleanup();
+});
+
+test('queue reopening restores its earlier pending ID and retains the other local pending send', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},events=[];
+  const drafts=chatState.createChatDraftStore(storage,()=> 'local_after_error');drafts.beginSend('account-A','room_recover_pending','Next thought');f.app.chatDrafts=drafts;f.app.preferences={motion:false};
+  Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  let attempts=0,pending={clientId:'idb_before_error',text:'Old unknown send',replyTo:null,attachments:[]};
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>{attempts++;if(attempts===1)return {ready:Promise.reject(Object.assign(Error('Synthetic IDB failure'),{code:'attachment_local_storage'})),canSend:()=>false,pendingIntent:()=>null,acceptedIntent:()=>null,close(){}};
+    return {ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},async prepareSend(value){if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}};};
+  const target={kind:'community',id:'room_recover_pending',draftKey:'room_recover_pending',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push(args.clientId);return {message:{messageId:'message_old',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+  assert.equal(attempts,2);assert.deepEqual(events,['idb_before_error']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_recover_pending').pending.clientId,'local_after_error');assert.equal(drafts.read('account-A','room_recover_pending').text,'Next thought');
+  f.app.chatCleanup();
+});

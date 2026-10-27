@@ -1997,10 +1997,17 @@ class WorldApplication {
     chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
     chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
     composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
-    outbox = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: initialDraft.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } });
-    const attachmentReady = outbox.ready.then(async () => {
-      if (initialDraft.pending && !outbox?.pendingIntent()) await outbox?.prepareSend(initialDraft.pending);
-    }).catch(reason => { if (active()) { errorMessage.textContent = errorText(reason?.code === 'attachment_local_storage' ? { code: 'chat_local_storage_unavailable' } : reason); updateComposer(); } });
+    let outboxFailed = false, attachmentReady: Promise<void>;
+    const startOutbox = (): void => {
+      outbox?.close(); outboxFailed = false;
+      const local = this.chatDrafts.read(accountId, conversation.draftKey);
+      const next = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: local.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } });
+      outbox = next;
+      attachmentReady = next.ready.then(async () => {
+        if (local.pending && !next.pendingIntent()) await next.prepareSend(local.pending);
+      }).catch(reason => { outboxFailed = true; if (active()) { errorMessage.textContent = errorText(reason?.code === 'attachment_local_storage' ? { code: 'chat_local_storage_unavailable' } : reason); updateComposer(); } });
+    };
+    startOutbox();
     if (this.profile?.chatAttachmentsVersion === 1) void this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities', { ...attachmentScope, expectedAccountId: accountId }).then(result => {
       if (!active()) return; attachmentWritable = result.readable && result.writable; attach.hidden = !attachmentWritable; updateComposer();
     }).catch(reason => { if (active()) { attachmentWritable = false; attach.hidden = true; errorMessage.textContent = errorText(reason); updateComposer(); } });
@@ -2103,7 +2110,7 @@ class WorldApplication {
         if (!acknowledgingAttachments) {
           acknowledgingAttachments = true;
           void attachmentReady.then(async () => { if (!outbox) throw Object.assign(Error('attachment_local_storage'), { code: 'attachment_local_storage' }); await outbox.acknowledge(ids, { ...pending, attachments: ids }); this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId, ids); })
-            .catch(reason => { if (active()) errorMessage.textContent = errorText(reason); })
+            .catch(reason => { if (reason?.code === 'attachment_local_storage') outboxFailed = true; if (active()) errorMessage.textContent = errorText(reason); })
             .finally(() => { acknowledgingAttachments = false; if (active()) renderAttachments(); });
         }
       }
@@ -2154,7 +2161,7 @@ class WorldApplication {
       historyLoading = true; previous.disabled = true; previous.querySelector('span')!.textContent = 'Загружаем историю'; messages.setAttribute('aria-busy', 'true');
       try {
         const history = await conversation.request<{ messages: WorldMessage[]; hasMore: boolean }>('list', { before: firstSeq, limit: 60 });
-        if (!active()) return false; const position = capturePosition(); history.messages.forEach(append); hasHistory = history.hasMore && history.messages.length > 0; previous.hidden = !hasHistory; refreshTimeline(); restorePosition(position); updateJump(); if (retrySend.hidden) errorMessage.textContent = ''; return history.messages.length > 0;
+        if (!active()) return false; const position = capturePosition(); history.messages.forEach(append); hasHistory = history.hasMore && history.messages.length > 0; previous.hidden = !hasHistory; refreshTimeline(); restorePosition(position); updateJump(); if (retrySend.hidden && !outboxFailed) errorMessage.textContent = ''; return history.messages.length > 0;
       } catch (reason) { if (active() && !closeAccess(reason)) errorMessage.textContent = errorText(reason); return false; }
       finally { historyLoading = false; previous.disabled = false; previous.querySelector('span')!.textContent = 'Ранее'; messages.setAttribute('aria-busy', 'false'); }
     };
@@ -2189,7 +2196,7 @@ class WorldApplication {
         if (!known.size) messages.replaceChildren(emptyState('Первое сообщение за вами', conversation.kind === 'direct' ? 'Напишите своему контакту.' : typeof conversation.subtitle === 'number' && conversation.subtitle < 2 ? 'Пригласите человека и начните разговор.' : 'Поздоровайтесь со своим кругом.', conversation.canModerate && presentation.invite ? button('Пригласить человека', 'people', 'sw-button-primary', presentation.invite) : undefined, 'chat'));
         refreshTimeline();
         if (!stickToEnd) unseen += Math.max(0, known.size - countBefore);
-        initial = false; if (retrySend.hidden) errorMessage.textContent = '';
+        initial = false; if (retrySend.hidden && !outboxFailed) errorMessage.textContent = '';
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else restorePosition(position);
         updateJump(); markRead(); notifyConversation();
       } catch (error) {
@@ -2208,11 +2215,12 @@ class WorldApplication {
       errorMessage.textContent = ''; retrySend.hidden = true;
       void (async()=>{
         let submitted=pending;
+        if (outboxFailed) startOutbox();
         await attachmentReady;
-        if (!outbox) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
+        if (!outbox || outboxFailed) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
         let prepared;
         try { prepared=await outbox.prepareSend(pending); }
-        catch(reason) { if (!pending.attachments?.length && (reason as {code?:string})?.code === 'attachment_local_storage') throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' }); throw reason; }
+        catch(reason) { if ((reason as {code?:string})?.code === 'attachment_local_storage') { outboxFailed=true; if (!pending.attachments?.length) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' }); } throw reason; }
         if (pending.clientId !== prepared.intent.clientId && active()) this.toast('Сначала подтверждаем прежнее сообщение. Новый текст остаётся черновиком.');
         if(prepared.state==='accepted'){
           this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
@@ -2234,6 +2242,7 @@ class WorldApplication {
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
         updateJump(); notifyConversation(); void load();
       })().catch(async reason => {
+        if(reason?.code==='attachment_local_storage')outboxFailed=true;
         if(!priorPending&&!dispatched&&reason?.code==='attachment_queue_changed'){
           this.chatDrafts.discardUnsubmitted(accountId,conversation.draftKey,pending.clientId);
           try{await outbox?.reconcile();}catch{/* The typed local storage error remains retryable. */}
