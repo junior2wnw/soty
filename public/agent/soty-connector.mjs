@@ -3696,7 +3696,10 @@ function createLocalAppsRuntime(deps, options = {}) {
     if (frame.type === 'prepared-browse' || frame.type === 'prepared-inspect') {
       const inspect = frame.type === 'prepared-inspect', handler = inspect ? options.preparedInspect : options.preparedBrowse;
       channelFrame(context, frame, inspect ? ['nonce', 'location', 'digest'] : ['nonce', 'location', 'after']);
-      localAppsCheck(localAppsNonce(frame.nonce) && typeof handler === 'function' && (context.preparedBrowseCount || 0) < 4, 'apps_bad_frame');
+      localAppsCheck(localAppsNonce(frame.nonce) && typeof handler === 'function', 'apps_bad_frame');
+      if ((context.preparedBrowseCount || 0) >= 4) {
+        send(context, { type: 'prepared-browse-result', channelId: context.channelId, nonce: frame.nonce, ok: false, code: 'prepared_busy' }); return;
+      }
       context.preparedBrowseCount = (context.preparedBrowseCount || 0) + 1;
       void Promise.resolve().then(() => handler(inspect ? { location: frame.location, digest: frame.digest }
         : { location: frame.location ?? null, after: frame.after ?? '' }))
