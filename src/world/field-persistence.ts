@@ -158,6 +158,8 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
       if (remote.revision > local.base.revision) local.remote = remote;
       return;
     }
+    // The verified remote is only a read-only fallback until local storage recovers.
+    if (storageError) { local.base = remote; return; }
     const next = { ...clone(local), base: remote, conflict: false, remote: null, conflictDocument: null };
     await persist(next); errorCode = ''; volatileDocument = null;
   }
@@ -275,12 +277,8 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
         // Include writes committed before this read even if their notice is late.
         if (!storageError && !local?.conflict && !local?.pending.length) return snapshot();
       }
-      try {
-        if (storageError) {
-          const remote = await remoteRead();
-          await serialize(async () => { check(); local!.base = remote; });
-        } else await refreshRemote();
-      } catch (error) { check(); errorCode = codeOf(error); }
+      try { await refreshRemote(); }
+      catch (error) { check(); errorCode = codeOf(error); }
       await serialize(async () => { check(); loaded = true; emit(); });
       await drain(); return snapshot();
     },

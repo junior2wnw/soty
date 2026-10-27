@@ -401,3 +401,47 @@ test('another window resolving a superseded receipt cannot silently adopt or fal
   assert.equal(adopted.state, 'saved'); assert.equal(adopted.localDurable, true); assert.equal(own.hasUnsavedChanges(), false);
   assert.deepEqual(adopted.document, doc(99)); assert.equal(f.writes(), before);
 });
+
+test('storage recovery keeps a confirmed newer field when its older startup GET arrives late', async t => {
+  const f = fixture(t), backing = memoryStore(), stale = f.current();
+  const author = f.create(backing.port()); await author.load();
+  await author.commit(doc(10), { expectedRevision: 0, requestId: 'storage_recovered_base' }); author.dispose();
+  assert.equal(backing.value().base.revision, 1);
+  let healthy = false, first = true; const gate = defer(), entered = defer(), base = backing.port(), updates = [];
+  const store = { ...base, async read() { if (!healthy) throw failure('field_local_storage_unavailable'); return base.read(); } };
+  const api = { async request(op, args) { if (op === 'world.field.get' && first) { first = false; entered.resolve(); await gate.promise; return stale; } return f.api.request(op, args); } };
+  const owner = f.create(store, { api, localFirst: true, onChange: state => updates.push(state) });
+  const pending = owner.load(); await entered.promise; healthy = true;
+  const recovered = await owner.retry(); assert.equal(recovered.revision, 1); assert.deepEqual(recovered.document, doc(10));
+  const afterRecovery = updates.length; gate.resolve(); const after = await pending;
+  assert.equal(after.revision, 1); assert.deepEqual(after.document, doc(10));
+  assert.equal(backing.value().base.revision, 1); assert.ok(updates.slice(afterRecovery).every(state => state.revision === 1));
+});
+
+for (const kind of ['older revision', 'same revision with another hash']) test(`storage failure still rejects ${kind}`, async t => {
+  const f = fixture(t), store = memoryStore(), stale = f.current(), author = f.create(store.port()); await author.load();
+  await author.commit(doc(20), { expectedRevision: 0, requestId: 'storage_known_revision' }); author.dispose();
+  const valid = f.current(), altered = doc(99), hash = createHash('sha256').update(JSON.stringify(altered)).digest('hex');
+  let response = valid; store.setQuota(true);
+  const owner = f.create(store.port(), { api: { request: async () => structuredClone(response) } });
+  const failed = await owner.load(); assert.equal(failed.state, 'storage-error'); assert.equal(failed.revision, 1);
+  response = kind === 'older revision' ? stale : { ...valid, document: altered, contentHash: hash };
+  const rejected = await owner.load();
+  assert.equal(rejected.errorCode, 'field_invalid_receipt'); assert.equal(rejected.revision, 1);
+  assert.deepEqual(rejected.document, doc(20)); assert.deepEqual(store.value().base.document, doc(20));
+});
+
+test('storage failure preserves both a lost ACK and a newer volatile edit for exact recovery', async t => {
+  const f = fixture(t), store = memoryStore(), owner = f.create(store.port(), { localFirst: true }); await owner.load();
+  f.loseAck(); await owner.commit(doc(30), { expectedRevision: 0, requestId: 'storage_lost_ack' });
+  await owner.flush(); assert.equal(f.current().revision, 1); assert.equal(store.value().pending.length, 1);
+  store.setQuota(true);
+  await assert.rejects(owner.commit(doc(40), { expectedRevision: 1, requestId: 'storage_volatile_after_lost_ack' }), { code: 'field_local_storage_unavailable' });
+  const unavailable = await owner.load();
+  assert.equal(unavailable.state, 'storage-error'); assert.equal(unavailable.revision, 0); assert.equal(unavailable.pendingCount, 1);
+  assert.equal(unavailable.remote.revision, 1); assert.deepEqual(unavailable.document, doc(40)); assert.equal(owner.hasUnsavedChanges(), true);
+  assert.equal(store.value().pending[0].requestId, 'storage_lost_ack');
+  store.setQuota(false); const recovered = await owner.retry();
+  assert.equal(recovered.state, 'saved'); assert.equal(recovered.pendingCount, 0); assert.equal(recovered.revision, 2);
+  assert.deepEqual(f.current().document, doc(40)); assert.equal(f.writes(), 3);
+});
