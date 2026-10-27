@@ -238,3 +238,22 @@ test('people and communities keep the existing preview path instead of acquiring
     h.enter('Цель'); h.buttons()[0].click(); assert.equal(h.calls.preview.length, 1); assert.equal(h.calls.open.length, 0);
   }
 });
+
+test('a late own app outside the field opens from search and disappears after it loses access', () => {
+  const h = harness(), app = { id: 'app-' + 'f'.repeat(32), name: 'Новый проект', state: 'ready', createdAt: 9 };
+  let available = [app];
+  h.environment.overviewApps = () => available;
+  h.environment.overviewEntity = value => ({ entity: { kind: 'app', id: value.id }, title: value.name, source: 'owner' });
+  h.environment.element.dataset.search = 'open';
+  h.enter(app.name);
+  const row = h.buttons().find(button => h.text(button).includes(app.name));
+  assert.ok(row, 'the new app is visible in search');
+  assert.equal(h.metadata.has(fieldEntityKey({ kind: 'app', id: app.id })), false, 'background registration did not populate the old directory cache');
+  row.click();
+  assert.equal(h.calls.open.length, 1);
+  assert.equal(h.calls.open[0].item.entity.id, app.id);
+  available = [];
+  row.click();
+  assert.equal(h.calls.open.length, 1, 'a stale result cannot open after access is removed');
+  h.assertUnchanged();
+});

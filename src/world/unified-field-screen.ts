@@ -333,7 +333,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     if (ownAppsOverview.hidden) return;
     if (ownedAppsState === 'offline') {
       const status = el('p', 'uf-own-apps-status', 'Не удалось обновить ваши приложения. Проверьте подключение.'); status.setAttribute('role', 'status');
-      ownAppsOverview.append(status); return;
+      const retry = button('Повторить', 'refresh', 'sw-button-quiet uf-own-apps-retry', () => { if (current()) run(loadOwnedApps(mineGeneration)); });
+      ownAppsOverview.append(status, retry); return;
     }
     const heading = el('h2', '', 'Ваши приложения'), list = el('div', 'uf-own-apps-list');
     for (const app of apps) list.append(ownAppButton(app));
@@ -869,7 +870,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         const fresh = listEntries().find(value => value.key === row.key);
         if (!fresh) { mineSearchSignature = ''; renderMineSearchResults(); return; }
         if (fresh.contextId) { closePreview(false); engine?.focusContext(fresh.contextId); }
-        else if (fresh.entity) { const item = metadata.get(fieldEntityKey(fresh.entity)); if (item) activate(item, fresh.shortcutId); }
+        else if (fresh.entity) { const item = currentEntity(fresh.entity); if (item) activate(item, fresh.shortcutId); }
       });
       const copy = el('span', 'uf-list-copy'); copy.append(el('strong', '', row.title), el('small', '', row.detail));
       action.replaceChildren(icon(row.contextId ? 'layers' : 'next'), copy); mineSearchList.append(action);
@@ -1122,7 +1123,20 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
         ownedApps = result.apps; ownedAppsState = 'ready'; renderOwnApps();
         if (!mineSearchResults.contains(document.activeElement)) renderMineSearchResults();
         if (!listDialog?.element.querySelector('.uf-list-results')?.contains(document.activeElement)) renderOpenList?.();
-      } catch { if (current() && generation === mineGeneration) ownAppsAppliedRead = Math.max(ownAppsAppliedRead, read); }
+      } catch {
+        if (!current() || generation !== mineGeneration || read < ownAppsAppliedRead) return;
+        const active = document.activeElement, ownFocused = ownAppsOverview.contains(active), searchFocused = mineSearchResults.contains(active);
+        const list = listDialog?.element, listFocused = list?.querySelector('.uf-list-results')?.contains(active) === true;
+        ownAppsAppliedRead = read; ownedApps = []; ownedAppsState = 'offline';
+        renderOwnApps(); renderMineSearchResults(); renderOpenList?.();
+        if (engine && mode === 'mine') { emptyDocument = null; updateMineEmpty(engine.snapshot()); }
+        if (searchFocused) searchInput.focus({ preventScroll: true });
+        else if (listFocused) list?.querySelector<HTMLInputElement>('input[aria-label="Найти в этом списке"]')?.focus({ preventScroll: true });
+        else if (ownFocused) {
+          const retry = ownAppsOverview.querySelector<HTMLButtonElement>('.uf-own-apps-retry');
+          if (retry) retry.focus({ preventScroll: true }); else focusFieldControl();
+        }
+      }
     },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },
