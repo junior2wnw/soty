@@ -1,0 +1,54 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prepared app recovery fixture</title>
+<button id="run">Проверить восстановление</button><pre id="proof" data-test-status="ready">Готово</pre>
+<script type="module">
+import './world.css';
+import { mountPreparedAppDialog } from './prepared-app-dialog.ts';
+const accountId='fixture-account',deviceId='fixture-device',key=`soty.prepared-app.v1:${accountId}:${deviceId}`;
+const hostDeviceId='fixture-host',connectorId='fixture-connector',rootId='a'.repeat(64),digest='b'.repeat(64),appId='app-'+'c'.repeat(32);
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const check=(value,message)=>{if(!value)throw Error(message);};
+async function until(predicate){for(let i=0;i<600;i++){if(predicate())return;await wait(10);}throw Error('fixture timeout');}
+let dialog,active=true,mode='conflict',opened=0,createCalls=0,readCalls=0;const serverRequests=new Map();
+const api={async request(op,args){
+  if(op==='apps.devices')return {devices:[{hostDeviceId,connectorId,name:'Компьютер',online:true,claimed:true}]};
+  if(op==='apps.prepared.browse')return args.location?{entries:[],next:null,project:{name:'Проект',digest,responding:true},projectError:null}:{roots:[{id:rootId,label:'Рабочая папка'}]};
+  if(op==='apps.prepared.create'){createCalls++;serverRequests.set(args.requestId,mode==='lost-ready'?'ready':'pending');
+    throw Object.assign(Error(mode==='lost-ready'?'synthetic lost response':'occupied'),{code:mode==='lost-ready'?'network_error':'app_port_already_registered'});}
+  if(op==='apps.prepared.read'){readCalls++;if(mode==='unavailable')throw Error('offline');
+    return serverRequests.get(args.requestId)==='ready'?{state:'ready',app:{id:appId,name:'Проект',state:'ready'}}:{state:'pending'};}
+  throw Error('unexpected operation '+op);
+}};
+const visible=label=>[...document.querySelectorAll('dialog[open] button')].find(node=>node.textContent.trim()===label&&!node.hidden);
+const body=()=>document.querySelector('dialog[open]')?.textContent||'';
+function marker(){return JSON.parse(localStorage.getItem(key)||'{"pending":[]}').pending;}
+async function mount(){
+  if(dialog?.element.open)dialog.element.close();dialog?.element.remove();active=true;
+  const element=document.createElement('dialog'),inner=document.createElement('div');element.append(inner);document.body.append(element);element.showModal();
+  dialog={element,body:inner,close:()=>element.close()};
+  await mountPreparedAppDialog({dialog,api,accountId,current:()=>active&&element.open,accountCurrent:()=>active,
+    identity:async()=>({accountId,deviceId}),open:()=>{opened++;element.close();},background:()=>{},manual:()=>{},connectDevice:()=>{}});
+  await until(()=>visible('Добавить и открыть'));
+}
+window.preparedFixture={mount,marker};
+const run=document.querySelector('#run'),proof=document.querySelector('#proof');
+run.onclick=async()=>{run.disabled=true;proof.dataset.testStatus='running';localStorage.removeItem(key);
+  try{
+    await mount();visible('Добавить и открыть').click();await until(()=>visible('Убрать ожидание'));
+    check(body().includes('порт уже занят')&&body().includes('проверьте «Моё»')&&body().includes('ещё может завершиться'),'conflict or uncertain outcome hidden');
+    check(marker().length===1&&serverRequests.size===1,'conflict was silently discarded');
+    active=false;visible('Убрать ожидание').click();await wait(100);check(marker().length===1,'changed account cleared marker');active=true;
+    visible('Убрать ожидание').click();await until(()=>body().includes('Ожидание убрано из этого браузера'));
+    check(marker().length===0&&serverRequests.size===1&&createCalls===1,'local dismissal mutated or repeated the server request');
+    await mount();check(!body().includes('Не подтверждено:')&&createCalls===1,'dismissed marker returned or retried after remount');
+    mode='lost-ready';visible('Добавить и открыть').click();await until(()=>opened===1);
+    check(marker().length===0&&createCalls===2,'confirmed card was not recovered exactly once');
+    mode='unavailable';await mount();visible('Добавить и открыть').click();await until(()=>visible('Убрать ожидание'));
+    check(marker().length===1&&body().includes('Результат не подтверждён')&&body().includes('не отменяет отправленную попытку'),'unknown result was presented as cancelled');
+    const beforeUnknownDismiss=createCalls,serverCount=serverRequests.size;visible('Убрать ожидание').click();await until(()=>body().includes('Ожидание убрано из этого браузера'));
+    check(marker().length===0&&serverRequests.size===serverCount&&createCalls===beforeUnknownDismiss,'unknown local dismissal changed or repeated the server request');
+    proof.dataset.testStatus='passed';proof.textContent='PASS: конфликт, явное локальное завершение, reload, смена аккаунта и неизвестный результат.';
+  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
+  finally{if(dialog?.element.open)dialog.element.close();dialog?.element.remove();localStorage.removeItem(key);run.disabled=false;}
+};
+</script></html>

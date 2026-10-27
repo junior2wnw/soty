@@ -29,9 +29,13 @@ export function createPreparedAppsExtension({ store, apps, universal, connect })
     const currentApp = receipt => connect.withCurrentContacts(actor, () => {
       need(guard(), 'authentication_required'); return apps.creationJobApp(actor, receipt.id);
     });
-    const status = app => {
+    const status = (app, continueFeedback = true) => {
+      need(guard(), 'authentication_required');
       if (!app) return null;
       if (app.state === 'revoked') return { state: 'revoked', app };
+      // Another active device of the owner may inspect the exact receipt, but
+      // must not continue work under the original signed device's authority.
+      if (!continueFeedback) return { state: 'ready', app, feedback: 'unconfirmed' };
       let feedback = universal ? 'waiting' : 'unavailable';
       try {
         const result = universal && connect.withCurrentContacts(actor, () => universal.completeExisting(actor, app));
@@ -40,9 +44,9 @@ export function createPreparedAppsExtension({ store, apps, universal, connect })
       need(guard(), 'authentication_required');
       return { state: 'ready', app, feedback };
     };
-    let prior = checked(await store.readPreparedRequest(intent, guard));
+    let prior = checked(await store.readPreparedRequest(intent, guard, op === 'apps.prepared.read'));
     if (prior.found) {
-      const value = status(currentApp(prior.receipt));
+      const value = status(currentApp(prior.receipt), prior.receipt.sourceActorDeviceId === actor.deviceId);
       if (value) return value;
       if (op === 'apps.prepared.read') return { state: 'pending' };
     } else {

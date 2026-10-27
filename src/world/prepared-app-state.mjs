@@ -14,9 +14,9 @@ function clean(value, withRequest = false) {
     ...(withRequest ? { requestId: value.requestId } : {}) };
 }
 
-// The marker is written before a request and remains until the server confirms
-// a card or tombstone. Web Locks serialize same-account tabs. Several unknown
-// results can coexist; an unrelated new project need not erase or replay one.
+// The marker is written before a request and remains until a confirmed result
+// or explicit local dismissal. Dismissal does not cancel server work. Web Locks
+// serialize same-account tabs; unrelated unknown results do not overwrite one another.
 export function createPreparedAppState({ accountId, deviceId, storage, locks, randomId = () => crypto.randomUUID() }) {
   if (!id(accountId) || !id(deviceId)) error('prepared_local_invalid');
   const key = `soty.prepared-app.v1:${accountId}:${deviceId}`;
@@ -41,6 +41,11 @@ export function createPreparedAppState({ accountId, deviceId, storage, locks, ra
     try { storage.setItem(key, JSON.stringify({ schema: 1, accountId, deviceId, pending })); }
     catch { error('prepared_local_unavailable'); }
   }
+  async function remove(expected) {
+    const exact = clean(expected, true);
+    return lock(() => { const pending = read(), match = pending.find(value => same(value, exact));
+      if (!match) return false; write(pending.filter(value => value.requestId !== exact.requestId)); return true; });
+  }
   return Object.freeze({
     read,
     async prepare(input) {
@@ -53,10 +58,8 @@ export function createPreparedAppState({ accountId, deviceId, storage, locks, ra
         const next = { ...value, requestId }; write([...pending, next]); return { payload: next, created: true };
       });
     },
-    async acknowledge(expected) {
-      const exact = clean(expected, true);
-      return lock(() => { const pending = read(), match = pending.find(value => same(value, exact));
-        if (!match) return false; write(pending.filter(value => value.requestId !== exact.requestId)); return true; });
-    },
+    acknowledge: remove,
+    // This only removes the local UI marker, not a server request or an app.
+    forget: remove,
   });
 }

@@ -78,9 +78,19 @@ export async function mountPreparedAppDialog(options: Options): Promise<void> {
       try {
         const result = await request<Result>('apps.prepared.read', { ...payload });
         if (await finish(payload, result, true)) return;
+        const code = typeof cause === 'object' && cause && 'code' in cause ? String(cause.code) : '';
+        if (code === 'app_port_already_registered' && result.state === 'pending') {
+          status.textContent = 'Этот порт уже занят. Проект может быть подключён: проверьте «Моё». Ожидание можно убрать в этом браузере; ранее начатая попытка ещё может завершиться.';
+          offerRetry(payload); offerDismiss(payload);
+          refreshPending();
+          return;
+        }
         status.textContent = result.state === 'not-found' ? 'Подключение не подтверждено. Можно повторить.' : 'Подключение ещё не завершено. Проверьте устройство и повторите.';
-        if (result.state === 'not-found') offerRetry(payload);
-      } catch { status.textContent = 'Не удалось проверить результат подключения. Проверьте связь и повторите.'; }
+        offerRetry(payload); offerDismiss(payload);
+      } catch {
+        status.textContent = 'Результат не подтверждён. Уже отправленная попытка может завершиться; проверьте связь или уберите ожидание в этом браузере.';
+        offerRetry(payload); offerDismiss(payload);
+      }
       if (current()) { errors.textContent = message(cause); refreshPending(); }
     } finally { busy = false; }
   }
@@ -92,12 +102,24 @@ export async function mountPreparedAppDialog(options: Options): Promise<void> {
       if (await finish(payload, result, true)) return;
       if (result.state === 'pending' || result.state === 'not-found' && allowMissing) { busy = false; await execute(payload); return; }
       status.textContent = 'Подключение не подтверждено. Нажмите «Повторить», чтобы отправить его снова.';
-      refreshPending(); offerRetry(payload);
-    } catch (cause) { showError(cause); }
+      refreshPending(); offerRetry(payload); offerDismiss(payload);
+    } catch (cause) {
+      if (current()) { status.textContent = 'Результат не подтверждён. Уже отправленная попытка может завершиться; проверьте связь или уберите ожидание в этом браузере.';
+        errors.textContent = message(cause); offerRetry(payload); offerDismiss(payload); }
+    }
     finally { busy = false; }
   }
   function offerRetry(payload: PreparedPayload): void {
     if (current()) retryArea.replaceChildren(button('Повторить подключение', 'refresh', 'sw-button-quiet', () => { void recover(payload, true); }));
+  }
+  function offerDismiss(payload: PreparedPayload): void {
+    if (!current()) return;
+    retryArea.append(el('small', 'sw-muted', `Номер для технической проверки: ${payload.requestId}. Удаление ожидания не отменяет отправленную попытку.`),
+      button('Убрать ожидание', 'close', 'sw-button-quiet', () => {
+        void (async () => { if (!await valid()) return; await state.forget(payload);
+          if (!await valid()) return; retryArea.replaceChildren(); errors.textContent = ''; status.textContent = 'Ожидание убрано из этого браузера.'; refreshPending();
+        })().catch(showError);
+      }));
   }
   function refreshPending(): void {
     if (!current()) return;

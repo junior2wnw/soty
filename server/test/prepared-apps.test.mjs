@@ -13,6 +13,7 @@ import { createClientWithStorage } from '../../modules/connect/browser/client.mj
 import { parseSourceJson } from '../../modules/source-app/shared/strict-json.mjs';
 import { createPreparedProjectBrowser } from '../../scripts/agent-modules/prepared-projects.mjs';
 import { createLocalAppsRuntime, normalizeLocalAppManifest, probeLocalApp } from '../../scripts/agent-modules/local-apps.mjs';
+import { createPreparedAppState } from '../../src/world/prepared-app-state.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -57,11 +58,11 @@ async function fixture(t) {
     runtime.start(); return runtime;
   }
   startRuntime(); await until(() => runtime.status().connected);
-  const makeClient = () => { const client = createClientWithStorage({ projectId: 'soty', endpoint: origin + '/api/connect/rpc',
+  const makeClient = (storage = memory()) => { const client = createClientWithStorage({ projectId: 'soty', endpoint: origin + '/api/connect/rpc',
     fetch: async (url, options) => { const response = await fetch(url, { ...options, headers: { ...options.headers, origin } });
-      if (loseAck && JSON.parse(options.body || '{}').op === 'apps.prepared.create') { loseAck = false; await response.arrayBuffer(); throw Error('synthetic lost response'); } return response; } }, memory());
+      if (loseAck && JSON.parse(options.body || '{}').op === 'apps.prepared.create') { loseAck = false; await response.arrayBuffer(); throw Error('synthetic lost response'); } return response; } }, storage);
     clients.push(client); return client; };
-  const owner = makeClient(), account = await owner.bootstrap('Owner'), claim = await runtime.claim();
+  const ownerStorage = memory(), owner = makeClient(ownerStorage), account = await owner.bootstrap('Owner'), claim = await runtime.claim();
   await owner.extension('apps.claim', { hostDeviceId: claim.hostDeviceId, connectorId: claim.connectorId, claimCode: claim.claimCode });
   const target = { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId };
   const roots = await owner.extension('apps.prepared.browse', { ...target, expectedAccountId: account.accountId });
@@ -74,7 +75,7 @@ async function fixture(t) {
     assert.equal(dirname(resolve(folder)), resolve(tmpdir())); assert.match(basename(folder), /^soty-prepared-root-/u);
     await rm(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const args = { ...target, expectedAccountId: account.accountId, requestId: 'prepared-request-1', location, manifestDigest: preview.project.digest };
-  return { owner, account, makeClient, args, auth, project, dataDir, source, service: () => app,
+  return { owner, ownerStorage, account, makeClient, args, auth, project, dataDir, source, service: () => app,
     loseNext: () => { loseAck = true; }, hold: () => { pause = gate(); return pause; }, release: () => { pause?.release(); pause = null; },
     async oldConnector() { runtime.stop(); startRuntime(false); await until(() => runtime.status().connected); },
     async newConnector() { runtime.stop(); startRuntime(true); await until(() => runtime.status().connected); },
@@ -107,6 +108,69 @@ test('lost reply and Root restart read the exact previously committed card', { t
   assert.equal(recovered.state, 'ready'); assert.equal(recovered.app.id, first.id);
   assert.equal((await f.owner.extension('apps.prepared.create', f.args)).app.id, first.id);
   assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('another active owner device reads the exact original receipt without continuing feedback or changing its binding', { timeout: 30000 }, async t => {
+  const f = await fixture(t), phone = f.makeClient(), enrollment = await phone.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await phone.previewEnrollment(enrollment.requestId);
+  await phone.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  f.loseNext(); await assert.rejects(f.owner.extension('apps.prepared.create', f.args));
+  const before = f.service().locals.connectorService.store.state.requests.find(row => row.prepared?.requestId === f.args.requestId);
+  assert.equal(before.prepared.sourceActorDeviceId, f.account.deviceId);
+  await phone.revokeDevice(f.account.deviceId); await f.restart();
+  const universal = f.service().locals.universalApps, actual = universal.completeExisting; let continued = 0;
+  universal.completeExisting = (...values) => { continued++; return actual(...values); };
+  try {
+    const result = await phone.extension('apps.prepared.read', f.args); assert.equal(result.state, 'ready');
+    assert.equal(result.feedback, 'unconfirmed'); assert.equal((await phone.extension('apps.list')).apps[0].id, result.app.id); assert.equal(continued, 0);
+    await assert.rejects(phone.extension('apps.prepared.read', { ...f.args, manifestDigest: 'f'.repeat(64) }), { code: 'job_request_conflict' });
+    await assert.rejects(phone.extension('apps.prepared.create', f.args), { code: 'job_request_conflict' });
+    assert.equal(f.service().locals.connectorService.store.state.requests.find(row => row.id === before.id).prepared.sourceActorDeviceId, f.account.deviceId);
+    await phone.extension('apps.revoke', { appId: result.app.id });
+    assert.equal((await phone.extension('apps.prepared.read', f.args)).state, 'revoked');
+    assert.equal(continued, 0);
+    const apps = f.service().locals.appsService, connect = f.service().locals.connectService;
+    const readApp = apps.creationJobApp, active = connect.isActorActive; let lost = false;
+    apps.creationJobApp = (...values) => { const value = readApp(...values); lost = true; return value; };
+    connect.isActorActive = actor => !lost && active(actor);
+    try { await assert.rejects(phone.extension('apps.prepared.read', f.args), { code: 'authentication_required' }); }
+    finally { apps.creationJobApp = readApp; connect.isActorActive = active; }
+  } finally { universal.completeExisting = actual; }
+});
+
+test('another owner device can inspect an uncertain original request but must explicitly create its own intent', { timeout: 30000 }, async t => {
+  const f = await fixture(t), phone = f.makeClient(), enrollment = await phone.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await phone.previewEnrollment(enrollment.requestId);
+  await phone.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  const hold = f.hold(), old = f.owner.extension('apps.prepared.create', f.args); await hold.entered;
+  await phone.revokeDevice(f.account.deviceId); f.release(); await assert.rejects(old); await f.restart();
+  assert.equal((await phone.extension('apps.prepared.read', f.args)).state, 'pending');
+  await assert.rejects(phone.extension('apps.prepared.create', f.args), { code: 'job_request_conflict' });
+  const current = await phone.extension('apps.prepared.create', { ...f.args, requestId: 'phone-explicit-request' });
+  assert.equal(current.state, 'ready'); assert.equal((await phone.extension('apps.list')).apps.length, 1);
+  assert.equal((await phone.extension('apps.prepared.read', f.args)).state, 'pending');
+});
+
+test('dismissing a confirmed local conflict does not cancel an already transmitted delayed request', { timeout: 30000 }, async t => {
+  const f = await fixture(t), tab = f.makeClient(f.ownerStorage), occupied = await f.owner.extension('apps.register', {
+    hostDeviceId: f.args.hostDeviceId, connectorId: f.args.connectorId, name: 'Different project', port: f.source.address().port, entryPath: '/', grants: {},
+  });
+  const data = new Map(), storage = { getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
+  const state = createPreparedAppState({ accountId: f.account.accountId, deviceId: f.account.deviceId, storage,
+    locks: { request(_key, action) { return Promise.resolve().then(action); } }, randomId: () => f.args.requestId });
+  const saved = await state.prepare(f.args); assert.equal(saved.payload.requestId, f.args.requestId);
+  const apps = f.service().locals.appsService, actual = apps.inspectPrepared, hold = gate(); let inspections = 0;
+  apps.inspectPrepared = async (...values) => { if (++inspections === 1) { hold.enter(); await hold.wait; } return actual(...values); };
+  try {
+    const late = f.owner.extension('apps.prepared.create', f.args); await hold.entered;
+    await assert.rejects(tab.extension('apps.prepared.create', f.args), { code: 'app_port_already_registered' });
+    assert.equal((await tab.extension('apps.prepared.read', f.args)).state, 'pending');
+    assert.equal(await state.forget(saved.payload), true); assert.deepEqual(state.read(), []);
+    await tab.extension('apps.revoke', { appId: occupied.app.id });
+    hold.release(); const completed = await late; assert.equal(completed.state, 'ready');
+    assert.equal((await tab.extension('apps.prepared.read', f.args)).app.id, completed.app.id);
+    assert.equal(f.service().locals.connectorService.store.state.requests.filter(row => row.prepared?.requestId === f.args.requestId).length, 1);
+  } finally { hold.release(); apps.inspectPrepared = actual; }
 });
 
 test('old connector cannot inspect; its reserved request can resume with the same intent', { timeout: 30000 }, async t => {

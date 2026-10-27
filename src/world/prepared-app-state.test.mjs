@@ -19,6 +19,8 @@ test('two tabs persist a single exact intent before sending and clear only its c
   assert.notEqual(other.payload.requestId, first.payload.requestId); assert.equal(a.read().length, 2);
   assert.equal(await a.acknowledge({ ...first.payload, manifestDigest: 'c'.repeat(64) }), false);
   assert.equal(await b.acknowledge(first.payload), true); assert.deepEqual(a.read(), [other.payload]);
+  assert.equal(await a.forget({ ...other.payload, manifestDigest: 'c'.repeat(64) }), false);
+  assert.equal(await b.forget(other.payload), true); assert.deepEqual(a.read(), []);
   assert.deepEqual(f.make('account-b').read(), []); assert.deepEqual(f.make('account-a', 'device-b').read(), []);
 });
 test('unavailable locks, storage and corrupt markers fail before a new request can be sent', async () => {

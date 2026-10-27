@@ -482,13 +482,20 @@ class ConnectorStore {
   /** A read-only project inspection needs no executor job. Its original owner,
    * device, selected location and manifest digest are immutable in the same
    * existing request ledger used for other account actions. */
-  async readPreparedRequest(input, guard) {
+  async readPreparedRequest(input, guard, ownerRead = false) {
     const intent = normalizePreparedIntent(input);
     if (!intent || typeof guard !== 'function') return { ok: false, error: 'invalid-prepared-request' };
     await this.writeQueue; await this.readable();
     if (guard() !== true) return { ok: false, error: 'job-access-denied' };
     const previous = this.requestIndex.get(preparedRequestKey(intent));
-    return previous ? preparedReceipt(previous, intent) : { ok: true, found: false };
+    if (!previous) return { ok: true, found: false };
+    if (!ownerRead) return preparedReceipt(previous, intent);
+    const original = normalizePreparedIntent(previous.prepared);
+    if (!original) return { ok: false, error: 'job-request-conflict' };
+    const { sourceActorDeviceId: _originalDevice, ...originalSelection } = original;
+    const { sourceActorDeviceId: _currentDevice, ...currentSelection } = intent;
+    if (JSON.stringify(originalSelection) !== JSON.stringify(currentSelection)) return { ok: false, error: 'job-request-conflict' };
+    return preparedReceipt(previous, original);
   }
 
   async reservePreparedRequest(input, guard) {
