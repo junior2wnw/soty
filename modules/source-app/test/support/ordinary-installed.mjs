@@ -6,12 +6,15 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHttpApp } from '../../../../server/http-app.js';
 import { createClientWithStorage } from '../../../connect/browser/client.mjs';
 import { runtimeTargetDigest } from '../../../apps/server/schema.mjs';
 import { STANDARD_SELECTED_SOURCE_V2 } from '../../server/standard-profile.mjs';
-import { createOrdinaryAppServer } from '../../examples/ordinary-app/index.mjs';
+import { createOrdinaryAppServer as createLocalOrdinaryAppServer } from '../../examples/ordinary-app/index.mjs';
+const createOrdinaryAppServer = process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY
+  ? (await import(pathToFileURL(join(process.env.SOTY_SOURCE_TEST_SDK_DIRECTORY,'dist','example.mjs')).href)).createOrdinaryAppServer
+  : createLocalOrdinaryAppServer;
 
 const random = () => randomBytes(32).toString('base64url'), pause = ms => new Promise(done => setTimeout(done, ms));
 async function until(check, ms = 20000) { const end = Date.now()+ms; while(Date.now()<end) { const value = await check(); if(value)return value; await pause(40); } throw new Error('ordinary_installed_timeout'); }
