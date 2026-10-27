@@ -6,6 +6,7 @@ import ts from'typescript';
 import{createAppRuntimePhaseTrace}from'./app-runtime-phase-trace.mjs';
 import{isScopedRuntimeProfile}from'./app-launch.mjs';
 import{createAppRuntimeDisplay}from'./app-runtime-display.mjs';
+import{createRelayIdentityBridge}from'./app-relay-identity-bridge.mjs';
 import{captureSourcePin,matchesScopedCaptureContext}from'./app-project-capture.mjs';
 import{createBootDisplayClient}from'../../modules/apps/server/runtime-display-client.mjs';
 
@@ -38,7 +39,12 @@ exports.harness=(host,options,state)=>{
  ${voiceCode}
  ${declaration('messageOwner').replace(/^const /u,'let ')}
  ${fn('showMessage')}
- const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,scopedCapture:()=>state.binding??null};
+ const launcher={launch:async()=>{state.calls.launch++;if(state.failure)throw state.failure;return state.held?await state.held:'https://frame.example/_soty/boot#PRIVATE_TICKET';},canOpenExternal:async()=>true,runtimeProfile:()=> 'soty.selected-human-embed.v2',entry:()=>({origin:'https://frame.example'}),binding:()=>null,latestBinding:()=>null,scopedCapture:()=>state.binding??null};
+ let relayPeer=null;
+ const relayIdentity=createRelayIdentityBridge({view,isCurrent:current,
+   getFrame:()=>runtime.querySelector('iframe')===relayPeer?.frame?relayPeer.frame:null,
+   getEntry:()=>relayPeer?.entry??null,getBinding:()=>relayPeer?.binding??null,
+   request:async()=>{throw Error('unexpected relay identity request');},close:async()=>({closed:true})});
  const button=host.button,el=host.el,emptyState=()=>host.el('div'),createDialog=host.createDialog;
  const appLaunchFailure=()=>({title:'Existing error',detail:'Existing detail'});
  ${declaration('runtimeTrace')}
@@ -81,7 +87,7 @@ function fixture(presentation){
  const host={view,runtime,ownerDocument:doc,message:new Node('message',state),panel:Object.assign(new Node('panel',state),{hidden:true}),button,el,createDialog};
  let observedMessage=host.message.textContent;
  Object.defineProperty(host.message,'textContent',{get:()=>observedMessage,set:text=>{observedMessage=text;state.messages.push(text);}});
- const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
+ const context=vm.createContext({exports:{},AbortController,URL,createAppRuntimePhaseTrace,createAppRuntimeDisplay,createRelayIdentityBridge,captureSourcePin,matchesScopedCaptureContext,isScopedRuntimeProfile});new vm.Script(compiled).runInContext(context);
  const h=context.exports.harness(host,{...(presentation?{presentation}:{}),onModalChange(){},api:{request:async(op,args)=>{state.reads.push({op,args});return state.context;}}},state);
  const tick=ms=>{const target=now+ms;while(true){const t=[...tasks].sort((a,b)=>a[1].at-b[1].at)[0];if(!t||t[1].at>target)break;tasks.delete(t[0]);now=t[1].at;t[1].fn();}now=target;};
  return{h,state,tasks,tick,view,host};
