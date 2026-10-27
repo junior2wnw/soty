@@ -47,7 +47,7 @@ export function parseConnectLink(value, origin = globalThis.location?.origin) {
     return { kind, id };
   } catch { return null; }
 }
-export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename, onContactCall, onEditProfile, onOpenDataTools,
+export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename, onContactCall, onContactMessage, onEditProfile, onOpenDataTools,
   snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null, initialTab = 'profile', bootstrapOnOpen = true }) {
   if (typeof bootstrapOnOpen !== 'boolean') throw new TypeError('invalid_bootstrap_policy');
   const previousFocus = document.activeElement;
@@ -163,10 +163,14 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
         <h4>Контакты</h4><div data-contacts>${contacts.length ? '' : '<p class="connect-muted">Покажите другу свой QR, чтобы добавиться.</p>'}</div>
         <h4>Отправленные запросы</h4><div data-outgoing></div><h4>Приглашения</h4><div data-invitations></div>
         <details><summary>Нежелательные обращения и визитка</summary><div data-blocked></div><button data-rotate>Сменить адрес моей визитки</button></details>`;
-      const row = (container, text, actions) => { const el = document.createElement('div'); el.className = 'connect-row'; const span = document.createElement('span'); span.textContent = text; el.append(span); for (const [title, fn] of actions) { const b = document.createElement('button'); b.textContent = title; b.type = 'button'; b.addEventListener('click', guard(fn)); el.append(b); } content.querySelector(container).append(el); };
+      const row = (container, text, actions) => { const el = document.createElement('div'); el.className = 'connect-row'; const span = document.createElement('span'); span.textContent = text; el.append(span); for (const [title, fn, accessibleName] of actions) { const b = document.createElement('button'); b.textContent = title; b.type = 'button'; if (accessibleName) b.setAttribute('aria-label', accessibleName); b.addEventListener('click', guard(fn)); el.append(b); } content.querySelector(container).append(el); };
       for (const r of incoming) row('[data-incoming]', r.label || 'Новый контакт', [['Принять', async () => { await client.acceptContact(r.requestId); note('Вы добавили друг друга.'); await render(); }], ['Отклонить', async () => { await client.declineContact(r.requestId); await render(); }], ['Заблокировать', async () => { await client.blockContact(r.peerAccountId); await render(); }]]);
       for (const r of contacts) {
         const actions = [];
+        if (typeof onContactMessage === 'function') actions.push(['Написать', async () => {
+          await onContactMessage({ peerAccountId: r.peerAccountId, relationshipId: r.relationshipId, label: r.label || r.peerLabel || 'Контакт' });
+          if (!stopped) dialog.close();
+        }, `Написать ${r.label || r.peerLabel || 'контакту'}`]);
         if (typeof onContactCall === 'function') actions.push(['Слушать звонок', async () => {
           await onContactCall({ peerAccountId: r.peerAccountId, label: r.label || r.peerLabel || 'Контакт' });
           if (!stopped) dialog.close();

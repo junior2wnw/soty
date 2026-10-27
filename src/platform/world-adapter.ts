@@ -1,5 +1,5 @@
 import { accountClient, observeAccount } from '../core/connect-client';
-import { mountWorldApp, type WorldAppHandle } from '../world/app';
+import { mountWorldApp, type WorldAppHandle, type ContactMessageTarget } from '../world/app';
 import type { WorldAppOptions, WorldIdentity, WorldHumanCallPort, WorldHumanCallState, WorldIncomingCall } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
@@ -160,6 +160,7 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
     const callView = currentCallView;
     const mountedWorld = world, accountAtOpen = activeAccount, generationAtOpen = mountGeneration, routeAtOpen = window.location.href;
     let editProfileRequested = false;
+    const messageRequest: { contact: ContactMessageTarget | null } = { contact: null };
     const current = () => !pageLifetime.signal.aborted && world === mountedWorld && activeAccount === accountAtOpen && mountGeneration === generationAtOpen && window.location.href === routeAtOpen;
     const [{ openConnectPanel }, { default: QRCode }] = await Promise.all([
       import('../../modules/connect/ui/index.mjs'), import('qrcode'), import('../../modules/connect/ui/style.css'),
@@ -170,6 +171,9 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       qr: url => QRCode.toDataURL(url, { width: 256, margin: 2, color: { dark: '#252923', light: '#ffffff' } }),
       ...(initialIntent ? { initialIntent } : {}), initialTab, bootstrapOnOpen: false,
       onEditProfile: () => { editProfileRequested = true; },
+      ...(mountedWorld?.supportsDirectMessages?.() ? { onContactMessage: (contact: ContactMessageTarget) => {
+        if (current()) messageRequest.contact = contact;
+      } } : {}),
       onOpenDataTools: () => openLegacy(),
       ...(callView ? { onContactCall: async ({ peerAccountId, label }: { peerAccountId: string; label: string }) => {
         const result = await callView.join({ roomId: peerAccountId, mode: 'one-to-one', displayLabel: label });
@@ -188,6 +192,8 @@ export async function startWorld(root: HTMLElement, dependencies: { callLifecycl
       window.removeEventListener('hashchange', routeChanged); window.removeEventListener('popstate', routeChanged); }
     if (!current()) return;
     await refresh();
+    if (!current()) return;
+    if (messageRequest.contact && mountedWorld?.supportsDirectMessages()) await mountedWorld.openDirectContact(messageRequest.contact);
     if (editProfileRequested && world === mountedWorld && activeAccount === accountAtOpen && mountGeneration === generationAtOpen) mountedWorld.editProfile();
   };
   let connectionOpening = false;

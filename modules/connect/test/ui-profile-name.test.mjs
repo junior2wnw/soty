@@ -104,3 +104,22 @@ test('recovery and data copies have separate views and preserve the selected-acc
   await data.content.querySelector('[data-save]').handlers.get('click')({ preventDefault() {} });
   assert.deepEqual(calls, [{ payload: { value: 'copy' }, expectedAccountId: 'A' }]); data.panel.close();
 });
+
+
+test('accepted contact offers a direct message only when the host supports it', async () => {
+  const local={accountId:'synthetic-owner',profiles:[]}, selected=[];
+  const client={async getLocalState(){return local;},async status(){return{accountId:local.accountId,label:'Owner'};},
+    async contacts(){return{contacts:[{peerAccountId:'synthetic-peer',relationshipId:'synthetic-relation',label:'Synthetic peer'}],incoming:[],outgoing:[],invitations:[],blocked:[]};}};
+  const active=panelFixture(client,{initialTab:'people',onContactMessage:contact=>selected.push(contact)});
+  await until(()=>active.content.querySelector('[data-contacts]')?.children.length===1);
+  const row=active.content.querySelector('[data-contacts]').children[0];
+  const write=row.children.find(child=>child.textContent==='Написать');assert.ok(write);assert.equal(write.getAttribute('aria-label'),'Написать Synthetic peer');
+  await write.handlers.get('click')({preventDefault(){}});
+  assert.equal(selected.length,1);assert.equal(selected[0].peerAccountId,'synthetic-peer');
+  assert.equal(selected[0].relationshipId,'synthetic-relation');assert.equal(selected[0].label,'Synthetic peer');
+  assert.equal(active.dialog.open,false);
+  const unsupported=panelFixture(client,{initialTab:'people'});
+  await until(()=>unsupported.content.querySelector('[data-contacts]')?.children.length===1);
+  assert.equal(unsupported.content.querySelector('[data-contacts]').children[0].children.some(child=>child.textContent==='Написать'),false);
+  unsupported.panel.close();
+});

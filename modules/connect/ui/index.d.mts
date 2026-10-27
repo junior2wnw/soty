@@ -11,6 +11,7 @@ export function openConnectPanel(options: {
   onEditProfile?: () => void;
   onOpenDataTools?: () => void | Promise<void>;
   onContactCall?: (contact: { peerAccountId: string; label: string }) => void | Promise<void>;
+  onContactMessage?: (contact: { peerAccountId: string; relationshipId: string; label: string }) => void | Promise<void>;
   snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: ConnectTab;
   bootstrapOnOpen?: boolean;
 }): { close(): void; refresh(): Promise<void> };

@@ -77,7 +77,9 @@ interface ConversationPresentation {
   notify(chat: HTMLElement, message: WorldMessage | undefined, readAcknowledged: boolean): void;
 }
 
+export type ContactMessageTarget = Pick<DirectoryContact, 'peerAccountId' | 'relationshipId' | 'label'>;
 export interface WorldAppHandle { destroy(): void; refresh(): Promise<void>; editProfile(): void;
+  supportsDirectMessages(): boolean; openDirectContact(contact: ContactMessageTarget): Promise<void>;
   openNotification(target: NotificationTarget, context: { assertCurrent(): Promise<void>; signal: AbortSignal }): Promise<void>;
   followConnection(intent: ConnectionIntent, navigate?: () => void, continueIf?: () => boolean): Promise<void>; }
 
@@ -85,6 +87,7 @@ export function mountWorldApp(root: HTMLElement, options: WorldAppOptions): Worl
   const app = new WorldApplication(root, options);
   void app.refresh();
   return { destroy: () => app.destroy(), refresh: () => app.refresh(), editProfile: () => app.openProfileEditor(),
+    supportsDirectMessages: () => app.supportsDirectMessages(), openDirectContact: contact => app.openDirectContact(contact),
     openNotification: (target, context) => app.openNotification(target, context),
     followConnection: (intent, navigate, continueIf) => app.followConnection(intent, navigate, continueIf) };
 }
@@ -2317,8 +2320,10 @@ class WorldApplication {
     return active;
   }
 
-  private async openDirectContact(contact: Omit<DirectoryContact, 'kind'>): Promise<void> {
-    if (this.profile?.directMessagesVersion !== 1) return;
+  supportsDirectMessages(): boolean { return !this.destroyed && !!this.deskAccount && this.profile?.directMessagesVersion === 1; }
+
+  async openDirectContact(contact: ContactMessageTarget): Promise<void> {
+    if (!this.supportsDirectMessages()) return;
     const current = this.accountTask(), expectedAccountId = this.deskAccount;
     const sequence = this.screenSequence, request = ++this.directOpenSequence;
     const active = (): boolean => current() && sequence === this.screenSequence && request === this.directOpenSequence;

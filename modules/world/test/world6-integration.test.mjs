@@ -196,3 +196,13 @@ test('contact remove/re-add needs explicit new relationship open and never rewri
   assert.equal(history[0].messageId,sent.messageId);assert.equal(history[0].text,'Preserve original text');
   good(await f.rpc(b,'contacts.block',{peerAccountId:a.accountId}));denied(await f.rpc(a,'world.direct.get',{expectedAccountId:a.accountId,threadId:thread.threadId,expectedRelationshipId:fresh}),'direct_not_found');
 });
+
+
+test('direct conversation is unavailable before two people are contacts', async t => {
+  const f=await signedFixture(t),[a,b]=f.actors;
+  assert.equal((await f.profile(a)).directMessagesVersion,1);
+  denied(await f.rpc(a,'world.direct.open',{expectedAccountId:a.accountId,peerAccountId:b.accountId,
+    expectedRelationshipId:'synthetic-no-contact',requestId:'synthetic-direct-no-contact'}),'direct_contact_required');
+  assert.equal(good(await f.rpc(a,'world.direct.list',{expectedAccountId:a.accountId})).threads.length,0);
+  assert.equal(good(await f.rpc(b,'world.direct.list',{expectedAccountId:b.accountId})).threads.length,0);
+});
