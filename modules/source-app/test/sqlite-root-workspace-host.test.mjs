@@ -119,6 +119,35 @@ test('generic SQLite Source host: real signed HTTP, personal isolation, cold rec
   f.closeRoot();assert.ok((await read(alice,rejoined.ref)).status>=400);
 });
 
+test('personal document callbacks are transaction-scoped and a failed write is rolled back',async t=>{
+  let retained;
+  const domain={personalDocuments:true,
+    read(context,{input}){assert.deepEqual(Object.keys(context).sort(),['personal','resourceId']);retained=context.personal;
+      if(input.operation==='reading.write-in-read')context.personal.create('items','invalid-read','not written');
+      return{items:context.personal.list('items')};},
+    execute(context,{requestId,input}){context.personal.create('items',requestId,{title:input.title});
+      if(input.title==='roll back')throw Error('application rejected staged change');
+      return{workspaceReceipt:{schema:'soty.workspace-receipt.v1',effects:[{kind:'created',resourceType:'reading-item',resourceId:requestId,revision:1}],
+        receipt:{verificationMethod:'domain_read',artifacts:[{type:'reading-item',id:requestId,revision:1}]}}};},
+  };
+  const f=await fixture(t,{domain}),browser=f.browser();assert.equal((await browser.request()).status,200);const context=await current(browser);
+  assert.deepEqual((await read(browser,context.ref)).body.data.items,[]);
+  assert.throws(()=>retained.list('items'),{code:'source_workspace_personal_context_closed'});
+  assert.ok((await browser.request('/api/embed/query',{requestId:'reading-denied-write-in-read',contextRef:context.ref,input:{operation:'reading.write-in-read'}})).status>=400);
+  assert.ok((await add(browser,context.ref,'reading-rollback-0001','roll back')).status>=400);
+  assert.deepEqual((await read(browser,context.ref)).body.data.items,[]);
+  assert.equal((await add(browser,context.ref,'reading-committed-001','kept')).status,200);
+  assert.deepEqual((await read(browser,context.ref)).body.data.items,[{id:'reading-committed-001',value:{title:'kept'}}]);
+});
+
+test('opting a legacy database into new document mode requires migration and leaves its old data usable',async t=>{
+  const f=await fixture(t),browser=f.browser();assert.equal((await browser.request()).status,200);const context=await current(browser);
+  assert.equal((await add(browser,context.ref)).status,200);
+  assert.throws(()=>createSqliteRootWorkspaceHost({...f.options,domain:{personalDocuments:true,read(){return{};}}}),
+    {code:'source_workspace_host_schema_mismatch'});
+  assert.deepEqual((await read(browser,context.ref)).body.data.items,[{id:'reading-item-0001',title:'Alice private item'}]);
+});
+
 test('personal creation is explicit; Root app-owner metadata never grants another Native identity',async t=>{
   const f=await fixture(t,{personalWorkspaces:false}),browser=f.browser();
   const denied=await browser.request();assert.equal(denied.status,403);assert.equal(denied.cookie,false);

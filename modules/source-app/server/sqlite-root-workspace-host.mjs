@@ -16,6 +16,7 @@ CREATE TABLE soty_workspace_sessions(id_hash TEXT PRIMARY KEY,principal_id TEXT 
 CREATE TABLE soty_workspace_nonces(nonce TEXT PRIMARY KEY,expires_at INTEGER NOT NULL);
 CREATE TABLE soty_workspace_receipts(principal_id TEXT NOT NULL REFERENCES soty_workspace_people(id),request_id TEXT NOT NULL,input_digest TEXT NOT NULL,result_json TEXT NOT NULL,binding_json TEXT NOT NULL,PRIMARY KEY(principal_id,request_id));
 CREATE TRIGGER soty_workspace_receipt_immutable BEFORE UPDATE ON soty_workspace_receipts BEGIN SELECT RAISE(ABORT,'soty_workspace_receipt_immutable');END;`;
+const DOCUMENT_DDL='CREATE TABLE soty_workspace_documents(principal_id TEXT NOT NULL REFERENCES soty_workspace_people(id),collection TEXT NOT NULL,item_id TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(principal_id,collection,item_id))';
 const columns={soty_workspace_meta:'id,schema,namespace,personal',soty_workspace_people:'id,issuer,subject,incarnation,active,generation,revision',
   soty_workspace_sessions:'id_hash,principal_id,resource_id,native_hash,active,expires_at,cipher,key_id',soty_workspace_nonces:'nonce,expires_at',
   soty_workspace_receipts:'principal_id,request_id,input_digest,result_json,binding_json'};
@@ -31,8 +32,11 @@ export function createSqliteRootWorkspaceHost(options) {
     && (value.initialize===undefined||typeof value.initialize==='boolean') && (value.personalWorkspaces===undefined||typeof value.personalWorkspaces==='boolean'),
     'source_workspace_host_configuration_invalid',503);
   check(typeof title==='string' && title.isWellFormed() && title.trim() && title.length<=240 && !/[\u0000-\u001f\u007f]/u.test(title),'source_workspace_host_configuration_invalid',503);
-  const domain=fields(value.domain,['read'],['initialize','inspect','execute']);
-  Object.values(domain).forEach(fn=>check(typeof fn==='function' && !['AsyncFunction','AsyncGeneratorFunction'].includes(fn.constructor?.name),'source_workspace_domain_invalid',503));
+  const domain=fields(value.domain,['read'],['initialize','inspect','execute','personalDocuments']);
+  const personalDocuments=domain.personalDocuments===true;
+  check(domain.personalDocuments===undefined||personalDocuments,'source_workspace_domain_invalid',503);
+  check(!personalDocuments||(!domain.initialize&&!domain.inspect),'source_workspace_domain_invalid',503);
+  Object.entries(domain).filter(([name])=>name!=='personalDocuments').forEach(([,fn])=>check(typeof fn==='function' && !['AsyncFunction','AsyncGeneratorFunction'].includes(fn.constructor?.name),'source_workspace_domain_invalid',503));
   if(!existsSync(value.databasePath)){
     check(value.initialize===true,'source_workspace_host_not_initialized',503);
     const file=openSync(value.databasePath,'wx',0o600);closeSync(file);
@@ -57,11 +61,13 @@ export function createSqliteRootWorkspaceHost(options) {
     check(db.prepare('PRAGMA foreign_key_check').all().length===0,'source_workspace_host_corrupt',503);
     check(db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='soty_workspace_receipt_immutable'").get()?.sql
       ==="CREATE TRIGGER soty_workspace_receipt_immutable BEFORE UPDATE ON soty_workspace_receipts BEGIN SELECT RAISE(ABORT,'soty_workspace_receipt_immutable');END",'source_workspace_host_schema_mismatch',503);
+    if(personalDocuments)check(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='soty_workspace_documents'").get()?.sql===DOCUMENT_DDL,
+      'source_workspace_host_schema_mismatch',503);
     syncResult(domain.inspect?.(db));
   }
   try{db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');
     const present=db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-    if(!present.length){check(value.initialize===true,'source_workspace_host_not_initialized',503);tx(()=>{db.exec(DDL);db.prepare('INSERT INTO soty_workspace_meta VALUES(1,?,?,?)').run(SCHEMA,namespace,value.personalWorkspaces===true?1:0);syncResult(domain.initialize?.(db));verifySchema();});}
+    if(!present.length){check(value.initialize===true,'source_workspace_host_not_initialized',503);tx(()=>{db.exec(DDL);if(personalDocuments)db.exec(DOCUMENT_DDL);db.prepare('INSERT INTO soty_workspace_meta VALUES(1,?,?,?)').run(SCHEMA,namespace,value.personalWorkspaces===true?1:0);syncResult(domain.initialize?.(db));verifySchema();});}
     else verifySchema();
     const sample=db.prepare('SELECT * FROM soty_workspace_sessions LIMIT 1').get();if(sample)openSession(sample);
     db.exec('PRAGMA journal_mode=WAL');
@@ -93,6 +99,20 @@ export function createSqliteRootWorkspaceHost(options) {
     return{key:digest([namespace,row.id,row.incarnation]),generation:row.generation,title,role:'owner',revision:row.revision,expiresAt:binding.rootExpiresAt};}
   function nativeContext(proof,binding){const{row}=inspect(proof,binding);denied(row);
     return Object.freeze({database:db,principalId:row.id,resourceId:resourceId(row.id)});}
+  function callDomain(method,actor,args){
+    if(!personalDocuments)return syncResult(domain[method](actor,args));
+    let active=true;
+    const collection=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.-]{1,64}$/u.test(value),'source_workspace_collection_invalid');
+    const itemId=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.:-]{1,128}$/u.test(value),'source_workspace_item_invalid');
+    const access=()=>check(active&&inTransaction,'source_workspace_personal_context_closed',503);
+    const personal=Object.freeze({
+      list(name){access();collection(name);return db.prepare('SELECT item_id,value_json FROM soty_workspace_documents WHERE principal_id=? AND collection=? ORDER BY rowid DESC LIMIT 100')
+        .all(actor.principalId,name).map(row=>({id:row.item_id,value:JSON.parse(row.value_json)}));},
+      create(name,id,value){access();check(method==='execute','source_workspace_personal_read_only',403);collection(name);itemId(id);
+        const document=jsonCopy(value,{bytes:16384});db.prepare('INSERT INTO soty_workspace_documents VALUES(?,?,?,?)').run(actor.principalId,name,id,JSON.stringify(document));},
+    });
+    try{return syncResult(domain[method](Object.freeze({personal,resourceId:actor.resourceId}),args));}finally{active=false;}
+  }
   function openSession(row){
     const record=cipher.open(row.id_hash,row.cipher,row.key_id),sealed=fields(record,['payload','native']);
     check(sealed.payload.idHash===row.id_hash && sealed.payload.expiresAt===row.expires_at && sealed.native.principalId===row.principal_id
@@ -135,7 +155,7 @@ export function createSqliteRootWorkspaceHost(options) {
       return{nativeSessionHash:sourceHash(binding,held.id),principalId:held.id,resourceId:resourceId(held.id)};},
     currentContext(proof,binding){return read(()=>context(proof,binding));},
     read(proof,binding,args){return tx(()=>{denied(binding.operation==='read');
-      const data=jsonCopy(syncResult(domain.read(nativeContext(proof,binding),args)));
+      const data=jsonCopy(callDomain('read',nativeContext(proof,binding),args));
       fields(data,[],Object.keys(data??{}));check(!Object.hasOwn(data,'requestId'),'source_workspace_domain_invalid',503);
       return{requestId:args.requestId,...data};});},
     ...(domain.execute?{execute(proof,binding,args,final){check(isSourceNativeCommitPort(final) && typeof final.receiptBinding==='function','source_workspace_commit_unsupported',503);
@@ -144,7 +164,7 @@ export function createSqliteRootWorkspaceHost(options) {
         check(!prior||prior.input_digest===inputDigest,'source_workspace_request_conflict',409);
         check(!prior,'source_workspace_request_recorded',409);
         check(db.prepare('SELECT count(*) n FROM soty_workspace_receipts WHERE principal_id=?').get(actor.principalId).n<SQLITE_ROOT_WORKSPACE_LIMITS.receiptsPerPerson,'source_workspace_receipt_capacity',503);
-        return final.commit(()=>{const data=fields(syncResult(domain.execute(actor,args)),['workspaceReceipt'],['result','data']);
+        return final.commit(()=>{const data=fields(callDomain('execute',actor,args),['workspaceReceipt'],['result','data']);
           db.prepare('UPDATE soty_workspace_people SET revision=revision+1 WHERE id=?').run(actor.principalId);
           const contextAfter=final.contextAfter();
           const original={requestId:args.requestId,inputDigest,outcome:'committed',replayed:false,

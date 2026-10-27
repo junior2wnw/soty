@@ -153,6 +153,21 @@ export interface SqliteWorkspaceDomain {
   read:(current:SqliteWorkspaceDomainContext,args:{requestId:string;input:unknown})=>Record<string,unknown>;
   execute?:(current:SqliteWorkspaceDomainContext,args:{requestId:string;input:unknown})=>{workspaceReceipt:NativeWorkspaceReceipt;result?:unknown;data?:unknown};
 }
+/** Small optional store for trusted new domains. It is valid only during the
+ * synchronous callback; `create` is available only inside `execute`. */
+export interface SqlitePersonalDocumentsReader {
+  list(collection:string):Array<{id:string;value:unknown}>;
+}
+export interface SqlitePersonalDocuments extends SqlitePersonalDocumentsReader {
+  create(collection:string,id:string,value:unknown):void;
+}
+export interface SqlitePersonalDocumentsReadContext {readonly personal:SqlitePersonalDocumentsReader;readonly resourceId:string}
+export interface SqlitePersonalDocumentsContext {readonly personal:SqlitePersonalDocuments;readonly resourceId:string}
+export interface SqlitePersonalDocumentsDomain {
+  personalDocuments:true;
+  read:(current:SqlitePersonalDocumentsReadContext,args:{requestId:string;input:unknown})=>Record<string,unknown>;
+  execute?:(current:SqlitePersonalDocumentsContext,args:{requestId:string;input:unknown})=>{workspaceReceipt:NativeWorkspaceReceipt;result?:unknown;data?:unknown};
+}
 export interface SqliteRootWorkspaceHost {readonly native:SourceNativeAuthorityPort;readonly storage:SourceStoragePort;
   readonly profile:SourceProfile&{digest:string};inspect():{schema:'soty.sqlite-root-workspace.v1';appId:string;initialized:true;
     personalWorkspaces:boolean;keyCorrectness:'sample_verified'|'unproved_empty';connected:false};
@@ -161,7 +176,7 @@ export interface SqliteRootWorkspaceHost {readonly native:SourceNativeAuthorityP
   setIdentityAccess(identity:{issuer:string;subject:string},active:boolean):void;close():void;
 }
 export const SQLITE_ROOT_WORKSPACE_LIMITS:Readonly<{sessions:4096;nonces:4096;receiptsPerPerson:20000}>;
-export function createSqliteRootWorkspaceHost(options:{profile:SourceProfile;databasePath:string;cipherKey:Buffer;keyId:string;domain:SqliteWorkspaceDomain;
+export function createSqliteRootWorkspaceHost(options:{profile:SourceProfile;databasePath:string;cipherKey:Buffer;keyId:string;domain:SqliteWorkspaceDomain|SqlitePersonalDocumentsDomain;
   initialize?:boolean;/** Explicit opt-in; default false. No guest or Root app-owner grant. */personalWorkspaces?:boolean;clock?:()=>number;title?:string}):SqliteRootWorkspaceHost;
 export function createRootWorkspaceServer(options:{profile:SourceProfile;transportKey:Buffer;connectorPort:number;host:SqliteRootWorkspaceHost;
   ui:{document:string|Uint8Array;script:string|Uint8Array;style:string|Uint8Array;sdk:string|Uint8Array};listen?:{host:'127.0.0.1';port:number};

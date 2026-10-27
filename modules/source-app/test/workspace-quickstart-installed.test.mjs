@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,writeFile,symlink} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,symlink} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
@@ -21,7 +21,7 @@ const {createSourceWorkspaceClient}=await import(qualifiedSdk?pathToFileURL(join
 async function nativeFactory({realm,initialize,directory}) {
   const folder=join(directory,'author-'+realm.realmId),configPath=join(folder,'operator.json');
   const sdkDirectory=qualifiedSdk?join(qualifiedSdk,'dist'):join(directory,'portable-sdk');
-  if(initialize&&!qualifiedSdk){await buildSourceAppPackage({outdir:sdkDirectory});await mkdir(join(directory,'node_modules'),{recursive:true});
+  if(initialize&&!qualifiedSdk&&realm.index===0){await buildSourceAppPackage({outdir:sdkDirectory});await mkdir(join(directory,'node_modules'),{recursive:true});
     const require=createRequire(import.meta.url);
     await symlink(dirname(dirname(require.resolve('openid-client'))),join(directory,'node_modules','openid-client'),process.platform==='win32'?'junction':'dir');}
   const {loadSourceOperatorConfiguration,disposeSourceOperatorConfiguration,startInstalledSource,diagnoseInstalledSource}
@@ -30,6 +30,13 @@ async function nativeFactory({realm,initialize,directory}) {
   if(initialize){
     await mkdir(folder,{mode:0o700});await mkdir(join(folder,'secrets'),{mode:0o700});await mkdir(join(folder,'data'),{mode:0o700});
     const author=cli('author','--title','Мой список','--template','reading-list');assert.equal(author.connected,false);assert.equal(author.template,'reading-list');
+    if(realm.realmId==='notes'){
+      await writeFile(join(folder,'source','domain.mjs'),await readFile(new URL('./fixtures/personal-notes-domain.mjs',import.meta.url)));
+      const uiFile=join(folder,'source','assets','ui.js'),htmlFile=join(folder,'source','assets','embed.html');
+      await writeFile(uiFile,(await readFile(uiFile,'utf8')).replaceAll('reading.','notes.').replaceAll('reading-','notes-')
+        .replaceAll('item.title','item.text').replace("title:$('title').value","text:$('title').value"));
+      await writeFile(htmlFile,(await readFile(htmlFile,'utf8')).replaceAll('Мой список','Мои заметки').replace('Книга, идея или ссылка','Текст заметки'));
+    }
     const config={schema:'soty.root-workspace.operator.v1',profile:realm.profile,connectorPort:realm.options.connectorPort,
       listener:{host:'127.0.0.1',port:realm.port},storage:{directory:join(folder,'data'),keyId:'reading-list',cipherKeyFile:'cipher.key'},
       transportKeyFile:'transport.key',native:{resourceTitle:'Мой список',domainModule:join(folder,'source','domain.mjs'),uiDirectory:join(folder,'source','assets')},
@@ -93,5 +100,54 @@ test('same-origin Source-only reading-list quickstart: installed CLI and actual 
   assert.equal(Object.entries(f.oauthCounts).filter(([name])=>/^(token|userinfo):/u.test(name)).reduce((sum,[,count])=>sum+count,0),0);
   await f.owner.client.extension('apps.update',{appId:realm.appId,grants:{accountIds:[],communityIds:[]}});
   await assert.rejects(second.client.query({requestId:'reading-installed-revoked-001',input:{operation:'reading.list'}}));
-  const db=new DatabaseSync(realm.databasePath);try{assert.equal(db.prepare('SELECT count(*) n FROM reading_items').get().n,1);}finally{db.close();}
+  const db=new DatabaseSync(realm.databasePath);try{assert.equal(db.prepare('SELECT count(*) n FROM soty_workspace_documents').get().n,1);}finally{db.close();}
+});
+
+test('two authored modules use shared personal storage with actual signed Root and installed device channel', {timeout:120000},async t=>{
+  const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['reading','notes'],withoutRpClients:['reading','notes'],
+    sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,
+    connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
+  const clients=[];t.after(()=>clients.forEach(client=>client.dispose()));
+  assert.equal(f.realms[0].profile.issuer,f.realms[1].profile.issuer,'one Root issuer, not a separate identity system per application');
+  await f.grantBrowser(f.foreign.account.accountId);
+  let sequence=0;
+  async function frame(realm,signer){
+    const launch=await signer.client.extension('apps.launch',{appId:realm.appId});
+    const boot=await f.wire(realm.embedded+'/_soty/session',{body:{ticket:new URL(launch.launchUrl).hash.slice(1)}});
+    assert.equal(boot.status,200);
+    const client=createSourceWorkspaceClient({href:realm.embedded+'/embed?sotyFrame='+boot.value.frame,
+      fetch:async(path,init)=>{const response=await f.wire(realm.embedded+path,{method:init.method,body:JSON.parse(init.body),headers:Object.fromEntries(new Headers(init.headers))});
+        return new Response(response.text,{status:response.status,headers:response.headers});}});
+    clients.push(client);await client.connect({requestId:`common-connect-${String(++sequence).padStart(6,'0')}`});return client;
+  }
+  const definitions=[{realm:f.realms[0],operation:'reading',field:'title'}, {realm:f.realms[1],operation:'notes',field:'text'}];
+  for(const {realm,operation,field}of definitions){
+    let previous;
+    for(const [label,signer]of [['one',f.reader],['two',f.foreign]]){
+      const client=await frame(realm,signer);
+      if(previous)assert.deepEqual((await previous.query({requestId:`common-${operation}-previous-context`,input:{operation:operation+'.list'}})).items,
+        [{id:`common-${operation}-shared-write`,[field]:`${operation} one`}]);
+      assert.deepEqual((await client.query({requestId:`common-${operation}-${label}-empty`,input:{operation:operation+'.list'}})).items,[]);
+      const input={operation:operation+'.add',[field]:`${operation} ${label}`},requestId=`common-${operation}-shared-write`;
+      await client.invoke(await client.prepareInvoke({requestId,input}));
+      assert.deepEqual((await client.query({requestId:`common-${operation}-${label}-read`,input:{operation:operation+'.list'}})).items,
+        [{id:requestId,[field]:`${operation} ${label}`}]);
+      previous=client;
+    }
+  }
+  for(const {realm}of definitions)await realm.restart();
+  await f.restartRoot();
+  for(const {realm,operation,field}of definitions){
+    for(const [label,signer]of [['one',f.reader],['two',f.foreign]]){
+      const client=await frame(realm,signer),requestId=`common-${operation}-shared-write`;
+      assert.deepEqual((await client.query({requestId:`common-${operation}-${label}-reload`,input:{operation:operation+'.list'}})).items,
+        [{id:requestId,[field]:`${operation} ${label}`}]);
+    }
+    const reader=await frame(realm,f.reader);
+    await f.owner.client.extension('apps.update',{appId:realm.appId,grants:{accountIds:[f.foreign.account.accountId],communityIds:[]}});
+    await assert.rejects(reader.query({requestId:`common-${operation}-revoked`,input:{operation:operation+'.list'}}));
+    const other=await frame(realm,f.foreign);
+    assert.equal((await other.query({requestId:`common-${operation}-remaining`,input:{operation:operation+'.list'}})).items.length,1);
+  }
+  assert.equal(Object.entries(f.oauthCounts).filter(([name])=>/^(token|userinfo):/u.test(name)).reduce((sum,[,count])=>sum+count,0),0);
 });
