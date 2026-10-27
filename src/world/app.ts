@@ -2204,6 +2204,7 @@ class WorldApplication {
       errorMessage.textContent = ''; retrySend.hidden = true;
       void (async()=>{
         let submitted=pending;
+        if (!pending.durable && !pending.attachments?.length) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
         if(pending.attachments?.length&&outbox){
           const prepared=await outbox.prepareSend(pending);
           if(prepared.state==='accepted'){

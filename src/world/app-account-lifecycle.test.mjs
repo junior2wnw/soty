@@ -170,6 +170,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     '../../modules/field/contract.mjs': fieldContract,
     './conversation-target.mjs': conversationTargets,
     './chat-state.mjs': chatState,
+    './attachment-outbox.mjs': {},
     './messenger.mjs': messenger,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
@@ -2829,4 +2830,50 @@ test('closing the page during the account field load keeps pending work for the 
     try { const state = await next.load(); assert.equal(state.pendingCount, 0); assert.deepEqual(h.remote().document, document); }
     finally { next.dispose(); }
   } finally { barrier.resolve(); await refreshing; h.dispose(); }
+});
+
+test('chat never dispatches a text message without a durable intent and retries it when storage returns', async () => {
+  const f = fixture(), disk = new Map(); let failing = false, sent = [];
+  const storage = { getItem: key => disk.get(key) ?? null, setItem(key, value) { if (failing) throw Error('Synthetic storage failure'); disk.set(key, value); }, removeItem: key => disk.delete(key) };
+  const drafts = chatState.createChatDraftStore(storage, () => 'intent_save_failure');
+  drafts.edit('account-A', 'room_fixture', 'Не потерять');
+  f.app.chatDrafts = drafts; f.app.preferences = { motion: false };
+  const parent = f.makeElement('div'), target = { kind: 'community', id: 'room_fixture', draftKey: 'room_fixture', name: 'Synthetic conversation', subtitle: 2,
+    canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
+    async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { sent.push(args); return { message: { messageId: 'message_saved', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
+  f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  await turn(); const composer = parent.querySelector('.sw-composer'), input = parent.querySelector('textarea');
+  failing = true; composer.requestSubmit(); await turn();
+  assert.equal(sent.length, 0, 'Unsaved intent must never reach the server');
+  assert.equal(drafts.read('account-A', 'room_fixture').text, 'Не потерять');
+  assert.equal(drafts.read('account-A', 'room_fixture').pending.clientId, 'intent_save_failure');
+  assert.equal(input.value, 'Не потерять'); assert.equal(drafts.hasVolatile(), true);
+  failing = false; composer.requestSubmit(); await turn();
+  assert.equal(sent.length, 1); assert.equal(sent[0].clientId, 'intent_save_failure'); assert.equal(sent[0].text, 'Не потерять');
+  assert.equal(drafts.read('account-A', 'room_fixture').pending, null); assert.equal(drafts.read('account-A', 'room_fixture').text, '');
+  assert.equal(drafts.hasVolatile(), false); f.app.chatCleanup();
+});
+
+for (const claimSucceeds of [false, true]) test(`chat attachment with unavailable localStorage ${claimSucceeds ? 'sends only after the durable file intent is claimed' : 'does not send when its file intent claim fails'}`, async () => {
+  const f = fixture(), disk = new Map(), events = []; let failing = false;
+  const storage = { getItem: key => disk.get(key) ?? null, setItem(key, value) { if (failing) throw Error('Synthetic storage failure'); disk.set(key, value); }, removeItem: key => disk.delete(key) };
+  const drafts = chatState.createChatDraftStore(storage, () => 'intent_attachment_save_failure');
+  drafts.edit('account-A', 'room_files', 'Подпись'); drafts.setAttachments('account-A', 'room_files', ['attachment_one']);
+  f.app.chatDrafts = drafts; f.app.preferences = { motion: false }; f.app.profile.chatAttachmentsVersion = 1;
+  Object.assign(f.ports['./dom'], { timeLabel: () => '12:00', avatar: () => f.makeElement('span') });
+  f.app.api = { async request(op) { assert.equal(op, 'world.attachment.capabilities'); return { readable: true, writable: true }; } };
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox = ({ changed }) => {
+    const rows = [{ attachmentId: 'attachment_one', name: 'fixture.txt', status: 'ready', size: 1, sent: 1 }];
+    const box = { ready: Promise.resolve(), canSend: () => true, refs: () => ['attachment_one'], pendingIntent: () => null, acceptedIntent: () => null,
+      isPending: () => false, close() {}, async acknowledge() { events.push('ack'); }, async reconcile() {},
+      async prepareSend(intent) { events.push('claim'); if (!claimSucceeds) throw Object.assign(Error('Synthetic file store failure'), { code: 'attachment_local_storage' }); return { state: 'pending', intent }; } };
+    queueMicrotask(() => changed(rows)); return box;
+  };
+  const target = { kind: 'community', id: 'room_files', draftKey: 'room_files', name: 'Synthetic conversation', subtitle: 2,
+    canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
+    async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { events.push('send'); return { message: { messageId: 'message_file', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
+  const parent = f.makeElement('div'); f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  await turn(); await turn(); failing = true; parent.querySelector('.sw-composer').requestSubmit(); await turn(); await turn();
+  assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
+  f.app.chatCleanup();
 });
