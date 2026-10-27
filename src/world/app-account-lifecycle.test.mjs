@@ -1721,14 +1721,37 @@ function outboxLifecycleFixture(f) {
 test('normal controller refresh with empty outbox opens the actual field persistence with just one GET', async () => {
   const f = fixture(), h = outboxLifecycleFixture(f); let field;
   f.app.renderCurrent = function () {
-    field = createFieldPersistence({ api: this.api, accountId: this.deskAccount, isCurrent: this.accountTask(), store: h.port() });
-    this.unifiedField = { ready: field.load(), async refresh() {}, dispose() { field.dispose(); }, hasUnsavedChanges() { return false; } };
+    field = this.accountFieldPersistence();
+    this.unifiedField = { ready: field.load(), async refresh() {}, dispose() {}, hasUnsavedChanges() { return false; } };
   };
   try {
     await f.app.refresh(); await turn();
     assert.deepEqual(h.operations, ['world.field.get']);
-    assert.equal(field.getState().state, 'saved'); assert.equal(f.app.fieldOutbox, null);
+    assert.equal(field.getState().state, 'saved'); assert.equal(f.app.accountField, field);
   } finally { f.app.cleanScreen(); h.dispose(); }
+});
+
+test('account field owner keeps one pending load after the screen closes', async () => {
+  const f = fixture(), h = outboxLifecycleFixture(f);
+  const author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() }); await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Synthetic pending', x: 15, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'pending_account_owner' }); author.dispose(); h.offline(false); h.operations.length = 0;
+  const barrier = deferred(); let reads = 0;
+  const originalRequest = f.app.api.request;
+  f.app.api.request = async (op, args) => { if (op === 'world.field.get') { reads++; await barrier.promise; } return originalRequest(op, args); };
+  let field, screenEvents = 0;
+  f.app.renderCurrent = function () {
+    field = this.accountFieldPersistence(); const unobserve = field.subscribe(() => { screenEvents++; });
+    this.unifiedField = { ready: field.load().catch(() => {}), async refresh() {}, dispose() { unobserve(); }, hasUnsavedChanges() { return false; } };
+  };
+  const refreshing = f.app.refresh();
+  try {
+    for (let i = 0; i < 100 && reads < 1; i++) await turn();
+    assert.equal(reads, 1); assert.equal(field, f.app.accountField);
+    f.app.view = 'notes'; f.app.cleanScreen(); const eventsAtClose = screenEvents;
+    barrier.resolve(); await refreshing; for (let i = 0; i < 30 && h.local().pending.length; i++) await turn();
+    assert.equal(reads, 1); assert.equal(screenEvents, eventsAtClose); assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
+  } finally { barrier.resolve(); await refreshing; f.app.cleanScreen(); h.dispose(); }
 });
 
 for (const route of ['chat', 'app']) test(`cold ${route} link replays pending field work without waiting for navigation to finish`, async () => {
@@ -2737,4 +2760,73 @@ for (const coarse of [false, true]) test(`chat composer keyboard: ${coarse ? 'to
   if (coarse) { key({ ctrlKey: true }); key({ metaKey: true }); assert.equal(submissions, 2); assert.equal(prevented, 2); }
   assert.equal(input.enterKeyHint, coarse ? 'enter' : 'send');
   await turn(); f.app.chatCleanup();
+});
+
+test('account field owner rejects an old pending load on A to B to A and resumes only under the new generation', async () => {
+  const f = fixture(), h = outboxLifecycleFixture(f), author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() });
+  await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Synthetic A', x: 19, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'owner_account_generation' }); author.dispose(); h.offline(false); h.operations.length = 0;
+  const barrier = deferred(), original = f.app.api.request; let reads = 0;
+  f.app.api.request = async (op, args) => { if (op === 'world.field.get') { reads++; await barrier.promise; } return original(op, args); };
+  f.app.renderCurrent = function () {
+    const field = this.accountFieldPersistence(), unobserve = field.subscribe(() => {});
+    this.unifiedField = { ready: field.load().catch(() => {}), async refresh() {}, dispose() { unobserve(); }, hasUnsavedChanges() { return false; } };
+  };
+  const refreshing = f.app.refresh();
+  try {
+    for (let i = 0; i < 100 && reads < 1; i++) await turn(); assert.equal(reads, 1);
+    const staleOwner = f.app.accountField;
+    f.app.transitionAccount('account-B'); f.app.transitionAccount('account-A');
+    barrier.resolve(); await refreshing;
+    assert.equal(h.local().pending.length, 1); assert.equal(h.remote().revision, 0); assert.equal(f.app.accountField, null);
+    assert.throws(() => staleOwner.getState(), { code: 'field_account_changed' });
+    f.app.syncFieldOutbox(); for (let i = 0; i < 50 && h.local().pending.length; i++) await turn();
+    assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
+  } finally { barrier.resolve(); await refreshing; f.app.accountField?.dispose(); f.app.cleanScreen(); h.dispose(); }
+});
+
+test('reconnect drains the retained account owner after the offline field is closed', async () => {
+  const f = fixture(), h = outboxLifecycleFixture(f), author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() });
+  await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Synthetic reconnect', x: 22, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'owner_offline_reconnect' }); author.dispose(); h.operations.length = 0;
+  f.app.connection = 'unreachable'; f.app.renderPwaBanner = () => {};
+  f.app.renderCurrent = function () {
+    const field = this.accountFieldPersistence(), unobserve = field.subscribe(() => {});
+    this.unifiedField = { ready: field.load().catch(() => {}), async refresh() {}, dispose() { unobserve(); }, hasUnsavedChanges() { return false; } };
+  };
+  try {
+    await f.app.refresh(); const owner = f.app.accountField; assert.equal(h.local().pending.length, 1);
+    f.app.view = 'notes'; f.app.cleanScreen(); h.offline(false); h.operations.length = 0;
+    f.connectionChanged({ connection: 'online' });
+    for (let i = 0; i < 50 && h.local().pending.length; i++) await turn();
+    assert.equal(f.app.accountField, owner); assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
+    assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
+  } finally { f.app.accountField?.dispose(); f.app.cleanScreen(); h.dispose(); }
+});
+
+test('closing the page during the account field load keeps pending work for the next session', async () => {
+  const f = fixture(), h = outboxLifecycleFixture(f), author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() });
+  await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Synthetic reopen', x: 24, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'owner_page_close' }); author.dispose(); h.offline(false); h.operations.length = 0;
+  const barrier = deferred(), original = f.app.api.request; let reads = 0;
+  f.app.api.request = async (op, args) => { if (op === 'world.field.get') { reads++; await barrier.promise; } return original(op, args); };
+  f.app.renderCurrent = function () {
+    const field = this.accountFieldPersistence(), unobserve = field.subscribe(() => {});
+    this.unifiedField = { ready: field.load().catch(() => {}), async refresh() {}, dispose() { unobserve(); }, hasUnsavedChanges() { return false; } };
+  };
+  Object.assign(f.app, { controller: new AbortController(), theme: { destroy() {} }, unsubscribePwa() {}, unregisterUpdateGuard() {},
+    formEdits: { destroy() {} }, releaseViewport() {}, stopIncomingCallPolling() {} });
+  f.app.avatars.destroy = () => {};
+  const refreshing = f.app.refresh();
+  try {
+    for (let i = 0; i < 100 && reads < 1; i++) await turn(); assert.equal(reads, 1);
+    f.app.destroy(); barrier.resolve(); await refreshing;
+    assert.equal(h.local().pending.length, 1); assert.equal(h.remote().revision, 0);
+    const next = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port(), localFirst: true });
+    try { const state = await next.load(); assert.equal(state.pendingCount, 0); assert.deepEqual(h.remote().document, document); }
+    finally { next.dispose(); }
+  } finally { barrier.resolve(); await refreshing; h.dispose(); }
 });

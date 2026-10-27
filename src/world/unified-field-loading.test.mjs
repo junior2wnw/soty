@@ -17,17 +17,18 @@ const screen=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.n
 const printer=ts.createPrinter(),print=node=>printer.printNode(ts.EmitHint.Unspecified,node,parsed);
 const variable=(nodes,name)=>nodes.find(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(item=>item.name.getText(parsed)===name));
 const functions=['mountEngine','revealReadyMine','applyPersistence','changeMode','loadInitialMine'].map(name=>screen.body.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===name)).filter(Boolean);
-const subscribe=screen.body.statements.find(node=>ts.isExpressionStatement(node)&&node.getText(parsed)==='persistence.subscribe(applyPersistence);');
+const subscribe=variable(screen.body.statements,'unobservePersistence');
+const initialSnapshot=screen.body.statements.find(node=>ts.isIfStatement(node)&&node.getText(parsed)==='if (options.persistence) applyPersistence(persistence.getState());');
 const returned=screen.body.statements.find(ts.isReturnStatement).expression;
 const dispose=returned.properties.find(node=>ts.isMethodDeclaration(node)&&node.name.getText(parsed)==='dispose');
-const ready=variable(screen.body.statements,'ready');assert.ok(ready&&subscribe&&dispose,'genuine full lifecycle must exist');
-const compiled=ts.transpileModule([print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(ready),
+const ready=variable(screen.body.statements,'ready');assert.ok(ready&&subscribe&&dispose&&initialSnapshot,'genuine full lifecycle must exist');
+const compiled=ts.transpileModule([print(variable(parsed.statements,'BUILTINS')),print(variable(screen.body.statements,'initialMineTask')),...functions.map(print),print(subscribe),print(initialSnapshot),print(ready),
   'exports.api = { ready, changeMode, mountEngine, '+print(dispose)+' };'].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
 const turn=()=>new Promise(done=>setImmediate(done));
 async function until(predicate){const end=Date.now()+3000;while(!predicate()){assert.ok(Date.now()<end,'bounded ready/cache phase completed');await turn();}}
 
-function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000}={}){
+function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000,lateStart=false}={}){
   const app={kind:'app',id:'app-'+'a'.repeat(32)};
   const doc=validateFieldDocument({schema:'soty.field.v1',contexts:[{contextId:'personal',title:'Личное',x:0,y:0}],shortcuts:[
     ...(builtin?[{shortcutId:'notes',entity:{kind:'builtin',id:'notes'},contextId:'personal',slot:[0,0]}]:[]),
@@ -57,11 +58,11 @@ function fixture(t,{mode='mine',builtin=true,unresolved=true,width=1000}={}){
       snapshot:()=>document,update(value){if(value.document)document=value.document;},hasUnsavedChanges:()=>false,
       cancel(){},destroy(){fieldPaint.resolve();}};fields.push(field);return field;},
   };
-  vm.createContext(environment);vm.runInContext(compiled,environment);
+  vm.createContext(environment);if(!lateStart)vm.runInContext(compiled,environment);
   // Static builtins are metadata only until the validated document places one.
   for(const id of ['notes','chess','assistant'])metadata.set(fieldEntityKey({kind:'builtin',id}),{entity:{kind:'builtin',id},title:id,source:'builtin'});
-  t.after(async()=>{environment.exports.api.dispose();remote.resolve();directory.resolve();paint.resolve();await environment.exports.api.ready;});
-  return{environment,api:environment.exports.api,fields,calls,messages,metadata,loading,remote,directory,paint,doc,
+  t.after(async()=>{environment.exports.api?.dispose();remote.resolve();directory.resolve();paint.resolve();await environment.exports.api?.ready;persistence.dispose();});
+  return{environment,get api(){return environment.exports.api;},persistence,start(){vm.runInContext(compiled,environment);},fields,calls,messages,metadata,loading,remote,directory,paint,doc,
     remoteDocument(document){base.document=validateFieldDocument(document);base.revision++;base.contentHash=createHash('sha256').update(JSON.stringify(base.document)).digest('hex');},
     accountAba(){accountGeneration=2;accountGeneration=3;}};
 }
@@ -123,4 +124,16 @@ test('a rejected engine ready cannot reveal the cache while the remote field rea
   // Old code has no observer of the paint port until field.get finishes.
   void f.paint.promise.catch(()=>{});f.paint.reject(Object.assign(Error('synthetic paint failure'),{code:'paint_unavailable'}));await turn();
   assert.equal(f.loading.hidden,false);assert.deepEqual(f.messages,['paint_unavailable']);
+});
+
+test('a late field screen paints the account owner snapshot before its held GET and unsubscribes on exit',async t=>{
+  const f=fixture(t,{lateStart:true});
+  const background=f.persistence.load();await until(()=>f.calls.includes('world.field.get'));
+  f.environment.options.persistence=f.persistence;f.start();
+  assert.equal(f.fields.length,1);assert.deepEqual(f.fields[0].snapshot(),f.doc);
+  assert.equal(f.calls.filter(op=>op==='world.field.get').length,1);
+  f.api.dispose();f.remote.resolve();f.directory.resolve();f.paint.resolve();
+  const loaded=await background;await f.api.ready;
+  assert.equal(loaded.state,'saved');assert.equal(f.persistence.getState().revision,7);
+  assert.equal(f.calls.filter(op=>op==='world.field.get').length,1);
 });

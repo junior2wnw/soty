@@ -19,6 +19,7 @@ import type { RecentAction } from './product';
 export type FieldFilter = 'all' | 'app' | 'person' | 'community' | 'device';
 export interface UnifiedFieldScreenOptions {
   api: DirectoryApi; accountId: string; isCurrent(): boolean;
+  persistence?: ReturnType<typeof createFieldPersistence>;
   mode?: UnifiedFieldMode; query?: string; filter?: FieldFilter;
   filtersByMode?: { mine: FieldFilter; search: FieldFilter };
   viewState?: UnifiedFieldViewState; pinnedApps?: readonly string[];
@@ -69,7 +70,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   const current = (): boolean => !disposed && options.isCurrent();
   const abort = new AbortController(), signal = abort.signal;
   const directory = createFieldDirectory({ api: options.api, accountId: options.accountId, isCurrent: current });
-  const persistence = createFieldPersistence({ api: options.api, accountId: options.accountId, isCurrent: current, localFirst: true });
+  const persistence = options.persistence ?? createFieldPersistence({ api: options.api, accountId: options.accountId, isCurrent: current, localFirst: true });
   const element = el('section', 'uf-screen'); element.setAttribute('aria-label', 'Мои соты');
   element.dataset.ready = 'loading';
   element.dataset.startupScreenAt = String(Date.now());
@@ -1082,7 +1083,8 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     // Cached references can start fresh signed metadata reads while the remote layout is loading.
     if (loaded.document.shortcuts.length && element.dataset.ready === 'loading') run(loadInitialMine());
   }
-  persistence.subscribe(applyPersistence);
+  const unobservePersistence = persistence.subscribe(applyPersistence);
+  if (options.persistence) applyPersistence(persistence.getState());
   const ready = (async (): Promise<void> => {
     const loaded = await persistence.load(); if (!current()) return;
     // The async local-store subscription may already have mounted the cache.
@@ -1160,6 +1162,6 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },
     reconnect() { run(persistence.retry().then(applyPersistence)); if (mode === 'search') run(searchDirectory()); else run(loadMine()); },
-    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
+    dispose() { disposed = true; searchGeneration++; mineGeneration++; if (searchTimer) clearTimeout(searchTimer); queuedSearch?.(false); queuedSearch = null; queuedMine?.(false); queuedMine = null; abort.abort(); for (const instance of [...dialogs]) instance.close({ restoreFocus: false }); closePreview(false); engine?.destroy(); engine = null; unobservePersistence(); if (!options.persistence) persistence.dispose(); directory.dispose(); listDialog = null; search.remove(); listButton.remove(); element.remove(); },
   };
 }

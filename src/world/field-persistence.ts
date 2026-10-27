@@ -249,39 +249,52 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
       emit();
     }).catch(error => { if (!disposed && isCurrent()) { errorCode = codeOf(error); storageError = true; emit(); } });
   }) ?? (() => {});
-  return Object.freeze({
-    async load(options: { skipRemoteIfEmpty?: boolean } = {}): Promise<FieldPersistenceState> {
+  type LoadFlight = { promise: Promise<FieldPersistenceState>; remoteRead: boolean };
+  let loadFlight: LoadFlight | null = null;
+  const load = (options: { skipRemoteIfEmpty?: boolean } = {}): Promise<FieldPersistenceState> => {
+    if (!loadFlight) {
+      const flight: LoadFlight = { remoteRead: false, promise: loadOnce(options, () => { flight.remoteRead = true; })
+        .finally(() => { if (loadFlight === flight) loadFlight = null; }) };
+      loadFlight = flight;
+    }
+    const flight = loadFlight;
+    // An empty background check cannot replace the field's fresh read.
+    return flight.promise.then(state => !options.skipRemoteIfEmpty && !flight.remoteRead ? load() : state);
+  };
+  async function loadOnce(options: { skipRemoteIfEmpty?: boolean }, markRemoteRead: () => void): Promise<FieldPersistenceState> {
+    await serialize(async () => {
+      check();
+      try { const saved = await store.read(); check(); local = saved ? await validateLocal(saved) : await empty(); loaded = !!saved; }
+      catch (error) { check(); storageError = true; errorCode = codeOf(error); local = await empty(); }
+      emit();
+    });
+    // A background worker has nothing to replay in an empty, healthy outbox;
+    // the visible field loads its own fresh document.
+    if (options.skipRemoteIfEmpty && !storageError && !local?.conflict && !local?.pending.length) {
       await serialize(async () => {
         check();
-        try { const saved = await store.read(); check(); local = saved ? await validateLocal(saved) : await empty(); loaded = !!saved; }
-        catch (error) { check(); storageError = true; errorCode = codeOf(error); local = await empty(); }
-        emit();
+        if (!storageError && !local?.conflict && !local?.pending.length) {
+          try {
+            const saved = await store.read(); check();
+            if (saved) {
+              const latest = await validateLocal(saved); check();
+              if (latest.localRevision < (local?.localRevision ?? 0)) fail('field_local_storage_corrupt');
+              local = latest;
+            } else if (local?.localRevision) fail('field_local_storage_corrupt');
+          } catch (error) { check(); storageError = true; errorCode = codeOf(error); }
+        }
+        loaded = true; emit();
       });
-      // A background worker has nothing to replay in an empty, healthy outbox;
-      // the visible field loads its own fresh document.
-      if (options.skipRemoteIfEmpty && !storageError && !local?.conflict && !local?.pending.length) {
-        await serialize(async () => {
-          check();
-          if (!storageError && !local?.conflict && !local?.pending.length) {
-            try {
-              const saved = await store.read(); check();
-              if (saved) {
-                const latest = await validateLocal(saved); check();
-                if (latest.localRevision < (local?.localRevision ?? 0)) fail('field_local_storage_corrupt');
-                local = latest;
-              } else if (local?.localRevision) fail('field_local_storage_corrupt');
-            } catch (error) { check(); storageError = true; errorCode = codeOf(error); }
-          }
-          loaded = true; emit();
-        });
-        // Include writes committed before this read even if their notice is late.
-        if (!storageError && !local?.conflict && !local?.pending.length) return snapshot();
-      }
-      try { await refreshRemote(); }
-      catch (error) { check(); errorCode = codeOf(error); }
-      await serialize(async () => { check(); loaded = true; emit(); });
-      await drain(); return snapshot();
-    },
+      // Include writes committed before this read even if their notice is late.
+      if (!storageError && !local?.conflict && !local?.pending.length) return snapshot();
+    }
+    try { markRemoteRead(); await refreshRemote(); }
+    catch (error) { check(); errorCode = codeOf(error); }
+    await serialize(async () => { check(); loaded = true; emit(); });
+    await drain(); return snapshot();
+  }
+  return Object.freeze({
+    load,
     async commit(value: FieldDocument, options: { expectedRevision: number; requestId: string }): Promise<FieldCommitResult> {
       const normalized = validateFieldDocument(value), contentHash = await hashDocument(normalized); check();
       if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0 || !/^[A-Za-z0-9_-]{3,160}$/u.test(options.requestId)) fail('field_invalid_intent');

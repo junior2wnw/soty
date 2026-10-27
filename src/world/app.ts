@@ -186,7 +186,7 @@ class WorldApplication {
   private groupReturn: 'mine' | 'world' | 'messages' = 'mine';
   private field: HexField | null = null;
   private unifiedField: UnifiedFieldScreen | null = null;
-  private fieldOutbox: ReturnType<typeof createFieldPersistence> | null = null;
+  private accountField: ReturnType<typeof createFieldPersistence> | null = null;
   private unifiedFieldView: UnifiedFieldViewState = {};
   private unifiedFieldFilter: FieldFilter = 'all';
   private unifiedFieldFilters: Record<'mine' | 'world', FieldFilter> = { mine: 'all', world: 'all' };
@@ -608,7 +608,7 @@ class WorldApplication {
     this.stopIncomingCallPolling();
     this.destroyed = true; this.requestSequence++; this.screenSequence++; this.unsubscribeNotifications?.(); this.agentOrb?.dispose(); this.agentOrb = null; this.widgets?.dispose(); this.widgets = null;
     this.unsubscribeHumanCall?.(); this.unsubscribeHumanCall = null;
-    this.controller.abort(); this.fieldOutbox?.dispose(); this.fieldOutbox = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
+    this.controller.abort(); this.accountField?.dispose(); this.accountField = null; this.cleanScreen(); this.avatars.destroy(); this.theme.destroy(); this.unsubscribePwa(); this.unregisterUpdateGuard(); this.formEdits.destroy(); this.releaseViewport();
     if (this.searchTimer) clearTimeout(this.searchTimer);
     if (this.toastTimer) clearTimeout(this.toastTimer);
     for (const dialog of this.dialogs) dialog.close({ restoreFocus: false });
@@ -751,7 +751,7 @@ class WorldApplication {
     this.applicationInboxScheduled = false; this.applicationReadState = 'synced';
     this.applicationDiscussions = []; this.applicationInboxStatus = 'unknown'; this.messagesView = { query: '', unreadOnly: false, scroll: 0 };
     this.widgets?.setAccount(next);
-    this.fieldOutbox?.dispose(); this.fieldOutbox = null;
+    this.accountField?.dispose(); this.accountField = null;
     this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close({ restoreFocus: false });
     this.profile = null; this.communities = []; this.directThreads = []; this.directLabels = new Map(); this.directThreadsLoaded = false; this.humanCallJoinPending = false; this.apps = []; this.devices = []; this.homeNotes = null;
     this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine'; this.groupTab = 'about';
@@ -781,15 +781,16 @@ class WorldApplication {
     return () => !this.destroyed && Boolean(accountId) && accountId === this.deskAccount && generation === this.accountGeneration;
   }
 
-  /** Drain only the existing durable journal. No placement or conflict choice
-   * is generated here; navigation never strands an app-stage offline intent. */
+  private accountFieldPersistence(): ReturnType<typeof createFieldPersistence> {
+    if (!this.accountField) this.accountField = createFieldPersistence({ api: this.api, accountId: this.deskAccount,
+      isCurrent: this.accountTask(), localFirst: true });
+    return this.accountField;
+  }
+
+  /** The account keeps one field owner even when its current screen closes. */
   private syncFieldOutbox(): void {
-    if (this.destroyed || !this.deskAccount || this.fieldOutbox || this.unifiedField || this.connection !== 'online') return;
-    const current = this.accountTask();
-    const outbox = createFieldPersistence({ api: this.api, accountId: this.deskAccount, isCurrent: current });
-    this.fieldOutbox = outbox;
-    void outbox.load({ skipRemoteIfEmpty: true }).catch(() => { /* Durable pending intents remain for reconnect or the field. */ })
-      .finally(() => { outbox.dispose(); if (this.fieldOutbox === outbox) this.fieldOutbox = null; });
+    if (this.destroyed || !this.deskAccount || this.unifiedField || this.connection !== 'online') return;
+    void this.accountFieldPersistence().load({ skipRemoteIfEmpty: true }).catch(() => { /* Durable pending intents remain for reconnect or the field. */ });
   }
 
   private loading(label: string): HTMLElement {
@@ -1406,6 +1407,7 @@ class WorldApplication {
     const isCurrent = this.accountTask();
     this.root.dataset.field = 'unified';
     const field = createUnifiedFieldScreen({ api: this.api, accountId: this.deskAccount, isCurrent,
+      persistence: this.accountFieldPersistence(),
       mode: this.view === 'world' ? 'search' : 'mine', query: this.view === 'world' ? this.query : this.homeQuery,
       filter: this.unifiedFieldFilter,
       filtersByMode: { mine: this.unifiedFieldFilters.mine, search: this.unifiedFieldFilters.world },
