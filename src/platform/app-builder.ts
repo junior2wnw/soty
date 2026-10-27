@@ -8,10 +8,10 @@ import { appBuilderAutomatic, appBuilderProposal, appBuilderReceipt, matchingApp
 
 interface HostDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean }
 interface Proposal { schema: 'soty.local-app.v1'; name: string; port: number; entryPath: string; sourceJobId: string }
-export interface AppBuilderTarget { hostDeviceId: string; connectorId: string; jobId: string }
+export interface AppBuilderTarget { hostDeviceId: string; connectorId: string; jobId: string; restrictedAuto?: 'pending' | 'archived' }
 type Pending = AppBuilderTarget;
-interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string; autoRegister?: boolean }; autoRegistration?: { state: string; appId?: string; appState?: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
-interface AgentCapabilities { agentConfigured: boolean; automaticAppRegistration?: { schema?: string; available?: boolean } }
+interface JobResult { job: { schema?: string; kind?: string; attempts?: number; id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; task?: { text: string; autoRegister?: boolean; originalRequestId?: string }; autoRegistration?: { state: string; appId?: string; appState?: string }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
+interface AgentCapabilities { agentConfigured: boolean; automaticAppRegistration?: { schema?: string; available?: boolean; archive?: boolean } }
 export interface AppActionDependencies {
   readAgentCapabilities?: () => Promise<AgentCapabilities>;
   openRegisteredApp?: (appId: string, accountId: string, continueIf?: () => boolean) => Promise<void>;
@@ -285,11 +285,14 @@ export function createAppBuilderAction(options: BuilderOptions) {
 
     function follow(pending: Pending, autoOpen = false): void {
       if (closed || following === pending.jobId) return;
+      const restrictedAuto = pending.restrictedAuto;
+      pending = { hostDeviceId: pending.hostDeviceId, connectorId: pending.connectorId, jobId: pending.jobId };
       const version = ++runVersion;
       formAbort?.abort();
       following = pending.jobId; if (timer) clearTimeout(timer);
       const saved = creation.read();
-      let automaticJob = saved.schema === 2 && saved.accepted?.jobId === pending.jobId, protectedAutomatic = automaticJob, polling = false;
+      let automaticJob = Boolean(restrictedAuto) || saved.schema === 2 && saved.accepted?.jobId === pending.jobId, protectedAutomatic = automaticJob, polling = false, archiving = false;
+      let archiveSupported = false, archivePermitted = false, unknownArchive = false, receiptPossible = false;
       const { conversation: activity, output, claim } = workspace();
       const progress = bubble('Задача принята', 'assistant'); progress.setAttribute('role', 'status'); progress.tabIndex = -1;
       const progressCopy = progress.querySelector('p')!;
@@ -301,14 +304,60 @@ export function createAppBuilderAction(options: BuilderOptions) {
         void request<JobResult>('apps.agent.cancel', { ...pending }).then(result => { if (!closed) progressCopy.textContent = label(result); })
           .catch(async error => { if (await current()) { progressCopy.textContent = friendly(error); cancel.disabled = false; } });
       });
-      const recheck = button('Проверить', 'refresh', 'sw-button-quiet', () => { if (timer) clearTimeout(timer); void poll(); }); recheck.hidden = true;
+      const recheck = button('Проверить', 'refresh', 'sw-button-quiet', () => {
+        if (timer) clearTimeout(timer); if (!unknownArchive) { receiptPossible = false; syncArchive(); } void poll();
+      }); recheck.hidden = true;
       const reset = button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending)); reset.hidden = true;
       const terminalDetails = el('details', 'sw-agent-details'); terminalDetails.hidden = true;
       const terminalText = el('pre'); terminalDetails.append(el('summary', '', 'Ответ задачи'), terminalText);
+      const archiveReceipt = el('small', 'sw-muted'); archiveReceipt.hidden = true;
+      const archivedMessage = 'Автоматическое добавление остановлено. Квитанция сохранена; ответ доступен до очистки истории.';
+      type ArchiveReceipt = { schema: string; jobId: string; requestId: string; archivedAt: number };
+      function showArchived(receipt: ArchiveReceipt | undefined): boolean {
+        if (receipt?.schema !== 'soty.app-auto-archive.v1' || receipt.jobId !== pending.jobId
+          || typeof receipt.requestId !== 'string' || !/^[A-Za-z0-9_:.\-]{3,160}$/u.test(receipt.requestId)
+          || !Number.isSafeInteger(receipt.archivedAt) || receipt.archivedAt <= 0) return false;
+        progressCopy.textContent = archivedMessage; output.querySelector('h2')!.textContent = archivedMessage;
+        archiveReceipt.textContent = `Номер исходного запроса: ${receipt.requestId}`; archiveReceipt.hidden = false;
+        archivePermitted = false; unknownArchive = false; receiptPossible = false;
+        archive.hidden = recheck.hidden = cancel.hidden = receiptCheck.hidden = true; reset.hidden = false; terminalDetails.hidden = !terminalText.textContent; return true;
+      }
+      const receiptCheck = button('Проверить квитанцию', 'refresh', 'sw-button-quiet', () => {
+        receiptCheck.disabled = true;
+        void (async () => {
+          const result = await request<{ state: string; receipt?: ArchiveReceipt }>('apps.agent.archiveReceipt', { jobId: pending.jobId });
+          if (!await current() || version !== runVersion) return;
+          if (result.state === 'archived' && showArchived(result.receipt)) return;
+          progressCopy.textContent = 'Пока нет подтверждённой квитанции. Проверьте состояние задачи или повторите проверку позже.';
+        })().catch(async () => { if (await current() && version === runVersion) progressCopy.textContent = 'Не удалось проверить квитанцию. Попробуйте позже.'; })
+          .finally(() => { receiptCheck.disabled = false; });
+      });
+      receiptCheck.hidden = true;
+      const archive = button('Остановить автодобавление', 'close', 'sw-button-quiet', () => {
+        if (archiving) return; archiving = true; archive.disabled = true; if (timer) clearTimeout(timer);
+        void (async () => {
+          const result = await request<{state:string;receipt?:ArchiveReceipt}>('apps.agent.archive', { jobId: pending.jobId });
+          if (!await current() || version !== runVersion) return;
+          if (result.state === 'archived' && showArchived(result.receipt)) return;
+          if (result.state === 'ready' || result.state === 'revoked') { archiving = false; await poll(); return; }
+          throw new Error('app_archive_unconfirmed');
+        })().catch(async () => { if (await current() && version === runVersion) {
+          unknownArchive = true; receiptPossible = true; archivePermitted = false; archive.disabled = false; recheck.hidden = false;
+          progressCopy.textContent = 'Результат остановки не подтверждён. Проверьте квитанцию или состояние задачи.'; syncArchive();
+        } })
+          .finally(() => { archiving = false; });
+      });
+      archive.hidden = true; archive.title = 'Прекратить автоматическое добавление; квитанция сохранится, ответ останется в обычной истории.';
+      const syncArchive = () => { archive.hidden = !archiveSupported || !archivePermitted || unknownArchive; receiptCheck.hidden = !archiveSupported || !receiptPossible; };
       const context = deviceContext(pending);
-      activity.append(transcript, history, terminalDetails, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, recheck, reset, context);
+      activity.append(transcript, history, terminalDetails, archiveReceipt, el('small', 'sw-muted', 'Можно вернуться позже — задача сохранена.'), cancel, recheck, receiptCheck, archive, reset, context);
       placeholder(output, 'Создаём приложение', 'Состояние и ответ будут доступны здесь.'); focus.restore(claim, progress);
       const followClaim = autoOpen ? focus.capture() : null;
+      const capability = Promise.resolve().then(() => options.readAgentCapabilities ? options.readAgentCapabilities() : fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+        .then(async response => { if (!response.ok) throw Error('capability_unavailable'); return await response.json() as AgentCapabilities; }));
+      void capability.then(async value => { if (!await current() || version !== runVersion) return;
+        archiveSupported = value.automaticAppRegistration?.schema === 'soty.automatic-app-registration-capability.v1' && value.automaticAppRegistration.archive === true; syncArchive(); })
+        .catch(() => { /* Older or unavailable servers do not advertise this action. */ });
       void request<{ devices: HostDevice[] }>('apps.devices', {}).then(async result => {
         if (!await current()) return; devices = result.devices; context.replaceChildren(...Array.from(deviceContext(pending).childNodes));
       }).catch(() => { /* An unknown device status is never shown as online. */ });
@@ -316,9 +365,9 @@ export function createAppBuilderAction(options: BuilderOptions) {
       const poll = async () => {
         if (polling) return; polling = true;
         try {
-          if (!await current() || version !== runVersion) return;
+          if (!await current() || version !== runVersion || archiving) return;
           const result = await request<JobResult>('apps.agent.read', { ...pending, after: cursor });
-          if (!await current() || version !== runVersion) return;
+          if (!await current() || version !== runVersion || archiving) return;
           if (result.task?.autoRegister === true) {
             automaticJob = true;
             if (!protectedAutomatic) { await creation.protectAutomatic(pending); protectedAutomatic = true; if (!await current()) return; }
@@ -330,11 +379,24 @@ export function createAppBuilderAction(options: BuilderOptions) {
             events.append(el('li', '', text)); while (events.children.length > 5) events.firstElementChild?.remove();
           }
           cursor = Math.max(cursor, result.cursor ?? 0, ...(result.events || []).map(event => event.seq));
+          if (result.job.result?.text) terminalText.textContent = result.job.result.text;
           progressCopy.textContent = label(result);
           output.querySelector('h2')!.textContent = label(result);
           cancel.disabled = Boolean(result.job.cancelRequested);
           if (result.done && automaticJob) {
             const status = appBuilderAutomatic(result, pending);
+            if (unknownArchive && status.state === 'unconfirmed') {
+              progressCopy.textContent = 'Результат остановки не подтверждён. Проверьте квитанцию или состояние задачи.';
+              recheck.hidden = false; receiptPossible = true; syncArchive(); return;
+            }
+            if (unknownArchive) { unknownArchive = false; receiptPossible = false; syncArchive(); }
+            if (status.state === 'archived') {
+              progressCopy.textContent = archivedMessage; output.querySelector('h2')!.textContent = archivedMessage;
+              if (result.task?.originalRequestId) { archiveReceipt.textContent = `Номер исходного запроса: ${result.task.originalRequestId}`; archiveReceipt.hidden = false; }
+              archivePermitted = false;
+              archive.hidden = recheck.hidden = cancel.hidden = true; reset.hidden = false;
+              terminalText.textContent = result.job.result?.text || 'Ответ недоступен.'; terminalDetails.hidden = false; return;
+            }
             if (status.state === 'ready') {
               // Registration can finish just before the device reports that its
               // app is running. Give that existing poll a bounded chance to
@@ -362,18 +424,29 @@ export function createAppBuilderAction(options: BuilderOptions) {
               progressCopy.textContent = message; output.querySelector('h2')!.textContent = message;
               cancel.hidden = true; reset.hidden = false;
               recheck.hidden = !terminalFailure && !['conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed'].includes(status.state);
+              archivePermitted = ['conflict', 'access-lost'].includes(status.state); syncArchive();
               if (terminalFailure || ['access-lost', 'revoked', 'failed'].includes(status.state)) {
                 terminalText.textContent = result.job.result?.text || 'Ответ недоступен.'; terminalDetails.hidden = false; return;
               }
             }
           } else if (result.done) { await showResult(result, pending); return; }
         } catch (error) {
-          if (!await current() || version !== runVersion) return;
+          if (!await current() || version !== runVersion || archiving) return;
           progressCopy.textContent = friendly(error);
           const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+          if (code === 'apps_device_not_owned' && automaticJob) {
+            progressCopy.textContent = unknownArchive ? 'Результат остановки не подтверждён. Проверьте квитанцию.' : 'Доступ к устройству потерян. Ответ задачи недоступен.';
+            cancel.hidden = true; recheck.hidden = false; reset.hidden = false;
+            archivePermitted = !unknownArchive && restrictedAuto !== 'archived'; receiptPossible = unknownArchive || restrictedAuto === 'archived'; syncArchive();
+          }
           if (code === 'job_not_found') {
-            const handoff = focus.capture(), reset = button('Новая задача', 'plus', 'sw-button-primary', () => newTask(pending));
-            panel.body.replaceChildren(emptyState('Эта задача больше недоступна', 'Уже добавленные приложения остаются в ваших сотах.', reset, 'sparkle')); focus.restore(handoff, reset);
+            if (automaticJob) {
+              progressCopy.textContent = 'Эта задача больше недоступна. Уже добавленные приложения остаются в ваших сотах.';
+              output.querySelector('h2')!.textContent = progressCopy.textContent;
+              archivePermitted = false; receiptPossible = true; cancel.hidden = recheck.hidden = true; reset.hidden = false; syncArchive(); return;
+            }
+            const handoff = focus.capture(), nextTask = button('Новая задача', 'plus', 'sw-button-primary', () => newTask(pending));
+            panel.body.replaceChildren(emptyState('Эта задача больше недоступна', 'Уже добавленные приложения остаются в ваших сотах.', nextTask, 'sparkle')); focus.restore(handoff, nextTask);
             return;
           }
         } finally { polling = false; }

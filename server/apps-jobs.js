@@ -1,7 +1,7 @@
 import { ConnectError } from '../modules/connect/server/index.mjs';
 import { createHash } from 'node:crypto';
 
-const operations = new Set(['apps.agent.create', 'apps.agent.read', 'apps.agent.cancel', 'apps.agent.result', 'apps.assistant.send', 'apps.assistant.history']);
+const operations = new Set(['apps.agent.create', 'apps.agent.read', 'apps.agent.cancel', 'apps.agent.result', 'apps.agent.archive', 'apps.agent.archiveReceipt', 'apps.assistant.send', 'apps.assistant.history']);
 function assert(value, code) { if (!value) throw new ConnectError(code); }
 function exact(args, keys) {
   assert(args && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).every(key => keys.includes(key)), 'invalid_arguments');
@@ -10,7 +10,7 @@ function id(value) { assert(typeof value === 'string' && /^[A-Za-z0-9_:.\-]{3,18
 
 /** Only the signed Connect extension can reach these operations. Legacy room link IDs
  * cannot read or cancel account-owned jobs; the store enforces this separation too. */
-export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive, inferenceReady = () => true, autoRegistrationAvailable = () => false, autoRegistrationStatus = () => null }) {
+export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive, inferenceReady = () => true, autoRegistrationAvailable = () => false, autoRegistrationStatus = () => null, autoRegistrationArchive = async () => ({ok:false,error:'app-archive-unavailable'}), autoRegistrationArchiveReceipt = async () => ({ok:false,error:'app-archive-unavailable'}) }) {
   return { operations,
     async executeAsync({ op, args, actor }) {
       assert(operations.has(op) && actorActive(actor), 'authentication_required');
@@ -21,6 +21,14 @@ export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive,
           canRead: ids => Boolean(resolveOwnedDevice(actor, ids)), limit: args.limit, cursor: args.cursor });
         assert(actorActive(actor), 'authentication_required');
         assert(result.ok, 'app_history_unavailable');
+        const { ok, ...value } = result; return value;
+      }
+      if (op === 'apps.agent.archive' || op === 'apps.agent.archiveReceipt') {
+        exact(args, ['expectedAccountId', 'jobId']);
+        assert(args.expectedAccountId === actor.accountId, 'authentication_required');
+        const result = await (op === 'apps.agent.archive' ? autoRegistrationArchive : autoRegistrationArchiveReceipt)(actor, id(args.jobId));
+        assert(actorActive(actor), 'authentication_required');
+        assert(result.ok, typeof result.error === 'string' ? result.error.replaceAll('-', '_') : 'app_archive_unavailable');
         const { ok, ...value } = result; return value;
       }
       exact(args, op === 'apps.agent.create' || op === 'apps.assistant.send'
@@ -85,7 +93,7 @@ export function createAppJobsExtension({ store, resolveOwnedDevice, actorActive,
         assert(!result.job || result.job.deviceId === hostDeviceId, 'apps_device_not_owned');
         if (op === 'apps.agent.read' && result.ok) {
           result.task = await store.getOwnedTask(device.linkId, jobId, access);
-          if (result.task?.autoRegister === true) result.autoRegistration = await autoRegistrationStatus(actor, result.job);
+          if (result.task?.autoRegister === true) result.autoRegistration = await autoRegistrationStatus(actor, result.job, result.task);
         }
       }
       assert(guard(), 'authentication_required');

@@ -31,7 +31,7 @@ test('automatic result opens only the exact successful job-bound server registra
   const ready = { job, task: { autoRegister: true }, autoRegistration: { state: 'ready', appId: `app-${id}`, appState: 'ready' } };
   assert.deepEqual(appBuilderAutomatic(ready, target), { state: 'ready', appId: `app-${id}`, appState: 'ready' });
   assert.deepEqual(appBuilderAutomatic({ ...ready, autoRegistration: { ...ready.autoRegistration, appState: 'new-state' } }, target), { state: 'ready', appId: `app-${id}`, appState: 'unknown' });
-  for (const state of ['waiting', 'conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed']) assert.deepEqual(appBuilderAutomatic({ ...ready, autoRegistration: { state } }, target), { state });
+  for (const state of ['waiting', 'conflict', 'capacity', 'attention', 'access-lost', 'revoked', 'failed', 'archived']) assert.deepEqual(appBuilderAutomatic({ ...ready, autoRegistration: { state } }, target), { state });
   for (const value of [
     { ...ready, task: undefined }, { ...ready, task: { autoRegister: false } }, { ...ready, autoRegistration: undefined },
     { ...ready, autoRegistration: { ...ready.autoRegistration, appId: `app-${'f'.repeat(32)}` } },

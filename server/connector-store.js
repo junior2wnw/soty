@@ -302,7 +302,7 @@ class ConnectorStore {
     return { ok: true, job: publicJob(access.job, options) };
   }
 
-  /** Account history uses the same current device guard as signed reads, before pagination. */
+  /** Device data requires current access; only owner-bound automatic-work receipts survive its loss. */
   async listOwnedJobs({ ownerAccountId, guard, canRead, limit = 30, cursor } = {}) {
     await this.writeQueue; await this.readable();
     if (!safeId(ownerAccountId, 160) || typeof guard !== 'function' || !guard() || typeof canRead !== 'function') return { ok: false, error: 'job-access-denied' };
@@ -314,17 +314,35 @@ class ConnectorStore {
       try { before = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { return { ok: false, error: 'invalid-page' }; }
       if (before?.scope !== scope || !Number.isSafeInteger(before.at) || !safeId(before.id, 160)) return { ok: false, error: 'invalid-page' };
     }
-    const values = this.state.jobs.filter(job => job.ownerAccountId === ownerAccountId && job.kind === 'agent'
-      && (() => { try { return canRead({ hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId }) === true; } catch { return false; } })()
-      && (!before || job.createdAt < before.at || (job.createdAt === before.at && job.id < before.id)))
+    const values = [];
+    for (const job of this.state.jobs) {
+      if (job.ownerAccountId !== ownerAccountId || job.kind !== 'agent') continue;
+      let permitted = false;
+      try { permitted = canRead({ hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId }) === true; } catch { /* Device access remains denied. */ }
+      const restricted = !permitted && job.autoRegistrationFinal === 'archived' ? 'archived'
+        : !permitted && isAutomaticResult(job) && job.autoRegistrationFinal === undefined ? 'pending' : '';
+      if (permitted || restricted) values.push({ id: job.id, createdAt: job.createdAt, job, restricted });
+    }
+    const present = new Set(this.state.jobs.map(job => job.id));
+    for (const item of this.state.requests) {
+      const receipt = item.autoArchive;
+      if (receipt?.ownerAccountId === ownerAccountId && !present.has(receipt.jobId) && validAutomaticArchive(item))
+        values.push({ id: receipt.jobId, createdAt: receipt.archivedAt, job: null, restricted: 'archived' });
+    }
+    const visible = values.filter(value => !before || value.createdAt < before.at || (value.createdAt === before.at && value.id < before.id))
       .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-    const page = values.slice(0, limit), last = page.at(-1);
+    const page = visible.slice(0, limit), last = page.at(-1);
     if (!guard()) return { ok: false, error: 'job-access-denied' };
-    return { ok: true, jobs: page.map(job => ({ id: job.id, hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId,
+    return { ok: true, jobs: page.map(({ job, id, createdAt, restricted }) => restricted ? ({ id,
+      hostDeviceId: job?.deviceId || 'archive-history-host', connectorId: job?.requestedConnectorId || 'archive-history-connector',
+      threadId: '', text: restricted === 'archived' ? 'Квитанция остановки приложения' : 'Приложение: доступ к устройству потерян', cwd: '',
+      appCreation: true, restrictedAuto: restricted, status: 'succeeded', cancelRequested: restricted === 'archived', executionUncertain: false,
+      createdAt: new Date(createdAt).toISOString(), updatedAt: new Date(createdAt).toISOString() }) : ({
+      id: job.id, hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId,
       threadId: job.threadId, text: job.input.text.slice(0, 180), cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
       status: job.status, cancelRequested: job.cancelRequested, executionUncertain: job.executionUncertain === true,
       createdAt: new Date(job.createdAt).toISOString(), updatedAt: new Date(job.updatedAt).toISOString() })),
-      nextCursor: values.length > limit ? Buffer.from(JSON.stringify({ scope, at: last.createdAt, id: last.id })).toString('base64url') : null };
+      nextCursor: visible.length > limit ? Buffer.from(JSON.stringify({ scope, at: last.createdAt, id: last.id })).toString('base64url') : null };
   }
 
   async getOwnedContinuation(auth, jobId, options) {
@@ -342,6 +360,7 @@ class ConnectorStore {
     if (!job || job.kind !== 'agent') return null;
     return { text: job.input.text, cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
       ...(job.input.autoRegister === true ? { autoRegister: true } : {}),
+      ...(job.autoRegistrationFinal === 'archived' ? { autoRegistrationFinal: 'archived', originalRequestId: job.requestId } : {}),
       canContinue: terminalStatuses.has(job.status) && job.executionUncertain !== true && job.input.output !== 'local-app' && Boolean(job.result?.sessionId) };
   }
 
@@ -350,7 +369,7 @@ class ConnectorStore {
     await this.writeQueue; await this.readable();
     return this.state.jobs.filter(job => (!jobId || job.id === jobId) && isAutomaticResult(job)
       && (jobId || job.autoRegistrationFinal === undefined))
-      .map(job => ({ id: job.id, schema: job.schema, status: job.status, autoRegister: true, ownerAccountId: job.ownerAccountId, sourceActorDeviceId: job.sourceActorDeviceId,
+      .map(job => ({ id: job.id, schema: job.schema, status: job.status, autoRegister: true, ownerAccountId: job.ownerAccountId, sourceActorDeviceId: job.sourceActorDeviceId, requestId: job.requestId,
         linkId: job.linkId, deviceId: job.deviceId, connectorId: job.requestedConnectorId, assignedConnectorId: job.connectorId,
         executionUncertain: job.executionUncertain === true, proposal: { ...job.result.appProposal } }));
   }
@@ -366,6 +385,41 @@ class ConnectorStore {
           || job.requestedConnectorId !== expected.connectorId || JSON.stringify(job.result.appProposal) !== JSON.stringify(expected.proposal)
           || guard() !== true) return false;
       job.autoRegistrationFinal = outcome; return true;
+    });
+  }
+
+  async automaticArchiveReceipt(ownerAccountId, jobId, guard) {
+    await this.writeQueue; await this.readable();
+    if (typeof guard !== 'function' || guard() !== true || !safeId(ownerAccountId,160) || !safeId(jobId,160)) return null;
+    const record = this.requestIndex.get(automaticArchiveKey(ownerAccountId, jobId));
+    if (!record?.autoArchive || !validAutomaticArchive(record)) return null;
+    const { schema, jobId: savedJob, requestId, archivedAt } = record.autoArchive;
+    return { schema, jobId: savedJob, requestId, archivedAt };
+  }
+
+  /** Explicit, owner-authenticated terminal decision; no application is created or deleted. */
+  async archiveAutomaticAppJob(expected, actor, guard) {
+    const ownerAccountId = actor?.accountId, actorDeviceId = actor?.deviceId;
+    if (!expected || !safeId(ownerAccountId,160) || !safeDeviceId(actorDeviceId) || typeof guard !== 'function') return { ok: false, error: 'app-archive-unavailable' };
+    return this.mutate(() => {
+      if (guard() !== true) return { ok: false, error: 'job-access-denied' };
+      const key = automaticArchiveKey(ownerAccountId, expected.id), old = this.requestIndex.get(key);
+      if (old?.autoArchive && validAutomaticArchive(old)) {
+        const { schema, jobId, requestId, archivedAt } = old.autoArchive;
+        return { ok: true, replayed: true, receipt: { schema, jobId, requestId, archivedAt } };
+      }
+      const job = this.state.jobs.find(item => item.id === expected.id);
+      if (!job || !isAutomaticResult(job) || job.autoRegistrationFinal !== undefined || job.ownerAccountId !== ownerAccountId
+          || job.sourceActorDeviceId !== expected.sourceActorDeviceId || job.linkId !== expected.linkId
+          || job.deviceId !== expected.deviceId || job.requestedConnectorId !== expected.connectorId
+          || job.requestId !== expected.requestId || JSON.stringify(job.result.appProposal) !== JSON.stringify(expected.proposal))
+        return { ok: false, error: 'app-archive-unavailable' };
+      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'app-archive-capacity' };
+      const archivedAt = this.now(), archive = { schema: 'soty.app-auto-archive.v1', ownerAccountId, actorDeviceId, jobId: job.id, requestId: job.requestId, archivedAt };
+      const record = { id: key, fingerprint: automaticArchiveFingerprint(archive), jobId: job.id, autoArchive: archive };
+      job.cancelRequested = true; job.autoRegistrationFinal = 'archived';
+      this.state.requests = [...this.state.requests, record];
+      return { ok: true, replayed: false, receipt: { schema: archive.schema, jobId: archive.jobId, requestId: archive.requestId, archivedAt } };
     });
   }
 
@@ -841,6 +895,18 @@ function isAutomaticResult(job) {
     && job.status === 'succeeded' && !job.cancelRequested && job.result?.ok === true && job.result.appProposal?.sourceJobId === job.id;
 }
 
+function automaticArchiveKey(ownerAccountId, jobId) { return hashToken(JSON.stringify(['automatic-archive', ownerAccountId, jobId])); }
+function automaticArchiveFingerprint(value) { return hashToken(JSON.stringify(['automatic-archive-v1', value.ownerAccountId, value.actorDeviceId, value.jobId, value.requestId, value.archivedAt])); }
+function validAutomaticArchive(record) {
+  const value = record?.autoArchive;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'actorDeviceId,archivedAt,jobId,ownerAccountId,requestId,schema'
+    && value.schema === 'soty.app-auto-archive.v1' && safeId(value.ownerAccountId,160) && safeDeviceId(value.actorDeviceId) && safeId(value.jobId,160)
+    && safeId(value.requestId,160) && Number.isSafeInteger(value.archivedAt) && value.archivedAt > 0
+    && record.id === automaticArchiveKey(value.ownerAccountId, value.jobId) && record.jobId === value.jobId
+    && record.fingerprint === automaticArchiveFingerprint(value);
+}
+
 function sameRecord(left, right) {
   if (!left || !right) return left === right;
   const keys = Object.keys(left);
@@ -905,9 +971,10 @@ export function normalizeConnectorState(value) {
       || !/^[a-f0-9]{64}$/u.test(job.requestDigest) || !safeId(job.requestedConnectorId,160) || !safeDeviceId(job.deviceId)
       || job.accessGrantId)) throw new Error('Account job missing account/request binding');
     if (job.sourceActorDeviceId !== undefined && (job.schema !== accountJobSchema || !safeDeviceId(job.sourceActorDeviceId))) throw new Error('Invalid local task actor binding');
-    if (job.autoRegistrationFinal !== undefined && (!['ready','revoked'].includes(job.autoRegistrationFinal)
+    if (job.autoRegistrationFinal !== undefined && (!['ready','revoked','archived'].includes(job.autoRegistrationFinal)
       || job.schema !== accountJobSchema || job.kind !== 'agent' || job.input?.autoRegister !== true
-      || job.input?.output !== 'local-app' || job.status !== 'succeeded' || job.result?.appProposal?.sourceJobId !== job.id))
+      || job.input?.output !== 'local-app' || job.status !== 'succeeded' || job.result?.appProposal?.sourceJobId !== job.id
+      || job.autoRegistrationFinal === 'archived' && job.cancelRequested !== true))
       throw new Error('Invalid automatic registration completion; preserve data for recovery');
     if (job.schema !== accountJobSchema && job.ownerAccountId) throw new Error('Account ownership requires the account job schema');
   }
@@ -918,6 +985,11 @@ export function normalizeConnectorState(value) {
   if (!Array.isArray(state.requests) || state.requests.some((item) => !/^[a-f0-9]{64}$/u.test(item.id) || !/^[a-f0-9]{64}$/u.test(item.fingerprint) || !safeId(item.jobId,160))) throw new Error("Invalid request identity history");
   if (state.requests.some(item => item.requestIntent !== undefined && !/^[a-f0-9]{64}$/u.test(item.requestIntent))) throw new Error('Invalid request intent history');
   if (state.requests.some(item => item.rejection !== undefined && (!item.requestIntent || !/^[a-z_]{3,80}$/u.test(item.rejection)))) throw new Error('Invalid request rejection history');
+  if (state.requests.some(item => item.autoArchive !== undefined && !validAutomaticArchive(item))) throw new Error('Invalid automatic archive receipt; preserve data for recovery');
+  for (const job of value.jobs) if (job.autoRegistrationFinal === 'archived') {
+    const record = state.requests.find(item => item.id === automaticArchiveKey(job.ownerAccountId, job.id));
+    if (!record?.autoArchive || record.autoArchive.requestId !== job.requestId) throw new Error('Missing automatic archive receipt; preserve data for recovery');
+  }
   if (new Set(state.requests.map((item) => item.id)).size !== state.requests.length) throw new Error("Duplicate request identities");
   state.connectors = Array.isArray(value.connectors)
     ? value.connectors.filter(validStoredConnector).map(normalizeStoredConnector)

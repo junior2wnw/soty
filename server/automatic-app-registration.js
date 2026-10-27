@@ -75,8 +75,51 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       void reconcile(id).catch(() => {});
     }
   }
-  function status(actor, job) {
+  async function archive(actor, jobId) {
+    if (closed || !actor || typeof jobId !== 'string' || !/^job_[a-f0-9]{32}$/u.test(jobId)) return { ok: false, error: 'app-archive-unavailable' };
+    while (flights.has(jobId)) await flights.get(jobId).catch(() => {});
+    const flight = (async () => {
+      const current = () => !closed && connect.isActorActive(actor) === true;
+      const previous = await store.automaticArchiveReceipt(actor.accountId, jobId, current);
+      if (previous) return { ok: true, state: 'archived', replayed: true, receipt: previous };
+      const [job] = await store.automaticAppJobs(jobId);
+      if (!current() || !job || job.ownerAccountId !== actor.accountId) return { ok: false, error: 'app-archive-unavailable' };
+      let confirmed;
+      try {
+        confirmed = connect.withCurrentContacts(actor, () => {
+          const app = apps.creationJobApp(actor, jobId);
+          if (!app) return null;
+          if (app.state === 'revoked') return { state: 'revoked', appId: app.id };
+          if (!universal) throw Error('registration unavailable');
+          const registration = universal.registration.execute({ op: 'apps.universal.get', actor,
+            args: { appId: app.id, expectedAccountId: actor.accountId } }).registration;
+          return registration?.state === 'ready' && registration.feedback?.state === 'ready' ? { state: 'ready', appId: app.id } : null;
+        });
+      } catch { return { ok: false, error: 'app-archive-unconfirmed' }; }
+      if (confirmed) {
+        if (!await store.confirmAutomaticAppJob(job, confirmed.state, current)) return { ok: false, error: 'app-archive-unconfirmed' };
+        pending.delete(jobId); problems.delete(jobId); return { ok: true, ...confirmed };
+      }
+      const original = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
+      let originalActive = false;
+      try { originalActive = connect.isActorActive(original) === true && apps.resolveOwnedDevice(original, job.deviceId, job.connectorId).linkId === job.linkId; } catch { /* Cannot restore a revoked authority. */ }
+      if (originalActive && !['conflict', 'access-lost'].includes(problems.get(jobId))) return { ok: false, error: 'app-archive-unavailable' };
+      const result = await store.archiveAutomaticAppJob(job, actor, current);
+      if (!result.ok) return result;
+      pending.delete(jobId); problems.delete(jobId); return { ...result, state: 'archived' };
+    })().finally(() => flights.delete(jobId));
+    flights.set(jobId, flight); return flight;
+  }
+  async function archiveReceipt(actor, jobId) {
+    if (closed || !actor || typeof jobId !== 'string' || !/^job_[a-f0-9]{32}$/u.test(jobId)) return { ok: false, error: 'app-archive-unavailable' };
+    const current = () => !closed && connect.isActorActive(actor) === true;
+    const receipt = await store.automaticArchiveReceipt(actor.accountId, jobId, current);
+    if (!current()) return { ok: false, error: 'job-access-denied' };
+    return receipt ? { ok: true, state: 'archived', receipt } : { ok: true, state: 'unconfirmed' };
+  }
+  function status(actor, job, task) {
     if (!job || !['succeeded', 'failed', 'cancelled'].includes(job.status)) return { state: 'creating' };
+    if (task?.autoRegistrationFinal === 'archived') return { state: 'archived' };
     if (job.status !== 'succeeded' || !job.result?.appProposal) return { state: 'failed' };
     try {
       const app = apps.creationJobApp(actor, job.id);
@@ -90,5 +133,5 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
       return { state: 'ready', appId: app.id, appState: app.state, feedback: ready ? 'ready' : 'waiting' };
     } catch { return { state: 'waiting' }; }
   }
-  return { reconcile, recover, poll, retryPending, status, close() { closed = true; pending.clear(); } };
+  return { reconcile, recover, poll, retryPending, status, archive, archiveReceipt, close() { closed = true; pending.clear(); } };
 }

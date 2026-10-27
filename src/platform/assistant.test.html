@@ -1,7 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Assistant isolated acceptance fixture</title>
 <style>body{margin:0;background:var(--sw-bg);color:var(--sw-ink);font-family:Manrope,system-ui,sans-serif}.qa-controls{padding:12px;display:flex;gap:8px;flex-wrap:wrap}.qa-controls button{padding:10px;font:inherit}#proof{padding:12px}.sw-app.qa-host{position:relative;inset:auto;display:block;overflow:visible}</style>
-<div class="qa-controls"><strong>Только тестовые данные · никакого исполнения или API</strong><button id="remount">Открыть заново</button><button id="deny">Закрыть доступ к задаче</button><button id="account">Сменить тестовый аккаунт</button><button id="history-error">Ошибка истории</button><button id="finish-personal">Завершить тестовую задачу</button></div>
+<div class="qa-controls"><strong>Только тестовые данные · никакого исполнения или API</strong><button id="remount">Открыть заново</button><button id="deny">Закрыть доступ к задаче</button><button id="account">Сменить тестовый аккаунт</button><button id="account-stale" hidden>Сменить без обновления</button><button id="history-error">Ошибка истории</button><button id="finish-personal">Завершить тестовую задачу</button></div>
 <output id="proof" aria-label="Проверка отправки"></output><main id="host" class="sw-app qa-host"></main>
 <script type="module">
 import '../world/world.css';
@@ -10,6 +10,7 @@ import { createPalette } from '../world/theme/palette.mjs';
 import { mountAssistant } from './assistant.ts';
 for(const [key,value] of Object.entries(createPalette('dark',50)))document.documentElement.style.setProperty(key,value);
 let accountId='qa_assistant_'+crypto.randomUUID(), handle, accepted=null, denied=false, calls=0, historyError=false;
+const originalAccount=accountId;
 const params=new URLSearchParams(location.search), personalReady=params.has('personal'), noDevices=params.get('devices')==='0';
 let localCreates=0, personalTurns=0;
 let personalResult, personalRequest, releasePersonal, personalComplete=false, statusReads=0;
@@ -37,7 +38,9 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
   return {schema:'soty.personal-agent-status.v1',requestId:args.requestId,state:personalComplete?'completed':'running',stage:personalComplete?'runtime':'model',elapsedMs:15000,modelRounds:1,completedTools:0,cancelRequested:false,...(personalComplete?{result:personalResult}:{})};
  }
  if(op==='agent.cancel'&&personalReady)return {schema:'soty.personal-agent-cancel.v1',requestId:args.requestId,cancelRequested:true,remoteTerminationVerified:false};
- if(op==='apps.assistant.history'){if(historyError)throw new TypeError('synthetic history unavailable');return {jobs:accepted?[{...first,id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,text:accepted.text,cwd:accepted.cwd,appCreation:false,status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};}
+ if(op==='apps.assistant.history'){if(historyError)throw new TypeError('synthetic history unavailable');
+  if(params.has('recovery'))return {jobs:accountId===originalAccount?[{...first,id:'job_1234567890abcdef1234567890abcdef',threadId:'',text:'Приложение: доступ к устройству потерян',cwd:'',appCreation:true,restrictedAuto:'pending',status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};
+  return {jobs:accepted?[{...first,id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,text:accepted.text,cwd:accepted.cwd,appCreation:false,status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};}
  if(op==='apps.assistant.send'){
   calls++;
   if(!accepted){accepted=structuredClone(args);proof.textContent='Потеря подтверждения: сервер принял одну тестовую задачу на A.';throw new TypeError('synthetic lost ACK');}
@@ -51,10 +54,12 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
  }
  throw new Error('unexpected synthetic operation '+op);
 }};
-async function remount(){handle?.dispose();handle=await mountAssistant(root,{client,connectDevice(){},createApp(){localCreates++;proof.dataset.localCreates=String(localCreates);proof.textContent='Локальная форма вызвана: '+localCreates+'; тестовых отправок в Сотах: '+personalTurns+'.';},resumeApp(){}});}
+async function remount(){handle?.dispose();handle=await mountAssistant(root,{client,connectDevice(){},createApp(){localCreates++;proof.dataset.localCreates=String(localCreates);proof.textContent='Локальная форма вызвана: '+localCreates+'; тестовых отправок в Сотах: '+personalTurns+'.';},resumeApp(target){proof.dataset.resumes=String(Number(proof.dataset.resumes||0)+1);proof.dataset.resumeTarget=JSON.stringify(target);}});}
 document.querySelector('#remount').onclick=()=>void remount();
 document.querySelector('#deny').onclick=()=>{denied=true;void remount();};
 document.querySelector('#account').onclick=()=>{accountId='qa_changed_'+crypto.randomUUID();void handle.refresh();};
+document.querySelector('#account-stale').hidden=!params.has('recovery');
+document.querySelector('#account-stale').onclick=()=>{accountId='qa_changed_'+crypto.randomUUID();};
 document.querySelector('#history-error').onclick=()=>{historyError=!historyError;void handle.refresh();};
 document.querySelector('#finish-personal').onclick=()=>{releasePersonal?.();releasePersonal=undefined;};
 await remount();

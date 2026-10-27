@@ -12,11 +12,11 @@ import { createDraftStore } from '../../modules/notes/browser/state.mjs';
 import './assistant.css';
 
 interface Host { hostDeviceId: string; connectorId: string; name: string; online: boolean }
-interface Task extends Host { id: string; threadId: string; text: string; cwd: string; appCreation: boolean; status: string; createdAt: string }
+interface Task extends Host { id: string; threadId: string; text: string; cwd: string; appCreation: boolean; restrictedAuto?: 'pending' | 'archived'; status: string; createdAt: string }
 interface Job { id: string; threadId: string; status: string; cancelRequested: boolean; executionUncertain: boolean;
   result?: { text: string; textTruncated?: boolean } | null }
 interface ReadResult { job: Job; task?: { text: string; cwd: string; appCreation: boolean; canContinue: boolean }; events?: { seq: number; text: string; type: string }[]; cursor?: number; done?: boolean; more?: boolean }
-interface Options { client: ConnectClient; connectDevice(): void | Promise<void>; createApp(): void | Promise<void>; resumeApp(target: AssistantTarget): void | Promise<void>; acquireVoiceCapture?(): (() => void) | null }
+interface Options { client: ConnectClient; connectDevice(): void | Promise<void>; createApp(): void | Promise<void>; resumeApp(target: AssistantTarget & { restrictedAuto?: 'pending' | 'archived' }): void | Promise<void>; acquireVoiceCapture?(): (() => void) | null }
 const finished = (status: string) => ['succeeded', 'failed', 'cancelled'].includes(status);
 const sourceStatusLabel = (status: string) => status === 'current' ? 'Данные на момент ответа'
   : status === 'stale' ? 'Данные устарели' : status === 'unavailable' ? 'Источник недоступен' : 'Актуальность неизвестна';
@@ -406,8 +406,8 @@ export async function mountAssistant(host: HTMLElement, options: Options, mountC
       item.append(icon(task.appCreation ? 'app' : 'chat'), copy);
       item.addEventListener('click', () => {
         if (drafts.read().pending || sending) { error.textContent = friendly(new Error('assistant_pending_unconfirmed')); return; }
-        const target = { hostDeviceId: task.hostDeviceId, connectorId: task.connectorId, jobId: task.id };
-        if (task.appCreation) { void options.resumeApp(target); return; }
+        const target = { hostDeviceId: task.hostDeviceId, connectorId: task.connectorId, jobId: task.id, ...(task.restrictedAuto ? { restrictedAuto: task.restrictedAuto } : {}) };
+        if (task.appCreation) { void current().then(valid => { if (valid) void options.resumeApp(target); }); return; }
         const conversationId = task.threadId.startsWith('assistant_') ? task.threadId.slice(10) : crypto.randomUUID();
         try {
           draft = drafts.select({ conversationId, lastJob: target, cwd: task.cwd, deviceKey: keyOf(task) });

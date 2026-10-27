@@ -8,6 +8,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { probe } from '../../deploy/connect/maintenance-probe.mjs';
+import { normalizeConnectorState } from '../connector-store.js';
 import { createHttpApp } from '../http-app.js';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createLocalAppsRuntime } from '../../scripts/agent-modules/local-apps.mjs';
@@ -34,7 +36,7 @@ function appRequest(url, pathname, { method = 'GET', headers = {}, body } = {}) 
 async function fixture(t) {
   const folder = await mkdtemp(join(tmpdir(), 'soty-auto-app-')), dist = join(folder, 'dist'), dataDir = join(folder, 'data');
   await mkdir(dist); await writeFile(join(dist, 'index.html'), '<!doctype html>');
-  let app, runtime, loseCreateAck = false; const clients = [], sockets = new Set();
+  let app, runtime, loseCreateAck = false, loseArchiveAck = false; const clients = [], sockets = new Set();
   const source = createServer((_req, res) => res.end('Local app'));
   const server = createServer((req, res) => app ? app(req, res) : res.writeHead(503).end());
   for (const item of [source, server]) item.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
@@ -60,6 +62,9 @@ async function fixture(t) {
         if (loseCreateAck && JSON.parse(options.body || '{}').op === 'apps.agent.create') {
           loseCreateAck = false; await response.arrayBuffer(); throw new Error('synthetic lost create acknowledgement');
         }
+        if (loseArchiveAck && JSON.parse(options.body || '{}').op === 'apps.agent.archive') {
+          loseArchiveAck = false; await response.arrayBuffer(); throw new Error('synthetic lost archive acknowledgement');
+        }
         return response;
       } }, memory());
     clients.push(client); return client;
@@ -75,8 +80,8 @@ async function fixture(t) {
   });
   const target = { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId };
   let sequence = 0;
-  async function create(autoRegister = true) {
-    const result = await owner.extension('apps.agent.create', { ...target, requestId: `auto-request-${++sequence}`, text: 'Создать список', cwd: '', ...(autoRegister ? { autoRegister: true } : {}) });
+  async function create(autoRegister = true, extra = {}) {
+    const result = await owner.extension('apps.agent.create', { ...target, requestId: `auto-request-${++sequence}`, text: 'Создать список', cwd: '', ...extra, ...(autoRegister ? { autoRegister: true } : {}) });
     const leased = await app.locals.connectorService.store.poll(auth, 0); assert.equal(leased.jobs[0]?.id, result.job.id);
     return result.job.id;
   }
@@ -99,13 +104,14 @@ async function fixture(t) {
   }
   return { owner, account, makeClient, auth, target, create, submit, poll, read, result, proposal, dataDir, source, stopRuntime: () => runtime.stop(),
     watchRegistration,
-    capabilities: async () => (await fetch(origin + '/api/apps/capabilities')).json(), loseNextCreateAck: () => { loseCreateAck = true; },
+    capabilities: async () => (await fetch(origin + '/api/apps/capabilities')).json(), loseNextCreateAck: () => { loseCreateAck = true; }, loseNextArchiveAck: () => { loseArchiveAck = true; },
     service: () => app, async restart(overrides = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...options, ...overrides }); } };
 }
 
 test('capability gates a new auto intent while the original lost ACK replays on a temporarily disabled server', { timeout: 25000 }, async t => {
   const f = await fixture(t), capability = (await f.capabilities()).automaticAppRegistration;
   assert.equal(capability.schema, 'soty.automatic-app-registration-capability.v1'); assert.equal(capability.available, true);
+  assert.equal(capability.archive, true);
   const args = { ...f.target, requestId: 'automatic-lost-ack', text: 'Создать список', cwd: '', autoRegister: true };
   f.loseNextCreateAck(); await assert.rejects(f.owner.extension('apps.agent.create', args));
   const jobs = f.service().locals.connectorService.store.state.jobs.filter(job => job.requestId === args.requestId);
@@ -316,6 +322,219 @@ test('old manual jobs stay manual and an occupied unrelated port is not adopted'
   const conflict = await until(async () => { const value = await f.read(id); return value.autoRegistration?.state === 'conflict' && value; });
   assert.equal(conflict.autoRegistration.state, 'conflict'); const apps = (await f.owner.extension('apps.list')).apps;
   assert.equal(apps.length, 1); assert.equal(apps[0].id, existing.id); assert.notEqual(existing.id, `app-${id.slice(4)}`);
+});
+
+test('owner explicitly archives a conflict once; receipt survives restart and duplicate completion cannot register it', { timeout: 25000 }, async t => {
+  const f = await fixture(t), existing = (await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } })).app;
+  const id = await f.create(); await f.submit(id);
+  await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const args = { expectedAccountId: f.account.accountId, jobId: id };
+  const first = await f.owner.extension('apps.agent.archive', args);
+  assert.equal(first.state, 'archived'); assert.equal(first.replayed, false); assert.equal(first.receipt.jobId, id);
+  assert.equal(first.receipt.requestId, f.service().locals.connectorService.store.state.jobs.find(job => job.id === id).requestId);
+  const replay = await f.owner.extension('apps.agent.archive', args); assert.equal(replay.replayed, true); assert.deepEqual(replay.receipt, first.receipt);
+  assert.equal((await f.read(id)).autoRegistration.state, 'archived');
+  const corrupt = structuredClone(f.service().locals.connectorService.store.state);
+  corrupt.requests = corrupt.requests.filter(row => !row.autoArchive); assert.throws(() => normalizeConnectorState(corrupt), /Missing automatic archive receipt/);
+  const changed = structuredClone(f.service().locals.connectorService.store.state);
+  changed.requests.find(row => row.autoArchive).autoArchive.requestId = 'tampered-request'; assert.throws(() => normalizeConnectorState(changed), /Invalid automatic archive receipt/);
+  await f.restart(); assert.equal((await f.owner.extension('apps.agent.archive', args)).replayed, true);
+  assert.equal((await f.submit(id)).ok, true); await f.poll();
+  const apps = (await f.owner.extension('apps.list')).apps; assert.equal(apps.length, 1); assert.equal(apps[0].id, existing.id);
+});
+
+test('another signed device of the same owner archives a result after the original actor is revoked', { timeout: 25000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  const id = await f.create(), original = f.service().locals.connectorService.store;
+  assert.equal((await original.finishJob(f.auth, id, f.result(id))).ok, true);
+  await second.revokeDevice(f.account.deviceId); await f.restart();
+  await until(async () => (await f.read(id, second)).autoRegistration?.state === 'access-lost');
+  assert.ok((await second.extension('apps.assistant.history', { expectedAccountId: f.account.accountId })).jobs.some(job => job.id === id));
+  const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await second.extension('apps.agent.archive', args);
+  assert.equal(archived.state, 'archived'); assert.equal((await f.read(id, second)).autoRegistration.state, 'archived');
+  assert.equal((await second.extension('apps.list')).apps.length, 0); await f.restart();
+  assert.deepEqual((await second.extension('apps.agent.archive', args)).receipt, archived.receipt);
+  assert.equal((await second.extension('apps.list')).apps.length, 0);
+});
+
+test('the revoked-device maintenance blocker clears only after the current owner archives; old reader cannot resume', { timeout: 30000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  const id = await f.create(), before = f.service().locals.connectorService.store;
+  assert.equal((await before.finishJob(f.auth, id, f.result(id))).ok, true);
+  await second.revokeDevice(f.account.deviceId); await f.restart();
+  await until(async () => (await f.read(id, second)).autoRegistration?.state === 'access-lost');
+  assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, true);
+  const cancellation = await second.extension('apps.agent.cancel', { ...f.target, jobId: id }); assert.equal(cancellation.job.status, 'succeeded');
+  const current = f.service().locals.connectorService.store; await current.mutate(() => current.expire(Date.now() + 8 * 24 * 60 * 60_000));
+  assert.ok(current.state.jobs.find(job => job.id === id)); await f.restart();
+  const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await second.extension('apps.agent.archive', args);
+  assert.equal(archived.state, 'archived'); const status = await probe({ dataDir: f.dataDir }); assert.equal(status.count, 0); assert.equal(status.automaticPending, undefined);
+  const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'revoked-old-reader'); await mkdir(oldDir);
+  for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
+    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+  await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
+  await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
+  try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0); } finally { await old.close(); }
+  await f.restart(); assert.deepEqual((await second.extension('apps.agent.archive', args)).receipt, archived.receipt);
+  assert.equal((await second.extension('apps.list')).apps.length, 0);
+});
+
+test('archiving a ready card returns the existing app without a new receipt or another registration', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(); await f.submit(id);
+  const ready = await until(async () => { const value = await f.read(id); return value.autoRegistration?.feedback === 'ready' && value; });
+  const store = f.service().locals.connectorService.store, before = store.state.requests.length;
+  const result = await f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
+  assert.equal(result.state, 'ready'); assert.equal(result.appId, ready.autoRegistration.appId);
+  assert.equal(store.state.requests.length, before); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('archive waits for an in-flight successful registration and returns the single ready card', { timeout: 25000 }, async t => {
+  const f = await fixture(t), id = await f.create(), store = f.service().locals.connectorService.store;
+  const actual = store.confirmAutomaticAppJob.bind(store); let reached, release;
+  const entered = new Promise(resolve => { reached = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  store.confirmAutomaticAppJob = async (...args) => { reached(); await hold; return actual(...args); };
+  assert.equal((await f.submit(id)).ok, true); await entered;
+  const request = f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
+  release(); const result = await request; assert.equal(result.state, 'ready'); assert.equal(result.appId, `app-${id.slice(4)}`);
+  assert.equal(store.state.requests.some(value => value.autoArchive?.jobId === id), false);
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('another account cannot archive a job; a full receipt ledger fails closed without clearing its reservation', { timeout: 25000 }, async t => {
+  const f = await fixture(t), other = f.makeClient(), stranger = await other.bootstrap('Other owner');
+  await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  await assert.rejects(other.extension('apps.agent.archive', { expectedAccountId: stranger.accountId, jobId: id }), { code: 'app_archive_unavailable' });
+  const store = f.service().locals.connectorService.store, count = store.state.requests.length; store.maxRequestRecords = count;
+  await assert.rejects(f.owner.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id }), { code: 'app_archive_capacity' });
+  assert.equal(store.state.requests.length, count); assert.equal(store.state.jobs.find(job => job.id === id).autoRegistrationFinal, undefined);
+  const db = new DatabaseSync(join(dirname(store.filePath), 'connector-store.sqlite'), { readOnly: true });
+  try { assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2'); } finally { db.close(); }
+});
+
+test('the previous reader cannot resume an archived job, and its historical receipt survives rollback', { timeout: 30000 }, async t => {
+  const f = await fixture(t); await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await f.owner.extension('apps.agent.archive', args);
+  const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'archived-old-reader'); await mkdir(oldDir);
+  for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
+    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+  await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
+  await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
+  try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0);
+    assert.equal(old.state.jobs.find(job => job.id === id).cancelRequested, true);
+    await old.mutate(() => old.expire(Date.now() + 8 * 24 * 60 * 60_000));
+    assert.equal(old.state.jobs.some(job => job.id === id), false, 'the old reader really cleaned up the job'); }
+  finally { await old.close(); }
+  await f.restart(); assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
+  assert.deepEqual((await f.owner.extension('apps.agent.archive', args)).receipt, archived.receipt);
+  assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('a lost archive response and concurrent explicit retries preserve one immutable receipt', { timeout: 25000 }, async t => {
+  const f = await fixture(t); await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const args = { expectedAccountId: f.account.accountId, jobId: id }; f.loseNextArchiveAck();
+  await assert.rejects(f.owner.extension('apps.agent.archive', args));
+  const [first, second] = await Promise.all([f.owner.extension('apps.agent.archive', args), f.owner.extension('apps.agent.archive', args)]);
+  assert.equal(first.replayed, true); assert.equal(second.replayed, true); assert.deepEqual(first.receipt, second.receipt);
+  assert.equal(f.service().locals.connectorService.store.state.requests.filter(row => row.autoArchive?.jobId === id).length, 1);
+});
+
+test('lost host access exposes only an owner-bound recovery entry and a durable read-only receipt', { timeout: 30000 }, async t => {
+  const f = await fixture(t), stranger = f.makeClient(), other = await stranger.bootstrap('Other owner');
+  const id = await f.create(true, { text: 'private prompt SECRET-PROMPT', cwd: 'D:\\private-SECRET-PATH' });
+  f.stopRuntime(); const store = f.service().locals.connectorService.store;
+  assert.equal((await store.finishJob(f.auth, id, { ...f.result(id), text: 'SECRET-RESULT' })).ok, true);
+  // Simulate the existing ownership guard denying this host without changing
+  // the owner account or granting any access through the recovery path.
+  f.service().locals.appsService.resolveOwnedDevice = () => { throw Object.assign(new Error('apps_device_not_owned'), { code: 'apps_device_not_owned' }); };
+  const args = { expectedAccountId: f.account.accountId, jobId: id };
+  await assert.rejects(f.read(id));
+  const page = await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId });
+  const row = page.jobs.find(job => job.id === id); assert.equal(row.restrictedAuto, 'pending'); assert.equal(row.cwd, '');
+  assert.doesNotMatch(JSON.stringify(page), /SECRET-PROMPT|SECRET-PATH|SECRET-RESULT/u);
+  assert.deepEqual((await stranger.extension('apps.assistant.history', { expectedAccountId: other.accountId })).jobs, []);
+  await assert.rejects(stranger.extension('apps.assistant.history', { expectedAccountId: f.account.accountId }));
+  assert.equal((await stranger.extension('apps.agent.archiveReceipt', { expectedAccountId: other.accountId, jobId: id })).state, 'unconfirmed');
+  await assert.rejects(stranger.extension('apps.agent.archive', { expectedAccountId: other.accountId, jobId: id }));
+  assert.equal((await f.owner.extension('apps.agent.archiveReceipt', args)).state, 'unconfirmed');
+  const archived = await f.owner.extension('apps.agent.archive', args); assert.equal(archived.state, 'archived');
+  assert.equal((await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId })).jobs.find(job => job.id === id).restrictedAuto, 'archived');
+  assert.equal((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt.requestId, archived.receipt.requestId);
+  await store.mutate(() => store.expire(Date.now() + 8 * 24 * 60 * 60_000));
+  assert.equal(store.state.jobs.some(job => job.id === id), false); await f.restart();
+  const recovered = await f.owner.extension('apps.assistant.history', { expectedAccountId: f.account.accountId });
+  const final = recovered.jobs.find(job => job.id === id); assert.equal(final.restrictedAuto, 'archived'); assert.equal(final.cwd, '');
+  assert.doesNotMatch(JSON.stringify(recovered), /SECRET-PROMPT|SECRET-PATH|SECRET-RESULT/u);
+  assert.deepEqual((await f.owner.extension('apps.agent.archiveReceipt', args)).receipt, archived.receipt);
+  assert.deepEqual((await stranger.extension('apps.assistant.history', { expectedAccountId: other.accountId })).jobs, []);
+});
+
+test('an archived job may expire but its original request and archive receipt remain readable', { timeout: 25000 }, async t => {
+  const f = await fixture(t); await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await f.owner.extension('apps.agent.archive', args);
+  const store = f.service().locals.connectorService.store;
+  await store.mutate(() => { const job = store.state.jobs.find(value => value.id === id), old = Date.now() - 8 * 24 * 60 * 60_000;
+    job.createdAt = old - 10; job.updatedAt = old; job.finishedAt = old; store.expire(Date.now()); });
+  assert.equal(store.state.jobs.some(job => job.id === id), false); await f.restart();
+  const recovered = await f.owner.extension('apps.agent.archive', args);
+  assert.equal(recovered.replayed, true); assert.deepEqual(recovered.receipt, archived.receipt);
+  assert.ok(recovered.receipt.requestId); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
+});
+
+test('a failed archive receipt write rolls back cancellation and keeps the old-reader fence', { timeout: 25000 }, async t => {
+  const f = await fixture(t); await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const store = f.service().locals.connectorService.store, db = new DatabaseSync(join(dirname(store.filePath), 'connector-store.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER fixture_fail_archive BEFORE INSERT ON requests WHEN json_extract(NEW.value,'$.autoArchive.schema')='soty.app-auto-archive.v1' BEGIN SELECT RAISE(ABORT,'synthetic archive failure'); END");
+    const args = { expectedAccountId: f.account.accountId, jobId: id }; await assert.rejects(f.owner.extension('apps.agent.archive', args));
+    const job = store.state.jobs.find(value => value.id === id); assert.equal(job.cancelRequested, false); assert.equal(job.autoRegistrationFinal, undefined);
+    assert.equal(store.state.requests.some(value => value.autoArchive?.jobId === id), false);
+    assert.equal(db.prepare("SELECT value FROM meta WHERE key='schema'").get().value, 'soty.connector-sqlite.v2');
+    db.exec('DROP TRIGGER fixture_fail_archive'); assert.equal((await f.owner.extension('apps.agent.archive', args)).state, 'archived');
+  } finally { db.close(); }
+});
+
+test('revoking the current actor before archive commit preserves the pending result', { timeout: 30000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId); const secondDevice = (await second.getLocalState()).deviceId;
+  await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const store = f.service().locals.connectorService.store, actual = store.archiveAutomaticAppJob.bind(store);
+  let reached, release; const entered = new Promise(resolve => { reached = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  store.archiveAutomaticAppJob = async (...args) => { reached(); await hold; return actual(...args); };
+  const request = second.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
+  try { await entered; await f.owner.revokeDevice(secondDevice); } finally { release(); }
+  await assert.rejects(request); const job = store.state.jobs.find(value => value.id === id);
+  assert.equal(job.autoRegistrationFinal, undefined); assert.equal(job.cancelRequested, false);
+  assert.equal(store.state.requests.some(value => value.autoArchive?.jobId === id), false);
+  assert.equal((await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id })).state, 'unconfirmed');
+});
+
+test('revocation after the last guard yields an unknown reply and the active owner reads the one receipt', { timeout: 30000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId); const secondDevice = (await second.getLocalState()).deviceId;
+  await f.owner.extension('apps.register', { ...f.target, name: 'Список', port: f.source.address().port, entryPath: '/', grants: { accountIds: [], communityIds: [] } });
+  const id = await f.create(); await f.submit(id); await until(async () => (await f.read(id)).autoRegistration?.state === 'conflict');
+  const store = f.service().locals.connectorService.store, original = store.persistence.call.bind(store.persistence);
+  let reached, release; const entered = new Promise(resolve => { reached = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  store.persistence.call = async (action, delta) => { if (action === 'commit' && delta.requests?.some(row => row.autoArchive?.jobId === id)) { reached(); await hold; } return original(action, delta); };
+  const request = second.extension('apps.agent.archive', { expectedAccountId: f.account.accountId, jobId: id });
+  try { await entered; await f.owner.revokeDevice(secondDevice); } finally { release(); }
+  await assert.rejects(request); const job = store.state.jobs.find(value => value.id === id);
+  const records = store.state.requests.filter(value => value.autoArchive?.jobId === id);
+  assert.equal(job.autoRegistrationFinal, 'archived'); assert.equal(records.length, 1); assert.equal(records[0].autoArchive.actorDeviceId, secondDevice);
+  const read = await f.owner.extension('apps.agent.archiveReceipt', { expectedAccountId: f.account.accountId, jobId: id });
+  assert.equal(read.state, 'archived'); assert.equal(read.receipt.requestId, job.requestId); assert.equal((await f.owner.extension('apps.list')).apps.length, 1);
 });
 
 test('revoking the original signed device before recovery prevents automatic registration', { timeout: 25000 }, async t => {
