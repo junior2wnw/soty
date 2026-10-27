@@ -2042,7 +2042,7 @@ class WorldApplication {
     };
     const retained=[...this.chatDraftSessions].find(session=>session.scope.accountId===accountId&&session.scope.conversationKey===conversation.draftKey&&session.hasUnsavedChanges());
     if(retained){const saved=retained.read().value;input.value=saved.text;replyTo=saved.replyTo;draftLoading=false;}
-    draftSession=retained?retained.reopen(changedDraft):createChatDraftSession({disk:draftDisk,accountId,conversationKey:conversation.draftKey,legacy:initialDraft,legacyCandidates:initialLegacy,changed:changedDraft});
+    draftSession=retained?retained.reopen(changedDraft):createChatDraftSession({disk:draftDisk,accountId,conversationKey:conversation.draftKey,legacy:initialDraft,legacyCandidates:initialLegacy,currentLegacy:source=>this.chatDrafts.legacyCurrent(accountId,conversation.draftKey,source),changed:changedDraft});
     if(retained)for(const candidate of initialLegacy)draftSession.recoverLegacy(candidate);
     this.chatDraftSession=draftSession;this.chatDraftSessions.add(draftSession);
     void draftSession.ready.then(()=>{draftLoading=false;if(active())updateComposer();},()=>{draftLoading=false;if(active())updateComposer();});

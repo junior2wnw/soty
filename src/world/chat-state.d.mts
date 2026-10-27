@@ -1,9 +1,10 @@
 import type { WorldMessage } from './types';
 export interface ChatDraft { text: string; replyTo: string | null; attachments?: string[]; pending: { clientId: string; text: string; replyTo: string | null; attachments?: string[] } | null; }
-export interface LegacyDraft { source:'v1'|'v2';text:string;replyTo:string|null }
+export interface LegacyDraft { source:'v1'|'v2';text:string;replyTo:string|null;fresh?:boolean }
 export interface ChatDraftStore {
   read(accountId: string, communityId: string): ChatDraft;
   legacyCandidates(accountId:string,communityId:string):LegacyDraft[];
+  legacyCurrent(accountId:string,communityId:string,source:'v1'|'v2'):LegacyDraft|null|undefined;
   edit(accountId: string, communityId: string, text: string, replyTo?: string | null): boolean;
   setAttachments(accountId: string, communityId: string, attachments: string[]): boolean;
   beginSend(accountId: string, communityId: string, text: string, replyTo?: string | null, attachments?: string[]): { clientId: string; text: string; replyTo: string | null; attachments?: string[]; durable: boolean; reusedOther?: boolean };

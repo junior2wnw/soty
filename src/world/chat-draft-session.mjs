@@ -5,13 +5,15 @@ const copy = value => structuredClone(value);
 const same = (a,b) => a.text===b.text&&a.replyTo===b.replyTo;
 
 /** Draft heads share the existing account-scoped IndexedDB outbox. */
-export function createChatDraftSession({disk,accountId,conversationKey,legacy,legacyCandidates=[],retainLegacy=false,changed=()=>{}}) {
+export function createChatDraftSession({disk,accountId,conversationKey,legacy,legacyCandidates=[],currentLegacy,retainLegacy=false,changed=()=>{}}) {
   const prefix=encodeURIComponent(accountId)+':'+encodeURIComponent(conversationKey)+':', writer=token();
   let value={text:legacy?.text??'',replyTo:legacy?.replyTo??null}, heads=[],selectedId=null, revision=0,
     dirty=retainLegacy&&!!(legacy?.text||legacy?.replyTo), generation=retainLegacy?1:0, error=null, closed=false, running=null, initialized=false, initializing=null;
   let onChange=changed,legacyInFlight=null;const pendingLegacy=[];
   const enqueueLegacy=candidate=>{if(!candidate||!['v1','v2'].includes(candidate.source)||(!candidate.text&&!candidate.replyTo))return;
-    const last=pendingLegacy.findLast(item=>item.source===candidate.source);if(last&&same(last,candidate))return;
+    const last=pendingLegacy.findLast(item=>item.source===candidate.source);if(last&&same(last,candidate)){
+      if(candidate.fresh&&!last.fresh){if(last===legacyInFlight)pendingLegacy.push({...candidate,id:token()});else last.fresh=true;}return;
+    }
     for(let i=pendingLegacy.length-1;i>=0;i--)if(pendingLegacy[i].source===candidate.source&&pendingLegacy[i]!==legacyInFlight)pendingLegacy.splice(i,1);
     pendingLegacy.push({...candidate,id:token()});};
   for(const candidate of legacyCandidates)enqueueLegacy(candidate);
@@ -46,8 +48,11 @@ export function createChatDraftSession({disk,accountId,conversationKey,legacy,le
       try {
         await initialize();
         while(pendingLegacy.length) {
-          const item=pendingLegacy[0];legacyInFlight=item;
-          const result=await disk.draftRecoverLegacy(prefix,item,item.id);pendingLegacy.shift();legacyInFlight=null;error=null;receive(result);await announceChatDraft(prefix);
+          const item=pendingLegacy[0],bytes=new TextEncoder().encode(JSON.stringify([item.text,item.replyTo]));legacyInFlight=item;
+          const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),value=>value.toString(16).padStart(2,'0')).join('');
+          const result=await disk.draftRecoverLegacy(prefix,{...item,digest},item.id,()=>{const latest=currentLegacy?.(item.source);return latest===undefined||!!latest&&same(latest,item);});
+          pendingLegacy.shift();legacyInFlight=null;if(result.stale){const latest=currentLegacy?.(item.source);if(latest)enqueueLegacy({...latest,fresh:true});}
+          error=null;receive(result);await announceChatDraft(prefix);
         }
         while(dirty) {
           const at=generation, submitted={...value}, proposal={...submitted,baseId:selectedId,id:token(),writer};

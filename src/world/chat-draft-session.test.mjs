@@ -48,7 +48,14 @@ test('late old-tab text survives a tombstone without becoming an automatic send'
   assert.equal(first.read().value.text,'');assert.deepEqual(first.read().heads.map(head=>[head.writer,head.text]),[['legacy_recovered_v1','Unsent old-tab text']]);
   const head=first.read().heads[0];assert.equal(await first.select([head.id],head.id),true);assert.equal(first.read().value.text,'Unsent old-tab text');
   await first.acknowledge(first.read().selectedId);const reopened=create(disk);t.after(()=>reopened.close());await reopened.ready;
-  reopened.recoverLegacy(candidate);await reopened.flush();assert.equal(reopened.read().value.text,'');assert.equal(reopened.read().heads[0].text,candidate.text);
+  reopened.recoverLegacy(candidate);await reopened.flush();assert.deepEqual(reopened.read().heads,[]);
+  reopened.recoverLegacy({...candidate,fresh:true});await reopened.flush();assert.equal(reopened.read().value.text,'');assert.equal(reopened.read().heads[0].text,candidate.text);
+});
+
+test('opening a pre-existing empty tombstone imports old text as an explicit recovery',async t=>{
+  const disk=diskFixture();await disk.draftInitialize('alice:room:',{text:'',replyTo:null},'empty_001');
+  const session=createChatDraftSession({disk,accountId:'alice',conversationKey:'room',legacy:{text:'',replyTo:null},legacyCandidates:[{source:'v1',text:'Old before opening',replyTo:null}]});
+  t.after(()=>session.close());await session.ready;assert.equal(session.read().value.text,'');assert.deepEqual(session.read().heads.map(head=>head.text),['Old before opening']);
 });
 
 test('storage refusal keeps the old-tab text in memory until it is durably recovered',async t=>{
@@ -69,4 +76,38 @@ test('sequential typing in one old storage slot stays one recovered version',asy
   const disk=diskFixture(),session=create(disk);t.after(()=>session.close());await session.ready;
   for(let i=1;i<=100;i++)session.recoverLegacy({source:'v1',text:'x'.repeat(i),replyTo:null});
   await session.flush();assert.equal(session.read().heads.length,1);assert.equal(session.read().heads[0].text,'x'.repeat(100));
+});
+
+test('a delayed old event cannot overwrite a newer old value already recovered by another tab',async t=>{
+  const disk=diskFixture();let release,entered;
+  const waiting=new Promise(resolve=>{release=resolve;}),arrived=new Promise(resolve=>{entered=resolve;});
+  const slow={...disk,draftRecoverLegacy:async(...args)=>{entered();await waiting;return disk.draftRecoverLegacy(...args);}};
+  let latest={source:'v1',text:'Earlier old text',replyTo:null};
+  const options={accountId:'alice',conversationKey:'room',legacy:{text:'',replyTo:null},currentLegacy:()=>latest};
+  const a=createChatDraftSession({...options,disk:slow}),b=createChatDraftSession({...options,disk});
+  t.after(()=>{a.close();b.close();});await Promise.all([a.ready,b.ready]);
+  a.recoverLegacy({...latest,fresh:true});await arrived;
+  latest={source:'v1',text:'Later old text',replyTo:null};b.recoverLegacy({...latest,fresh:true});assert.equal(await b.flush(),true);
+  release();assert.equal(await a.flush(),true);await Promise.all([a.refresh(),b.refresh()]);
+  for(const session of [a,b]){assert.equal(session.read().value.text,'');assert.deepEqual(session.read().heads.map(head=>head.text),['Later old text']);}
+});
+
+test('a cleared old slot is ignored but inaccessible storage retains the captured text',async t=>{
+  const disk=diskFixture();let latest=null;
+  const session=createChatDraftSession({disk,accountId:'alice',conversationKey:'room',legacy:{text:'',replyTo:null},currentLegacy:()=>latest});
+  t.after(()=>session.close());await session.ready;
+  const candidate={source:'v1',text:'Captured old text',replyTo:null,fresh:true};
+  session.recoverLegacy(candidate);await session.flush();assert.deepEqual(session.read().heads,[]);
+  latest=undefined;session.recoverLegacy(candidate);await session.flush();assert.equal(session.read().heads[0].text,candidate.text);
+});
+
+test('a fresh identical old write is not swallowed by an in-flight initial import',async t=>{
+  const disk=diskFixture(),candidate={source:'v1',text:'Same old text',replyTo:null};
+  const first=create(disk);await first.ready;first.recoverLegacy({...candidate,fresh:true});await first.flush();
+  const head=first.read().heads[0];await first.select([head.id],head.id);await first.acknowledge(first.read().selectedId);first.close();
+  let release,entered;const waiting=new Promise(resolve=>{release=resolve;}),arrived=new Promise(resolve=>{entered=resolve;});
+  const slow={...disk,draftRecoverLegacy:async(...args)=>{entered();await waiting;return disk.draftRecoverLegacy(...args);}};
+  const current=createChatDraftSession({disk:slow,accountId:'alice',conversationKey:'room',legacy:{text:'',replyTo:null},legacyCandidates:[candidate],currentLegacy:()=>candidate});
+  t.after(()=>current.close());await arrived;current.recoverLegacy({...candidate,fresh:true});release();await current.ready;
+  assert.equal(current.read().value.text,'');assert.deepEqual(current.read().heads.map(item=>item.text),[candidate.text]);
 });

@@ -66,7 +66,7 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
       const request=store.get(draftKey(prefix));request.onsuccess=()=>{try{
         const current=request.result, changed=operation(current);
         if(changed.record)store.put({...changed.record,key:draftKey(prefix)});
-        result={...readDraftRecord(changed.record??current),...(changed.head?{head:changed.head}:{})};
+        result={...readDraftRecord(changed.record??current),...(changed.head?{head:changed.head}:{}),...(changed.stale?{stale:true}:{})};
       }catch(reason){error=reason;tx.abort();}};
     });
   }
@@ -84,7 +84,7 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
     draftWrite(prefix,proposal) {return draftTransaction(prefix,value=>writeDraftRecord(value,proposal));},
     draftSelect(prefix,expectedIds,selectedId,newId,writer) {return draftTransaction(prefix,value=>selectDraftRecord(value,expectedIds,selectedId,newId,writer));},
     draftAcknowledge(prefix,id) {return draftTransaction(prefix,value=>({record:acknowledgeDraftRecord(value,id)}));},
-    draftRecoverLegacy(prefix,candidate,id) {return draftTransaction(prefix,value=>({record:recoverLegacyDraftRecord(value,candidate,id)}));},
+    draftRecoverLegacy(prefix,candidate,id,isCurrent) {return draftTransaction(prefix,value=>isCurrent&&!isCurrent()?{stale:true}:{record:recoverLegacyDraftRecord(value,candidate,id)});},
     async scope(prefix) {
       const db=await opened();return new Promise((resolve,reject)=>{
         const tx=db.transaction('outbox','readonly'),store=tx.objectStore('outbox');const result={rows:[],message:null};

@@ -3041,12 +3041,25 @@ test('modern cross-tab writes stay a single draft while an independently edited 
   const first=fixture(),second=fixture();for(const f of [first,second]){f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;}
   const target={kind:'community',id:'room_modern_live',draftKey:'room_modern_live',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
   const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
-  const key='soty.chat.draft.v1:account-A:room_modern_live',input=p1.querySelector('textarea');input.value='Modern text';input.emit('input');second.app.chatDrafts.storageChanged(key,storage.getItem(key));
+  const key='soty.chat.draft.v1:account-A:room_modern_live',modernKey='soty.chat.draft.v3:account-A:room_modern_live',input=p1.querySelector('textarea');input.value='Modern text';input.emit('input');second.app.chatDrafts.storageChanged(modernKey,storage.getItem(modernKey));
   await first.app.chatDraftSession.flush();await second.app.chatDraftSession.refresh();assert.deepEqual(second.app.chatDraftSession.read().heads.map(head=>head.text),['Modern text']);
   old.edit('account-A','room_modern_live','Old tab text');first.app.chatDrafts.storageChanged(key,storage.getItem(key));await first.app.chatDraftSession.flush();
   assert.equal(input.value,'Modern text');assert.deepEqual(first.app.chatDraftSession.read().heads.map(head=>head.text).sort(),['Modern text','Old tab text']);
   p1.querySelector('.sw-composer').requestSubmit();for(let i=0;i<15&&!first.dialogs.length;i++)await turn();assert.equal(sent.length,0);assert.ok(first.dialogs.length);
   first.app.chatCleanup();second.app.chatCleanup();
+});
+
+test('a modern cache write before a delayed old-tab event cannot erase the old text', async () => {
+  const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage);
+  const target={kind:'community',id:'room_delayed_old',draftKey:'room_delayed_old',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected send');}};
+  const setup=()=>{const f=fixture();f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;return f;};
+  const first=setup(),p1=first.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
+  const key='soty.chat.draft.v1:account-A:room_delayed_old';old.edit('account-A','room_delayed_old','Old text before event');
+  first.app.chatDrafts.setAttachments('account-A','room_delayed_old',[]);const input=p1.querySelector('textarea');input.value='Newer modern text';input.emit('input');await first.app.chatDraftSession.flush();
+  assert.equal(JSON.parse(storage.getItem(key)).text,'Old text before event');first.app.chatCleanup();
+  const reopened=setup(),p2=reopened.makeElement('div');reopened.app.mountConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
+  assert.equal(p2.querySelector('textarea').value,'Newer modern text');assert.deepEqual(reopened.app.chatDraftSession.read().heads.map(head=>head.text).sort(),['Newer modern text','Old text before event']);
+  assert.equal(p2.querySelector('.sw-chat-draft-versions').hidden,false);reopened.app.chatCleanup();
 });
 
 test('an old-tab recovery that cannot reach storage stays downloadable and blocks navigation', async () => {
@@ -3103,7 +3116,7 @@ test('old storage cannot silently revive a discarded or acknowledged draft in th
   let release;disk.hold(new Promise(resolve=>{release=resolve;}));const again=reopened.makeElement('div');reopened.app.mountConversation(again,target,{showHeader:false,notify(){}});
   assert.equal(again.querySelector('textarea').value,'');assert.equal(again.querySelector('textarea').disabled,true);
   disk.hold(null);release();await reopened.app.chatDraftSession.ready;await turn();assert.equal(again.querySelector('textarea').value,'');
-  assert.equal(reopened.app.chatDraftSession.read().heads[0].text,'Legacy text');assert.equal(again.querySelector('.sw-chat-draft-versions').hidden,false);
+  assert.equal(reopened.app.chatDraftSession.read().heads.length,0);assert.equal(again.querySelector('.sw-chat-draft-versions').hidden,true);
   reopened.app.chatCleanup();
 });
 

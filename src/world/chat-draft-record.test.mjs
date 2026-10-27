@@ -45,11 +45,12 @@ test('malformed or stale data is rejected without modifying the previous record'
 
 test('late legacy text is a separate version and an identical later old write can be recovered',()=>{
   const current=writeDraftRecord(null,edit(null,'draft_001','tab_001','Current')).record;
-  const candidate={source:'v1',text:'Old tab thought',replyTo:null};
+  const candidate={source:'v1',digest:'a'.repeat(64),text:'Old tab thought',replyTo:null};
   const both=recoverLegacyDraftRecord(current,candidate,'recovered_001');assert.deepEqual(both.heads.map(head=>head.text),['Current','Old tab thought']);
   assert.equal(recoverLegacyDraftRecord(both,candidate,'recovered_002'),null);
   const selected=selectDraftRecord(both,both.heads.map(head=>head.id),'draft_001','selected_001','tab_001').record;
   const sent=acknowledgeDraftRecord(selected,'selected_001');assert.deepEqual(sent.heads,[]);
-  const repeated=recoverLegacyDraftRecord(sent,candidate,'recovered_003');assert.equal(repeated.heads[0].text,'Old tab thought');
-  const changed=recoverLegacyDraftRecord(repeated,{...candidate,text:'Another old edit'},'recovered_004');assert.equal(changed.heads.length,1);assert.equal(changed.heads[0].text,'Another old edit');
+  assert.equal(recoverLegacyDraftRecord(sent,candidate,'recovered_003'),null);
+  const repeated=recoverLegacyDraftRecord(sent,{...candidate,fresh:true},'recovered_003');assert.equal(repeated.heads[0].text,'Old tab thought');
+  const changed=recoverLegacyDraftRecord(repeated,{...candidate,digest:'b'.repeat(64),text:'Another old edit'},'recovered_004');assert.equal(changed.heads.length,1);assert.equal(changed.heads[0].text,'Another old edit');
 });

@@ -4,14 +4,15 @@ const valid = head => head && id(head.id) && id(head.writer) && text(head.text) 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const snapshot = value => ({id:value.id,writer:value.writer,text:value.text,replyTo:value.replyTo});
 export function readDraftRecord(value) {
-  if (!value) return {revision:0,heads:[]};
+  if (!value) return {revision:0,heads:[],legacySeen:{}};
   if (value.kind !== 'chat-draft-heads.v1' || !Number.isSafeInteger(value.revision) || value.revision < 0
-    || !Array.isArray(value.heads) || !value.heads.every(valid) || new Set(value.heads.map(h=>h.id)).size !== value.heads.length) fail('chat_draft_storage_corrupt');
-  return {revision:value.revision,heads:value.heads.map(snapshot)};
+    || !Array.isArray(value.heads) || !value.heads.every(valid) || new Set(value.heads.map(h=>h.id)).size !== value.heads.length
+    || value.legacySeen!==undefined && (!value.legacySeen||typeof value.legacySeen!=='object'||Array.isArray(value.legacySeen)||Object.entries(value.legacySeen).some(([key,digest])=>!['v1','v2'].includes(key)||typeof digest!=='string'||!/^[a-f0-9]{64}$/u.test(digest)))) fail('chat_draft_storage_corrupt');
+  return {revision:value.revision,heads:value.heads.map(snapshot),legacySeen:{...value.legacySeen}};
 }
 function next(record, heads) {
   if(record.revision>=Number.MAX_SAFE_INTEGER)fail('chat_draft_storage_corrupt');
-  return {kind:'chat-draft-heads.v1',revision:record.revision+1,heads};
+  return {kind:'chat-draft-heads.v1',revision:record.revision+1,heads,...(Object.keys(record.legacySeen).length?{legacySeen:record.legacySeen}:{})};
 }
 export function initializeDraftRecord(value, legacy, legacyId) {
   const record=readDraftRecord(value); if(value)return null;
@@ -41,10 +42,11 @@ export function acknowledgeDraftRecord(value, draftId) {
 }
 export function recoverLegacyDraftRecord(value, candidate, draftId) {
   const record=readDraftRecord(value),head={id:draftId,writer:'legacy_recovered_'+candidate.source,text:candidate.text,replyTo:candidate.replyTo};
-  if(!['v1','v2'].includes(candidate.source)||!valid(head)||(!head.text&&!head.replyTo))fail('chat_draft_invalid');
+  if(!['v1','v2'].includes(candidate.source)||!/^[a-f0-9]{64}$/u.test(candidate.digest)||!valid(head)||(!head.text&&!head.replyTo))fail('chat_draft_invalid');
   const heads=record.heads.map(snapshot),index=heads.findIndex(item=>item.writer===head.writer);
   if(index>=0){if(heads[index].text===head.text&&heads[index].replyTo===head.replyTo)return null;heads[index]=head;}
-  else if(!heads.some(item=>item.writer==='legacy'&&item.text===head.text&&item.replyTo===head.replyTo))heads.push(head);
-  else return null;
+  else if(record.legacySeen[candidate.source]===candidate.digest&&!candidate.fresh)return null;
+  else if(candidate.fresh||!heads.some(item=>item.writer==='legacy'&&item.text===head.text&&item.replyTo===head.replyTo))heads.push(head);
+  record.legacySeen[candidate.source]=candidate.digest;
   return next(record,heads);
 }

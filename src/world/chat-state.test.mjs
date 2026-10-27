@@ -9,13 +9,29 @@ function storage() {
 test('old writes are recognized while current IndexedDB clients do not create false legacy versions',()=>{
   const disk=storage(),old=createChatDraftStore(disk),current=createChatDraftStore(disk,undefined,{indexedDB:true}),seen=[];
   current.subscribe('alice','room',(_draft,legacy)=>{if(legacy)seen.push(legacy);});
-  current.edit('alice','room','Modern');const key='soty.chat.draft.v1:alice:room',modern=disk.getItem(key);
+  current.edit('alice','room','Modern');const modernKey='soty.chat.draft.v3:alice:room',key='soty.chat.draft.v1:alice:room',modern=disk.getItem(modernKey);
   assert.equal(JSON.parse(modern)._sotyWriter,'soty.chat.idb.v1');assert.deepEqual(current.legacyCandidates('alice','room'),[]);
-  current.storageChanged(key,modern);assert.deepEqual(seen,[]);assert.equal(old.read('alice','room').text,'Modern');
+  current.storageChanged(modernKey,modern);assert.deepEqual(seen,[]);assert.equal(old.read('alice','room').text,'');
   old.edit('alice','room','Old tab');const legacy=disk.getItem(key);current.storageChanged(key,legacy);
-  assert.deepEqual(seen,[{source:'v1',text:'Old tab',replyTo:null}]);
-  disk.setItem('soty.chat.draft.v2:alice:room',JSON.stringify({text:'Old attachment draft',replyTo:null,pending:null}));
+  assert.deepEqual(seen,[{source:'v1',text:'Old tab',replyTo:null,fresh:true}]);
+  current.setAttachments('alice','room',['file_001']);assert.equal(current.read('alice','room').text,'Modern');assert.deepEqual(current.read('alice','room').attachments,['file_001']);
+  current.setAttachments('alice','room',[]);assert.equal(disk.getItem(key),legacy,'Modern writes never overwrite the old key');
+  old.edit('alice','room','Newer old text');const newer=disk.getItem(key);current.storageChanged(key,newer);current.storageChanged(key,legacy);
+  assert.equal(seen.at(-1).text,'Newer old text','A delayed storage event must not restore an older value');
+  old.edit('alice','room','Old tab');
+  const v2='soty.chat.draft.v2:alice:room',oldV2=JSON.stringify({text:'Old attachment draft',replyTo:null,attachments:['old_ref_001'],pending:{clientId:'old_intent_001',text:'Old attachment draft',replyTo:null,attachments:['old_ref_001']}});
+  disk.setItem(v2,oldV2);
   assert.deepEqual(current.legacyCandidates('alice','room').map(item=>item.text),['Old tab','Old attachment draft']);
+  current.storageChanged(v2,oldV2);current.setAttachments('alice','room',['modern_ref_001']);current.edit('alice','room','Modern next');
+  assert.equal(disk.getItem(v2),oldV2,'Modern changes preserve old attachment intent');
+  assert.equal(current.read('alice','room').text,'Modern next');assert.deepEqual(current.read('alice','room').attachments,['modern_ref_001']);
+});
+
+test('modern v3 attachment metadata follows a different modern tab',()=>{
+  const disk=storage(),a=createChatDraftStore(disk,undefined,{indexedDB:true}),b=createChatDraftStore(disk,undefined,{indexedDB:true});
+  b.setAttachments('alice','room',['old_ref_001']);
+  a.setAttachments('alice','room',['new_ref_001']);const key='soty.chat.draft.v3:alice:room';
+  b.storageChanged(key,disk.getItem(key));assert.deepEqual(b.read('alice','room').attachments,['new_ref_001']);
 });
 test('chat draft survives reload and retries a lost ACK with the same id', () => {
   const disk = storage(); const first = createChatDraftStore(disk, () => 'request-123');

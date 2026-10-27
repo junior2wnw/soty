@@ -1,5 +1,6 @@
 const PREFIX = 'soty.chat.draft.v1:';
 const ATTACHMENT_PREFIX = 'soty.chat.draft.v2:';
+const IDB_PREFIX = 'soty.chat.draft.v3:';
 const IDB_WRITER = 'soty.chat.idb.v1';
 const empty = () => ({ text: '', replyTo: null, pending: null });
 const replyId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(value) ? value : null;
@@ -35,6 +36,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
   const listeners = new Map();
   const keyFor = (accountId, communityId) => PREFIX + encodeURIComponent(accountId) + ':' + encodeURIComponent(communityId);
   function stored(key) {
+    if(indexedDB){const current=storage.getItem(IDB_PREFIX+key.slice(PREFIX.length));if(current!==null&&current!==undefined)return current;}
     const newer = storage.getItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length));
     if (newer !== null && newer !== undefined) { attachmentScopes.add(key); return newer; }
     return attachmentScopes.has(key) ? null : storage.getItem(key);
@@ -54,11 +56,12 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     memory.set(key, copy(value));
     let durable = true;
     try {
-      // Attachment intents live in v2; an old tab cannot erase their refs/clientId.
-      // Keep its small empty tombstone so legacy v1 text cannot revive after ACK.
+      // Older clients keep attachment intents in v2. Modern clients use their
+      // own v3 cache and never overwrite or remove either old storage key.
       if (refs(value.attachments).length || refs(value.pending?.attachments).length) attachmentScopes.add(key);
       const encoded=JSON.stringify(indexedDB?{...value,_sotyWriter:IDB_WRITER}:value);
-      if (attachmentScopes.has(key)) storage.setItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length), encoded);
+      if (indexedDB) storage.setItem(IDB_PREFIX + key.slice(PREFIX.length),encoded);
+      else if (attachmentScopes.has(key)) storage.setItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length), encoded);
       else if (value.text || value.replyTo || value.pending) storage.setItem(key, encoded);
       else storage.removeItem(key);
       volatile.delete(key);
@@ -76,6 +79,10 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       const key=keyFor(accountId,communityId),suffix=key.slice(PREFIX.length);
       const readCandidate=(name,source)=>{try{return legacyCandidate(storage.getItem(name),source);}catch{return null;}};
       return [readCandidate(key,'v1'),readCandidate(ATTACHMENT_PREFIX+suffix,'v2')].filter(Boolean);
+    },
+    legacyCurrent(accountId,communityId,source) {
+      const key=keyFor(accountId,communityId),name=source==='v2'?ATTACHMENT_PREFIX+key.slice(PREFIX.length):key;
+      try{return legacyCandidate(storage.getItem(name),source);}catch{return undefined;}
     },
     edit(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId); value.text = text.slice(0, 6000);
@@ -135,11 +142,17 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       return () => { subscribers.delete(listener); if (!subscribers.size) listeners.delete(key); };
     },
     storageChanged(key, newValue) {
+      const eventKey=key;
+      const current=key?.startsWith(IDB_PREFIX);
       const newer=key?.startsWith(ATTACHMENT_PREFIX);
-      const candidate=newValue===undefined?null:legacyCandidate(newValue,newer?'v2':'v1');
+      let candidate=current||newValue===undefined?null:legacyCandidate(newValue,newer?'v2':'v1');
+      if(current)key=PREFIX+key.slice(IDB_PREFIX.length);
       if (newer) key=PREFIX+key.slice(ATTACHMENT_PREFIX.length);
       if (!key?.startsWith(PREFIX)) return;
-      if (volatile.has(key) || !newer&&attachmentScopes.has(key)) {if(candidate)notify(key,memory.get(key)??empty(),candidate);return;}
+      if(indexedDB&&!current){if(candidate){try{const latest=storage.getItem(eventKey);if(latest!==newValue)candidate=legacyCandidate(latest,newer?'v2':'v1');}catch{/* Keep the event if storage is unavailable. */}}
+        if(candidate)notify(key,memory.get(key)??empty(),{...candidate,fresh:true});return;}
+      if(!indexedDB&&current)return;
+      if (volatile.has(key) || !indexedDB&&!newer&&attachmentScopes.has(key)) {if(candidate)notify(key,memory.get(key)??empty(),candidate);return;}
       const [accountId, communityId] = key.slice(PREFIX.length).split(':');
       if (!accountId || !communityId) return;
       try { const value = decode(stored(key)); memory.set(key, value); notify(key, value,candidate); } catch { if(candidate)notify(key,memory.get(key)??empty(),candidate); }
