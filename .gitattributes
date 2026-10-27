@@ -3,6 +3,11 @@
 /public/agent/soty-connector.mjs text eol=lf
 /public/agent/manifest.json text eol=lf
 /public/agent/install-macos-linux.sh text eol=lf
+/scripts/windows/soty-managed-windows-reinstall.ps1 text eol=lf
+/scripts/windows/soty-prepare-windows-reinstall.ps1 text eol=lf
+/scripts/windows/soty-arm-windows-reinstall.ps1 text eol=lf
+/scripts/windows/soty-make-fast-usb.ps1 text eol=lf
+/public/agent/windows-reinstall/*.ps1 text eol=lf
 /contracts/identity/v1/** text eol=lf
 /deploy/connector/fixtures/** text eol=lf
 /modules/capabilities/test/fixtures/** text eol=lf
