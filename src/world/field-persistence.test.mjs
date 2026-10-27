@@ -84,6 +84,36 @@ test('an intent added by another window during the empty-outbox check is not str
   assert.deepEqual(f.current().document, doc(14));
 });
 
+test('empty outbox is reread when another writer commits before a delayed notification', async t => {
+  const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load();
+  const gate = defer(), reading = defer(), base = store.port(); let reads = 0;
+  const delayed = { ...base, async read() {
+    const value = await base.read();
+    if (++reads === 1) { reading.resolve(); await gate.promise; }
+    return value;
+  } };
+  const operations = [], api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(delayed, { api }), loading = worker.load({ skipRemoteIfEmpty: true });
+  await reading.promise; f.setOffline(true);
+  await author.commit(doc(15), { expectedRevision: 0, requestId: 'late_unnotified_outbox' });
+  assert.equal(store.value().pending[0].requestId, 'late_unnotified_outbox');
+  author.dispose(); f.setOffline(false); gate.resolve();
+  const state = await loading;
+  assert.deepEqual(f.current().document, doc(15)); assert.equal(store.value().pending.length, 0);
+  assert.equal(state.pendingCount, 0); assert.equal(state.state, 'saved'); assert.equal(reads, 2);
+  assert.deepEqual(operations, ['world.field.get', 'world.field.put']);
+});
+
+test('failed final local outbox read does not report a safe empty journal', async t => {
+  const f = fixture(t), operations = []; let reads = 0;
+  const store = { async read() { if (++reads === 1) return null; throw failure('field_local_storage_unavailable'); },
+    async write() { assert.fail('failed read must not write'); } };
+  const api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(store, { api }), state = await worker.load({ skipRemoteIfEmpty: true });
+  assert.equal(state.state, 'storage-error'); assert.equal(state.localDurable, false); assert.equal(reads, 2);
+  assert.deepEqual(operations, ['world.field.get']);
+});
+
 test('background outbox checks and sends durable offline edits in order; the field reloads their server result', async t => {
   const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load(); f.setOffline(true);
   for (const [index, x] of [11, 22, 33].entries()) await author.commit(doc(x), { expectedRevision: 0, requestId: `background_offline_${index}` });

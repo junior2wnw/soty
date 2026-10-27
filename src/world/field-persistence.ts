@@ -258,8 +258,21 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
       // A background worker has nothing to replay in an empty, healthy outbox;
       // the visible field loads its own fresh document.
       if (options.skipRemoteIfEmpty && !storageError && !local?.conflict && !local?.pending.length) {
-        await serialize(async () => { check(); loaded = true; emit(); });
-        // A notified writer may have filled the shared journal while waiting.
+        await serialize(async () => {
+          check();
+          if (!storageError && !local?.conflict && !local?.pending.length) {
+            try {
+              const saved = await store.read(); check();
+              if (saved) {
+                const latest = await validateLocal(saved); check();
+                if (latest.localRevision < (local?.localRevision ?? 0)) fail('field_local_storage_corrupt');
+                local = latest;
+              } else if (local?.localRevision) fail('field_local_storage_corrupt');
+            } catch (error) { check(); storageError = true; errorCode = codeOf(error); }
+          }
+          loaded = true; emit();
+        });
+        // Include writes committed before this read even if their notice is late.
         if (!storageError && !local?.conflict && !local?.pending.length) return snapshot();
       }
       try {
