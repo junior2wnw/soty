@@ -2,7 +2,7 @@ import { createSourceFeedbackClient, createSourceFeedbackController } from './so
 import { mountFeedbackInbox } from './feedback-inbox.js';
 const byId = id => document.getElementById(id), state = byId('state');
 const requestId = () => 'ordinary-' + crypto.randomUUID();
-let pendingWrite = null, disposed = false, polling = null, pollUntil = 0, pollDelay = 700;
+let pendingWrite = null, pendingKey = null, pendingBlocked = false, writeBusy = false, disposed = false, polling = null, pollUntil = 0, pollDelay = 700;
 const profileVersion = Number(document.querySelector('main').dataset.profileVersion);
 if (![1, 2, 3].includes(profileVersion)) throw new Error('invalid_profile');
 const feedbackApi = createSourceFeedbackClient({ profileVersion });
@@ -16,12 +16,30 @@ async function render() {
   const response = await call('/api/embed/query', { operation: 'items.list' }); byId('items').replaceChildren();
   for (const item of response.data.items) { const row = document.createElement('li'); row.textContent = item.title; byId('items').append(row); }
 }
+function restorePending(bindingDigest) {
+  const key = 'ordinary-items-pending:' + bindingDigest; let raw;
+  try { raw = sessionStorage.getItem(key); } catch { throw Error('pending_storage_unavailable'); }
+  let value = null;
+  if (raw !== null) {
+    try { value = JSON.parse(raw); } catch { throw Error('pending_storage_invalid'); }
+    if (!value || Object.keys(value).sort().join(',') !== 'digest,requestId' || typeof value.requestId !== 'string'
+      || !/^ordinary-[A-Za-z0-9-]{16,100}$/u.test(value.requestId) || typeof value.digest !== 'string'
+      || !/^[a-f0-9]{64}$/u.test(value.digest)) throw Error('pending_storage_invalid');
+  }
+  pendingKey = key; pendingWrite = value; pendingBlocked = false;
+  byId('title').disabled = Boolean(value); byId('create').querySelector('button').textContent = value ? 'Проверить результат' : 'Добавить запись';
+}
 async function refreshConnection() {
   try {
     const context = await fetch('/api/embed/context', { credentials: 'same-origin', redirect: 'error', signal: AbortSignal.timeout(10000) });
     if (!context.ok || (await context.json()).ready !== true || disposed) throw new Error('login_required');
     await render(); if (disposed) return false;
-    state.textContent = 'Подключено к выбранному проекту'; byId('content').hidden = false; byId('connect').hidden = true; return true;
+    try { const identity = await feedbackApi.context(); if (disposed) return false; restorePending(identity.bindingDigest); }
+    catch { pendingKey = null; pendingWrite = null; pendingBlocked = true; }
+    const button = byId('create').querySelector('button'); button.disabled = pendingBlocked;
+    state.textContent = pendingBlocked ? 'Не удалось проверить предыдущую запись на устройстве. Добавление недоступно.'
+      : pendingWrite ? 'Результат предыдущей записи пока неизвестен. Проверьте сохранение.' : 'Подключено к выбранному проекту';
+    byId('content').hidden = false; byId('connect').hidden = true; return true;
   } catch { if (!disposed) { inbox.invalidate(); state.textContent = 'Войдите через Соты. Доступ к выбранному проекту проверит приложение.'; byId('connect').hidden = false; byId('content').hidden = true; } return false; }
 }
 function pollConnection() {
@@ -50,23 +68,34 @@ byId('connect').addEventListener('click', async () => {
 });
 await refreshConnection();
 byId('create').addEventListener('submit', async event => {
-  event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
+  event.preventDefault(); if (writeBusy || pendingBlocked || !pendingKey) return; writeBusy = true;
+  const button = event.currentTarget.querySelector('button'); button.disabled = true;
   try {
+    const identity = await feedbackApi.context();
+    if (disposed || 'ordinary-items-pending:' + identity.bindingDigest !== pendingKey) throw Error('profile_changed');
     if (pendingWrite) {
       const response = await fetch('/api/embed/receipt', { method: 'POST', credentials: 'same-origin', redirect: 'error', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: pendingWrite.args.requestId, input: { inputDigest: pendingWrite.digest } }) });
+        body: JSON.stringify({ requestId: pendingWrite.requestId, input: { inputDigest: pendingWrite.digest } }) });
       if (!response.ok) throw new Error('unknown'); const value = (await response.json()).data;
-      if (value.outcome !== 'committed') throw new Error('unknown');
+      if (value.outcome !== 'committed' || value.requestId !== pendingWrite.requestId || value.inputDigest !== pendingWrite.digest) throw new Error('unknown');
     } else {
       const input = Object.freeze({ operation: 'items.create', title: byId('title').value }), args = Object.freeze({ requestId: requestId(), input });
       const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(input)));
-      pendingWrite = { args, digest: [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('') };
+      const reference = { requestId: args.requestId, digest: [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('') };
+      try { sessionStorage.setItem(pendingKey, JSON.stringify(reference)); } catch { throw Error('pending_storage_unavailable'); }
+      pendingWrite = reference;
       const response = await fetch('/api/embed/invoke', { method: 'POST', credentials: 'same-origin', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) });
-      if (!response.ok) throw new Error('unknown');
+      if (!response.ok) throw new Error('unknown'); const value = (await response.json()).data;
+      if (value.outcome !== 'committed' || value.requestId !== reference.requestId || value.inputDigest !== reference.digest) throw new Error('unknown');
     }
-    pendingWrite = null; byId('title').value = ''; byId('title').disabled = false; button.textContent = 'Добавить запись'; await render(); state.textContent = 'Запись добавлена';
-  } catch { byId('title').disabled = true; button.textContent = 'Проверить результат'; state.textContent = 'Ответ потерян. Проверим квитанцию без повторной записи.'; }
-  finally { button.disabled = false; }
+    try { sessionStorage.removeItem(pendingKey); } catch { throw Error('pending_storage_unavailable'); }
+    pendingWrite = null; byId('title').value = ''; byId('title').disabled = false; button.textContent = 'Добавить запись';
+    try { await render(); state.textContent = 'Запись добавлена'; } catch { state.textContent = 'Запись подтверждена, но список не обновлён.'; }
+  } catch (error) {
+    if (pendingWrite) { byId('title').disabled = true; button.textContent = 'Проверить результат'; state.textContent = 'Результат пока неизвестен. Повторная запись не отправлена.'; }
+    else state.textContent = error?.message === 'pending_storage_unavailable' ? 'Не удалось сохранить запрос на устройстве. Запись не отправлена.'
+      : error?.message === 'profile_changed' ? 'Профиль изменился. Откройте приложение заново.' : 'Не удалось подготовить запись. Повторите попытку.';
+  } finally { writeBusy = false; button.disabled = pendingBlocked; }
 });
 const feedback = createSourceFeedbackController({ api: feedbackApi, onChange(snapshot) {
   byId('recipient').textContent = snapshot.context?.recipientLabel ?? '';

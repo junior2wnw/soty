@@ -1,6 +1,6 @@
 {
   "name": "@soty/source-app",
-  "version": "0.1.0-preview.17",
+  "version": "0.1.0-preview.18",
   "type": "module",
   "bin": { "soty-source": "./dist/install.mjs" },
   "engines": { "node": ">=24.15.0" },
