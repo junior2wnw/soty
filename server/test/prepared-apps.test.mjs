@@ -5,9 +5,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
+import { pinnedHistory } from './support/pinned-history.mjs';
 import { createHttpApp } from '../http-app.js';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { parseSourceJson } from '../../modules/source-app/shared/strict-json.mjs';
@@ -229,7 +229,7 @@ test('the real prior SQLite reader retains the immutable receipt through a write
   const f = await fixture(t); await f.oldConnector(); await assert.rejects(f.owner.extension('apps.prepared.create', f.args));
   const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'old-prepared-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}');
   const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   const before = f.service().locals.connectorService.store.state.requests.find(item => item.prepared);

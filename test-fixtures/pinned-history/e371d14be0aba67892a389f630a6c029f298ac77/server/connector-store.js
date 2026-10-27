@@ -1,0 +1,1236 @@
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { ConnectorPersistence, metadata, connectorStoreClosed } from "./connector-persistence.js";
+import path from "node:path";
+import { statSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { captureConnectorModelAuthorization, captureLegacyConnectorModelAuthorization, recheckConnectorModelAuthorizations } from './connector-model-authorization.js';
+
+// Keep v2 so the current production rollback image can still read connectors
+// and jobs. Older code safely drops the additive accessGrants collection.
+const storeSchema = "soty.connector-store.v2";
+const previousStoreSchemas = new Set(["soty.connector-store.v1"]);
+const jobSchema = "soty.connector-job.v2";
+const delegatedJobSchema = "soty.connector-job.v3";
+const accountJobSchema = "soty.connector-job.v4";
+const previousJobSchema = "soty.connector-job.v1";
+const connectorFreshMs = 90_000;
+const defaultLeaseMs = 75_000;
+const finishedRetentionMs = 7 * 24 * 60 * 60_000;
+const maxJobs = 2_000;
+const maxEvents = 512;
+const maxAccessGrants = 4_000;
+const maxAccessGrantMs = 30 * 24 * 60 * 60_000;
+const defaultAccessGrantMs = maxAccessGrantMs;
+const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
+
+export function createConnectorStore(dataDir, options = {}) {
+  return new ConnectorStore(path.join(dataDir || "data", "connector-store.json"), options);
+}
+
+class ConnectorStore {
+  constructor(filePath, options) {
+    this.filePath = filePath;
+    this.maintenancePath = path.join(path.dirname(filePath), "connector-maintenance.json");
+    this.now = typeof options.now === "function" ? options.now : () => Date.now();
+    this.ownedJobActive = typeof options.ownedJobActive === 'function' ? options.ownedJobActive : null;
+    this.legacyModelSponsorEligible = typeof options.legacyModelSponsorEligible === 'function' ? options.legacyModelSponsorEligible : null;
+    this.preserveHistory = options.preserveHistory ?? process.env.SOTY_CONNECTOR_PRESERVE_HISTORY === "1";
+    this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
+    this.requestIndex = new Map();
+    this.leaseMs = safeInteger(options.leaseMs, 5_000, 10 * 60_000, defaultLeaseMs);
+    this.events = new EventEmitter();
+    this.changeSequence = 0;
+    this.routeVersions = new Map();
+    this.events.setMaxListeners(0);
+    this.state = emptyState();
+    this.persistence = new ConnectorPersistence(filePath);
+    this.ready = this.load();
+    this.ready.catch(() => undefined);
+    this.writeQueue = this.ready;
+  }
+
+  async load() {
+    const loaded = await this.persistence.call("load");
+    this.state = loaded.state;
+    this.requestIndex = new Map(this.state.requests.map((item) => [item.id,item]));
+    this.revision = loaded.revision;
+  }
+
+  maintenance() { try { statSync(this.maintenancePath); return true; } catch(error) { if(error.code === "ENOENT") return false; throw error; } }
+
+  close() {
+    if (this.closePromise) return this.closePromise;
+    this.closing = true;
+    this.events.emit('model-authorization-close');
+    this.closePromise = (async () => {
+      await this.writeQueue.catch(() => undefined);
+      await this.persistence.close();
+    })();
+    return this.closePromise;
+  }
+
+  async readable() {
+    if (this.closing) throw connectorStoreClosed();
+    await this.ready;
+    if (this.closing) throw connectorStoreClosed();
+    if (this.persistence.failed || this.failed) throw this.persistence.failed || this.failed;
+  }
+
+  async register(input, token) {
+    const clean = cleanRegistration(input);
+    const secret = safeToken(token);
+    if (!clean || !secret) return { ok: false, error: "invalid-registration" };
+    return await this.mutate(() => {
+      const now = this.now();
+      this.expire(now);
+      const tokenHash = hashToken(secret);
+      const existing = this.state.connectors.find((item) => connectorKey(item) === connectorKey(clean));
+      if (existing && !sameHash(existing.tokenHash, tokenHash)) {
+        return { ok: false, error: "connector-auth-failed" };
+      }
+      const connector = existing || { ...clean, tokenHash, createdAt: now };
+      Object.assign(connector, clean, { tokenHash, lastSeenAt: now });
+      if (!existing) this.state.connectors.push(connector);
+      this.signal(clean.linkId, clean.deviceId);
+      return { ok: true, connector: publicConnector(connector, now) };
+    });
+  }
+
+  async status(auth, deviceId = "") {
+    await this.readable();
+    const now = this.now();
+    const access = this.authorizeController(auth, { deviceId, capability: "status" }, now);
+    if (!access.ok) return access;
+    const link = access.linkId;
+    const device = access.deviceId;
+    const connectors = this.state.connectors
+      .filter((item) => item.linkId === link && (!device || item.deviceId === device))
+      .map((item) => publicConnector(item, now));
+    const devices = aggregateDevices(connectors);
+    return {
+      ok: true,
+      schema: "soty.connector-status.v1",
+      connected: devices.some((item) => item.connected),
+      devices
+    };
+  }
+
+  isConnected(linkId, now = this.now()) {
+    const link = safeLinkId(linkId);
+    return Boolean(link && this.state.connectors.some((item) => item.linkId === link && now - item.lastSeenAt <= connectorFreshMs));
+  }
+
+  async captureModelAuthorization(token) {
+    await this.writeQueue; await this.readable();
+    const secret = safeToken(token); if (!secret) return false;
+    return captureConnectorModelAuthorization(this, hashToken(secret), { sameHash, hashToken, changeKey, freshMs: connectorFreshMs });
+  }
+
+  async authenticateModelToken(token) { return Boolean(await this.captureModelAuthorization(token)); }
+  async captureLegacyModelAuthorization(token) {
+    await this.writeQueue; await this.readable();
+    const secret = safeToken(token); if (!secret) return false;
+    const tokenHash = hashToken(secret), matches = this.state.connectors.filter(item => item.protocol === 2 && sameHash(item.tokenHash, tokenHash));
+    if (matches.length !== 1 || !this.legacyModelSponsorEligible) return false;
+    const binding = { linkId: matches[0].linkId, deviceId: matches[0].deviceId, connectorId: matches[0].connectorId };
+    let unowned = false; try { unowned = this.legacyModelSponsorEligible(binding) === true; } catch {}
+    if (!unowned) { await this.noteAccountModelOwnership(binding); return false; }
+    return captureLegacyConnectorModelAuthorization(this, hashToken(secret), { sameHash, hashToken, changeKey, freshMs: connectorFreshMs });
+  }
+  async noteAccountModelOwnership(binding) {
+    return this.mutate(() => {
+      for (const connector of this.state.connectors) if (connector.linkId === binding.linkId && connector.deviceId === binding.deviceId && connector.connectorId === binding.connectorId) connector.accountOwned = true;
+      this.signal(binding.linkId, binding.deviceId);
+    });
+  }
+  recheckModelAuthorizations() { recheckConnectorModelAuthorizations(this); }
+
+  async createAccessGrant(ownerLinkId, input) {
+    const linkId = safeLinkId(ownerLinkId);
+    const deviceId = safeDeviceId(input?.deviceId);
+    const controllerDeviceId = safeControllerDeviceId(input?.controllerDeviceId, true);
+    const capabilities = cleanAccessCapabilities(input?.capabilities);
+    const lifetimeMs = safeInteger(input?.expiresInMs ?? input?.ttlMs, 1_000, maxAccessGrantMs, defaultAccessGrantMs);
+    if (!linkId || !deviceId || !controllerDeviceId || capabilities.length === 0) {
+      return { ok: false, error: "invalid-access-grant" };
+    }
+    return await this.mutate(() => {
+      const now = this.now();
+      this.expire(now);
+      if (!this.state.connectors.some((item) => item.linkId === linkId && item.deviceId === deviceId)) {
+        return { ok: false, error: "connector-access-denied" };
+      }
+      if (this.state.accessGrants.length >= maxAccessGrants) return { ok: false, error: "connector-grant-limit" };
+      const token = randomBytes(32).toString("base64url");
+      const grant = {
+        id: `grant_${randomUUID().replace(/-/gu, "")}`,
+        linkId,
+        deviceId,
+        controllerDeviceId,
+        capabilities,
+        tokenHash: hashToken(token),
+        createdAt: now,
+        expiresAt: now + lifetimeMs,
+        revokedAt: 0
+      };
+      this.state.accessGrants.push(grant);
+      return { ok: true, grant: publicAccessGrant(grant), token };
+    });
+  }
+
+  async revokeAccessGrant(ownerLinkId, grantId) {
+    const linkId = safeLinkId(ownerLinkId);
+    const id = safeId(grantId, 160);
+    if (!linkId || !id) return { ok: false, error: "connector-access-denied" };
+    return await this.mutate(() => {
+      const now = this.now();
+      this.expire(now);
+      const grant = this.state.accessGrants.find((item) => item.id === id && item.linkId === linkId);
+      if (!grant) return { ok: false, error: "connector-access-denied" };
+      if (!grant.revokedAt) grant.revokedAt = now;
+      this.cancelGrantJobs(grant, now, "Доступ отозван");
+      this.signal(grant.linkId, grant.deviceId);
+      return { ok: true, grant: publicAccessGrant(grant) };
+    });
+  }
+
+
+  async createJob(input, auth = input?.linkId) {
+    const requested = cleanNewJob(input, { requireLink: false });
+    if (!requested || (input?.requestId !== undefined && !/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.requestId))) return { ok: false, error: "invalid-job" };
+    return await this.mutate(() => {
+      if (this.maintenance()) return { ok: false, error: "connector-maintenance" };
+      const ownerAccountId = safeId(auth?.ownerAccountId, 160);
+      if (ownerAccountId && (typeof auth.guard !== 'function' || auth.guard() !== true)) return { ok: false, error: 'job-access-denied' };
+      if (ownerAccountId && this.ownedJobActive && !safeDeviceId(auth.sourceActorDeviceId)) return { ok: false, error: 'job-access-denied' };
+      const ownedRequestId = ownerAccountId ? safeId(auth.requestId, 160) : '';
+      const ownedConnectorId = ownerAccountId ? safeId(auth.connectorId, 160) : '';
+      if (ownerAccountId && (!ownedRequestId || !ownedConnectorId || !requested.linkId || !requested.deviceId
+        || auth.expectedDeviceId && auth.expectedDeviceId !== requested.deviceId)) return { ok: false, error: 'invalid-request-id' };
+      const now = this.now();
+      this.expire(now);
+      const access = ownerAccountId ? { ok: true, linkId: requested.linkId, deviceId: requested.deviceId, grant: null }
+        : this.authorizeController(auth, { deviceId: requested.deviceId, capability: requested.kind }, now);
+      if (!access.ok) return access;
+      const clean = { ...requested, linkId: access.linkId, deviceId: access.deviceId };
+      if (!this.state.connectors.some((item) => item.linkId === clean.linkId && (!clean.deviceId || item.deviceId === clean.deviceId))) {
+        return { ok: false, error: "connector-access-denied" };
+      }
+      if (ownerAccountId) for (const connector of this.state.connectors) {
+        if (connector.linkId === clean.linkId && connector.deviceId === clean.deviceId && connector.connectorId === ownedConnectorId) connector.accountOwned = true;
+      }
+      const requestId = ownedRequestId || input?.requestId || "";
+      const requestKey = requestId ? hashToken(JSON.stringify(ownerAccountId ? ['account', ownerAccountId, requestId] : [clean.linkId, clean.deviceId, access.grant?.id || "", requestId])) : "";
+      const fingerprint = requestId ? hashToken(JSON.stringify({ ...clean, threadId: input?.threadId || "", connectorId: ownedConnectorId || input?.connectorId || "" })) : "";
+      const projection = ownerAccountId ? { events: false, resultPreview: true } : { summary: true };
+      const previous = requestKey ? this.requestIndex.get(requestKey) : null;
+      if (previous) {
+        if (previous.requestIntent && auth.requestIntent && previous.requestIntent !== auth.requestIntent) return { ok: false, error: 'job-request-conflict' };
+        if (previous.fingerprint !== fingerprint) return { ok: false, error: "job-request-conflict" };
+        const priorJob = this.state.jobs.find((item) => item.id === previous.jobId);
+        return priorJob ? { ok: true, reused: true, job: publicJob(priorJob, projection) }
+          : { ok: false, error: "job-request-retired", jobId: previous.jobId };
+      }
+      if (requestKey && this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: "connector-request-limit" };
+      if (ownerAccountId && auth.conversationGuard === true) {
+        const conversation = this.state.jobs.filter(item => item.ownerAccountId === ownerAccountId && item.threadId === clean.threadId
+          && item.deviceId === clean.deviceId && item.requestedConnectorId === ownedConnectorId);
+        if (conversation.some(item => !terminalStatuses.has(item.status) || item.executionUncertain === true)) return { ok: false, error: 'assistant-conversation-busy' };
+        const latest = conversation.at(-1);
+        if (latest && latest.id !== auth.previousJobId) return { ok: false, error: 'assistant-conversation-stale' };
+      }
+      const activeJobs = this.state.jobs.filter((job) => !terminalStatuses.has(job.status)).length;
+      if (activeJobs >= maxJobs) return { ok: false, error: "connector-queue-full" };
+      const job = {
+        // Older readers must fail closed, never reinterpret an account-owned
+        // job as a legacy room-link job. Code rollback needs a v4-capable reader.
+        schema: ownerAccountId ? accountJobSchema : access.grant ? delegatedJobSchema : jobSchema,
+        id: `job_${randomUUID().replace(/-/gu, "")}`,
+        linkId: clean.linkId,
+        deviceId: clean.deviceId,
+        threadId: clean.threadId,
+        requestedConnectorId: safeId(input?.connectorId, 160),
+        kind: clean.kind,
+        ...(ownerAccountId ? { ownerAccountId, requestId, requestDigest: fingerprint, requestedConnectorId: ownedConnectorId,
+          ...(safeDeviceId(auth.sourceActorDeviceId) ? { sourceActorDeviceId: auth.sourceActorDeviceId } : {}) } : {}),
+        input: clean.input,
+        permissions: clean.permissions,
+        status: "queued",
+        attempts: 0,
+        connectorId: "",
+        accessGrantId: access.grant?.id || "",
+        leaseUntil: 0,
+        cancelRequested: false,
+        events: [],
+        result: null,
+        createdAt: now,
+        updatedAt: now,
+        finishedAt: 0
+      };
+      this.state.jobs.push(job);
+      if (requestKey) this.state.requests = [...this.state.requests, { id: requestKey, fingerprint, jobId: job.id,
+        ...(/^[a-f0-9]{64}$/u.test(auth?.requestIntent || '') ? { requestIntent: auth.requestIntent } : {}) }];
+      this.pushEvent(job, { type: "queued", text: "Задание принято" }, now);
+      this.expire(now);
+      this.signal(job.linkId, job.deviceId);
+      return { ok: true, job: publicJob(job, projection) };
+    });
+  }
+
+  async getJob(auth, jobId, options = {}) {
+    if (options.ownerAccountId) {
+      await this.writeQueue; await this.readable();
+      if (options.guard && options.guard() !== true) return { ok: false, error: 'job-access-denied' };
+      const job = this.findOwnedJob(auth, jobId, options);
+      return job ? { ok: true, job: publicJob(job, { events: false, resultPreview: true }) } : { ok: false, error: 'job-not-found' };
+    }
+    await this.readable();
+    const access = this.authorizeJob(auth, jobId, "events", this.now());
+    if (!access.ok) return access;
+    return { ok: true, job: publicJob(access.job, options) };
+  }
+
+  /** Account history uses the same current device guard as signed reads, before pagination. */
+  async listOwnedJobs({ ownerAccountId, guard, canRead, limit = 30, cursor } = {}) {
+    await this.writeQueue; await this.readable();
+    if (!safeId(ownerAccountId, 160) || typeof guard !== 'function' || !guard() || typeof canRead !== 'function') return { ok: false, error: 'job-access-denied' };
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { ok: false, error: 'invalid-page' };
+    const scope = hashToken(`assistant-history:${ownerAccountId}`);
+    let before;
+    if (cursor !== undefined) {
+      if (typeof cursor !== 'string' || cursor.length > 500) return { ok: false, error: 'invalid-page' };
+      try { before = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { return { ok: false, error: 'invalid-page' }; }
+      if (before?.scope !== scope || !Number.isSafeInteger(before.at) || !safeId(before.id, 160)) return { ok: false, error: 'invalid-page' };
+    }
+    const values = this.state.jobs.filter(job => job.ownerAccountId === ownerAccountId && job.kind === 'agent'
+      && (() => { try { return canRead({ hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId }) === true; } catch { return false; } })()
+      && (!before || job.createdAt < before.at || (job.createdAt === before.at && job.id < before.id)))
+      .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    const page = values.slice(0, limit), last = page.at(-1);
+    if (!guard()) return { ok: false, error: 'job-access-denied' };
+    return { ok: true, jobs: page.map(job => ({ id: job.id, hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId,
+      threadId: job.threadId, text: job.input.text.slice(0, 180), cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
+      status: job.status, cancelRequested: job.cancelRequested, executionUncertain: job.executionUncertain === true,
+      createdAt: new Date(job.createdAt).toISOString(), updatedAt: new Date(job.updatedAt).toISOString() })),
+      nextCursor: values.length > limit ? Buffer.from(JSON.stringify({ scope, at: last.createdAt, id: last.id })).toString('base64url') : null };
+  }
+
+  async getOwnedContinuation(auth, jobId, options) {
+    await this.writeQueue; await this.readable();
+    if (typeof options.guard !== 'function' || !options.guard()) return null;
+    const job = this.findOwnedJob(auth, jobId, options);
+    if (!job || !terminalStatuses.has(job.status) || job.executionUncertain === true || job.kind !== 'agent' || job.input.output === 'local-app' || !job.result?.sessionId) return null;
+    return { threadId: job.threadId, cwd: job.input.cwd, sessionId: job.result.sessionId };
+  }
+
+  async getOwnedTask(auth, jobId, options) {
+    await this.writeQueue; await this.readable();
+    if (typeof options.guard !== 'function' || !options.guard()) return null;
+    const job = this.findOwnedJob(auth, jobId, options);
+    if (!job || job.kind !== 'agent') return null;
+    return { text: job.input.text, cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
+      ...(job.input.autoRegister === true ? { autoRegister: true } : {}),
+      canContinue: terminalStatuses.has(job.status) && job.executionUncertain !== true && job.input.output !== 'local-app' && Boolean(job.result?.sessionId) };
+  }
+
+  /** Host-only recovery source. Read the durable job, never the connector's retry body. */
+  async automaticAppJobs(jobId = '') {
+    await this.writeQueue; await this.readable();
+    const now = this.now();
+    return this.state.jobs.filter(job => (!jobId || job.id === jobId) && job.schema === accountJobSchema
+      && job.kind === 'agent' && job.input?.output === 'local-app' && job.input.autoRegister === true
+      && job.status === 'succeeded' && !job.cancelRequested && !job.executionUncertain && job.result?.ok === true
+      && job.result.appProposal?.sourceJobId === job.id && job.sourceActorDeviceId
+      && job.connectorId === job.requestedConnectorId && job.finishedAt > 0 && now - job.finishedAt < finishedRetentionMs)
+      .map(job => ({ id: job.id, schema: job.schema, status: job.status, autoRegister: true, ownerAccountId: job.ownerAccountId, sourceActorDeviceId: job.sourceActorDeviceId,
+        linkId: job.linkId, deviceId: job.deviceId, connectorId: job.requestedConnectorId, proposal: { ...job.result.appProposal } }));
+  }
+
+  async getOwnedRequest(auth, options) {
+    await this.writeQueue; await this.readable();
+    if (!safeId(options.ownerAccountId, 160) || !safeId(options.requestId, 160) || !/^[a-f0-9]{64}$/u.test(options.requestIntent || '')
+      || typeof options.guard !== 'function' || !options.guard()) return { ok: false, error: 'job-access-denied' };
+    const previous = this.requestIndex.get(hashToken(JSON.stringify(['account', options.ownerAccountId, options.requestId])));
+    if (!previous) return { ok: true, found: false };
+    if (!previous.requestIntent) return { ok: false, error: 'job-request-unverifiable' };
+    if (previous.requestIntent !== options.requestIntent) return { ok: false, error: 'job-request-conflict' };
+    if (previous.rejection) return { ok: true, found: true, admission: { status: 'rejected', requestId: options.requestId, reason: previous.rejection } };
+    const job = this.findOwnedJob(auth, previous.jobId, options);
+    if (!job) return { ok: false, error: 'job-request-retired' };
+    return { ok: true, found: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) };
+  }
+
+  async rejectOwnedRequest(auth, options, reason) {
+    return this.mutate(() => {
+      if (typeof options.guard !== 'function' || !options.guard() || !safeId(options.ownerAccountId, 160)
+        || !safeId(options.requestId, 160) || !/^[a-f0-9]{64}$/u.test(options.requestIntent || '') || !/^[a-z_]{3,80}$/u.test(reason)) return { ok: false, error: 'job-access-denied' };
+      const key = hashToken(JSON.stringify(['account', options.ownerAccountId, options.requestId]));
+      const previous = this.requestIndex.get(key);
+      if (previous) {
+        if (previous.requestIntent !== options.requestIntent) return { ok: false, error: 'job-request-conflict' };
+        if (previous.rejection) return { ok: true, admission: { status: 'rejected', requestId: options.requestId, reason: previous.rejection } };
+        const job = this.findOwnedJob(auth, previous.jobId, options);
+        return job ? { ok: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) } : { ok: false, error: 'job-request-retired' };
+      }
+      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'connector-request-limit' };
+      // A rejection is an immutable receipt too. A racing request with this ID
+      // can never turn it into a later execution after the UI has corrected it.
+      this.state.requests = [...this.state.requests, { id: key, fingerprint: options.requestIntent, requestIntent: options.requestIntent,
+        jobId: `rejected_${randomUUID().replaceAll('-', '')}`, rejection: reason }];
+      return { ok: true, admission: { status: 'rejected', requestId: options.requestId, reason } };
+    });
+  }
+
+  async getAssignedConnectorJob(auth, jobId) {
+    await this.readable();
+    const connector = this.authenticate(auth);
+    const job = connector ? this.assignedJob(connector, jobId) : null;
+    if (job?.ownerAccountId) return { ok: false, error: 'job-not-found' };
+    return connector && job ? { ok: true, job: publicJob(job, { summary: true }) } : { ok: false, error: "connector-auth-failed" };
+  }
+
+  /** A leased runtime observes cancellation without gaining account history. */
+  async getAssignedJobState(auth, jobId) {
+    if (!this.ownedJobActive) {
+      await this.writeQueue; await this.readable();
+      const connector = this.authenticate(auth), job = connector ? this.assignedJob(connector, jobId) : null;
+      return connector && job ? { ok: true, job: { id: job.id, status: job.status, cancelRequested: job.cancelRequested } }
+        : { ok: false, error: 'connector-auth-failed' };
+    }
+    return this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
+      const connector = this.authenticate(auth), job = connector ? this.assignedJob(connector, jobId) : null;
+      return connector && job ? { ok: true, job: { id: job.id, status: job.status, cancelRequested: job.cancelRequested,
+        currentOwnerChecked: job.schema === accountJobSchema && Boolean(job.sourceActorDeviceId) } }
+        : { ok: false, error: 'connector-auth-failed' };
+    });
+  }
+
+  refreshOwnedJobAdmission(now) {
+    if (!this.ownedJobActive) return;
+    for (const job of this.state.jobs) {
+      if (!job.ownerAccountId || terminalStatuses.has(job.status) || job.cancelRequested) continue;
+      let active = false;
+      try { active = Boolean(job.sourceActorDeviceId && this.ownedJobActive(job) === true); } catch { /* Deny unavailable authority. */ }
+      if (active) continue;
+      job.cancelRequested = true; job.updatedAt = now;
+      this.pushEvent(job, { type: 'cancel_requested', text: 'Доступ владельца устройства отозван' }, now);
+      if (job.status === 'queued') {
+        job.status = 'cancelled'; job.leaseUntil = 0; job.finishedAt = now;
+        job.result = { ok: false, text: 'Отменено до запуска: доступ отозван', exitCode: 130 };
+      }
+      this.signal(job.linkId, job.deviceId);
+    }
+  }
+
+  async getEvents(auth, jobId, after = 0, owned = {}) {
+    if (owned.ownerAccountId) await this.writeQueue;
+    await this.readable();
+    if (owned.guard && owned.guard() !== true) return { ok: false, error: 'job-access-denied' };
+    const ownedJob = owned.ownerAccountId ? this.findOwnedJob(auth, jobId, owned) : null;
+    const access = owned.ownerAccountId ? ownedJob ? { ok: true, job: ownedJob } : { ok: false, error: 'job-not-found' }
+      : this.authorizeJob(auth, jobId, "events", this.now());
+    if (!access.ok) return access;
+    const job = access.job;
+    const cursor = Math.max(0, Number.isSafeInteger(after) ? after : 0);
+    const available = job.events.filter((event) => event.seq > cursor);
+    const page = [];
+    let bytes = 0;
+    for (const event of available) {
+      const cost = Buffer.byteLength(JSON.stringify(event));
+      if (page.length && (page.length >= 32 || bytes + cost > (owned.ownerAccountId ? Math.min(256_000, owned.maxEventBytes || 256_000) : 128_000))) break;
+      page.push(publicEvent(event));
+      bytes += cost;
+    }
+    const more = page.length < available.length;
+    return {
+      ok: true,
+      job: publicJob(job, owned.ownerAccountId ? { events: false, resultPreview: true } : { events: false, summary: more || !terminalStatuses.has(job.status) }),
+      events: page,
+      cursor: page.at(-1)?.seq || cursor,
+      more,
+      changeVersion: this.routeVersion(job.linkId, job.deviceId),
+      done: terminalStatuses.has(job.status) && !more
+    };
+  }
+
+  async cancelJob(auth, jobId, owned = {}) {
+    return await this.mutate(() => {
+      if (owned.guard && owned.guard() !== true) return { ok: false, error: 'job-access-denied' };
+      const now = this.now();
+      this.expire(now);
+      this.refreshOwnedJobAdmission(now);
+      const ownedJob = owned.ownerAccountId ? this.findOwnedJob(auth, jobId, owned) : null;
+      const access = owned.ownerAccountId ? ownedJob ? { ok: true, job: ownedJob } : { ok: false, error: 'job-not-found' }
+        : this.authorizeJob(auth, jobId, "cancel", now);
+      if (!access.ok) return access;
+      const job = access.job;
+      const projection = owned.ownerAccountId ? { events: false, resultPreview: true } : { summary: true };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, projection) };
+      job.cancelRequested = true;
+      job.updatedAt = now;
+      this.pushEvent(job, { type: "cancel_requested", text: "Запрошена отмена" }, now);
+      if (job.status === "queued") {
+        job.status = "cancelled";
+        job.finishedAt = now;
+        job.result = { ok: false, text: "Отменено", exitCode: 130 };
+      }
+      this.signal(job.linkId, job.deviceId);
+      return { ok: true, job: publicJob(job, projection) };
+    });
+  }
+
+  async getResultPage(linkId, jobId, { offset = 0, limit = 8000 } = {}, access = {}) {
+    await this.writeQueue;
+    await this.readable();
+    if (access.guard && access.guard() !== true) return { ok: false, error: 'job-access-denied' };
+    const job = this.findOwnedJob(linkId, jobId, access);
+    if (!job) return { ok: false, error: 'job-not-found' };
+    const start = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+    const size = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 8000) : 8000;
+    const text = job.result?.text || '';
+    return { ok: true, text: text.slice(start, start + size), total: text.length, nextOffset: start + size < text.length ? start + size : null };
+  }
+
+  async poll(auth, waitMs = 0, signal) {
+    const observedVersion = this.routeVersion(safeLinkId(auth?.linkId), safeDeviceId(auth?.deviceId));
+    const first = await this.lease(auth);
+    if (!first.ok || first.jobs.length > 0 || first.cancel.length > 0 || waitMs <= 0) return first;
+    await this.waitForChange(safeLinkId(auth?.linkId), first.connector.deviceId, waitMs, signal, observedVersion);
+    return await this.lease(auth);
+  }
+
+  async lease(auth) {
+    return await this.mutate(() => {
+      const connector = this.authenticate(auth);
+      if (!connector) return { ok: false, error: "connector-auth-failed" };
+      const now = this.now();
+      connector.lastSeenAt = now;
+      this.expire(now);
+      this.refreshOwnedJobAdmission(now);
+      const cancel = this.state.jobs
+        .filter((job) => job.linkId === connector.linkId && job.connectorId === connector.connectorId && job.deviceId === connector.deviceId && job.cancelRequested && !terminalStatuses.has(job.status))
+        .map((job) => job.id);
+      const candidate = this.maintenance() ? null : this.state.jobs.find((job) => this.jobGrantActive(job, now) && canLease(job, connector, now));
+      const jobs = [];
+      if (candidate) {
+        candidate.status = "leased";
+        candidate.connectorId = connector.connectorId;
+        candidate.deviceId = candidate.deviceId || connector.deviceId;
+        candidate.leaseUntil = now + this.leaseMs;
+        candidate.attempts += 1;
+        candidate.updatedAt = now;
+        this.pushEvent(candidate, { type: "leased", text: connector.deviceNick || connector.deviceId }, now);
+        jobs.push(connectorJob(candidate));
+      }
+      return { ok: true, connector: publicConnector(connector, now), jobs, cancel };
+    });
+  }
+
+  async appendEvent(auth, jobId, value) {
+    const event = cleanEvent(value);
+    if (!event) return { ok: false, error: "invalid-event" };
+    return await this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
+      const connector = this.authenticate(auth);
+      const job = connector ? this.assignedJob(connector, jobId) : null;
+      if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, { summary: true }) };
+      const now = this.now();
+      connector.lastSeenAt = now;
+      job.status = job.cancelRequested ? job.status : "running";
+      job.executionUncertain = false;
+      job.leaseUntil = now + this.leaseMs;
+      job.updatedAt = now;
+      this.pushEvent(job, event, now);
+      this.signal(job.linkId, job.deviceId);
+      return { ok: true, job: publicJob(job, { summary: true }) };
+    });
+  }
+
+  async finishJob(auth, jobId, value) {
+    const result = cleanResult(value);
+    if (!result) return { ok: false, error: "invalid-result" };
+    return await this.mutate(() => {
+      this.refreshOwnedJobAdmission(this.now());
+      const connector = this.authenticate(auth);
+      const job = connector ? this.assignedJob(connector, jobId) : null;
+      if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, { summary: true }) };
+      const now = this.now();
+      connector.lastSeenAt = now;
+      if (result.appProposal && (job.input?.output !== 'local-app' || result.appProposal.sourceJobId !== job.id)) delete result.appProposal;
+      job.result = result;
+      job.executionUncertain = false;
+      job.status = job.cancelRequested || result.exitCode === 130 ? "cancelled" : result.ok ? "succeeded" : "failed";
+      job.leaseUntil = 0;
+      job.finishedAt = now;
+      job.updatedAt = now;
+      this.pushEvent(job, { type: job.status, text: result.text.slice(0, 4_000) }, now);
+      this.signal(job.linkId, job.deviceId);
+      return { ok: true, job: publicJob(job, { summary: true }) };
+    });
+  }
+
+
+  authorizeController(auth, options = {}, now = this.now()) {
+    const value = normalizeControllerAuth(auth);
+    const requestedDeviceId = safeDeviceId(options.deviceId);
+    if (!value.grantId && !value.token) {
+      if (!value.linkId) return { ok: false, error: "connector-access-denied" };
+      return { ok: true, linkId: value.linkId, deviceId: requestedDeviceId, grant: null };
+    }
+    if (!value.grantId || !value.token || !value.controllerDeviceId) {
+      return { ok: false, error: "connector-access-denied" };
+    }
+    const grant = this.state.accessGrants.find((item) => item.id === value.grantId);
+    if (!grant || (grant.controllerDeviceId !== "*" && grant.controllerDeviceId !== value.controllerDeviceId)
+      || !sameHash(grant.tokenHash, hashToken(value.token))) {
+      return { ok: false, error: "connector-access-denied" };
+    }
+    if (grant.revokedAt) return { ok: false, error: "connector-access-revoked" };
+    if (grant.expiresAt <= now) return { ok: false, error: "connector-access-expired" };
+    if (options.capability && !hasAccessCapability(grant, options.capability)) {
+      return { ok: false, error: "connector-access-denied" };
+    }
+    if (requestedDeviceId && requestedDeviceId !== grant.deviceId) {
+      return { ok: false, error: "connector-access-denied" };
+    }
+    return { ok: true, linkId: grant.linkId, deviceId: grant.deviceId, grant };
+  }
+
+  authorizeJob(auth, jobId, capability, now = this.now()) {
+    const id = safeId(jobId, 160);
+    if (!id) return { ok: false, error: "job-not-found" };
+    const access = this.authorizeController(auth, { capability }, now);
+    if (!access.ok) return access;
+    if (!access.grant) {
+      const job = this.findOwnedJob(access.linkId, id);
+      return job ? { ok: true, job, access } : { ok: false, error: "job-not-found" };
+    }
+    const job = this.state.jobs.find((item) => item.id === id);
+    if (!job) return { ok: false, error: "job-not-found" };
+    if (job.linkId !== access.linkId || job.deviceId !== access.deviceId || job.accessGrantId !== access.grant.id) {
+      return { ok: false, error: "connector-access-denied" };
+    }
+    return { ok: true, job, access };
+  }
+
+  jobGrantActive(job, now) {
+    if (!job.accessGrantId) return true;
+    const grant = this.state.accessGrants.find((item) => item.id === job.accessGrantId);
+    return Boolean(grant && !grant.revokedAt && grant.expiresAt > now);
+  }
+
+  cancelGrantJobs(grant, now, text) {
+    for (const job of this.state.jobs) {
+      if (job.accessGrantId !== grant.id || terminalStatuses.has(job.status)) continue;
+      if (!job.cancelRequested) this.pushEvent(job, { type: "cancel_requested", text }, now);
+      job.cancelRequested = true;
+      job.updatedAt = now;
+      if (job.status === "queued") {
+        job.status = "cancelled";
+        job.leaseUntil = 0;
+        job.finishedAt = now;
+        job.result = { ok: false, text, exitCode: 130 };
+        this.pushEvent(job, { type: "cancelled", text }, now);
+      }
+      this.signal(job.linkId, job.deviceId);
+    }
+  }
+
+  findOwnedJob(linkId, jobId, access = {}) {
+    const link = safeLinkId(linkId);
+    const id = safeId(jobId, 160);
+    return link && id ? this.state.jobs.find((job) => job.linkId === link && job.id === id
+      && (job.ownerAccountId ? job.ownerAccountId === access.ownerAccountId : !access.ownerAccountId)
+      && (!access.expectedDeviceId || job.deviceId === access.expectedDeviceId)
+      && (!access.connectorId || job.requestedConnectorId === access.connectorId)) || null : null;
+  }
+
+  authenticate(auth) {
+    const linkId = safeLinkId(auth?.linkId);
+    const deviceId = safeDeviceId(auth?.deviceId);
+    const connectorId = safeId(auth?.connectorId, 160);
+    const token = safeToken(auth?.token);
+    if (!linkId || !deviceId || !connectorId || !token) return null;
+    const connector = this.state.connectors.find((item) => item.linkId === linkId && item.deviceId === deviceId && item.connectorId === connectorId);
+    return connector && sameHash(connector.tokenHash, hashToken(token)) ? connector : null;
+  }
+
+  assignedJob(connector, jobId) {
+    const id = safeId(jobId, 160);
+    return id ? this.state.jobs.find((job) => job.id === id && job.linkId === connector.linkId && job.deviceId === connector.deviceId && job.connectorId === connector.connectorId) || null : null;
+  }
+
+  pushEvent(job, event, now = this.now()) {
+    const clean = cleanEvent(event);
+    if (!clean) return;
+    const seq = (job.events.at(-1)?.seq || 0) + 1;
+    job.events = [...job.events.slice(-(maxEvents - 1)), { ...clean, seq, at: now }];
+  }
+
+  expire(now) {
+    for (const grant of this.state.accessGrants) {
+      if (!grant.revokedAt && grant.expiresAt <= now) {
+        this.cancelGrantJobs(grant, now, "Срок доступа истёк");
+      }
+    }
+    for (const job of this.state.jobs) {
+      if (job.status === "queued" && now - job.createdAt >= finishedRetentionMs) {
+        job.status = "failed";
+        job.result = { ok: false, text: "Срок хранения задания истёк", exitCode: 124 };
+        job.leaseUntil = 0;
+        job.finishedAt = now;
+        job.updatedAt = now;
+        this.pushEvent(job, { type: "failed", text: "Срок хранения задания истёк" }, now);
+        continue;
+      }
+      if ((job.status === "leased" || job.status === "running") && job.leaseUntil > 0 && job.leaseUntil <= now && !job.executionUncertain) {
+        job.executionUncertain = true;
+        this.pushEvent(job, { type: "execution_uncertain", text: "Подтверждение коннектора задержано; назначение сохранено, повторный запуск запрещён" }, now);
+        this.signal(job.linkId, job.deviceId);
+      }
+    }
+
+    // A recovered installation may contain history older than the normal
+    // retention window. Keep its records without reviving expired grants,
+    // replaying stale queued jobs, or changing uncertain execution handling.
+    if (this.preserveHistory) return;
+
+    this.state.connectors = this.state.connectors.filter((item) => now - item.lastSeenAt < finishedRetentionMs || this.state.jobs.some((job) => !terminalStatuses.has(job.status) && job.linkId === item.linkId && job.deviceId === item.deviceId && job.connectorId === item.connectorId));
+    const retained = this.state.jobs
+      .filter((job) => !job.finishedAt || now - job.finishedAt < finishedRetentionMs)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const active = retained.filter((job) => !terminalStatuses.has(job.status));
+    const finished = retained.filter((job) => terminalStatuses.has(job.status));
+    const finishedSlots = Math.max(0, maxJobs - active.length);
+    const keep = [...active, ...finished.slice(Math.max(0, finished.length - finishedSlots))];
+    this.state.jobs = keep.sort((a, b) => a.createdAt - b.createdAt);
+    this.state.accessGrants = this.state.accessGrants.filter((grant) => {
+      const inactiveAt = grant.revokedAt || (grant.expiresAt <= now ? grant.expiresAt : 0);
+      return !inactiveAt || now - inactiveAt < finishedRetentionMs;
+    });
+  }
+
+  signal(linkId, deviceId) {
+    // Notifications are emitted only after the corresponding transaction commits.
+    this.pendingSignals?.add(changeKey(linkId, deviceId));
+    this.pendingSignals?.add(changeKey(linkId, "@all"));
+  }
+
+  routeVersion(linkId, deviceId) {
+    // Device polls also observe untargeted jobs, but never another device's
+    // targeted traffic. Owner watches without a device observe the whole link.
+    return deviceId
+      ? Math.max(this.routeVersions.get(changeKey(linkId, deviceId)) || 0, this.routeVersions.get(changeKey(linkId, "")) || 0)
+      : this.routeVersions.get(changeKey(linkId, "@all")) || 0;
+  }
+
+  waitForChange(linkId, deviceId, waitMs, signal, observedVersion) {
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const keys = deviceId ? [changeKey(linkId, deviceId), changeKey(linkId, "")] : [changeKey(linkId, "@all")];
+      let timer;
+      const done = () => {
+        clearTimeout(timer);
+        for (const key of keys) this.events.removeListener(key, done);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      };
+      timer = setTimeout(done, safeInteger(waitMs, 100, 30_000, 25_000));
+      timer.unref?.();
+      for (const key of keys) this.events.once(key, done);
+      signal?.addEventListener("abort", done, { once: true });
+      if (observedVersion !== undefined && observedVersion !== this.routeVersion(linkId, deviceId)) done();
+    });
+  }
+
+  async waitForControllerChange(auth, deviceId, waitMs, signal, observedVersion) {
+    await this.readable();
+    const access = this.authorizeController(auth, { deviceId, capability: "events" }, this.now());
+    if (!access.ok) return;
+    await this.waitForChange(access.linkId, access.deviceId, waitMs, signal, observedVersion);
+  }
+
+  async mutate(callback) {
+    if (this.closing) throw connectorStoreClosed();
+    const run = this.writeQueue.then(async () => {
+      // This write was admitted before close began. Drain it, while public
+      // readers and new writes are already refused by the closing fence.
+      await this.ready;
+      if (this.persistence.failed || this.failed) throw this.persistence.failed || this.failed;
+      const committed = this.state;
+      const draft = {
+        ...committed,
+        connectors: committed.connectors.map((item) => ({ ...item })),
+        accessGrants: committed.accessGrants.map((item) => ({ ...item })),
+        jobs: committed.jobs.map((item) => ({ ...item }))
+      };
+      this.pendingSignals = new Set();
+      let result;
+      try {
+        this.state = draft;
+        result = callback(); // synchronous; no reader can observe this draft
+      } finally {
+        this.state = committed;
+      }
+      const signals = this.pendingSignals;
+      this.pendingSignals = null;
+      const delta = changesSince(committed, draft, this.revision);
+      if (delta) await this.persist(delta);
+      this.state = draft;
+      for (const request of delta?.requests || []) this.requestIndex.set(request.id,request);
+      if (signals.size) this.changeSequence += 1;
+      for (const key of signals) this.routeVersions.set(key, this.changeSequence);
+      for (const key of signals) this.events.emit(key);
+      return result;
+    });
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return await run;
+  }
+
+  async persist(delta) {
+    try {
+      const result = await this.persistence.call("commit", delta);
+      this.revision = result.revision;
+    } catch (error) {
+      if (["STORE_STALE_WRITER","STORE_COMMIT_AMBIGUOUS"].includes(error.code) || this.persistence.failed) this.failed = error;
+      throw error;
+    }
+  }
+}
+
+function sameRecord(left, right) {
+  if (!left || !right) return left === right;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
+}
+
+function changesSince(before, after, revision) {
+  const delta = { revision, requests: after.requests.slice(before.requests.length) };
+  let dirty = delta.requests.length > 0;
+  for (const kind of ["connectors", "accessGrants", "jobs"]) {
+    const key = kind === "connectors" ? connectorKey : (item) => item.id;
+    const old = new Map(before[kind].map((item) => [key(item), item]));
+    const current = new Set(after[kind].map(key));
+    const changed = after[kind].filter((item) => !sameRecord(old.get(key(item)), item)).map((item) => {
+      if (kind !== "jobs") return item;
+      const prior = old.get(item.id);
+      return {
+        id: item.id, metadata: metadata(item),
+        ...(prior?.input !== item.input ? { input: item.input } : {}),
+        ...(prior?.result !== item.result ? { result: item.result } : {}),
+        events: prior?.events === item.events ? [] : item.events.filter((event) => event.seq > (prior?.events.at(-1)?.seq || 0)),
+        firstSeq: item.events[0]?.seq || 0
+      };
+    });
+    const removed = [...old.keys()].filter((id) => !current.has(id));
+    delta[kind] = { changed, removed };
+    dirty ||= changed.length > 0 || removed.length > 0;
+  }
+  return dirty ? delta : null;
+}
+
+function canLease(job, connector, now) {
+  if (job.status !== "queued" || job.cancelRequested || job.leaseUntil > now) return false;
+  if (job.linkId !== connector.linkId || (job.deviceId && job.deviceId !== connector.deviceId) || (job.requestedConnectorId && job.requestedConnectorId !== connector.connectorId)) return false;
+  if (job.kind === "agent") return connector.protocol === 2 && connector.agent?.available === true;
+  if (!connector.capabilities.includes(job.kind)) return false;
+  const runAs = job.input?.runAs === "system" ? "system" : "user";
+  return runAs === (connector.scope === "Machine" ? "system" : "user");
+}
+
+function emptyState() {
+  return { schema: storeSchema, connectors: [], accessGrants: [], jobs: [], requests: [] };
+}
+
+export function normalizeConnectorState(value) {
+  const state = emptyState();
+  if (value?.schema !== storeSchema && !previousStoreSchemas.has(value?.schema)) throw new Error("Unknown connector store schema; preserve data for recovery");
+  if (!Array.isArray(value.connectors) || !Array.isArray(value.jobs) || (value.accessGrants !== undefined && !Array.isArray(value.accessGrants))) throw new Error("Partial connector store; preserve data for recovery");
+  if (value.connectors.some((item) => !validStoredConnector(item)) || (value.accessGrants || []).some((item) => !normalizeStoredAccessGrant(item))) throw new Error("Invalid connector identity or access grant; preserve data for recovery");
+  for (const job of value.jobs) {
+    if (![accountJobSchema,delegatedJobSchema,jobSchema,previousJobSchema].includes(job?.schema) || !safeId(job.id,160) || !safeLinkId(job.linkId)
+      || !["queued","leased","running",...terminalStatuses].includes(job.status) || !job.input || !Array.isArray(job.events)
+      || !Number.isFinite(job.createdAt) || !Number.isFinite(job.updatedAt)
+      || job.events.some((event) => !normalizeStoredEvent(event))) throw new Error("Invalid connector job or event history; preserve data for recovery");
+    if (!["agent","chat","command","script"].includes(job.kind || job.input?.kind)) throw new Error("Unknown persisted connector job kind");
+    if (terminalStatuses.has(job.status) && (!job.result || typeof job.result.text !== "string" || !Number.isInteger(job.result.exitCode) || job.result.exitCode < 0 || job.result.exitCode > 65535 || typeof job.result.ok !== "boolean" || !Number.isFinite(job.finishedAt) || job.finishedAt <= 0)) throw new Error("Terminal connector job is missing its native result");
+    const seqs = job.events.map((event) => event.seq);
+    if (seqs.some((seq, index) => index > 0 && seq <= seqs[index-1])) throw new Error("Invalid event sequence; preserve data for recovery");
+    if (job.schema === delegatedJobSchema && !safeId(job.accessGrantId,160)) throw new Error("Delegated job missing access grant binding");
+    if (job.schema === accountJobSchema && (!safeId(job.ownerAccountId,160) || !safeId(job.requestId,160)
+      || !/^[a-f0-9]{64}$/u.test(job.requestDigest) || !safeId(job.requestedConnectorId,160) || !safeDeviceId(job.deviceId)
+      || job.accessGrantId)) throw new Error('Account job missing account/request binding');
+    if (job.sourceActorDeviceId !== undefined && (job.schema !== accountJobSchema || !safeDeviceId(job.sourceActorDeviceId))) throw new Error('Invalid local task actor binding');
+    if (job.schema !== accountJobSchema && job.ownerAccountId) throw new Error('Account ownership requires the account job schema');
+  }
+  for (const [records,key] of [[value.connectors,connectorKey],[value.jobs,(job)=>job.id],[value.accessGrants || [],(grant)=>grant.id]]) {
+    if (new Set(records.map(key)).size !== records.length) throw new Error("Duplicate connector records; preserve data for recovery");
+  }
+  state.requests = value.requests || [];
+  if (!Array.isArray(state.requests) || state.requests.some((item) => !/^[a-f0-9]{64}$/u.test(item.id) || !/^[a-f0-9]{64}$/u.test(item.fingerprint) || !safeId(item.jobId,160))) throw new Error("Invalid request identity history");
+  if (state.requests.some(item => item.requestIntent !== undefined && !/^[a-f0-9]{64}$/u.test(item.requestIntent))) throw new Error('Invalid request intent history');
+  if (state.requests.some(item => item.rejection !== undefined && (!item.requestIntent || !/^[a-z_]{3,80}$/u.test(item.rejection)))) throw new Error('Invalid request rejection history');
+  if (new Set(state.requests.map((item) => item.id)).size !== state.requests.length) throw new Error("Duplicate request identities");
+  state.connectors = Array.isArray(value.connectors)
+    ? value.connectors.filter(validStoredConnector).map(normalizeStoredConnector)
+    : [];
+  state.accessGrants = Array.isArray(value.accessGrants)
+    ? value.accessGrants.map(normalizeStoredAccessGrant).filter(Boolean)
+    : [];
+  state.jobs = Array.isArray(value.jobs)
+    ? value.jobs
+      .filter((job) => [accountJobSchema, delegatedJobSchema, jobSchema, previousJobSchema].includes(job?.schema) && safeId(job.id, 160) && safeLinkId(job.linkId))
+      .map((job) => {
+        const { adapterId: _adapterId, requestedAdapterId: _requestedAdapterId, ...rest } = job;
+        return {
+          ...rest,
+          schema: job.schema === accountJobSchema ? accountJobSchema : job.schema === delegatedJobSchema ? delegatedJobSchema : jobSchema,
+          kind: cleanJobKind(job.kind || job.input?.kind),
+          accessGrantId: safeId(job.accessGrantId, 160),
+          events: Array.isArray(job.events) ? job.events.map(normalizeStoredEvent).filter(Boolean) : []
+        };
+      })
+    : [];
+  // Keep this historical fact when old terminal jobs are later pruned. Client
+  // registration never accepts or clears this host-written additive marker.
+  for (const connector of state.connectors) if (state.jobs.some(job => job.schema === accountJobSchema
+    && job.linkId === connector.linkId && job.deviceId === connector.deviceId && job.requestedConnectorId === connector.connectorId)) connector.accountOwned = true;
+  return state;
+}
+
+function cleanRegistration(value) {
+  const linkId = safeLinkId(value?.linkId);
+  const deviceId = safeDeviceId(value?.deviceId);
+  const connectorId = safeId(value?.connectorId, 160);
+  if (!linkId || !deviceId || !connectorId) return null;
+  return {
+    linkId,
+    deviceId,
+    connectorId,
+    deviceNick: safeText(value?.deviceNick, 120) || deviceId,
+    version: safeText(value?.version, 40),
+    platform: safeText(value?.platform, 40),
+    scope: safeText(value?.scope, 40),
+    capabilities: cleanStringList(value?.capabilities, 64, 80),
+    protocol: value?.agent?.id === "opencode" && value?.agent?.provider === "gonka" ? 2 : 1,
+    agent: cleanAgent(value?.agent) || legacyAgent(value?.adapters)
+  };
+}
+
+function normalizeStoredConnector(value) {
+  const clean = cleanRegistration(value);
+  return { ...value, ...clean };
+}
+
+function normalizeStoredAccessGrant(value) {
+  const id = safeId(value?.id, 160);
+  const linkId = safeLinkId(value?.linkId);
+  const deviceId = safeDeviceId(value?.deviceId);
+  const controllerDeviceId = safeControllerDeviceId(value?.controllerDeviceId, true);
+  const capabilities = cleanAccessCapabilities(value?.capabilities);
+  const createdAt = Number(value?.createdAt);
+  const expiresAt = Number(value?.expiresAt);
+  const revokedAt = Number(value?.revokedAt || 0);
+  if (!id || !linkId || !deviceId || !controllerDeviceId || capabilities.length === 0
+    || !/^[a-f0-9]{64}$/u.test(value?.tokenHash) || !Number.isFinite(createdAt) || !Number.isFinite(expiresAt)
+    || !Number.isFinite(revokedAt) || expiresAt <= createdAt || revokedAt < 0) {
+    return null;
+  }
+
+  return { id, linkId, deviceId, controllerDeviceId, capabilities, tokenHash: value.tokenHash, createdAt, expiresAt, revokedAt };
+}
+
+function cleanAgent(value) {
+  if (!value || typeof value !== "object" || value.id !== "opencode" || value.provider !== "gonka") return null;
+  return {
+    id: "opencode",
+    name: "OpenCode",
+    provider: "gonka",
+    model: safeText(value?.model, 200),
+    available: value?.available === true,
+    version: safeText(value?.version, 80),
+    reason: safeText(value?.reason, 240),
+    capabilities: cleanStringList(value?.capabilities, 32, 80)
+  };
+}
+
+function legacyAgent(value) {
+  if (!Array.isArray(value)) return null;
+  return cleanAgent({ id: "opencode", provider: "gonka", available: false, reason: "Требуется обновление Soty Agent" });
+}
+
+function cleanNewJob(value, options = {}) {
+  const linkId = safeLinkId(value?.linkId);
+  const requestedKind = value?.kind || value?.input?.kind;
+  if (!["agent", "chat", "command", "script"].includes(requestedKind)) return null;
+  const kind = cleanJobKind(requestedKind);
+  const script = safeMultiline(value?.input?.script, 8_000_000);
+  const text = safeMultiline(value?.input?.text ?? value?.text, 64_000) || (kind === "script" && script ? safeText(value?.input?.name, 120) || "script" : "");
+  if ((options.requireLink !== false && !linkId) || !text || (kind === "script" && !script)) return null;
+  return {
+    linkId,
+    deviceId: safeDeviceId(value?.deviceId),
+    threadId: safeId(value?.threadId || `thread_${randomUUID().replace(/-/gu, "")}`, 160),
+    kind,
+    input: {
+      text,
+      context: safeMultiline(value?.input?.context ?? value?.context, 128_000),
+      cwd: safeText(value?.input?.cwd, 2_000),
+      sessionId: safeText(value?.input?.sessionId, 200),
+      kind,
+      name: safeText(value?.input?.name, 120),
+      shell: safeText(value?.input?.shell, 80),
+      script,
+      runAs: value?.input?.runAs === "system" ? "system" : "user",
+      ...(kind === 'agent' && value?.input?.output === 'local-app' ? { output: 'local-app', ...(value.input.autoRegister === true ? { autoRegister: true } : {}) } : {}),
+      timeoutMs: safeInteger(value?.input?.timeoutMs, 1_000, 24 * 60 * 60_000, 30 * 60_000)
+    },
+    permissions: cleanPermissions(value?.permissions)
+  };
+}
+
+function cleanJobKind(value) {
+  if (value === "command" || value === "script") return value;
+  return "agent";
+}
+
+function cleanPermissions(value) {
+  const sandbox = ["read-only", "workspace-write", "danger-full-access"].includes(value?.sandbox) ? value.sandbox : "workspace-write";
+  return { sandbox, approval: value?.approval === "on-request" ? "on-request" : "never" };
+}
+
+function cleanAccessCapabilities(value) {
+  const allowed = new Set(["link.control", "status", "agent", "command", "script", "events", "cancel"]);
+  return cleanStringList(value, 16, 64).filter((item) => allowed.has(item));
+}
+
+function hasAccessCapability(grant, capability) {
+  return grant.capabilities.includes("link.control") || grant.capabilities.includes(capability);
+}
+
+function cleanEvent(value) {
+  const type = safeId(value?.type || "message", 80);
+  if (!type) return null;
+  const data = value?.data && typeof value.data === "object" && !Array.isArray(value.data) ? safeJsonObject(value.data) : undefined;
+  return { type, text: safeMultiline(value?.text, 64_000), ...(data ? { data } : {}) };
+}
+
+function normalizeStoredEvent(value) {
+  const event = cleanEvent(value);
+  const seq = safeInteger(value?.seq, 1, Number.MAX_SAFE_INTEGER, 0);
+  const at = Number(value?.at);
+  return event && seq > 0 && Number.isFinite(at) ? { ...event, seq, at } : null;
+}
+
+function cleanResult(value) {
+  if (!value || typeof value !== "object") return null;
+  const exitCode = safeInteger(value.exitCode, 0, 65_535, value.ok === true ? 0 : 1);
+  return {
+    ok: value.ok === true && exitCode === 0,
+    text: safeMultiline(value.text, 1_000_000),
+    exitCode,
+    sessionId: safeText(value.sessionId, 200),
+    agentId: value.agentId === "opencode" ? "opencode" : "",
+    ...(value.ok === true && exitCode === 0 && cleanAppProposal(value.appProposal) ? { appProposal: cleanAppProposal(value.appProposal) } : {})
+  };
+}
+
+function cleanAppProposal(value) {
+  if (!value || value.schema !== 'soty.local-app.v1' || Object.keys(value).some(key => !['schema', 'name', 'port', 'entryPath', 'sourceJobId'].includes(key))) return null;
+  const name = safeText(value.name, 64), sourceJobId = safeId(value.sourceJobId, 160);
+  if (!name || !sourceJobId || !Number.isSafeInteger(value.port) || value.port < 1024 || value.port > 65535 || value.port === 49424) return null;
+  const entryPath = typeof value.entryPath === 'string' ? value.entryPath : '/';
+  if (entryPath.length > 2048 || !entryPath.startsWith('/') || entryPath.startsWith('//') || /[\\\u0000-\u001f\u007f]/u.test(entryPath)) return null;
+  return { schema: 'soty.local-app.v1', name, port: value.port, entryPath, sourceJobId };
+}
+
+function connectorJob(job) {
+  return {
+    schema: job.schema,
+    id: job.id,
+    threadId: job.threadId,
+    kind: job.kind,
+    // Kept only until protocol-v1 installations finish upgrading; protocol v2 ignores it.
+    adapterId: job.kind === "agent" ? "opencode" : job.input?.runAs === "system" ? "shell-system" : "shell-user",
+    input: job.input,
+    permissions: job.permissions,
+    attempt: job.attempts,
+    cancelRequested: job.cancelRequested
+  };
+}
+
+function publicJob(job, options = {}) {
+  let result = job.result;
+  if (job.ownerAccountId && result) { const { sessionId, ...visible } = result; result = visible; }
+  return {
+    schema: job.schema,
+    id: job.id,
+    deviceId: job.deviceId,
+    threadId: job.threadId,
+    kind: job.kind,
+    status: job.status,
+    attempts: job.attempts,
+    cancelRequested: job.cancelRequested,
+    executionUncertain: job.executionUncertain === true,
+    connectorId: job.connectorId,
+    result: options.summary && result ? { ...result, text: "", textOmitted: true }
+      : result && options.resultPreview && result.text.length > 32_000
+        ? { ...result, text: result.text.slice(0, 32_000), textTruncated: true, textLength: result.text.length } : result,
+    ...(options.events === false || options.summary ? {} : { events: job.events.map(publicEvent) }),
+    ...(options.summary ? { artifactUrl: `/api/connectors/jobs/${job.id}?view=full` } : {}),
+    createdAt: new Date(job.createdAt).toISOString(),
+    updatedAt: new Date(job.updatedAt).toISOString(),
+    finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : ""
+  };
+}
+
+function publicEvent(event) {
+  return { seq: event.seq, type: event.type, text: event.text, ...(event.data ? { data: event.data } : {}), at: new Date(event.at).toISOString() };
+}
+
+function publicConnector(connector, now) {
+  return {
+    connectorId: connector.connectorId,
+    deviceId: connector.deviceId,
+    deviceNick: connector.deviceNick,
+    version: connector.version,
+    platform: connector.platform,
+    scope: connector.scope,
+    protocol: connector.protocol,
+    capabilities: connector.capabilities,
+    agent: connector.agent,
+    connected: now - connector.lastSeenAt <= connectorFreshMs,
+    lastSeenAt: new Date(connector.lastSeenAt).toISOString()
+  };
+}
+
+function publicAccessGrant(grant) {
+  return {
+    id: grant.id,
+    deviceId: grant.deviceId,
+    controllerDeviceId: grant.controllerDeviceId,
+    capabilities: grant.capabilities,
+    expiresAt: new Date(grant.expiresAt).toISOString()
+  };
+}
+
+function aggregateDevices(connectors) {
+  const connectorGroups = new Map();
+  for (const connector of connectors) {
+    const group = connectorGroups.get(connector.deviceId) || [];
+    group.push(connector);
+    connectorGroups.set(connector.deviceId, group);
+  }
+
+  const devices = [...connectorGroups.entries()].map(([deviceId, group]) => {
+    const connected = group.filter((connector) => connector.connected);
+    const active = connected.length > 0 ? connected : group;
+    const availableAgents = active.filter((connector) => connector.agent?.available);
+    const representative = newestConnector(availableAgents.length > 0 ? availableAgents : active);
+    const newest = newestConnector(active);
+
+    return {
+      deviceId,
+      deviceNick: representative.deviceNick,
+      connected: connected.length > 0,
+      version: representative.version,
+      platform: representative.platform,
+      scopes: [...new Set(active.map((connector) => connector.scope).filter(Boolean))],
+      capabilities: [...new Set(active.flatMap((connector) => connector.capabilities))],
+      agent: representative.agent,
+      lastSeenAt: newest.lastSeenAt
+    };
+  });
+
+  return [...devices.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeenAt.localeCompare(a.lastSeenAt));
+}
+
+function newestConnector(connectors) {
+  return connectors.reduce((newest, connector) => connector.lastSeenAt > newest.lastSeenAt ? connector : newest);
+}
+
+function validStoredConnector(value) {
+  return Boolean(cleanRegistration(value) && /^[a-f0-9]{64}$/u.test(value.tokenHash) && Number.isFinite(value.lastSeenAt)
+    && (value.accountOwned === undefined || typeof value.accountOwned === 'boolean'));
+}
+
+function connectorKey(value) {
+  return JSON.stringify([value.linkId, value.deviceId, value.connectorId]);
+}
+
+function changeKey(linkId, deviceId) {
+  return `${linkId}\u0000${deviceId || "*"}`;
+}
+
+function hashToken(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sameHash(left, right) {
+  if (!/^[a-f0-9]{64}$/u.test(left) || !/^[a-f0-9]{64}$/u.test(right)) return false;
+  return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
+
+function normalizeControllerAuth(value) {
+  if (typeof value === "string") {
+    return { linkId: safeLinkId(value), grantId: "", controllerDeviceId: "", token: "" };
+  }
+  return {
+    linkId: safeLinkId(value?.linkId),
+    grantId: safeId(value?.grantId, 160),
+    controllerDeviceId: safeControllerDeviceId(value?.controllerDeviceId, true),
+    token: safeToken(value?.token)
+  };
+}
+
+function safeToken(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{40,160}$/u.test(text) ? text : "";
+}
+
+function safeLinkId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
+}
+
+function safeDeviceId(value) {
+  return safeId(value, 180);
+}
+
+function safeControllerDeviceId(value, allowWildcard) {
+  return allowWildcard && value === "*" ? "*" : safeDeviceId(value);
+}
+
+function safeId(value, max = 120) {
+  const text = String(value || "").trim().slice(0, max);
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/u.test(text) ? text : "";
+}
+
+function safeText(value, max) {
+  return typeof value === "string" ? value.replace(/[\r\n\t]+/gu, " ").trim().slice(0, max) : "";
+}
+
+function safeMultiline(value, max) {
+  return typeof value === "string" ? value.replace(/\r\n?/gu, "\n").trim().slice(0, max) : "";
+}
+
+function safeInteger(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= min && number <= max ? number : fallback;
+}
+
+function cleanStringList(value, maxItems, maxChars) {
+  return [...new Set((Array.isArray(value) ? value : []).map((item) => safeText(item, maxChars)).filter(Boolean))].slice(0, maxItems);
+}
+
+function safeJsonObject(value) {
+  try {
+    const text = JSON.stringify(value);
+    return text.length <= 32_000 ? JSON.parse(text) : undefined;
+  } catch {
+    return undefined;
+  }
+}

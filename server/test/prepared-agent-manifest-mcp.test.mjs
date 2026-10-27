@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { nativeHttpFixture, nativeIdentity, good } from './support/native-capability-http.mjs';
+import { pinnedHistory } from './support/pinned-history.mjs';
 
 const repo = resolve(import.meta.dirname, '../..');
 const oldCheckout = process.env.SOTY_PREPARED_AGENT_OLD_ROOT;
@@ -50,8 +51,8 @@ async function until(check, timeout = 15000) {
 async function listen(server) { await new Promise((done, fail) => { server.once('error', fail); server.listen(0, '127.0.0.1', done); }); }
 async function freePort() { const server = createServer(); await listen(server); const port = server.address().port; await new Promise(done => server.close(done)); return port; }
 function previousConnector() {
-  const bytes = execFileSync('git', ['show', `${baseline}:public/agent/soty-connector.mjs`], { cwd: repo, maxBuffer: 16 * 1024 * 1024 });
-  const manifest = JSON.parse(execFileSync('git', ['show', `${baseline}:public/agent/manifest.json`], { cwd: repo, encoding: 'utf8' }));
+  const bytes = pinnedHistory(baseline, 'public/agent/soty-connector.mjs');
+  const manifest = JSON.parse(pinnedHistory(baseline, 'public/agent/manifest.json').toString('utf8'));
   assert.equal(manifest.version, '1.4.13'); assert.equal(createHash('sha256').update(bytes).digest('hex'), manifest.sha256);
   return bytes;
 }

@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { attachConnectorApi } from '../connector-api.js';
+import { pinnedHistory } from './support/pinned-history.mjs';
 
 const compiler = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
 const skip = process.platform === 'win32' && !existsSync(compiler) ? 'Windows C# compiler is unavailable' : false;
@@ -25,8 +26,8 @@ test('actual old release cannot lease auto work after a stale new-process heartb
   const runtime = join(root, 'runtime'), dataDir = join(root, 'data'), marker = join(root, 'legacy-spawned');
   await mkdir(runtime); await writeFile(join(runtime, 'connector-config.json'), JSON.stringify({ workspaceRoot: runtime, allowedRoots: [runtime] }));
   const oldCommit = '2b770d8c2c34ae513e83a1c5bd489f1414c36b3b';
-  const oldBundle = execFileSync('git', ['show', `${oldCommit}:public/agent/soty-connector.mjs`], { maxBuffer: 10_000_000 });
-  const oldManifest = JSON.parse(execFileSync('git', ['show', `${oldCommit}:public/agent/manifest.json`], { maxBuffer: 10_000_000 }).toString('utf8'));
+  const oldBundle = pinnedHistory(oldCommit, 'public/agent/soty-connector.mjs');
+  const oldManifest = JSON.parse(pinnedHistory(oldCommit, 'public/agent/manifest.json').toString('utf8'));
   assert.equal(oldManifest.version, '1.4.12'); assert.equal(digest(oldBundle), oldManifest.sha256);
   const oldPath = join(root, 'old-connector.mjs'); await writeFile(oldPath, oldBundle);
   const executable = await fakeAgent(root), firstPort = await unusedPort(), oldPort = await unusedPort();

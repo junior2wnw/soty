@@ -1,0 +1,183 @@
+{
+  "schema": "soty.connector.release.v1",
+  "version": "1.4.13",
+  "architecture": "durable-jobs+opencode+server-gonka-proxy",
+  "connectorUrl": "/agent/soty-connector.mjs",
+  "agentUrl": "/agent/soty-connector.mjs",
+  "compatibilityUrl": "/agent/soty-agent.mjs",
+  "sha256": "ba6a7a1a94e18c4c4d67e6bb31c23bc77568a18eb98e4d3422c109a2c35ecec0",
+  "protocol": {
+    "schema": "soty.connector-job.v2",
+    "entities": [
+      "device",
+      "link",
+      "thread",
+      "job"
+    ],
+    "delivery": "lease+retry",
+    "events": "ordered+resumable",
+    "cancellation": "cooperative+process-tree",
+    "authentication": "per-installation-bearer-token"
+  },
+  "agent": {
+    "id": "opencode",
+    "provider": "gonka",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "modelLimits": {
+      "context": 380000,
+      "output": 8192
+    },
+    "transport": "authenticated-server-proxy",
+    "endpoint": "/api/connectors/gonka/v1/chat/completions",
+    "runtime": {
+      "schema": "soty.opencode.release.v1",
+      "name": "OpenCode",
+      "version": "1.18.15",
+      "source": "https://github.com/anomalyco/opencode",
+      "license": "MIT",
+      "platforms": {
+        "win32-x64": {
+          "asset": "opencode-windows-x64-baseline.zip",
+          "sha256": "98df4ed9993406e190b9a4c937aea98d733bb047c47e93c9f0c2f90ab90c2982",
+          "executable": "opencode.exe",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-x64-baseline.zip"
+        },
+        "win32-arm64": {
+          "asset": "opencode-windows-arm64.zip",
+          "sha256": "7815f7a980fc4273e3fc1ada5a51e9dff17e62f5a119ab769b44e06b50c1d9da",
+          "executable": "opencode.exe",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-arm64.zip"
+        },
+        "linux-x64": {
+          "asset": "opencode-linux-x64-baseline.tar.gz",
+          "sha256": "caab046d311f29d80085979b168995f32cd052ffb7bcffe067b14cd9679d2e38",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-x64-baseline.tar.gz"
+        },
+        "linux-x64-musl": {
+          "asset": "opencode-linux-x64-baseline-musl.tar.gz",
+          "sha256": "73ae90210eb93192b64d8409b9ea70fb151b7a73ac5f49739e170066a253b88f",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-x64-baseline-musl.tar.gz"
+        },
+        "linux-arm64": {
+          "asset": "opencode-linux-arm64.tar.gz",
+          "sha256": "500611819ff88916b185649990505a9be76ad13ca5bb4b9323e5abdd39b1c6fb",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-arm64.tar.gz"
+        },
+        "linux-arm64-musl": {
+          "asset": "opencode-linux-arm64-musl.tar.gz",
+          "sha256": "134d46c15c184ed9d5fce7c93423b4040dcdc8547f23fc425e6a7b51e166e18a",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-arm64-musl.tar.gz"
+        },
+        "darwin-x64": {
+          "asset": "opencode-darwin-x64-baseline.zip",
+          "sha256": "234e67a90a16a8fa670131b097dfb72aabc4a2cc863a7be459be0215deb18a3f",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-x64-baseline.zip"
+        },
+        "darwin-arm64": {
+          "asset": "opencode-darwin-arm64.zip",
+          "sha256": "bd60b57cb9fe0494a5352c807424d36d6d7853cf6dbddb97065c7ccd3c5d391c",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-arm64.zip"
+        }
+      }
+    }
+  },
+  "trafficCore": {
+    "schema": "soty.traffic-core.release.v1",
+    "engine": "xray-core",
+    "version": "26.7.11",
+    "platforms": {
+      "win32-x64": {
+        "url": "/agent/core/xray-windows-x64-26.7.11.zip",
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-windows-64.zip",
+        "sha256": "af801b62c4d41d248d3db8016d4c6e2a7ccfb7ed443e3738aeb6f9e062321512",
+        "executable": "xray.exe"
+      },
+      "linux-x64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-linux-64.zip",
+        "sha256": "aa11c3685c71da0ffc71e511db50404609e7e963bb914b048f59a6a00af8930e",
+        "executable": "xray"
+      },
+      "linux-arm64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-linux-arm64-v8a.zip",
+        "sha256": "89cfe01674d7c9f6847b7dd9389537be9acb3b9dc3c6cb9fdeba87a3e4e57fc1",
+        "executable": "xray"
+      },
+      "darwin-x64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-64.zip",
+        "sha256": "d8c116756d3a88a38a833a94bdf8bc801f69243ee888befcb56df8b4f1ec4878",
+        "executable": "xray"
+      },
+      "darwin-arm64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-arm64-v8a.zip",
+        "sha256": "61f8f74d099098af710fa43613d9934d97b901dee909801d34f496cd463956d1",
+        "executable": "xray"
+      }
+    }
+  },
+  "spreadexMl": {
+    "schema": "soty.spreadex-ml.release.v1",
+    "available": false,
+    "reason": "platform-worker-not-published",
+    "featureSchema": "spreadex.ml.features.v1",
+    "signatureRequired": true,
+    "signatureAlgorithm": "Ed25519",
+    "publicKeyId": "spreadex-ml-release-v1",
+    "platforms": {}
+  },
+  "windowsReinstall": {
+    "scriptsBaseUrl": "/agent/windows-reinstall/",
+    "scripts": [
+      {
+        "name": "managed",
+        "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
+        "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
+        "bytes": 53772
+      },
+      {
+        "name": "prepare",
+        "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
+        "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
+        "bytes": 96345
+      },
+      {
+        "name": "arm",
+        "url": "/agent/windows-reinstall/soty-arm-windows-reinstall.ps1",
+        "sha256": "2f6913e1704de8b945d768d747acc45ca5819fca72473846289a3c22feceff1b",
+        "bytes": 8384
+      },
+      {
+        "name": "makeFastUsb",
+        "url": "/agent/windows-reinstall/soty-make-fast-usb.ps1",
+        "sha256": "0f5dc6b3fb9c18b57f8c48506268f0540869734313696273f924872696dac8d0",
+        "bytes": 14857
+      }
+    ]
+  },
+  "transitClient": {
+    "schema": "soty.transit-client.release.v1",
+    "engine": "sing-box",
+    "version": "1.13.15",
+    "license": "LicenseRef-sing-box-upstream",
+    "sourceUrl": "https://github.com/SagerNet/sing-box/tree/3708fa18766cda1f11b77f6ed9c7bd61688f17df",
+    "platforms": {
+      "win32-x64": {
+        "version": "1.13.15",
+        "platform": "win32",
+        "arch": "x64",
+        "sha256": "599b296f6e57511d36d2a6f3011aed1a86fa98418578bbb06bd6dc241b5d8877",
+        "binarySha256": "4db8218dea131668ccd5e0b32e773e916a37be730e655b176e0d3a930276cbe7",
+        "executable": "sing-box-1.13.15-windows-amd64/sing-box.exe",
+        "urls": [
+          "https://github.com/SagerNet/sing-box/releases/download/v1.13.15/sing-box-1.13.15-windows-amd64.zip"
+        ]
+      }
+    },
+    "installationStartsVpn": false
+  }
+}

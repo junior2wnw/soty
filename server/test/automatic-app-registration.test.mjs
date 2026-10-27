@@ -6,8 +6,8 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { pinnedHistory } from './support/pinned-history.mjs';
 import { probe } from '../../deploy/connect/maintenance-probe.mjs';
 import { normalizeConnectorState } from '../connector-store.js';
 import { createHttpApp } from '../http-app.js';
@@ -229,7 +229,7 @@ test('the actual previous reader refuses protected work; after confirmed complet
   });
   const directory = dirname(store.filePath), oldDir = join(dirname(directory), 'frozen-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}');
   const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices();
@@ -361,7 +361,7 @@ test('conditional feedback stop preserves the card and durable outbox across los
   try { assert.deepEqual(db.prepare('SELECT provisioning_key,request_json FROM registration_feedback_outbox').get(), outboxBefore); } finally { db.close(); }
   const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'feedback-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
   try {
@@ -556,7 +556,7 @@ test('the revoked-device maintenance blocker clears only after the current owner
   assert.equal(archived.state, 'archived'); const status = await probe({ dataDir: f.dataDir }); assert.equal(status.count, 0); assert.equal(status.automaticPending, undefined);
   const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'revoked-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
   try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0); } finally { await old.close(); }
@@ -727,7 +727,7 @@ test('already full historical ledgers can archive every protected job and remain
   assert.equal(store.state.requests.length, cap + 2); assert.equal((await probe({ dataDir: f.dataDir })).automaticPending, undefined);
   const directory = dirname(store.filePath), oldDir = join(dirname(directory), 'full-ledger-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory, { maxRequestRecords: cap });
   try {
@@ -773,7 +773,7 @@ test('the owner can stop a job at the real app limit and recover one receipt aft
   assert.equal((await stranger.extension('apps.agent.archiveReceipt', otherArgs)).state, 'unconfirmed');
   const directory = dirname(store.filePath), oldDir = join(dirname(directory), 'capacity-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
   try {
@@ -796,7 +796,7 @@ test('the previous reader cannot resume an archived job, and its historical rece
   const args = { expectedAccountId: f.account.accountId, jobId: id }, archived = await f.owner.extension('apps.agent.archive', args);
   const directory = dirname(f.service().locals.connectorService.store.filePath), oldDir = join(dirname(directory), 'archived-old-reader'); await mkdir(oldDir);
   for (const name of ['connector-store.js', 'connector-persistence.js', 'connector-model-authorization.js'])
-    await writeFile(join(oldDir, name), execFileSync('git', ['show', `e371d14be0aba67892a389f630a6c029f298ac77:server/${name}`]));
+    await writeFile(join(oldDir, name), pinnedHistory('e371d14be0aba67892a389f630a6c029f298ac77', `server/${name}`));
   await writeFile(join(oldDir, 'package.json'), '{"type":"module"}'); const legacy = await import(pathToFileURL(join(oldDir, 'connector-store.js')).href);
   await f.service().locals.closeServices(); const old = legacy.createConnectorStore(directory);
   try { await old.ready; assert.equal((await old.automaticAppJobs(id)).length, 0);
