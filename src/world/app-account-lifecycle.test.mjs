@@ -3,6 +3,8 @@ import * as nativeVoiceCarrier from './native-voice-carrier.mjs';
 import { createNativeVoiceDescriptor } from '../platform/native-voice-descriptor.mjs';
 import * as conversationTargets from './conversation-target.mjs';
 import * as chatState from './chat-state.mjs';
+import * as chatDraftSessions from './chat-draft-session.mjs';
+import { createTestChatDraftDisk } from './test-support/chat-draft-disk.mjs';
 import * as messenger from './messenger.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -141,6 +143,7 @@ test('ElementPort inline styles retain values across CSS names and camelCase wit
 });
 
 function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {}) {
+  const draftDisk=createTestChatDraftDisk();
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}`, origin: 'https://shell.example' };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
   const timers = new Map(), intervals = new Map(); let timerId = 0;
@@ -153,6 +156,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   const discussionCalls = { refresh: 0 }, nativeVoiceBridges = [], settingsMounts = [], settingsCloseRequests = [];
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '',
     ...(tagName === 'iframe' ? { contentWindow: { sent: [], postMessage(data, origin) { this.sent.push({ data, origin }); } } } : {}) });
+  document.createTextNode = text => makeElement('text', '', text);
   const makeButton = (label, _icon, className, callback) => { const value = Object.assign(makeElement('button', className, label), { disabled: false }); if (callback) value.addEventListener('click', callback); return value; };
   const ports = {
     './dom': { el: makeElement, button:makeButton,iconButton:(label,icon,callback)=>makeButton(label,icon,'',callback), emptyState: label => makeElement('div', '', label),
@@ -170,12 +174,13 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     '../../modules/field/contract.mjs': fieldContract,
     './conversation-target.mjs': conversationTargets,
     './chat-state.mjs': chatState,
-    './attachment-outbox.mjs': { createAttachmentOutbox() {
+    './attachment-outbox.mjs': { attachmentDisk:()=>draftDisk,createAttachmentOutbox() {
       let pending=null,accepted=null;
       return { ready:Promise.resolve(), canSend:()=>false, refs:()=>[], pendingIntent:()=>pending, acceptedIntent:()=>accepted, close() {},
-        async prepareSend(value) { pending ??= {clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]}; return {state:'pending',intent:pending}; },
+        async prepareSend(value) { pending ??= {clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[],...(value.draftId?{draftId:value.draftId}:{})}; return {state:'pending',intent:pending}; },
         async acknowledge(_ids,value) { accepted=value; pending=null; }, async reconcile() {} };
     } },
+    './chat-draft-session.mjs': chatDraftSessions,
     './messenger.mjs': messenger,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
@@ -223,7 +228,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
   ports['./app-stage'] = stageModule.exports;
   vm.runInNewContext(`${compiled}\nexports.TestController = WorldApplication; exports.bindRootClick = function() { return ${rootClickHandler}; }; exports.bindConnection = function() { return ${connectionHandler}; };`, {
     module, exports: module.exports, require: name => ports[name] ?? {}, location, window: view,
-    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, Event, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
+    document, navigator: view.navigator, crypto: globalThis.crypto, Element: ElementPort, HTMLElement: ElementPort, HTMLButtonElement: ElementPort, Event, URL, URLSearchParams, setTimeout, clearTimeout, clearInterval,
     setInterval: view.setInterval, matchMedia: view.matchMedia, ResizeObserver: class { observe() {} disconnect() {} },
     history: { replaceState(_state, _title, url) { location.hash = url; }, pushState(_state, _title, url) { location.hash = url; } }, console,
   });
@@ -272,7 +277,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };
-  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, connectionChanged: module.exports.bindConnection.call(app), rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
+  return { app, Controller, view, timers, intervals, location, requests, personalFrames, dialogs, discussionCalls, nativeVoiceBridges, settingsMounts, settingsCloseRequests, ports, makeElement, draftDisk, connectionChanged: module.exports.bindConnection.call(app), rootClick: module.exports.bindRootClick.call(app), mountStage: stageModule.exports.mountAppStage,
     workspacePreferences: productModule.exports, useSavedWorkspace() { ports['./product'].loadDeskPreferences = productModule.exports.loadDeskPreferences; },
     setLocal(value) { local = value; }, setOnline(value) { online = value; }, setApiError(value) { apiError = value; } };
 }
@@ -2725,9 +2730,10 @@ for (const scenario of ['initial accepted send', 'later history poll', 'newer te
       async request(action) { if (action === 'list') return pollResponse ?? page.promise; throw Error(`Unexpected chat action: ${action}`); }, setUnread() {} };
     const parent = f.makeElement('div');
     f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+    await f.app.chatDraftSession.ready; await turn();
     const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer'), send = composer.querySelector('.sw-button-primary');
     input.focus(); assert.equal(input.value, 'Original A');
-    if (scenario === 'newer text and reply') drafts.edit('account-A', 'room_fixture', 'New draft B', 'reply_next');
+    if (scenario === 'newer text and reply') {input.value='New draft B';drafts.edit('account-A', 'room_fixture', 'New draft B', 'reply_next');f.app.chatDraftSession.edit('New draft B','reply_next');}
     if (scenario === 'another tab already acknowledged') chatState.createChatDraftStore(storage).acknowledge('account-A', 'room_fixture', 'intent_original');
     if (scenario === 'cleanup denied') denyRemoval = true;
     const accepted = { messages: [{ messageId: 'message_original', clientId: 'intent_original', seq: 1, text: 'Original A', author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false }], hasMore: false };
@@ -2756,6 +2762,7 @@ for (const coarse of [false, true]) test(`chat composer keyboard: ${coarse ? 'to
   const parent = f.makeElement('div'), target = { kind: 'community', id: 'keyboard_room', draftKey: 'keyboard_room', name: 'Keyboard fixture', record: {},
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {}, async request() { return { messages: [], hasMore: false }; }, setUnread() {} };
   f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
+  await f.app.chatDraftSession.ready; await turn();
   const input = parent.querySelector('textarea'), composer = parent.querySelector('.sw-composer');
   let submissions = 0, prevented = 0; composer.requestSubmit = () => { submissions++; };
   const key = modifiers => input.emit('keydown', { key: 'Enter', keyCode: 13, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, isComposing: false,
@@ -2980,4 +2987,117 @@ test('queue reopening restores its earlier pending ID and retains the other loca
   const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
   assert.equal(attempts,2);assert.deepEqual(events,['idb_before_error']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_recover_pending').pending.clientId,'local_after_error');assert.equal(drafts.read('account-A','room_recover_pending').text,'Next thought');
   f.app.chatCleanup();
+});
+
+test('chat conflict chooser keeps a newer edit made while the chooser was open', async () => {
+  const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  const first=fixture(),second=fixture();for(const f of [first,second]){f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;}
+  const target={kind:'community',id:'room_conflict',draftKey:'room_conflict',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
+  await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
+  const i1=p1.querySelector('textarea'),i2=p2.querySelector('textarea');i1.value='First';i1.emit('input');i2.value='Second';i2.emit('input');
+  await Promise.all([first.app.chatDraftSession.flush(),second.app.chatDraftSession.flush()]);await Promise.all([first.app.chatDraftSession.refresh(),second.app.chatDraftSession.refresh()]);
+  const chooser=p1.querySelector('.sw-chat-draft-versions');assert.equal(chooser.hidden,false);p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();const dialog=first.dialogs.at(-1),list=dialog.body.querySelector('.sw-stack');
+  const firstRow=list.children.find(row=>row.querySelector('p')?.textContent==='First');assert.ok(firstRow);
+  i2.value='Second newer';i2.emit('input');await second.app.chatDraftSession.flush();firstRow.querySelector('button').emit('click');await turn();await turn();
+  assert.equal(dialog.element.open,false);assert.match(p1.querySelector('.sw-error').textContent,/изменились/u);await first.app.chatDraftSession.refresh();
+  assert.deepEqual(first.app.chatDraftSession.read().heads.map(h=>h.text).sort(),['First','Second newer']);
+  first.app.chatCleanup();second.app.chatCleanup();
+});
+
+test('sending reloads the shared drafts even when a cross-tab notification was missed', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},sent=[];
+  f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
+  const target={kind:'community',id:'room_silent',draftKey:'room_silent',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const input=parent.querySelector('textarea');input.value='First';input.emit('input');await f.app.chatDraftSession.flush();
+  await f.draftDisk.draftWrite('account-A:room_silent:',{baseId:null,id:'external_001',writer:'tab_external',text:'Second',replyTo:null});
+  assert.equal(f.app.chatDraftSession.read().heads.length,1);parent.querySelector('.sw-composer').requestSubmit();
+  for(let i=0;i<20&&!f.dialogs.length;i++)await turn();
+  assert.equal(sent.length,0);assert.deepEqual(f.app.chatDraftSession.read().heads.map(head=>head.text).sort(),['First','Second']);assert.equal(f.dialogs.at(-1).element.open,true);
+  f.app.chatCleanup();
+});
+
+test('storage refusal keeps a typed draft visible and sending works after storage recovers', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},sent=[];
+  f.app.chatDrafts=chatState.createChatDraftStore(storage,()=> 'intent_storage_recovery');f.app.preferences={motion:false};f.draftDisk.setFailure(true);
+  Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  const target={kind:'community',id:'room_idb_failure',draftKey:'room_idb_failure',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);return {message:{messageId:'recovered',clientId:args.clientId,seq:1,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
+  const input=parent.querySelector('textarea');input.value='Written during failure';input.emit('input');assert.equal(await f.app.chatDraftSession.flush(),false);
+  assert.equal(input.value,'Written during failure');assert.equal(parent.querySelector('.sw-chat-draft-status').hidden,false);assert.equal(parent.querySelector('.sw-chat-draft-status').textContent,'Черновик пока только в открытом приложении');
+  const download=parent.querySelectorAll('button').find(button=>button.textContent==='Скачать черновик');assert.equal(download.hidden,false);
+  parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();assert.equal(sent.length,0);assert.equal(input.value,'Written during failure');
+  f.draftDisk.setFailure(false);parent.querySelector('.sw-composer').requestSubmit();for(let i=0;i<20&&!sent.length;i++)await turn();assert.equal(sent.length,1);assert.equal(sent[0].text,'Written during failure');
+  f.app.chatCleanup();
+});
+
+test('an account switch keeps an unsaved draft private and restores it when its owner returns', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
+  const target={kind:'community',id:'room_accounts',draftKey:'room_accounts',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
+  const a=f.makeElement('div');f.app.mountConversation(a,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
+  const input=a.querySelector('textarea');input.value='Private for A';input.emit('input');assert.equal(await f.app.chatDraftSession.flush(),false);
+  f.app.transitionAccount('account-B');const b=f.makeElement('div');f.app.mountConversation(b,target,{showHeader:false,notify(){}});await assert.rejects(f.app.chatDraftSession.ready);
+  assert.equal(b.querySelector('textarea').value,'');assert.equal([...f.app.chatDraftSessions].some(session=>session.scope.accountId==='account-A'&&session.read().value.text==='Private for A'),true);
+  f.app.transitionAccount('account-A');const again=f.makeElement('div');f.app.mountConversation(again,target,{showHeader:false,notify(){}});
+  assert.equal(again.querySelector('textarea').value,'Private for A');f.draftDisk.setFailure(false);assert.equal(await f.app.chatDraftSession.flush(),true);f.app.chatCleanup();
+});
+
+test('a legacy tab cannot revive a discarded or acknowledged draft in the new composer', async () => {
+  const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  const oldTab=chatState.createChatDraftStore(storage),f=fixture();oldTab.edit('account-A','room_legacy','Legacy text');
+  f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
+  const target={kind:'community',id:'room_legacy',draftKey:'room_legacy',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  await disk.draftWrite('account-A:room_legacy:',{baseId:null,id:'other_legacy',writer:'tab_other',text:'Other version',replyTo:null});await f.app.chatDraftSession.refresh();
+  const heads=f.app.chatDraftSession.read().heads,chosen=heads.find(head=>head.text==='Legacy text');assert.equal(await f.app.chatDraftSession.select(heads.map(head=>head.id),chosen.id),true);
+  oldTab.edit('account-A','room_legacy','Other version');f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_legacy');
+  assert.equal(parent.querySelector('textarea').value,'Legacy text');await f.app.chatDraftSession.acknowledge(f.app.chatDraftSession.read().selectedId);
+  oldTab.edit('account-A','room_legacy','Legacy text');f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_legacy');assert.equal(parent.querySelector('textarea').value,'');
+  f.app.chatCleanup();
+  const reopened=fixture();reopened.app.chatDrafts=chatState.createChatDraftStore(storage);reopened.app.preferences={motion:false};reopened.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
+  let release;disk.hold(new Promise(resolve=>{release=resolve;}));const again=reopened.makeElement('div');reopened.app.mountConversation(again,target,{showHeader:false,notify(){}});
+  assert.equal(again.querySelector('textarea').value,'');assert.equal(again.querySelector('textarea').disabled,true);
+  disk.hold(null);release();await reopened.app.chatDraftSession.ready;await turn();assert.equal(again.querySelector('textarea').value,'');assert.equal(reopened.app.chatDraftSession.read().heads.length,0);
+  reopened.app.chatCleanup();
+});
+
+test('the chat list reads authoritative drafts instead of stale writes from an old tab', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},oldTab=chatState.createChatDraftStore(storage);
+  oldTab.edit('account-A','room_preview','Stale legacy');f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
+  f.app.communities=[{communityId:'room_preview',name:'Room',description:'',topics:[],memberCount:2,unreadCount:0,membership:{state:'active',pinned:false,muted:false}}];
+  f.ports['./dom'].nounCount=()=> '2 participants';f.ports['./hex-field'].communityEmblem=()=>f.makeElement('span');
+  await f.draftDisk.draftInitialize('account-A:room_preview:',{text:'Old',replyTo:null},'legacy_001');
+  await f.draftDisk.draftWrite('account-A:room_preview:',{baseId:'legacy_001',id:'chosen_001',writer:'tab_new',text:'Chosen',replyTo:null});
+  f.app.renderMessages();for(let i=0;i<8;i++)await turn();
+  let preview=f.app.main.querySelector('.sw-conversation-preview');assert.equal(preview.children.at(-1).textContent,'Chosen');
+  await f.draftDisk.draftAcknowledge('account-A:room_preview:','chosen_001');oldTab.edit('account-A','room_preview','Stale again');
+  f.app.chatDrafts.storageChanged('soty.chat.draft.v1:account-A:room_preview');for(let i=0;i<8;i++)await turn();
+  preview=f.app.main.querySelector('.sw-conversation-preview');assert.equal(preview.textContent,'2 participants');
+  assert.equal(oldTab.read('account-A','room_preview').text,'Stale again');f.app.chatCleanup();
+});
+
+test('navigation waits for the chat draft flush and a failed flush retains the text', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};
+  const target={kind:'community',id:'room_navigation',draftKey:'room_navigation',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected request');}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  let release;f.draftDisk.hold(new Promise(resolve=>{release=resolve;}));const input=parent.querySelector('textarea');input.value='Keep before leaving';input.emit('input');let navigated=false;f.app.afterNoteSaved(()=>{navigated=true;});
+  await turn();assert.equal(navigated,false);assert.equal(f.app.screenHasUnsavedChanges(),true);f.draftDisk.hold(null);release();for(let i=0;i<20&&!navigated;i++)await turn();assert.equal(navigated,true,JSON.stringify({state:f.app.chatDraftSession.read(),toast:f.app.lastToast,pending:f.app.noteActionPending}));
+  f.draftDisk.setFailure(true);input.value='Keep after failure';input.emit('input');await f.app.chatDraftSession.flush();navigated=false;f.app.afterNoteSaved(()=>{navigated=true;});await turn();await turn();
+  assert.equal(navigated,false);assert.equal(input.value,'Keep after failure');assert.equal(f.app.screenHasUnsavedChanges(),true);assert.match(f.app.lastToast,/сохран/iu);assert.equal(parent.querySelector('.sw-chat-draft-status').hidden,false);
+  f.draftDisk.setFailure(false);assert.equal(await f.app.chatDraftSession.flush(),true);f.app.chatCleanup();
+});
+
+test('an old chat ACK cannot erase a new identical text typed while it was in flight', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},gate=deferred(),sent=[];
+  f.app.chatDrafts=chatState.createChatDraftStore(storage,()=> 'intent_in_flight');f.app.preferences={motion:false};Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  const target={kind:'community',id:'room_identical',draftKey:'room_identical',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);return gate.promise;}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;
+  const input=parent.querySelector('textarea');input.value='Same';input.emit('input');await f.app.chatDraftSession.flush();const old=f.app.chatDraftSession.read().selectedId;
+  parent.querySelector('.sw-composer').requestSubmit();for(let i=0;i<20&&sent.length===0;i++)await turn();assert.equal(sent.length,1);
+  input.value='Changed';input.emit('input');input.value='Same';input.emit('input');await f.app.chatDraftSession.flush();assert.notEqual(f.app.chatDraftSession.read().selectedId,old);
+  gate.resolve({message:{messageId:'message_first',clientId:'intent_in_flight',seq:1,text:'Same',author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}});for(let i=0;i<20;i++)await turn();
+  assert.equal(input.value,'Same');assert.equal(f.app.chatDraftSession.read().value.text,'Same');assert.equal(f.app.chatDraftSession.read().heads.length,1);f.app.chatCleanup();
 });

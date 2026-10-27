@@ -4,7 +4,8 @@ import './product.css';
 import './shell.css';
 import './chat.css';
 import './attachments.css';
-import { createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
+import { attachmentDisk, createAttachmentOutbox, downloadAttachment, type AttachmentOutbox, type AttachmentOutboxItem } from './attachment-outbox.mjs';
+import { createChatDraftSession, type ChatDraftSession } from './chat-draft-session.mjs';
 import { attachmentImage } from './attachment-image.mjs';
 import './community.css';
 import { mountAppStage, type AppStageHandle, type AppStageOptions } from './app-stage';
@@ -198,6 +199,8 @@ class WorldApplication {
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private chatTimer: ReturnType<typeof setInterval> | null = null;
   private chatCleanup: (() => void) | null = null;
+  private chatDraftSession: ChatDraftSession | null = null;
+  private chatDraftSessions = new Set<ChatDraftSession>();
   private selectedChat: string | undefined;
   private directThreads: WorldDirectThread[] = [];
   private directThreadsLoaded = false;
@@ -320,7 +323,7 @@ class WorldApplication {
     });
     this.unregisterUpdateGuard = registerUpdateGuard(async () => {
       await this.flushScreen(); await this.agentOrb?.flush(); await this.widgets?.flush();
-      if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile()) return 'work';
+      if (this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges() || this.chatDrafts.hasVolatile() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges())) return 'work';
       if (this.appStage?.hasUnconfirmedWork() || this.widgets?.hasUnconfirmedWork()) return 'app';
       if (this.formEdits.hasUnsavedChanges()) return 'form';
       if (document.querySelector('dialog[open] form')) return 'dialog';
@@ -337,7 +340,7 @@ class WorldApplication {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button, a[href]') : null;
       const support = target && coreSupportLinks.has(target) && (target as HTMLAnchorElement).href === CORE_SUPPORT_URL &&
         (target as HTMLAnchorElement).target === '_blank' && (target as HTMLAnchorElement).rel === 'noopener noreferrer';
-      if (!target || support || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
+      if (!target || support || target.hasAttribute?.('data-soty-draft-download') || target.closest('.sn-workspace,.sw-assistant-host,.sw-access-host,.sw-agent-orb,.sa-stage,.uf-screen,.uf-global-search,.sw-cover-dialog,.sw-toast,.sw-help-dialog') || !this.screenHasUnsavedChanges()) return;
       event.preventDefault(); event.stopImmediatePropagation();
       this.afterNoteSaved(() => { if (target.isConnected) target.click(); });
     }, { capture: true, signal: this.controller.signal });
@@ -347,7 +350,7 @@ class WorldApplication {
     window.addEventListener('pagehide', () => { this.stopIncomingCallPolling(); this.mountFieldCovers(null); }, { signal: this.controller.signal });
     window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); this.mountFieldCovers(this.unifiedField); }, { signal: this.controller.signal });
     document.addEventListener('visibilitychange', () => this.mountFieldCovers(this.unifiedField), { signal: this.controller.signal });
-    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
+    window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges()) || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
     window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
@@ -798,8 +801,8 @@ class WorldApplication {
     node.append(el('span', '', label)); return node;
   }
   private cleanScreen(): void { this.aiSettingsDialog?.close({ restoreFocus: false }); this.aiSettingsDialog = null; this.coverDialog?.close({ restoreFocus: false }); this.coverHandle?.dispose(); this.coverHandle = null; this.coverDialog = null; this.coverTargetCurrent = null; this.mountFieldCovers(null); this.fieldBackdrop?.remove(); this.fieldBackdrop = null; this.screenSequence++; this.agentOrb?.resetScreen(); this.appSettingsDialog?.close({ restoreFocus: false }); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appPlacementDialog?.close({ restoreFocus: false }); this.appPlacementController?.dispose(); this.appPlacementDialog = null; this.appPlacementController = null; this.appPlacementRouteClose = null; this.appStage?.dispose(); this.appStage = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; const hadField = !!this.unifiedField; this.unifiedField?.dispose(); this.unifiedField = null; delete this.root.dataset.field; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; if (hadField && !this.destroyed) this.renderNavigation(); }
-  private screenHasUnsavedChanges(): boolean { return !!(this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
-  private async flushScreen(): Promise<void> { await Promise.all([this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
+  private screenHasUnsavedChanges(): boolean { return !!(this.chatDraftSession?.hasUnsavedChanges() || this.coverHandle?.hasUnsavedChanges() || this.unifiedField?.hasUnsavedChanges() || this.appPlacementController?.hasUnsavedChanges() || this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.() || this.appStage?.hasUnsavedChanges()); }
+  private async flushScreen(): Promise<void> { await Promise.all([this.chatDraftSession?.flush(), this.unifiedField?.flush(), this.appPlacementController?.retry(), this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.(), this.appStage?.flush()]); }
   private persist(): void { savePreferences(this.preferences); }
   private announce(message: string): void { this.live.textContent = message; }
   private toast(message: string, isError = false, action?: { label: string; run(): void }): void {
@@ -1825,13 +1828,13 @@ class WorldApplication {
     const accountId = this.profile?.profileId ?? this.deskAccount;
     const initialDraft = this.chatDrafts.read(accountId, conversation.draftKey);
     const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${conversation.name}`);
-    let replyTo = initialDraft.replyTo, sending = false, accessClosed = false, searchIndex = -1;
+    let replyTo: string | null = null, sending = false, accessClosed = false, draftLoading = true, searchIndex = -1;
     let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, historyLoading = false, hasHistory = false;
     let catchupTimer: ReturnType<typeof setTimeout> | undefined;
     const highlightTimers = new Set<ReturnType<typeof setTimeout>>();
     const known = new Map<string, WorldMessage>();
     const rows = new Map<string, HTMLElement>();
-    let outbox: AttachmentOutbox | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false, acknowledgingAttachments = false;
+    let outbox: AttachmentOutbox | undefined, draftSession: ChatDraftSession | undefined, attachmentRows: AttachmentOutboxItem[] = [], attachmentWritable = false, acknowledgingAttachments = false;
     const attachmentScope: Record<string,string> = conversation.kind === 'direct' ? { threadId: conversation.id, expectedRelationshipId: (conversation.record as WorldDirectThread).relationshipId } : { communityId: conversation.id };
     const active = (): boolean => !this.destroyed && !accessClosed && sequence === this.screenSequence && chat.isConnected;
     const nearEnd = (): boolean => messages.clientHeight > 0 && messages.getClientRects().length > 0 && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
@@ -1907,8 +1910,8 @@ class WorldApplication {
     const reply = el('div', 'sw-composer-reply'); reply.hidden = true;
     const replyCopy = el('button', 'sw-composer-reply-copy'); replyCopy.type = 'button'; replyCopy.addEventListener('click', () => { if (replyTo) void jumpToMessage(replyTo); });
     const replyAuthor = el('strong'), replyText = el('span'); replyCopy.append(icon('back'), replyAuthor, replyText);
-    const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; this.chatDrafts.edit(accountId, conversation.draftKey, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
-    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = initialDraft.text;
+    const cancelReply = iconButton('Отменить ответ', 'close', () => { replyTo = null; draftSession?.edit(input.value,null); this.chatDrafts.edit(accountId, conversation.draftKey, input.value, null); refreshReply(); input.focus({ preventScroll: true }); }); reply.append(replyCopy, cancelReply);
+    const composer = el('form', 'sw-composer'); composer.dataset.pwaIgnore = ''; const input = el('textarea'); input.rows = 1; input.maxLength = 6000; input.placeholder = conversation.canWrite ? 'Сообщение' : 'В этом чате доступно только чтение'; input.enterKeyHint = 'send'; input.setAttribute('aria-label', `Сообщение в ${conversation.name}`); input.setAttribute('aria-keyshortcuts', 'Enter'); input.value = '';
     const send = button('Отправить', 'send', 'sw-button-primary'); send.type = 'submit'; send.setAttribute('aria-label', 'Отправить сообщение');
     const filePicker = el('input'); filePicker.type = 'file'; filePicker.multiple = true; filePicker.hidden = true;
     const touchKeyboard = matchMedia('(pointer:coarse)').matches; input.enterKeyHint = touchKeyboard ? 'enter' : 'send'; input.setAttribute('aria-keyshortcuts', touchKeyboard ? 'Control+Enter Meta+Enter' : 'Enter');
@@ -1918,14 +1921,38 @@ class WorldApplication {
     const error = el('div', 'sw-chat-error'); const errorMessage = el('div', 'sw-error'); errorMessage.setAttribute('role', 'alert'); error.append(errorMessage);
     const retrySend = button('Повторить отправку', 'refresh', 'sw-button-small sw-button-quiet', () => composer.requestSubmit()); retrySend.hidden = !initialDraft.pending; error.append(retrySend);
     const draftStatus = el('div', 'sw-chat-draft-status'); draftStatus.setAttribute('role', 'status');
+    const draftChoices = () => {
+      const heads=draftSession?.read().heads??[], choices: typeof heads=[];
+      for(const head of heads)if(!choices.some(value=>value.text===head.text&&value.replyTo===head.replyTo))choices.push(head);
+      return choices.length>1?choices:[];
+    };
+    const openDraftChoices = (): void => {
+      const choices=draftChoices(), session=draftSession; if(choices.length<2||!session)return;
+      const ids=session.read().heads.map(head=>head.id), dialog=this.dialog('Выберите черновик'), list=el('div','sw-stack');
+      dialog.body.append(el('p','sw-muted','В разных вкладках появились разные варианты. Выберите, какой продолжить.'),list);
+      if(attachmentRows.length)dialog.body.append(el('p','sw-muted','Вложения останутся в текущей очереди.'));
+      for(const choice of choices) {
+        const row=el('div','sw-chat-draft-choice');row.append(el('p','',choice.text||'Пустой черновик'));
+        if(choice.replyTo) {const replied=known.get(choice.replyTo);row.append(el('small','sw-muted',replied?`Ответ: ${replied.author.displayName} — ${chatPreview(replied)}`:'Ответ на сообщение из истории'));
+          row.append(button('Посмотреть ответ','back','sw-button-quiet',()=>{dialog.close();void jumpToMessage(choice.replyTo!);}));}
+        const use=button('Использовать этот','check','sw-button-quiet',()=>{void session.select(ids,choice.id).then(ok=>{
+          if(!active())return;if(!ok){errorMessage.textContent='Черновики изменились. Откройте выбор ещё раз.';void session.refresh();}
+          dialog.close();if(ok)input.focus({preventScroll:true});
+        });});
+        use.setAttribute('aria-label',`Использовать черновик: ${Array.from(choice.text.replace(/\s+/gu,' ').trim()).slice(0,90).join('')||'пустой'}${choice.replyTo?' — с ответом':''}`);
+        row.append(use);list.append(row);
+      }
+    };
+    const chooseDraft=button('Выбрать черновик','list','sw-chat-draft-versions sw-button-small sw-button-quiet',openDraftChoices);chooseDraft.hidden=true;
     const downloadDraft = button('Скачать черновик', 'download', 'sw-button-small sw-button-quiet', () => {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
+    downloadDraft.dataset.sotyDraftDownload='';
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
     const updateComposer = (): void => {
       const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending;
-      input.disabled = accessClosed || !conversation.canWrite;
-      input.placeholder = conversation.canWrite ? attachmentRows.length ? 'Сообщение или подпись к файлам' : 'Сообщение' : 'В этом чате доступно только чтение';
+      input.disabled = accessClosed || !conversation.canWrite || draftLoading;
+      input.placeholder = draftLoading ? 'Загружаем черновик…' : conversation.canWrite ? attachmentRows.length ? 'Сообщение или подпись к файлам' : 'Сообщение' : 'В этом чате доступно только чтение';
       input.setAttribute('aria-label', `Сообщение в ${conversation.name}`);
       const waitingForFiles = pending?.attachments?.length ? !outbox?.canSend() : !pending && attachmentRows.length > 0 && !outbox?.canSend();
       send.disabled = sending || input.disabled || (!pending && !input.value.trim() && !outbox?.canSend()) || !!waitingForFiles;
@@ -1935,19 +1962,20 @@ class WorldApplication {
       limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`;
     };
     const describeDraft = (): void => {
-      const volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey);
+      const state=draftSession?.read(), volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey)||!!(state?.dirty&&state.error);
       const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending && !draft.attachments?.length;
-      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : '';
+      const conflicts=draftChoices();chooseDraft.hidden=conflicts.length<2;
+      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : state?.dirty ? 'Сохраняем черновик…' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : conflicts.length>1 ? 'Есть несколько вариантов черновика.' : '';
       draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !draftStatus.textContent; downloadDraft.hidden = !volatile || !draft.text;
       retrySend.hidden = !draft.pending || sending;
     };
-    error.append(draftStatus, downloadDraft, limitStatus); describeDraft();
+    error.append(draftStatus, chooseDraft, downloadDraft, limitStatus); describeDraft();
     const fitComposer = (): void => { const stick = nearEnd(); input.style.height = 'auto'; input.style.height = `${Math.min(144, Math.max(24, input.scrollHeight))}px`; if (stick) messages.scrollTop = messages.scrollHeight; };
     const refreshReply = (): void => {
       reply.hidden = !replyTo; if (!replyTo) return;
       const target = known.get(replyTo); replyAuthor.textContent = target ? `Ответ · ${target.author.displayName}` : 'Ответ на сообщение'; replyText.textContent = target ? chatPreview(target) : 'Сообщение из предыдущей истории';
     };
-    input.addEventListener('input', () => { this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
+    input.addEventListener('input', () => { draftSession?.edit(input.value,replyTo); this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); updateComposer(); fitComposer(); describeDraft(); });
     input.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229) return;
       if (touchKeyboard ? event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey : shouldSendOnEnter(event)) { event.preventDefault(); if (!send.disabled) composer.requestSubmit(); }
@@ -1980,7 +2008,7 @@ class WorldApplication {
       }
       if (!acknowledgingAttachments) {
         const accepted=outbox?.acceptedIntent(),pending=outbox?.pendingIntent();
-        if(accepted)this.chatDrafts.acknowledge(accountId,conversation.draftKey,accepted.clientId,accepted.attachments);
+        if(accepted){if(accepted.draftId)void draftSession?.acknowledge(accepted.draftId).catch(reason=>{if(active())errorMessage.textContent=errorText(reason);});this.chatDrafts.acknowledge(accountId,conversation.draftKey,accepted.clientId,accepted.attachments);}
         const localPending=this.chatDrafts.read(accountId,conversation.draftKey).pending;
         if(pending&&(!localPending||localPending.clientId===pending.clientId))this.chatDrafts.recoverPending(accountId,conversation.draftKey,pending);
         this.chatDrafts.setAttachments(accountId,conversation.draftKey,attachmentRows.map(item=>item.attachmentId));
@@ -1997,14 +2025,31 @@ class WorldApplication {
     chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
     chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
     composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
+    const draftDisk=attachmentDisk();this.chatDraftSessions??=new Set();
+    const changedDraft = (state: ReturnType<ChatDraftSession['read']>): void => {
+      if(!active())return;
+      if((!state.dirty||draftLoading)&&(input.value!==state.value.text||replyTo!==state.value.replyTo)){
+        input.value=state.value.text;replyTo=state.value.replyTo;this.chatDrafts.edit(accountId,conversation.draftKey,input.value,replyTo);
+      }
+      updateComposer();fitComposer();refreshReply();describeDraft();
+    };
+    const retained=[...this.chatDraftSessions].find(session=>session.scope.accountId===accountId&&session.scope.conversationKey===conversation.draftKey&&session.hasUnsavedChanges());
+    if(retained){const saved=retained.read().value;input.value=saved.text;replyTo=saved.replyTo;draftLoading=false;}
+    draftSession=retained?retained.reopen(changedDraft):createChatDraftSession({disk:draftDisk,accountId,conversationKey:conversation.draftKey,legacy:initialDraft,changed:changedDraft});
+    this.chatDraftSession=draftSession;this.chatDraftSessions.add(draftSession);
+    void draftSession.ready.then(()=>{draftLoading=false;if(active())updateComposer();},()=>{draftLoading=false;if(active())updateComposer();});
     let outboxFailed = false, attachmentReady: Promise<void>;
     const startOutbox = (): void => {
       outbox?.close(); outboxFailed = false;
       const local = this.chatDrafts.read(accountId, conversation.draftKey);
-      const next = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: local.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } });
+      const next = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: local.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); },disk:draftDisk });
       outbox = next;
-      attachmentReady = next.ready.then(async () => {
-        if (local.pending && !next.pendingIntent()) await next.prepareSend(local.pending);
+      attachmentReady = Promise.all([next.ready,draftSession!.flush()]).then(async ([,saved]) => {
+        if(!saved)throw Object.assign(new Error('attachment_local_storage'),{code:'attachment_local_storage'});
+        if (local.pending && !next.pendingIntent()) {
+          const old=draftSession!.read().heads.find(head=>head.writer==='legacy'&&head.text.trim()===local.pending!.text&&head.replyTo===local.pending!.replyTo);
+          await next.prepareSend({...local.pending,...(old?{draftId:old.id}:{})});
+        }
       }).catch(reason => { outboxFailed = true; if (active()) { errorMessage.textContent = errorText(reason?.code === 'attachment_local_storage' ? { code: 'chat_local_storage_unavailable' } : reason); updateComposer(); } });
     };
     startOutbox();
@@ -2015,7 +2060,7 @@ class WorldApplication {
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
     composerResize.observe(composer); composerResize.observe(dock);
-    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, conversation.draftKey, draft => { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; updateComposer(); refreshReply(); describeDraft(); });
+    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, conversation.draftKey, draft => { if (!draftSession) { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; } updateComposer(); refreshReply(); describeDraft(); });
 
     const ordered = (): WorldMessage[] => [...known.values()].sort((a, b) => a.seq - b.seq);
     const notifyConversation = (readAcknowledged = false): void => presentation.notify(chat, ordered().at(-1), readAcknowledged);
@@ -2064,7 +2109,7 @@ class WorldApplication {
     const messageActions = (messageId: string, anchor: HTMLButtonElement): void => {
       const message = known.get(messageId); if (!message || message.removed) return;
       const actions: Parameters<typeof openMenu>[1] = [
-        { label: 'Ответить', symbol: 'back', disabled: sending || accessClosed || !conversation.canWrite, run: () => { replyTo = messageId; this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); refreshReply(); input.focus({ preventScroll: true }); } },
+        { label: 'Ответить', symbol: 'back', disabled: sending || accessClosed || !conversation.canWrite, run: () => { replyTo = messageId; draftSession?.edit(input.value,replyTo); this.chatDrafts.edit(accountId, conversation.draftKey, input.value, replyTo); refreshReply(); input.focus({ preventScroll: true }); } },
         { label: 'Копировать текст', symbol: 'list', run: () => { if (!navigator.clipboard) { this.toast('Выделите текст сообщения, чтобы скопировать его.', true); return; } void navigator.clipboard.writeText(message.text).then(() => { if (active()) this.toast('Текст скопирован'); }).catch(() => { if (active()) this.toast('Не удалось скопировать. Выделите текст сообщения.', true); }); } },
       ];
       if (message.author.profileId === accountId || conversation.canModerate) actions.push({ label: 'Удалить у всех', symbol: 'trash', danger: true, run: () => this.confirmAction('Удалить сообщение?', 'Оно исчезнет из разговора у всех участников.', 'Удалить', async () => {
@@ -2109,7 +2154,12 @@ class WorldApplication {
         const ids = pending.attachments ?? [];
         if (!acknowledgingAttachments) {
           acknowledgingAttachments = true;
-          void attachmentReady.then(async () => { if (!outbox) throw Object.assign(Error('attachment_local_storage'), { code: 'attachment_local_storage' }); await outbox.acknowledge(ids, { ...pending, attachments: ids }); this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId, ids); })
+          void attachmentReady.then(async () => { if (!outbox) throw Object.assign(Error('attachment_local_storage'), { code: 'attachment_local_storage' });
+            const queued=outbox.pendingIntent(),accepted=outbox.acceptedIntent();
+            let confirmedIds=ids;
+            if(queued?.clientId===pending.clientId){confirmedIds=queued.attachments;await outbox.acknowledge(confirmedIds,queued);await draftSession?.acknowledge(queued.draftId);}
+            else if(accepted?.clientId===pending.clientId)await draftSession?.acknowledge(accepted.draftId);
+            this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId, confirmedIds); })
             .catch(reason => { if (reason?.code === 'attachment_local_storage') outboxFailed = true; if (active()) errorMessage.textContent = errorText(reason); })
             .finally(() => { acknowledgingAttachments = false; if (active()) renderAttachments(); });
         }
@@ -2208,21 +2258,28 @@ class WorldApplication {
     };
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
-      event.preventDefault(); const text = input.value.trim(), attachmentIds=attachmentRows.map(item=>item.attachmentId), priorPending=this.chatDrafts.read(accountId,conversation.draftKey).pending; if (send.disabled) return;
+      event.preventDefault(); const text = input.value.trim(), clickedReply=replyTo, generation=draftSession?.read().generation, attachmentIds=attachmentRows.map(item=>item.attachmentId), priorPending=this.chatDrafts.read(accountId,conversation.draftKey).pending; if (send.disabled) return;
       sending = true; const pending = priorPending ? { ...priorPending, durable: !this.chatDrafts.isVolatile(accountId, conversation.draftKey) }
         : this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo,attachmentIds); describeDraft(); updateComposer();
       let dispatched=false;
       errorMessage.textContent = ''; retrySend.hidden = true;
       void (async()=>{
-        let submitted=pending;
+        let submitted: typeof pending & {draftId?:string}=pending;
         if (outboxFailed) startOutbox();
         await attachmentReady;
-        if (!outbox || outboxFailed) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
+        if (!outbox || !draftSession || outboxFailed || !await draftSession.flush()) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
+        await draftSession.refresh();
+        const captured=draftSession.read();
+        if(!priorPending&&(captured.generation!==generation||captured.value.text.trim()!==text||captured.value.replyTo!==clickedReply)){
+          this.chatDrafts.discardUnsubmitted(accountId,conversation.draftKey,pending.clientId);throw Object.assign(new Error('chat_draft_changed'),{code:'chat_draft_changed'});
+        }
+        if(!priorPending&&draftChoices().length>1){this.chatDrafts.discardUnsubmitted(accountId,conversation.draftKey,pending.clientId);if(active())openDraftChoices();return;}
         let prepared;
-        try { prepared=await outbox.prepareSend(pending); }
+        try { prepared=await outbox.prepareSend({...pending,...(!priorPending&&!pending.reusedOther&&captured.selectedId?{draftId:captured.selectedId}:{})}); }
         catch(reason) { if ((reason as {code?:string})?.code === 'attachment_local_storage') { outboxFailed=true; if (!pending.attachments?.length) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' }); } throw reason; }
         if ((pending.reusedOther || pending.clientId !== prepared.intent.clientId) && active()) this.toast('Сначала подтверждаем прежнее сообщение. Новый текст остаётся черновиком.');
         if(prepared.state==='accepted'){
+          await draftSession.acknowledge(prepared.intent.draftId);
           this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
           if(active())void load();return;
         }
@@ -2233,12 +2290,12 @@ class WorldApplication {
         dispatched=true;
         const response=await conversation.request<{message:WorldMessage}>('send',{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,...(sentIds.length?{attachments:sentIds,expectedAccountId:accountId}:{})});
         acknowledgingAttachments=true;
-        try { await outbox.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds}); }
+        try { await outbox.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds,...(submitted.draftId?{draftId:submitted.draftId}:{})});await draftSession.acknowledge(submitted.draftId); }
         finally { acknowledgingAttachments=false; }
-        const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, submitted.clientId,sentIds);
+        this.chatDrafts.acknowledge(accountId, conversation.draftKey, submitted.clientId,sentIds);
         if (!active()) return;
         const stickToEnd = nearEnd(), position = capturePosition();
-        append(response.message); refreshTimeline(); input.value = draft.text; replyTo = draft.replyTo; refreshReply(); fitComposer(); describeDraft();
+        append(response.message); refreshTimeline(); const draft=draftSession.read().value;input.value=draft.text;replyTo=draft.replyTo;refreshReply();fitComposer();describeDraft();
         if (stickToEnd) messages.scrollTop = messages.scrollHeight; else { restorePosition(position); unseen++; }
         updateJump(); notifyConversation(); void load();
       })().catch(async reason => {
@@ -2250,10 +2307,12 @@ class WorldApplication {
         if (active() && !closeAccess(reason)) { errorMessage.textContent = errorText(reason); retrySend.hidden = false; }
       }).finally(() => { sending = false; if (active()) { const returnToComposer = document.activeElement === input || document.activeElement === send || document.activeElement === retrySend; updateComposer(); describeDraft(); if (returnToComposer && !input.disabled && !matchMedia('(pointer:coarse)').matches) input.focus({ preventScroll: true }); } });
     });
-    const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); describeDraft(); void load(); } };
+    const returned = (): void => { if (document.visibilityState === 'visible') { this.chatDrafts.retrySave(accountId, conversation.draftKey); void draftSession?.refresh().catch(() => {}); describeDraft(); void load(); } };
     document.addEventListener('visibilitychange', returned);
     const previousCleanup = this.chatCleanup;
-    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer); };
+    this.chatCleanup = () => { outbox?.close(); previousCleanup?.(); closeMenu(); unsubscribeDraft(); composerResize.disconnect(); document.removeEventListener('visibilitychange', returned); document.removeEventListener('pointerdown', outsideMenu); if (catchupTimer) clearTimeout(catchupTimer); for (const timer of highlightTimers) clearTimeout(timer);
+      const closing=draftSession;if(closing){closing.close();if(this.chatDraftSession===closing)this.chatDraftSession=null;
+        if(!closing.hasUnsavedChanges())this.chatDraftSessions.delete(closing);else void closing.flush().then(saved=>{if(saved&&this.chatDraftSession!==closing)this.chatDraftSessions.delete(closing);});} };
     void load(); this.chatTimer = setInterval(() => { void load(); }, 4500);
     return active;
   }
@@ -2346,16 +2405,50 @@ class WorldApplication {
     });
     moreApplications.hidden = true; list.append(moreApplications);
     const room = el('div', 'sw-message-room');
+    const draftDisk=attachmentDisk(), draftPreviews=new Map<string,string>(), draftReads=new Map<string,number>();
+    const draftAccount=encodeURIComponent(accountId)+':';let draftPreviewsLoaded=false,draftPreviewsFailed=false;
+    const draftLabel = (heads:{text:string;replyTo:string|null}[]):string => {
+      const distinct=heads.filter((head,index)=>heads.findIndex(other=>other.text===head.text&&other.replyTo===head.replyTo)===index);
+      return distinct.length>1?'Несколько вариантов':distinct[0]?.text??'';
+    };
+    void draftDisk.draftList(draftAccount).then(rows=>{
+      if(!active())return;const prefix='$draft:'+draftAccount;
+      for(const row of rows)try{const key=decodeURIComponent(row.key.slice(prefix.length,-1));if(!draftReads.has(key))draftPreviews.set(key,draftLabel(row.heads));}catch{/* Ignore malformed keys. */}
+      draftPreviewsLoaded=true;renderList();
+    }).catch(()=>{if(active()){draftPreviewsLoaded=true;draftPreviewsFailed=true;renderList();}});
+    const repaintDraft = (key:string): void => {
+      if(!active())return;const group=groups.find(item=>item.communityId===key);
+      if(group&&conversationRows.get(key)?.isConnected)paintConversation(group);else renderList();
+    };
+    const readDraftPreview = (key:string): void => {
+      const version=(draftReads.get(key)??0)+1;draftReads.set(key,version);
+      const prefix=encodeURIComponent(accountId)+':'+encodeURIComponent(key)+':';
+      void draftDisk.draftRead(prefix).then(snapshot=>{
+        if(!active()||draftReads.get(key)!==version)return;
+        draftPreviews.set(key,snapshot.revision ? draftLabel(snapshot.heads) : this.chatDrafts.read(accountId,key).text);repaintDraft(key);
+      }).catch(()=>{if(active()&&draftReads.get(key)===version){draftPreviews.set(key,'');repaintDraft(key);}});
+    };
+    const draftText = (key:string): string => {
+      if(!unsubscribers.has(key))unsubscribers.set(key,this.chatDrafts.subscribe(accountId,key,()=>{
+        const current=this.chatDraftSession;
+        if(current?.scope.accountId===accountId&&current.scope.conversationKey===key&&(current.isReady()||current.read().dirty))repaintDraft(key);
+        else readDraftPreview(key);
+      }));
+      const current=this.chatDraftSession;
+      if(current?.scope.accountId===accountId&&current.scope.conversationKey===key&&(current.isReady()||current.read().dirty))return current.read().value.text;
+      if(draftPreviews.has(key))return draftPreviews.get(key)??'';
+      return draftPreviewsLoaded&&!draftPreviewsFailed?this.chatDrafts.read(accountId,key).text:'';
+    };
     const paintConversation = (group: WorldCommunity): HTMLButtonElement => {
       let target = conversationRows.get(group.communityId);
       if (!target) { target = el('button', 'sw-conversation'); target.type = 'button'; target.dataset.communityId = group.communityId; target.addEventListener('click', event => { if (this.selectedChat === group.communityId) return; this.writeRoute(`messages/${group.communityId}`); this.cleanScreen(); this.renderMessages(group.communityId); if (event.detail === 0) this.main.querySelector<HTMLButtonElement>('.sw-chat-identity')?.focus({ preventScroll: true }); }); conversationRows.set(group.communityId, target); }
       target.classList.toggle('is-selected', selectedId === group.communityId); target.classList.toggle('is-muted', !!group.membership?.muted); target.setAttribute('aria-current', selectedId === group.communityId ? 'true' : 'false');
-      const draft = this.chatDrafts.read(accountId, group.communityId), message = previews.get(group.communityId);
+      const draft = draftText(group.communityId), message = previews.get(group.communityId);
       target.dataset.inboxTime = String(message?.createdAt ?? 0); target.dataset.inboxPinned = String(!!group.membership?.pinned);
       const copy = el('span', 'sw-conversation-copy'); const head = el('span', 'sw-conversation-head'); const name = el('strong', '', group.name); head.append(name);
       if (message) { const time = el('time', '', chatListTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); head.append(time); }
-      const line = el('span', `sw-conversation-preview${draft.text ? ' is-draft' : ''}`);
-      if (draft.text) line.append(el('span', 'sw-conversation-draft-label', 'Черновик: '), document.createTextNode(draft.text.replace(/\s+/gu, ' ')));
+      const line = el('span', `sw-conversation-preview${draft ? ' is-draft' : ''}`);
+      if (draft) line.append(el('span', 'sw-conversation-draft-label', 'Черновик: '), document.createTextNode(draft.replace(/\s+/gu, ' ')));
       else if (message) line.textContent = `${message.author.profileId === accountId ? 'Вы' : message.author.displayName.split(' ')[0]}: ${chatPreview(message)}`;
       else line.textContent = nounCount(group.memberCount, 'участник', 'участника', 'участников');
       const sub = el('span', 'sw-conversation-sub'); sub.append(line); const indicators = el('span', 'sw-conversation-indicators');
@@ -2382,8 +2475,8 @@ class WorldApplication {
         const copy = el('span', 'sw-conversation-copy'), head = el('span', 'sw-conversation-head'), sub = el('span', 'sw-conversation-sub'), message = previews.get(thread.threadId);
         row.dataset.inboxTime = String(message?.createdAt ?? thread.createdAt); row.dataset.inboxPinned = String(thread.preferences.pinned);
         head.append(el('strong', '', name)); if (message) { const time = el('time', '', chatListTime(message.createdAt)); time.dateTime = new Date(message.createdAt).toISOString(); head.append(time); }
-        const draftKey = `direct:${thread.threadId}:${thread.relationshipId}`, draft = this.chatDrafts.read(accountId, draftKey);
-        sub.append(el('span', 'sw-conversation-preview', draft.text ? `Черновик: ${draft.text.replace(/\s+/gu, ' ')}` : message ? `${message.author.profileId === accountId ? 'Вы' : name}: ${chatPreview(message)}` : 'Личный разговор'));
+        const draftKey = `direct:${thread.threadId}:${thread.relationshipId}`, draft = draftText(draftKey);
+        sub.append(el('span', 'sw-conversation-preview', draft ? `Черновик: ${draft.replace(/\s+/gu, ' ')}` : message ? `${message.author.profileId === accountId ? 'Вы' : name}: ${chatPreview(message)}` : 'Личный разговор'));
         if (thread.preferences.pinned) { const pin = icon('pin'); pin.setAttribute('aria-label', 'Закреплён'); sub.append(pin); }
         if (thread.preferences.muted) { const muted = icon('bell'); muted.setAttribute('aria-label', 'Уведомления выключены'); sub.append(muted); }
         if (thread.unreadCount) sub.append(el('span', 'sw-message-count', thread.unreadCount > 99 ? '99+' : String(thread.unreadCount)));
@@ -2439,8 +2532,6 @@ class WorldApplication {
       if (!active() || !this.directThreads.some(value => value.threadId === detail.thread.threadId && value.relationshipId === detail.thread.relationshipId)) return;
       if (detail.message) previews.set(detail.thread.threadId, detail.message); renderList();
     });
-    const subscribeDrafts = (): void => { for (const group of groups) if (!unsubscribers.has(group.communityId)) unsubscribers.set(group.communityId, this.chatDrafts.subscribe(accountId, group.communityId, () => { if (!active()) return; const current = groups.find(item => item.communityId === group.communityId); if (current && conversationRows.get(group.communityId)?.isConnected) paintConversation(current); })); };
-    subscribeDrafts();
     const applicationUpdated = (): void => { if (active()) renderList(); };
     this.root.addEventListener('soty:app-inbox-updated', applicationUpdated);
     let inboxTimer: ReturnType<typeof setInterval> | undefined;
@@ -2518,8 +2609,8 @@ class WorldApplication {
           if (group.communityId !== selectedId && (!previous || previous.unreadCount !== group.unreadCount || previous.revision !== group.revision || visibleConversation(group.communityId))) pendingPreviews.add(group.communityId);
         }
         this.communities = response.communities; this.communityAppliedReadSequence = communityRead; groups.splice(0, groups.length, ...next);
-        for (const [id, unsubscribe] of unsubscribers) if (!next.some(group => group.communityId === id)) { unsubscribe(); unsubscribers.delete(id); previews.delete(id); conversationRows.delete(id); pendingPreviews.delete(id); }
-        subscribeDrafts(); renderList(); startPreviews();
+        for (const [id, unsubscribe] of unsubscribers) if (!next.some(group => group.communityId === id) && !this.directThreads.some(thread=>`direct:${thread.threadId}:${thread.relationshipId}`===id)) { unsubscribe(); unsubscribers.delete(id); draftPreviews.delete(id);draftReads.delete(id);previews.delete(id);conversationRows.delete(id);pendingPreviews.delete(id); }
+        renderList(); startPreviews();
         screen.dispatchEvent(new CustomEvent('soty:inbox-updated', { bubbles: true, detail: { communities: response.communities } }));
         if (selectedId) room.querySelector('.sw-chat')?.dispatchEvent(new CustomEvent('soty:chat-community', { detail: { communityId: selectedId, community: next.find(group => group.communityId === selectedId) ?? null } }));
         const notify = next.find(group => group.communityId === selectedId) ?? next[0]; if (notify) screen.dispatchEvent(new CustomEvent('soty:chat-updated', { bubbles: true, detail: { community: notify } }));

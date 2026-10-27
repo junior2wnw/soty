@@ -1,32 +1,42 @@
 import { ATTACHMENT_LIMITS as L, attachmentManifest } from '../../modules/world/attachment-contract.mjs';
 import { attachmentFileName } from '../../modules/world/attachment-file-policy.mjs';
+import { readDraftRecord, initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord } from './chat-draft-record.mjs';
 const hash = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
 const base64 = bytes => { let value = ''; for (let i=0;i<bytes.length;i+=8192) value += String.fromCharCode(...bytes.subarray(i,i+8192)); return btoa(value); };
 const decode = value => Uint8Array.from(atob(value), b => b.charCodeAt(0));
 const need = (ok, code) => { if (!ok) throw Object.assign(Error(code), { code }); };
-const intentCopy = value => value ? ({clientId:value.clientId,text:value.text,replyTo:value.replyTo??null,attachments:[...(value.attachments??[])]}) : null;
+const intentCopy = value => value ? ({clientId:value.clientId,text:value.text,replyTo:value.replyTo??null,attachments:[...(value.attachments??[])],...(value.draftId?{draftId:value.draftId}:{})}) : null;
 const intentKey = prefix => '$message:'+prefix;
+const draftKey = prefix => '$draft:'+prefix;
 function validIntent(value) {
   return value&&/^[A-Za-z0-9_-]{3,160}$/u.test(value.clientId)&&typeof value.text==='string'&&value.text.length<=6000
     &&(value.replyTo===null||value.replyTo===undefined||/^[A-Za-z0-9_-]{3,160}$/u.test(value.replyTo))
+    &&(value.draftId===undefined||/^[A-Za-z0-9_-]{3,160}$/u.test(value.draftId))
     &&Array.isArray(value.attachments)&&value.attachments.length<=L.batch&&(value.attachments.length>0||value.text.trim().length>0)
     &&new Set(value.attachments).size===value.attachments.length&&value.attachments.every(id=>/^[A-Za-z0-9_-]{3,160}$/u.test(id));
 }
 // Narrow queue invalidation only. IDB remains authoritative, including when a
 // tab misses a broadcast; prepareSend rechecks it before every publication.
-const queueReaders=new Map();let queueChannel;
-function subscribeQueue(prefix,read) {
-  const set=queueReaders.get(prefix)??new Set();set.add(read);queueReaders.set(prefix,set);
+const queueReaders=new Map(),draftReaders=new Map();let queueChannel;
+function subscribeReaders(readers,prefix,read) {
+  const set=readers.get(prefix)??new Set();set.add(read);readers.set(prefix,set);
   if(!queueChannel&&typeof BroadcastChannel==='function'){
     queueChannel=new BroadcastChannel('soty.chat.attachment-queue.v1');
-    queueChannel.onmessage=event=>{if(event.data?.kind==='queue-changed'&&typeof event.data.scope==='string')for(const load of queueReaders.get(event.data.scope)??[])void load().catch(()=>{});};
+    queueChannel.onmessage=event=>{const readers=event.data?.kind==='queue-changed'?queueReaders:event.data?.kind==='draft-changed'?draftReaders:null;
+      if(readers&&typeof event.data.scope==='string')for(const load of readers.get(event.data.scope)??[])void load().catch(()=>{});};
     queueChannel.unref?.();
   }
-  return ()=>{set.delete(read);if(!set.size)queueReaders.delete(prefix);};
+  return ()=>{set.delete(read);if(!set.size)readers.delete(prefix);};
 }
+const subscribeQueue=(prefix,read)=>subscribeReaders(queueReaders,prefix,read);
+export const subscribeChatDraft=(prefix,read)=>subscribeReaders(draftReaders,prefix,read);
 async function announceQueue(prefix) {
   await Promise.allSettled([...queueReaders.get(prefix)??[]].map(read=>read()));
   queueChannel?.postMessage({kind:'queue-changed',scope:prefix});
+}
+export async function announceChatDraft(prefix) {
+  await Promise.allSettled([...draftReaders.get(prefix)??[]].map(read=>read()));
+  queueChannel?.postMessage({kind:'draft-changed',scope:prefix});
 }
 export { ATTACHMENT_LIMITS } from '../../modules/world/attachment-contract.mjs';
 
@@ -41,7 +51,7 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
     r.onupgradeneeded=event=>{ if (event.oldVersion !== 0) { r.transaction.abort(); fail(); return; } r.result.createObjectStore('outbox',{keyPath:'key'}); };
     r.onsuccess=()=>{ const db=r.result; if(failed||db.version!==1||db.objectStoreNames.length!==1||!db.objectStoreNames.contains('outbox')) {db.close();fail();return;} db.onversionchange=()=>{db.close();database=null;};resolve(db); };
     r.onerror=r.onblocked=fail;
-  });
+  }).catch(reason=>{database=null;throw reason;});
   async function transaction(mode, callback) {
     const db=await opened();return new Promise((resolve,reject)=>{
       const tx=db.transaction('outbox',mode),store=tx.objectStore('outbox');let result;
@@ -49,11 +59,31 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
       try { const request=callback(store);if(request)request.onsuccess=()=>{result=request.result;}; } catch(error){tx.abort();reject(error);}
     });
   }
+  async function draftTransaction(prefix, operation) {
+    const db=await opened();return new Promise((resolve,reject)=>{
+      const tx=db.transaction('outbox','readwrite'),store=tx.objectStore('outbox');let result,error;
+      tx.oncomplete=()=>resolve(result);tx.onabort=tx.onerror=()=>reject(error??Object.assign(Error('attachment_local_storage'),{code:'attachment_local_storage'}));
+      const request=store.get(draftKey(prefix));request.onsuccess=()=>{try{
+        const current=request.result, changed=operation(current);
+        if(changed.record)store.put({...changed.record,key:draftKey(prefix)});
+        result={...readDraftRecord(changed.record??current),...(changed.head?{head:changed.head}:{})};
+      }catch(reason){error=reason;tx.abort();}};
+    });
+  }
   return {
     list: prefix=>transaction('readonly',store=>store.getAll(IDBKeyRange.bound(prefix,prefix+'\uffff'))),
     put: row=>transaction('readwrite',store=>store.put(row)),
     remove: key=>transaction('readwrite',store=>store.delete(key)),
     removeBatch: keys=>transaction('readwrite',store=>{for(const key of keys)store.delete(key);}),
+    async draftRead(prefix) {return readDraftRecord(await transaction('readonly',store=>store.get(draftKey(prefix))));},
+    async draftList(accountPrefix) {
+      const key=draftKey(accountPrefix),rows=await transaction('readonly',store=>store.getAll(IDBKeyRange.bound(key,key+'\uffff')));
+      return rows.map(row=>{try{return {key:row.key,...readDraftRecord(row)};}catch{return {key:row.key,revision:1,heads:[]};}});
+    },
+    draftInitialize(prefix,legacy,legacyId) {return draftTransaction(prefix,value=>({record:initializeDraftRecord(value,legacy,legacyId)}));},
+    draftWrite(prefix,proposal) {return draftTransaction(prefix,value=>writeDraftRecord(value,proposal));},
+    draftSelect(prefix,expectedIds,selectedId,newId,writer) {return draftTransaction(prefix,value=>selectDraftRecord(value,expectedIds,selectedId,newId,writer));},
+    draftAcknowledge(prefix,id) {return draftTransaction(prefix,value=>({record:acknowledgeDraftRecord(value,id)}));},
     async scope(prefix) {
       const db=await opened();return new Promise((resolve,reject)=>{
         const tx=db.transaction('outbox','readonly'),store=tx.objectStore('outbox');const result={rows:[],message:null};
@@ -114,6 +144,9 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
           if(message?.pending?.clientId===intent.clientId){
             need(JSON.stringify(message.pending)===JSON.stringify(intentCopy(intent)),'attachment_queue_changed');
             message.pending=null;message.accepted=intentCopy(intent);store.put(message);
+            if(intent.draftId){const draft=store.get(draftKey(prefix));draft.onsuccess=()=>{try{
+              const remaining=acknowledgeDraftRecord(draft.result,intent.draftId);if(remaining)store.put({...remaining,key:draftKey(prefix)});
+            }catch(reason){error=reason;tx.abort();}};}
           }
           for(const id of intent.attachments)store.delete(prefix+id);
         }catch(reason){error=reason;tx.abort();}};

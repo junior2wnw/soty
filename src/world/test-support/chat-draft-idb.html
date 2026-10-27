@@ -1,0 +1,36 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><link rel="icon" href="data:,"><title>Транзакция черновиков</title><body><h1>Синтетическая проверка IndexedDB</h1><button id="run">Проверить</button><pre id="result">Ожидание</pre>
+<script type="module">
+import {attachmentDisk} from '/src/world/attachment-outbox.mjs';const out=document.querySelector('#result');const ok=(value,message)=>{if(!value)throw Error(message)};
+document.querySelector('#run').onclick=async()=>{try{
+ const a=attachmentDisk(),b=attachmentDisk(),prefix='synthetic:'+crypto.randomUUID()+':';
+ await Promise.all([a.draftInitialize(prefix,{text:'',replyTo:null},'legacy_A'),b.draftInitialize(prefix,{text:'',replyTo:null},'legacy_B')]);
+ await Promise.all([a.draftWrite(prefix,{baseId:null,id:'first_id',writer:'tab_A',text:'First',replyTo:null}),b.draftWrite(prefix,{baseId:null,id:'second_id',writer:'tab_B',text:'Second',replyTo:null})]);
+ const observed=await a.draftRead(prefix);ok(observed.heads.length===2,'two simultaneous edits');
+ await b.draftWrite(prefix,{baseId:'second_id',id:'newer_id',writer:'tab_B',text:'Newer',replyTo:null});
+ let stale=false;try{await a.draftSelect(prefix,observed.heads.map(h=>h.id),'first_id','selection_old','tab_A');}catch(e){stale=e.code==='chat_draft_changed'}ok(stale,'stale selection must fail');
+ const current=await a.draftRead(prefix);ok(current.heads.map(h=>h.text).sort().join('|')==='First|Newer','both texts survive stale choice');
+ const selected=await a.draftSelect(prefix,current.heads.map(h=>h.id),'first_id','selection_new','tab_A');ok(selected.heads.length===1,'selection is atomic');
+ const later=await b.draftWrite(prefix,{baseId:'selection_new',id:'later_id',writer:'tab_B',text:'First',replyTo:null});ok(later.heads.length===1,'later same text');
+ const oldAck=await a.draftAcknowledge(prefix,'selection_new');ok(oldAck.heads.length===1&&oldAck.heads[0].id==='later_id','old ACK must keep new identical text');
+ const done=await a.draftAcknowledge(prefix,'later_id');ok(done.heads.length===0,'exact ACK removes sent draft');
+ const ownList=await a.draftList('synthetic:'),otherList=await a.draftList('unrelated_synthetic_account:');
+ ok(ownList.some(row=>row.key==='$draft:'+prefix&&row.heads.length===0)&&!otherList.some(row=>row.key==='$draft:'+prefix),'list is account-scoped and retains the tombstone');
+ const intentPrefix='synthetic-intent:'+crypto.randomUUID()+':';
+ await a.draftInitialize(intentPrefix,{text:'',replyTo:null},'legacy_A');
+ await a.draftWrite(intentPrefix,{baseId:null,id:'sent_draft',writer:'tab_A',text:'Same',replyTo:null});
+ const intent={clientId:'intent_001',text:'Same',replyTo:null,attachments:[],draftId:'sent_draft'};
+ await a.claimMessage(intentPrefix,intent);
+ await b.draftWrite(intentPrefix,{baseId:'sent_draft',id:'later_draft',writer:'tab_B',text:'Same',replyTo:null});
+ await a.acceptMessage(intentPrefix,intent);
+ const accepted=await a.scope(intentPrefix),remaining=await b.draftRead(intentPrefix);
+ ok(accepted.message.pending===null&&accepted.message.accepted.clientId===intent.clientId,'accepted message retained');
+ ok(remaining.heads.length===1&&remaining.heads[0].id==='later_draft','atomic ACK keeps later identical draft');
+ const corruptPrefix='synthetic-corrupt:'+crypto.randomUUID()+':';
+ await a.draftInitialize(corruptPrefix,{text:'',replyTo:null},'legacy_B');
+ await a.claimMessage(corruptPrefix,intent);
+ await a.put({key:'$draft:'+corruptPrefix,kind:'broken'});
+ let rejected=false;try{await a.acceptMessage(corruptPrefix,intent);}catch(e){rejected=e.code==='chat_draft_storage_corrupt'}
+ const intact=await a.scope(corruptPrefix);ok(rejected&&intact.message.pending.clientId===intent.clientId&&intact.message.accepted===null,'failed draft operation rolls back entire ACK');
+ out.textContent='PASS — транзакции: две версии, устаревший выбор, точный ACK, атомарное подтверждение и откат при ошибке.';
+}catch(e){out.textContent='FAIL — '+String(e?.stack||e)}};
+</script></body></html>

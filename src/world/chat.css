@@ -130,6 +130,8 @@
 .sw-chat-error>.sw-error:empty { display: none; }
 .sw-chat-draft-status { color: var(--sw-muted); font-size: 11px; line-height: 1.4; }
 .sw-chat-draft-status.is-error { color: var(--sw-danger); }
+.sw-chat-draft-choice { min-width: 0; padding: 12px; border: 1px solid var(--sw-line); border-radius: 12px; }
+.sw-chat-draft-choice p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sw-composer-limit { margin-left: auto; color: var(--sw-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .sw-app .sw-chat-menu { position: absolute; z-index: 10; display: flex; flex-direction: column; min-width: 196px; max-width: calc(100% - 16px); padding: 5px; border: 1px solid var(--sw-line); border-radius: 12px; background: var(--sw-surface-raised); box-shadow: var(--sw-shadow-dialog); }
 .sw-app .sw-chat-menu-item { justify-content: flex-start; gap: 11px; width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; text-align: left; font-size: 12px; }
