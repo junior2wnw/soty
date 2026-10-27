@@ -255,6 +255,7 @@ var ScopedConnectorHost = (() => {
   var SOURCE_MAC_HEADER = "x-soty-selected-mac";
   var SOURCE_PROBE_HEADER = "x-soty-selected-probe";
   var SOURCE_READY_HEADER = "x-soty-selected-ready";
+  var PROOF_ISSUANCE_CLOCK_SKEW_MS = 1e3;
   var token = (value) => need(
     typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value),
     "scoped_embed_proof_invalid",
@@ -316,7 +317,7 @@ var ScopedConnectorHost = (() => {
           schema: "soty.selected-source-probe.v1",
           profileDigest: profile.digest,
           nonce: (0, import_node_crypto2.randomBytes)(32).toString("base64url"),
-          expiresAt: clock() + SCOPED_EMBED_LIMITS.proofMs
+          expiresAt: clock() + SCOPED_EMBED_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS
         });
         const text = Buffer.from(JSON.stringify(value)).toString("base64url");
         return { request: value, headers: { [SOURCE_PROBE_HEADER]: text, [SOURCE_MAC_HEADER]: mac(secret2, "probe\0" + text) } };
@@ -347,7 +348,7 @@ var ScopedConnectorHost = (() => {
           nonce: (0, import_node_crypto2.randomBytes)(32).toString("base64url"),
           expiresAt: Math.min(
             trusted.expiresAt,
-            clock() + SCOPED_EMBED_LIMITS.proofMs
+            clock() + SCOPED_EMBED_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS
           )
         };
         const text = Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -682,7 +683,7 @@ var ScopedConnectorHost = (() => {
   // modules/apps/scoped-embed/resource-proof.mjs
   var RESOURCE_PROOF_HEADER = "x-soty-selected-proof";
   var RESOURCE_MAC_HEADER = "x-soty-selected-mac";
-  var PROOF_ISSUANCE_CLOCK_SKEW_MS = 1e3;
+  var PROOF_ISSUANCE_CLOCK_SKEW_MS2 = 1e3;
   var opaque = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
   var mac2 = (key, value) => (0, import_node_crypto4.createHmac)("sha256", key).update(value).digest("base64url");
   function hostKey2(key) {
@@ -749,7 +750,7 @@ var ScopedConnectorHost = (() => {
           bodyDigest: hash(bytes.toString("base64")),
           cookieDigest: hash(cookie),
           nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
-          expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS)
+          expiresAt: Math.min(captured.expiresAt, clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS2)
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
         need(text.length <= RESOURCE_TRANSPORT_LIMITS.proofHeaderBytes, "scoped_embed_proof_limit", 413);
@@ -760,7 +761,7 @@ var ScopedConnectorHost = (() => {
           schema: "soty.selected-source-probe.v2",
           profileDigest: profile.digest,
           nonce: (0, import_node_crypto4.randomBytes)(32).toString("base64url"),
-          expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS
+          expiresAt: clock() + RESOURCE_TRANSPORT_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS2
         };
         const text = Buffer.from(JSON.stringify(proof)).toString("base64url");
         return { request: Object.freeze(proof), headers: { "x-soty-selected-probe": text, [RESOURCE_MAC_HEADER]: mac2(secret2, "probe\0" + text) } };
@@ -3332,7 +3333,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.15";
+const connectorVersion = "1.4.16";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -4021,6 +4022,7 @@ function runChild(command, args, options) {
     let timedOut = false;
     let stdout = "";
     let stderr = "";
+    let inputError;
     let timer;
     let terminationTimer;
     const child = spawn(command, args, {
@@ -4070,12 +4072,19 @@ function runChild(command, args, options) {
       stderr = appendBounded(stderr, text, maxResultChars);
       options.onStderr?.(text);
     });
+    child.stdin?.on("error", (error) => {
+      inputError ||= error;
+      if (!settled && !options.signal?.aborted && !timedOut) abort();
+    });
     child.on("error", (error) => finish(() => reject(error)));
-    child.on("close", (code, signalName) => finish(() => resolveRun({
-      exitCode: options.signal?.aborted ? 130 : timedOut ? 124 : Number.isSafeInteger(code) ? code : signalName ? 1 : 0,
-      stdout,
-      stderr
-    })));
+    child.on("close", (code, signalName) => finish(() => {
+      if (inputError && !options.signal?.aborted && !timedOut) return reject(inputError);
+      resolveRun({
+        exitCode: options.signal?.aborted ? 130 : timedOut ? 124 : Number.isSafeInteger(code) ? code : signalName ? 1 : 0,
+        stdout,
+        stderr
+      });
+    }));
     if (options.input !== undefined) {
       child.stdin.end(options.input, "utf8");
     }
