@@ -12,12 +12,13 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const base = resolve(tmpdir());
 async function fixture(t) {
   const directory = await mkdtemp(join(base, 'soty-registry-v2-'));
-  const store = createConnectorStore(directory); await store.ready;
+  const store = createConnectorStore(directory, { automaticJobActive: () => true }); await store.ready;
   const token = 'fixture-token-' + 'x'.repeat(40);
   const host = { linkId: 'registry-fixture-link-12345678901234567890', deviceId: 'host-fixture', connectorId: 'connector-fixture' };
   const connector = { ...host, token };
-  const registration = { ...host, scope: 'CurrentUser', capabilities: ['agent'], agent: { id: 'opencode', provider: 'gonka', available: true } };
+  const registration = { ...host, scope: 'CurrentUser', capabilities: ['agent', 'soty.auto-owner-check.v1'], agent: { id: 'opencode', provider: 'gonka', available: true } };
   assert.equal((await store.register(registration, token)).ok, true);
+  assert.equal((await store.poll(connector, 0, undefined, { automaticOwnerGuard: true })).ok, true);
   t.after(async () => {
     await store.close();
     assert.equal(dirname(resolve(directory)), base); assert.match(basename(directory), /^soty-registry-v2-/u);
@@ -44,7 +45,9 @@ test('read-only registry reads v1, protected v2 and v1 again without changing da
   assert.equal((await f.store.finishJob(f.connector, ordinary.job.id, { ok: true, exitCode: 0, text: 'fixture-result' })).ok, true);
   const before = await readConnectorRegistry(f.directory, { jobId: ordinary.job.id });
   assert.equal(before.jobs.find(job => job.id === ordinary.job.id).result.text, 'fixture-result');
+  assert.equal((await f.store.poll(f.connector, 0, undefined, { automaticOwnerGuard: true })).ok, true);
   const auto = await f.create('automatic-task', true); assert.equal(auto.ok, true);
+  assert.ok(auto.job?.id);
   const dbPath = join(f.directory, 'connector-store.sqlite');
   const readOnly = new DatabaseSync(dbPath, { readOnly: true });
   try {

@@ -74,7 +74,7 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions, accountA
   app.get("/api/connectors/poll", route(async (req, res) => {
     const auth = connectorAuth(req);
     const waitMs = req.query.wait === "1" ? 25_000 : 0;
-    const result = await store.poll(auth, waitMs, responseSignal(res));
+    const result = await store.poll(auth, waitMs, responseSignal(res), { automaticOwnerGuard: req.query.autoOwnerGuard === '1' });
     if (result.ok) automaticApps?.poll(auth);
     respond(res, result);
   }));

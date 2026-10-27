@@ -383,6 +383,10 @@ export function createAppBuilderAction(options: BuilderOptions) {
           progressCopy.textContent = label(result);
           output.querySelector('h2')!.textContent = label(result);
           cancel.disabled = Boolean(result.job.cancelRequested);
+          if (automaticJob && !result.done && result.autoRegistration?.state === 'device-update-required') {
+            progressCopy.textContent = 'Подключите или обновите коннектор на выбранном компьютере. Задача сохранена и не будет запущена старой версией.';
+            output.querySelector('h2')!.textContent = progressCopy.textContent;
+          }
           if (result.done && automaticJob) {
             const status = appBuilderAutomatic(result, pending);
             if (unknownArchive && status.state === 'unconfirmed') {

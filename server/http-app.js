@@ -223,16 +223,19 @@ function createHttpAppWithNativeSources(distDir, { env = process.env, dataDir, t
         if (!capabilities?.nativeNotes) throw new AccessError('native_unavailable');
         return capabilities.nativeNotes.verifyContext(token, mode);
       } });
-    connectors = attachConnectorApi(app, { dataDir, gonka, accountAi: accountAiService,
-      ...(accountAiService || localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? { storeOptions: {
+    const currentOwnedJob = job => {
+      const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
+      if (!connect?.isActorActive(actor)) return false;
+      const current = apps?.resolveOwnedDevice(actor, job.deviceId, job.requestedConnectorId);
+      return current?.linkId === job.linkId;
+    };
+    connectors = attachConnectorApi(app, { dataDir, gonka, accountAi: accountAiService, storeOptions: {
+      automaticJobActive: currentOwnedJob,
+      ...(accountAiService || localExecutorCurrent || env.SOTY_LOCAL_EXECUTOR_CURRENT === '1' ? {
         ...(accountAiService ? { legacyModelSponsorEligible: binding => apps?.isUnownedConnector({ linkId: binding.linkId, hostDeviceId: binding.deviceId, connectorId: binding.connectorId }) === true } : {}),
-        ownedJobActive: job => {
-          const actor = { accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId };
-          if (!connect?.isActorActive(actor)) return false;
-          const current = apps?.resolveOwnedDevice(actor, job.deviceId, job.requestedConnectorId);
-          return current?.linkId === job.linkId;
-        },
-      } } : {}) });
+        ownedJobActive: currentOwnedJob,
+      } : {}),
+    } });
     capabilities = createCapabilitiesService({
       databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
       projectId: 'soty', actorActive: actor => connect?.isActorActive(actor) === true,

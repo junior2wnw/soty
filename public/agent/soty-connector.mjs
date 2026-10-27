@@ -4012,7 +4012,7 @@ function productionShellOriginAllowed(origin, relayOrigin) {
 return { productionShellOriginAllowed };
 })();
 
-const connectorVersion = "1.4.12";
+const connectorVersion = "1.4.13";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -4501,7 +4501,7 @@ async function registerConnector(forceAgent = false) {
         version: connectorVersion,
         platform: `${process.platform}-${process.arch}`,
         scope,
-        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml", "local-apps"],
+        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml", "local-apps", "soty.auto-owner-check.v1"],
         agent: await detectAgent(forceAgent)
       }
     });
@@ -4529,7 +4529,7 @@ async function connectorLoop() {
     }
     try {
       if (localJobReceipts) await reconcileLocalResults();
-      const result = await serverJson(`/api/connectors/poll?linkId=${encodeURIComponent(linkId)}&deviceId=${encodeURIComponent(deviceId)}&connectorId=${encodeURIComponent(connectorId)}&wait=1`, { timeoutMs: 35_000 });
+      const result = await serverJson(`/api/connectors/poll?linkId=${encodeURIComponent(linkId)}&deviceId=${encodeURIComponent(deviceId)}&connectorId=${encodeURIComponent(connectorId)}&wait=1&autoOwnerGuard=1`, { timeoutMs: 35_000 });
       if (!result.ok) {
         // A successful registration has recovered this old poll denial. Retry
         // polling instead of replacing its fresh health state with that error.
@@ -4555,13 +4555,15 @@ async function executeJob(job) {
   }
   // Existing root admission/cancellation is read again at the start boundary.
   // A dropped admission response cannot turn into process execution.
-  if (localJobReceipts && kind === 'agent') {
+  const automatic = kind === 'agent' && job.input?.output === 'local-app' && job.input?.autoRegister === true;
+  const needsCurrentOwner = kind === 'agent' && (Boolean(localJobReceipts) || automatic);
+  if (needsCurrentOwner) {
     const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
     if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
     if (!['leased', 'running'].includes(state.job.status)) return;
-    if (!await localJobReceipts.claim(job)) return; // A started marker is NEVER re-executable.
+    if (localJobReceipts && !await localJobReceipts.claim(job)) return; // A started marker is NEVER re-executable.
     if (state.job.cancelRequested === true) {
-      await finishRemoteJob(job.id, { ok: false, text: 'Отменено до запуска', exitCode: 130 }, true); return;
+      await finishRemoteJob(job.id, { ok: false, text: 'Отменено до запуска', exitCode: 130 }, Boolean(localJobReceipts)); return;
     }
   }
   const detected = kind === "agent" ? await detectAgent() : null;
@@ -4588,14 +4590,14 @@ async function executeJob(job) {
   const cancelWatch = watchCancellation(job.id, controller);
   try {
     const runtime = { signal: controller.signal, emit };
-    if (localJobReceipts && kind === 'agent') {
+    const verifyStart = needsCurrentOwner ? async () => {
       const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(job.id)}/runtime-status`, { timeoutMs: 5_000 });
       if (!state.ok || state.job?.id !== job.id || state.job.currentOwnerChecked !== true) throw new Error('local_job_admission_unavailable');
       if (state.job.cancelRequested === true || !['leased', 'running'].includes(state.job.status)) {
         controller.abort(); throw new Error('local_job_admission_revoked');
       }
-    }
-    const result = kind === "agent" ? await runOpenCode(job, runtime) : await runShellJob(job, runtime);
+    } : undefined;
+    const result = kind === "agent" ? await runOpenCode(job, { ...runtime, verifyStart }) : await runShellJob(job, runtime);
     await eventQueue;
     await finishRemoteJob(job.id, { ...result, ...(kind === "agent" ? { agentId: "opencode" } : {}) }, Boolean(localJobReceipts && kind === 'agent'));
   } catch (error) {
@@ -4692,7 +4694,7 @@ function agentStatus(available, version, reason) {
   };
 }
 
-async function runOpenCode(job, { signal, emit }) {
+async function runOpenCode(job, { signal, emit, verifyStart }) {
   const command = await resolveOpenCodeCommand(managed && autoUpdate);
   if (!command) return { ok: false, text: "OpenCode не установлен", exitCode: 126 };
   const appOutput = job.input?.output === 'local-app';
@@ -4710,6 +4712,9 @@ async function runOpenCode(job, { signal, emit }) {
   let sessionId = "";
   let lastMessage = "";
   let lineBuffer = "";
+  // This is the final network check immediately before the native process is
+  // spawned. Revocation after dispatch cannot atomically undo a running process.
+  if (verifyStart) await verifyStart();
   const result = await runChild(command, args, {
     cwd,
     input: prompt,

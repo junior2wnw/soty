@@ -49,8 +49,9 @@ async function fixture(t) {
   const token = randomBytes(32).toString('base64url'), identity = { linkId: 'automatic_app_link_12345678901234567890', hostDeviceId: 'automatic_host', connectorId: 'automatic_connector', name: 'Test device' };
   const auth = { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token };
   const registered = await fetch(origin + '/api/connectors/register', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ ...auth, scope: 'Dev', capabilities: ['apps', 'agent'], agent: { id: 'opencode', provider: 'gonka', available: true } }) });
+    body: JSON.stringify({ ...auth, scope: 'Dev', capabilities: ['apps', 'agent', 'soty.auto-owner-check.v1'], agent: { id: 'opencode', provider: 'gonka', available: true } }) });
   assert.equal((await registered.json()).ok, true);
+  assert.equal((await app.locals.connectorService.store.poll(auth, 0, undefined, { automaticOwnerGuard: true })).ok, true);
   runtime = createLocalAppsRuntime({ randomSecret: () => randomBytes(32).toString('base64url'), digest: value => createHash('sha256').update(value).digest('hex'),
     createWebSocket: url => new WebSocket(url), httpRequest: request, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64') },
     { identity, token, serverUrl: origin });
@@ -82,7 +83,7 @@ async function fixture(t) {
   let sequence = 0;
   async function create(autoRegister = true, extra = {}) {
     const result = await owner.extension('apps.agent.create', { ...target, requestId: `auto-request-${++sequence}`, text: 'Создать список', cwd: '', ...extra, ...(autoRegister ? { autoRegister: true } : {}) });
-    const leased = await app.locals.connectorService.store.poll(auth, 0); assert.equal(leased.jobs[0]?.id, result.job.id);
+    const leased = await app.locals.connectorService.store.poll(auth, 0, undefined, { automaticOwnerGuard: true }); assert.equal(leased.jobs[0]?.id, result.job.id);
     return result.job.id;
   }
   const proposal = jobId => ({ schema: 'soty.local-app.v1', name: 'Список', port: source.address().port, entryPath: '/', sourceJobId: jobId });
@@ -92,8 +93,8 @@ async function fixture(t) {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ ...auth, result: result(jobId) }) });
     return response.json();
   }
-  async function poll() {
-    const query = new URLSearchParams({ linkId: auth.linkId, deviceId: auth.deviceId, connectorId: auth.connectorId });
+  async function poll(compatible = true) {
+    const query = new URLSearchParams({ linkId: auth.linkId, deviceId: auth.deviceId, connectorId: auth.connectorId, ...(compatible ? { autoOwnerGuard: '1' } : {}) });
     const response = await fetch(`${origin}/api/connectors/poll?${query}`, { headers: { authorization: `Bearer ${token}` } });
     return response.json();
   }
@@ -105,7 +106,8 @@ async function fixture(t) {
   return { owner, account, makeClient, auth, target, create, submit, poll, read, result, proposal, dataDir, source, stopRuntime: () => runtime.stop(),
     watchRegistration,
     capabilities: async () => (await fetch(origin + '/api/apps/capabilities')).json(), loseNextCreateAck: () => { loseCreateAck = true; }, loseNextArchiveAck: () => { loseArchiveAck = true; },
-    service: () => app, async restart(overrides = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...options, ...overrides }); } };
+    service: () => app, async restart(overrides = {}, { announce = true } = {}) { await app.locals.closeServices(); app = createHttpApp(dist, { ...options, ...overrides });
+      if (announce) assert.equal((await app.locals.connectorService.store.poll(auth, 0, undefined, { automaticOwnerGuard: true })).ok, true); } };
 }
 
 test('capability gates a new auto intent while the original lost ACK replays on a temporarily disabled server', { timeout: 25000 }, async t => {
@@ -122,6 +124,62 @@ test('capability gates a new auto intent while the original lost ACK replays on 
   const rejected = await f.owner.extension('apps.agent.create', { ...args, requestId: 'new-disabled-request' });
   assert.equal(rejected.admission.status, 'rejected'); assert.equal(rejected.admission.reason, 'app_autoregistration_unavailable');
   assert.equal(f.service().locals.connectorService.store.state.jobs.filter(job => job.requestId === args.requestId).length, 1);
+});
+
+test('a stale modern registration cannot make an old poll lease automatic work; manual jobs remain compatible', { timeout: 25000 }, async t => {
+  const f = await fixture(t), store = f.service().locals.connectorService.store;
+  const args = { ...f.target, requestId: 'guarded-first', text: 'Create fixture', cwd: '', autoRegister: true };
+  const first = await f.owner.extension('apps.agent.create', args); assert.ok(first.job.id);
+  const oldPoll = await f.poll(false); assert.equal(oldPoll.jobs.length, 0);
+  assert.equal((await f.read(first.job.id)).autoRegistration.state, 'device-update-required');
+  const rejectedArgs = { ...args, requestId: 'old-device' };
+  const rejected = await f.owner.extension('apps.agent.create', rejectedArgs);
+  assert.equal(rejected.admission?.reason, 'app_auto_device_update_required');
+  const modernPoll = await f.poll();
+  assert.equal(modernPoll.jobs[0]?.id, first.job.id);
+  assert.deepEqual((await f.owner.extension('apps.agent.create', rejectedArgs)).admission, rejected.admission);
+  const next = await f.owner.extension('apps.agent.create', { ...args, requestId: 'guarded-next' });
+  assert.ok(next.job.id);
+  const manual = await f.owner.extension('apps.agent.create', { ...args, requestId: 'manual-legacy', autoRegister: false });
+  const legacyPoll = await f.poll(false); assert.equal(legacyPoll.jobs[0]?.id, manual.job.id);
+  assert.equal(store.state.jobs.find(job => job.id === next.job.id).status, 'queued');
+});
+
+test('server restart does not trust a persisted capability until the running process polls', { timeout: 25000 }, async t => {
+  const f = await fixture(t);
+  await f.restart({ localExecutorCurrent: false, env: {} }, { announce: false });
+  const args = { ...f.target, requestId: 'stale-after-restart', text: 'Create fixture', cwd: '', autoRegister: true };
+  const rejected = await f.owner.extension('apps.agent.create', args);
+  assert.equal(rejected.admission?.reason, 'app_auto_device_update_required');
+  assert.equal((await f.poll()).ok, true);
+  assert.deepEqual((await f.owner.extension('apps.agent.create', args)).admission, rejected.admission);
+  assert.ok((await f.owner.extension('apps.agent.create', { ...args, requestId: 'fresh-after-restart' })).job.id);
+});
+
+test('default Root checks the initiating account before lease and at runtime-status for auto jobs', { timeout: 25000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  await f.restart({ localExecutorCurrent: false, env: {} });
+  const args = { ...f.target, requestId: 'revoked-before-lease', text: 'Create fixture', cwd: '', autoRegister: true };
+  const created = await f.owner.extension('apps.agent.create', args), store = f.service().locals.connectorService.store;
+  await second.revokeDevice(f.account.deviceId);
+  const result = await store.poll(f.auth, 0, undefined, { automaticOwnerGuard: true });
+  assert.equal(result.jobs.length, 0);
+  const status = await f.read(created.job.id, second);
+  assert.equal(status.job.status, 'cancelled'); assert.equal(status.job.cancelRequested, true);
+  assert.equal((await second.extension('apps.list')).apps.length, 0);
+});
+
+test('revocation after lease is checked again by runtime-status before a native start', { timeout: 25000 }, async t => {
+  const f = await fixture(t), second = f.makeClient(), enrollment = await second.startEnrollment('Second device');
+  await f.owner.approveEnrollment(enrollment.requestId); const preview = await second.previewEnrollment(enrollment.requestId);
+  await second.finishEnrollment(enrollment.requestId, preview.account.accountId);
+  await f.restart({ localExecutorCurrent: false, env: {} });
+  const id = await f.create();
+  await second.revokeDevice(f.account.deviceId);
+  const status = await f.service().locals.connectorService.store.getAssignedJobState(f.auth, id);
+  assert.equal(status.job.currentOwnerChecked, true); assert.equal(status.job.cancelRequested, true);
 });
 
 test('one requested job registers one private app and real universal feedback despite duplicate result delivery', { timeout: 25000 }, async t => {

@@ -18,8 +18,8 @@ const client={async getLocalState(){return {accountId};},async extension(op,args
   check(context.expectedAccountId===accountId,'account mismatch');
   if(op==='apps.devices')return {devices:[{...target,name:'Компьютер',online:true}]};
   if(op==='apps.agent.read'&&restrictedAuto)throw Object.assign(Error('apps_device_not_owned'),{code:'apps_device_not_owned'});
-  if(op==='apps.agent.read')return {job:{schema:'soty.connector-job.v4',kind:'agent',id:jobId,deviceId:target.hostDeviceId,connectorId:target.connectorId,status:'succeeded',attempts:1,cancelRequested:cancelled,result:{text:'Выполнение завершено',appProposal:proposal}},
-    ...(!missingTask?{task:{autoRegister:true},autoRegistration:{state:status,appId,appState:'ready'}}:{}),done:true,events:[],cursor:0};
+  if(op==='apps.agent.read'){const queued=status==='device-update-required';return {job:{schema:'soty.connector-job.v4',kind:'agent',id:jobId,deviceId:target.hostDeviceId,connectorId:queued?'':target.connectorId,status:queued?'queued':'succeeded',attempts:queued?0:1,cancelRequested:cancelled,result:queued?null:{text:'Выполнение завершено',appProposal:proposal}},
+    ...(!missingTask?{task:{autoRegister:true},autoRegistration:{state:status,appId,appState:'ready'}}:{}),done:!queued,events:[],cursor:0};}
   if(op==='apps.agent.archive'){archiveCalls++;check(args.jobId===jobId,'wrong archive job');status='archived';cancelled=true;
     if(loseArchiveAck){loseArchiveAck=false;throw Error('synthetic lost acknowledgement');}
     return {state:'archived',receipt:{schema:'soty.app-auto-archive.v1',jobId,requestId:'synthetic-original',archivedAt:1}};}
@@ -46,6 +46,8 @@ run.onclick=async()=>{
     check(!button('Открыть приложение')&&opened.length===0,'waiting opened early');status='ready';
     await until(()=>button('Открыть приложение'));button('Открыть приложение').click();await until(()=>opened.length===1);
     check(opened[0]===appId,'opened wrong app');
+    await fresh('device-update-required');await until(()=>body().includes('Подключите или обновите коннектор'));check(button('Остановить')&&!button('Открыть приложение'),'queued job lost its cancel action');
+    status='ready';await until(()=>button('Открыть приложение'));
     await fresh('conflict');await until(()=>body().includes('занятый порт'));check(button('Проверить')&&button('Новая задача'),'conflict lacks recovery');
     status='ready';button('Проверить').click();await until(()=>button('Открыть приложение'));
     await fresh('capacity');await until(()=>body().includes('предел приложений в аккаунте'));check(button('Проверить')&&button('Новая задача'),'capacity lacks recovery');

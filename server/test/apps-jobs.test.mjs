@@ -23,8 +23,8 @@ async function proof(service, actor, op, args) {
 async function invoke(service, actor, op, args = {}) { return service.handle(await proof(service, actor, op, args)); }
 async function setup(t) {
   const base = resolve(tmpdir()), directory = mkdtempSync(join(base, 'soty-app-jobs-'));
-  const store = createConnectorStore(directory);
   let accountId = '', permitted = true, inferenceReady = true, service;
+  const store = createConnectorStore(directory, { automaticJobActive: job => permitted && service.isActorActive({ accountId: job.ownerAccountId, deviceId: job.sourceActorDeviceId }) });
   const host = { linkId: 'owned-device-link-12345678901234567890', hostDeviceId: 'device-test-host', connectorId: 'connector-test-user' };
   const ownedHosts = [host];
   const extension = createAppJobsExtension({ store, actorActive: actor => service.isActorActive(actor),
@@ -37,9 +37,10 @@ async function setup(t) {
   await invoke(service, stranger, 'bootstrap', { label: 'Stranger', encryptionPublicJwk: stranger.encryptionPublicJwk });
   const token = randomBytes(32).toString('base64url');
   const auth = { linkId: host.linkId, deviceId: host.hostDeviceId, connectorId: host.connectorId, token };
-  const registration = { ...auth, scope: 'CurrentUser', deviceNick: 'Test host', capabilities: ['agent'], agent: { id: 'opencode', provider: 'gonka', available: true } };
+  const registration = { ...auth, scope: 'CurrentUser', deviceNick: 'Test host', capabilities: ['agent', 'soty.auto-owner-check.v1'], agent: { id: 'opencode', provider: 'gonka', available: true } };
   delete registration.token;
   assert.equal((await store.register(registration, token)).ok, true);
+  assert.equal((await store.poll(auth, 0, undefined, { automaticOwnerGuard: true })).ok, true);
   t.after(async () => {
     await store.close(); service.close();
     assert.equal(dirname(resolve(directory)), base);
@@ -148,7 +149,7 @@ test('automatic creation reserves bounded capacity before acceptance and replays
 
 test('the global history limit preserves an unresolved automatic result through a real store restart', async t => {
   const f = await setup(t), created = await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, autoRegister: true });
-  const id = created.job.id; assert.equal((await f.store.lease(f.auth)).jobs[0].id, id);
+  const id = created.job.id; assert.equal((await f.store.lease(f.auth, { automaticOwnerGuard: true })).jobs[0].id, id);
   const proposal = { schema: 'soty.local-app.v1', name: 'Список', port: 3000, entryPath: '/', sourceJobId: id };
   assert.equal((await f.store.finishJob(f.auth, id, { ok: true, text: 'Готово', exitCode: 0, appProposal: proposal })).ok, true);
   await f.store.mutate(() => {
@@ -183,7 +184,7 @@ test('reservation and rollback fence commit together, or neither is accepted', a
 
 test('failed completion leaves both reservation and old-reader fence intact', async t => {
   const f = await setup(t), created = await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, autoRegister: true });
-  const id = created.job.id; assert.equal((await f.store.lease(f.auth)).jobs[0].id, id);
+  const id = created.job.id; assert.equal((await f.store.lease(f.auth, { automaticOwnerGuard: true })).jobs[0].id, id);
   const proposal = { schema: 'soty.local-app.v1', name: 'Список', port: 3000, entryPath: '/', sourceJobId: id };
   assert.equal((await f.store.finishJob(f.auth, id, { ok: true, text: 'Готово', exitCode: 0, appProposal: proposal })).ok, true);
   const [expected] = await f.store.automaticAppJobs(id), db = new DatabaseSync(join(dirname(f.store.filePath), 'connector-store.sqlite'));

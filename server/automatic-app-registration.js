@@ -118,6 +118,7 @@ export function createAutomaticAppRegistration({ store, apps, universal, connect
     return receipt ? { ok: true, state: 'archived', receipt } : { ok: true, state: 'unconfirmed' };
   }
   function status(actor, job, task) {
+    if (job?.status === 'queued' && !store.automaticJobDeviceReady(job.id)) return { state: 'device-update-required' };
     if (!job || !['succeeded', 'failed', 'cancelled'].includes(job.status)) return { state: 'creating' };
     if (task?.autoRegistrationFinal === 'archived') return { state: 'archived' };
     if (job.status !== 'succeeded' || !job.result?.appProposal) return { state: 'failed' };
