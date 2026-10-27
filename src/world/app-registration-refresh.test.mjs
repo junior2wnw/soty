@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 
-// Execute the real registration, account fence and placement-cancel methods.
+// Execute the real registration, unsaved-work guard and account fence.
 // Rendering, directory readiness and transport are inert ports; no DB/network.
 const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -27,7 +27,7 @@ class Element {
   emit(type) { for (const fn of this.handlers.get(type) || []) fn({ preventDefault() {}, stopImmediatePropagation() {} }); }
   reportValidity() { return true; } setAttribute() {} focus() {}
 }
-function fixture({ registration, fieldReady = Promise.resolve() } = {}) {
+function fixture({ registration, fieldReady = Promise.resolve(), blocked = false, refreshTask } = {}) {
   const ports = {
     './dom': {
       el: (tag, className, text) => new Element(tag, className, text),
@@ -47,13 +47,16 @@ function fixture({ registration, fieldReady = Promise.resolve() } = {}) {
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
   const module = { exports: {} };
   vm.runInNewContext(compiled + '\nexports.Controller=WorldApplication;', { module, exports: module.exports, require: name => ports[name] || {} });
-  const app = Object.create(module.exports.Controller.prototype), dialogs = [], calls = [], refreshes = [], toasts = [];
-  const field = { ready: fieldReady, async refresh(options) { refreshes.push(structuredClone(options)); } };
+  const app = Object.create(module.exports.Controller.prototype), dialogs = [], calls = [], refreshes = [], toasts = [], opened = [];
+  const field = { ready: fieldReady, hasUnsavedChanges: () => blocked,
+    async flush() { if (blocked) throw Error('synthetic unsaved work'); },
+    async refresh(options) { refreshes.push(structuredClone(options)); if (refreshTask) await refreshTask.promise; } };
   Object.assign(app, { destroyed: false, deskAccount: 'account-A', accountGeneration: 1, screenSequence: 1, view: 'world', query: 'Хочу',
     group: null, appStage: null, communities: [], desk: { pinnedApps: [] }, unifiedField: field, main: new Element(),
     homeQuery: 'mine-query', unifiedFieldFilters: { mine: 'app', world: 'all' }, unifiedFieldView: { mineContext: 'personal', mineFit: 'context' },
     toast(message) { toasts.push(message); }, loading: label => new Element('p', '', label),
-    navigate() { throw Error('registration cancellation must not navigate'); },
+    async openApplication(value) { opened.push(structuredClone(value)); this.screenSequence++; this.unifiedField = null; },
+    openAppFieldPlacement() { assert.fail('placement must remain optional'); },
     dialog(title, closed) {
       const value = { title, element: new Element('dialog'), body: new Element(), close() { if (!value.element.open) return; value.element.open = false; closed?.(); } };
       dialogs.push(value); return value;
@@ -70,17 +73,26 @@ function fixture({ registration, fieldReady = Promise.resolve() } = {}) {
     form.querySelector('input').value = 'ХочуИпотеку';
     form.emit('submit'); await settle(); return dialog;
   }
-  return { app, field, dialogs, calls, refreshes, toasts, submit };
+  return { app, field, dialogs, calls, refreshes, toasts, opened, submit };
 }
 
-test('successful registration refreshes the existing query without a placement, including chooser cancellation', async () => {
+test('successful registration opens the app without a placement and never refreshes the retired field', async () => {
   const ready = deferred(), f = fixture({ fieldReady: ready.promise }); await f.submit();
-  const chooser = f.dialogs.find(dialog => dialog.title === 'На моё поле'); assert.ok(chooser);
-  chooser.element.emit('cancel'); assert.equal(chooser.element.open, false); assert.equal(f.app.appPlacementDialog, null);
+  assert.equal(f.dialogs.length, 1); assert.equal(f.dialogs[0].element.open, false);
+  assert.equal(f.opened.length, 1); assert.equal(f.opened[0].appId, appId); assert.equal(f.opened[0].ownerAccountId, 'account-A');
   assert.equal(f.refreshes.length, 0); ready.resolve(); await settle();
-  assert.deepEqual(f.refreshes, [{ preserveView: true }]);
+  assert.equal(f.refreshes.length, 0);
   assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1); assert.equal(f.calls.length, 2);
   assert.deepEqual(f.calls[1].args.grants, { accountIds: [], communityIds: [] });
+});
+
+test('registered app refreshes the existing field when unsaved work prevents opening', async () => {
+  const ready = deferred(), f = fixture({ fieldReady: ready.promise, blocked: true }); await f.submit();
+  assert.equal(f.dialogs.length, 1); assert.equal(f.dialogs[0].element.open, false);
+  assert.equal(f.opened.length, 0); assert.equal(f.refreshes.length, 0);
+  assert.ok(f.toasts.includes('Изменения ещё не сохранены. Повторите сохранение перед выходом.'));
+  ready.resolve(); await settle(); assert.deepEqual(f.refreshes, [{ preserveView: true }]);
+  assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
   assert.equal(f.app.query, 'Хочу'); assert.equal(f.app.view, 'world'); assert.equal(f.app.homeQuery, 'mine-query');
   assert.deepEqual(f.app.desk.pinnedApps, []); assert.equal(f.app.unifiedFieldView.mineContext, 'personal');
   assert.equal(f.app.unifiedFieldFilters.mine, 'app');
@@ -90,7 +102,7 @@ test('registration failure and malformed app identity never refresh a directory 
   for (const value of [null, { app: { id: 'wrong', name: 'Untrusted' } }]) {
     const registration = deferred(), f = fixture({ registration }); await f.submit();
     if (value) registration.resolve(value); else registration.reject(Object.assign(Error('synthetic failure'), { code: 'app_offline' }));
-    await settle(); assert.equal(f.refreshes.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+    await settle(); assert.equal(f.refreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
   }
 });
 
@@ -99,14 +111,25 @@ test('registration ACK after dialog cancellation, logout or account ABA cannot r
     f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; f.app.deskAccount = 'account-A'; f.app.accountGeneration++; }]) {
     const registration = deferred(), f = fixture({ registration }); await f.submit(); change(f);
     registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
-    assert.equal(f.refreshes.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+    assert.equal(f.refreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
   }
 });
 
 test('deferred directory readiness cannot refresh a replaced screen, changed account or new field instance', async () => {
   for (const change of [f => { f.app.screenSequence++; }, f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; },
     f => { f.app.unifiedField = { ready: Promise.resolve(), refresh() { throw Error('foreign field'); } }; }]) {
-    const ready = deferred(), f = fixture({ fieldReady: ready.promise }); await f.submit(); change(f); ready.resolve(); await settle();
+    const ready = deferred(), f = fixture({ fieldReady: ready.promise, blocked: true }); await f.submit(); change(f); ready.resolve(); await settle();
     assert.equal(f.refreshes.length, 0); assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
+  }
+});
+
+test('refresh failure reports the saved registration only to its still-current account and field', async () => {
+  for (const switched of [false, true]) {
+    const refreshTask = deferred(), f = fixture({ blocked: true, refreshTask }); await f.submit();
+    assert.deepEqual(f.refreshes, [{ preserveView: true }]);
+    if (switched) { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; }
+    refreshTask.reject(Error('synthetic read failure')); await settle();
+    assert.equal(f.toasts.includes('Проект подключён, но список не обновился. Попробуйте позже.'), !switched);
+    assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1);
   }
 });

@@ -3021,6 +3021,13 @@ class WorldApplication {
         void this.api.request<{ app: { id: string; name: string } }>('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(result => {
           if (!current()) return;
           if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
+          const field = this.unifiedField;
+          if (field) void field.ready.then(() => {
+            if (accountCurrent() && sequence === this.screenSequence && field === this.unifiedField) return field.refresh({ preserveView: true });
+          }).catch(() => {
+            if (accountCurrent() && sequence === this.screenSequence && field === this.unifiedField)
+              this.toast('Проект подключён, но список не обновился. Попробуйте позже.', true);
+          });
           dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
           this.afterNoteSaved(() => {
             if (!accountCurrent() || sequence !== this.screenSequence) return;
