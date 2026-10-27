@@ -1,6 +1,6 @@
 import { ATTACHMENT_LIMITS as L, attachmentManifest } from '../../modules/world/attachment-contract.mjs';
 import { attachmentFileName } from '../../modules/world/attachment-file-policy.mjs';
-import { readDraftRecord, initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord } from './chat-draft-record.mjs';
+import { readDraftRecord, initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord, recoverLegacyDraftRecord } from './chat-draft-record.mjs';
 const hash = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
 const base64 = bytes => { let value = ''; for (let i=0;i<bytes.length;i+=8192) value += String.fromCharCode(...bytes.subarray(i,i+8192)); return btoa(value); };
 const decode = value => Uint8Array.from(atob(value), b => b.charCodeAt(0));
@@ -84,6 +84,7 @@ export function attachmentDisk(indexed = globalThis.indexedDB) {
     draftWrite(prefix,proposal) {return draftTransaction(prefix,value=>writeDraftRecord(value,proposal));},
     draftSelect(prefix,expectedIds,selectedId,newId,writer) {return draftTransaction(prefix,value=>selectDraftRecord(value,expectedIds,selectedId,newId,writer));},
     draftAcknowledge(prefix,id) {return draftTransaction(prefix,value=>({record:acknowledgeDraftRecord(value,id)}));},
+    draftRecoverLegacy(prefix,candidate,id) {return draftTransaction(prefix,value=>({record:recoverLegacyDraftRecord(value,candidate,id)}));},
     async scope(prefix) {
       const db=await opened();return new Promise((resolve,reject)=>{
         const tx=db.transaction('outbox','readonly'),store=tx.objectStore('outbox');const result={rows:[],message:null};

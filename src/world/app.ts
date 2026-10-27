@@ -223,7 +223,7 @@ class WorldApplication {
   private directLabels = new Map<string, string>();
   private directOpenSequence = 0;
   private directProjectionEpoch = 0;
-  private readonly chatDrafts = createChatDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) });
+  private readonly chatDrafts = createChatDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) },undefined,{indexedDB:true});
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private requestSequence = 0;
   private refreshInFlight = 0;
@@ -354,7 +354,7 @@ class WorldApplication {
     window.addEventListener('pageshow', event => { if (event.persisted) this.startIncomingCallPolling(); this.mountFieldCovers(this.unifiedField); }, { signal: this.controller.signal });
     document.addEventListener('visibilitychange', () => this.mountFieldCovers(this.unifiedField), { signal: this.controller.signal });
     window.addEventListener('beforeunload', event => { if (this.chatDrafts.hasVolatile() || this.screenHasUnsavedChanges() || [...(this.chatDraftSessions??[])].some(session=>session.hasUnsavedChanges()) || this.agentOrb?.hasUnsavedChanges() || this.widgets?.hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } }, { signal: this.controller.signal });
-    window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key), { signal: this.controller.signal });
+    window.addEventListener('storage', event => this.chatDrafts.storageChanged(event.key,event.newValue), { signal: this.controller.signal });
     root.addEventListener('soty:chat-updated', event => {
       const group=(event as CustomEvent<{community:WorldCommunity}>).detail?.community;
       if(!group)return;const known=this.communities.find(value=>value.communityId===group.communityId);if(known)known.unreadCount=group.unreadCount;this.updateNavUnread();
@@ -1829,7 +1829,7 @@ class WorldApplication {
     this.avatars.setContext(conversation.avatarContext);
     const sequence = this.screenSequence;
     const accountId = this.profile?.profileId ?? this.deskAccount;
-    const initialDraft = this.chatDrafts.read(accountId, conversation.draftKey);
+    const initialDraft = this.chatDrafts.read(accountId, conversation.draftKey), initialLegacy=this.chatDrafts.legacyCandidates(accountId,conversation.draftKey);
     const chat = el('section', 'sw-chat'); chat.setAttribute('aria-label', `Чат: ${conversation.name}`);
     let replyTo: string | null = null, sending = false, accessClosed = false, draftLoading = true, searchIndex = -1;
     let syncSeq = 0, firstSeq = Number.MAX_SAFE_INTEGER, lastRead = 0, reading = false, initial = true, fetching = false, historyLoading = false, hasHistory = false;
@@ -1927,22 +1927,22 @@ class WorldApplication {
     const draftChoices = () => {
       const heads=draftSession?.read().heads??[], choices: typeof heads=[];
       for(const head of heads)if(!choices.some(value=>value.text===head.text&&value.replyTo===head.replyTo))choices.push(head);
-      return choices.length>1?choices:[];
+      return choices.length>1||choices.some(head=>head.writer.startsWith('legacy_recovered_'))?choices:[];
     };
     const openDraftChoices = (): void => {
-      const choices=draftChoices(), session=draftSession; if(choices.length<2||!session)return;
-      const ids=session.read().heads.map(head=>head.id), dialog=this.dialog('Оставить один черновик?'), list=el('div','sw-stack');
-      dialog.body.append(el('p','sw-muted','В разных вкладках появились разные варианты. Остальные варианты будут удалены. Скопируйте нужный текст перед выбором.'),list);
+      const choices=draftChoices(), session=draftSession; if(!choices.length||!session)return;
+      const multiple=choices.length>1,ids=session.read().heads.map(head=>head.id), dialog=this.dialog(multiple?'Оставить один черновик?':'Текст из старой вкладки'), list=el('div','sw-stack');
+      dialog.body.append(el('p','sw-muted',multiple?'В разных вкладках появились разные варианты. Остальные варианты будут удалены. Скопируйте нужный текст перед выбором.':'Проверьте восстановленный текст перед отправкой.'),list);
       if(attachmentRows.length)dialog.body.append(el('p','sw-muted','Вложения останутся в текущей очереди.'));
       for(const choice of choices) {
-        const row=el('div','sw-chat-draft-choice');row.append(el('p','',choice.text||'Пустой черновик'));
+        const row=el('div','sw-chat-draft-choice');if(choice.writer.startsWith('legacy_recovered_'))row.append(el('small','sw-muted','Текст из старой вкладки'));row.append(el('p','',choice.text||'Пустой черновик'));
         if(choice.replyTo) {const replied=known.get(choice.replyTo);row.append(el('small','sw-muted',replied?`Ответ: ${replied.author.displayName} — ${chatPreview(replied)}`:'Ответ на сообщение из истории'));
           row.append(button('Посмотреть ответ','back','sw-button-quiet',()=>{dialog.close();void jumpToMessage(choice.replyTo!);}));}
-        const use=button('Оставить этот вариант','check','sw-button-quiet',()=>{void session.select(ids,choice.id).then(ok=>{
+        const use=button(multiple?'Оставить этот вариант':'Восстановить','check','sw-button-quiet',()=>{void session.select(ids,choice.id).then(ok=>{
           if(!active())return;if(!ok){errorMessage.textContent='Черновики изменились. Откройте выбор ещё раз.';void session.refresh();}
           dialog.close();if(ok)input.focus({preventScroll:true});
         });});
-        use.setAttribute('aria-label',`Оставить этот вариант: ${Array.from(choice.text.replace(/\s+/gu,' ').trim()).slice(0,90).join('')||'пустой'}${choice.replyTo?' — с ответом':''}`);
+        use.setAttribute('aria-label',`${multiple?'Оставить этот вариант':'Восстановить'}: ${Array.from(choice.text.replace(/\s+/gu,' ').trim()).slice(0,90).join('')||'пустой'}${choice.replyTo?' — с ответом':''}`);
         row.append(use);list.append(row);
       }
     };
@@ -1951,6 +1951,10 @@ class WorldApplication {
       const url = URL.createObjectURL(new Blob([input.value], { type: 'text/plain;charset=utf-8' })); const link = el('a'); link.href = url; link.download = 'soty-chat-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     downloadDraft.dataset.sotyDraftDownload='';
+    const downloadLegacy=button('Скачать текст из старой вкладки','download','sw-button-small sw-button-quiet',()=>{
+      const pending=draftSession?.read().pendingLegacy??[],body=pending.map(item=>item.text+(item.replyTo?`\nОтвет на сообщение: ${item.replyTo}`:'')).join('\n\n---\n\n');
+      const url=URL.createObjectURL(new Blob([body],{type:'text/plain;charset=utf-8'})),link=el('a');link.href=url;link.download='soty-recovered-draft.txt';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    });downloadLegacy.dataset.sotyDraftDownload='';
     const limitStatus = el('span', 'sw-composer-limit'); limitStatus.hidden = true;
     const updateComposer = (): void => {
       const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending;
@@ -1965,14 +1969,14 @@ class WorldApplication {
       limitStatus.hidden = input.value.length < 5800; limitStatus.textContent = `${input.value.length} / 6000`;
     };
     const describeDraft = (): void => {
-      const state=draftSession?.read(), volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey)||!!(state?.dirty&&state.error);
+      const state=draftSession?.read(), volatile = this.chatDrafts.isVolatile(accountId, conversation.draftKey)||!!((state?.dirty||state?.pendingLegacy.length)&&state?.error);
       const draft = this.chatDrafts.read(accountId, conversation.draftKey), clearing = !draft.text && !draft.replyTo && !draft.pending && !draft.attachments?.length;
-      const conflicts=draftChoices();chooseDraft.hidden=conflicts.length<2;
-      draftStatus.textContent = volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : state?.dirty ? 'Сохраняем черновик…' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : conflicts.length>1 ? 'Есть несколько вариантов черновика.' : '';
-      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !draftStatus.textContent; downloadDraft.hidden = !volatile || !draft.text;
+      const conflicts=draftChoices();chooseDraft.hidden=!conflicts.length;
+      draftStatus.textContent = state?.pendingLegacy.length&&state.error?'Не удалось сохранить текст из старой вкладки. Скачайте его и не закрывайте приложение.' : volatile ? clearing ? 'Не удалось очистить локальную запись. Пока не закрывайте приложение.' : 'Черновик пока только в открытом приложении' : state?.dirty||state?.pendingLegacy.length ? 'Сохраняем черновик…' : draft.pending && !sending ? 'Отправка не подтверждена. Повторим прежнее сообщение; новый текст сохранится.' : conflicts.some(head=>head.writer.startsWith('legacy_recovered_'))?'Найден текст из старой вкладки. Проверьте его перед отправкой.' : conflicts.length>1 ? 'Есть несколько вариантов черновика.' : '';
+      draftStatus.classList.toggle('is-error', volatile); draftStatus.hidden = !draftStatus.textContent; downloadDraft.hidden = !volatile || !draft.text;downloadLegacy.hidden=!(state?.pendingLegacy.length&&state.error);
       retrySend.hidden = !draft.pending || sending;
     };
-    error.append(draftStatus, chooseDraft, downloadDraft, limitStatus); describeDraft();
+    error.append(draftStatus, chooseDraft, downloadDraft, downloadLegacy, limitStatus); describeDraft();
     const fitComposer = (): void => { const stick = nearEnd(); input.style.height = 'auto'; input.style.height = `${Math.min(144, Math.max(24, input.scrollHeight))}px`; if (stick) messages.scrollTop = messages.scrollHeight; };
     const refreshReply = (): void => {
       reply.hidden = !replyTo; if (!replyTo) return;
@@ -2032,13 +2036,14 @@ class WorldApplication {
     const changedDraft = (state: ReturnType<ChatDraftSession['read']>): void => {
       if(!active())return;
       if((!state.dirty||draftLoading)&&(input.value!==state.value.text||replyTo!==state.value.replyTo)){
-        input.value=state.value.text;replyTo=state.value.replyTo;this.chatDrafts.edit(accountId,conversation.draftKey,input.value,replyTo);
+        input.value=state.value.text;replyTo=state.value.replyTo;if(!state.pendingLegacy.length&&!state.heads.some(head=>head.writer.startsWith('legacy_recovered_')))this.chatDrafts.edit(accountId,conversation.draftKey,input.value,replyTo);
       }
       updateComposer();fitComposer();refreshReply();describeDraft();
     };
     const retained=[...this.chatDraftSessions].find(session=>session.scope.accountId===accountId&&session.scope.conversationKey===conversation.draftKey&&session.hasUnsavedChanges());
     if(retained){const saved=retained.read().value;input.value=saved.text;replyTo=saved.replyTo;draftLoading=false;}
-    draftSession=retained?retained.reopen(changedDraft):createChatDraftSession({disk:draftDisk,accountId,conversationKey:conversation.draftKey,legacy:initialDraft,changed:changedDraft});
+    draftSession=retained?retained.reopen(changedDraft):createChatDraftSession({disk:draftDisk,accountId,conversationKey:conversation.draftKey,legacy:initialDraft,legacyCandidates:initialLegacy,changed:changedDraft});
+    if(retained)for(const candidate of initialLegacy)draftSession.recoverLegacy(candidate);
     this.chatDraftSession=draftSession;this.chatDraftSessions.add(draftSession);
     void draftSession.ready.then(()=>{draftLoading=false;if(active())updateComposer();},()=>{draftLoading=false;if(active())updateComposer();});
     let outboxFailed = false, attachmentReady: Promise<void>;
@@ -2063,7 +2068,7 @@ class WorldApplication {
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
     composerResize.observe(composer); composerResize.observe(dock);
-    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, conversation.draftKey, draft => { if (!draftSession) { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; } updateComposer(); refreshReply(); describeDraft(); });
+    const unsubscribeDraft = this.chatDrafts.subscribe(accountId, conversation.draftKey, (draft,legacy) => { if(legacy)draftSession?.recoverLegacy(legacy);if (!draftSession) { if (input.value !== draft.text) { input.value = draft.text; fitComposer(); } replyTo = draft.replyTo; } updateComposer(); refreshReply(); describeDraft(); });
 
     const ordered = (): WorldMessage[] => [...known.values()].sort((a, b) => a.seq - b.seq);
     const notifyConversation = (readAcknowledged = false): void => presentation.notify(chat, ordered().at(-1), readAcknowledged);

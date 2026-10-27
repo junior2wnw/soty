@@ -1,4 +1,4 @@
-import { readDraftRecord, initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord } from '../chat-draft-record.mjs';
+import { readDraftRecord, initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord, recoverLegacyDraftRecord } from '../chat-draft-record.mjs';
 export function createTestChatDraftDisk() {
   const rows=new Map();let chain=Promise.resolve(), failure=false, barrier=null;
   const transaction=fn=>{const work=chain.then(async()=>{if(barrier)await barrier;if(failure)throw Object.assign(Error('Synthetic IDB unavailable'),{code:'attachment_local_storage'});return fn();});chain=work.catch(()=>{});return work;};
@@ -10,5 +10,6 @@ export function createTestChatDraftDisk() {
     draftWrite:(key,proposal)=>transaction(()=>result(key,writeDraftRecord(rows.get(key),proposal))),
     draftSelect:(key,ids,selected,id,writer)=>transaction(()=>result(key,selectDraftRecord(rows.get(key),ids,selected,id,writer))),
     draftAcknowledge:(key,id)=>transaction(()=>result(key,{record:acknowledgeDraftRecord(rows.get(key),id)})),
+    draftRecoverLegacy:(key,candidate,id)=>transaction(()=>result(key,{record:recoverLegacyDraftRecord(rows.get(key),candidate,id)})),
   };
 }

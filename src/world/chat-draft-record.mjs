@@ -39,3 +39,12 @@ export function acknowledgeDraftRecord(value, draftId) {
   const record=readDraftRecord(value);if(!id(draftId))fail('chat_draft_invalid');
   const heads=record.heads.filter(head=>head.id!==draftId);return heads.length===record.heads.length?null:next(record,heads);
 }
+export function recoverLegacyDraftRecord(value, candidate, draftId) {
+  const record=readDraftRecord(value),head={id:draftId,writer:'legacy_recovered_'+candidate.source,text:candidate.text,replyTo:candidate.replyTo};
+  if(!['v1','v2'].includes(candidate.source)||!valid(head)||(!head.text&&!head.replyTo))fail('chat_draft_invalid');
+  const heads=record.heads.map(snapshot),index=heads.findIndex(item=>item.writer===head.writer);
+  if(index>=0){if(heads[index].text===head.text&&heads[index].replyTo===head.replyTo)return null;heads[index]=head;}
+  else if(!heads.some(item=>item.writer==='legacy'&&item.text===head.text&&item.replyTo===head.replyTo))heads.push(head);
+  else return null;
+  return next(record,heads);
+}

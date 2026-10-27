@@ -41,3 +41,32 @@ test('an initial storage-open failure retries without losing text entered while 
   disk.setFailure(false);assert.equal(await session.flush(),true);assert.equal(session.read().value.text,'During outage');
   const reopened=create(disk);t.after(()=>reopened.close());await reopened.ready;assert.equal(reopened.read().value.text,'During outage');
 });
+
+test('late old-tab text survives a tombstone without becoming an automatic send',async t=>{
+  const disk=diskFixture(),first=create(disk);t.after(()=>first.close());await first.ready;first.edit('Already sent',null);await first.flush();await first.acknowledge(first.read().selectedId);
+  const candidate={source:'v1',text:'Unsent old-tab text',replyTo:null};first.recoverLegacy(candidate);assert.equal(await first.flush(),true);
+  assert.equal(first.read().value.text,'');assert.deepEqual(first.read().heads.map(head=>[head.writer,head.text]),[['legacy_recovered_v1','Unsent old-tab text']]);
+  const head=first.read().heads[0];assert.equal(await first.select([head.id],head.id),true);assert.equal(first.read().value.text,'Unsent old-tab text');
+  await first.acknowledge(first.read().selectedId);const reopened=create(disk);t.after(()=>reopened.close());await reopened.ready;
+  reopened.recoverLegacy(candidate);await reopened.flush();assert.equal(reopened.read().value.text,'');assert.equal(reopened.read().heads[0].text,candidate.text);
+});
+
+test('storage refusal keeps the old-tab text in memory until it is durably recovered',async t=>{
+  const disk=diskFixture(),session=create(disk);t.after(()=>session.close());await session.ready;disk.setFailure(true);
+  session.recoverLegacy({source:'v1',text:'Keep old text',replyTo:null});assert.equal(await session.flush(),false);
+  assert.equal(session.hasUnsavedChanges(),true);assert.equal(session.read().pendingLegacy[0].text,'Keep old text');assert.equal(session.read().error,'attachment_local_storage');
+  disk.setFailure(false);assert.equal(await session.flush(),true);assert.equal(session.hasUnsavedChanges(),false);assert.equal(session.read().heads[0].text,'Keep old text');
+});
+
+test('an identical new legacy write survives acknowledgement of the modern message',async t=>{
+  const disk=diskFixture(),session=create(disk);t.after(()=>session.close());await session.ready;
+  session.edit('Same text',null);await session.flush();const sent=session.read().selectedId;
+  session.recoverLegacy({source:'v1',text:'Same text',replyTo:null});await session.flush();assert.equal(session.read().heads.length,2);
+  await session.acknowledge(sent);assert.equal(session.read().value.text,'');assert.equal(session.read().heads[0].text,'Same text');
+});
+
+test('sequential typing in one old storage slot stays one recovered version',async t=>{
+  const disk=diskFixture(),session=create(disk);t.after(()=>session.close());await session.ready;
+  for(let i=1;i<=100;i++)session.recoverLegacy({source:'v1',text:'x'.repeat(i),replyTo:null});
+  await session.flush();assert.equal(session.read().heads.length,1);assert.equal(session.read().heads[0].text,'x'.repeat(100));
+});

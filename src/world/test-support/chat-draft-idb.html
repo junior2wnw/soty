@@ -13,6 +13,10 @@ document.querySelector('#run').onclick=async()=>{try{
  const later=await b.draftWrite(prefix,{baseId:'selection_new',id:'later_id',writer:'tab_B',text:'First',replyTo:null});ok(later.heads.length===1,'later same text');
  const oldAck=await a.draftAcknowledge(prefix,'selection_new');ok(oldAck.heads.length===1&&oldAck.heads[0].id==='later_id','old ACK must keep new identical text');
  const done=await a.draftAcknowledge(prefix,'later_id');ok(done.heads.length===0,'exact ACK removes sent draft');
+ const recovered=await a.draftRecoverLegacy(prefix,{source:'v1',text:'Old tab',replyTo:null},'recovered_001');
+ await b.draftRecoverLegacy(prefix,{source:'v1',text:'Old tab newer',replyTo:null},'recovered_002');
+ let oldChoice=false;try{await a.draftSelect(prefix,recovered.heads.map(h=>h.id),'recovered_001','selection_stale','tab_A');}catch(e){oldChoice=e.code==='chat_draft_changed'}
+ const afterOld=await a.draftRead(prefix);ok(oldChoice&&afterOld.heads.length===1&&afterOld.heads[0].text==='Old tab newer','new old-tab edit survives stale choice');
  const ownList=await a.draftList('synthetic:'),otherList=await a.draftList('unrelated_synthetic_account:');
  ok(ownList.some(row=>row.key==='$draft:'+prefix&&row.heads.length===0)&&!otherList.some(row=>row.key==='$draft:'+prefix),'list is account-scoped and retains the tombstone');
  const intentPrefix='synthetic-intent:'+crypto.randomUUID()+':';
@@ -31,6 +35,6 @@ document.querySelector('#run').onclick=async()=>{try{
  await a.put({key:'$draft:'+corruptPrefix,kind:'broken'});
  let rejected=false;try{await a.acceptMessage(corruptPrefix,intent);}catch(e){rejected=e.code==='chat_draft_storage_corrupt'}
  const intact=await a.scope(corruptPrefix);ok(rejected&&intact.message.pending.clientId===intent.clientId&&intact.message.accepted===null,'failed draft operation rolls back entire ACK');
- out.textContent='PASS — транзакции: две версии, устаревший выбор, точный ACK, атомарное подтверждение и откат при ошибке.';
+ out.textContent='PASS — транзакции: две версии, восстановление старой вкладки, устаревший выбор, точный ACK и откат при ошибке.';
 }catch(e){out.textContent='FAIL — '+String(e?.stack||e)}};
 </script></body></html>

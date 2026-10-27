@@ -6,6 +6,17 @@ function storage() {
   const entries = new Map();
   return { getItem: key => entries.get(key), setItem: (key, value) => entries.set(key, value), removeItem: key => entries.delete(key) };
 }
+test('old writes are recognized while current IndexedDB clients do not create false legacy versions',()=>{
+  const disk=storage(),old=createChatDraftStore(disk),current=createChatDraftStore(disk,undefined,{indexedDB:true}),seen=[];
+  current.subscribe('alice','room',(_draft,legacy)=>{if(legacy)seen.push(legacy);});
+  current.edit('alice','room','Modern');const key='soty.chat.draft.v1:alice:room',modern=disk.getItem(key);
+  assert.equal(JSON.parse(modern)._sotyWriter,'soty.chat.idb.v1');assert.deepEqual(current.legacyCandidates('alice','room'),[]);
+  current.storageChanged(key,modern);assert.deepEqual(seen,[]);assert.equal(old.read('alice','room').text,'Modern');
+  old.edit('alice','room','Old tab');const legacy=disk.getItem(key);current.storageChanged(key,legacy);
+  assert.deepEqual(seen,[{source:'v1',text:'Old tab',replyTo:null}]);
+  disk.setItem('soty.chat.draft.v2:alice:room',JSON.stringify({text:'Old attachment draft',replyTo:null,pending:null}));
+  assert.deepEqual(current.legacyCandidates('alice','room').map(item=>item.text),['Old tab','Old attachment draft']);
+});
 test('chat draft survives reload and retries a lost ACK with the same id', () => {
   const disk = storage(); const first = createChatDraftStore(disk, () => 'request-123');
   first.edit('account-a', 'room-a', 'Привет'); const send = first.beginSend('account-a', 'room-a', 'Привет');

@@ -2860,7 +2860,7 @@ test('chat never dispatches a text message when its shared queue is unavailable 
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
     async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { sent.push(args); return { message: { messageId: 'message_saved', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
   f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
-  await turn(); const composer = parent.querySelector('.sw-composer'), input = parent.querySelector('textarea');
+  await f.app.chatDraftSession.ready; await turn(); const composer = parent.querySelector('.sw-composer'), input = parent.querySelector('textarea');
   failing = true; composer.requestSubmit(); await turn();
   assert.equal(sent.length, 0, 'Unsaved intent must never reach the server');
   assert.equal(drafts.read('account-A', 'room_fixture').text, 'Не потерять');
@@ -3022,6 +3022,45 @@ test('sending reloads the shared drafts even when a cross-tab notification was m
   f.app.chatCleanup();
 });
 
+test('late legacy text is visible after reload and requires explicit recovery before sending', async () => {
+  const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage),sent=[];
+  const target={kind:'community',id:'room_old_live',draftKey:'room_old_live',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
+  const setup=()=>{const f=fixture();f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;return f;};
+  const first=setup(),p1=first.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});await first.app.chatDraftSession.ready;
+  const key='soty.chat.draft.v1:account-A:room_old_live';old.edit('account-A','room_old_live','Unsent from old tab');first.app.chatDrafts.storageChanged(key,storage.getItem(key));
+  assert.equal(await first.app.chatDraftSession.flush(),true);assert.equal(p1.querySelector('textarea').value,'');assert.equal(p1.querySelector('.sw-chat-draft-versions').hidden,false);
+  first.app.chatCleanup();const reopened=setup(),p2=reopened.makeElement('div');reopened.app.mountConversation(p2,target,{showHeader:false,notify(){}});await reopened.app.chatDraftSession.ready;
+  assert.equal(p2.querySelector('textarea').value,'');assert.equal(p2.querySelector('.sw-chat-draft-versions').hidden,false);assert.equal(sent.length,0);
+  p2.querySelector('.sw-chat-draft-versions').emit('click');const dialog=reopened.dialogs.at(-1),row=dialog.body.querySelector('.sw-stack').children[0];
+  assert.equal(row.querySelector('p').textContent,'Unsent from old tab');assert.equal(row.querySelector('small').textContent,'Текст из старой вкладки');row.querySelector('button').emit('click');
+  for(let i=0;i<10;i++)await turn();assert.equal(p2.querySelector('textarea').value,'Unsent from old tab');assert.equal(sent.length,0);reopened.app.chatCleanup();
+});
+
+test('modern cross-tab writes stay a single draft while an independently edited old tab is retained', async () => {
+  const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage),sent=[];
+  const first=fixture(),second=fixture();for(const f of [first,second]){f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;}
+  const target={kind:'community',id:'room_modern_live',draftKey:'room_modern_live',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};sent.push(args);throw Error('Unexpected send');}};
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});await Promise.all([first.app.chatDraftSession.ready,second.app.chatDraftSession.ready]);
+  const key='soty.chat.draft.v1:account-A:room_modern_live',input=p1.querySelector('textarea');input.value='Modern text';input.emit('input');second.app.chatDrafts.storageChanged(key,storage.getItem(key));
+  await first.app.chatDraftSession.flush();await second.app.chatDraftSession.refresh();assert.deepEqual(second.app.chatDraftSession.read().heads.map(head=>head.text),['Modern text']);
+  old.edit('account-A','room_modern_live','Old tab text');first.app.chatDrafts.storageChanged(key,storage.getItem(key));await first.app.chatDraftSession.flush();
+  assert.equal(input.value,'Modern text');assert.deepEqual(first.app.chatDraftSession.read().heads.map(head=>head.text).sort(),['Modern text','Old tab text']);
+  p1.querySelector('.sw-composer').requestSubmit();for(let i=0;i<15&&!first.dialogs.length;i++)await turn();assert.equal(sent.length,0);assert.ok(first.dialogs.length);
+  first.app.chatCleanup();second.app.chatCleanup();
+});
+
+test('an old-tab recovery that cannot reach storage stays downloadable and blocks navigation', async () => {
+  const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},old=chatState.createChatDraftStore(storage);
+  f.app.chatDrafts=chatState.createChatDraftStore(storage,undefined,{indexedDB:true});f.app.preferences={motion:false};
+  const target={kind:'community',id:'room_old_failure',draftKey:'room_old_failure',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[],hasMore:false};throw Error('Unexpected send');}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await f.app.chatDraftSession.ready;f.draftDisk.setFailure(true);
+  const key='soty.chat.draft.v1:account-A:room_old_failure';old.edit('account-A','room_old_failure','Recover this old text');f.app.chatDrafts.storageChanged(key,storage.getItem(key));
+  assert.equal(await f.app.chatDraftSession.flush(),false);assert.equal(f.app.screenHasUnsavedChanges(),true);
+  assert.match(parent.querySelector('.sw-chat-draft-status').textContent,/Скачайте/u);
+  assert.equal(parent.querySelectorAll('button').find(button=>button.textContent==='Скачать текст из старой вкладки').hidden,false);
+  f.draftDisk.setFailure(false);assert.equal(await f.app.chatDraftSession.flush(),true);assert.equal(parent.querySelector('.sw-chat-draft-versions').hidden,false);f.app.chatCleanup();
+});
+
 test('storage refusal keeps a typed draft visible and sending works after storage recovers', async () => {
   const f=fixture(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},sent=[];
   f.app.chatDrafts=chatState.createChatDraftStore(storage,()=> 'intent_storage_recovery');f.app.preferences={motion:false};f.draftDisk.setFailure(true);
@@ -3048,7 +3087,7 @@ test('an account switch keeps an unsaved draft private and restores it when its 
   assert.equal(again.querySelector('textarea').value,'Private for A');f.draftDisk.setFailure(false);assert.equal(await f.app.chatDraftSession.flush(),true);f.app.chatCleanup();
 });
 
-test('a legacy tab cannot revive a discarded or acknowledged draft in the new composer', async () => {
+test('old storage cannot silently revive a discarded or acknowledged draft in the composer', async () => {
   const disk=createTestChatDraftDisk(),values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
   const oldTab=chatState.createChatDraftStore(storage),f=fixture();oldTab.edit('account-A','room_legacy','Legacy text');
   f.app.chatDrafts=chatState.createChatDraftStore(storage);f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
@@ -3063,7 +3102,8 @@ test('a legacy tab cannot revive a discarded or acknowledged draft in the new co
   const reopened=fixture();reopened.app.chatDrafts=chatState.createChatDraftStore(storage);reopened.app.preferences={motion:false};reopened.ports['./attachment-outbox.mjs'].attachmentDisk=()=>disk;
   let release;disk.hold(new Promise(resolve=>{release=resolve;}));const again=reopened.makeElement('div');reopened.app.mountConversation(again,target,{showHeader:false,notify(){}});
   assert.equal(again.querySelector('textarea').value,'');assert.equal(again.querySelector('textarea').disabled,true);
-  disk.hold(null);release();await reopened.app.chatDraftSession.ready;await turn();assert.equal(again.querySelector('textarea').value,'');assert.equal(reopened.app.chatDraftSession.read().heads.length,0);
+  disk.hold(null);release();await reopened.app.chatDraftSession.ready;await turn();assert.equal(again.querySelector('textarea').value,'');
+  assert.equal(reopened.app.chatDraftSession.read().heads[0].text,'Legacy text');assert.equal(again.querySelector('.sw-chat-draft-versions').hidden,false);
   reopened.app.chatCleanup();
 });
 

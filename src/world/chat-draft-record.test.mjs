@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord, readDraftRecord } from './chat-draft-record.mjs';
+import { initializeDraftRecord, writeDraftRecord, selectDraftRecord, acknowledgeDraftRecord, readDraftRecord, recoverLegacyDraftRecord } from './chat-draft-record.mjs';
 const edit=(baseId,id,writer,text,replyTo=null)=>({baseId,id,writer,text,replyTo});
 
 test('legacy text is imported once, and a following edit remains a single draft',()=>{
@@ -41,4 +41,15 @@ test('malformed or stale data is rejected without modifying the previous record'
   assert.throws(()=>writeDraftRecord(first,edit(null,'draft_001','tab_001','Changed')),{code:'chat_draft_changed'});
   assert.throws(()=>readDraftRecord({kind:'chat-draft-heads.v1',revision:1,heads:[{id:'wrong'}]}),{code:'chat_draft_storage_corrupt'});
   assert.deepEqual(first,before);
+});
+
+test('late legacy text is a separate version and an identical later old write can be recovered',()=>{
+  const current=writeDraftRecord(null,edit(null,'draft_001','tab_001','Current')).record;
+  const candidate={source:'v1',text:'Old tab thought',replyTo:null};
+  const both=recoverLegacyDraftRecord(current,candidate,'recovered_001');assert.deepEqual(both.heads.map(head=>head.text),['Current','Old tab thought']);
+  assert.equal(recoverLegacyDraftRecord(both,candidate,'recovered_002'),null);
+  const selected=selectDraftRecord(both,both.heads.map(head=>head.id),'draft_001','selected_001','tab_001').record;
+  const sent=acknowledgeDraftRecord(selected,'selected_001');assert.deepEqual(sent.heads,[]);
+  const repeated=recoverLegacyDraftRecord(sent,candidate,'recovered_003');assert.equal(repeated.heads[0].text,'Old tab thought');
+  const changed=recoverLegacyDraftRecord(repeated,{...candidate,text:'Another old edit'},'recovered_004');assert.equal(changed.heads.length,1);assert.equal(changed.heads[0].text,'Another old edit');
 });

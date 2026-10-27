@@ -1,5 +1,6 @@
 const PREFIX = 'soty.chat.draft.v1:';
 const ATTACHMENT_PREFIX = 'soty.chat.draft.v2:';
+const IDB_WRITER = 'soty.chat.idb.v1';
 const empty = () => ({ text: '', replyTo: null, pending: null });
 const replyId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(value) ? value : null;
 const refs = value => Array.isArray(value) && value.length <= 10 && value.every(item => replyId(item)) && new Set(value).size === value.length ? [...value] : [];
@@ -20,9 +21,14 @@ function decode(raw) {
   } catch { /* Invalid local metadata is not executable data. */ }
   return value;
 }
+function legacyCandidate(raw,source) {
+  try {const item=JSON.parse(raw||'null');if(!item||item._sotyWriter===IDB_WRITER||typeof item.text!=='string'||item.text.length>6000)return null;
+    const replyTo=replyId(item.replyTo);return item.text||replyTo?{source,text:item.text,replyTo}:null;
+  }catch{return null;}
+}
 
 /** Account-scoped local drafts retain the original request id across a lost ACK. */
-export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()) {
+export function createChatDraftStore(storage, makeId = () => crypto.randomUUID(), {indexedDB=false} = {}) {
   const memory = new Map();
   const volatile = new Set();
   const attachmentScopes = new Set();
@@ -33,7 +39,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     if (newer !== null && newer !== undefined) { attachmentScopes.add(key); return newer; }
     return attachmentScopes.has(key) ? null : storage.getItem(key);
   }
-  const notify = (key, value) => { for (const listener of listeners.get(key) || []) listener(copy(value)); };
+  const notify = (key, value, legacy) => { for (const listener of listeners.get(key) || []) listener(copy(value),legacy); };
   function read(accountId, communityId) {
     const key = keyFor(accountId, communityId);
     if (!memory.has(key)) {
@@ -51,8 +57,9 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       // Attachment intents live in v2; an old tab cannot erase their refs/clientId.
       // Keep its small empty tombstone so legacy v1 text cannot revive after ACK.
       if (refs(value.attachments).length || refs(value.pending?.attachments).length) attachmentScopes.add(key);
-      if (attachmentScopes.has(key)) storage.setItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length), JSON.stringify(value));
-      else if (value.text || value.replyTo || value.pending) storage.setItem(key, JSON.stringify(value));
+      const encoded=JSON.stringify(indexedDB?{...value,_sotyWriter:IDB_WRITER}:value);
+      if (attachmentScopes.has(key)) storage.setItem(ATTACHMENT_PREFIX + key.slice(PREFIX.length), encoded);
+      else if (value.text || value.replyTo || value.pending) storage.setItem(key, encoded);
       else storage.removeItem(key);
       volatile.delete(key);
     } catch {
@@ -65,6 +72,11 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
   }
   return {
     read,
+    legacyCandidates(accountId,communityId) {
+      const key=keyFor(accountId,communityId),suffix=key.slice(PREFIX.length);
+      const readCandidate=(name,source)=>{try{return legacyCandidate(storage.getItem(name),source);}catch{return null;}};
+      return [readCandidate(key,'v1'),readCandidate(ATTACHMENT_PREFIX+suffix,'v2')].filter(Boolean);
+    },
     edit(accountId, communityId, text, replyTo) {
       const value = read(accountId, communityId); value.text = text.slice(0, 6000);
       if (value.pending) value.pending.preserveDraft = true;
@@ -122,13 +134,15 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       const key = keyFor(accountId, communityId); const subscribers = listeners.get(key) || new Set(); subscribers.add(listener); listeners.set(key, subscribers);
       return () => { subscribers.delete(listener); if (!subscribers.size) listeners.delete(key); };
     },
-    storageChanged(key) {
+    storageChanged(key, newValue) {
       const newer=key?.startsWith(ATTACHMENT_PREFIX);
+      const candidate=newValue===undefined?null:legacyCandidate(newValue,newer?'v2':'v1');
       if (newer) key=PREFIX+key.slice(ATTACHMENT_PREFIX.length);
-      if (!key?.startsWith(PREFIX) || volatile.has(key) || !newer&&attachmentScopes.has(key)) return;
+      if (!key?.startsWith(PREFIX)) return;
+      if (volatile.has(key) || !newer&&attachmentScopes.has(key)) {if(candidate)notify(key,memory.get(key)??empty(),candidate);return;}
       const [accountId, communityId] = key.slice(PREFIX.length).split(':');
       if (!accountId || !communityId) return;
-      try { const value = decode(stored(key)); memory.set(key, value); notify(key, value); } catch { /* Keep the live copy if storage is no longer readable. */ }
+      try { const value = decode(stored(key)); memory.set(key, value); notify(key, value,candidate); } catch { if(candidate)notify(key,memory.get(key)??empty(),candidate); }
     },
     hasVolatile() { return volatile.size > 0; },
     isVolatile(accountId, communityId) { return volatile.has(keyFor(accountId, communityId)); },
