@@ -170,7 +170,12 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     '../../modules/field/contract.mjs': fieldContract,
     './conversation-target.mjs': conversationTargets,
     './chat-state.mjs': chatState,
-    './attachment-outbox.mjs': {},
+    './attachment-outbox.mjs': { createAttachmentOutbox() {
+      let pending=null,accepted=null;
+      return { ready:Promise.resolve(), canSend:()=>false, refs:()=>[], pendingIntent:()=>pending, acceptedIntent:()=>accepted, close() {},
+        async prepareSend(value) { pending ??= {clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]}; return {state:'pending',intent:pending}; },
+        async acknowledge(_ids,value) { accepted=value; pending=null; }, async reconcile() {} };
+    } },
     './messenger.mjs': messenger,
     './app-boot-recovery.mjs': appBootRecovery,
     './app-runtime-phase-trace.mjs': appRuntimePhaseTrace,
@@ -2832,12 +2837,18 @@ test('closing the page during the account field load keeps pending work for the 
   } finally { barrier.resolve(); await refreshing; h.dispose(); }
 });
 
-test('chat never dispatches a text message without a durable intent and retries it when storage returns', async () => {
+test('chat never dispatches a text message when its shared queue is unavailable and retries it when storage returns', async () => {
   const f = fixture(), disk = new Map(); let failing = false, sent = [];
-  const storage = { getItem: key => disk.get(key) ?? null, setItem(key, value) { if (failing) throw Error('Synthetic storage failure'); disk.set(key, value); }, removeItem: key => disk.delete(key) };
+  const storage = { getItem: key => disk.get(key) ?? null, setItem: (key, value) => disk.set(key, value), removeItem: key => disk.delete(key) };
   const drafts = chatState.createChatDraftStore(storage, () => 'intent_save_failure');
   drafts.edit('account-A', 'room_fixture', 'Не потерять');
   f.app.chatDrafts = drafts; f.app.preferences = { motion: false };
+  const makeOutbox=f.ports['./attachment-outbox.mjs'].createAttachmentOutbox;
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox = options => {
+    const box=makeOutbox(options),claim=box.prepareSend;
+    box.prepareSend = value => failing ? Promise.reject(Object.assign(Error('Synthetic queue failure'),{code:'attachment_local_storage'})) : claim(value);
+    return box;
+  };
   const parent = f.makeElement('div'), target = { kind: 'community', id: 'room_fixture', draftKey: 'room_fixture', name: 'Synthetic conversation', subtitle: 2,
     canWrite: true, canModerate: false, preferences: { pinned: false, muted: false }, async refresh() {},
     async request(action, args) { if (action === 'list') return { messages: [], hasMore: false }; if (action === 'send') { sent.push(args); return { message: { messageId: 'message_saved', clientId: args.clientId, seq: 1, text: args.text, author: { profileId: 'account-A', displayName: 'Alice', revision: 1 }, createdAt: 1800000000000, replyTo: null, removed: false } }; } throw Error(`Unexpected action ${action}`); }, setUnread() {} };
@@ -2847,7 +2858,7 @@ test('chat never dispatches a text message without a durable intent and retries 
   assert.equal(sent.length, 0, 'Unsaved intent must never reach the server');
   assert.equal(drafts.read('account-A', 'room_fixture').text, 'Не потерять');
   assert.equal(drafts.read('account-A', 'room_fixture').pending.clientId, 'intent_save_failure');
-  assert.equal(input.value, 'Не потерять'); assert.equal(drafts.hasVolatile(), true);
+  assert.equal(input.value, 'Не потерять'); assert.equal(drafts.hasVolatile(), false);
   failing = false; composer.requestSubmit(); await turn();
   assert.equal(sent.length, 1); assert.equal(sent[0].clientId, 'intent_save_failure'); assert.equal(sent[0].text, 'Не потерять');
   assert.equal(drafts.read('account-A', 'room_fixture').pending, null); assert.equal(drafts.read('account-A', 'room_fixture').text, '');
@@ -2875,5 +2886,67 @@ for (const claimSucceeds of [false, true]) test(`chat attachment with unavailabl
   const parent = f.makeElement('div'); f.app.mountConversation(parent, target, { showHeader: false, notify() {} });
   await turn(); await turn(); failing = true; parent.querySelector('.sw-composer').requestSubmit(); await turn(); await turn();
   assert.deepEqual(events, claimSucceeds ? ['claim', 'send', 'ack'] : ['claim']);
+  f.app.chatCleanup();
+});
+
+for (const retryFrom of ['first', 'second']) for (const nextText of ['Следующая мысль', 'Первое сообщение']) test(`two chat tabs retry from ${retryFrom} without erasing the other ${nextText === 'Первое сообщение' ? 'identical' : 'different'} draft`, async () => {
+  const { createWorldService } = await import('../../modules/world/server/index.mjs');
+  const world=createWorldService({databasePath:':memory:',projectId:'chat-two-tabs-regression'}),actor={accountId:'account-A',deviceId:'device-A',label:'Alice'},peer={accountId:'account-B',deviceId:'device-B',label:'Bob'};
+  const call=(who,op,args={})=>world.execute({actor:who,op:'world.'+op,args});
+  call(actor,'profile.get');call(peer,'profile.get');const room=call(actor,'community.create',{requestId:'two_tab_room_01',name:'Synthetic'}).community.communityId;call(peer,'membership.join',{communityId:room});
+  const map=new Map(),storage={getItem:key=>map.get(key)??null,setItem:(key,value)=>map.set(key,value),removeItem:key=>map.delete(key)};
+  let generated=0, lost=true;const sends=[],shared={pending:null,accepted:null};
+  const box=()=>({ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>shared.pending,acceptedIntent:()=>shared.accepted,close(){},
+    async prepareSend(value){if(shared.pending)return {state:'pending',intent:shared.pending};if(shared.accepted?.clientId===value.clientId)return {state:'accepted',intent:shared.accepted};shared.pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:shared.pending};},
+    async acknowledge(_ids,value){if(shared.pending?.clientId===value.clientId){shared.accepted=shared.pending;shared.pending=null;}},async reconcile(){}});
+  const first=fixture(),second=fixture();first.app.chatDrafts=chatState.createChatDraftStore(storage,()=>`send_${++generated}`);second.app.chatDrafts=chatState.createChatDraftStore(storage,()=>`send_${++generated}`);
+  first.app.chatDrafts.edit('account-A',room,'Первое сообщение');second.app.chatDrafts.read('account-A',room);
+  for(const f of [first,second]){f.app.preferences={motion:false};f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=box;Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});}
+  const target={kind:'community',id:room,draftKey:room,name:'Synthetic chat',subtitle:2,canWrite:true,canModerate:false,preferences:{pinned:false,muted:false},async refresh(){},setUnread(){},
+    async request(action,args){if(action==='list')return {messages:[],hasMore:false};if(action==='send'){sends.push(args.clientId);const result=call(actor,'chat.send',{communityId:room,clientId:args.clientId,text:args.text,replyTo:args.replyTo});if(lost){lost=false;throw Object.assign(Error('Synthetic lost ACK'),{code:'NETWORK_ERROR'});}return result;}throw Error(`Unexpected action ${action}`);}};
+  const p1=first.makeElement('div'),p2=second.makeElement('div');first.app.mountConversation(p1,target,{showHeader:false,notify(){}});second.app.mountConversation(p2,target,{showHeader:false,notify(){}});
+  try {
+    await turn();p1.querySelector('.sw-composer').requestSubmit();await turn();await turn();assert.equal(sends.length,1);
+    const input2=p2.querySelector('textarea');input2.value=nextText;input2.emit('input');
+    (retryFrom==='first'?p1:p2).querySelector('.sw-composer').requestSubmit();await turn();await turn();
+    assert.equal(sends.length,2);assert.equal(sends[1],sends[0]);
+    assert.deepEqual(call(peer,'chat.list',{communityId:room}).messages.map(m=>m.text),['Первое сообщение']);
+    assert.equal(second.app.chatDrafts.read('account-A',room).text,nextText);
+    assert.equal(chatState.createChatDraftStore(storage).read('account-A',room).text,nextText);
+    if (retryFrom==='second') assert.match(second.app.lastToast, /прежнее сообщение/u);
+  } finally {first.app.chatCleanup();second.app.chatCleanup();world.close();}
+});
+
+for (const conflict of [false,true]) test(`old chat pending survives new queue startup${conflict ? ' when another distinct intent is already retained' : ' and is claimed before any send'}`, async () => {
+  const f=fixture(),disk=new Map(),storage={getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value),removeItem:key=>disk.delete(key)},events=[];
+  const drafts=chatState.createChatDraftStore(storage,()=> 'legacy_intent');drafts.beginSend('account-A','legacy_room','Legacy text');
+  f.app.chatDrafts=drafts;f.app.preferences={motion:false};
+  Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  let pending=conflict?{clientId:'other_intent',text:'Other text',replyTo:null,attachments:[]}:null;
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>({ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},
+    async prepareSend(value){events.push('claim');if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},async acknowledge(_ids,value){events.push('ack');if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
+  const target={kind:'community',id:'legacy_room',draftKey:'legacy_room',name:'Legacy',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action,args){if(action==='list')return {messages:[],hasMore:false};events.push('send:'+args.clientId);return {message:{messageId:'message_'+args.clientId,clientId:args.clientId,seq:events.length,text:args.text,author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false}};}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
+  if(!conflict){assert.deepEqual(events,['claim']);assert.equal(pending.clientId,'legacy_intent');}
+  else {assert.deepEqual(events,[]);parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+    assert.deepEqual(events,['claim','send:other_intent','ack']);assert.equal(pending,null);assert.equal(drafts.read('account-A','legacy_room').pending.clientId,'legacy_intent');
+    assert.equal(drafts.read('account-A','legacy_room').text,'Legacy text');assert.match(f.app.lastToast,/прежнее сообщение/u);
+    parent.querySelector('.sw-composer').requestSubmit();await turn();await turn();
+    assert.deepEqual(events,['claim','send:other_intent','ack','claim','send:legacy_intent','ack']);assert.equal(drafts.read('account-A','legacy_room').pending,null);}
+  f.app.chatCleanup();
+});
+
+test('history acknowledgement clears the shared old intent without erasing a different locally retained one', async () => {
+  const f=fixture(),disk=new Map(),storage={getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value),removeItem:key=>disk.delete(key)},events=[];
+  const drafts=chatState.createChatDraftStore(storage,()=> 'local_next');drafts.beginSend('account-A','room_ack','Next thought');f.app.chatDrafts=drafts;f.app.preferences={motion:false};
+  Object.assign(f.ports['./dom'],{timeLabel:()=> '12:00',avatar:()=>f.makeElement('span')});
+  let pending={clientId:'queued_old',text:'Already delivered',replyTo:null,attachments:[]};
+  f.ports['./attachment-outbox.mjs'].createAttachmentOutbox=()=>({ready:Promise.resolve(),canSend:()=>false,refs:()=>[],pendingIntent:()=>pending,acceptedIntent:()=>null,close(){},
+    async prepareSend(value){events.push('claim:'+value.clientId);if(!pending)pending={clientId:value.clientId,text:value.text,replyTo:value.replyTo,attachments:value.attachments??[]};return {state:'pending',intent:pending};},
+    async acknowledge(_ids,value){events.push('ack:'+value.clientId);if(pending?.clientId===value.clientId)pending=null;},async reconcile(){}});
+  const old={messageId:'message_queued_old',clientId:'queued_old',seq:1,text:'Already delivered',author:{profileId:'account-A',displayName:'Alice',revision:1},createdAt:1800000000000,replyTo:null,removed:false};
+  const target={kind:'community',id:'room_ack',draftKey:'room_ack',name:'Synthetic',subtitle:2,canWrite:true,canModerate:false,preferences:{},async refresh(){},setUnread(){},async request(action){if(action==='list')return {messages:[old],hasMore:false};throw Error('Unexpected network operation');}};
+  const parent=f.makeElement('div');f.app.mountConversation(parent,target,{showHeader:false,notify(){}});await turn();await turn();
+  assert.deepEqual(events,['ack:queued_old']);assert.equal(pending,null);assert.equal(drafts.read('account-A','room_ack').pending.clientId,'local_next');assert.equal(drafts.read('account-A','room_ack').text,'Next thought');
   f.app.chatCleanup();
 });

@@ -179,3 +179,14 @@ test('chat catch-up yields at a page budget and stops after screen disposal', as
   const disposed = await readChatForward({ after: 300, fetchPage: async () => { active = false; return { messages: [{ seq: 301 }], hasMore: false }; }, active: () => active, append: () => assert.fail('Disposed screen receives no messages') });
   assert.equal(disposed.cursor, 300);
 });
+
+test('accepting another tab’s pending message retains this tab’s identical new draft', () => {
+  const disk=storage(),drafts=createChatDraftStore(disk,()=> 'new_intent');
+  drafts.edit('alice','room','Same text');
+  const own=drafts.beginSend('alice','room','Same text');assert.equal(own.clientId,'new_intent');
+  drafts.recoverPending('alice','room',{clientId:'older_intent',text:'Same text',replyTo:null,attachments:[]});
+  const reopened=createChatDraftStore(disk);
+  assert.equal(reopened.read('alice','room').pending.clientId,'older_intent');
+  reopened.acknowledge('alice','room','older_intent');
+  assert.equal(reopened.read('alice','room').text,'Same text');assert.equal(reopened.read('alice','room').pending,null);
+});

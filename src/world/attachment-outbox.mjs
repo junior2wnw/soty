@@ -9,7 +9,7 @@ const intentKey = prefix => '$message:'+prefix;
 function validIntent(value) {
   return value&&/^[A-Za-z0-9_-]{3,160}$/u.test(value.clientId)&&typeof value.text==='string'&&value.text.length<=6000
     &&(value.replyTo===null||value.replyTo===undefined||/^[A-Za-z0-9_-]{3,160}$/u.test(value.replyTo))
-    &&Array.isArray(value.attachments)&&value.attachments.length>0&&value.attachments.length<=L.batch
+    &&Array.isArray(value.attachments)&&value.attachments.length<=L.batch&&(value.attachments.length>0||value.text.trim().length>0)
     &&new Set(value.attachments).size===value.attachments.length&&value.attachments.every(id=>/^[A-Za-z0-9_-]{3,160}$/u.test(id));
 }
 // Narrow queue invalidation only. IDB remains authoritative, including when a

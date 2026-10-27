@@ -1966,8 +1966,8 @@ class WorldApplication {
     const renderAttachments = (): void => {
       if (!active()) return;
       attachmentRail.hidden = attachmentRows.length === 0; attachmentRail.replaceChildren();
-      attachmentHint.hidden = !attachmentRows.length && !outbox?.pendingIntent();
-      attachmentHint.textContent = outbox?.pendingIntent() ? 'Прежняя отправка ещё без подтверждения. Уточним её результат; ваши новые изменения останутся черновиком.' : attachmentWritable ? 'До 10 файлов, вместе до 25 МиБ. Подпись необязательна.' : 'Отправка файлов пока выключена. Очередь сохранена на устройстве; файл можно убрать.';
+      attachmentHint.hidden = !attachmentRows.length && !outbox?.pendingIntent()?.attachments?.length;
+      attachmentHint.textContent = outbox?.pendingIntent()?.attachments?.length ? 'Прежняя отправка ещё без подтверждения. Уточним её результат; ваши новые изменения останутся черновиком.' : attachmentWritable ? 'До 10 файлов, вместе до 25 МиБ. Подпись необязательна.' : 'Отправка файлов пока выключена. Очередь сохранена на устройстве; файл можно убрать.';
       for (const item of attachmentRows) {
         const card = el('div', 'sw-attachment-card'); card.dataset.attachmentId = item.attachmentId;
         const info = el('div', 'sw-attachment-info'); info.append(el('strong', '', item.name));
@@ -1981,7 +1981,8 @@ class WorldApplication {
       if (!acknowledgingAttachments) {
         const accepted=outbox?.acceptedIntent(),pending=outbox?.pendingIntent();
         if(accepted)this.chatDrafts.acknowledge(accountId,conversation.draftKey,accepted.clientId,accepted.attachments);
-        if(pending)this.chatDrafts.recoverPending(accountId,conversation.draftKey,pending);
+        const localPending=this.chatDrafts.read(accountId,conversation.draftKey).pending;
+        if(pending&&(!localPending||localPending.clientId===pending.clientId))this.chatDrafts.recoverPending(accountId,conversation.draftKey,pending);
         this.chatDrafts.setAttachments(accountId,conversation.draftKey,attachmentRows.map(item=>item.attachmentId));
       }
       updateComposer();
@@ -1996,11 +1997,13 @@ class WorldApplication {
     chat.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect=attachmentWritable&&!sending?'copy':'none';}});
     chat.addEventListener('drop',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();chooseFiles(event.dataTransfer.files);}});
     composer.append(attach, filePicker, input, send); dock.append(reply, error, attachmentRail, composer, attachmentHint); chat.append(searchBar, messages, jump, dock, menu); parent.append(chat);
-    const attachmentReady = this.profile?.chatAttachmentsVersion === 1 ? this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities', { ...attachmentScope, expectedAccountId: accountId }).then(result => {
-      if (!active()) return; attachmentWritable = result.writable; attach.hidden = !attachmentWritable;
-      if (result.readable) { outbox = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: initialDraft.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } }); return outbox.ready; }
-      updateComposer();
-    }).catch(reason => { if (active()) { attachmentWritable = false; attach.hidden = true; errorMessage.textContent = errorText(reason); updateComposer(); } }) : Promise.resolve();
+    outbox = createAttachmentOutbox({ api: this.api, accountId, conversationKey: conversation.draftKey, conversationScope: attachmentScope, initialOrder: initialDraft.attachments ?? [], current: active, allowUpload: () => attachmentWritable, changed: items => { attachmentRows = items; renderAttachments(); } });
+    const attachmentReady = outbox.ready.then(async () => {
+      if (initialDraft.pending && !outbox?.pendingIntent()) await outbox?.prepareSend(initialDraft.pending);
+    }).catch(reason => { if (active()) { errorMessage.textContent = errorText(reason?.code === 'attachment_local_storage' ? { code: 'chat_local_storage_unavailable' } : reason); updateComposer(); } });
+    if (this.profile?.chatAttachmentsVersion === 1) void this.api.request<{readable:boolean;writable:boolean}>('world.attachment.capabilities', { ...attachmentScope, expectedAccountId: accountId }).then(result => {
+      if (!active()) return; attachmentWritable = result.readable && result.writable; attach.hidden = !attachmentWritable; updateComposer();
+    }).catch(reason => { if (active()) { attachmentWritable = false; attach.hidden = true; errorMessage.textContent = errorText(reason); updateComposer(); } });
     fitComposer(); updateComposer(); refreshReply();
     let composerWidth = 0;
     const composerResize = new ResizeObserver(entries => { const width = entries.find(entry => entry.target === composer)?.contentRect.width ?? 0; if (width > 0 && width !== composerWidth) { composerWidth = width; fitComposer(); } chat.style.setProperty('--sw-chat-dock-height', `${dock.getBoundingClientRect().height}px`); });
@@ -2093,11 +2096,11 @@ class WorldApplication {
       return row;
     };
     const append = (message: WorldMessage): void => {
-      const pending = this.chatDrafts.read(accountId, conversation.draftKey).pending;
+      const localPending = this.chatDrafts.read(accountId, conversation.draftKey).pending, queued = outbox?.pendingIntent();
+      const pending = queued?.clientId === message.clientId ? queued : localPending?.clientId === message.clientId ? localPending : null;
       if (message.author.profileId === accountId && message.clientId && pending?.clientId === message.clientId) {
         const ids = pending.attachments ?? [];
-        if (!ids.length) this.chatDrafts.acknowledge(accountId, conversation.draftKey, message.clientId);
-        else if (!acknowledgingAttachments) {
+        if (!acknowledgingAttachments) {
           acknowledgingAttachments = true;
           void attachmentReady.then(async () => { if (!outbox) throw Object.assign(Error('attachment_local_storage'), { code: 'attachment_local_storage' }); await outbox.acknowledge(ids, { ...pending, attachments: ids }); this.chatDrafts.acknowledge(accountId, conversation.draftKey, pending.clientId, ids); })
             .catch(reason => { if (active()) errorMessage.textContent = errorText(reason); })
@@ -2199,27 +2202,30 @@ class WorldApplication {
     messages.addEventListener('scroll', () => { if (Math.abs(messages.scrollTop - menuScrollTop) > 1) closeMenu(); updateJump(); if (!fetching && !historyLoading) { markRead(); if (messages.scrollTop < 64) void loadHistory(); } }, { passive: true });
     composer.addEventListener('submit', event => {
       event.preventDefault(); const text = input.value.trim(), attachmentIds=attachmentRows.map(item=>item.attachmentId), priorPending=this.chatDrafts.read(accountId,conversation.draftKey).pending; if (send.disabled) return;
-      sending = true; const pending = this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo,attachmentIds); describeDraft(); updateComposer();
+      sending = true; const pending = priorPending ? { ...priorPending, durable: !this.chatDrafts.isVolatile(accountId, conversation.draftKey) }
+        : this.chatDrafts.beginSend(accountId, conversation.draftKey, text, replyTo,attachmentIds); describeDraft(); updateComposer();
       let dispatched=false;
       errorMessage.textContent = ''; retrySend.hidden = true;
       void (async()=>{
         let submitted=pending;
-        if (!pending.durable && !pending.attachments?.length) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
-        if(pending.attachments?.length&&outbox){
-          const prepared=await outbox.prepareSend(pending);
-          if(prepared.state==='accepted'){
-            this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
-            if(active())void load();return;
-          }
-          submitted={...prepared.intent,durable:true};
-          this.chatDrafts.recoverPending(accountId,conversation.draftKey,prepared.intent);
+        await attachmentReady;
+        if (!outbox) throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' });
+        let prepared;
+        try { prepared=await outbox.prepareSend(pending); }
+        catch(reason) { if (!pending.attachments?.length && (reason as {code?:string})?.code === 'attachment_local_storage') throw Object.assign(new Error('chat_local_storage_unavailable'), { code: 'chat_local_storage_unavailable' }); throw reason; }
+        if (pending.clientId !== prepared.intent.clientId && active()) this.toast('Сначала подтверждаем прежнее сообщение. Новый текст остаётся черновиком.');
+        if(prepared.state==='accepted'){
+          this.chatDrafts.acknowledge(accountId,conversation.draftKey,prepared.intent.clientId,prepared.intent.attachments);
+          if(active())void load();return;
         }
+        submitted={...prepared.intent,durable:true};
+        if (!priorPending || priorPending.clientId === prepared.intent.clientId) this.chatDrafts.recoverPending(accountId,conversation.draftKey,prepared.intent);
         if(!active())return;
         const sentIds=submitted.attachments??[];
         dispatched=true;
         const response=await conversation.request<{message:WorldMessage}>('send',{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,...(sentIds.length?{attachments:sentIds,expectedAccountId:accountId}:{})});
         acknowledgingAttachments=true;
-        try { if(sentIds.length)await outbox?.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds}); }
+        try { await outbox.acknowledge(sentIds,{clientId:submitted.clientId,text:submitted.text,replyTo:submitted.replyTo,attachments:sentIds}); }
         finally { acknowledgingAttachments=false; }
         const draft = this.chatDrafts.acknowledge(accountId, conversation.draftKey, submitted.clientId,sentIds);
         if (!active()) return;

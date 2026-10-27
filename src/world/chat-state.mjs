@@ -15,6 +15,7 @@ function decode(raw) {
       Object.assign(value, withRefs(item.attachments));
       if (item.pending && typeof item.pending.clientId === 'string' && /^[A-Za-z0-9_-]{3,160}$/.test(item.pending.clientId) && typeof item.pending.text === 'string' && item.pending.text.length <= 6000) value.pending = { clientId: item.pending.clientId, text: item.pending.text, replyTo: replyId(item.pending.replyTo) };
       if (value.pending) Object.assign(value.pending, withRefs(item.pending.attachments));
+      if (value.pending && item.pending.preserveDraft === true) value.pending.preserveDraft = true;
     }
   } catch { /* Invalid local metadata is not executable data. */ }
   return value;
@@ -89,6 +90,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
     recoverPending(accountId, communityId, pending) {
       const value=read(accountId,communityId);
       const captured={clientId:pending.clientId,text:pending.text,replyTo:replyId(pending.replyTo),...withRefs(pending.attachments)};
+      if (value.pending?.clientId !== captured.clientId || value.pending?.preserveDraft) captured.preserveDraft=true;
       if (JSON.stringify(value.pending)===JSON.stringify(captured)) return value;
       value.pending=captured;save(accountId,communityId,value);return copy(value);
     },
@@ -105,7 +107,7 @@ export function createChatDraftStore(storage, makeId = () => crypto.randomUUID()
       const pending=value.pending?.clientId===clientId?value.pending:null;
       const accepted=refs(acceptedAttachments??pending?.attachments);
       if(!pending&&!refs(value.attachments).some(id=>accepted.includes(id))){notify(key,value);return value;}
-      if (pending && value.text.trim() === pending.text && value.replyTo === pending.replyTo
+      if (pending && !pending.preserveDraft && value.text.trim() === pending.text && value.replyTo === pending.replyTo
         && JSON.stringify(refs(value.attachments)) === JSON.stringify(refs(pending.attachments))) { value.text = ''; value.replyTo = null; }
       const remaining=refs(value.attachments).filter(id=>!accepted.includes(id));delete value.attachments;Object.assign(value,withRefs(remaining));
       if(pending)value.pending=null;save(accountId, communityId, value);

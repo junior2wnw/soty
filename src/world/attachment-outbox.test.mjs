@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { File } from 'node:buffer';
 import { DatabaseSync } from 'node:sqlite';
-import { createAttachmentOutbox, downloadAttachment, ATTACHMENT_LIMITS as L } from './attachment-outbox.mjs';
+import { attachmentDisk, createAttachmentOutbox, downloadAttachment, ATTACHMENT_LIMITS as L } from './attachment-outbox.mjs';
 import { createChatDraftStore } from './chat-state.mjs';
 import { attachmentHttpFixture } from '../../modules/world/test/support/attachment-http-fixture.mjs';
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -266,4 +266,55 @@ test('download rejects changed chunk bytes and a changed ordered manifest before
   await assert.rejects(downloadAttachment({api:tampered,accountId:'actor_a',communityId:'community_a',attachment:ref}),e=>e.code==='attachment_integrity_failed');
   const changed={request:async(op,args)=>{const r=await api.request(op,args);if(op==='world.attachment.read'){const bytes=Buffer.from('fake');return {...r,data:bytes.toString('base64'),sha256:sha(bytes)};}return r;}};
   await assert.rejects(downloadAttachment({api:changed,accountId:'actor_a',communityId:'community_a',attachment:ref}),e=>e.code==='attachment_integrity_failed');box.close();
+});
+
+test('two text-send tabs use one durable pending intent until the accepted message is reconciled', async t => {
+  const disk=memoryDisk(), api=wire(), options={api,accountId:'synthetic_account',communityId:'synthetic_room',disk};
+  const first=createAttachmentOutbox(options),second=createAttachmentOutbox(options);t.after(()=>{first.close();second.close();});
+  await Promise.all([first.ready,second.ready]);
+  const original={clientId:'text_send_original',text:'Original',replyTo:null,attachments:[]};
+  const proposed={clientId:'text_send_new_id',text:'New draft',replyTo:null,attachments:[]};
+  const stored=await first.prepareSend(original);assert.deepEqual(stored.intent,original);
+  const retry=await second.prepareSend(proposed);assert.deepEqual(retry.intent,original);
+  first.close();const reopened=createAttachmentOutbox(options);t.after(()=>reopened.close());await reopened.ready;
+  assert.deepEqual(reopened.pendingIntent(),original);
+  await second.acknowledge([],original);await reopened.reconcile();assert.equal(reopened.pendingIntent(),null);assert.deepEqual(reopened.acceptedIntent(),original);
+  const next=await reopened.prepareSend(proposed);assert.deepEqual(next.intent,proposed);
+});
+
+test('text send intent cannot be claimed when the shared queue storage is unavailable', async t => {
+  const disk=memoryDisk(),box=createAttachmentOutbox({api:wire(),accountId:'synthetic_account',communityId:'synthetic_room',disk});t.after(()=>box.close());
+  await box.ready;disk.setFailure(true);
+  await assert.rejects(box.prepareSend({clientId:'text_storage_failure',text:'Retain this draft',replyTo:null,attachments:[]}),{code:'attachment_local_storage'});
+  assert.equal(disk.messages.size,0);
+});
+
+test('text queue refuses missing IndexedDB before any network call', async t => {
+  let calls=0;const box=createAttachmentOutbox({api:{async request(){calls++;}},accountId:'synthetic_account',communityId:'synthetic_room',disk:attachmentDisk(null),allowUpload:()=>false});t.after(()=>box.close());
+  await assert.rejects(box.ready,{code:'attachment_local_storage'});
+  await assert.rejects(box.prepareSend({clientId:'missing_idb_message',text:'Keep this text',replyTo:null,attachments:[]}),{code:'attachment_local_storage'});
+  assert.equal(calls,0);
+});
+
+test('signed HTTP: two text tabs recover one committed send and preserve the next draft without file upload', async t => {
+  const f=await attachmentHttpFixture(t),[alice,bob]=f.actors,disk=memoryDisk(),net=[];
+  const api={async request(op,args){net.push(op);const response=await f.call(alice,op,args);if(!response.ok)throw Object.assign(Error('Synthetic signed failure'),{code:response.error.code});return response;}};
+  const options={api,accountId:alice.accountId,communityId:f.group.communityId,disk,allowUpload:()=>false},first=createAttachmentOutbox(options),second=createAttachmentOutbox(options);
+  t.after(()=>{first.close();second.close();});await Promise.all([first.ready,second.ready]);
+  const values=new Map(),storage={getItem:k=>values.get(k)??null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)};
+  const left=createChatDraftStore(storage,()=> 'signed_text_old'),right=createChatDraftStore(storage,()=> 'signed_text_next');
+  left.read(alice.accountId,f.group.communityId);right.read(alice.accountId,f.group.communityId);
+  const pending=left.beginSend(alice.accountId,f.group.communityId,'Synthetic first');
+  const acceptedIntent=(await first.prepareSend(pending)).intent;
+  const accepted=await api.request('world.chat.send',{communityId:f.group.communityId,expectedAccountId:alice.accountId,clientId:acceptedIntent.clientId,text:acceptedIntent.text,replyTo:acceptedIntent.replyTo});
+  right.edit(alice.accountId,f.group.communityId,'Synthetic next');
+  const proposed=right.beginSend(alice.accountId,f.group.communityId,'Synthetic next');assert.notEqual(proposed.clientId,pending.clientId);
+  const retry=(await second.prepareSend(proposed)).intent;assert.equal(retry.clientId,pending.clientId);
+  right.recoverPending(alice.accountId,f.group.communityId,retry);
+  const repeated=await api.request('world.chat.send',{communityId:f.group.communityId,expectedAccountId:alice.accountId,clientId:retry.clientId,text:retry.text,replyTo:retry.replyTo});
+  assert.equal(repeated.message.messageId,accepted.message.messageId);
+  await second.acknowledge([],retry);right.acknowledge(alice.accountId,f.group.communityId,retry.clientId);
+  assert.equal(right.read(alice.accountId,f.group.communityId).text,'Synthetic next');
+  assert.equal((await f.call(bob,'world.chat.list',{communityId:f.group.communityId})).messages.filter(m=>m.text==='Synthetic first').length,1);
+  assert.deepEqual(net,['world.chat.send','world.chat.send']);
 });
