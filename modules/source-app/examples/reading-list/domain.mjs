@@ -4,10 +4,11 @@ const invalid=()=>{throw Object.assign(new Error('reading_input_invalid'),{code:
 export function createDomain(){return{
   personalDocuments:true,
   read({personal,resourceId},{input}){
-    if(!input||Object.keys(input).join(',')!=='operation'||input.operation!=='reading.list')invalid();
+    if(!input||!['operation','cursor,operation'].includes(Object.keys(input).sort().join(','))||input.operation!=='reading.list')invalid();
     // A UI-storage namespace only, obtained AFTER authorization. It is never
     // accepted back as a principal, resource selector or permission.
-    return{storageScope:resourceId,items:personal.list('reading-items').map(({id,value})=>({id,title:value.title}))};
+    const page=personal.list('reading-items',input.cursor??null);
+    return{storageScope:resourceId,items:page.items.map(({id,value})=>({id,title:value.title})),nextCursor:page.nextCursor};
   },
   execute({personal},{requestId,input}){
     if(!input||Object.keys(input).sort().join(',')!=='operation,title'||input.operation!=='reading.add'

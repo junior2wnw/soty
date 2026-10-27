@@ -15,6 +15,7 @@ import {selectedResourceProfile} from '../../apps/scoped-embed/resource-profile.
 import {createResourceSourceProofSigner} from '../../apps/scoped-embed/resource-proof.mjs';
 import {digest,fields,check} from '../server/wire.mjs';
 import {buildSourceAppPackage} from '../scripts/build.mjs';
+import {parseSourceJson} from '../shared/strict-json.mjs';
 
 const require=createRequire(import.meta.url),oidcRequire=createRequire(require.resolve('openid-client'));
 const {SignJWT,importJWK}=await import(pathToFileURL(oidcRequire.resolve('jose')).href);
@@ -124,7 +125,7 @@ test('personal document callbacks are transaction-scoped and a failed write is r
   const domain={personalDocuments:true,
     read(context,{input}){assert.deepEqual(Object.keys(context).sort(),['personal','resourceId']);retained=context.personal;
       if(input.operation==='reading.write-in-read')context.personal.create('items','invalid-read','not written');
-      return{items:context.personal.list('items')};},
+      return{items:context.personal.list('items').items};},
     execute(context,{requestId,input}){context.personal.create('items',requestId,{title:input.title});
       if(input.title==='roll back')throw Error('application rejected staged change');
       return{workspaceReceipt:{schema:'soty.workspace-receipt.v1',effects:[{kind:'created',resourceType:'reading-item',resourceId:requestId,revision:1}],
@@ -138,6 +139,32 @@ test('personal document callbacks are transaction-scoped and a failed write is r
   assert.deepEqual((await read(browser,context.ref)).body.data.items,[]);
   assert.equal((await add(browser,context.ref,'reading-committed-001','kept')).status,200);
   assert.deepEqual((await read(browser,context.ref)).body.data.items,[{id:'reading-committed-001',value:{title:'kept'}}]);
+});
+
+test('personal pages reserve wire budgets for maximum supported document bytes, nodes and depth',async t=>{
+  const complex=Object.fromEntries(Array.from({length:1199},(_,i)=>['key'+i,i]));
+  let deep='leaf';for(let i=0;i<12;i++)deep=[deep];
+  const domain={personalDocuments:true,
+    read({personal},{input}){return{page:personal.list('items',input.cursor??null)};},
+    execute({personal},{requestId,input}){
+      const value=input.title==='complex'?complex:input.title==='deep'?deep:input.title==='large'?'x'.repeat(16382):
+        Object.fromEntries(Array.from({length:1200},(_,i)=>['key'+i,i]));
+      personal.create('items',requestId,value);
+      return{workspaceReceipt:{schema:'soty.workspace-receipt.v1',effects:[{kind:'created',resourceType:'reading-item',resourceId:requestId,revision:1}],
+        receipt:{verificationMethod:'domain_read',artifacts:[{type:'reading-item',id:requestId,revision:1}]}}};
+    }};
+  const f=await fixture(t,{domain}),browser=f.browser();assert.equal((await browser.request()).status,200);const context=await current(browser);
+  for(const [id,title]of [['page-complex-0001','complex'],['page-complex-0002','complex'],['page-largest-0001','large'],['page-deepest-0001','deep']])
+    assert.equal((await add(browser,context.ref,id,title)).status,200);
+  assert.ok((await add(browser,context.ref,'page-too-many-0001','overflow')).status>=400);
+  const collect=[];let cursor=null,pages=0;
+  do{const reply=await browser.request('/api/embed/query',{requestId:`page-bounded-${String(++pages).padStart(5,'0')}`,contextRef:context.ref,
+      input:{operation:'reading.list',...(cursor?{cursor}:{})}});
+    assert.equal(reply.status,200,JSON.stringify(reply.body));parseSourceJson(JSON.stringify(reply.body),{bytes:65536});
+    collect.push(...reply.body.data.page.items);cursor=reply.body.data.page.nextCursor;
+  }while(cursor);
+  assert.equal(pages,2);assert.deepEqual(collect.map(item=>item.id),['page-deepest-0001','page-largest-0001','page-complex-0002','page-complex-0001']);
+  assert.equal(JSON.stringify(collect[1].value).length,16384);assert.deepEqual(collect[0].value,deep);
 });
 
 test('opting a legacy database into new document mode requires migration and leaves its old data usable',async t=>{

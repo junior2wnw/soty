@@ -151,3 +151,47 @@ test('two authored modules use shared personal storage with actual signed Root a
   }
   assert.equal(Object.entries(f.oauthCounts).filter(([name])=>/^(token|userinfo):/u.test(name)).reduce((sum,[,count])=>sum+count,0),0);
 });
+
+test('personal pages retain every long and short item across people, new writes and restart', {timeout:240000},async t=>{
+  const f=await createOrdinaryInstalledFixture(t,{workspace:true,sourceOnly:true,realmIds:['paging'],withoutRpClients:['paging'],
+    sourceProfile:STANDARD_ROOT_WORKSPACE_SOURCE,nativeFactory,
+    connectorScript:fileURLToPath(new URL('../../../scripts/soty-connector.mjs',import.meta.url))});
+  const realm=f.realms[0],clients=[],responseBytes=[];t.after(()=>clients.forEach(client=>client.dispose()));
+  await f.grantBrowser(f.foreign.account.accountId);let serial=0;
+  const requestId=()=>`pagination-query-${String(++serial).padStart(6,'0')}`;
+  async function frame(signer){
+    const launch=await signer.client.extension('apps.launch',{appId:realm.appId});
+    const boot=await f.wire(realm.embedded+'/_soty/session',{body:{ticket:new URL(launch.launchUrl).hash.slice(1)}});assert.equal(boot.status,200);
+    const client=createSourceWorkspaceClient({href:realm.embedded+'/embed?sotyFrame='+boot.value.frame,
+      fetch:async(path,init)=>{const response=await f.wire(realm.embedded+path,{method:init.method,body:JSON.parse(init.body),headers:Object.fromEntries(new Headers(init.headers))});
+        if(path==='/api/embed/query'&&response.status===200)responseBytes.push(Buffer.byteLength(response.text));
+        return new Response(response.text,{status:response.status,headers:response.headers});}});
+    clients.push(client);await client.connect({requestId:requestId()});return client;
+  }
+  const query=(client,cursor)=>client.query({requestId:requestId(),input:{operation:'reading.list',...(cursor?{cursor}:{})}});
+  async function write(client,id,title){const intent=await client.prepareInvoke({requestId:id,input:{operation:'reading.add',title}});await client.invoke(intent);}
+  const reader=await frame(f.reader),empty=await query(reader);assert.deepEqual(empty.items,[]);assert.equal(empty.nextCursor,null);
+  const long=[];
+  for(let i=0;i<90;i++){const id=`pagination-long-${String(i).padStart(6,'0')}`,title='漢'.repeat(240);long.push({id,title});await write(reader,id,title);}
+  const first=await query(reader);assert.ok(first.nextCursor&&first.items.length<90);
+  const next=await query(reader,first.nextCursor),seen=[...first.items,...next.items];let cursor=next.nextCursor;
+  while(cursor){const page=await query(reader,cursor);seen.push(...page.items);cursor=page.nextCursor;}
+  assert.deepEqual(seen,long.reverse());
+  await write(reader,'pagination-long-new-0001','added after first page');
+  assert.equal((await query(reader)).items[0].id,'pagination-long-new-0001');
+  assert.deepEqual((await query(reader,first.nextCursor)).items,next.items,'continuing or retrying excludes later insertions');
+  const other=await frame(f.foreign);assert.deepEqual((await query(other)).items,[]);await assert.rejects(query(other,first.nextCursor));
+  for(let i=0;i<100;i++)await write(other,`pagination-short-${String(i).padStart(6,'0')}`,`short ${i}`);
+  const exactly=await query(other);assert.equal(exactly.items.length,100);assert.equal(exactly.nextCursor,null);
+  for(let i=100;i<102;i++)await write(other,`pagination-short-${String(i).padStart(6,'0')}`,`short ${i}`);
+  const shortFirst=await query(other);assert.equal(shortFirst.items.length,100);assert.ok(shortFirst.nextCursor);
+  const shortLast=await query(other,shortFirst.nextCursor);assert.equal(shortLast.items.length,2);assert.equal(shortLast.nextCursor,null);
+  await write(other,'pagination-short-new-0001','another new item');
+  assert.equal((await query(other)).items[0].id,'pagination-short-new-0001');
+  assert.deepEqual((await query(other,shortFirst.nextCursor)).items,shortLast.items);
+  await realm.restart();await f.restartRoot();
+  const reloadedReader=await frame(f.reader),reloadedOther=await frame(f.foreign);
+  assert.deepEqual((await query(reloadedReader,first.nextCursor)).items,next.items);
+  assert.deepEqual((await query(reloadedOther,shortFirst.nextCursor)).items,shortLast.items);
+  assert.ok(responseBytes.length>0&&responseBytes.every(bytes=>bytes<=65536));
+});

@@ -156,7 +156,7 @@ export interface SqliteWorkspaceDomain {
 /** Small optional store for trusted new domains. It is valid only during the
  * synchronous callback; `create` is available only inside `execute`. */
 export interface SqlitePersonalDocumentsReader {
-  list(collection:string):Array<{id:string;value:unknown}>;
+  list(collection:string,cursor?:string|null):{items:Array<{id:string;value:unknown}>;nextCursor:string|null};
 }
 export interface SqlitePersonalDocuments extends SqlitePersonalDocumentsReader {
   create(collection:string,id:string,value:unknown):void;

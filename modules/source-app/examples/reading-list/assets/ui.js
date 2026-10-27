@@ -1,7 +1,7 @@
 import {createSourceWorkspaceClient} from '/assets/source-sdk.js';
 const $=id=>document.getElementById(id),client=createSourceWorkspaceClient();
-const state=$('state'),content=$('content'),retry=$('retry'),form=$('add'),save=$('save-state');
-const id=()=>crypto.randomUUID();let busy=false,unresolved=false,pendingKey=null,draftKey=null;
+const state=$('state'),content=$('content'),retry=$('retry'),form=$('add'),save=$('save-state'),more=$('more'),pageState=$('page-state');
+const id=()=>crypto.randomUUID();let busy=false,unresolved=false,pendingKey=null,draftKey=null,nextCursor=null,currentScope=null;
 const draftState=$('draft-state'),title=$('title');
 const validDraft=value=>typeof value==='string'&&value.length<=240&&value.isWellFormed()&&!/[\u0000-\u001f\u007f]/u.test(value);
 function scopeDraft(scope){const key='reading-draft:'+scope;if(key===draftKey)return;draftKey=key;title.value='';draftState.textContent='';
@@ -14,10 +14,13 @@ const message=error=>error?.message==='pending_storage_unavailable'?'Не уда
   error?.status===503?'Приложение временно занято. Попробуйте ещё раз.':'Не удалось получить данные. Повторите подключение.';
 function remember({requestId,contextRef,inputDigest}){try{if(!pendingKey)throw Error();sessionStorage.setItem(pendingKey,JSON.stringify({requestId,contextRef,inputDigest}));}catch{throw Error('pending_storage_unavailable');}}
 function forget(){try{sessionStorage.removeItem(pendingKey);}catch{}}
-async function refresh(){const result=await client.query({requestId:id(),input:{operation:'reading.list'}});
-  if(typeof result.storageScope!=='string'||!result.storageScope.length||result.storageScope.length>160)throw Error('scope_invalid');pendingKey='reading-pending:'+result.storageScope;
+async function refresh(cursor=null){const result=await client.query({requestId:id(),input:{operation:'reading.list',...(cursor?{cursor}:{})}});
+  if(typeof result.storageScope!=='string'||!result.storageScope.length||result.storageScope.length>160||cursor&&result.storageScope!==currentScope
+    ||!Array.isArray(result.items)||!(result.nextCursor===null||typeof result.nextCursor==='string'&&result.nextCursor.length<=193))throw Error('scope_invalid');
+  currentScope=result.storageScope;pendingKey='reading-pending:'+result.storageScope;
   scopeDraft(result.storageScope);
-  const list=$('items');list.replaceChildren();for(const item of result.items){const li=document.createElement('li');li.textContent=item.title;list.append(li);}$('empty').hidden=result.items.length>0;}
+  const list=$('items');if(!cursor)list.replaceChildren();for(const item of result.items){const li=document.createElement('li');li.textContent=item.title;list.append(li);}
+  $('empty').hidden=list.children.length>0;nextCursor=result.nextCursor;more.hidden=!nextCursor;pageState.textContent='';}
 async function connect(){if(busy)return;busy=true;retry.hidden=true;content.hidden=true;state.textContent='Подключаем ваш профиль…';
   try{await client.connect({requestId:id()});await refresh();unresolved=false;let prior;try{prior=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}
     if(prior){
@@ -36,3 +39,5 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(busy||unr
   catch(error){unresolved=error?.effectUnknown===true;save.textContent=unresolved?'Проверяем результат. Повторное добавление не отправлено.':message(error);retry.hidden=false;retry.textContent=unresolved?'Проверить сохранение':'Повторить подключение';}
   finally{busy=false;form.querySelector('button').disabled=unresolved;}});
 retry.addEventListener('click',connect);window.addEventListener('pagehide',()=>client.dispose(),{once:true});void connect();
+more.addEventListener('click',async()=>{if(busy||!nextCursor)return;busy=true;more.disabled=true;pageState.textContent='';
+  try{await refresh(nextCursor);}catch(error){pageState.textContent=message(error);}finally{busy=false;more.disabled=false;}});

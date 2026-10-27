@@ -6,8 +6,9 @@ export function createDomain(){return{
   read(context,{input}){
     if(Object.keys(context).sort().join(',')!=='personal,resourceId')invalid();
     const {personal,resourceId}=context;
-    if(!input||Object.keys(input).join(',')!=='operation'||input.operation!=='notes.list')invalid();
-    return{storageScope:resourceId,items:personal.list('notes').map(({id,value})=>({id,text:value.text}))};
+    if(!input||!['operation','cursor,operation'].includes(Object.keys(input).sort().join(','))||input.operation!=='notes.list')invalid();
+    const page=personal.list('notes',input.cursor??null);
+    return{storageScope:resourceId,items:page.items.map(({id,value})=>({id,text:value.text})),nextCursor:page.nextCursor};
   },
   execute(context,{requestId,input}){
     if(Object.keys(context).sort().join(',')!=='personal,resourceId')invalid();

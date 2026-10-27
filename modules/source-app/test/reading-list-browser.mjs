@@ -8,7 +8,7 @@ import {buildSourceAppPackage} from '../scripts/build.mjs';
 import {verifyPublicSourceSdk,readSourceSdkArchive} from '../public-release.mjs';
 import {fileURLToPath} from 'node:url';
 const directory=await mkdtemp(join(tmpdir(),'sdk-template-browser-'));
-const publicPacket=process.argv.includes('--public-sdk');let load;
+const publicPacket=process.argv.includes('--public-sdk'),pagination=process.argv.includes('--pagination');let load;
 if(publicPacket){const root=fileURLToPath(new URL('../../../',import.meta.url));verifyPublicSourceSdk(root);
   const index=JSON.parse(await readFile(join(root,'public/sdk/source-app/index.json'))),sdk=readSourceSdkArchive(await readFile(join(root,'public',index.artifact.url.slice(1))));
   load=name=>Promise.resolve(sdk.files.get(name==='browser.mjs'?'dist/browser.mjs':'dist/templates/reading-list/assets/'+name));
@@ -34,7 +34,9 @@ const server=createServer(async(req,res)=>{try{
     sessionExpiresAt:1900000000000,accessExpiresAt:1900000000000,receiptDigest:'0'.repeat(64)};
   else if(args.input?.operation==='soty.current_context')value={ok:true,data:{schema:'soty.current-context.v2',selection:{kind:'soty.workspace.v1',nativeId:'personal',incarnationId:'one'},
     context:{ref,generation:1,expiresAt:1900000000000},title:'Мой список',role:'owner',revision:1}};
-  else if(path.endsWith('/query'))value={ok:true,data:{requestId:args.requestId,storageScope:'opaque-personal-'+scope,items:[]}};
+  else if(path.endsWith('/query'))value={ok:true,data:{requestId:args.requestId,storageScope:'opaque-personal-'+scope,
+    items:pagination?[args.input?.cursor?{id:'older',title:'Более ранняя запись'}:{id:'newer',title:'Новая запись'}]:[],
+    nextCursor:pagination&&!args.input?.cursor?'fixture-next-page':null}};
   else{if(path.endsWith('/invoke'))invokes++;res.writeHead(503,{'content-type':'application/json'}).end('{"ok":false,"error":{"code":"fixture_no_write"}}');return;}
   res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'}).end(JSON.stringify(value));
 }catch{res.writeHead(503).end();}});

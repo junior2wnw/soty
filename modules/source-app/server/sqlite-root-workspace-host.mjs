@@ -21,6 +21,13 @@ const columns={soty_workspace_meta:'id,schema,namespace,personal',soty_workspace
   soty_workspace_sessions:'id_hash,principal_id,resource_id,native_hash,active,expires_at,cipher,key_id',soty_workspace_nonces:'nonce,expires_at',
   soty_workspace_receipts:'principal_id,request_id,input_digest,result_json,binding_json'};
 const denied=condition=>check(condition,'source_workspace_native_denied',403);
+// Reserve room for the domain result and the Source response envelope.
+const DOCUMENT_PAGE_BYTES=32768,DOCUMENT_PAGE_NODES=3000,DOCUMENT_PAGE_ITEMS=100;
+function jsonNodes(value){
+  if(Array.isArray(value))return 1+value.reduce((sum,item)=>sum+jsonNodes(item),0);
+  if(value&&typeof value==='object')return 1+Object.values(value).reduce((sum,item)=>sum+1+jsonNodes(item),0);
+  return 1;
+}
 
 /** New per-person SQLite applications. Existing databases/identity models use
  * the maintained Native/storage ports or an explicit adapter, never a shadow
@@ -105,11 +112,32 @@ export function createSqliteRootWorkspaceHost(options) {
     const collection=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.-]{1,64}$/u.test(value),'source_workspace_collection_invalid');
     const itemId=value=>check(typeof value==='string'&&/^[a-zA-Z0-9_.:-]{1,128}$/u.test(value),'source_workspace_item_invalid');
     const access=()=>check(active&&inTransaction,'source_workspace_personal_context_closed',503);
+    const pageDigest=(name,id)=>digest(['soty.personal-page.v1',namespace,actor.principalId,name,id]);
+    function list(name,cursor=null){
+      access();collection(name);let anchor=null;
+      if(cursor!==null){
+        const match=typeof cursor==='string'?/^([a-zA-Z0-9_.:-]{1,128})\.([a-f0-9]{64})$/u.exec(cursor):null;
+        check(match&&pageDigest(name,match[1])===match[2]&&db.prepare('SELECT 1 FROM soty_workspace_documents WHERE principal_id=? AND collection=? AND item_id=?')
+          .get(actor.principalId,name,match[1]),'source_workspace_cursor_invalid');
+        anchor=match[1];
+      }
+      const where=anchor===null?'':' AND rowid<(SELECT rowid FROM soty_workspace_documents WHERE principal_id=? AND collection=? AND item_id=?)';
+      const rows=db.prepare('SELECT item_id,value_json FROM soty_workspace_documents WHERE principal_id=? AND collection=?'+where+' ORDER BY rowid DESC LIMIT 101')
+        .iterate(...(anchor===null?[actor.principalId,name]:[actor.principalId,name,actor.principalId,name,anchor]));
+      const items=[];let bytes=2,nodes=1,last=null,more=false;
+      for(const row of rows){
+        const item={id:row.item_id,value:JSON.parse(row.value_json)},itemBytes=Buffer.byteLength(JSON.stringify(item))+1,itemNodes=jsonNodes(item);
+        if(items.length===DOCUMENT_PAGE_ITEMS||bytes+itemBytes>DOCUMENT_PAGE_BYTES||nodes+itemNodes>DOCUMENT_PAGE_NODES){more=true;break;}
+        items.push(item);bytes+=itemBytes;nodes+=itemNodes;last=row.item_id;
+      }
+      check(!more||last!==null,'source_workspace_page_item_too_large',503);
+      const nextCursor=more?`${last}.${pageDigest(name,last)}`:null;
+      return{items,nextCursor};
+    }
     const personal=Object.freeze({
-      list(name){access();collection(name);return db.prepare('SELECT item_id,value_json FROM soty_workspace_documents WHERE principal_id=? AND collection=? ORDER BY rowid DESC LIMIT 100')
-        .all(actor.principalId,name).map(row=>({id:row.item_id,value:JSON.parse(row.value_json)}));},
+      list,
       create(name,id,value){access();check(method==='execute','source_workspace_personal_read_only',403);collection(name);itemId(id);
-        const document=jsonCopy(value,{bytes:16384});db.prepare('INSERT INTO soty_workspace_documents VALUES(?,?,?,?)').run(actor.principalId,name,id,JSON.stringify(document));},
+        const document=jsonCopy(value,{bytes:16384,nodes:1200,depth:12});db.prepare('INSERT INTO soty_workspace_documents VALUES(?,?,?,?)').run(actor.principalId,name,id,JSON.stringify(document));},
     });
     try{return syncResult(domain[method](Object.freeze({personal,resourceId:actor.resourceId}),args));}finally{active=false;}
   }
