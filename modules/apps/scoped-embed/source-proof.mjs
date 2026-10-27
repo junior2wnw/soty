@@ -16,6 +16,8 @@ export const SOURCE_PROOF_HEADER = "x-soty-selected-proof";
 export const SOURCE_MAC_HEADER = "x-soty-selected-mac";
 export const SOURCE_PROBE_HEADER = 'x-soty-selected-probe';
 export const SOURCE_READY_HEADER = 'x-soty-selected-ready';
+// Leave 1s for bounded issuer-ahead skew; the receiver's 10s bound is unchanged.
+const PROOF_ISSUANCE_CLOCK_SKEW_MS = 1000;
 const token = (value) =>
   need(
     typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value),
@@ -88,7 +90,7 @@ export function createSourceProofSigner({
   return Object.freeze({
     probeHeaders() {
       const value = Object.freeze({ schema: 'soty.selected-source-probe.v1', profileDigest: profile.digest,
-        nonce: randomBytes(32).toString('base64url'), expiresAt: clock()+SCOPED_EMBED_LIMITS.proofMs });
+        nonce: randomBytes(32).toString('base64url'), expiresAt: clock()+SCOPED_EMBED_LIMITS.proofMs-PROOF_ISSUANCE_CLOCK_SKEW_MS });
       const text = Buffer.from(JSON.stringify(value)).toString('base64url');
       return { request: value, headers: { [SOURCE_PROBE_HEADER]: text, [SOURCE_MAC_HEADER]: mac(secret, 'probe\0'+text) } };
     },
@@ -116,7 +118,7 @@ export function createSourceProofSigner({
         nonce: randomBytes(32).toString("base64url"),
         expiresAt: Math.min(
           trusted.expiresAt,
-          clock() + SCOPED_EMBED_LIMITS.proofMs,
+          clock() + SCOPED_EMBED_LIMITS.proofMs - PROOF_ISSUANCE_CLOCK_SKEW_MS,
         ),
       };
       const text = Buffer.from(JSON.stringify(value)).toString("base64url");

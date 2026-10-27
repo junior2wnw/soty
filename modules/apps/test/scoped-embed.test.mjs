@@ -18,7 +18,7 @@ import {
   sourceConsentDigest,
 } from "../scoped-embed/profile.mjs";
 
-function fixture() {
+function fixture({ clock = Date.now, verifierClock = clock } = {}) {
   const appId = "app-" + "a".repeat(32),
     actor = Object.freeze({ accountId: "actor_a", deviceId: "device_a" }),
     foreign = Object.freeze({ accountId: "actor_b", deviceId: "device_b" });
@@ -55,6 +55,7 @@ function fixture() {
     seenActor = null;
   const authority = createScopedEmbedAuthority({
     profiles: [profile],
+    clock,
     withHumanSubjectAuthority(request, callback) {
       assert.ok(request.actor === actor || request.actor === foreign);
       if (!allowed) throw new Error('synthetic revoked');
@@ -79,10 +80,11 @@ function fixture() {
   const context = authority.open({ actor, appId, domainId: "domain_a" }),
     key = randomBytes(32),
     nonces = new Set();
-  const signer = createSourceProofSigner({ profile, key }),
+  const signer = createSourceProofSigner({ profile, key, clock }),
     verifier = createSourceProofVerifier({
       profile,
       key,
+      clock: verifierClock,
       consumeNonce(nonce) {
         if (nonces.has(nonce)) return false;
         nonces.add(nonce);
@@ -101,6 +103,7 @@ function fixture() {
     authority,
     context,
     key,
+    nonces,
     signer,
     verifier,
     request,
@@ -562,4 +565,50 @@ test("broker freezes pending headers, drops expired source cookies and bounds re
 test('legacy selected launch ignores valid workspace instance locators and keeps its exact context shape',()=>{
   const f=fixture();const next=f.authority.open({actor:f.actor,appId:f.profile.appId,domainId:'domain_a',instanceId:'main'});
   assert.equal(Object.hasOwn(next,'instanceId'),false);assert.deepEqual(Object.keys(next),Object.keys(f.context));
+});
+
+for (const lag of [1, 250]) test(`ordinary Source header admits a receiver clock behind by ${lag}ms without widening its bound`, () => {
+  const now=100000,f=fixture({clock:()=>now,verifierClock:()=>now-lag});
+  try{
+    const headers=f.signer.headers({context:f.context,method:'GET',path:'/api/embed/login'});
+    assert.equal(f.verifier.verify(f.request(headers,'GET','/api/embed/login')).appId,f.context.appId);
+    const proof=JSON.parse(Buffer.from(headers['x-soty-selected-proof'],'base64url'));
+    assert.equal(proof.expiresAt,now+9000);
+    const probe=f.signer.probeHeaders();
+    assert.equal(probe.request.expiresAt,now+9000);
+    f.verifier.verifyReady(f.request(probe.headers,'HEAD','/api/embed/transport-ready'));
+  }finally{f.authority.close();}
+});
+
+test('shorter Source issuance retains the Root fence and refuses excess skew, expiry and request tampering', () => {
+  const now=100000;
+  const ahead=fixture({clock:()=>now,verifierClock:()=>now-1500});
+  try{
+    const headers=ahead.signer.headers({context:ahead.context,method:'GET',path:'/api/embed/login'});
+    assert.throws(()=>ahead.verifier.verify(ahead.request(headers,'GET','/api/embed/login')),{code:'scoped_embed_proof_expired',status:401});
+    assert.throws(()=>ahead.verifier.verifyReady(ahead.request(ahead.signer.probeHeaders().headers,'HEAD','/api/embed/transport-ready')));
+    assert.equal(ahead.nonces.size,0);
+  }finally{ahead.authority.close();}
+  let receiver=now;const f=fixture({clock:()=>now,verifierClock:()=>receiver});
+  const issue=()=>f.signer.headers({context:f.context,method:'GET',path:'/api/embed/login'});
+  try{
+    const short={...f.context,expiresAt:now+125},headers=f.signer.headers({context:short,method:'GET',path:'/api/embed/login'});
+    assert.equal(JSON.parse(Buffer.from(headers['x-soty-selected-proof'],'base64url')).expiresAt,short.expiresAt);
+    receiver=short.expiresAt;
+    assert.throws(()=>f.verifier.verify(f.request(headers,'GET','/api/embed/login')),{code:'scoped_embed_proof_expired',status:401});
+    const full=issue();receiver=now+9000;
+    assert.throws(()=>f.verifier.verify(f.request(full,'GET','/api/embed/login')),{code:'scoped_embed_proof_expired',status:401});
+    receiver=now;
+    assert.throws(()=>f.verifier.verify(f.request({...issue(),host:'foreign.invalid'},'GET','/api/embed/login')),{code:'scoped_embed_origin_invalid',status:403});
+    assert.throws(()=>f.verifier.verify(f.request(issue(),'POST','/api/embed/login')),{code:'scoped_embed_proof_expired',status:401});
+    const duplicated=issue(),request=f.request(duplicated,'GET','/api/embed/login');
+    request.rawHeaders=['x-soty-selected-proof',duplicated['x-soty-selected-proof'],'x-soty-selected-proof',duplicated['x-soty-selected-proof']];
+    assert.throws(()=>f.verifier.verify(request),{code:'scoped_embed_proof_invalid',status:403});
+    assert.equal(f.nonces.size,0);
+    const original=f.request(issue(),'GET','/api/embed/login');f.verifier.verify(original);
+    assert.throws(()=>f.verifier.verify({...original}),{code:'scoped_embed_proof_replayed',status:403});
+    assert.equal(f.nonces.size,1);
+    f.authority.invalidate({reference:f.context.reference,connector:f.profile.connector});
+    assert.throws(()=>f.authority.read({reference:f.context.reference,connector:f.profile.connector}));
+  }finally{f.authority.close();}
 });
