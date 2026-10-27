@@ -19,7 +19,7 @@ const values={
  [accountB]:[{id:id('3'),name:'B placed',ownerAccountId:accountB,state:'ready',createdAt:3},{id:id('4'),name:'B available',ownerAccountId:accountB,state:'ready',createdAt:4}],
 };
 const documents={}, opened=[], puts=[];
-let currentAccount='',generation=0,screen,holdA=false,releaseA,offlineB=false;
+let currentAccount='',generation=0,screen,holdA=false,releaseA,offlineB=false,holdOwnSnapshot=null,releaseStaleOwn;
 const clone=value=>structuredClone(value);
 async function hash(document){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(document)));return [...new Uint8Array(digest)].map(value=>value.toString(16).padStart(2,'0')).join('');}
 async function field(account,placed){const document=createFieldDocument();document.contexts.push({contextId:'personal',title:'Личное',x:0,y:0});
@@ -31,6 +31,7 @@ function apiFor(account){return {async request(op,args={}){
  if(op==='world.field.put'){puts.push(clone(args));throw Error('fixture forbids field writes');}
  if(op==='apps.list'){
   check(args.expectedAccountId===account,'wrong account on own app read');
+  if(account===accountA&&holdOwnSnapshot){const snapshot=holdOwnSnapshot;holdOwnSnapshot=null;await new Promise(resolve=>{releaseStaleOwn=resolve;});return {apps:snapshot};}
   if(account===accountA&&holdA)await new Promise(resolve=>{releaseA=resolve;});
   if(account===accountB&&offlineB)throw Error('synthetic network outage');
   return {apps:[...clone(values[account]),...clone(values[account===accountA?accountB:accountA])]};
@@ -57,14 +58,48 @@ run.onclick=async()=>{run.disabled=true;proof.dataset.testStatus='running';
   await mount(accountA);await until(()=>chips().includes('A available'));
   check(!chips().includes('A placed')&&!chips().includes('B available'),'foreign or already placed app leaked');
   host.querySelector('.uf-own-app').click();check(opened[0]?.id===id('2')&&opened[0]?.account===accountA,'personal card did not open');
+  const focused=host.querySelector('.uf-own-app');focused.focus();
+  values[accountA].push({id:id('6'),name:'A late registration',ownerAccountId:accountA,state:'ready',createdAt:6});
+  await screen.refreshOwnApps();
+  check(document.activeElement===focused&&focused.isConnected,'background update moved focus from an existing app');
+  check(chips().includes('A late registration')&&chips().filter(name=>name==='A available').length===1,'background update missed or duplicated the app');
+  values[accountA].find(app=>app.id===id('2')).state='offline';
+  values[accountA].find(app=>app.id===id('6')).state='revoked';
+  await screen.refreshOwnApps();
+  check(document.activeElement===focused&&focused.textContent.includes('нет связи'),'background status update lost focus or missed the current state');
+  check(!chips().includes('A late registration'),'revoked app survived background refresh');
+  holdOwnSnapshot=clone(values[accountA]);const staleOwn=screen.refreshOwnApps();await until(()=>Boolean(releaseStaleOwn));
+  values[accountA].push({id:id('8'),name:'A latest registration',ownerAccountId:accountA,state:'ready',createdAt:8});
+  await screen.refreshOwnApps();check(chips().includes('A latest registration'),'newest own read missed the app');
+  releaseStaleOwn();await staleOwn;
+  check(chips().includes('A latest registration')&&document.activeElement===focused,'older background read replaced newer apps or focus');
+  screen.setMode('search');
+  values[accountA].push({id:id('7'),name:'A completed during search',ownerAccountId:accountA,state:'ready',createdAt:7});
+  await screen.refreshOwnApps();screen.setMode('mine');
+  await until(()=>chips().includes('A completed during search'));
+  screen.focusSearch();const search=host.querySelector('input[aria-label="Найти в моих сотах"]');
+  search.value='A live search';search.dispatchEvent(new Event('input',{bubbles:true}));
+  values[accountA].push({id:id('9'),name:'A live search',ownerAccountId:accountA,state:'ready',createdAt:9});
+  await screen.refreshOwnApps();
+  check(document.activeElement===search&&host.querySelector('.uf-search-results').textContent.includes('A live search'),'background update did not preserve the search input and refresh results');
+  screen.closeSearch();
   screen.openList();await until(()=>Boolean(document.querySelector('dialog[open] .uf-list-results')));
-  const list=document.querySelector('dialog[open] .uf-list-results'),rows=[...list.querySelectorAll('button')];
+  const list=document.querySelector('dialog[open] .uf-list-results'),find=document.querySelector('dialog[open] input');find.focus();
+  find.value='A live list';find.dispatchEvent(new Event('input',{bubbles:true}));
+  values[accountA].push({id:id('a'),name:'A live list',ownerAccountId:accountA,state:'ready',createdAt:10});
+  await screen.refreshOwnApps();
+  check(document.activeElement===find&&list.textContent.includes('A live list'),'background update did not preserve the list input and refresh results');
+  find.value='';find.dispatchEvent(new Event('input',{bubbles:true}));const rows=[...list.querySelectorAll('button')];
   check(rows.filter(row=>row.textContent.includes('A available')).length===1&&rows.filter(row=>row.textContent.includes('A placed')).length===1,'list missed or duplicated an app');
   rows.find(row=>row.textContent.includes('A available')).click();check(opened[1]?.id===id('2'),'list entry did not open');
 
+  holdA=true;const lateOwn=screen.refreshOwnApps();await until(()=>Boolean(releaseA));
+  await mount(accountB);holdA=false;releaseA();await lateOwn;releaseA=undefined;
+  check(!chips().some(name=>name.startsWith('A '))&&chips().includes('B available'),'late background result crossed accounts');
+  await mount(accountA);
   holdA=true;screen.refresh();await until(()=>Boolean(releaseA));offlineB=true;await mount(accountB);holdA=false;releaseA();
   await until(()=>host.textContent.includes('Не удалось обновить ваши приложения'));
-  check(!host.textContent.includes('A available')&&!chips().includes('B available'),'stale account or offline app was shown');
+  check(!host.textContent.includes('A available')&&!host.textContent.includes('A late registration')&&!chips().includes('B available'),'stale account or offline app was shown');
   offlineB=false;await screen.refresh();await until(()=>chips().includes('B available'));
   check(!chips().includes('A available')&&!chips().includes('B placed'),'account switch did not fence old app or duplicate placed app');
 
@@ -75,7 +110,7 @@ run.onclick=async()=>{run.disabled=true;proof.dataset.testStatus='running';
   screen.dispose();currentAccount='';values[accountB].push({id:id('5'),name:'B completed in background',ownerAccountId:accountB,state:'ready',createdAt:5});
   await mount(accountB);await until(()=>chips().includes('B completed in background'));
   check(puts.length===0,'background result changed the field document');
-  proof.dataset.testStatus='passed';proof.textContent='PASS: direct open / two accounts / delayed old response / offline after switch / existing shortcut / deleted shortcut stays deleted / background completion on return. Real side effects: 0.';
+  proof.dataset.testStatus='passed';proof.textContent='PASS: direct open / two accounts / delayed old response / offline after switch / existing shortcut / deleted shortcut stays deleted / focused background update and revoke / completion while searching / background completion on return. Real side effects: 0.';
  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
  finally{generation++;screen?.dispose();host.replaceChildren();await clean(accountA);await clean(accountB);run.disabled=false;}
 };

@@ -3018,16 +3018,19 @@ class WorldApplication {
         for (const control of [name, device, port, path, audience]) control.disabled = true;
         // The registry returns the canonical identity. A field placement is a
         // separate private choice, never proof of publication or a new grant.
+        const field = this.unifiedField;
         void this.api.request<{ app: { id: string; name: string } }>('apps.register', { expectedAccountId: accountId, hostDeviceId: chosen.hostDeviceId, connectorId: chosen.connectorId, name: name.value.trim(), port: Number(port.value), entryPath: path.value.trim() || '/', grants: { accountIds: [], communityIds: audience.value ? [audience.value] : [] } }).then(result => {
-          if (!current()) return;
-          if (!/^app-[a-f0-9]{32}$/.test(result.app.id)) throw new Error('invalid_registered_app');
-          const field = this.unifiedField;
+          if (!accountCurrent() || sequence !== this.screenSequence || field !== this.unifiedField) return;
+          const shouldOpen = current();
+          if (!/^app-[a-f0-9]{32}$/.test(result.app?.id)) { if (shouldOpen) throw new Error('invalid_registered_app'); return; }
           if (field) void field.ready.then(() => {
-            if (accountCurrent() && sequence === this.screenSequence && field === this.unifiedField) return field.refresh({ preserveView: true });
-          }).catch(() => {
             if (accountCurrent() && sequence === this.screenSequence && field === this.unifiedField)
+              return shouldOpen ? field.refresh({ preserveView: true }) : field.refreshOwnApps();
+          }).catch(() => {
+            if (shouldOpen && accountCurrent() && sequence === this.screenSequence && field === this.unifiedField)
               this.toast('Проект подключён, но список не обновился. Попробуйте позже.', true);
           });
+          if (!shouldOpen) return;
           dialog.close({ restoreFocus: false }); this.toast('Проект подключён');
           this.afterNoteSaved(() => {
             if (!accountCurrent() || sequence !== this.screenSequence) return;

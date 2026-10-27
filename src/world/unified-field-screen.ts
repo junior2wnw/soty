@@ -156,6 +156,7 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
   let engine: UnifiedField | null = null, summary: UnifiedFieldSummary | null = null, state: FieldPersistenceState | null = null;
   let searchItems: DirectoryEntity[] = [], available: DirectoryEntity[] = [], searchCursor: string | null = null;
   let ownedApps: unknown[] = [], ownedAppsState: 'loading' | 'ready' | 'offline' = 'loading', ownAppsSignature = '';
+  let ownAppsReadSequence = 0, ownAppsAppliedRead = 0;
   let availableCursor: string | null = null;
   const searchPlacement = createFieldSearchPlacement();
   let activeSearchScene = createFieldDocument();
@@ -293,12 +294,41 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
     const own = ref.kind === 'app' ? overviewApps().find(app => app.id === ref.id) : undefined;
     return own ? overviewEntity(own) : metadata.get(key);
   }
+  function ownAppLabel(app: OwnAppOverview): string {
+    return app.state === 'offline' ? `${app.name} · нет связи` : app.state === 'stopped' ? `${app.name} · остановлено` : app.name;
+  }
+  function ownAppButton(app: OwnAppOverview): HTMLButtonElement {
+    const target = button(ownAppLabel(app), 'grid', 'uf-own-app', () => {
+      if (!current() || mode !== 'mine') return;
+      const fresh = overviewApps().find(value => value.id === app.id);
+      if (fresh) options.onOpen(overviewEntity(fresh), null);
+    });
+    target.dataset.appId = app.id; return target;
+  }
   function renderOwnApps(): void {
     const visible = current() && !!engine && mode === 'mine' && element.dataset.search !== 'open' && !summary?.arranging && !queries.mine.trim() && ['all', 'app'].includes(filter);
     const apps = visible ? overviewApps() : [];
     const signature = JSON.stringify([visible, ownedAppsState, apps]);
     if (signature === ownAppsSignature) return;
-    ownAppsSignature = signature; ownAppsOverview.replaceChildren();
+    ownAppsSignature = signature;
+    const previous = ownAppsOverview.querySelector<HTMLDivElement>('.uf-own-apps-list');
+    if (visible && ownedAppsState === 'ready' && apps.length && previous && ownAppsOverview.contains(document.activeElement)) {
+      const wanted = new Map(apps.map(app => [app.id, app]));
+      const existing = new Map(Array.from(previous.querySelectorAll<HTMLButtonElement>('.uf-own-app'), item => [item.dataset.appId, item]));
+      for (const [id, item] of existing) {
+        const app = id && wanted.get(id);
+        if (!app) item.remove();
+        else { const label = item.querySelector('span'); if (label) label.textContent = ownAppLabel(app); }
+      }
+      let next: HTMLButtonElement | null = null;
+      for (const app of [...apps].reverse()) {
+        let item = existing.get(app.id);
+        if (!item) { item = ownAppButton(app); previous.insertBefore(item, next); }
+        next = item;
+      }
+      return;
+    }
+    ownAppsOverview.replaceChildren();
     ownAppsOverview.hidden = !visible || ownedAppsState === 'loading' || ownedAppsState === 'ready' && apps.length === 0;
     if (ownAppsOverview.hidden) return;
     if (ownedAppsState === 'offline') {
@@ -306,25 +336,21 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       ownAppsOverview.append(status); return;
     }
     const heading = el('h2', '', 'Ваши приложения'), list = el('div', 'uf-own-apps-list');
-    for (const app of apps) {
-      const label = app.state === 'offline' ? `${app.name} · нет связи` : app.state === 'stopped' ? `${app.name} · остановлено` : app.name;
-      list.append(button(label, 'grid', 'uf-own-app', () => {
-        if (!current() || mode !== 'mine') return;
-        const fresh = overviewApps().find(value => value.id === app.id);
-        if (fresh) options.onOpen(overviewEntity(fresh), null);
-      }));
-    }
+    for (const app of apps) list.append(ownAppButton(app));
     ownAppsOverview.append(heading, list);
   }
   async function loadOwnedApps(generation: number): Promise<void> {
+    const read = ++ownAppsReadSequence;
     ownedApps = []; ownedAppsState = 'loading'; renderOwnApps();
     try {
       const result = await options.api.request<{ apps: unknown[] }>('apps.list', { expectedAccountId: options.accountId });
-      if (!current() || generation !== mineGeneration) return;
+      if (!current() || generation !== mineGeneration || read < ownAppsAppliedRead) return;
       if (!Array.isArray(result.apps)) throw Error('invalid_apps_overview');
+      ownAppsAppliedRead = read;
       ownedApps = result.apps; ownedAppsState = 'ready';
     } catch {
-      if (!current() || generation !== mineGeneration) return;
+      if (!current() || generation !== mineGeneration || read < ownAppsAppliedRead) return;
+      ownAppsAppliedRead = read;
       ownedApps = []; ownedAppsState = 'offline';
     }
     renderOwnApps(); renderMineSearchResults(); renderOpenList?.();
@@ -1086,14 +1112,17 @@ export function createUnifiedFieldScreen(options: UnifiedFieldScreenOptions): Un
       if (mode === 'search') await Promise.all([mineTask, searchDirectory(false, refreshOptions?.preserveView === true)]); else await mineTask;
     },
     async refreshOwnApps() {
-      await ready; if (!current() || mode !== 'mine') return;
-      const generation = mineGeneration;
+      await ready; if (!current()) return;
+      const generation = mineGeneration, read = ++ownAppsReadSequence;
       try {
         const result = await options.api.request<{ apps: unknown[] }>('apps.list', { expectedAccountId: options.accountId });
-        if (!current() || generation !== mineGeneration || mode !== 'mine' || !Array.isArray(result.apps)
-          || ownAppsOverview.contains(document.activeElement)) return;
+        if (!current() || generation !== mineGeneration || read < ownAppsAppliedRead) return;
+        if (!Array.isArray(result.apps)) throw Error('invalid_apps_overview');
+        ownAppsAppliedRead = read;
         ownedApps = result.apps; ownedAppsState = 'ready'; renderOwnApps();
-      } catch { /* Preserve the existing overview during a transient failure. */ }
+        if (!mineSearchResults.contains(document.activeElement)) renderMineSearchResults();
+        if (!listDialog?.element.querySelector('.uf-list-results')?.contains(document.activeElement)) renderOpenList?.();
+      } catch { if (current() && generation === mineGeneration) ownAppsAppliedRead = Math.max(ownAppsAppliedRead, read); }
     },
     hasUnsavedChanges: () => !!engine?.hasUnsavedChanges() || persistence.hasUnsavedChanges(),
     async flush() { await engine?.flush(); await persistence.flush(); },

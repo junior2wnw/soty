@@ -47,10 +47,11 @@ function fixture({ registration, fieldReady = Promise.resolve(), blocked = false
   ports['./dialogs'].pinDialogSubmit = dialogsModule.exports.pinDialogSubmit;
   const module = { exports: {} };
   vm.runInNewContext(compiled + '\nexports.Controller=WorldApplication;', { module, exports: module.exports, require: name => ports[name] || {} });
-  const app = Object.create(module.exports.Controller.prototype), dialogs = [], calls = [], refreshes = [], toasts = [], opened = [];
+  const app = Object.create(module.exports.Controller.prototype), dialogs = [], calls = [], refreshes = [], ownRefreshes = [], toasts = [], opened = [];
   const field = { ready: fieldReady, hasUnsavedChanges: () => blocked,
     async flush() { if (blocked) throw Error('synthetic unsaved work'); },
-    async refresh(options) { refreshes.push(structuredClone(options)); if (refreshTask) await refreshTask.promise; } };
+    async refresh(options) { refreshes.push(structuredClone(options)); if (refreshTask) await refreshTask.promise; },
+    async refreshOwnApps() { ownRefreshes.push(true); } };
   Object.assign(app, { destroyed: false, deskAccount: 'account-A', accountGeneration: 1, screenSequence: 1, view: 'world', query: 'Хочу',
     group: null, appStage: null, communities: [], desk: { pinnedApps: [] }, unifiedField: field, main: new Element(),
     homeQuery: 'mine-query', unifiedFieldFilters: { mine: 'app', world: 'all' }, unifiedFieldView: { mineContext: 'personal', mineFit: 'context' },
@@ -73,7 +74,7 @@ function fixture({ registration, fieldReady = Promise.resolve(), blocked = false
     form.querySelector('input').value = 'ХочуИпотеку';
     form.emit('submit'); await settle(); return dialog;
   }
-  return { app, field, dialogs, calls, refreshes, toasts, opened, submit };
+  return { app, field, dialogs, calls, refreshes, ownRefreshes, toasts, opened, submit };
 }
 
 test('successful registration opens the app without a placement and never refreshes the retired field', async () => {
@@ -106,12 +107,30 @@ test('registration failure and malformed app identity never refresh a directory 
   }
 });
 
-test('registration ACK after dialog cancellation, logout or account ABA cannot refresh or populate the new account', async () => {
-  for (const change of [f => f.dialogs[0].close(), f => { f.app.deskAccount = ''; f.app.accountGeneration++; },
-    f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; f.app.deskAccount = 'account-A'; f.app.accountGeneration++; }]) {
+test('a late successful registration refreshes only the same field without opening or a toast', async () => {
+  const registration = deferred(), ready = deferred(), f = fixture({ registration, fieldReady: ready.promise }); await f.submit();
+  f.dialogs[0].close(); registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
+  assert.equal(f.opened.length, 0); assert.equal(f.refreshes.length, 0); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.toasts.length, 0);
+  ready.resolve(); await settle(); assert.equal(f.ownRefreshes.length, 1);
+  assert.equal(f.calls.filter(call => call.op === 'apps.register').length, 1); assert.equal(f.app.screenSequence, 1);
+});
+
+test('late registration ACK after logout, account ABA, screen or field change does nothing', async () => {
+  for (const change of [f => { f.app.deskAccount = ''; f.app.accountGeneration++; },
+    f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; f.app.deskAccount = 'account-A'; f.app.accountGeneration++; },
+    f => { f.app.screenSequence++; }, f => { f.app.unifiedField = { ready: Promise.resolve(), refreshOwnApps() { throw Error('foreign field'); } }; }]) {
     const registration = deferred(), f = fixture({ registration }); await f.submit(); change(f);
     registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
-    assert.equal(f.refreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+    assert.equal(f.refreshes.length, 0); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.opened.length, 0); assert.equal(f.dialogs.length, 1); assert.equal(f.toasts.length, 0);
+  }
+});
+
+test('a late refresh is fenced again if the account or field changes while initial readiness is pending', async () => {
+  for (const change of [f => { f.app.deskAccount = 'account-B'; f.app.accountGeneration++; },
+    f => { f.app.screenSequence++; }, f => { f.app.unifiedField = null; }]) {
+    const registration = deferred(), ready = deferred(), f = fixture({ registration, fieldReady: ready.promise }); await f.submit();
+    f.dialogs[0].close(); registration.resolve({ app: { id: appId, name: 'Late app' } }); await settle();
+    change(f); ready.resolve(); await settle(); assert.equal(f.ownRefreshes.length, 0); assert.equal(f.opened.length, 0);
   }
 });
 
