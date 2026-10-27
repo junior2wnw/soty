@@ -9,6 +9,15 @@ const tick = () => new Promise(resolve=>setImmediate(resolve));
 async function until(check) { for(let n=0;n<100;n++){if(check())return;await tick();}throw Error('world6_controlled_wait'); }
 const own = (person,targetId=person.accountId) => ({expectedAccountId:person.accountId,targetId});
 
+test('direct messaging is advertised only on the own profile with live contact authority', async t => {
+  const f=await signedFixture(t),[a,b]=f.actors;
+  assert.equal((await f.profile(a)).directMessagesVersion,1);
+  const disconnected=await signedFixture(t,{withContacts:false});
+  assert.equal((await disconnected.profile(disconnected.actors[0])).directMessagesVersion,undefined);
+  good(await f.rpc(a,'world.profile.update',{expectedRevision:1,audience:'public'}));
+  assert.equal(good(await f.rpc(b,'world.profile.view',{profileId:a.accountId})).profile.directMessagesVersion,undefined);
+});
+
 test('World6 advertises avatar protocol only with actual store, decoder, live bridge and registered async operations', async t => {
   const f=await signedFixture(t),[a,b]=f.actors;assert.equal(f.world.schemaVersion,6);assert.equal((await f.profile(a)).avatarWriteVersion,1);
   const actual=await f.status(a);assert.equal(actual.scope.kind,'profile');assert.equal(actual.scope.ownerAccountId,a.accountId);

@@ -234,6 +234,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now, 
             else if (ATTACHMENT_OPERATIONS.includes(op)) result = attachmentOperation(m, op, args, actor, now,
               contacts && typeof contacts.relationshipId === 'function' ? { relationshipId: peer => contacts.relationshipId(peer) } : null);
             else result = avatarOperation(m, op, args, actor, now);
+            if (op === 'world.profile.get' && storageVersion >= 6 && typeof contacts?.relationshipId === 'function') result.profile.directMessagesVersion = 1;
             if (op === 'world.profile.get' && storageVersion === 7) result.profile.chatAttachmentsVersion = 1;
             if (result?.communityId && ['world.community.create', 'world.membership.transfer'].includes(op)) {
               const row = m.get("SELECT * FROM communities WHERE id=? AND state='active'", result.communityId);

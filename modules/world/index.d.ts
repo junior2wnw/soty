@@ -13,6 +13,7 @@ export interface WorldIdentity {
   revision: number;
 }
 export interface WorldProfile extends WorldIdentity {
+  directMessagesVersion?: 1;
   chatAttachmentsVersion?: 1;
   bio: string;
   interests: string[];
