@@ -72,10 +72,14 @@
   .sw-dialog.sw-app-settings-dialog { width: 100%; }
 }
 @media (max-width: 480px) {
-  .sw-app-settings-navigation { flex-direction: column; }
-  .sw-app-settings-navigation > .sw-button { justify-content: flex-start; text-align: left; flex-basis: auto; }
+  .sw-app-settings-navigation { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(6.5em,100%),1fr)); gap: 4px; font-size: 13px; }
+  .sw-app-settings-navigation > .sw-button { justify-content: center; text-align: center; min-height: 50px; padding: 6px 3px; font-size: 1em; line-height: 1.2; }
+  .sw-app-settings-navigation > .sw-button > span { min-width: 0; overflow-wrap: anywhere; }
+  .sw-app-settings-navigation > .sw-button > svg { display: none; }
   .sw-app-settings-actions>.sw-button { flex: 1 1 120px; }
   .sw-app-settings-inline>.sw-button { width: 100%; }
+  .sw-app-settings-details>.sw-button { max-width: 100%; white-space: normal; }
+  .sw-app-settings-details>.sw-button>span { min-width: 0; overflow-wrap: anywhere; }
   .sw-app-settings-address-main { flex-basis: 100%; }
   .sw-app-settings-source { grid-template-columns: minmax(0,1fr); gap: 3px; }
   .sw-app-settings-source dd { margin-bottom: 8px; }
