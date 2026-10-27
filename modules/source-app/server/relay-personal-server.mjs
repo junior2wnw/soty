@@ -71,7 +71,9 @@ export function createRelayPersonalServer(options){
       if(req.url==='/api/receipt'){
         const prior=database.prepare('SELECT input_digest,result_json FROM soty_relay_receipts WHERE principal_id=? AND request_id=?').get(principalId,args.requestId);
         check(!prior||prior.input_digest===args.inputDigest,'source_workspace_request_conflict',409);
-        return prior?JSON.parse(prior.result_json):{requestId:args.requestId,inputDigest:args.inputDigest,outcome:'not_applied'};
+        // A missing receipt cannot prove that a request still in flight will
+        // not commit later. Only a persisted receipt establishes an outcome.
+        return prior?JSON.parse(prior.result_json):{requestId:args.requestId,inputDigest:args.inputDigest,outcome:'unknown'};
       }
       const execute=req.url==='/api/invoke',inputDigest=digest(args.input);
       if(execute){check(domain.execute,'relay_personal_read_only',403);

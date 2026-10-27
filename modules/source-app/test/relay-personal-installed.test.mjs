@@ -66,8 +66,8 @@ test('one relay host implementation serves two domains and two signed users with
     if(label==='one'){
       const failed={requestId:`relay-${op}-rollback`,input:{operation:'fixture.rollback'}};
       assert.notEqual((await call(window,'/api/invoke',failed)).status,200);
-      const notApplied=await call(window,'/api/receipt',{requestId:failed.requestId,inputDigest:digest(failed.input)});
-      assert.equal(notApplied.value.data.outcome,'not_applied');
+      const uncertain=await call(window,'/api/receipt',{requestId:failed.requestId,inputDigest:digest(failed.input)});
+      assert.equal(uncertain.value.data.outcome,'unknown');
       assert.deepEqual((await call(window,'/api/query',query)).value.data.items,[{id:write.requestId,[field]:`${op} ${label}`}]);
       lost={requestId:`relay-${op}-lost-ack`,input:{operation:op+'.add',[field]:`${op} lost response`}};realm.dropPath='/api/invoke';
       let reply;try{reply=await call(window,'/api/invoke',lost);}catch{}
@@ -85,12 +85,30 @@ test('one relay host implementation serves two domains and two signed users with
       assert.equal(recovered.status,200,recovered.text);assert.equal(recovered.value.data.outcome,'committed');
       assert.deepEqual((await call(window,'/api/invoke',record.lost)).value.data,recovered.value.data,'retry after restart returns the original receipt');
       assert.deepEqual((await call(window,'/api/query',query)).value.data.items,expected,'no second write after lost ACK');}}
+  // An earlier request can still be arriving when a receipt is read. Pause
+  // its body after delivery to the actual upstream, then complete it later.
+  const heldWindow=await frame(f.realms[0],f.reader),held={requestId:'relay-held-request-0001',input:{operation:'reading.add',title:'held response'}};
+  const encoded=Buffer.from(JSON.stringify(held)),host=new URL(heldWindow.realm.embedded).host;
+  let reached;const reachedUpstream=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('held_request_not_delivered')),5000);
+    reached=req=>{if(req.url!=='/api/invoke')return;req.once('data',()=>{clearTimeout(timer);heldWindow.realm.instance.server.off('request',reached);resolve();});};
+    heldWindow.realm.instance.server.prependListener('request',reached);});
+  const pending=httpsRequest({hostname:'127.0.0.1',port,path:'/api/invoke',method:'POST',ca:cert,agent:false,
+    headers:{host,origin:heldWindow.realm.embedded,'content-type':'application/json','content-length':encoded.length,
+      'x-soty-identity-request':'1','x-soty-window-grant':heldWindow.grant}});
+  const completed=new Promise((resolve,reject)=>{pending.on('response',res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));
+    res.on('end',()=>resolve({status:res.statusCode,text:Buffer.concat(chunks).toString('utf8')}));});pending.on('error',reject);});
+  pending.write(encoded.subarray(0,8));await reachedUpstream;
+  const before=await call(heldWindow,'/api/receipt',{requestId:held.requestId,inputDigest:digest(held.input)});
+  assert.equal(before.value.data.outcome,'unknown','an absent receipt is not proof that an in-flight request failed');
+  pending.end(encoded.subarray(8));const delivered=await completed;assert.equal(delivered.status,200,delivered.text);
+  const after=await call(heldWindow,'/api/receipt',{requestId:held.requestId,inputDigest:digest(held.input)});
+  assert.equal(after.value.data.outcome,'committed');assert.deepEqual((await call(heldWindow,'/api/invoke',held)).value.data,after.value.data);
   const paged=await frame(f.realms[0],f.reader),titles=[];
   for(let i=0;i<50;i++){const requestId=`relay-page-write-${String(i).padStart(4,'0')}`,title='漢'.repeat(240);titles.push({id:requestId,title});
     assert.equal((await call(paged,'/api/invoke',{requestId,input:{operation:'reading.add',title}})).status,200);}
   let cursor=null;const seen=[];do{const response=await call(paged,'/api/query',{requestId:'relay-page-query-0001',input:{operation:'reading.list',...(cursor?{cursor}:{})}});
     assert.equal(response.status,200,response.text);seen.push(...response.value.data.items);cursor=response.value.data.nextCursor;}while(cursor);
-  assert.deepEqual(seen.slice(0,50),titles.reverse());assert.equal(seen.length,52);
+  assert.deepEqual(seen.slice(0,50),titles.reverse());assert.equal(seen.length,53);
   for(const {realm,op}of definitions){const reader=await frame(realm,f.reader);
     await f.owner.client.extension('apps.update',{appId:realm.appId,grants:{accountIds:[f.foreign.account.accountId],communityIds:[]}});
     assert.notEqual((await call(reader,'/api/query',{requestId:`relay-${op}-revoked-query`,input:{operation:op+'.list'}})).status,200);
