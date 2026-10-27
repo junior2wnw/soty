@@ -787,7 +787,7 @@ class WorldApplication {
     const current = this.accountTask();
     const outbox = createFieldPersistence({ api: this.api, accountId: this.deskAccount, isCurrent: current });
     this.fieldOutbox = outbox;
-    void outbox.load().catch(() => { /* Durable pending intents remain for reconnect or the field. */ })
+    void outbox.load({ skipRemoteIfEmpty: true }).catch(() => { /* Durable pending intents remain for reconnect or the field. */ })
       .finally(() => { outbox.dispose(); if (this.fieldOutbox === outbox) this.fieldOutbox = null; });
   }
 

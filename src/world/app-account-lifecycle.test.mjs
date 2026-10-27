@@ -33,6 +33,8 @@ import * as appScopedRenewal from './app-scoped-renewal.mjs';
 import { createOtsovEditorHost } from './otsov-editor-handoff.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
+import { createFieldPersistence } from './field-persistence.ts';
+import { createHash } from 'node:crypto';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { migrateAppsSchema, ensureCanonicalDomain, ensureInitialPublication, runtimeTargetDigest } from '../../modules/apps/server/schema.mjs';
@@ -160,6 +162,7 @@ function fixture({ initial = 'account-A', hash = '#mine', coarse = false } = {})
     './dialogs': { errorText: error => error.code ?? 'failure' },
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
+    './field-persistence': {},
     './app-launch.mjs': appLaunch,
     './workspace-return.mjs': workspaceReturn,
     './app-inbox.mjs': appInbox,
@@ -1686,6 +1689,85 @@ test('progressive actual refresh and openRoute retain a cold conversation link u
     await refreshing;
     f.app.cleanScreen();
   }
+});
+
+function outboxLifecycleFixture(f) {
+  const models = [], operations = [], original = f.app.api.request;
+  let local = null, offline = false;
+  const port = () => ({ async read() { return structuredClone(local); }, async write(next, expected) {
+    if ((local?.localRevision ?? 0) !== expected) throw failure('field_local_revision_conflict');
+    local = structuredClone(next);
+  } });
+  const empty = fieldContract.createFieldDocument();
+  let remote = { revision: 0, document: empty, contentHash: createHash('sha256').update(JSON.stringify(empty)).digest('hex'), updatedAt: 0 };
+  f.app.api.request = async (op, args = {}) => {
+    if (!['world.field.get', 'world.field.put'].includes(op)) return original(op, args);
+    operations.push(op);
+    assert.equal(args.expectedAccountId, 'account-A');
+    if (offline) throw failure('NETWORK_ERROR');
+    if (op === 'world.field.get') return structuredClone(remote);
+    assert.equal(args.expectedRevision, remote.revision);
+    remote = { revision: remote.revision + 1, document: structuredClone(args.document), contentHash: args.contentHash, updatedAt: 1 };
+    return { replayed: false, receipt: { revision: remote.revision, contentHash: remote.contentHash, committedAt: 1 }, current: structuredClone(remote) };
+  };
+  f.ports['./field-persistence'].createFieldPersistence = options => {
+    const model = createFieldPersistence({ ...options, store: port() }); models.push(model); return model;
+  };
+  f.app.connection = 'online'; f.app.queueApplicationInbox = () => {};
+  return { port, operations, remote: () => structuredClone(remote), local: () => structuredClone(local),
+    offline(value) { offline = value; }, dispose() { for (const model of models) model.dispose(); } };
+}
+
+test('normal controller refresh with empty outbox opens the actual field persistence with just one GET', async () => {
+  const f = fixture(), h = outboxLifecycleFixture(f); let field;
+  f.app.renderCurrent = function () {
+    field = createFieldPersistence({ api: this.api, accountId: this.deskAccount, isCurrent: this.accountTask(), store: h.port() });
+    this.unifiedField = { ready: field.load(), async refresh() {}, dispose() { field.dispose(); }, hasUnsavedChanges() { return false; } };
+  };
+  try {
+    await f.app.refresh(); await turn();
+    assert.deepEqual(h.operations, ['world.field.get']);
+    assert.equal(field.getState().state, 'saved'); assert.equal(f.app.fieldOutbox, null);
+  } finally { f.app.cleanScreen(); h.dispose(); }
+});
+
+for (const route of ['chat', 'app']) test(`cold ${route} link replays pending field work without waiting for navigation to finish`, async () => {
+  const id = route === 'chat' ? 'chat-cold-outbox' : 'app-' + 'a'.repeat(32);
+  const f = fixture({ hash: route === 'chat' ? `#messages/${id}` : `#app/${id}` }), h = outboxLifecycleFixture(f);
+  const author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() });
+  await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Моё', x: 12, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'pending_on_cold_link' }); author.dispose(); h.offline(false); h.operations.length = 0;
+  const navigation = deferred(), original = f.app.api.request;
+  f.app.routeLoaded = false; f.app.openRoute = f.Controller.prototype.openRoute;
+  if (route === 'chat') {
+    f.app.api.request = (op, args) => op === 'world.community.list' ? navigation.promise : original(op, args);
+    f.app.navigate = () => {};
+  } else f.app.openApplication = () => navigation.promise;
+  const refreshing = f.app.refresh();
+  try {
+    for (let i = 0; i < 50 && h.local()?.pending.length; i++) await turn();
+    assert.equal(h.local().pending.length, 0, 'background pending replay does not wait for the cold route');
+    assert.deepEqual(h.remote().document, document); assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
+  } finally {
+    navigation.resolve(route === 'chat' ? { communities: [{ communityId: id, membership: { state: 'active' } }] } : undefined);
+    await refreshing; f.app.cleanScreen(); h.dispose();
+  }
+});
+
+test('reconnection from a non-field screen resumes its durable field outbox', async () => {
+  const f = fixture({ hash: '#notes' }), h = outboxLifecycleFixture(f);
+  const author = createFieldPersistence({ api: f.app.api, accountId: 'account-A', store: h.port() });
+  await author.load(); h.offline(true);
+  const document = { schema: 'soty.field.v1', contexts: [{ contextId: 'personal', title: 'Моё', x: 18, y: 0 }], shortcuts: [] };
+  await author.commit(document, { expectedRevision: 0, requestId: 'reconnect_from_notes' }); author.dispose(); h.offline(false); h.operations.length = 0;
+  f.app.connection = 'unreachable'; f.app.renderPwaBanner = () => {};
+  try {
+    f.connectionChanged({ connection: 'online' });
+    for (let i = 0; i < 50 && h.local()?.pending.length; i++) await turn();
+    assert.equal(h.local().pending.length, 0); assert.deepEqual(h.remote().document, document);
+    assert.deepEqual(h.operations, ['world.field.get', 'world.field.put']);
+  } finally { f.app.cleanScreen(); h.dispose(); }
 });
 
 // Progressive transport permits a read to finish after a later accepted write.

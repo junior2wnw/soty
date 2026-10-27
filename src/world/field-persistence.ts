@@ -248,13 +248,20 @@ export function createFieldPersistence({ api, accountId, projectId = 'soty', isC
     }).catch(error => { if (!disposed && isCurrent()) { errorCode = codeOf(error); storageError = true; emit(); } });
   }) ?? (() => {});
   return Object.freeze({
-    async load(): Promise<FieldPersistenceState> {
+    async load(options: { skipRemoteIfEmpty?: boolean } = {}): Promise<FieldPersistenceState> {
       await serialize(async () => {
         check();
         try { const saved = await store.read(); check(); local = saved ? await validateLocal(saved) : await empty(); loaded = !!saved; }
         catch (error) { check(); storageError = true; errorCode = codeOf(error); local = await empty(); }
         emit();
       });
+      // A background worker has nothing to replay in an empty, healthy outbox;
+      // the visible field loads its own fresh document.
+      if (options.skipRemoteIfEmpty && !storageError && !local?.conflict && !local?.pending.length) {
+        await serialize(async () => { check(); loaded = true; emit(); });
+        // A notified writer may have filled the shared journal while waiting.
+        if (!storageError && !local?.conflict && !local?.pending.length) return snapshot();
+      }
       try {
         if (storageError) {
           const remote = await remoteRead();

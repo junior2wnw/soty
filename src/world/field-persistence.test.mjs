@@ -55,6 +55,107 @@ test('three offline arrangements are locally durable and reload drains exact ord
   assert.deepEqual(f.current().document, doc(30)); assert.equal(f.writes(), 3);
 });
 
+test('background outbox with no pending edits makes no network read; the visible field still reads once', async t => {
+  const f = fixture(t), store = memoryStore(), operations = [];
+  const api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api });
+  assert.equal((await worker.load({ skipRemoteIfEmpty: true })).state, 'saved');
+  assert.deepEqual(operations, []);
+  const field = f.create(store.port(), { api }); await field.load();
+  assert.deepEqual(operations, ['world.field.get']);
+});
+
+test('an intent added by another window during the empty-outbox check is not stranded', async t => {
+  const f = fixture(t), store = memoryStore(true), author = f.create(store.port()); await author.load();
+  const gate = defer(), reading = defer(), base = store.port(); let first = true;
+  const delayed = { ...base, async read() {
+    const value = await base.read();
+    if (first) { first = false; reading.resolve(); await gate.promise; }
+    return value;
+  } };
+  const operations = [], api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(delayed, { api }), loading = worker.load({ skipRemoteIfEmpty: true });
+  await reading.promise; f.setOffline(true);
+  await author.commit(doc(14), { expectedRevision: 0, requestId: 'late_shared_outbox' });
+  author.dispose(); f.setOffline(false); gate.resolve();
+  const state = await loading;
+  assert.equal(state.pendingCount, 0); assert.equal(state.state, 'saved');
+  assert.deepEqual(operations, ['world.field.get', 'world.field.put']);
+  assert.deepEqual(f.current().document, doc(14));
+});
+
+test('background outbox checks and sends durable offline edits in order; the field reloads their server result', async t => {
+  const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load(); f.setOffline(true);
+  for (const [index, x] of [11, 22, 33].entries()) await author.commit(doc(x), { expectedRevision: 0, requestId: `background_offline_${index}` });
+  author.dispose(); f.setOffline(false);
+  const operations = [], api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api }), state = await worker.load({ skipRemoteIfEmpty: true });
+  assert.deepEqual(operations, ['world.field.get', 'world.field.put', 'world.field.put', 'world.field.put']);
+  assert.equal(state.state, 'saved'); assert.equal(state.pendingCount, 0); assert.deepEqual(f.current().document, doc(33));
+  worker.dispose(); const field = f.create(store.port(), { api }), restored = await field.load();
+  assert.equal(restored.revision, 3); assert.deepEqual(restored.document, doc(33)); assert.equal(operations.at(-1), 'world.field.get');
+});
+
+test('background replay keeps the original lost-ACK identity and does not duplicate the server revision', async t => {
+  const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load(); f.loseAck();
+  await author.commit(doc(44), { expectedRevision: 0, requestId: 'background_lost_ack' }); author.dispose();
+  assert.equal(f.current().revision, 1); assert.equal(store.value().pending[0].requestId, 'background_lost_ack');
+  const operations = [], api = { request(op, args) { operations.push({ op, requestId: args.requestId }); return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api }), state = await worker.load({ skipRemoteIfEmpty: true });
+  assert.deepEqual(operations, [{ op: 'world.field.get', requestId: undefined }, { op: 'world.field.put', requestId: 'background_lost_ack' }]);
+  assert.equal(state.state, 'saved'); assert.equal(state.revision, 1); assert.equal(state.pendingCount, 0); assert.equal(f.current().revision, 1);
+});
+
+test('background conflict retains the previous read and preserves the offline layout for the field', async t => {
+  const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load(); f.setOffline(true);
+  await author.commit(doc(55), { expectedRevision: 0, requestId: 'background_conflict' }); author.dispose(); f.setOffline(false);
+  f.world.execute({ actor: account, op: 'world.field.put', args: { expectedAccountId: account.accountId, expectedRevision: 0, requestId: 'other_device_background', document: doc(99) } });
+  const operations = [], api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api }), state = await worker.load({ skipRemoteIfEmpty: true });
+  assert.deepEqual(operations, ['world.field.get', 'world.field.put', 'world.field.get']); assert.equal(state.state, 'conflict');
+  assert.equal(state.localDurable, true); assert.deepEqual(state.document, doc(55)); assert.deepEqual(state.remote.document, doc(99));
+  assert.equal(store.value().pending[0].requestId, 'background_conflict'); worker.dispose();
+  const field = f.create(store.port(), { api }), restored = await field.load();
+  assert.equal(restored.state, 'conflict'); assert.deepEqual(restored.document, doc(55));
+  const resolved = await field.resolveConflict('local'); assert.equal(resolved.state, 'saved'); assert.deepEqual(f.current().document, doc(55));
+});
+
+test('account switch while background replay is in flight retains the old-account intent for exact replay', async t => {
+  const f = fixture(t), store = memoryStore(), author = f.create(store.port()); await author.load(); f.setOffline(true);
+  await author.commit(doc(66), { expectedRevision: 0, requestId: 'background_account_switch' }); author.dispose(); f.setOffline(false);
+  const gate = defer(); let active = true, putStarted = false;
+  const api = { async request(op, args) { if (op === 'world.field.put') { putStarted = true; await gate.promise; } return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api, isCurrent: () => active }), loading = worker.load({ skipRemoteIfEmpty: true });
+  await until(() => putStarted); active = false; gate.resolve();
+  await assert.rejects(loading, error => error.code === 'field_account_changed');
+  assert.equal(store.value().pending[0].requestId, 'background_account_switch');
+  assert.equal(f.world.execute({ actor: other, op: 'world.field.get', args: { expectedAccountId: other.accountId } }).revision, 0);
+  const restored = f.create(store.port()), state = await restored.load({ skipRemoteIfEmpty: true });
+  assert.equal(state.pendingCount, 0); assert.equal(f.current().revision, 1); assert.deepEqual(f.current().document, doc(66));
+});
+
+test('unavailable local outbox cannot dispatch or erase an unknown pending edit', async t => {
+  const f = fixture(t), operations = [];
+  const api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create({ async read() { throw failure('field_local_storage_unavailable'); }, async write() { assert.fail('no write'); } }, { api });
+  const state = await worker.load({ skipRemoteIfEmpty: true });
+  assert.equal(state.state, 'storage-error'); assert.equal(state.localDurable, false); assert.deepEqual(operations, ['world.field.get']);
+});
+
+test('field and background outbox starting together reconcile one durable intent without duplicate revisions', async t => {
+  const f = fixture(t), store = memoryStore(true), author = f.create(store.port()); await author.load(); f.setOffline(true);
+  await author.commit(doc(77), { expectedRevision: 0, requestId: 'background_parallel_field' }); author.dispose(); f.setOffline(false);
+  const gate = defer(); f.gate(gate); const operations = [];
+  const api = { request(op, args) { operations.push(op); return f.api.request(op, args); } };
+  const worker = f.create(store.port(), { api }), field = f.create(store.port(), { api, localFirst: true });
+  const replay = worker.load({ skipRemoteIfEmpty: true }), opening = field.load();
+  await until(() => operations.filter(op => op === 'world.field.get').length === 2);
+  gate.resolve(); f.gate(null); await Promise.all([replay, opening]); await turn();
+  assert.equal(operations.filter(op => op === 'world.field.get').length, 2, 'pending edits keep the original verification reads');
+  assert.equal(store.value().pending.length, 0); assert.equal(store.value().conflict, false);
+  assert.equal(f.current().revision, 1); assert.deepEqual(f.current().document, doc(77));
+});
+
 test('ACK lost after actual World commit survives reload and replay does not advance revision again', async t => {
   const f = fixture(t), store = memoryStore(), first = f.create(store.port()); await first.load(); f.loseAck();
   const pending = await first.commit(doc(18), { expectedRevision: 0, requestId: 'lost_ack_001' });
