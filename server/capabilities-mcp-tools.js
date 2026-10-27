@@ -49,7 +49,7 @@ function definitions() {
       inputSchema: object({ invocationId: structuredClone(schemas.NativeInvocationId) }), outputSchema: standalone('NativeReadResponse', schemas), readOnly: true },
     { name: 'apps_diagnose', description: 'Explain reported Soty app launch observations through the maintained CLI/MCP guidance. A blank frame or AX label is not an authentication diagnosis; distinguish Boot GET from browser admission and compare authorized observations. Accepts closed enums only: no URLs, logs, tokens or child DOM. Does not inspect a live browser/server, grant rights, execute commands or qualify a release.',
       inputSchema: DIAGNOSE_INPUT_SCHEMA, outputSchema: DIAGNOSE_OUTPUT_SCHEMA, readOnly: true },
-    { name: 'apps_auth_guide', description: 'Read Soty login guidance. Ordinary relay identity is temporarily unavailable; admitted workspace apps use their verified Source contract. Explicit modes cover an app-owned confidential OIDC client, a private single-owner adapter, or agent OAuth/MCP. This tool does not deploy, authenticate, activate an issuer or grant rights.',
+    { name: 'apps_auth_guide', description: 'Read Soty login guidance for the window-bound embedded relay contract or admitted workspace apps; verify installed compatibility. Explicit modes cover an app-owned confidential OIDC client, a private single-owner adapter, or agent OAuth/MCP. This tool does not deploy, authenticate, activate an issuer or grant rights.',
       inputSchema: AUTH_GUIDE_INPUT_SCHEMA, outputSchema: AUTH_GUIDE_OUTPUT_SCHEMA, readOnly: true },
   ];
   return values.map(({ readOnly, ...tool }) => freezeDeep({ ...tool,

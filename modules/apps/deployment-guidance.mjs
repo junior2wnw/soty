@@ -103,10 +103,10 @@ export function diagnoseAppRelease(input) {
 
 const guides = {
   soty: {
-    identity: 'The goal is one Soty account with separate app data and permissions per person. Admitted workspace2 supports a verified identity; common login for ordinary relay apps is temporarily unavailable.',
+    identity: 'The goal is one Soty account with separate app data and permissions per person. The window-bound relay contract is implemented in source but must be verified in the installed Root, shell, connector and SDK.',
     steps: [
       'Check the installed Root, connector and portable Source SDK support the chosen common-login contract. A registered card or a downloaded SDK is not proof that the runtime supports it.',
-      'Do not enable or use ordinary relay identity: the previous contract can silently switch accounts between windows. The new Root fails closed until a window-bound contract is verified. For an already admitted workspace2 use its maintained Source SDK and Native ACL.',
+      'For a compatible embedded relay app, use createRelayIdentityFetch in its browser and createSqliteRelayIdentity on its single-host server with a trusted issuer, exact appId and dedicated nonce database. Verify the installed window-bound contract end to end: preview.10 and preview.11 browser helpers do not support it. For admitted workspace2 retain its Source SDK and Native ACL.',
       'Use the verified issuer and subject, not a browser-supplied user ID, to find the person’s existing app records. Verify the app’s own permissions for each operation.',
       'Link an existing app account only after both identities are verified. Do not merge by email or display name, replace its data, or require a new app-specific login for an already compatible user.',
       'After a sent write receives 403 or loses its response, keep the original request ID and check the app receipt or actual data under current rights. Do not blindly repeat an unknown effect.',
@@ -114,6 +114,7 @@ const guides = {
     acceptance: ['Two people get separate records; the same person retains the same records after reload and across compatible entry points.',
       'Wrong issuer, app, method, path, expired/replayed proof, anonymous or revoked access fails closed. Verify a real permitted write and readback after reload.'],
     boundaries: ['An ingress session or unverified request header is not proof of the person. Signed identity alone grants no app role or agent capability.',
+      'Standalone relay identity, hostile code in the same app origin, and cross-site third-party cookie support are not guaranteed by this embedded contract. A local preview is not an installed production feature.',
       'The relay login SDK does not create business receipts. The app must atomically associate the request ID, effect and receipt; verify Idempotency-Key support through the installed relay before relying on that header.',
       'This guide does not deploy a service, enable an issuer, update a connector, migrate old accounts or grant access. Check live compatibility rather than assuming every app is supported.'],
     references: ['docs/deployment/app-authentication.md', 'modules/source-app/README.md', 'modules/apps/README.md'],
